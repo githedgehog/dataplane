@@ -68,7 +68,7 @@ pub struct BgpNeighCapabilities {
     pub ext_nhop: bool,
     pub fqdn: bool,
     pub software_ver: bool,
-    //ORF
+    // TODO: ORF
 }
 
 #[derive(Clone, Debug)]
@@ -184,6 +184,101 @@ impl Default for BgpOptions {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum BmpSource {
+    Address(IpAddr),
+    Interface(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct BmpOptions {
+    /// Name for `bmp targets <name>`
+    pub target_name: String,
+    /// Collector host/IP in `bmp connect`
+    pub connect_host: String,
+    /// Collector TCP port
+    pub port: u16,
+    /// Optional local source (address or interface)
+    pub source: Option<BmpSource>,
+    /// Optional reconnect backoff (ms)
+    pub min_retry_ms: Option<u64>,
+    pub max_retry_ms: Option<u64>,
+    /// `bmp stats interval` (ms)
+    pub stats_interval_ms: u64,
+    /// Monitoring toggles
+    pub monitor_ipv4_pre: bool,
+    pub monitor_ipv4_post: bool,
+    pub monitor_ipv6_pre: bool,
+    pub monitor_ipv6_post: bool,
+}
+
+impl Default for BmpOptions {
+    fn default() -> Self {
+        Self {
+            target_name: "bmp1".to_string(),
+            connect_host: "127.0.0.1".to_string(),
+            port: 5000,
+            source: None,
+            min_retry_ms: Some(1_000),
+            max_retry_ms: Some(20_000),
+            stats_interval_ms: 60_000,
+            monitor_ipv4_pre: true,
+            monitor_ipv4_post: true,
+            monitor_ipv6_pre: false,
+            monitor_ipv6_post: false,
+        }
+    }
+}
+
+impl BmpOptions {
+    #[must_use]
+    pub fn new<T: Into<String>, H: Into<String>>(
+        target_name: T,
+        connect_host: H,
+        port: u16,
+    ) -> Self {
+        Self {
+            target_name: target_name.into(),
+            connect_host: connect_host.into(),
+            port,
+            ..Default::default()
+        }
+    }
+    #[must_use]
+    pub fn set_source_addr(mut self, ip: IpAddr) -> Self {
+        self.source = Some(BmpSource::Address(ip));
+        self
+    }
+    #[must_use]
+    pub fn set_source_interface<S: Into<String>>(mut self, ifname: S) -> Self {
+        self.source = Some(BmpSource::Interface(ifname.into()));
+        self
+    }
+    #[must_use]
+    pub fn set_retry_ms(mut self, min_ms: u64, max_ms: u64) -> Self {
+        self.min_retry_ms = Some(min_ms);
+        self.max_retry_ms = Some(max_ms);
+        self
+    }
+    #[must_use]
+    pub fn set_stats_interval_ms(mut self, ms: u64) -> Self {
+        self.stats_interval_ms = ms;
+        self
+    }
+    #[must_use]
+    pub fn monitor_ipv4(mut self, pre: bool, post: bool) -> Self {
+        self.monitor_ipv4_pre = pre;
+        self.monitor_ipv4_post = post;
+        self
+    }
+    #[must_use]
+    pub fn monitor_ipv6(mut self, pre: bool, post: bool) -> Self {
+        self.monitor_ipv6_pre = pre;
+        self.monitor_ipv6_post = post;
+        self
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 /// A BGP instance config, within a certain VRF
 pub struct BgpConfig {
@@ -195,6 +290,7 @@ pub struct BgpConfig {
     pub af_ipv4unicast: Option<AfIpv4Ucast>,
     pub af_ipv6unicast: Option<AfIpv6Ucast>,
     pub af_l2vpnevpn: Option<AfL2vpnEvpn>,
+    pub bmp: Option<BmpOptions>,
 }
 
 /* ===== impls: Builders ===== */
@@ -234,7 +330,6 @@ impl AfIpv4Ucast {
     pub fn set_vrf_imports(&mut self, imports: VrfImports) {
         self.imports = Some(imports);
     }
-    // redistribution is configured by adding one or more redistribute objects
     pub fn redistribute(&mut self, redistribute: Redistribute) {
         self.redistribute.push(redistribute);
     }
@@ -594,6 +689,7 @@ impl BgpOptions {
         self
     }
 }
+
 impl BgpConfig {
     #[must_use]
     pub fn new(asn: u32) -> Self {
@@ -626,5 +722,11 @@ impl BgpConfig {
     }
     pub fn set_af_ipv6unicast(&mut self, af_ipv6unicast: AfIpv6Ucast) {
         self.af_ipv6unicast = Some(af_ipv6unicast);
+    }
+
+    /* NEW: attach BMP options */
+    pub fn set_bmp_options(&mut self, bmp: BmpOptions) -> &Self {
+        self.bmp = Some(bmp);
+        self
     }
 }

@@ -12,6 +12,7 @@ use config::internal::routing::bgp::Redistribute;
 use config::internal::routing::bgp::VrfImports;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpNeighCapabilities, Protocol};
+use config::internal::routing::bgp::{BmpOptions, BmpSource};
 
 /* impl Display */
 impl Rendered for BgpNeighType {
@@ -51,6 +52,50 @@ impl Rendered for Protocol {
             Protocol::ISIS => "isis".to_string(),
             Protocol::OSPF => "ospf".to_string(),
         }
+    }
+}
+
+impl Render for BmpOptions {
+    type Context = ();
+    type Output = ConfigBuilder;
+    fn render(&self, _: &Self::Context) -> Self::Output {
+        let mut cfg = ConfigBuilder::new();
+        cfg += MARKER;
+        cfg += format!("bmp targets {}", self.target_name);
+
+        // connect line
+        let mut connect = format!(" bmp connect {} port {}", self.connect_host, self.port);
+        if let (Some(minr), Some(maxr)) = (self.min_retry_ms, self.max_retry_ms) {
+            connect.push_str(&format!(" min-retry {minr} max-retry {maxr}"));
+        }
+        if let Some(src) = &self.source {
+            match src {
+                BmpSource::Address(ip) => connect.push_str(&format!(" source {}", ip)),
+                BmpSource::Interface(ifn) => connect.push_str(&format!(" source {}", ifn)),
+            }
+        }
+        cfg += connect;
+
+        // monitors
+        if self.monitor_ipv4_pre {
+            cfg += " bmp monitor ipv4 unicast pre-policy";
+        }
+        if self.monitor_ipv4_post {
+            cfg += " bmp monitor ipv4 unicast post-policy";
+        }
+        if self.monitor_ipv6_pre {
+            cfg += " bmp monitor ipv6 unicast pre-policy";
+        }
+        if self.monitor_ipv6_post {
+            cfg += " bmp monitor ipv6 unicast post-policy";
+        }
+
+        // stats
+        cfg += format!(" bmp stats interval {}", self.stats_interval_ms);
+
+        cfg += "exit";
+        cfg += MARKER;
+        cfg
     }
 }
 
@@ -207,7 +252,7 @@ fn bgp_neigh_bool_switches(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
 
     /* extended link bw */
     if neigh.remove_private_as {
-        cfg += format!(" {prefix} remove-private-AS");
+        cfg += format!(" {prefix} remove-private-AS");ß
     }
 
     /* extended link bw */
@@ -282,7 +327,6 @@ impl Render for AfIpv4Ucast {
         cfg += MARKER;
         cfg += "address-family ipv4 unicast";
 
-        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv4_unicast)
@@ -318,7 +362,6 @@ impl Render for AfIpv6Ucast {
         cfg += MARKER;
         cfg += "address-family ipv6 unicast";
 
-        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv6_unicast)
@@ -354,7 +397,6 @@ impl Render for AfL2vpnEvpn {
         cfg += MARKER;
         cfg += "address-family l2vpn evpn";
 
-        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.l2vpn_evpn)
@@ -389,6 +431,7 @@ impl Render for AfL2vpnEvpn {
         if self.default_originate_ipv6 {
             cfg += " default-originate ipv6";
         }
+
         cfg += "exit-address-family";
         cfg += MARKER;
         cfg
@@ -491,6 +534,11 @@ impl Render for BgpConfig {
         self.af_l2vpnevpn
             .as_ref()
             .map(|evpn| config += evpn.render(self));
+
+        /* BMP options */
+        if let Some(bmp) = &self.bmp {
+            config += bmp.render(&());
+        }
 
         config += "exit";
         config += MARKER;
