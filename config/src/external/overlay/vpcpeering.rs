@@ -284,7 +284,7 @@ impl VpcExpose {
     ///    taking exclusion prefixes into account.
     pub fn validate(&self) -> ConfigResult {
         // 1. Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
-        // support NAT46 or NAT64 at the moment.
+        //    support NAT46 or NAT64 at the moment.
         //
         // TODO: We can loosen this restriction in the future. When we do, some additional
         //       considerations might be required to validate independently the IPv4 and the IPv6
@@ -322,7 +322,7 @@ impl VpcExpose {
         }
 
         // 3. Ensure all exclusion prefixes are contained within existing allowed prefixes,
-        // unless the list of allowed prefixes is empty.
+        //    unless the list of allowed prefixes is empty.
         for (prefixes, excludes) in [
             (prefix_sets[0], prefix_sets[1]),
             (prefix_sets[2], prefix_sets[3]),
@@ -355,7 +355,22 @@ impl VpcExpose {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
 
-        // 5. Forbid empty ips list if not is non-empty.
+        // 5. For static NAT, ensure that, if the list of publicly-exposed addresses is not empty,
+        //    then we have the same number of addresses on each side.
+        //
+        //    Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
+        //    size was smaller than allowed prefixes size already.
+        if self.has_stateless_nat()
+            && as_range_sizes > 0
+            && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes
+        {
+            return Err(ConfigError::MismatchedPrefixSizes(
+                ips_sizes - nots_sizes,
+                as_range_sizes - not_as_sizes,
+            ));
+        }
+
+        // 6. Forbid empty ips list if not is non-empty.
         //    Forbid empty as_range list if not_as is non-empty.
         //    These configurations are allowed by the user API, but we don't currently support them,
         //    so we reject them during validation.
