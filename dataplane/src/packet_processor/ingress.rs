@@ -138,8 +138,6 @@ impl Ingress {
     ) {
         if interface.admin_state == IfState::Down {
             packet.done(DoneReason::InterfaceAdmDown);
-        } else if interface.oper_state == IfState::Down {
-            packet.done(DoneReason::InterfaceOperDown);
         } else {
             match interface.iftype {
                 IfType::Ethernet(_) | IfType::Dot1q(_) => {
