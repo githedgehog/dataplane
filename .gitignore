@@ -4,6 +4,7 @@
 **/target/**
 /.bin/**
 /.vscode/**
+/.zed/**
 /artifact/**
 /compile-env
 /compile-env/**
