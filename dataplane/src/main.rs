@@ -28,6 +28,7 @@ use tracing::{error, info, level_filters::LevelFilter};
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 custom_target!("tonic", LevelFilter::ERROR, &[]);
 custom_target!("h2", LevelFilter::ERROR, &[]);
+custom_target!("Pyroscope", LevelFilter::INFO, &[]);
 
 fn init_logging() {
     let tctl = get_trace_ctl();
