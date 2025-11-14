@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::time::{Duration, Instant};
 
 use concurrency::sync::RwLock;
@@ -180,5 +180,19 @@ impl FlowInfo {
         self.status
             .store(status, std::sync::atomic::Ordering::Relaxed);
         Ok(())
+    }
+}
+
+impl Display for FlowInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let expires_at = self.expires_at.load(Ordering::Relaxed);
+        let expires_in = expires_at.saturating_duration_since(Instant::now());
+        write!(
+            f,
+            " status: {:?}, expires in {}s",
+            self.status,
+            expires_in.as_secs()
+        )
+        // we can't show the flowinfo yet.
     }
 }
