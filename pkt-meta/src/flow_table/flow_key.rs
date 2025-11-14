@@ -585,6 +585,12 @@ impl FlowKey {
             FlowKey::Unidirectional(data) => FlowKey::Unidirectional(data.reverse()),
         }
     }
+
+    pub fn clear_dst_vpcd(&mut self) {
+        match self {
+            FlowKey::Bidirectional(data) | FlowKey::Unidirectional(data) => data.dst_vpcd = None,
+        }
+    }
 }
 
 // The FlowKey Eq is symmetric, src == src or src == dst

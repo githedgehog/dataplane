@@ -62,7 +62,7 @@ pub enum StatefulNatError {
     UnexpectedKeyVariant,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct NatFlowState<I: NatIpWithBitmap> {
     src_alloc: Option<AllocatedIpPort<I>>,
     dst_alloc: Option<AllocatedIpPort<I>>,
@@ -186,9 +186,10 @@ impl StatefulNat {
         Some((translation_data, state.idle_timeout))
     }
 
-    fn create_session<I: NatIpWithBitmap>(
+    fn create_session_with_dst_vpcd<I: NatIpWithBitmap>(
         &mut self,
         flow_key: &FlowKey,
+        dst_vpcd: VpcDiscriminant,
         state: NatFlowState<I>,
         idle_timeout: Duration,
     ) {
@@ -210,10 +211,25 @@ impl StatefulNat {
         // Write destination VPC information, so that pipeline can look it up from the flow table
         // when it's not possibly to uniquely determine the destination VPC from source VPC and
         // packet's destination address.
-        write_guard.dst_vpc_info = Some(Box::new(flow_key.data().dst_vpcd()));
+        write_guard.dst_vpc_info = Some(Box::new(dst_vpcd));
         drop(write_guard);
 
         self.sessions.insert(*flow_key, flow_info);
+    }
+
+    fn create_session<I: NatIpWithBitmap>(
+        &mut self,
+        flow_key: &FlowKey,
+        state: NatFlowState<I>,
+        idle_timeout: Duration,
+    ) {
+        self.create_session_with_dst_vpcd(
+            flow_key,
+            // Destination VPC discriminant is always set at this stage
+            flow_key.data().dst_vpcd().unwrap_or_else(|| unreachable!()),
+            state,
+            idle_timeout,
+        );
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -613,11 +629,22 @@ impl StatefulNat {
         let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
 
         let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
-        let reverse_flow_key = Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
+        let mut reverse_flow_key =
+            Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
 
         self.create_session(flow_key, forward_state, idle_timeout);
-        self.create_session(&reverse_flow_key, reverse_state, idle_timeout);
+        self.create_session(&reverse_flow_key, reverse_state.clone(), idle_timeout);
+        // Remove destination VPC information from the flow key, and add a third entry so we can
+        // look up for this flow even if we don't know the destination VPC discriminant for the
+        // packet. Destination VPC for return path is the source VPC for the current packet.
+        reverse_flow_key.clear_dst_vpcd();
+        self.create_session_with_dst_vpcd(
+            &reverse_flow_key,
+            src_vpc_id,
+            reverse_state,
+            idle_timeout,
+        );
 
         Self::stateful_translate::<Buf>(self.name(), packet, &translation_info).and(Ok(true))
     }
