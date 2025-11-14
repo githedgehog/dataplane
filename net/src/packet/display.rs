@@ -11,6 +11,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::tcp::Tcp;
 use crate::udp::{Udp, UdpEncap};
+use crate::vlan::Vlan;
 
 use crate::buffer::PacketBufferMut;
 use crate::checksum::Checksum;
@@ -27,6 +28,19 @@ impl Display for Eth {
             self.destination(),
             self.ether_type(),
         )
+    }
+}
+impl Display for Vlan {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "  vlan: pcp:{} dei:{:?} vid:{} ({:?})",
+            self.pcp().to_u8(),
+            self.dei(),
+            self.vid().as_u16(),
+            self.inner_ethtype(),
+        )?;
+        Ok(())
     }
 }
 impl Display for Ipv4 {
@@ -182,6 +196,9 @@ impl Display for Headers {
         writeln!(f)?;
         if let Some(eth) = &self.eth {
             write!(f, "{eth}")?;
+        }
+        for vlan in &self.vlan {
+            write!(f, "{vlan}")?;
         }
         if let Some(net) = &self.net {
             write!(f, "{net}")?;
