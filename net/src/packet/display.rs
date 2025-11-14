@@ -227,6 +227,24 @@ impl Display for BridgeDomain {
         write!(f, "{}", self.get_id())
     }
 }
+
+#[inline]
+fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Result {
+    write!(f, "    Flags:")?;
+    if meta.is_l2bcast() {
+        write!(f, " bcast")?;
+    }
+    if meta.nat() {
+        write!(f, " do-nat")?;
+    }
+    if meta.keep() {
+        write!(f, " keep")?;
+    }
+    if meta.checksum_refresh() {
+        write!(f, " refresh-chksum")?;
+    }
+    writeln!(f)
+}
 impl Display for PacketMeta {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  metadata:")?;
@@ -235,16 +253,13 @@ impl Display for PacketMeta {
         fmt_opt(f, " iif", self.iif, false)?;
         fmt_opt(f, " oif", self.oif, false)?;
         fmt_opt(f, " oport", self.oport, true)?;
-
-        writeln!(f, "    bcast: {}", self.is_l2bcast())?;
         fmt_opt(f, "    src-vpcd", self.src_vpcd, false)?;
         fmt_opt(f, "    dst-vpcd", self.dst_vpcd, true)?;
-        writeln!(f, "    do-nat: {}", self.nat())?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
         fmt_opt(f, "    bd", self.bridge, true)?;
         fmt_opt(f, "    next-hop", self.nh_addr, true)?;
         fmt_opt(f, "    done", self.done, true)?;
-        writeln!(f, "    keep: {}", self.keep())
+        fmt_metadata_flags(self, f)
     }
 }
 
