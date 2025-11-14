@@ -83,8 +83,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             flow_table.clone(),
             natallocator_factory.handle(),
         );
-        let dumper1 = PacketDumper::new("pre-ingress", true, None);
-        let dumper2 = PacketDumper::new("post-egress", true, None);
+        let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", writer.clone());
         let flow_lookup_nf = LookupNF::new(flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
@@ -92,7 +91,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
         DynPipeline::new()
-            .add_stage(dumper1)
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
             .add_stage(dst_vpcd_lookup)
@@ -101,8 +99,8 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(stateful_nat)
             .add_stage(iprouter2)
             .add_stage(stage_egress)
-            .add_stage(dumper2)
             .add_stage(flow_expirations_nf)
+            .add_stage(pktdump)
             .add_stage(stats_stage)
     };
 
