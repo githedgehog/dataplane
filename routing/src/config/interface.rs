@@ -49,7 +49,7 @@ impl ReconfigInterfacePlan {
             }
         }
         for cfg in config.interfaces() {
-            if !iftable.contains(cfg.ifindex.into()) {
+            if !iftable.contains(cfg.ifindex) {
                 to_add.push(cfg.clone());
             }
         }
@@ -63,7 +63,7 @@ impl ReconfigInterfacePlan {
 
     fn enforce_deletions(&self, iftw: &mut IfTableWriter) -> Result<(), RouterError> {
         for ifindex in &self.to_delete {
-            iftw.del_interface((*ifindex).into());
+            iftw.del_interface(*ifindex);
         }
         Ok(())
     }
@@ -105,7 +105,6 @@ impl ReconfigInterfacePlan {
         Ok(())
     }
 
-    #[must_use]
     pub(crate) fn apply(
         &self,
         iftw: &mut IfTableWriter,

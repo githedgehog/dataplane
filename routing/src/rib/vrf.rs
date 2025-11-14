@@ -514,7 +514,7 @@ impl Vrf {
                 &[RouteNhop::default()],
                 None,
             );
-        } else if let Some(found) = &mut self.routesv4.remove(&prefix) {
+        } else if let Some(found) = &mut self.routesv4.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
     }
@@ -530,7 +530,7 @@ impl Vrf {
                 &[RouteNhop::default()],
                 None,
             );
-        } else if let Some(found) = &mut self.routesv6.remove(&prefix) {
+        } else if let Some(found) = &mut self.routesv6.remove(prefix) {
             self.deregister_shared_nexthops(found);
         }
     }
@@ -552,11 +552,11 @@ impl Vrf {
 
     #[inline]
     fn get_route_v4(&self, prefix: Ipv4Prefix) -> Option<&Route> {
-        self.routesv4.get(&prefix)
+        self.routesv4.get(prefix)
     }
     #[inline]
     fn get_route_v6(&self, prefix: Ipv6Prefix) -> Option<&Route> {
-        self.routesv6.get(&prefix)
+        self.routesv6.get(prefix)
     }
     pub fn get_route(&self, prefix: Prefix) -> Option<&Route> {
         match prefix {
@@ -572,11 +572,11 @@ impl Vrf {
 
     #[inline]
     fn get_route_v4_mut(&mut self, prefix: Ipv4Prefix) -> Option<&mut Route> {
-        self.routesv4.get_mut(&prefix)
+        self.routesv4.get_mut(prefix)
     }
     #[inline]
     fn get_route_v6_mut(&mut self, prefix: Ipv6Prefix) -> Option<&mut Route> {
-        self.routesv6.get_mut(&prefix)
+        self.routesv6.get_mut(prefix)
     }
     pub fn get_route_mut(&mut self, prefix: Prefix) -> Option<&mut Route> {
         match prefix {
