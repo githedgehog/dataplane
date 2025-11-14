@@ -251,10 +251,12 @@ impl Display for PacketMeta {
 /* ============= HEXDUMP ================ */
 
 #[inline]
+#[allow(unused)]
 fn min(a: usize, b: usize) -> usize {
     if a < b { a } else { b }
 }
 static HEX_CHARS: &[u8] = b"0123456789abcdef";
+#[allow(unused)]
 fn dump_hex(raw: &[u8], chunk_size: usize) -> String {
     let mut out = Vec::with_capacity(raw.len() * 3);
     let mut count = 0;
@@ -283,9 +285,7 @@ fn dump_hex(raw: &[u8], chunk_size: usize) -> String {
 
 fn fmt_packet_buf<Buf: PacketBufferMut>(f: &mut Formatter<'_>, payload: &Buf) -> std::fmt::Result {
     let raw = payload.as_ref();
-    writeln!(f, "{:─<width$}", "─", width = 100)?;
-    write!(f, "{}", dump_hex(raw, 32))?;
-    writeln!(f, "{:─<width$}", "─", width = 100)?;
+    writeln!(f, "{:━<width$}", "━", width = 100)?;
     writeln!(
         f,
         "buffer: {} data octets (headroom: {} tailroom: {}))",
