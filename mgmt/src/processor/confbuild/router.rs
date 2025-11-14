@@ -70,14 +70,9 @@ fn build_router_interface_config(
         }
     };
     let mut new = RouterInterfaceConfig::new(name, ifindex);
-
-    // set admin status -- currently from oper
-    let status = if kiface.is_up() {
-        IfState::Up
-    } else {
-        IfState::Down
-    };
-    new.set_admin_state(status);
+    // we don't expose a way to set admin state interface atm.
+    // therefore, it is always up
+    new.set_admin_state(IfState::Up);
 
     // set mtu -- this is informational
     if let Some(mtu) = kiface.mtu
