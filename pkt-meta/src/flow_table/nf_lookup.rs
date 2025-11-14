@@ -8,7 +8,7 @@ use tracing::debug;
 use concurrency::sync::Arc;
 use flow_info::ExtractRef;
 use net::buffer::PacketBufferMut;
-use net::packet::{Packet, VpcDiscriminant};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 
 use crate::flow_table::{FlowKey, FlowTable};
@@ -17,12 +17,16 @@ use tracectl::trace_target;
 trace_target!("flow-lookup", LevelFilter::INFO, &["pipeline"]);
 
 pub struct LookupNF {
+    name: String,
     flow_table: Arc<FlowTable>,
 }
 
 impl LookupNF {
-    pub fn new(flow_table: Arc<FlowTable>) -> Self {
-        Self { flow_table }
+    pub fn new(name: &str, flow_table: Arc<FlowTable>) -> Self {
+        Self {
+            name: name.to_string(),
+            flow_table,
+        }
     }
 }
 
@@ -53,6 +57,15 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
                 }
                 packet.meta.flow_info = Some(flow_info);
             }
+            if packet.meta.dst_vpcd.is_none() {
+                debug!(
+                    "{}: no dst_vpcd found for {} in src_vpcd {:?}: marking packet as unroutable",
+                    self.name,
+                    flow_key.data().dst_ip(),
+                    flow_key.data().src_vpcd()
+                );
+                packet.done(DoneReason::Unroutable);
+            }
             packet.enforce()
         })
     }
@@ -79,7 +92,7 @@ mod test {
     #[test]
     fn test_lookup_nf() {
         let flow_table = Arc::new(FlowTable::default());
-        let mut lookup_nf = LookupNF::new(flow_table.clone());
+        let mut lookup_nf = LookupNF::new("test_lookup_nf", flow_table.clone());
         let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
         let dst_vpcd = VpcDiscriminant::VNI(Vni::new_checked(200).unwrap());
         let src_ip = "1.2.3.4".parse::<UnicastIpAddr>().unwrap();

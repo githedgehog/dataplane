@@ -85,7 +85,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         );
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", writer.clone());
-        let flow_lookup_nf = LookupNF::new(flow_table.clone());
+        let flow_lookup_nf = LookupNF::new("flow-lookup", flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
