@@ -162,6 +162,33 @@ impl FlowInfo {
             .fetch_add(duration, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Reset the expiry of the flow if it is not expired.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FlowInfoError::FlowExpired` if the flow is expired with the expiry `Instant`
+    ///
+    pub fn reset_expiry(&self, duration: Duration) -> Result<(), FlowInfoError> {
+        if self.status.load(std::sync::atomic::Ordering::Relaxed) == FlowStatus::Expired {
+            return Err(FlowInfoError::FlowExpired(self.expires_at()));
+        }
+        self.reset_expiry_unchecked(duration);
+        Ok(())
+    }
+
+    /// Reset the expiry of the flow without checking if it is already expired.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe.
+    ///
+    pub fn reset_expiry_unchecked(&self, duration: Duration) {
+        self.expires_at.store(
+            Instant::now() + duration,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
     pub fn status(&self) -> FlowStatus {
         self.status.load(std::sync::atomic::Ordering::Relaxed)
     }
