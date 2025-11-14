@@ -6,3 +6,4 @@ COPY --link --chown=0:0 "${ARTIFACT}" /dataplane
 COPY --link --chown=0:0 "${ARTIFACT_CLI}" /dataplane-cli
 WORKDIR /
 ENTRYPOINT ["/dataplane"]
+SHELL ["/dataplane-cli"]
