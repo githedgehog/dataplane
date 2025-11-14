@@ -441,7 +441,7 @@ impl<I: NatIpWithBitmap> Drop for AllocatedPortBlock<I> {
 ///
 /// It contains a back reference to its parent [`AllocatedPortBlock`], to deallocate the port when
 /// the [`AllocatedPort`] is dropped.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AllocatedPort<I: NatIpWithBitmap> {
     port: NatPort,
     block_allocator: Arc<AllocatedPortBlock<I>>,
