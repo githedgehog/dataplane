@@ -154,7 +154,7 @@ impl StatefulNat {
         let flow_info = packet.get_meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
-        flow_info.extend_expiry(state.idle_timeout).ok()?;
+        flow_info.reset_expiry(state.idle_timeout).ok()?;
         let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
         Some(translation_data)
     }
