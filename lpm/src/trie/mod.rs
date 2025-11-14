@@ -104,6 +104,14 @@ impl<V: Clone> IpPrefixTrie<V> {
     pub fn is_empty(&self) -> bool {
         self.ipv4.is_empty() && self.ipv6.is_empty()
     }
+
+    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &V)> {
+        self.ipv4.iter()
+    }
+
+    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &V)> {
+        self.ipv6.iter()
+    }
 }
 
 impl<V: Clone> Default for IpPrefixTrie<V> {

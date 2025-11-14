@@ -5,6 +5,7 @@
 #[allow(dead_code)]
 pub mod test {
     use caps::Capability::CAP_NET_ADMIN;
+    use concurrency::sync::{Arc, Mutex};
     use lpm::prefix::Prefix;
     use nat::stateful::NatAllocatorWriter;
     use nat::stateless::NatTablesWriter;
@@ -389,7 +390,7 @@ pub mod test {
         let natallocatorw = NatAllocatorWriter::new();
 
         /* crate VniTables for dst_vni_lookup */
-        let vnitablesw = VpcDiscTablesWriter::new();
+        let vnitablesw = Arc::new(Mutex::new(VpcDiscTablesWriter::new()));
 
         /* NEW: VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();

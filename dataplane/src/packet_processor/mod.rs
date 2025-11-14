@@ -10,7 +10,7 @@ use super::packet_processor::egress::Egress;
 use super::packet_processor::ingress::Ingress;
 use super::packet_processor::ipforward::IpForwarder;
 
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Mutex};
 
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
@@ -38,7 +38,7 @@ where
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablew: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
-    pub vpcdtablesw: VpcDiscTablesWriter,
+    pub vpcdtables_wrapper: Arc<Mutex<VpcDiscTablesWriter>>,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
 }
@@ -65,10 +65,12 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
-    let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
     let atabler_factory = router.get_atabler_factory();
     let nattabler_factory = nattablew.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
+    let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
+    let vpcdtables_wrapper = Arc::new(Mutex::new(vpcdtablesw));
+    let vpcdtables_wrapper_clone = vpcdtables_wrapper.clone();
 
     let pipeline_builder = move || {
         // Build network functions
@@ -82,6 +84,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             "stateful-NAT",
             flow_table.clone(),
             natallocator_factory.handle(),
+            vpcdtables_wrapper_clone.clone(),
         );
         let dumper1 = PacketDumper::new("pre-ingress", true, None);
         let dumper2 = PacketDumper::new("post-egress", true, None);
@@ -112,7 +115,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         vpcmapw,
         nattablew,
         natallocatorw,
-        vpcdtablesw,
+        vpcdtables_wrapper,
         stats,
         vpc_stats_store,
     })

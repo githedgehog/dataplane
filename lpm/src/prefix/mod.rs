@@ -6,6 +6,7 @@
 pub mod ip;
 pub use ip::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
 
+use crate::prefix::ip::IpPrefixColliding;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
@@ -140,6 +141,15 @@ impl Prefix {
         match (self, other) {
             (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.covers(p2),
             (Prefix::IPV6(p1), Prefix::IPV6(p2)) => p1.covers(p2),
+            _ => false,
+        }
+    }
+
+    #[must_use]
+    pub fn collides_with(&self, other: &Prefix) -> bool {
+        match (self, other) {
+            (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.collides_with(p2),
+            (Prefix::IPV6(p1), Prefix::IPV6(p2)) => p1.collides_with(p2),
             _ => false,
         }
     }

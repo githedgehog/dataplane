@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle, new_from_empty};
+use lpm::prefix::Prefix;
 use std::collections::HashMap;
 use tracing::{debug, error, warn};
 
@@ -45,6 +46,7 @@ impl Default for VpcDiscriminantTables {
 #[derive(Debug)]
 enum VpcDiscriminantTablesChange {
     UpdateVpcDiscTables(VpcDiscriminantTables),
+    InsertInVpcDiscTable(VpcDiscriminant, Prefix, Option<VpcDiscriminant>),
 }
 
 impl Absorb<VpcDiscriminantTablesChange> for VpcDiscriminantTables {
@@ -52,6 +54,13 @@ impl Absorb<VpcDiscriminantTablesChange> for VpcDiscriminantTables {
         match change {
             VpcDiscriminantTablesChange::UpdateVpcDiscTables(vpcd_tables) => {
                 *self = vpcd_tables.clone();
+            }
+            VpcDiscriminantTablesChange::InsertInVpcDiscTable(vpcd, prefix, dst_vpcd) => {
+                self.tables_by_discriminant
+                    .entry(*vpcd)
+                    .or_default()
+                    .dst_vpcds
+                    .insert(*prefix, *dst_vpcd);
             }
         }
     }
@@ -111,11 +120,24 @@ impl VpcDiscTablesWriter {
         self.0.publish();
         debug!("Updated tables for Destination vpcd Lookup");
     }
+
+    pub fn insert(
+        &mut self,
+        vpcd: VpcDiscriminant,
+        prefix: Prefix,
+        dst_vpcd: Option<VpcDiscriminant>,
+    ) {
+        self.0
+            .append(VpcDiscriminantTablesChange::InsertInVpcDiscTable(
+                vpcd, prefix, dst_vpcd,
+            ));
+        self.0.publish();
+    }
 }
 
 #[derive(Debug, Clone)]
 struct VpcDiscriminantTable {
-    dst_vpcds: IpPrefixTrie<VpcDiscriminant>,
+    dst_vpcds: IpPrefixTrie<Option<VpcDiscriminant>>,
 }
 
 impl VpcDiscriminantTable {
@@ -168,11 +190,18 @@ impl DstVpcdLookup {
         let dst_ip = net.dst_addr();
         if let Some(vpcd_table) = tablesr.tables_by_discriminant.get(&src_vpcd) {
             let dst_vpcd = vpcd_table.dst_vpcds.lookup(dst_ip);
-            if let Some((prefix, dst_vpcd)) = dst_vpcd {
-                debug!(
-                    "{nfi}: Set packet dst_vpcd to {dst_vpcd} from src_vpcd:{src_vpcd}, prefix:{prefix}"
-                );
-                packet.meta.dst_vpcd = Some(*dst_vpcd);
+            if let Some((prefix, dst_vpcd_opt)) = dst_vpcd {
+                if let Some(dst_vpcd) = dst_vpcd_opt {
+                    debug!(
+                        "{nfi}: Set packet dst_vpcd to {dst_vpcd} from src_vpcd:{src_vpcd}, prefix:{prefix}"
+                    );
+                    packet.meta.dst_vpcd = Some(*dst_vpcd);
+                } else {
+                    debug!(
+                        "{nfi}: no dst_vpcd found for {dst_ip} in src_vpcd {src_vpcd}: marking packet as unroutable"
+                    );
+                    packet.done(DoneReason::Unroutable);
+                }
             } else {
                 debug!(
                     "{nfi}: no dst_vpcd found for {dst_ip} in src_vpcd {src_vpcd}: marking packet as unroutable"
@@ -265,38 +294,42 @@ mod test {
         let mut vpcd_table_100 = VpcDiscriminantTable::new();
         let dst_vpcd_100_192_168_1_0_24 = VpcDiscriminant::VNI(vni101);
         let dst_vpcd_100_192_168_0_0_16 = VpcDiscriminant::VNI(vni102);
-        vpcd_table_100
-            .dst_vpcds
-            .insert(Prefix::from("192.168.1.0/24"), dst_vpcd_100_192_168_1_0_24);
-        vpcd_table_100
-            .dst_vpcds
-            .insert(Prefix::from("192.168.0.0/16"), dst_vpcd_100_192_168_0_0_16);
+        vpcd_table_100.dst_vpcds.insert(
+            Prefix::from("192.168.1.0/24"),
+            Some(dst_vpcd_100_192_168_1_0_24),
+        );
+        vpcd_table_100.dst_vpcds.insert(
+            Prefix::from("192.168.0.0/16"),
+            Some(dst_vpcd_100_192_168_0_0_16),
+        );
         vpcd_table_100.dst_vpcds.insert(
             Prefix::from("::192.168.1.0/120"),
-            dst_vpcd_100_192_168_1_0_24,
+            Some(dst_vpcd_100_192_168_1_0_24),
         );
         vpcd_table_100.dst_vpcds.insert(
             Prefix::from("::192.168.0.0/112"),
-            dst_vpcd_100_192_168_0_0_16,
+            Some(dst_vpcd_100_192_168_0_0_16),
         );
 
         // VNI 200
         let mut vpcd_table_200 = VpcDiscriminantTable::new();
         let dst_vpcd_200_192_168_2_0_24 = VpcDiscriminant::VNI(vni201);
         let dst_vpcd_200_192_168_0_0_16 = VpcDiscriminant::VNI(vni202);
-        vpcd_table_200
-            .dst_vpcds
-            .insert(Prefix::from("192.168.2.0/24"), dst_vpcd_200_192_168_2_0_24);
-        vpcd_table_200
-            .dst_vpcds
-            .insert(Prefix::from("192.168.2.0/16"), dst_vpcd_200_192_168_0_0_16);
+        vpcd_table_200.dst_vpcds.insert(
+            Prefix::from("192.168.2.0/24"),
+            Some(dst_vpcd_200_192_168_2_0_24),
+        );
+        vpcd_table_200.dst_vpcds.insert(
+            Prefix::from("192.168.2.0/16"),
+            Some(dst_vpcd_200_192_168_0_0_16),
+        );
         vpcd_table_200.dst_vpcds.insert(
             Prefix::from("::192.168.2.0/120"),
-            dst_vpcd_200_192_168_2_0_24,
+            Some(dst_vpcd_200_192_168_2_0_24),
         );
         vpcd_table_200.dst_vpcds.insert(
             Prefix::from("::192.168.0.0/112"),
-            dst_vpcd_200_192_168_0_0_16,
+            Some(dst_vpcd_200_192_168_0_0_16),
         );
 
         ////////////////////////////
