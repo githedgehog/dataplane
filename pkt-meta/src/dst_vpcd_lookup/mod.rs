@@ -169,16 +169,19 @@ impl DstVpcdLookup {
         if let Some(vpcd_table) = tablesr.tables_by_discriminant.get(&src_vpcd) {
             let dst_vpcd = vpcd_table.dst_vpcds.lookup(dst_ip);
             if let Some((prefix, dst_vpcd_opt)) = dst_vpcd {
+                // We found an entry in the destination VPC discriminant table, which means there
+                // are valid destinations for this packet, but the value may still be None if we're
+                // not able to tell the right destination VPC uniquely from this lookup.
                 if let Some(dst_vpcd) = dst_vpcd_opt {
                     debug!(
                         "{nfi}: Set packet dst_vpcd to {dst_vpcd} from src_vpcd:{src_vpcd}, prefix:{prefix}"
                     );
                     packet.meta.dst_vpcd = Some(*dst_vpcd);
                 } else {
-                    debug!(
-                        "{nfi}: no dst_vpcd found for {dst_ip} in src_vpcd {src_vpcd}: marking packet as unroutable"
-                    );
-                    packet.done(DoneReason::Unroutable);
+                    // If we can't tell, we'll need a look up in the flow table in a follow-up
+                    // pipeline stage to see if we have a session that can help us determine the
+                    // right destination VPC. So, we do NOT mark the packet as "done" here, we just
+                    // pass it along with no dst_vpcd attached.
                 }
             } else {
                 debug!(
