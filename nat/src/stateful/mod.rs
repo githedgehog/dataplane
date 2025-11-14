@@ -168,17 +168,10 @@ impl StatefulNat {
         &self,
         src_vpcd: VpcDiscriminant,
         src_ip: IpAddr,
-        dst_vpcd: VpcDiscriminant,
         dst_ip: IpAddr,
         proto_key_info: IpProtoKey,
     ) -> Option<(NatTranslationData, Duration)> {
-        let flow_key = FlowKey::uni(
-            Some(src_vpcd),
-            src_ip,
-            Some(dst_vpcd),
-            dst_ip,
-            proto_key_info,
-        );
+        let flow_key = FlowKey::uni(Some(src_vpcd), src_ip, None, dst_ip, proto_key_info);
         let flow_info = self.sessions.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
@@ -188,13 +181,18 @@ impl StatefulNat {
 
     fn create_session<I: NatIpWithBitmap>(
         &mut self,
-        flow_key: &FlowKey,
+        flow_key: &mut FlowKey,
         state: NatFlowState<I>,
         idle_timeout: Duration,
     ) {
         fn session_timeout_time(timeout: Duration) -> Instant {
             Instant::now() + timeout
         }
+
+        let dst_vpcd = flow_key.data().dst_vpcd();
+        // Remove destination VPC information from the flow key, so we can look up for this entry
+        // even if we don't know the destination VPC discriminant for the packet.
+        flow_key.delete_dst_vpcd();
 
         debug!(
             "{}: Creating new flow session entry: {} -> {}",
@@ -210,7 +208,9 @@ impl StatefulNat {
         // Write destination VPC information, so that pipeline can look it up from the flow table
         // when it's not possibly to uniquely determine the destination VPC from source VPC and
         // packet's destination address.
-        write_guard.dst_vpc_info = Some(Box::new(flow_key.data().dst_vpcd()));
+        if let Some(vpcd) = dst_vpcd {
+            write_guard.dst_vpc_info = Some(Box::new(vpcd));
+        }
         drop(write_guard);
 
         self.sessions.insert(*flow_key, flow_info);
@@ -569,7 +569,7 @@ impl StatefulNat {
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
         &mut self,
         packet: &mut Packet<Buf>,
-        flow_key: &FlowKey,
+        flow_key: &mut FlowKey,
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
@@ -613,11 +613,12 @@ impl StatefulNat {
         let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
 
         let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
-        let reverse_flow_key = Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
+        let mut reverse_flow_key =
+            Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
 
         self.create_session(flow_key, forward_state, idle_timeout);
-        self.create_session(&reverse_flow_key, reverse_state, idle_timeout);
+        self.create_session(&mut reverse_flow_key, reverse_state, idle_timeout);
 
         Self::stateful_translate::<Buf>(self.name(), packet, &translation_info).and(Ok(true))
     }
@@ -635,14 +636,21 @@ impl StatefulNat {
             return Err(StatefulNatError::BadIpHeader);
         };
 
-        let flow_key = Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
+        let mut flow_key =
+            Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
         match net {
-            Net::Ipv4(_) => {
-                self.translate_packet::<Buf, Ipv4Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
-            }
-            Net::Ipv6(_) => {
-                self.translate_packet::<Buf, Ipv6Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
-            }
+            Net::Ipv4(_) => self.translate_packet::<Buf, Ipv4Addr>(
+                packet,
+                &mut flow_key,
+                src_vpc_id,
+                dst_vpc_id,
+            ),
+            Net::Ipv6(_) => self.translate_packet::<Buf, Ipv6Addr>(
+                packet,
+                &mut flow_key,
+                src_vpc_id,
+                dst_vpc_id,
+            ),
         }
     }
 

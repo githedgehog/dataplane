@@ -400,7 +400,6 @@ mod tests {
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
             VpcDiscriminant::VNI(vni(100)),
             IpAddr::from_str(orig_src).unwrap(),
-            VpcDiscriminant::VNI(vni(200)),
             IpAddr::from_str(orig_dst).unwrap(),
             IpProtoKey::Udp(UdpProtoKey {
                 src_port: UdpPort::new_checked(9998).unwrap(),
@@ -415,7 +414,6 @@ mod tests {
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
             VpcDiscriminant::VNI(vni(200)),
             IpAddr::from_str(target_dst).unwrap(),
-            VpcDiscriminant::VNI(vni(100)),
             IpAddr::from_str(target_src).unwrap(),
             IpProtoKey::Udp(UdpProtoKey {
                 src_port: UdpPort::new_checked(output_dst_port).unwrap(),

@@ -33,9 +33,15 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).ok();
-            let Some(flow_key) = flow_key else {
+            let Some(mut flow_key) = flow_key else {
                 return packet.enforce();
             };
+
+            // We may not know the destination VPC discriminant yet, so we create all entries in the
+            // flow table with entry dst_vpcd set to None so we get a chance to match here, using an
+            // empty dst_vpcd.
+            flow_key.delete_dst_vpcd();
+
             if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
                 debug!(
                     "LookupNF: Tagging packet with flow info for flow key {:?}",
