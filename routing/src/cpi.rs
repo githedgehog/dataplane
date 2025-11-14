@@ -199,7 +199,7 @@ impl RpcOperation for IpRoute {
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
-        let iftabler = &db.iftw.as_iftable_reader();
+        let iftabler = &db.iftw.as_reader();
 
         if self.vrfid != 0 && (is_evpn_route(self) || nonlocal_nhop(self)) {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {

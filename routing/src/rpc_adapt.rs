@@ -109,7 +109,7 @@ impl RouteNhop {
                 Ok(idx) => Ok(idx),
                 Err(e) => {
                     error!("unable to build route next hop: {e}");
-                    return Err(RouterError::Internal("0 is not a valid interface index"));
+                    Err(RouterError::Internal("0 is not a valid interface index"))
                 }
             })
             .transpose()?;
@@ -132,8 +132,7 @@ impl RouteNhop {
             None => None,
             Some(k) => iftabler
                 .enter()
-                .map(|iftable| iftable.get_interface(k).map(|iface| iface.name.to_owned()))
-                .flatten(),
+                .and_then(|iftable| iftable.get_interface(k).map(|iface| iface.name.to_owned())),
         };
 
         Ok(RouteNhop {
@@ -192,10 +191,10 @@ impl Vrf {
             return;
         };
 
-        if let Some(tableid) = self.tableid {
-            if iproute.tableid != RouteTableId::from(tableid) {
-                warn!("Table id mismatch for {iproute}; vrf tableid is {tableid}");
-            }
+        if let Some(tableid) = self.tableid
+            && iproute.tableid != RouteTableId::from(tableid)
+        {
+            warn!("Table id mismatch for {iproute}; vrf tableid is {tableid}");
         }
 
         let route = Route::from_iproute(&prefix, iproute);

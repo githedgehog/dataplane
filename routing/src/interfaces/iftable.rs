@@ -49,15 +49,17 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Add an [`Interface`] to the table
     //////////////////////////////////////////////////////////////////
-    #[must_use]
-    pub fn add_interface(&mut self, config: &RouterInterfaceConfig) -> Result<(), RouterError> {
+    pub(crate) fn add_interface(
+        &mut self,
+        config: &RouterInterfaceConfig,
+    ) -> Result<(), RouterError> {
         let ifindex = config.ifindex;
         if self.contains(ifindex) {
             error!("Failed to add interface with ifindex {ifindex}: already exists!");
             return Err(RouterError::InterfaceExists(ifindex));
         }
         let ifindex = config.ifindex;
-        self.by_index.insert(ifindex, Interface::new(&config));
+        self.by_index.insert(ifindex, Interface::new(config));
         debug!(
             "Added new interface {} with ifindex {ifindex} to the interface table",
             &config.name
@@ -68,24 +70,26 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Modify an [`Interface`] with the provided config
     //////////////////////////////////////////////////////////////////
-    #[must_use]
-    pub fn mod_interface(&mut self, config: &RouterInterfaceConfig) -> Result<(), RouterError> {
+    pub(crate) fn mod_interface(
+        &mut self,
+        config: &RouterInterfaceConfig,
+    ) -> Result<(), RouterError> {
         let ifindex = config.ifindex;
         let Some(iface) = self.by_index.get_mut(&ifindex) else {
             error!("Failed to modify interface with ifindex {ifindex}: not found");
             return Err(RouterError::NoSuchInterface(ifindex));
         };
         if iface.name != config.name {
-            iface.name = config.name.clone();
+            iface.name.clone_from(&config.name);
         }
         if iface.description != config.description {
-            iface.description = config.description.clone();
+            iface.description.clone_from(&config.description);
         }
         if iface.iftype != config.iftype {
             iface.iftype = config.iftype.clone();
         }
         if iface.admin_state != config.admin_state {
-            iface.admin_state = config.admin_state.clone();
+            iface.admin_state = config.admin_state;
         }
         if iface.mtu != config.mtu {
             iface.mtu = config.mtu;
@@ -97,7 +101,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Remove an interface from the table
     //////////////////////////////////////////////////////////////////
-    pub fn del_interface(&mut self, ifindex: InterfaceIndex) {
+    pub(crate) fn del_interface(&mut self, ifindex: InterfaceIndex) {
         if let Some(iface) = self.by_index.remove(&ifindex) {
             debug!("Deleted interface '{}'", iface.name);
         }
@@ -115,7 +119,7 @@ impl IfTable {
     /// Get a mutable reference to an [`Interface`]
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn get_interface_mut(&mut self, ifindex: InterfaceIndex) -> Option<&mut Interface> {
+    pub(crate) fn get_interface_mut(&mut self, ifindex: InterfaceIndex) -> Option<&mut Interface> {
         self.by_index.get_mut(&ifindex)
     }
 
@@ -126,26 +130,25 @@ impl IfTable {
     ///
     /// Fails if the interface is not found
     //////////////////////////////////////////////////////////////////
-    pub fn add_ifaddr(
+    pub(crate) fn add_ifaddr(
         &mut self,
         ifindex: InterfaceIndex,
         ifaddr: &IfAddress,
     ) -> Result<(), RouterError> {
-        if let Some(iface) = self.by_index.get_mut(&ifindex) {
-            iface.add_ifaddr(ifaddr);
-            Ok(())
-        } else {
-            Err(RouterError::NoSuchInterface(ifindex))
-        }
+        self.by_index
+            .get_mut(&ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?
+            .add_ifaddr(ifaddr);
+        Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
     /// Un-assign an Ip address from an interface.
     //////////////////////////////////////////////////////////////////
-    pub fn del_ifaddr(&mut self, ifindex: InterfaceIndex, ifaddr: &IfAddress) {
-        if let Some(iface) = self.by_index.get_mut(&ifindex) {
-            iface.del_ifaddr(&(ifaddr.0, ifaddr.1));
-        }
+    pub(crate) fn del_ifaddr(&mut self, ifindex: InterfaceIndex, ifaddr: &IfAddress) {
+        self.by_index
+            .get_mut(&ifindex)
+            .map(|iface| iface.del_ifaddr(&(ifaddr.0, ifaddr.1)));
         // if interface does not exist or the address was not configured,
         // we'll do nothing
     }
@@ -178,7 +181,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////////
     /// Detach [`Interface`] from wherever it is attached
     //////////////////////////////////////////////////////////////////////
-    pub fn detach_interface_from_vrf(&mut self, ifindex: InterfaceIndex) {
+    pub(crate) fn detach_interface_from_vrf(&mut self, ifindex: InterfaceIndex) {
         if let Some(iface) = self.get_interface_mut(ifindex) {
             iface.detach();
         } else {
@@ -189,7 +192,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////////
     /// Set the operational state of an [`Interface`]
     //////////////////////////////////////////////////////////////////////
-    pub fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
+    pub(crate) fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
             ifr.set_oper_state(state);
         }
@@ -198,7 +201,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////////
     /// Set the admin state of an [`Interface`]
     //////////////////////////////////////////////////////////////////////
-    pub fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
+    pub(crate) fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
             ifr.set_admin_state(state);
         }

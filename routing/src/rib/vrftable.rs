@@ -59,7 +59,7 @@ impl VrfTable {
         }
 
         /* Build new VRF object */
-        let mut vrf = Vrf::new(&config);
+        let mut vrf = Vrf::new(config);
 
         /* Forbid addition of a vrf if one exists with same vni */
         if let Some(vni) = config.vni {

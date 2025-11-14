@@ -31,10 +31,10 @@ impl Absorb<IfTableChange> for IfTable {
     fn absorb_first(&mut self, change: &mut IfTableChange, _: &Self) {
         match change {
             IfTableChange::Add(ifconfig) => {
-                let _ = self.add_interface(&ifconfig);
+                let _ = self.add_interface(ifconfig);
             }
             IfTableChange::Mod(ifconfig) => {
-                let _ = self.mod_interface(&ifconfig);
+                let _ = self.mod_interface(ifconfig);
             }
             IfTableChange::Del(ifindex) => self.del_interface(*ifindex),
             IfTableChange::Attach((ifindex, fibkey)) => {
@@ -47,14 +47,13 @@ impl Absorb<IfTableChange> for IfTable {
             }
             IfTableChange::DelIpAddress((ifindex, ifaddr)) => self.del_ifaddr(*ifindex, ifaddr),
             IfTableChange::UpdateOpState((ifindex, state)) => {
-                self.set_iface_oper_state(*ifindex, state.clone());
+                self.set_iface_oper_state(*ifindex, *state);
             }
             IfTableChange::UpdateAdmState((ifindex, state)) => {
-                self.set_iface_admin_state(*ifindex, state.clone());
+                self.set_iface_admin_state(*ifindex, *state);
             }
         }
     }
-    fn drop_first(self: Box<Self>) {}
     fn sync_with(&mut self, first: &Self) {
         *self = first.clone();
     }
@@ -73,29 +72,28 @@ impl IfTableWriter {
         (IfTableWriter(w), IfTableReader(r))
     }
     #[must_use]
-    pub fn as_iftable_reader(&self) -> IfTableReader {
+    pub fn as_reader(&self) -> IfTableReader {
         IfTableReader::new(self.0.clone())
     }
+    #[must_use]
     pub fn enter(&self) -> Option<ReadGuard<'_, IfTable>> {
         self.0.enter()
     }
     pub fn add_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
-        let iftr = self.as_iftable_reader();
-        if let Some(iftable) = iftr.enter() {
-            if iftable.contains(ifconfig.ifindex) {
-                return Err(RouterError::InterfaceExists(ifconfig.ifindex));
-            }
+        if let Some(iftable) = self.enter()
+            && iftable.contains(ifconfig.ifindex)
+        {
+            return Err(RouterError::InterfaceExists(ifconfig.ifindex));
         }
         self.0.append(IfTableChange::Add(ifconfig));
         self.0.publish();
         Ok(())
     }
     pub fn mod_interface(&mut self, ifconfig: RouterInterfaceConfig) -> Result<(), RouterError> {
-        let iftr = self.as_iftable_reader();
-        if let Some(iftable) = iftr.enter() {
-            if !iftable.contains(ifconfig.ifindex) {
-                return Err(RouterError::NoSuchInterface(ifconfig.ifindex));
-            }
+        if let Some(iftable) = self.enter()
+            && !iftable.contains(ifconfig.ifindex)
+        {
+            return Err(RouterError::NoSuchInterface(ifconfig.ifindex));
         }
         self.0.append(IfTableChange::Mod(ifconfig));
         self.0.publish();

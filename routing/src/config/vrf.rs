@@ -134,7 +134,6 @@ impl ReconfigVrfPlan {
         }
     }
 
-    #[must_use]
     fn enforce_deletions(
         &self,
         vrftable: &mut VrfTable,
@@ -155,7 +154,6 @@ impl ReconfigVrfPlan {
         Ok(())
     }
 
-    #[must_use]
     fn enforce_keeps(&self, vrftable: &mut VrfTable) -> Result<(), RouterError> {
         for vrfid in &self.to_keep {
             let vrf = vrftable.get_vrf_mut(*vrfid)?;
@@ -166,7 +164,6 @@ impl ReconfigVrfPlan {
         Ok(())
     }
 
-    #[must_use]
     fn enforce_changes(&self, vrftable: &mut VrfTable) -> Result<(), RouterError> {
         let mut vni_changes = VniChangePlan::new();
         for cfg in &self.to_change {
@@ -215,10 +212,9 @@ impl ReconfigVrfPlan {
         Ok(())
     }
 
-    #[must_use]
     fn enforce_additions(&self, vrftable: &mut VrfTable) -> Result<(), RouterError> {
         for cfg in &self.to_add {
-            vrftable.add_vrf(&cfg)?;
+            vrftable.add_vrf(cfg)?;
             if let Ok(vrf) = vrftable.get_vrf_mut(cfg.vrfid) {
                 if let Some(descr) = &cfg.description {
                     vrf.set_description(descr);
@@ -235,7 +231,6 @@ impl ReconfigVrfPlan {
         Ok(())
     }
 
-    #[must_use]
     pub(crate) fn apply(
         &self,
         vrftable: &mut VrfTable,

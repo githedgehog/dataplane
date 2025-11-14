@@ -37,7 +37,7 @@ impl Nhop {
             return instructions;
         }
         if let Some(encap) = self.key.encap {
-            let mut inst_encap = encap.clone();
+            let mut inst_encap = encap;
             match inst_encap {
                 Encapsulation::Vxlan(ref mut vxlan) => vxlan.resolve(rstore),
                 Encapsulation::Mpls(_) => {}

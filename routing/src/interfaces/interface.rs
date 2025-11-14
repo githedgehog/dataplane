@@ -91,6 +91,7 @@ pub struct RouterInterfaceConfig {
     pub mtu: Option<Mtu>,
 }
 impl RouterInterfaceConfig {
+    #[must_use]
     pub fn new(name: &str, ifindex: InterfaceIndex) -> Self {
         Self {
             ifindex,
@@ -103,10 +104,10 @@ impl RouterInterfaceConfig {
         }
     }
     pub fn set_name(&mut self, name: &str) {
-        self.name = name.to_owned();
+        self.name = name.to_string();
     }
     pub fn set_description(&mut self, description: &str) {
-        self.description = Some(description.to_owned());
+        self.description = Some(description.to_string());
     }
     pub fn set_iftype(&mut self, iftype: IfType) {
         self.iftype = iftype;
@@ -144,7 +145,7 @@ impl Interface {
     #[must_use]
     pub fn new(config: &RouterInterfaceConfig) -> Self {
         Interface {
-            name: config.name.to_string(),
+            name: config.name.clone(),
             ifindex: config.ifindex,
             description: config.description.clone(),
             iftype: config.iftype.clone(),
