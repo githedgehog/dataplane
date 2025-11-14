@@ -34,6 +34,6 @@ pub fn set_packet_fanout<Fd>(fd: Fd) -> Result<(), nix::Error>
 where
     Fd: AsFd,
 {
-    let value = (u32::from(PACKET_FANOUT_HASH) << 16) | u32::from(DP_PACKET_FANOUT_ID);
+    let value = (u32::from(PACKET_FANOUT_QM) << 16) | u32::from(DP_PACKET_FANOUT_ID);
     setsockopt(&fd, PacketFanout, &value)
 }
