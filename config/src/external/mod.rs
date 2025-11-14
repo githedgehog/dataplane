@@ -8,10 +8,10 @@ pub mod underlay;
 
 use derive_builder::Builder;
 
+use crate::ConfigError;
 use crate::internal::device::DeviceConfig;
 use crate::internal::device::settings::DeviceSettings;
-use crate::{ConfigError, ConfigResult};
-use overlay::Overlay;
+use overlay::{Overlay, ValidatedOverlay};
 use underlay::Underlay;
 
 /// Alias for a config generation number
@@ -38,17 +38,30 @@ impl ExternalConfig {
             overlay: Overlay::default(),
         }
     }
-    pub fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&mut self) -> Result<ValidatedExternalConfig, ConfigError> {
         self.device.validate()?;
         self.underlay.validate()?;
-        self.overlay.validate()?;
+        let validated_overlay = self.overlay.validate()?;
 
         // if there are vpcs configured, there MUST be a vtep configured
-        if !self.overlay.vpc_table.is_empty() && self.underlay.vtep.is_none() {
+        if !validated_overlay.vpc_table.is_empty() && self.underlay.vtep.is_none() {
             return Err(ConfigError::MissingParameter(
                 "Vtep interface configuration",
             ));
         }
-        Ok(())
+        Ok(ValidatedExternalConfig {
+            genid: self.genid,
+            device: self.device.clone(),
+            underlay: self.underlay.clone(),
+            overlay: validated_overlay,
+        })
     }
+}
+
+#[derive(Builder, Clone, Debug)]
+pub struct ValidatedExternalConfig {
+    pub genid: GenId,              /* configuration generation id (version) */
+    pub device: DeviceConfig,      /* goes as-is into the internal config */
+    pub underlay: Underlay,        /* goes as-is into the internal config */
+    pub overlay: ValidatedOverlay, /* VPCs and peerings -- get highly developed in internal config */
 }
