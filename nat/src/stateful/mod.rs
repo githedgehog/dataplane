@@ -204,7 +204,14 @@ impl StatefulNat {
         );
 
         let flow_info = FlowInfo::new(session_timeout_time(idle_timeout));
-        flow_info.locked.write().unwrap().nat_state = Some(Box::new(state));
+        let mut write_guard = flow_info.locked.write().unwrap();
+        // Write NAT state
+        write_guard.nat_state = Some(Box::new(state));
+        // Write destination VPC information, so that pipeline can look it up from the flow table
+        // when it's not possibly to uniquely determine the destination VPC from source VPC and
+        // packet's destination address.
+        write_guard.dst_vpc_info = Some(Box::new(flow_key.data().dst_vpcd()));
+        drop(write_guard);
 
         self.sessions.insert(*flow_key, flow_info);
     }
