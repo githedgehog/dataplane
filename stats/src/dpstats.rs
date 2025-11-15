@@ -18,6 +18,7 @@ use vpcmap::map::VpcMapReader;
 use crate::vpc_stats::VpcStatsStore;
 use crate::{RegisteredVpcMetrics, Specification, VpcMetricsSpec};
 use net::buffer::PacketBufferMut;
+use net::packet::DoneReason;
 use rand::RngCore;
 use serde::Serialize;
 use small_map::SmallMap;
@@ -369,6 +370,19 @@ impl StatsCollector {
                         action.tx.byte.count.metric.increment(stats.bytes);
                     }
                 });
+            let action = &metrics.drops;
+            action
+                .tx
+                .packet
+                .count
+                .metric
+                .increment(tx_summary.drops.packets);
+            action
+                .tx
+                .byte
+                .count
+                .metric
+                .increment(tx_summary.drops.bytes);
         });
 
         // Mirror counters into the store (monotonic)
@@ -388,6 +402,12 @@ impl StatsCollector {
             if total_pkts != 0 || total_bytes != 0 {
                 self.vpc_store
                     .add_vpc_counts(src, total_pkts, total_bytes)
+                    .await;
+            }
+
+            if tx_summary.drops.bytes != 0 || tx_summary.drops.packets != 0 {
+                self.vpc_store
+                    .add_vpc_drops(src, tx_summary.drops.packets, tx_summary.drops.bytes)
                     .await;
             }
         }
@@ -497,7 +517,7 @@ where
 /// This type is mostly expected to exist on a per-packet batch basis.
 #[derive(Debug, Default, Clone)]
 pub struct TransmitSummary<T> {
-    pub drop: PacketAndByte<T>,
+    pub drops: PacketAndByte<T>,
     pub dst: SmallMap<{ SMALL_MAP_CAPACITY }, VpcDiscriminant, PacketAndByte<T>>,
 }
 
@@ -508,7 +528,7 @@ impl<T> TransmitSummary<T> {
         T: Default,
     {
         Self {
-            drop: PacketAndByte::<T>::default(),
+            drops: PacketAndByte::<T>::default(),
             dst: SmallMap::new(),
         }
     }
@@ -656,32 +676,43 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
         input.filter_map(|mut packet| {
             let sdisc = packet.get_meta().src_vpcd;
             let ddisc = packet.get_meta().dst_vpcd;
+            let is_drop =
+                !(packet.get_done().unwrap_or_else(|| unreachable!()) == DoneReason::Delivered);
+            let bytes: u64 = packet.total_len().into();
+
             match (sdisc, ddisc) {
                 (Some(src), Some(dst)) => match self.update.vpc.get_mut(&src) {
                     None => {
-                        let mut tx_sumary = TransmitSummary::new();
-                        tx_sumary.dst.insert(
-                            dst,
-                            PacketAndByte {
-                                packets: 1,
-                                bytes: packet.total_len().into(),
-                            },
-                        );
-                        self.update.vpc.insert(src, tx_sumary);
+                        let mut tx_summary = TransmitSummary::new();
+                        if is_drop {
+                            tx_summary.drops.packets = 1;
+                            tx_summary.drops.bytes = bytes;
+                        } else {
+                            tx_summary
+                                .dst
+                                .insert(dst, PacketAndByte { packets: 1, bytes });
+                        }
+                        self.update.vpc.insert(src, tx_summary);
                     }
                     Some(tx_summary) => match tx_summary.dst.get_mut(&dst) {
                         None => {
-                            tx_summary.dst.insert(
-                                dst,
-                                PacketAndByte {
-                                    packets: 1,
-                                    bytes: packet.total_len().into(),
-                                },
-                            );
+                            if is_drop {
+                                tx_summary.drops.packets += 1;
+                                tx_summary.drops.bytes += bytes;
+                            } else {
+                                tx_summary
+                                    .dst
+                                    .insert(dst, PacketAndByte { packets: 1, bytes });
+                            }
                         }
                         Some(dst) => {
-                            dst.packets += 1;
-                            dst.bytes += u64::from(packet.total_len());
+                            if is_drop {
+                                tx_summary.drops.packets += 1;
+                                tx_summary.drops.bytes += bytes;
+                            } else {
+                                dst.packets += 1;
+                                dst.bytes += bytes;
+                            }
                         }
                     },
                 },
@@ -804,7 +835,7 @@ mod contract {
     {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let mut summary = TransmitSummary {
-                drop: driver.produce()?,
+                drops: driver.produce()?,
                 dst: SmallMap::default(),
             };
             let num_src = driver.produce::<u8>()? % 16;
