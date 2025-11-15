@@ -310,6 +310,13 @@ pub struct VpcStatus {
     pub interfaces: HashMap<String, VpcInterfaceStatus>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VpcCounters {
+    pub name: String,
+    pub total_packets: String,
+    pub total_drops: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcPeeringCounters {
     pub name: String,
@@ -330,6 +337,7 @@ pub struct DataplaneStatus {
     pub bgp: Option<BgpStatus>,
     pub vpcs: HashMap<String, VpcStatus>,
     pub vpc_peering_counters: HashMap<String, VpcPeeringCounters>,
+    pub vpc_counters: HashMap<String, VpcCounters>, // <-- added
 }
 
 impl DataplaneStatus {
@@ -348,6 +356,9 @@ impl DataplaneStatus {
     }
     pub fn add_peering(&mut self, name: String, c: VpcPeeringCounters) {
         self.vpc_peering_counters.insert(name, c);
+    }
+    pub fn add_vpc_counters(&mut self, name: String, c: VpcCounters) {
+        self.vpc_counters.insert(name, c);
     }
     pub fn set_frr_status(&mut self, s: FrrStatus) {
         self.frr_status = Some(s);
