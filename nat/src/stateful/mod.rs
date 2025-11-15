@@ -666,7 +666,7 @@ impl StatefulNat {
         match self.nat_packet(packet, src_vpc_id, dst_vpc_id) {
             Err(error) => {
                 packet.done(translate_error(&error));
-                error!("{}: Error processing packet: {}", self.name(), error);
+                error!("{}: Error processing packet: {error}", self.name());
             }
             Ok(true) => {
                 packet.get_meta_mut().set_checksum_refresh(true);
