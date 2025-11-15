@@ -4,7 +4,7 @@
 //! Implements an ingress stage
 
 #![allow(clippy::collapsible_if)]
-
+#[allow(unused)]
 use tracing::{debug, trace, warn};
 
 use net::buffer::PacketBufferMut;
@@ -35,7 +35,7 @@ impl Ingress {
         }
     }
 
-    pub fn name(&self) -> &String {
+    fn name(&self) -> &String {
         &self.name
     }
 
@@ -49,7 +49,7 @@ impl Ingress {
         match &interface.attachment {
             Some(Attachment::VRF(fibkey)) => {
                 if packet.try_ip().is_none() {
-                    warn!("{nfi}: Processing of non-ip traffic on {ifname} is not supported");
+                    debug!("{nfi}: Processing of non-ip traffic on {ifname} is not supported");
                     packet.done(DoneReason::NotIp);
                     return;
                 }
@@ -58,11 +58,11 @@ impl Ingress {
                 packet.get_meta_mut().vrf = Some(vrfid);
             }
             Some(Attachment::BD) => {
-                warn!("{nfi}: Bridge domains are not supported");
+                debug!("{nfi}: Bridge domains are not supported");
                 packet.done(DoneReason::InterfaceUnsupported);
             }
             None => {
-                warn!("{nfi}: Interface {ifname} is not attached");
+                debug!("{nfi}: Interface {ifname} is not attached");
                 packet.done(DoneReason::InterfaceDetached);
             }
         }
@@ -78,7 +78,7 @@ impl Ingress {
         /* Here we would check if the interface is part of some
         bridge domain. But we don't support bridging yet. */
         trace!(
-            "{nfi}: Recvd frame for mac {dst_mac} (not for us) (interface {ifname})",
+            "{nfi}: Ignoring frame for mac {dst_mac} over {ifname}",
             nfi = self.name(),
             ifname = interface.name
         );
@@ -94,8 +94,8 @@ impl Ingress {
         let nfi = self.name();
         packet.get_meta_mut().set_l2bcast(true);
         packet.done(DoneReason::Unhandled);
-        warn!(
-            "{nfi}: Processing of broadcast ethernet frames is not supported (interface {ifname})",
+        debug!(
+            "{nfi}: Processing of broadcast frames is not supported (iif:{ifname})",
             ifname = interface.name
         );
     }
@@ -163,11 +163,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
                 if let Some(iftable) = self.iftr.enter() {
                     match packet.get_meta().iif {
                         None => {
-                            warn!("no incoming interface for packet");
+                            warn!("no iif set in packet metadata (driver bug)");
+                            packet.done(DoneReason::InternalFailure);
                         }
                         Some(iif) => match iftable.get_interface(iif) {
                             None => {
-                                warn!("{nfi}: unknown incoming interface {iif}");
+                                debug!("{nfi}: unknown/unconfigured incoming interface {iif}");
                                 packet.done(DoneReason::InterfaceUnknown);
                             }
                             Some(interface) => {

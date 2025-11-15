@@ -11,7 +11,7 @@ use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, warn};
 
 use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
 use routing::fib::fibtable::FibTableReader;
@@ -44,7 +44,7 @@ pub struct IpForwarder {
 
 impl IpForwarder {
     /// Build a new IP forwarding stage to use the indicated [`FibTableReader`]
-    #[allow(unused)]
+    #[must_use]
     pub fn new(name: &str, fibtr: FibTableReader) -> Self {
         Self {
             name: name.to_owned(),
@@ -376,7 +376,6 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        trace!("{}'", self.name);
         input.filter_map(move |mut packet| {
             if !packet.is_done() {
                 // strip off vrf id from metadata
@@ -384,7 +383,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
                 if let Some(vrfid) = vrfid {
                     self.forward_packet(&mut packet, vrfid);
                 } else {
-                    warn!("{}: missing information to handle packet", self.name);
+                    warn!("{}: missing vrf annotation to handle packet", self.name);
                 }
             }
             packet.enforce()
