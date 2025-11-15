@@ -28,8 +28,9 @@ pub struct Rates {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FlowStats {
-    pub ctr: Counters, // monotonic counters
-    pub rate: Rates,   // latest snapshot of rates
+    pub ctr: Counters,   // monotonic counters
+    pub rate: Rates,     // latest snapshot of rates
+    pub drops: Counters, // drops
 }
 
 #[derive(Debug, Default)]
@@ -111,6 +112,13 @@ impl VpcStatsStore {
         let e = map.entry(vpc).or_default();
         e.ctr.packets = e.ctr.packets.saturating_add(add_packets);
         e.ctr.bytes = e.ctr.bytes.saturating_add(add_bytes);
+    }
+
+    pub async fn add_vpc_drops(&self, vpc: VpcId, add_packets: u64, add_bytes: u64) {
+        let mut map = self.vpc_stats.write().await;
+        let e = map.entry(vpc).or_default();
+        e.drops.packets = e.drops.packets.saturating_add(add_packets);
+        e.drops.bytes = e.drops.bytes.saturating_add(add_bytes);
     }
 
     pub async fn set_vpc_rates(&self, vpc: VpcId, pps: f64, bps: f64) {

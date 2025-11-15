@@ -120,6 +120,7 @@ impl Specification for BasicActionSpec {
 
 pub struct VpcMetricsSpec {
     pub total: BasicActionSpec,
+    pub drops: BasicActionSpec,
     pub peering: HashMap<VpcDiscriminant, BasicActionSpec>,
 }
 
@@ -133,10 +134,14 @@ impl VpcMetricsSpec {
             .map(|(src_disc, src_name, labels)| {
                 let mut total_labels = labels.clone();
                 total_labels.push(("total".to_string(), src_name.clone()));
+
+                let mut drop_labels = labels.clone();
+                drop_labels.push(("drops".to_string(), src_name.clone()));
                 (
                     *src_disc,
                     VpcMetricsSpec {
                         total: BasicActionSpec::new("vpc", total_labels),
+                        drops: BasicActionSpec::new("vpc", drop_labels),
                         peering: vpc_data
                             .iter()
                             .map(|(dst_disc, dst_name, labels)| {
@@ -156,12 +161,14 @@ impl VpcMetricsSpec {
 #[derive(Debug, Serialize)]
 pub struct RegisteredVpcMetrics {
     pub total: RegisteredBasicAction,
+    pub drops: RegisteredBasicAction,
     pub peering: BTreeMap<VpcDiscriminant, RegisteredBasicAction>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct VpcMetrics<T> {
     pub total: BasicAction<T>,
+    pub drops: BasicAction<T>,
     pub peering: BTreeMap<VpcDiscriminant, BasicAction<T>>,
 }
 
@@ -171,6 +178,7 @@ impl Specification for VpcMetricsSpec {
     fn build(self) -> RegisteredVpcMetrics {
         RegisteredVpcMetrics {
             total: self.total.build(),
+            drops: self.drops.build(),
             peering: self
                 .peering
                 .into_iter()
@@ -182,12 +190,14 @@ impl Specification for VpcMetricsSpec {
 
 pub struct PipelineMetricsSpec {
     pub total: BasicActionSpec,
+    pub drops: BasicActionSpec,
     pub vpc: BTreeMap<VpcDiscriminant, VpcMetricsSpec>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct RegisteredPipelineMetrics {
     pub total: RegisteredBasicAction,
+    pub drops: RegisteredBasicAction,
     vpc: BTreeMap<VpcDiscriminant, RegisteredVpcMetrics>,
 }
 
@@ -197,6 +207,7 @@ impl Specification for PipelineMetricsSpec {
     fn build(self) -> RegisteredPipelineMetrics {
         RegisteredPipelineMetrics {
             total: self.total.build(),
+            drops: self.drops.build(),
             vpc: self
                 .vpc
                 .into_iter()
