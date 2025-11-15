@@ -554,6 +554,17 @@ mod test {
             },
         );
 
+        // vpc_counters
+        let mut vpc_counters = std::collections::HashMap::new();
+        vpc_counters.insert(
+            "vpc-1".into(),
+            gateway_config::VpcCounters {
+                name: "vpc-1".into(),
+                total_packets: "100000".into(),
+                total_drops: "42".into(),
+            },
+        );
+
         gateway_config::GetDataplaneStatusResponse {
             interface_statuses,
             frr_status,
@@ -562,6 +573,7 @@ mod test {
             bgp,
             vpcs,
             vpc_peering_counters,
+            vpc_counters,
         }
     }
 

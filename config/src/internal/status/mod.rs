@@ -337,7 +337,7 @@ pub struct DataplaneStatus {
     pub bgp: Option<BgpStatus>,
     pub vpcs: HashMap<String, VpcStatus>,
     pub vpc_peering_counters: HashMap<String, VpcPeeringCounters>,
-    pub vpc_counters: HashMap<String, VpcCounters>, // <-- added
+    pub vpc_counters: HashMap<String, VpcCounters>,
 }
 
 impl DataplaneStatus {
