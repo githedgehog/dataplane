@@ -98,5 +98,9 @@ impl DriverKernel {
                 Err(e) => error!("Unable to spawn worker {id} error: {e:?}"),
             }
         }
+
+        // Exiting with error as it's not expected for all workers to finish
+        error!("All workers finished unexpectedly");
+        std::process::exit(1);
     }
 }
