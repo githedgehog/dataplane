@@ -13,7 +13,9 @@ use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 
 use config::external::overlay::vpc::VpcTable;
-use config::internal::status::{DataplaneStatus, FrrStatus, VpcPeeringCounters, VpcStatus};
+use config::internal::status::{
+    DataplaneStatus, FrrStatus, VpcCounters, VpcPeeringCounters, VpcStatus,
+};
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
@@ -268,7 +270,12 @@ impl ConfigProcessor {
         // Helper to check if a flow stats has any traffic
         #[inline]
         fn has_traffic(fs: &stats::FlowStats) -> bool {
-            fs.ctr.packets > 0 || fs.ctr.bytes > 0 || fs.rate.pps > 0.0 || fs.rate.bps > 0.0
+            fs.ctr.packets > 0
+                || fs.ctr.bytes > 0
+                || fs.rate.pps > 0.0
+                || fs.rate.bps > 0.0
+                || fs.drops.packets > 0
+                || fs.drops.bytes > 0
         }
 
         // Keep only pairs with traffic
@@ -344,8 +351,24 @@ impl ConfigProcessor {
                     dst_vpc: dst_name,
                     packets: fs.ctr.packets,
                     bytes: fs.ctr.bytes,
-                    drops: 0,
+                    drops: 0, // TODO: Add this in Release 2
                     pps: fs.rate.pps,
+                },
+            );
+        }
+
+        // Emit per-VPC total counters (packets + drops, as strings in API)
+        for (disc, fs) in vpc_snap {
+            let name = name_of
+                .get(&disc)
+                .cloned()
+                .unwrap_or_else(|| format!("{disc:?}"));
+            status.add_vpc_counters(
+                name.clone(),
+                VpcCounters {
+                    name,
+                    total_packets: fs.ctr.packets.to_string(),
+                    total_drops: fs.drops.packets.to_string(),
                 },
             );
         }
