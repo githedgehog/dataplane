@@ -24,7 +24,7 @@ use crate::internal::status::{
     BgpNeighborStatus, BgpStatus, BgpVrfStatus, DataplaneStatus, DataplaneStatusInfo,
     DataplaneStatusType, FrrAgentStatusType, FrrStatus, InterfaceAdminStatusType,
     InterfaceCounters, InterfaceOperStatusType, InterfaceRuntimeStatus, InterfaceStatus,
-    VpcInterfaceStatus, VpcPeeringCounters, VpcStatus, ZebraStatusType,
+    VpcCounters, VpcInterfaceStatus, VpcPeeringCounters, VpcStatus, ZebraStatusType,
 };
 
 impl TryFrom<&gateway_config::InterfaceStatus> for InterfaceStatus {
@@ -773,6 +773,34 @@ impl TryFrom<&VpcPeeringCounters> for gateway_config::VpcPeeringCounters {
     }
 }
 
+/* ========================= */
+/* ===== VpcCounters ======= */
+/* ========================= */
+
+impl TryFrom<&gateway_config::VpcCounters> for VpcCounters {
+    type Error = String;
+
+    fn try_from(p: &gateway_config::VpcCounters) -> Result<Self, Self::Error> {
+        Ok(VpcCounters {
+            name: p.name.clone(),
+            total_packets: p.total_packets.clone(),
+            total_drops: p.total_drops.clone(),
+        })
+    }
+}
+
+impl TryFrom<&VpcCounters> for gateway_config::VpcCounters {
+    type Error = String;
+
+    fn try_from(c: &VpcCounters) -> Result<Self, Self::Error> {
+        Ok(gateway_config::VpcCounters {
+            name: c.name.clone(),
+            total_packets: c.total_packets.clone(),
+            total_drops: c.total_drops.clone(),
+        })
+    }
+}
+
 impl TryFrom<&gateway_config::GetDataplaneStatusResponse> for DataplaneStatus {
     type Error = String;
 
@@ -803,6 +831,13 @@ impl TryFrom<&gateway_config::GetDataplaneStatusResponse> for DataplaneStatus {
             vpc_peering_counters.insert(k.clone(), VpcPeeringCounters::try_from(v)?);
         }
 
+        // vpc counters
+        let mut vpc_counters: HashMap<String, VpcCounters> =
+            HashMap::with_capacity(p.vpc_counters.len());
+        for (k, v) in &p.vpc_counters {
+            vpc_counters.insert(k.clone(), VpcCounters::try_from(v)?);
+        }
+
         Ok(DataplaneStatus {
             interface_statuses,
             frr_status: p.frr_status.as_ref().map(FrrStatus::try_from).transpose()?,
@@ -815,6 +850,7 @@ impl TryFrom<&gateway_config::GetDataplaneStatusResponse> for DataplaneStatus {
             bgp: p.bgp.as_ref().map(BgpStatus::try_from).transpose()?,
             vpcs,
             vpc_peering_counters,
+            vpc_counters,
         })
     }
 }
@@ -854,6 +890,13 @@ impl TryFrom<&DataplaneStatus> for gateway_config::GetDataplaneStatusResponse {
                 .insert(k.clone(), gateway_config::VpcPeeringCounters::try_from(v)?);
         }
 
+        // vpc counters
+        let mut vpc_counters: HashMap<String, gateway_config::VpcCounters> =
+            HashMap::with_capacity(s.vpc_counters.len());
+        for (k, v) in &s.vpc_counters {
+            vpc_counters.insert(k.clone(), gateway_config::VpcCounters::try_from(v)?);
+        }
+
         Ok(gateway_config::GetDataplaneStatusResponse {
             interface_statuses,
             frr_status: s
@@ -874,6 +917,7 @@ impl TryFrom<&DataplaneStatus> for gateway_config::GetDataplaneStatusResponse {
                 .transpose()?,
             vpcs,
             vpc_peering_counters,
+            vpc_counters,
         })
     }
 }
