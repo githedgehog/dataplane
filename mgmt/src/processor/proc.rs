@@ -351,13 +351,14 @@ impl ConfigProcessor {
                     dst_vpc: dst_name,
                     packets: fs.ctr.packets,
                     bytes: fs.ctr.bytes,
-                    drops: 0, // TODO: Add this in Release 2
+                    drops: 0, // TODO: Add this in a later release
                     pps: fs.rate.pps,
+                    bps: fs.rate.bps,
                 },
             );
         }
 
-        // Emit per-VPC total counters (packets + drops, as strings in API)
+        // Emit per-VPC total counters (numeric; includes bytes)
         for (disc, fs) in vpc_snap {
             let name = name_of
                 .get(&disc)
@@ -367,8 +368,9 @@ impl ConfigProcessor {
                 name.clone(),
                 VpcCounters {
                     name,
-                    total_packets: fs.ctr.packets.to_string(),
-                    total_drops: fs.drops.packets.to_string(),
+                    packets: fs.ctr.packets,
+                    bytes: fs.ctr.bytes,
+                    drops: fs.drops.packets,
                 },
             );
         }

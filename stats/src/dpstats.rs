@@ -328,8 +328,6 @@ impl StatsCollector {
 
     /// Submit a concluded set of stats for inclusion in smoothing calculations
     #[tracing::instrument(level = "trace")]
-    /// Submit a concluded set of stats for inclusion in smoothing calculations
-    #[tracing::instrument(level = "trace")]
     async fn submit_expired(&mut self, concluded: BatchSummary<u64>) {
         const CAPACITY_PADDING: usize = 16;
         let capacity = self
@@ -462,8 +460,6 @@ impl StatsCollector {
         } else {
             trace!("Not enough samples yet for smoothing");
         }
-
-        // TODO: add in drop metrics
     }
 }
 

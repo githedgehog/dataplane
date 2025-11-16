@@ -313,8 +313,9 @@ pub struct VpcStatus {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VpcCounters {
     pub name: String,
-    pub total_packets: String,
-    pub total_drops: String,
+    pub packets: u64,
+    pub drops: u64,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -326,6 +327,7 @@ pub struct VpcPeeringCounters {
     pub bytes: u64,
     pub drops: u64,
     pub pps: f64,
+    pub bps: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

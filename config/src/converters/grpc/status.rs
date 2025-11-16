@@ -753,6 +753,7 @@ impl TryFrom<&gateway_config::VpcPeeringCounters> for VpcPeeringCounters {
             bytes: p.bytes,
             drops: p.drops,
             pps: p.pps,
+            bps: p.bps,
         })
     }
 }
@@ -769,6 +770,7 @@ impl TryFrom<&VpcPeeringCounters> for gateway_config::VpcPeeringCounters {
             bytes: c.bytes,
             drops: c.drops,
             pps: c.pps,
+            bps: c.bps,
         })
     }
 }
@@ -783,8 +785,9 @@ impl TryFrom<&gateway_config::VpcCounters> for VpcCounters {
     fn try_from(p: &gateway_config::VpcCounters) -> Result<Self, Self::Error> {
         Ok(VpcCounters {
             name: p.name.clone(),
-            total_packets: p.total_packets.clone(),
-            total_drops: p.total_drops.clone(),
+            packets: p.packets,
+            drops: p.drops,
+            bytes: p.bytes,
         })
     }
 }
@@ -795,8 +798,9 @@ impl TryFrom<&VpcCounters> for gateway_config::VpcCounters {
     fn try_from(c: &VpcCounters) -> Result<Self, Self::Error> {
         Ok(gateway_config::VpcCounters {
             name: c.name.clone(),
-            total_packets: c.total_packets.clone(),
-            total_drops: c.total_drops.clone(),
+            packets: c.packets,
+            drops: c.drops,
+            bytes: c.bytes,
         })
     }
 }
