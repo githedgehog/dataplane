@@ -547,10 +547,11 @@ mod test {
                 name: "peering-1".into(),
                 src_vpc: "vpc-1".into(),
                 dst_vpc: "vpc-2".into(),
-                packets: 12345,
+                packets: 12_345,
                 bytes: 987_654,
                 drops: 12,
                 pps: 321.0,
+                bps: 123_456.0,
             },
         );
 
@@ -560,8 +561,9 @@ mod test {
             "vpc-1".into(),
             gateway_config::VpcCounters {
                 name: "vpc-1".into(),
-                total_packets: "100000".into(),
-                total_drops: "42".into(),
+                packets: 100_000,
+                drops: 42,
+                bytes: 6_400_000,
             },
         );
 
