@@ -159,6 +159,15 @@ jobs:
             target=x86_64-unknown-linux-gnu \
             push-container
 
+      - name: "print container image name"
+        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            print-container-tags
+
       - id: "test"
         name: "test"
         run: |

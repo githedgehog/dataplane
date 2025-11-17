@@ -474,6 +474,22 @@ push-container: build-container
       sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
+# Print names of container images to build or push
+[script]
+print-container-tags:
+    {{ _define_truncate128 }}
+    declare build_date
+    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
+    declare -r build_date
+    echo "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
+    echo "{{ _container_repo }}:$(truncate128 "{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
+    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
+      echo "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
+    fi
+    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
+      echo "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
+    fi
+
 # Run Clippy like you're in CI
 [script]
 clippy *args: (cargo "clippy" "--all-targets" "--all-features" args "--" "-D" "warnings")
