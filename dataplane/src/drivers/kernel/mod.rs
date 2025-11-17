@@ -24,7 +24,8 @@ use tracectl::trace_target;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
-use kif::Kif;
+use super::tokio_util::run_in_local_tokio_runtime;
+use kif::{Kif, bring_kifs_up};
 use worker::Worker;
 
 trace_target!("kernel-driver", LevelFilter::INFO, &["driver"]);
@@ -85,7 +86,15 @@ impl DriverKernel {
             }
         };
 
-        // Spawn worker
+        // ensure that the kernel interfaces for rx/tx are up
+        if let Err(e) =
+            run_in_local_tokio_runtime(async || bring_kifs_up(interfaces.as_slice()).await)
+        {
+            error!("Interface bring up failed: {e}");
+            return;
+        }
+
+        // Spawn workers
         let worker_handles =
             Self::spawn_workers(num_workers, setup_pipeline, interfaces.as_slice());
 
