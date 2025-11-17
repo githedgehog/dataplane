@@ -17,7 +17,7 @@ use concurrency::sync::Arc;
 use concurrency::thread;
 use net::buffer::test_buffer::TestBuffer;
 use net::interface::InterfaceIndex;
-use net::packet::Packet;
+use net::packet::{DoneReason, Packet};
 use pipeline::{DynPipeline, NetworkFunction};
 
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
@@ -397,82 +397,73 @@ async fn tx_packet(
     if_table: &WorkerIfTable,
     pkt: Packet<TestBuffer>,
 ) {
-    let oif_id_opt = pkt.get_meta().oif;
-    if let Some(oif_id) = oif_id_opt {
-        if let Some(outgoing_unlocked) = if_table.get(&oif_id) {
-            trace!(
-                worker = id,
-                rx_intf_name = rx_if_name,
-                "Locking interface index {} for transmit from rx interface {}",
-                oif_id,
-                rx_if_name
-            );
-            let mut outgoing = outgoing_unlocked.lock().await;
-            match pkt.serialize() {
-                Ok(out) => {
-                    let len = out.as_ref().len();
-                    trace!(
-                        worker = id,
-                        rx_intf_name = rx_if_name,
-                        "TXing {len} bytes on interface {}",
-                        &outgoing.if_name
-                    );
-                    if let Err(e) = outgoing.sock.write(out.as_ref()).await {
-                        warn!(
-                            worker = id,
-                            rx_intf_name = rx_if_name,
-                            "TX failed for pkt ({len} octets) on '{}': {e}",
-                            &outgoing.if_name
-                        );
-                    } else {
-                        trace!(
-                            worker = id,
-                            rx_intf_name = rx_if_name,
-                            "TX {len} bytes on interface {}",
-                            &outgoing.if_name
-                        );
-                    }
-                    trace!(
-                        worker = id,
-                        rx_intf_name = rx_if_name,
-                        "Finished TXing {len} bytes on interface {}",
-                        &outgoing.if_name
-                    );
-                }
-                Err(e) => error!(
-                    worker = id,
-                    rx_intf_name = rx_if_name,
-                    "Serialize failed: {e:?}"
-                ),
-            }
-        } else {
-            warn!(
-                worker = id,
-                rx_intf_name = rx_if_name,
-                "TX drop: unknown oif {}",
-                oif_id
-            );
-        }
-    } else {
-        // No oif set -> inspect DoneReason via enforce()
-        match pkt.enforce() {
-            Some(_keep) => {
-                // Packet is not marked for drop by the pipeline (Delivered/None/keep=true),
-                // but we still can't TX without an oif; drop here.
+    // get outgoing interface marking. Should have one, except if packet is to be dropped.
+    let Some(oif) = pkt.get_meta().oif else {
+        match pkt.get_done() {
+            Some(DoneReason::Delivered) => {
                 error!(
                     worker = id,
                     rx_intf_name = rx_if_name,
-                    "No oif in packet meta; enforce() => keep/Delivered; dropping here"
+                    "Missing oif in packet metadata. Will drop packet (pipeline bug)"
                 );
             }
-            None => {
-                // Pipeline explicitly marked it to be dropped
-                debug!(
+            Some(done_reason) => {
+                trace!(
                     worker = id,
                     rx_intf_name = rx_if_name,
-                    "Packet marked for drop by pipeline (enforce() => None)"
+                    "Dropping packet, reason: {:?}",
+                    done_reason
                 );
             }
+            None => {} // drop impl of packet meta will log
+        }
+        return;
+    };
+    // lookup interface
+    let Some(outgoing_unlocked) = if_table.get(&oif) else {
+        warn!(
+            worker = id,
+            rx_intf_name = rx_if_name,
+            "TX drop: unknown oif {} (driver bug)",
+            oif
+        );
+        return;
+    };
+
+    // serialize and xmit
+    match pkt.serialize() {
+        Ok(out) => {
+            let mut outgoing = outgoing_unlocked.lock().await;
+            let len = out.as_ref().len();
+            trace!(
+                worker = id,
+                rx_intf_name = rx_if_name,
+                "TXing {len} bytes on interface {}",
+                &outgoing.if_name
+            );
+            if let Err(e) = outgoing.sock.write(out.as_ref()).await {
+                warn!(
+                    worker = id,
+                    rx_intf_name = rx_if_name,
+                    "TX failed for pkt ({len} octets) on interface '{}': {e}",
+                    &outgoing.if_name
+                );
+            } else {
+                trace!(
+                    worker = id,
+                    rx_intf_name = rx_if_name,
+                    "TX {len} bytes on interface {}",
+                    &outgoing.if_name
+                );
+            }
+        }
+        Err(e) => {
+            // this should be a warn/error. Making it debug until we rate-limit logs
+            debug!(
+                worker = id,
+                rx_intf_name = rx_if_name,
+                "Serialize failed: {e:?}"
+            );
         }
     }
 }
