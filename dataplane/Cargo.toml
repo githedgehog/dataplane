@@ -36,6 +36,7 @@ pkt-meta = { workspace = true }
 pyroscope = { workspace = true }
 pyroscope_pprofrs = { workspace = true }
 routing = { workspace = true }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }
 tokio = { workspace = true }

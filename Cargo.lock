@@ -1040,6 +1040,7 @@ dependencies = [
  "parking_lot",
  "pyroscope",
  "pyroscope_pprofrs",
+ "rtnetlink",
  "serde",
  "tokio",
  "tracing",
