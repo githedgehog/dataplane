@@ -3,6 +3,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::StatefulNat;
     use config::GwConfig;
     use config::external::ExternalConfigBuilder;
     use config::external::overlay::Overlay;
@@ -18,23 +19,20 @@ mod tests {
     use config::internal::routing::bgp::BgpConfig;
     use config::internal::routing::vrf::VrfConfig;
     use etherparse::Icmpv4Type;
-    use net::icmp4::TruncatedIcmp4;
-    use net::ip::NextHeader;
-    use net::tcp::TruncatedTcp;
-    use net::udp::{TruncatedUdp, UdpPort};
-
-    use crate::StatefulNat;
-
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
     use net::headers::{
         EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
     };
+    use net::icmp4::TruncatedIcmp4;
+    use net::ip::NextHeader;
     use net::packet::test_utils::{
         IcmpEchoDirection, build_test_icmp4_destination_unreachable_packet, build_test_icmp4_echo,
         build_test_udp_ipv4_frame,
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
+    use net::tcp::TruncatedTcp;
+    use net::udp::{TruncatedUdp, UdpPort};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use pkt_meta::flow_table::flow_key::Uni;
