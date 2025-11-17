@@ -70,8 +70,6 @@ fn create_worker_interface(
         },
     )?;
 
-    // FIXME(mvachhar) Insert RSS setsockopt here
-
     let read_fd_owned = nix::unistd::dup(bfd).map_err(io::Error::from)?;
     let read_fd = AsyncFd::with_interest(read_fd_owned, Interest::READABLE)?;
     let fanout_type = set_packet_fanout(if_index, &read_fd);
@@ -380,9 +378,9 @@ async fn read_packets_from_interface(
         worker = id,
         rx_intf_name = intf.if_name,
         "Received {} packets from interface {}, index: {}",
+        pkts.len(),
         intf.if_name,
         intf.if_index,
-        pkts.len()
     );
     Ok(pkts)
 }
