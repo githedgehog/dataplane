@@ -71,6 +71,7 @@ impl DriverKernel {
     /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
     #[allow(clippy::too_many_lines)]
     pub fn start(
+        stop_tx: std::sync::mpsc::Sender<i32>,
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
@@ -88,19 +89,25 @@ impl DriverKernel {
         let worker_handles =
             Self::spawn_workers(num_workers, setup_pipeline, interfaces.as_slice());
 
-        for (id, handle) in worker_handles.into_iter().enumerate() {
-            info!("Waiting for workers to finish");
-            match handle.join() {
-                Ok(result) => match result {
-                    Ok(()) => info!("Worker {id} exited successfully"),
-                    Err(e) => error!("Worker {id} exited with error: {e}"),
-                },
-                Err(e) => error!("Unable to spawn worker {id} error: {e:?}"),
-            }
-        }
+        let control_builder = thread::Builder::new().name("kernel-driver-controller".to_string());
+        #[allow(clippy::expect_used)]
+        control_builder
+            .spawn(move || {
+                for (id, handle) in worker_handles.into_iter().enumerate() {
+                    info!("Waiting for workers to finish");
+                    match handle.join() {
+                        Ok(result) => match result {
+                            Ok(()) => info!("Worker {id} exited successfully"),
+                            Err(e) => error!("Worker {id} exited with error: {e}"),
+                        },
+                        Err(e) => error!("Unable to spawn worker {id} error: {e:?}"),
+                    }
+                }
 
-        // Exiting with error as it's not expected for all workers to finish
-        error!("All workers finished unexpectedly");
-        std::process::exit(1);
+                // Exiting with error as it's not expected for all workers to finish
+                error!("All workers finished unexpectedly");
+                stop_tx.send(1).expect("Failed to send stop signal");
+            })
+            .expect("Failed to spawn kernel driver control thread");
     }
 }
