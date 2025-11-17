@@ -11,7 +11,7 @@ use lpm::prefix::Prefix;
 impl Rendered for StaticRouteNhop {
     fn rendered(&self) -> String {
         match self {
-            StaticRouteNhop::Interface(ifname) => ifname.to_string(),
+            StaticRouteNhop::Interface(ifname) => ifname.clone(),
             StaticRouteNhop::Address(address) => format!("{address}"),
             StaticRouteNhop::Null0 => "Null0".to_string(),
             StaticRouteNhop::Reject => "reject".to_string(),

@@ -3,11 +3,8 @@
 
 //! Generic thread-local event logs. See the tests for sample usage
 
-#![allow(unused)]
-
 use chrono::DateTime;
 use chrono::Local;
-use std::cell::RefCell;
 use std::fmt::Display;
 
 /// An `Event` is a wrapper over a generic type T that represents something that happened.
@@ -70,8 +67,8 @@ impl<T: Display> EventLog<T> {
 impl<T: Display> Display for Event<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let fmt_simple = "%Y-%m-%dT %H:%M:%S";
-        let mut time = self.time.format(fmt_simple).to_string();
-        write!(f, " {:<4} {}: {}", self.ord, time, self.code.to_string())
+        let time = self.time.format(fmt_simple).to_string();
+        write!(f, " {:<4} {}: {}", self.ord, time, self.code)
     }
 }
 
@@ -105,6 +102,7 @@ macro_rules! make_event_log {
 }
 
 /// macro to produce and store an `Event` on the given thread-local `EventLog`
+#[cfg(test)]
 macro_rules! event {
     ($name:ident, $item:expr) => {
         $name.with(|evlog| evlog.borrow_mut().add($item))

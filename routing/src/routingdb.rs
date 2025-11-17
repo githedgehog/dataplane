@@ -12,7 +12,7 @@ use crate::rib::vrftable::VrfTable;
 use tracing::debug;
 
 /// Routing database
-pub struct RoutingDb {
+pub(crate) struct RoutingDb {
     pub vrftable: VrfTable,
     pub rmac_store: RmacStore,
     pub vtep: Vtep,
@@ -38,13 +38,15 @@ impl RoutingDb {
         debug!("Storing router config for gen {}", config.genid());
         self.config = Some(config);
     }
+    #[must_use]
     pub fn have_config(&self) -> bool {
         match &self.config {
             Some(config) => config.genid() != 0,
             None => false,
         }
     }
+    #[must_use]
     pub fn current_config(&self) -> Option<i64> {
-        self.config.as_ref().map(|rconfig| rconfig.genid())
+        self.config.as_ref().map(RouterConfig::genid)
     }
 }

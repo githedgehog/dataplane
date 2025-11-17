@@ -21,7 +21,7 @@ impl Rendered for OspfNetwork {
 impl Render for Ospf {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut config = ConfigBuilder::new();
         let mut heading = "router ospf".to_string();
         if let Some(vrf) = &self.vrf {
@@ -38,7 +38,7 @@ impl Render for Ospf {
 impl Render for OspfInterface {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut config = ConfigBuilder::new();
         config += format!(" ip ospf area {}", self.area);
         if let Some(network) = &self.network {

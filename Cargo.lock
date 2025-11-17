@@ -1433,7 +1433,6 @@ dependencies = [
  "ipnet",
  "left-right",
  "linkme",
- "mac_address",
  "mio",
  "netdev",
  "procfs",

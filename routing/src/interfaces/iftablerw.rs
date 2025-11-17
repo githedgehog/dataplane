@@ -15,6 +15,7 @@ use net::interface::InterfaceIndex;
 
 use tracing::debug;
 
+#[allow(unused)]
 enum IfTableChange {
     Add(RouterInterfaceConfig),
     Mod(RouterInterfaceConfig),
@@ -113,11 +114,13 @@ impl IfTableWriter {
             .append(IfTableChange::DelIpAddress((ifindex, ifaddr)));
         self.0.publish();
     }
+    #[allow(unused)]
     pub fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         self.0
             .append(IfTableChange::UpdateOpState((ifindex, state)));
         self.0.publish();
     }
+    #[allow(unused)]
     pub fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         self.0
             .append(IfTableChange::UpdateAdmState((ifindex, state)));

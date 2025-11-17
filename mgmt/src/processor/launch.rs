@@ -19,7 +19,7 @@ use tokio_stream::Stream;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
-use routing::ctl::RouterCtlSender;
+use routing::RouterCtlSender;
 
 use crate::grpc::server::create_config_service;
 use tonic::transport::Server;

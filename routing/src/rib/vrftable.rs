@@ -251,10 +251,12 @@ impl VrfTable {
         vrf.vrfid == 0
     }
 
+    #[allow(unused)]
     pub fn get_default_vrf(&self) -> &Vrf {
         self.by_id.get(&0_u32).unwrap_or_else(|| unreachable!())
     }
 
+    #[allow(unused)]
     pub fn get_default_vrf_mut(&mut self) -> &mut Vrf {
         self.by_id.get_mut(&0_u32).unwrap_or_else(|| unreachable!())
     }
@@ -373,13 +375,6 @@ impl VrfTable {
     //////////////////////////////////////////////////////////////////
     pub fn len(&self) -> usize {
         self.by_id.len()
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Get the number of VRFs that have a VNI associated to them
-    //////////////////////////////////////////////////////////////////
-    pub fn len_with_vni(&self) -> usize {
-        self.by_vni.len()
     }
 
     //////////////////////////////////////////////////////////////////
@@ -673,8 +668,8 @@ mod tests {
         debug!("\n{vrftable}");
 
         if let Some(fibtable) = fibtr.enter() {
-            assert!(fibtable.get_fib(&FibKey::from_vrfid(vrfid)).is_some());
-            assert!(fibtable.get_fib(&FibKey::from_vni(vni)).is_some());
+            assert!(fibtable.get_fib(FibKey::from_vrfid(vrfid)).is_some());
+            assert!(fibtable.get_fib(FibKey::from_vni(vni)).is_some());
         }
 
         debug!("━━━━Test: Unset vni {vni} from the vrf");
@@ -687,8 +682,8 @@ mod tests {
         assert!((id.is_err_and(|e| e == RouterError::NoSuchVrf)));
         debug!("\n{vrftable}");
         if let Some(fibtable) = fibtr.enter() {
-            assert!(fibtable.get_fib(&FibKey::from_vrfid(vrfid)).is_some());
-            assert!(fibtable.get_fib(&FibKey::from_vni(vni)).is_none());
+            assert!(fibtable.get_fib(FibKey::from_vrfid(vrfid)).is_some());
+            assert!(fibtable.get_fib(FibKey::from_vni(vni)).is_none());
         }
     }
 
@@ -705,7 +700,7 @@ mod tests {
         debug!("━━━━Test: Check fib access for vrf default");
         if let Some(fibtable) = fibtr.enter() {
             let fibkey = FibKey::from_vrfid(0);
-            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
             assert_eq!(fib.as_ref().get_id(), fibkey);
         }
@@ -723,7 +718,7 @@ mod tests {
         if let Some(fibtable) = fibtr.enter() {
             // check that fib is accessible from vrfid
             let fibkey = FibKey::from_vrfid(vrfid);
-            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
             assert_eq!(fib.as_ref().get_id(), fibkey);
             assert_eq!(fibtable.as_ref().len(), 2);
@@ -737,13 +732,13 @@ mod tests {
         if let Some(fibtable) = fibtr.enter() {
             // check that fib continues to be accessible via vrfid
             let fibkey = FibKey::from_vrfid(vrfid);
-            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
             assert_eq!(fib.as_ref().get_id(), fibkey);
 
             // check that fib is accessible from vni
             let fibkey = FibKey::from_vni(vni);
-            let fibr = fibtable.get_fib(&fibkey).unwrap();
+            let fibr = fibtable.get_fib(fibkey).unwrap();
             let fib = fibr.enter().unwrap();
             assert_eq!(fib.as_ref().get_id(), FibKey::from_vrfid(vrfid));
         }
@@ -787,9 +782,9 @@ mod tests {
 
         debug!("━━━━Test: Check that no fib is accessible vrfid:{vrfid} nor vni:{vni}");
         if let Some(fibtable) = fibtr.enter() {
-            assert!(fibtable.get_fib(&FibKey::from_vrfid(vrfid)).is_none());
-            assert!(fibtable.get_fib(&FibKey::from_vni(vni)).is_none());
-            assert!(fibtable.get_fib(&FibKey::from_vrfid(0)).is_some());
+            assert!(fibtable.get_fib(FibKey::from_vrfid(vrfid)).is_none());
+            assert!(fibtable.get_fib(FibKey::from_vni(vni)).is_none());
+            assert!(fibtable.get_fib(FibKey::from_vrfid(0)).is_some());
         }
         debug!("━━━━Test: Interface {idx} should no longer be attached");
         if let Some(iftable) = iftr.enter() {

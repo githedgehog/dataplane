@@ -19,7 +19,7 @@ impl Rendered for BgpNeighType {
         match self {
             BgpNeighType::Unset => panic!("Bgp neighbor without type"),
             BgpNeighType::Host(address) => format!("{address}"),
-            BgpNeighType::PeerGroup(group) => group.to_string(),
+            BgpNeighType::PeerGroup(group) => group.clone(),
         }
     }
 }
@@ -27,7 +27,7 @@ impl Rendered for BgpUpdateSource {
     fn rendered(&self) -> String {
         match self {
             BgpUpdateSource::Address(address) => format!("{address}"),
-            BgpUpdateSource::Interface(ifname) => ifname.to_string(),
+            BgpUpdateSource::Interface(ifname) => ifname.clone(),
         }
     }
 }
@@ -58,7 +58,7 @@ impl Rendered for Protocol {
 fn bgp_neigh_minimal(neigh: &BgpNeighbor, name: &str) -> String {
     let mut out;
     if neigh.is_peer_group() {
-        out = format!(" neighbor {name} peer-group")
+        out = format!(" neighbor {name} peer-group");
     } else {
         out = format!(" neighbor {name}");
         if let Some(peer_group) = &neigh.peer_group {
@@ -242,7 +242,7 @@ fn bgp_neigh_capabilities(capa: &BgpNeighCapabilities, prefix: &str) -> ConfigBu
 impl Render for Redistribute {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> Self::Output {
+    fn render(&self, (): &Self::Context) -> Self::Output {
         let mut redist = format!(" redistribute {}", self.protocol.rendered());
         if let Some(metric) = self.metric {
             redist += format!(" metric {metric}").as_str();
@@ -257,7 +257,7 @@ impl Render for VrfImports {
     type Context = ();
     type Output = ConfigBuilder;
     #[allow(clippy::option_map_unit_fn)]
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
         self.routemap
             .as_ref()
@@ -392,7 +392,7 @@ impl Render for AfL2vpnEvpn {
 impl Render for BgpNeighbor {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
         let neigh_name = self.ntype.rendered();
         cfg += bgp_neigh_minimal(self, &neigh_name);
@@ -408,7 +408,7 @@ impl Render for BgpOptions {
     type Context = ();
     type Output = ConfigBuilder;
     #[allow(clippy::option_map_unit_fn)]
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
         if !self.network_import_check {
             cfg += " no bgp network import-check";
@@ -444,7 +444,7 @@ impl Render for BgpConfig {
     type Context = ();
     type Output = ConfigBuilder;
     #[allow(clippy::option_map_unit_fn)]
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut config = ConfigBuilder::new();
 
         /* main heading */

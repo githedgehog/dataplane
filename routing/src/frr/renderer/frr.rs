@@ -20,7 +20,7 @@ impl Rendered for FrrProfile {
 impl Render for Frr {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> Self::Output {
+    fn render(&self, (): &Self::Context) -> Self::Output {
         let mut cfg = ConfigBuilder::new();
         cfg += format!("frr defaults {}", self.profile.rendered()).as_str();
         cfg += format!("hostname {}", self.hostname).as_str();

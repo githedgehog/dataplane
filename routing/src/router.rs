@@ -5,7 +5,6 @@
 
 use derive_builder::Builder;
 use std::fmt::Display;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{debug, error};
 
@@ -27,9 +26,6 @@ use args::DEFAULT_FRR_AGENT_PATH;
 pub struct RouterParams {
     #[builder(setter(into), default = "router".to_string())]
     name: String,
-
-    #[builder(setter(into), default = "127.0.0.1:9000".parse().unwrap())]
-    pub metrics_addr: SocketAddr,
 
     #[builder(setter(into), default = DEFAULT_DP_UX_PATH.to_string().into())]
     pub cpi_sock_path: PathBuf,
@@ -61,41 +57,43 @@ pub struct Router {
     fibtr: FibTableReader,
 }
 
-// Build the router IO configuration from the router configuration
-fn init_router(params: &RouterParams) -> Result<RioConf, RouterError> {
-    Ok(RioConf {
-        cpi_sock_path: Some(
-            params
-                .cpi_sock_path
-                .to_str()
-                .ok_or(RouterError::InvalidPath("(cpi path)".to_string()))?
-                .to_owned(),
-        ),
-        cli_sock_path: Some(
-            params
-                .cli_sock_path
-                .to_str()
-                .ok_or(RouterError::InvalidPath("(cli path)".to_string()))?
-                .to_owned(),
-        ),
-        frrmi_sock_path: Some(
-            params
-                .frr_agent_path
-                .to_str()
-                .ok_or(RouterError::InvalidPath("(frr-agent path)".to_string()))?
-                .to_owned(),
-        ),
-    })
-}
 
-#[allow(clippy::new_without_default)]
 impl Router {
-    /// Start a router object
+    /// Build the router IO configuration from the router configuration
+    fn build_rio_config(params: &RouterParams) -> Result<RioConf, RouterError> {
+        Ok(RioConf {
+            name: params.name.clone(),
+            cpi_sock_path: Some(
+                params
+                    .cpi_sock_path
+                    .to_str()
+                    .ok_or(RouterError::InvalidPath("(cpi path)".to_string()))?
+                    .to_owned(),
+            ),
+            cli_sock_path: Some(
+                params
+                    .cli_sock_path
+                    .to_str()
+                    .ok_or(RouterError::InvalidPath("(cli path)".to_string()))?
+                    .to_owned(),
+            ),
+            frrmi_sock_path: Some(
+                params
+                    .frr_agent_path
+                    .to_str()
+                    .ok_or(RouterError::InvalidPath("(frr-agent path)".to_string()))?
+                    .to_owned(),
+            ),
+        })
+    }
+
+    /// Start a `Router`
+    #[allow(clippy::new_without_default)]
     pub fn new(params: RouterParams) -> Result<Router, RouterError> {
         let name = &params.name;
 
-        debug!("{name}: Initializing...");
-        let rioconf = init_router(&params)?;
+        debug!("{name}: Building RIO config...");
+        let rioconf = Self::build_rio_config(&params)?;
 
         debug!("{name}: Creating interface table...");
         let (iftw, iftr) = IfTableWriter::new();
@@ -110,7 +108,7 @@ impl Router {
         debug!("{name}: Starting router IO...");
         let rio_handle = start_rio(&rioconf, fibtw, iftw, atabler)?;
 
-        debug!("{name}: Successfully started with parameters:\n{params}");
+        debug!("{name}: Successfully started router with parameters:\n{params}");
         let router = Router {
             name: name.to_owned(),
             params,
@@ -122,16 +120,14 @@ impl Router {
         Ok(router)
     }
 
-    /// Stop this router instance
+    /// Stop this router. This stops the router IO thread and drops the interface table, adjacency table
+    /// vrf table and the fib table.
     pub fn stop(&mut self) {
         if let Err(e) = self.rio_handle.finish() {
-            error!(
-                "Failed to stop the router IO for router '{}': {e}",
-                self.name
-            );
+            error!("Failed to stop IO for router '{}': {e}", self.name);
         }
         self.resolver.stop();
-        debug!("Router instance '{}' is now stopped", self.name);
+        debug!("Router '{}' is now stopped", self.name);
     }
 
     #[must_use]
@@ -145,18 +141,8 @@ impl Router {
     }
 
     #[must_use]
-    pub fn get_iftabler(&self) -> IfTableReader {
-        self.iftr.clone()
-    }
-
-    #[must_use]
     pub fn get_iftabler_factory(&self) -> IfTableReaderFactory {
         self.iftr.factory()
-    }
-
-    #[must_use]
-    pub fn get_fibtr(&self) -> FibTableReader {
-        self.fibtr.clone()
     }
 
     #[must_use]

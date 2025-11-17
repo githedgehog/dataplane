@@ -3,11 +3,9 @@
 
 //! The Fib table, which allows accessing all FIBs
 
+use crate::RouterError;
+use crate::fib::fibtype::{FibKey, FibReader, FibReaderFactory, FibWriter};
 use crate::rib::vrf::VrfId;
-use crate::{
-    RouterError,
-    fib::fibtype::{FibKey, FibReader, FibReaderFactory, FibWriter},
-};
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use net::vxlan::Vni;
@@ -42,13 +40,13 @@ impl FibTable {
             .insert(id, Arc::new(FibTableEntry::new(id, factory)));
     }
     /// Delete a `Fib`, by unregistering a `FibReaderFactory` for it
-    fn del_fib(&mut self, id: &FibKey) {
+    fn del_fib(&mut self, id: FibKey) {
         info!("Unregistering Fib with id {id} from the FibTable");
-        self.entries.remove(id);
+        self.entries.remove(&id);
     }
     /// Register an existing `Fib` with a given [`Vni`].
     /// This allows looking up a Fib (`FibReaderFactory`) from a [`Vni`]
-    fn register_by_vni(&mut self, id: &FibKey, vni: Vni) {
+    fn register_by_vni(&mut self, id: FibKey, vni: Vni) {
         if let Some(entry) = self.get_entry(id) {
             self.entries
                 .insert(FibKey::from_vni(vni), Arc::clone(entry));
@@ -66,15 +64,15 @@ impl FibTable {
 
     /// Get the entry for the fib with the given [`FibKey`]
     #[must_use]
-    fn get_entry(&self, key: &FibKey) -> Option<&Arc<FibTableEntry>> {
-        self.entries.get(key)
+    fn get_entry(&self, key: FibKey) -> Option<&Arc<FibTableEntry>> {
+        self.entries.get(&key)
     }
 
     /// Get a [`FibReader`] for the fib with the given [`FibKey`]. This method should only
     /// be called in the existing tests, as it creates a new `FibReader` on every call.
     #[must_use]
     #[cfg(test)]
-    pub fn get_fib(&self, key: &FibKey) -> Option<FibReader> {
+    pub fn get_fib(&self, key: FibKey) -> Option<FibReader> {
         self.get_entry(key).map(|entry| entry.factory.handle())
     }
 
@@ -98,8 +96,8 @@ impl Absorb<FibTableChange> for FibTable {
         self.version = self.version.wrapping_add(1);
         match change {
             FibTableChange::Add((id, factory)) => self.add_fib(*id, factory.clone()),
-            FibTableChange::Del(id) => self.del_fib(id),
-            FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(id, *vni),
+            FibTableChange::Del(id) => self.del_fib(*id),
+            FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(*id, *vni),
             FibTableChange::UnRegisterVni(vni) => self.unregister_vni(*vni),
         }
     }
@@ -114,6 +112,8 @@ impl FibTableWriter {
         write.publish(); /* avoid needing to impl sync_with() so that no need to impl Clone */
         (FibTableWriter(write), FibTableReader(read))
     }
+    #[must_use]
+    #[allow(unused)]
     pub fn enter(&self) -> Option<ReadGuard<'_, FibTable>> {
         self.0.enter()
     }
@@ -194,7 +194,7 @@ impl ReadHandleProvider for FibTable {
         &self,
         key: &Self::Key,
     ) -> Option<(&ReadHandleFactory<Self::Data>, Self::Key, u64)> {
-        let entry = self.get_entry(key)?.as_ref();
+        let entry = self.get_entry(*key)?.as_ref();
         let factory = entry.factory.as_ref();
         Some((factory, entry.id, self.version))
     }
@@ -202,7 +202,7 @@ impl ReadHandleProvider for FibTable {
         self.version
     }
     fn get_identity(&self, key: &Self::Key) -> Option<Self::Key> {
-        self.get_entry(key).map(|entry| entry.id)
+        self.get_entry(*key).map(|entry| entry.id)
     }
     fn get_iter(
         &self,
@@ -213,16 +213,16 @@ impl ReadHandleProvider for FibTable {
         let iter = self
             .entries
             .iter()
-            .map(|(key, entry)| (*key, &*entry.factory.as_ref(), entry.as_ref().id));
+            .map(|(key, entry)| (*key, entry.factory.as_ref(), entry.as_ref().id));
         (self.version, iter)
     }
 }
 
 impl FibTableReader {
-    /// Main method for threads to get a reference to a FibReader from their thread-local cache.
+    /// Main method for threads to get a reference to a `FibReader` from their thread-local cache.
     /// Note 1: the cache stores `ReadHandle<Fib>`'s. This method returns `FibReader` for convenience. This is zero cost
     /// Note 2: we make this a method of [`FibTableReader`], as each thread is assumed to have its own read handle to the `FibTable`.
-    /// Note 3: we map ReadHandleCacheError to RouterError
+    /// Note 3: we map `ReadHandleCacheError` to `RouterError`
     pub fn get_fib_reader(&self, id: FibKey) -> Result<Rc<FibReader>, RouterError> {
         let Some(fibtable) = self.enter() else {
             warn!("Unable to access fib table!");

@@ -3,8 +3,6 @@
 
 //! Fib implementation for IP packet lookups
 
-#![allow(clippy::collapsible_if)]
-
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use left_right_tlcache::Identity;
 use std::net::IpAddr;
@@ -99,9 +97,10 @@ pub type FibRouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &FibRoute)) -> bool>;
 impl Fib {
     /// Set the id for this [`Fib`]
     fn set_id(&mut self, id: FibKey) {
-        if !matches!(id, FibKey::Id(_)) {
-            panic!("Attempting to set invalid Id of {id} to fib");
-        }
+        assert!(
+            matches!(id, FibKey::Id(_)),
+            "Attempting to set invalid Id of {id} to fib"
+        );
         self.id = id;
     }
 
@@ -146,7 +145,7 @@ impl Fib {
                     let route = FibRoute::with_fibgroup(self.groupstore.get_drop_fibgroup_ref());
                     self.add_fibroute(Prefix::root_v4(), route)
                 } else {
-                    self.routesv4.remove(&p4)
+                    self.routesv4.remove(p4)
                 }
             }
             Prefix::IPV6(p6) => {
@@ -154,7 +153,7 @@ impl Fib {
                     let route = FibRoute::with_fibgroup(self.groupstore.get_drop_fibgroup_ref());
                     self.add_fibroute(Prefix::root_v6(), route)
                 } else {
-                    self.routesv6.remove(&p6)
+                    self.routesv6.remove(p6)
                 }
             }
         };
@@ -176,13 +175,12 @@ impl Fib {
         let ip = self
             .vtep
             .get_ip()
-            .map(|a| a.to_string())
-            .unwrap_or("none".to_owned());
+            .map_or("none".to_owned(), |a| a.to_string());
+
         let mac = self
             .vtep
             .get_mac()
-            .map(|a| a.to_string())
-            .unwrap_or("none".to_owned());
+            .map_or("none".to_owned(), |a| a.to_string());
         info!("VTEP for fib {id} set to ip:{ip} mac:{mac}");
     }
 
@@ -262,6 +260,9 @@ impl Fib {
     /// However, instead of returning the entire [`FibRoute`], returns a single [`FibEntry`] out of
     /// those in the `FibGroup`s that make up the [`FibRoute`]. The entry selected is chosen by
     /// computing a hash on the invariant header fields of the IP and L4 headers.
+    /// # Panics
+    ///
+    /// This function panics if a route does not have any entries
     #[allow(clippy::cast_possible_truncation)]
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
@@ -418,14 +419,14 @@ impl FibReader {
             }
         })?
     }
-    #[inline(always)]
-    /// Convert Rc<ReadHandle<Fib>> -> FibReader
-    /// We need this conversion because the cache of read-handles stores ReadHandle<T>,
-    /// but the FibTable provides FibReader.
+
+    /// Convert `Rc<ReadHandle<Fib>>` -> `FibReader`
+    /// We need this conversion because the cache of read-handles stores `ReadHandle<T>`'s
+    /// but the `FibTable` provides `FibReader`s.
     pub(crate) fn rc_from_rc_rhandle(rc: Rc<ReadHandle<Fib>>) -> Rc<Self> {
         unsafe {
             // the conversion is safe because FibReader is a transparent wrapper of ReadHandle<Fib>
-            let ptr = Rc::into_raw(rc) as *const Self;
+            let ptr = Rc::into_raw(rc).cast::<Self>();
             Rc::from_raw(ptr)
         }
     }
@@ -466,7 +467,7 @@ impl FibReader {
     }
 
     /// Similar to `FibReader::lpm_route_with_prefix()`, but receing a `Packet` and selecting
-    /// a `FibEntry` based on a hash of the packet if more than one FibEntries could be used to
+    /// a `FibEntry` based on a hash of the packet if more than one `FibEntries` could be used to
     /// forward the packet
     pub fn lpm_entry_prefix<Buf: PacketBufferMut>(
         &self,
@@ -489,7 +490,7 @@ impl AsRef<FibReader> for ReadHandle<Fib> {
     #[inline]
     fn as_ref(&self) -> &FibReader {
         // safe because FibReader is repr(transparent) wrapper of ReadHandle<Fib>
-        unsafe { &*(self as *const ReadHandle<Fib> as *const FibReader) }
+        unsafe { &*(std::ptr::from_ref::<ReadHandle<Fib>>(self).cast::<FibReader>()) }
     }
 }
 #[derive(Debug, Clone)]

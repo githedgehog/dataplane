@@ -113,7 +113,6 @@ fn main() {
 
     /* router parameters */
     let Ok(config) = RouterParamsBuilder::default()
-        .metrics_addr(args.metrics_address())
         .cli_sock_path(args.cli_sock_path())
         .cpi_sock_path(args.cpi_sock_path())
         .frr_agent_path(args.frr_agent_path())

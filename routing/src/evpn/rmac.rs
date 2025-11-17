@@ -3,8 +3,6 @@
 
 //! Submodule to implement a table of EVPN router macs.
 
-#![allow(clippy::collapsible_if)]
-
 use ahash::RandomState;
 use net::eth::mac::Mac;
 use net::vxlan::Vni;
@@ -19,6 +17,7 @@ pub struct RmacEntry {
     pub vni: Vni,
 }
 impl RmacEntry {
+    #[allow(unused)]
     fn new(vni: Vni, address: IpAddr, mac: Mac) -> Self {
         Self { address, mac, vni }
     }
@@ -34,14 +33,15 @@ impl RmacStore {
     /// Create rmac table
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
 
     //////////////////////////////////////////////////////////////////
     /// Add an rmac entry. Returns an [`RmacEntry`] if some was before
     //////////////////////////////////////////////////////////////////
-    pub fn add_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) -> Option<RmacEntry> {
+    #[cfg(test)]
+    fn add_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) -> Option<RmacEntry> {
         let rmac = RmacEntry::new(vni, address, mac);
         self.0.insert((address, vni), rmac)
     }
@@ -63,6 +63,7 @@ impl RmacStore {
     //////////////////////////////////////////////////////////////////
     /// Delete an [`RmacEntry`]. The mac address must match (sanity)
     //////////////////////////////////////////////////////////////////
+    #[cfg(test)]
     pub fn del_rmac(&mut self, vni: Vni, address: IpAddr, mac: Mac) {
         let key = (address, vni);
         if let Entry::Occupied(o) = self.0.entry(key) {

@@ -11,14 +11,19 @@ use crate::rpc_adapt::is_evpn_route;
 
 use bytes::Bytes;
 use chrono::{DateTime, Local};
+use dplane_rpc::msg::{
+    ConnectInfo, IfAddress, IpRoute, Rmac, RpcControl, RpcMsg, RpcNotification, RpcObject, RpcOp,
+    RpcRequest, RpcResponse, RpcResultCode, VER_DP_MAJOR, VER_DP_MINOR, VER_DP_PATCH, VerInfo,
+    VrfId, WrapMsg,
+};
+use dplane_rpc::socks::Pretty;
 use dplane_rpc::socks::RpcCachedSock;
-use dplane_rpc::wire::*;
-use dplane_rpc::{msg::*, socks::Pretty};
+use dplane_rpc::wire::Wire;
+use net::interface::InterfaceIndex;
 use std::os::unix::net::SocketAddr;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use net::interface::InterfaceIndex;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
@@ -195,7 +200,6 @@ fn on_vrf_lookup_fail(have_config: bool, vrfid: VrfId) -> RpcResultCode {
 
 impl RpcOperation for IpRoute {
     type ObjectStore = RoutingDb;
-    #[allow(unused_mut)]
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
         let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
@@ -333,7 +337,7 @@ fn rpc_send_response(
     update_stats(&mut rio.cpistats, op, object, rescode);
 }
 pub(crate) fn rpc_send_control(csock: &mut RpcCachedSock, peer: &SocketAddr, refresh: bool) {
-    let refresh: u8 = if refresh { 1 } else { 0 };
+    let refresh: u8 = u8::from(refresh);
     let control = build_control_msg(refresh);
     csock.send_msg(control, peer);
 }

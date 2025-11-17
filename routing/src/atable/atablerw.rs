@@ -36,19 +36,13 @@ impl AtableWriter {
             left_right::new_from_empty::<AdjacencyTable, AtableChange>(AdjacencyTable::new());
         (AtableWriter(w), AtableReader(r))
     }
-    #[must_use]
-    pub fn as_atable_reader(&self) -> AtableReader {
-        AtableReader::new(self.0.clone())
-    }
-    pub fn enter(&self) -> Option<ReadGuard<'_, AdjacencyTable>> {
-        self.0.enter()
-    }
     pub fn add_adjacency(&mut self, adjacency: Adjacency, publish: bool) {
         self.0.append(AtableChange::Add(adjacency));
         if publish {
             self.0.publish();
         }
     }
+    #[allow(unused)]
     pub fn del_adjacency(&mut self, address: IpAddr, ifindex: InterfaceIndex, publish: bool) {
         self.0.append(AtableChange::Del((address, ifindex)));
         if publish {

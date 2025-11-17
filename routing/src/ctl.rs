@@ -19,10 +19,10 @@ use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
 
-pub(crate) type RouterCtlReplyTx = AsyncSender<RouterCtlReply>;
+type RouterCtlReplyTx = AsyncSender<RouterCtlReply>;
 
 #[derive(Debug)]
-pub enum RouterCtlReply {
+pub(crate) enum RouterCtlReply {
     Result(Result<(), RouterError>),
     FrrConfig(Option<FrrAppliedConfig>),
 }
@@ -42,7 +42,7 @@ impl Drop for LockGuard {
     }
 }
 
-pub enum RouterCtlMsg {
+pub(crate) enum RouterCtlMsg {
     Finish,
     Lock(RouterCtlReplyTx),
     Unlock(RouterCtlReplyTx),
@@ -51,7 +51,7 @@ pub enum RouterCtlMsg {
     GetFrrAppliedConfig(RouterCtlReplyTx),
 }
 
-// An object to send control messages to the router
+/// Object to send control messages to the router
 pub struct RouterCtlSender(tokio::sync::mpsc::Sender<RouterCtlMsg>);
 impl RouterCtlSender {
     pub(crate) fn new(tx: Sender<RouterCtlMsg>) -> Self {
@@ -60,7 +60,6 @@ impl RouterCtlSender {
     pub(crate) fn as_lock_guard(&self) -> LockGuard {
         LockGuard(Some(self.0.clone()))
     }
-    #[must_use]
     pub async fn lock(&mut self) -> Result<LockGuard, RouterError> {
         debug!("Requesting CPI lock...");
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -80,9 +79,8 @@ impl RouterCtlSender {
         Ok(self.as_lock_guard())
     }
     #[allow(unused)]
-    #[must_use]
     pub async fn unlock(&mut self) -> Result<(), RouterError> {
-        debug!("Requesting CPI lock...");
+        debug!("Requesting CPI unlock...");
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::Unlock(reply_tx);
         self.0
@@ -185,7 +183,7 @@ fn handle_configure(
 
     /* generate event depending on result */
     match result {
-        Ok(_) => revent!(RouterEvent::ConfigSuceeded(config.genid())),
+        Ok(()) => revent!(RouterEvent::ConfigSuceeded(config.genid())),
         Err(_) => revent!(RouterEvent::ConfigFailed(config.genid())),
     }
 
@@ -200,9 +198,9 @@ fn handle_configure(
 
 /// Handle get applied FRR config
 fn handle_get_frr_applied_config(rio: &Rio, reply_to: RouterCtlReplyTx) {
-    let frr_cfg = rio.frrmi.get_applied_cfg().as_ref().map(|c| c.clone());
+    let frr_cfg = rio.frrmi.get_applied_cfg();
     let _ = reply_to
-        .send(RouterCtlReply::FrrConfig(frr_cfg))
+        .send(RouterCtlReply::FrrConfig(frr_cfg.cloned()))
         .map_err(|e| {
             error!("Fatal: could not reply to get applied FRR config request: {e:?}");
         });
@@ -219,10 +217,10 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
         Ok(RouterCtlMsg::Unlock(reply_to)) => handle_lock(rio, false, Some(reply_to)),
         Ok(RouterCtlMsg::GuardedUnlock) => handle_lock(rio, false, None),
         Ok(RouterCtlMsg::Configure(config, reply_to)) => {
-            handle_configure(rio, config, db, reply_to)
+            handle_configure(rio, config, db, reply_to);
         }
         Ok(RouterCtlMsg::GetFrrAppliedConfig(reply_to)) => {
-            handle_get_frr_applied_config(rio, reply_to)
+            handle_get_frr_applied_config(rio, reply_to);
         }
         Err(TryRecvError::Empty) => {}
         Err(e) => {

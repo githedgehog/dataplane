@@ -3,9 +3,9 @@
 
 //! Interfaces module
 
-pub mod iftable;
-pub mod iftablerw;
-pub mod interface;
+pub(crate) mod iftable;
+pub(crate) mod iftablerw;
+pub(crate) mod interface;
 
 #[cfg(test)]
 pub mod tests {

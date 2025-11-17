@@ -4,8 +4,6 @@
 //! Object definitions for (shared) routing next-hops. These
 //! refer to other objects like Encapsulation.
 
-#![allow(clippy::collapsible_if)]
-
 use super::encapsulation::Encapsulation;
 use super::vrf::{RouteOrigin, Vrf};
 use crate::evpn::RmacStore;

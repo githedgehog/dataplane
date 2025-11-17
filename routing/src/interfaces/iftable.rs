@@ -146,9 +146,9 @@ impl IfTable {
     /// Un-assign an Ip address from an interface.
     //////////////////////////////////////////////////////////////////
     pub(crate) fn del_ifaddr(&mut self, ifindex: InterfaceIndex, ifaddr: &IfAddress) {
-        self.by_index
-            .get_mut(&ifindex)
-            .map(|iface| iface.del_ifaddr(&(ifaddr.0, ifaddr.1)));
+        if let Some(iface) = self.by_index.get_mut(&ifindex) {
+            iface.del_ifaddr(&(ifaddr.0, ifaddr.1));
+        }
         // if interface does not exist or the address was not configured,
         // we'll do nothing
     }

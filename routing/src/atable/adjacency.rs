@@ -92,26 +92,6 @@ use super::*;
 use crate::rib::vrf::tests::mk_addr;
 use net::interface::InterfaceIndex;
 
-    pub fn build_test_atable() -> AdjacencyTable {
-        let mut atable = AdjacencyTable::new();
-        {
-            let ip = mk_addr("10.0.0.1");
-            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x1]);
-            atable.add_adjacency(Adjacency::new(ip, InterfaceIndex::try_new(2).unwrap(), mac));
-        }
-        {
-            let ip = mk_addr("10.0.0.5");
-            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x5]);
-            atable.add_adjacency(Adjacency::new(ip, InterfaceIndex::try_new(3).unwrap(), mac));
-        }
-        {
-            let ip = mk_addr("10.0.0.9");
-            let mac = Mac::from([0x0, 0x0, 0x0, 0x0 ,0xaa, 0x9]);
-            atable.add_adjacency(Adjacency::new(ip, InterfaceIndex::try_new(4).unwrap(), mac ));
-        }
-        atable
-    }
-
     #[test]
     fn test_adj_table_minimal() {
         let mut atable = AdjacencyTable::new();

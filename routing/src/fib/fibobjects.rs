@@ -3,10 +3,9 @@
 
 //! Module that contains definitions and methods for fib objects
 
-use net::vxlan::Vni;
-
 use crate::rib::encapsulation::Encapsulation;
 use net::interface::InterfaceIndex;
+use net::vxlan::Vni;
 use std::net::IpAddr;
 
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -55,7 +54,7 @@ impl EgressObject {
             self.address = other.address;
         }
         if self.ifname.is_none() && other.ifname.is_some() {
-            self.ifname = other.ifname.clone();
+            self.ifname.clone_from(&other.ifname);
         }
     }
 }
@@ -103,7 +102,7 @@ impl FibGroup {
         self.entries.iter_mut()
     }
     /// Extend a [`FibGroup`] with the  [`FibEntry`]ies of another one
-    /// N.B. extend() uses extend_from_slice creating a copy. This is usually
+    /// N.B. `extend()` uses `extend_from_slice` creating a copy. This is usually
     /// the required behavior. For consuming (moving) the entries in other
     /// we'd use append.
     pub fn extend(&mut self, other: &Self) {
@@ -131,7 +130,6 @@ impl FibGroup {
 
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
 #[cfg_attr(test, derive(Hash))]
-
 /// A Fib entry is made of a sequence of [`PktInstruction`] s to be executed for an IP packet
 /// in order to forward it.
 pub struct FibEntry {
@@ -193,27 +191,24 @@ impl FibEntry {
         }
         self.instructions = out;
     }
+    #[must_use]
     pub fn is_iplocal(&self) -> bool {
         self.instructions.len() == 1 && matches!(self.instructions[0], PktInstruction::Local(_))
     }
+    #[must_use]
     pub fn is_vxlan(&self) -> Option<Vni> {
         for inst in &self.instructions {
-            match inst {
-                PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) => {
-                    return Some(vxlan.vni);
-                }
-                _ => {}
+            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
+                return Some(vxlan.vni);
             }
         }
         None
     }
+    #[must_use]
     pub fn is_vxlan_with_vni(&self, vni: Vni) -> bool {
         for inst in &self.instructions {
-            match inst {
-                PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) => {
-                    return vxlan.vni == vni;
-                }
-                _ => {}
+            if let PktInstruction::Encap(Encapsulation::Vxlan(vxlan)) = inst {
+                return vxlan.vni == vni;
             }
         }
         false

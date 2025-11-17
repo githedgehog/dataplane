@@ -7,11 +7,11 @@
 //! the routing database which is fully and only owned by the routing thread.
 //! This includes the Fib contents since fibs belong to vrfs.
 //! So:
-///    - it is Okay to call any of this from the routing thread (cli)
-///    - other threads may not be able to call Display's for routing objects.
-///    - Display for Fib objects visible from dataplane workers can be safely called.
-///    - Cli thread does not need a read handle cache to inspect Fib contents
-///    - Still, FIXME(fredi): make that distinction clearer
+//!    - it is Okay to call any of this from the routing thread (cli)
+//!    - Display for Fib objects visible from dataplane workers can be safely called.
+//!    - Cli thread does not need a read handle cache to inspect Fib contents
+//!    - Still, FIXME(fredi): make that distinction clearer
+
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
 use crate::cpi::{CpiStats, CpiStatus, StatsRow};
 use crate::fib::fibgroupstore::FibRoute;
@@ -37,6 +37,7 @@ use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::vxlan::Vni;
 use std::fmt::Display;
+use std::fmt::Write;
 use std::os::unix::net::SocketAddr;
 use std::rc::Rc;
 
@@ -46,7 +47,7 @@ use tracing::{error, warn};
 fn fmt_opt_value<T: Display>(
     f: &mut std::fmt::Formatter<'_>,
     name: &str,
-    value: &Option<T>,
+    value: Option<T>,
     nl: bool,
 ) -> Result<(), std::fmt::Error> {
     match value {
@@ -65,7 +66,7 @@ impl Display for VxlanEncapsulation {
             self.vni.as_u32(),
             self.remote
         )?;
-        fmt_opt_value(f, " dmac", &self.dmac, false)
+        fmt_opt_value(f, " dmac", self.dmac.as_ref(), false)
     }
 }
 impl Display for Encapsulation {
@@ -282,7 +283,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_,
         // displayed routes
         let mut displayed = 0;
 
-        fmt_vrf_oneline(&self.vrf, f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv4 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
             write!(f, " {}  {prefix:?} {route}", route.flags)?;
@@ -316,7 +317,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
         // displayed routes
         let mut displayed = 0;
 
-        fmt_vrf_oneline(&self.vrf, f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv6 routes ({total_routes})")).fmt(f)?;
         for (prefix, route) in rt_iter {
             write!(f, " {}  {prefix:?} {route}", route.flags)?;
@@ -337,7 +338,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
 pub struct VrfV4Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV4Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_vrf_oneline(&self.0, f)?;
+        fmt_vrf_oneline(self.0, f)?;
         Heading("Ipv4 Next-hops".to_string()).fmt(f)?;
         let iter =
             self.0.nhstore.iter().filter(|nh| {
@@ -353,7 +354,7 @@ impl Display for VrfV4Nexthops<'_> {
 pub struct VrfV6Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV6Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_vrf_oneline(&self.0, f)?;
+        fmt_vrf_oneline(self.0, f)?;
         Heading("Ipv6 Next-hops".to_string()).fmt(f)?;
         let iter =
             self.0.nhstore.iter().filter(|nh| {
@@ -417,8 +418,8 @@ impl Display for VrfTable {
 impl Display for Attachment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Attachment::BD => write!(f, "BD"),
-            Attachment::VRF(fibkey) => write!(f, "VRF: {fibkey}"),
+            Attachment::BridgeDomain => write!(f, "BD"),
+            Attachment::Vrf(fibkey) => write!(f, "VRF: {fibkey}"),
         }
     }
 }
@@ -486,10 +487,7 @@ impl Display for Interface {
         } else {
             "---".to_string()
         };
-        let mtu = self
-            .mtu
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "--".to_string());
+        let mtu = self.mtu.map_or_else(|| "--".to_string(), |m| m.to_string());
         write!(
             f,
             "{}",
@@ -594,8 +592,8 @@ impl Display for RmacStore {
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "\n ───────── Local VTEP configuration ─────────")?;
-        fmt_opt_value(f, " ip address", &self.get_ip(), true)?;
-        fmt_opt_value(f, " Mac address", &self.get_mac(), true)
+        fmt_opt_value(f, " ip address", self.get_ip().as_ref(), true)?;
+        fmt_opt_value(f, " Mac address", self.get_mac().as_ref(), true)
     }
 }
 
@@ -651,9 +649,9 @@ impl Display for FibKey {
 }
 impl Display for EgressObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        fmt_opt_value(f, " interface", &self.ifname, false)?;
-        fmt_opt_value(f, " idx", &self.ifindex, false)?;
-        fmt_opt_value(f, " addr", &self.address, false)
+        fmt_opt_value(f, " interface", self.ifname.as_ref(), false)?;
+        fmt_opt_value(f, " idx", self.ifindex.as_ref(), false)?;
+        fmt_opt_value(f, " addr", self.address.as_ref(), false)
     }
 }
 impl Display for PktInstruction {
@@ -745,7 +743,7 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<
         let total_entries = fibr.len_v4();
         let mut displayed = 0;
 
-        fmt_vrf_oneline(&self.vrf, f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} {route}")?;
@@ -782,7 +780,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<
         let total_entries = fibr.len_v6();
         let mut displayed = 0;
 
-        fmt_vrf_oneline(&self.vrf, f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} {route}")?;
@@ -804,7 +802,7 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<
 // them according to ip version is not yet possible.
 pub struct FibGroups<'a>(pub &'a Vrf);
 
-impl<'a> Display for FibGroups<'a> {
+impl Display for FibGroups<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(ref fibw) = self.0.fibw else {
             writeln!(f, "No fib")?;
@@ -818,7 +816,8 @@ impl<'a> Display for FibGroups<'a> {
         let vrf_name = &self.0.name;
         let vrfid = self.0.vrfid;
         let fibid = fibr.get_id();
-        Heading(format!("FIB groups")).fmt(f)?;
+        Heading("FIB groups".to_string()).fmt(f)?;
+
         writeln!(f, " vrf: {vrf_name}, Id: {vrfid}")?;
         writeln!(f, " fib: {fibid}")?;
         writeln!(f, " groups: {num_groups}\n")?;
@@ -847,18 +846,18 @@ pub(crate) fn fmt_time(time: &DateTime<Local>) -> String {
     let seconds = elapsed % 60;
 
     if weeks > 0 {
-        out += &format!("{} weeks ", weeks);
+        let _ = write!(out, "{weeks} weeks ");
     }
     if days > 0 {
-        out += &format!("{} days ", days);
+        let _ = write!(out, "{days} days ");
     }
     if hours > 0 {
-        out += &format!("{} hours ", hours);
+        let _ = write!(out, "{hours} hours ");
     }
     if minutes > 0 {
-        out += &format!("{} min ", minutes);
+        let _ = write!(out, "{minutes} min ");
     }
-    out += &format!("{} s ago)", seconds);
+    let _ = write!(out, "{seconds} s ago)");
     out
 }
 
@@ -913,16 +912,11 @@ impl Display for CpiStats {
         let empty = "--".to_string();
         let connect_t = &self
             .connect_time
-            .map(|t| fmt_time(&t))
-            .unwrap_or_else(|| "never".to_string());
+            .map_or_else(|| "never".to_string(), |t| fmt_time(&t));
         let last_msg_rx_t = &self
             .last_msg_rx
-            .map(|t| fmt_time(&t))
-            .unwrap_or_else(|| "--".to_string());
-        let pid = self
-            .last_pid
-            .map(|pid| pid.to_string())
-            .unwrap_or_else(|| empty);
+            .map_or_else(|| "--".to_string(), |t| fmt_time(&t));
+        let pid = self.last_pid.map_or_else(|| empty, |pid| pid.to_string());
         let peer = match &self.peer {
             Some(a) => fmt_socketaddr(a),
             None => "--".to_string(),
@@ -956,33 +950,21 @@ impl Display for FrrmiStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let last_conn_time = &self
             .last_conn_time
-            .map(|t| fmt_time(&t))
-            .unwrap_or_else(|| "never".to_string());
-
+            .map_or_else(|| "never".to_string(), |t| fmt_time(&t));
         let last_disconn_time = &self
             .last_disconn_time
-            .map(|t| fmt_time(&t))
-            .unwrap_or_else(|| "never".to_string());
-
-        let last_ok_t = &self
-            .last_ok_time
-            .map(|t| fmt_time(&t))
-            .unwrap_or_else(|| "".to_string());
-
+            .map_or_else(|| "never".to_string(), |t| fmt_time(&t));
+        let last_ok_t = &self.last_ok_time.map(|t| fmt_time(&t)).unwrap_or_default();
         let last_fail_t = &self
             .last_fail_time
             .map(|t| fmt_time(&t))
-            .unwrap_or_else(|| "".to_string());
-
+            .unwrap_or_default();
         let last_ok_genid = self
             .last_ok_genid
-            .map(|genid| genid.to_string())
-            .unwrap_or_else(|| "none".to_string());
-
+            .map_or_else(|| "none".to_string(), |genid| genid.to_string());
         let last_fail_genid = self
             .last_fail_genid
-            .map(|genid| genid.to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), |genid| genid.to_string());
 
         writeln!(f, " Last connection : {last_conn_time}")?;
         writeln!(f, " Last disconnect : {last_disconn_time}")?;

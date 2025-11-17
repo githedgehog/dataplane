@@ -19,7 +19,7 @@ use crate::frr::renderer::vrf::{render_vrfs_bgp, render_vrfs_ospf};
 use config::{GenId, InternalConfig};
 use tracing::debug;
 
-fn render_metadata(genid: &GenId) -> String {
+fn render_metadata(genid: GenId) -> String {
     format!("! config for gen {genid}")
 }
 
@@ -31,7 +31,7 @@ impl Render for InternalConfig {
         let mut cfg = ConfigBuilder::new();
 
         /* Metadata: TODO */
-        cfg += render_metadata(config);
+        cfg += render_metadata(*config);
 
         /* we always enable logging on stdout */
         cfg += "log stdout";

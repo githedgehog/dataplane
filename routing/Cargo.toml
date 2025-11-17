@@ -28,7 +28,6 @@ derive_builder = { workspace = true, features = ["default", "std"] }
 ipnet = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
-mac_address= { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
