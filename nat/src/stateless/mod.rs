@@ -24,7 +24,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use thiserror::Error;
 
 #[allow(unused)]
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use tracectl::trace_target;
 trace_target!("stateless-nat", LevelFilter::INFO, &["nat", "pipeline"]);
@@ -259,7 +259,7 @@ impl StatelessNat {
 
         // Get IP header
         let Some(net) = packet.headers_mut().try_ip_mut() else {
-            error!("{nfi}: Failed to get IP headers!");
+            debug!("{nfi}: Failed to get IP headers!");
             return Err(StatelessNatError::NoIpHeader);
         };
 
@@ -304,14 +304,14 @@ impl StatelessNat {
 
         /* get source VNI annotation */
         let Some(VpcDiscriminant::VNI(src_vni)) = packet.get_meta().src_vpcd else {
-            warn!("{nfi}: Packet has no source VNI annotation!. Will drop...");
+            debug!("{nfi}: Packet has no source VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
         };
 
         /* get destination VNI annotation */
         let Some(VpcDiscriminant::VNI(dst_vni)) = packet.get_meta().dst_vpcd else {
-            warn!("{nfi}: Packet has no destination VNI annotation!. Will drop...");
+            debug!("{nfi}: Packet has no destination VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
         };

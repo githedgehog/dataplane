@@ -31,7 +31,7 @@ use std::num::NonZero;
 use std::time::{Duration, Instant};
 
 #[allow(unused)]
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info};
 
 use tracectl::trace_target;
 trace_target!("stateful-nat", LevelFilter::INFO, &["nat", "pipeline"]);
@@ -624,7 +624,7 @@ impl StatefulNat {
         let nfi = self.name();
 
         let Some(net) = packet.try_ip() else {
-            error!("{nfi}: Failed to get IP headers!");
+            debug!("{nfi}: Failed to get IP headers!");
             return Err(StatefulNatError::BadIpHeader);
         };
 
@@ -644,7 +644,7 @@ impl StatefulNat {
     fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
         // TODO: What if no VNI
         let Some(src_vpc_id) = Self::get_src_vpc_id(packet) else {
-            warn!(
+            debug!(
                 "{}: Packet has no source VPC discriminant!. Will drop...",
                 self.name()
             );
@@ -652,7 +652,7 @@ impl StatefulNat {
             return;
         };
         let Some(dst_vpc_id) = Self::get_dst_vpc_id(packet) else {
-            warn!(
+            debug!(
                 "{}: Packet has no destination VPC discriminant!. Will drop...",
                 self.name()
             );
@@ -665,8 +665,17 @@ impl StatefulNat {
 
         match self.nat_packet(packet, src_vpc_id, dst_vpc_id) {
             Err(error) => {
-                packet.done(translate_error(&error));
-                error!("{}: Error processing packet: {error}", self.name());
+                let reason = translate_error(&error);
+                packet.done(reason);
+                match reason {
+                    DoneReason::InternalFailure => {
+                        error!("{}: Error processing packet: {error}", self.name());
+                    }
+                    DoneReason::NatOutOfResources => {
+                        info!("{}: Error processing packet: {error}", self.name());
+                    }
+                    _ => debug!("{}: Error processing packet: {error}", self.name()),
+                }
             }
             Ok(true) => {
                 packet.get_meta_mut().set_checksum_refresh(true);
