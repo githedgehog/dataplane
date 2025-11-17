@@ -95,8 +95,13 @@ fn main() {
     info!("Starting gateway process...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    ctrlc::set_handler(move || stop_tx.send(()).expect("Error sending SIGINT signal"))
-        .expect("failed to set SIGINT handler");
+    let ctrlc_stop_tx = stop_tx.clone();
+    ctrlc::set_handler(move || {
+        ctrlc_stop_tx
+            .send(0)
+            .expect("Error sending shutdown signal");
+    })
+    .expect("failed to set SIGINT handler");
 
     let grpc_addr = match args.grpc_address() {
         Ok(addr) => addr,
@@ -147,6 +152,7 @@ fn main() {
         "kernel" => {
             info!("Using driver kernel...");
             DriverKernel::start(
+                stop_tx.clone(),
                 args.kernel_interfaces(),
                 args.kernel_num_workers(),
                 &pipeline_factory,
@@ -158,7 +164,7 @@ fn main() {
         }
     }
 
-    stop_rx.recv().expect("failed to receive stop signal");
+    let exit_code = stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");
     if let Some(running) = agent_running {
         match running.stop() {
@@ -166,7 +172,7 @@ fn main() {
             Err(e) => error!("Pyroscope stop failed: {e}"),
         }
     }
-    std::process::exit(0);
+    std::process::exit(exit_code);
 }
 
 #[cfg(test)]
