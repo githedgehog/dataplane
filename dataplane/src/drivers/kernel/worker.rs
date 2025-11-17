@@ -22,7 +22,7 @@ use pipeline::{DynPipeline, NetworkFunction};
 
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
-use crate::drivers::tokio_util::{force_send, run_in_local_tokio_runtime};
+use crate::drivers::tokio_util::run_in_local_tokio_runtime;
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -174,13 +174,9 @@ impl Worker {
                 for intf in readers {
                     let setup = setup.clone();
                     let if_table = if_table.clone();
-                    reader_handles.spawn(async move {
+                    reader_handles.spawn_local(async move {
                         let intf = intf;
-                        // Pipeline isn't Send because it isn't safe to Send, but we know that we are
-                        // using it inside of a tokio current_thread runtime which will not send it
-                        // to another thread as long as we don't use it in a spawn_blocking, which we don't, so force it to be send here.
-                        #[allow(unsafe_code)]
-                        let mut pipeline = unsafe { force_send(setup()) };
+                        let mut pipeline = setup();
                         loop {
                             tracing::debug!(worker = id, "awaiting packets");
 
