@@ -2,14 +2,14 @@
 // Copyright Open Network Fabric Authors
 
 use std::ops::{Deref, DerefMut};
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, LocalOptions};
 
-/// Executes a function inside a current-thread tokio runtime.
+/// Executes a function inside a local (non-Send) tokio runtime.
 /// The runtime will be torn down when the function returns.
 ///
 /// # Panics
 /// If it fails to create a current thread runtime.
-pub fn run_in_current_thread_tokio_runtime<F, Fut, R>(f: F) -> R
+pub fn run_in_local_tokio_runtime<F, Fut, R>(f: F) -> R
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
@@ -23,7 +23,7 @@ where
 
     let rt = Builder::new_current_thread()
         .enable_all()
-        .build()
+        .build_local(LocalOptions::default())
         .expect("Failed to create current thread runtime");
 
     rt.block_on(f())
@@ -77,13 +77,13 @@ mod tests {
 
     #[test]
     fn test_run_in_tokio_runtime_pure() {
-        let result = run_in_current_thread_tokio_runtime(|| async { 42 });
+        let result = run_in_local_tokio_runtime(|| async { 42 });
         assert_eq!(result, 42);
     }
 
     #[test]
     fn test_run_in_tokio_runtime_async() {
-        let result = run_in_current_thread_tokio_runtime(|| async {
+        let result = run_in_local_tokio_runtime(|| async {
             sleep(Duration::from_millis(100)).await;
             42
         });

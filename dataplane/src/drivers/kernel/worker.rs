@@ -22,7 +22,7 @@ use pipeline::{DynPipeline, NetworkFunction};
 
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
-use crate::drivers::tokio_util::{force_send, run_in_current_thread_tokio_runtime};
+use crate::drivers::tokio_util::{force_send, run_in_local_tokio_runtime};
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -156,7 +156,7 @@ impl Worker {
         let handle_res = thread_builder.spawn(move || {
             info!(worker = id, "Worker started");
 
-            run_in_current_thread_tokio_runtime(async || {
+            run_in_local_tokio_runtime(async || {
                 let (readers, if_table) =
                     match build_interface_table(id, total_workers, interfaces.as_slice()) {
                         Ok(table) => table,
