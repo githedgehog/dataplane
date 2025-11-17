@@ -3,11 +3,10 @@
 
 //! Router IO, which includes the control-plane interface CPI and the FRR management interface (FRRMI)
 
-#![allow(clippy::items_after_statements)]
-
+use crate::atable::atablerw::AtableReader;
 use crate::cli::handle_cli_request;
 use crate::config::FrrConfig;
-use crate::cpi::{CpiStats, process_rx_data, rpc_send_control};
+use crate::cpi::{CpiStats, CpiStatus, process_rx_data, rpc_send_control};
 use crate::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
@@ -15,7 +14,6 @@ use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::revent::{ROUTER_EVENTS, RouterEvent};
 use crate::routingdb::RoutingDb;
-use crate::{atable::atablerw::AtableReader, cpi::CpiStatus};
 
 use cli::cliproto::{CliRequest, CliSerialize};
 use dplane_rpc::socks::RpcCachedSock;
@@ -33,19 +31,20 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 
-// capacity of rio control channel. This should have very little impact on performance.
+// capacity of rio control channel
 const CTL_CHANNEL_CAPACITY: usize = 100;
 
-pub struct RioHandle {
-    pub ctl: Sender<RouterCtlMsg>,
-    pub handle: Option<JoinHandle<()>>,
+/// An object to control a router IO, [`Rio`]
+pub(crate) struct RioHandle {
+    ctl: Sender<RouterCtlMsg>,
+    handle: Option<JoinHandle<()>>,
 }
 impl RioHandle {
     /// Terminate the router IO loop / thread
     ///
     /// # Errors
     /// Fails if the channel has been dropped or the thread cannot be joined
-    pub fn finish(&mut self) -> Result<(), RouterError> {
+    pub(crate) fn finish(&mut self) -> Result<(), RouterError> {
         debug!("Requesting router IO to stop..");
         self.ctl
             .try_send(RouterCtlMsg::Finish)
@@ -64,24 +63,16 @@ impl RioHandle {
         }
     }
     #[must_use]
-    pub fn get_ctl_tx(&self) -> RouterCtlSender {
+    pub(crate) fn get_ctl_tx(&self) -> RouterCtlSender {
         RouterCtlSender::new(self.ctl.clone())
     }
 }
 
-pub struct RioConf {
+pub(crate) struct RioConf {
+    pub name: String,
     pub cpi_sock_path: Option<String>,
     pub cli_sock_path: Option<String>,
     pub frrmi_sock_path: Option<String>,
-}
-impl Default for RioConf {
-    fn default() -> Self {
-        Self {
-            cpi_sock_path: Some(args::DEFAULT_DP_UX_PATH.to_string()),
-            cli_sock_path: Some(args::DEFAULT_DP_UX_PATH_CLI.to_string()),
-            frrmi_sock_path: Some(args::DEFAULT_FRR_AGENT_PATH.to_string()),
-        }
-    }
 }
 
 fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
@@ -102,6 +93,8 @@ pub(crate) const CLISOCK: Token = Token(1);
 pub(crate) const FRRMISOCK: Token = Token(2);
 /// `Rio` is the router IO loop state
 pub(crate) struct Rio {
+    #[allow(unused)]
+    pub(crate) name: String,
     pub(crate) run: bool,
     pub(crate) frozen: bool,
     pub(crate) cp_sock_path: String,
@@ -144,7 +137,7 @@ impl Rio {
         /* frrmi - communication to frr-agent */
         let frrmi = Frrmi::new(&frrmi_sock_path);
 
-        /* internal ctl channel */
+        /* ctl channel */
         let (ctl_tx, ctl_rx) = channel::<RouterCtlMsg>(CTL_CHANNEL_CAPACITY);
 
         /* Routing socket */
@@ -170,6 +163,7 @@ impl Rio {
             .map_err(|_| RouterError::Internal("Failed to register CLI sock"))?;
 
         Ok(Rio {
+            name: conf.name.clone(),
             run: true,
             frozen: false,
             cp_sock_path,
@@ -215,7 +209,7 @@ impl Rio {
         debug!("Deregistering fd {fd}...");
         let mut ev_sock = SourceFd(&fd);
         if let Err(e) = self.poller.registry().deregister(&mut ev_sock) {
-            warn!("Error deregistering descriptor {fd}: {e}")
+            warn!("Error deregistering descriptor {fd}: {e}");
         }
     }
     fn frrmi_connect(&mut self) {
@@ -272,9 +266,7 @@ impl Rio {
     /// Check the status of the CPI and react accordingly
     pub(crate) fn cpi_status_check(&mut self, db: &mut RoutingDb) {
         match self.cpistats.status {
-            CpiStatus::NotConnected => {}
-            CpiStatus::Connected => {}
-            CpiStatus::Incompatible => {}
+            CpiStatus::NotConnected | CpiStatus::Connected | CpiStatus::Incompatible => {}
             CpiStatus::FrrRestarted => {
                 warn!("FRR appears to have restarted!!!...");
                 db.vrftable.remove_deleting_vrfs(&mut db.iftw);
@@ -282,7 +274,7 @@ impl Rio {
                 self.set_stale_timeout();
                 debug!("Will now re-apply the last config to FRR...");
                 self.frrmi.clear_applied_cfg(); /* we know Frr has no config */
-                self.reapply_frr_config(&db); /* request agent to apply last config */
+                self.reapply_frr_config(db); /* request agent to apply last config */
                 self.cpistats.status.change(CpiStatus::Connected); /* we now frr is connected */
             }
             CpiStatus::NeedRefresh => {
@@ -315,7 +307,7 @@ impl Rio {
 }
 
 #[allow(clippy::missing_errors_doc)]
-pub fn start_rio(
+pub(crate) fn start_rio(
     conf: &RioConf,
     fibtw: FibTableWriter,
     iftw: IfTableWriter,
@@ -395,7 +387,7 @@ pub fn start_rio(
                         if event.is_readable() {
                             match rio.frrmi.recv_msg() {
                                 Ok(None) => {} // do nothing; continue receiving
-                                Ok(Some(response)) => rio.frrmi.process_response(response),
+                                Ok(Some(response)) => rio.frrmi.process_response(&response),
                                 Err(e) => {
                                     error!("Failed to receive over frrmi: {e}");
                                     rio.frrmi_restart();
@@ -454,6 +446,7 @@ mod tests {
 
         /* Build cpi configuration */
         let conf = RioConf {
+            name: "test-routter".to_string(),
             cpi_sock_path: Some(cpi_bind_addr),
             cli_sock_path: Some(cli_bind_addr),
             frrmi_sock_path: Some(frra_path),
@@ -477,6 +470,7 @@ mod tests {
     fn test_rio_bad_path() {
         /* Build rio configuration with bad path for unix sock */
         let conf = RioConf {
+            name: "test-routter".to_string(),
             cpi_sock_path: Some("/nonexistent/hh_dataplane.sock".to_string()),
             cli_sock_path: None,
             frrmi_sock_path: None,

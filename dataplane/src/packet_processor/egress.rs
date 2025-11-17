@@ -19,9 +19,7 @@ use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::interfaces::iftablerw::IfTableReader;
-use routing::interfaces::interface::{IfState, IfType, Interface};
-use routing::{atable::atablerw::AtableReader, interfaces::iftable::IfTable};
+use routing::{AtableReader, IfState, IfTable, IfTableReader, IfType, Interface};
 
 use tracectl::trace_target;
 trace_target!("egress", LevelFilter::WARN, &["pipeline"]);

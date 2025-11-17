@@ -6,7 +6,7 @@
 //! crate to the types used here. Strictly speaking, the conversions should be fallible. However,
 //! in case of failure, there's little we can do other than logging. In addition, note that because
 //! we disaggregate routing information internally (e.g. next-hops are separated from routes), some
-//! of these methods incur information loss in that they are not reversible and into() would not
+//! of these methods incur information loss in that they are not reversible and `into()` would not
 //! provide the expected results. Hence the use of the From trait is overloaded for convenience.
 
 use crate::errors::RouterError;
@@ -132,7 +132,7 @@ impl RouteNhop {
             None => None,
             Some(k) => iftabler
                 .enter()
-                .and_then(|iftable| iftable.get_interface(k).map(|iface| iface.name.to_owned())),
+                .and_then(|iftable| iftable.get_interface(k).map(|iface| iface.name.clone())),
         };
 
         Ok(RouteNhop {
@@ -149,6 +149,7 @@ impl RouteNhop {
     }
 }
 impl Route {
+    #[must_use]
     fn from_iproute(prefix: &Prefix, r: &IpRoute) -> Self {
         let origin = if r.rtype == RouteType::Connected && prefix.is_host() {
             RouteOrigin::Local
@@ -167,6 +168,7 @@ impl Route {
 }
 
 /// Util to tell if a route is EVPN - heuristic
+#[must_use]
 pub fn is_evpn_route(iproute: &IpRoute) -> bool {
     if iproute.rtype != RouteType::Bgp || iproute.nhops.is_empty() {
         false

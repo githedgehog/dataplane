@@ -5,7 +5,6 @@
 
 use bitflags::bitflags;
 use std::hash::Hash;
-use std::iter::Filter;
 use std::net::IpAddr;
 use std::rc::Rc;
 use tracing::debug;
@@ -15,7 +14,7 @@ use crate::pretty_utils::Frame;
 
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
-use crate::fib::fibtype::{FibKey, FibReader, FibWriter};
+use crate::fib::fibtype::FibWriter;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
@@ -79,6 +78,7 @@ impl Default for Route {
     }
 }
 impl Route {
+    #[must_use]
     pub fn is_stale(&self) -> bool {
         self.flags.contains(RouteFlags::STALE)
     }
@@ -89,6 +89,7 @@ impl Route {
             self.flags.remove(RouteFlags::STALE);
         }
     }
+    #[must_use]
     pub fn is_preset_drop_route(&self) -> bool {
         self.origin == RouteOrigin::Other
             && self.s_nhops.len() == 1
@@ -146,26 +147,30 @@ pub struct RouterVrfConfig {
     pub vni: Option<Vni>,              /* vni */
 }
 impl RouterVrfConfig {
+    #[must_use]
     pub fn new(vrfid: VrfId, name: &str) -> Self {
         Self {
             vrfid,
-            name: name.to_owned(),
+            name: name.to_string(),
             description: None,
             tableid: None,
             vni: None,
         }
     }
     pub fn set_name(&mut self, name: &str) {
-        self.name = name.to_owned();
+        self.name = name.to_string();
     }
+    #[must_use]
     pub fn set_description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
         self
     }
+    #[must_use]
     pub fn set_tableid(mut self, tableid: RouteTableId) -> Self {
         self.tableid = Some(tableid);
         self
     }
+    #[must_use]
     pub fn set_vni(mut self, vni: Option<Vni>) -> Self {
         self.vni = vni;
         self
@@ -187,10 +192,10 @@ impl Vrf {
         let routesv4 = PrefixMapTrie::create();
         let routesv6 = PrefixMapTrie::create();
         let mut vrf = Self {
-            name: config.name.to_owned(),
+            name: config.name.clone(),
             vrfid: config.vrfid,
             tableid: config.tableid,
-            description: config.description.to_owned(),
+            description: config.description.clone(),
             vni: config.vni,
             status: VrfStatus::Active,
             routesv4,
@@ -245,21 +250,6 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_fibw(&mut self, fibw: FibWriter) {
         self.fibw = Some(fibw);
-    }
-
-    ////////////////////////////////////////////////////////////////////////
-    /// Get a fibreader for the fib associated to this [`Vrf`]
-    /////////////////////////////////////////////////////////////////////////
-    #[allow(clippy::redundant_closure_for_method_calls)]
-    pub fn get_vrf_fibr(&self) -> Option<FibReader> {
-        self.fibw.as_ref().map(|fibw| fibw.as_fibreader())
-    }
-
-    ////////////////////////////////////////////////////////////////////////
-    /// Get the id (`FibKey`) of the Fib associated to this [`Vrf`]
-    /////////////////////////////////////////////////////////////////////////
-    pub fn get_vrf_fibid(&self) -> Option<FibKey> {
-        self.get_vrf_fibr()?.get_id()
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -578,6 +568,7 @@ impl Vrf {
     fn get_route_v6_mut(&mut self, prefix: Ipv6Prefix) -> Option<&mut Route> {
         self.routesv6.get_mut(prefix)
     }
+    #[allow(unused)]
     pub fn get_route_mut(&mut self, prefix: Prefix) -> Option<&mut Route> {
         match prefix {
             Prefix::IPV4(p) => self.get_route_v4_mut(p),
@@ -585,34 +576,14 @@ impl Vrf {
         }
     }
 
-    /////////////////////////////////////////////////////////////////////////
-    /// iterators, filters and counts
-    /////////////////////////////////////////////////////////////////////////
-
+    // ///////////////////////////////////////////////////////////////////////
+    // iterators, filters and counts
+    // //////////////////////////////////////////////////////////////////////
     pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Route)> {
         self.routesv4.iter()
     }
-    pub fn iter_mut_v4(&mut self) -> impl Iterator<Item = (&Ipv4Prefix, &mut Route)> {
-        self.routesv4.iter_mut()
-    }
     pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Route)> {
         self.routesv6.iter()
-    }
-    pub fn iter_mut_v6(&mut self) -> impl Iterator<Item = (&Ipv6Prefix, &mut Route)> {
-        self.routesv6.iter_mut()
-    }
-
-    pub fn filter_v4<'a>(
-        &'a self,
-        filter: &'a RouteV4Filter,
-    ) -> Filter<impl Iterator<Item = (&'a Ipv4Prefix, &'a Route)>, &'a RouteV4Filter> {
-        self.iter_v4().filter(filter)
-    }
-    pub fn filter_v6<'a>(
-        &'a self,
-        filter: &'a RouteV6Filter,
-    ) -> Filter<impl Iterator<Item = (&'a Ipv6Prefix, &'a Route)>, &'a RouteV6Filter> {
-        self.iter_v6().filter(filter)
     }
     pub fn len_v4(&self) -> usize {
         self.routesv4.len()
@@ -973,17 +944,6 @@ pub mod tests {
 
         assert_eq!(vrf.len_v4(), 4, "There are 3 routes + drop");
 
-        let only_connected: RouteV4Filter= Box::new(|(_, route): &(&Ipv4Prefix, &Route)| {route.origin == RouteOrigin::Connected});
-        let filtered  = vrf.filter_v4(&only_connected);
-        assert_eq!(filtered.count(), 1);
-
-        let only_ospf: RouteV4Filter= Box::new(|(_, route): &(&Ipv4Prefix, &Route)| {route.origin == RouteOrigin::Ospf});
-        let filtered  = vrf.filter_v4(&only_ospf);
-        assert_eq!(filtered.count(), 1);
-
-        let only_bgp: RouteV4Filter= Box::new(|(_, route): &(&Ipv4Prefix, &Route)| {route.origin == RouteOrigin::Bgp});
-        let filtered  = vrf.filter_v4(&only_bgp);
-        assert_eq!(filtered.count(), 1);
     }
 
     fn add_vxlan_route(vrf: &mut Vrf, dst: (&str, u8), vni: u32) {

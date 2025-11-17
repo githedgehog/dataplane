@@ -3,10 +3,10 @@
 
 //! The Fib module
 
-pub mod fibgroupstore;
-pub mod fibobjects;
-pub mod fibtable;
-pub mod fibtype;
+pub(crate) mod fibgroupstore;
+pub(crate) mod fibobjects;
+pub(crate) mod fibtable;
+pub(crate) mod fibtype;
 mod test;
 
 use tracectl::trace_target;

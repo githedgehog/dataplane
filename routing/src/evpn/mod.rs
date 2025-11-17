@@ -3,8 +3,8 @@
 
 //! EVPN-related state
 
-pub mod rmac;
-pub mod vtep;
+pub(crate) mod rmac;
+pub(crate) mod vtep;
 
 pub use rmac::RmacEntry;
 pub use rmac::RmacStore;

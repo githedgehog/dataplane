@@ -87,7 +87,7 @@ pub(crate) struct FrrmiRequest {
     max_retries: u8, /* max number of times to retry configuration on failure */
 }
 
-const CLEAN_CONFIG: &'static str = "! Empty config";
+const CLEAN_CONFIG: &str = "! Empty config";
 
 impl FrrmiRequest {
     pub(crate) fn new(genid: GenId, cfg: String, max_retries: u8) -> Self {
@@ -111,10 +111,7 @@ impl FrrmiResponse {
         &self.data
     }
     fn is_success(&self) -> bool {
-        match self.data.as_str() {
-            "Ok" => true,
-            _ => false,
-        }
+        matches!(self.data.as_str(), "Ok")
     }
 }
 
@@ -164,7 +161,7 @@ impl Frrmi {
     }
     #[must_use]
     pub(crate) fn get_sock_fd(&self) -> Option<i32> {
-        self.sock.as_ref().map(|sock| sock.as_raw_fd())
+        self.sock.as_ref().map(AsRawFd::as_raw_fd)
     }
     #[must_use]
     pub(crate) fn has_sock(&self) -> bool {
@@ -183,8 +180,8 @@ impl Frrmi {
     }
     #[must_use]
     #[allow(unused)]
-    pub fn get_applied_cfg(&self) -> &Option<FrrAppliedConfig> {
-        &self.applied_cfg
+    pub fn get_applied_cfg(&self) -> Option<&FrrAppliedConfig> {
+        self.applied_cfg.as_ref()
     }
 }
 
@@ -210,7 +207,7 @@ impl Frrmi {
         if self.inservice.is_some() {
             return Ok(());
         }
-        self.sock.as_mut().ok_or_else(|| FrrErr::NotConnected)?;
+        self.sock.as_mut().ok_or(FrrErr::NotConnected)?;
         if let Some(req) = self.requests.pop_front() {
             debug!("Initiating new FRR reconfiguration (gen: {})", req.genid);
             let genid = req.genid;
@@ -270,7 +267,7 @@ impl Frrmi {
         self.inservice = Some(req);
 
         // fixme
-        let sock = self.sock.as_mut().ok_or_else(|| FrrErr::NotConnected)?;
+        let sock = self.sock.as_mut().ok_or(FrrErr::NotConnected)?;
 
         debug!("Sending config request to frr-agent for gen {genid}...");
         Self::send(sock, &mut self.writeb)?;
@@ -343,9 +340,8 @@ impl Frrmi {
                             Ok(response) => return Ok(Some(response)),
                             Err(e) => return Err(e),
                         }
-                    } else {
-                        // did not receive the complete message and need to read more
                     }
+                    // did not receive the complete message and need to read more
                 }
                 // we must wait. Can't provide a message yet
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => return Ok(None),
@@ -360,7 +356,7 @@ impl Frrmi {
 /// Handling of responses
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 impl Frrmi {
-    pub fn process_response(&mut self, response: FrrmiResponse) {
+    pub fn process_response(&mut self, response: &FrrmiResponse) {
         let Some(request) = self.inservice.take() else {
             error!("Got response over frrmi to unsolicited request!. Ignoring it...");
             self.timeout.take();
@@ -435,11 +431,13 @@ impl IoBuffer {
     #[must_use]
     fn msg_len(&self) -> Option<usize> {
         if self.buffer.len() < 8 {
-            return None;
+            None
         } else {
             let len_buf = &self.buffer[0..8]
                 .try_into()
                 .unwrap_or_else(|_| unreachable!());
+
+            #[allow(clippy::cast_possible_truncation)]
             let msg_len = u64::from_ne_bytes(*len_buf) as usize;
             Some(msg_len)
         }

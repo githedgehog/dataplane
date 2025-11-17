@@ -16,7 +16,7 @@ pub struct ConfigBuilder {
     lines: Vec<String>,
 }
 
-/// Impl Display for [`ConfigBuilder`]. This provides to_string().
+/// Impl Display for [`ConfigBuilder`]
 impl Display for ConfigBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for s in &self.lines {
@@ -29,11 +29,13 @@ impl Display for ConfigBuilder {
 /// Main operations on a [`ConfigBuilder`]
 impl ConfigBuilder {
     #[allow(clippy::new_without_default)]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             lines: Vec::with_capacity(2),
         }
     }
+    #[must_use]
     pub fn from_string(string: String) -> Self {
         Self {
             lines: vec![string],

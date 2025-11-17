@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Module that contains a reference counted store for Fibgroups. Every FibGroup is
-//! a vector of FibEntries. Forwarding a packet happens by finding and selecting one FibEntry.
+//! Module that contains a reference counted store for Fibgroups. Every `FibGroup` is
+//! a vector of `FibEntry`ies. Forwarding a packet happens by finding and selecting one `FibEntry`.
 //!
-//! This module defines a new data structure called FibRoute, that consists of a vector
-//! of shared references of FibGroups. The data structures in this module allows mutating
-//! Fibgroups when routing changes occur for all the affected routes without needing to explicitly
+//! This module defines a new data structure called `FibRoute`, that consists of a vector
+//! of shared references of `FibGroup`s. The data structures in this module allows mutating
+//! `Fibgroup`s when routing changes occur for all the affected routes without needing to explicitly
 //! change any of the routes. This allows, upon routing changes, updating the FIB in O(Nh) instead
 //! of O(Routes), potentially reducing the number of updates by several orders of magnitude.
-//! This is achieved by means of an `UnsafeCell`, which allows us to mutate fibgroups.
+//! This is achieved by means of an `UnsafeCell`, which allows us to mutate `FibGroups`.
 //! This data structure is, therefore, **NOT** thread-safe.
 //!
 //! Safety is achieved by wrapping the structure in left-right. Safety for readers is granted
@@ -86,7 +86,7 @@ impl FibGroupStore {
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
     fn get_ref(&self, key: &NhopKey) -> Option<Rc<UnsafeCell<FibGroup>>> {
-        self.0.get(key).map(|group| Rc::clone(group))
+        self.0.get(key).map(Rc::clone)
     }
 
     #[cfg(test)]
@@ -195,11 +195,11 @@ impl FibRoute {
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    /// A Fibroute is a vector of fibgroups, and each fibgroup is itself a vector of FibEntries.
-    /// We cannot "merge" all of the FibEntries into a single vector since that would defeat the purpose
+    /// A `Fibroute` is a vector of `Fibgroup`s, and each group is itself a vector of `FibEntries`.
+    /// We cannot "merge" all of the `FibEntries` into a single vector since that would defeat the purpose
     /// of automatically mutating them at once for multiple prefixes. This creates a problem in the datapath.
-    /// To forward a packet we have to hash it in order to select one out of the total set of FibEntries.
-    /// One possibility would be that we first select a fibgroup and then one of its FibEntries.
+    /// To forward a packet we have to hash it in order to select one out of the total set of `FibEntries`.
+    /// One possibility would be that we first select a fibgroup and then one of its `FibEntries`.
     /// However, this could bias the selection if fibgroups have distinct number of entries: take 2 groups,
     /// one with 5 entries and one with 2. Assuming uniformity, each group would be selected
     /// 1/2 of the time. However, entries in the first would be selected 1/10th of the time each, while,
@@ -212,13 +212,13 @@ impl FibRoute {
     /// 0 1 2 3 4 | 0 1 2 | 0 1 | 0  1  2  | real    entry indices within each group.
     ///
     /// Panics:
-    ///   This method will panic if index is >= FibRoute::len(). This is so to keep this method
+    ///   This method will panic if index is >= `FibRoute::len()`. This is so to keep this method
     /// infallible, which simplifies its use in several cases.
     ////////////////////////////////////////////////////////////////////////////////////////////////
     #[must_use]
     pub(crate) fn get_fibentry(&self, index: usize) -> &FibEntry {
         let mut index = index;
-        for g in self.0.iter() {
+        for g in &self.0 {
             let group = unsafe { &*g.get() };
             if index < group.len() {
                 return &group.entries[index];
@@ -238,10 +238,9 @@ impl FibRoute {
         unsafe { self.0.iter().map(|group| &*group.get()) }
     }
 
-    #[must_use]
     ///////////////////////////////////////////////////////////////////////////////////
     /// Creates a `FibRoute` with the `FibGroups` corresponding to a set of `NhopKey`s.
-    /// Fails if it can't find a FibGroup for any of the `NhopKey`s.
+    /// Fails if it can't find a `FibGroup` for any of the `NhopKey`s.
     ///////////////////////////////////////////////////////////////////////////////////
     pub(super) fn from_nhopkeys(store: &FibGroupStore, keys: &[NhopKey]) -> Result<Self, FibError> {
         let mut route = FibRoute::new();

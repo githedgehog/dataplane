@@ -20,6 +20,8 @@ impl Nhop {
     /// Hence it does not depend on the routing table.
     /// It does depend on the rmacs, though.
     //////////////////////////////////////////////////////////////////////
+    #[allow(clippy::single_match_else)]
+    #[must_use]
     fn build_pkt_instructions(&self, rstore: &RmacStore) -> Vec<PktInstruction> {
         let mut instructions = Vec::with_capacity(2);
         if self.key.origin == RouteOrigin::Local {
@@ -29,7 +31,7 @@ impl Nhop {
                     warn!("packet is locally destined but has no target interface index: dropping");
                     instructions.push(PktInstruction::Drop);
                 }
-            };
+            }
             return instructions;
         }
         if self.key.fwaction == FwAction::Drop {

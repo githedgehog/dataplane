@@ -3,8 +3,6 @@
 
 //! Network interface model
 
-#![allow(clippy::collapsible_if)]
-
 use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
 use net::eth::mac::Mac;
@@ -69,14 +67,14 @@ pub enum IfState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Attachment {
-    VRF(FibKey),
-    BD,
+    Vrf(FibKey),
+    BridgeDomain,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttachConfig {
-    VRF(VrfId),
-    BD,
+    Vrf(VrfId),
+    BridgeDomain,
 }
 
 /// An object representing the configuration for an [`Interface`]
@@ -202,7 +200,7 @@ impl Interface {
     /// Attach an [`Interface`] to the fib corresponding to a [`crate::rib::vrf::Vrf`]
     //////////////////////////////////////////////////////////////////
     pub fn attach_vrf(&mut self, fibkey: FibKey) {
-        self.attachment = Some(Attachment::VRF(fibkey));
+        self.attachment = Some(Attachment::Vrf(fibkey));
     }
 
     //////////////////////////////////////////////////////////////////
@@ -211,7 +209,7 @@ impl Interface {
     #[must_use]
     pub fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
         match &self.attachment {
-            Some(Attachment::VRF(key)) => *key == fibid,
+            Some(Attachment::Vrf(key)) => *key == fibid,
             _ => false,
         }
     }

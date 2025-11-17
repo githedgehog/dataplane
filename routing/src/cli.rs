@@ -321,6 +321,7 @@ fn show_ip_fib_groups_single(
 ) -> Result<CliResponse, CliError> {
     let out: String;
     if let Ok(vrf) = vrftable.get_vrf(vrfid) {
+        #[allow(clippy::if_same_then_else)]
         if ipv4 {
             out = format!("{}", FibGroups(vrf)); // for the time being we show all
         } else {
@@ -338,6 +339,7 @@ fn show_ip_fib_groups_multi(
 ) -> Result<CliResponse, CliError> {
     let mut out = String::new();
     for vrf in vrftable.values() {
+        #[allow(clippy::if_same_then_else)]
         if ipv4 {
             out += format!("{}", FibGroups(vrf)).as_ref();
         } else {
@@ -379,29 +381,29 @@ fn do_handle_cli_request(
         CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n {cpi_s}")),
         CliAction::ShowFrrmiStats => CliResponse::from_request_ok(request, format!("\n{frrmi}")),
         CliAction::ShowFrrmiLastConfig => match frrmi.get_applied_cfg() {
-            None => CliResponse::from_request_ok(request, format!("\n No config is applied")),
+            None => CliResponse::from_request_ok(request, "\n No config is applied".to_string()),
             Some(cfg) => CliResponse::from_request_ok(request, format!("\n{cfg}")),
         },
         CliAction::FrrmiApplyLastConfig => {
             if let Some(genid) = db.current_config() {
-                rio.reapply_frr_config(&db);
+                rio.reapply_frr_config(db);
                 CliResponse::from_request_ok(
                     request,
                     format!("Requested to apply config for gen {genid}"),
                 )
             } else {
-                CliResponse::from_request_ok(request, format!("There is no configuration"))
+                CliResponse::from_request_ok(request, "There is no configuration".to_string())
             }
         }
         CliAction::CpiRequestRefresh => {
             let Some(peer) = &rio.cpistats.peer else {
                 return Ok(CliResponse::from_request_ok(
                     request,
-                    format!("No connection over CPI"),
+                    "No connection over CPI".to_string(),
                 ));
             };
             rpc_send_control(&mut rio.cpi_sock, peer, true);
-            CliResponse::from_request_ok(request, format!("Requested refresh..."))
+            CliResponse::from_request_ok(request, "Requested refresh...".to_string())
         }
         CliAction::RouterEventLog => ROUTER_EVENTS.with(|el| {
             let el = el.borrow();
@@ -462,7 +464,7 @@ fn do_handle_cli_request(
         CliAction::ShowRouterIpv6FibGroups => {
             return show_ip_fib_groups(request, db, false);
         }
-        _ => Err(CliError::NotSupported("Not implemented yet".to_owned()))?,
+        _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
     Ok(response)
 }

@@ -35,13 +35,13 @@ impl Display for RouterEvent {
             RouterEvent::CpiRefreshRequested => write!(f, "Requested refresh to FRR")?,
 
             RouterEvent::GotConfigRequest(genid) => {
-                write!(f, "Router config request received for generation {genid}")?
+                write!(f, "Router config request received for generation {genid}")?;
             }
             RouterEvent::ConfigSuceeded(genid) => {
-                write!(f, "Router config request for generation {genid} SUCCEEDED")?
+                write!(f, "Router config request for generation {genid} SUCCEEDED")?;
             }
             RouterEvent::ConfigFailed(genid) => {
-                write!(f, "Router config request for generation {genid} FAILED")?
+                write!(f, "Router config request for generation {genid} FAILED")?;
             }
 
             RouterEvent::FrrmiConnectSucceeded => write!(f, "Connected to frr-agent")?,
@@ -49,13 +49,13 @@ impl Display for RouterEvent {
             RouterEvent::FrrmiPeerLeft => write!(f, "Frr-agent left!")?,
 
             RouterEvent::FrrConfigApplyRequested(genid) => {
-                write!(f, "Requested FRR configuration for generation {genid}")?
+                write!(f, "Requested FRR configuration for generation {genid}")?;
             }
             RouterEvent::FrrConfigApplySuccess(genid) => {
-                write!(f, "FRR configuration for generation {genid} SUCCEEDED")?
+                write!(f, "FRR configuration for generation {genid} SUCCEEDED")?;
             }
             RouterEvent::FrrConfigApplyFailure(genid) => {
-                write!(f, "FRR configuration for generation {genid} FAILED")?
+                write!(f, "FRR configuration for generation {genid} FAILED")?;
             }
         }
         Ok(())

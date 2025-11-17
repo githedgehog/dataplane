@@ -79,7 +79,7 @@ impl VniChangePlan {
 }
 impl Display for VniChangePlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for change in self.0.iter() {
+        for change in &self.0 {
             change.fmt(f)?;
         }
         Ok(())
@@ -110,10 +110,10 @@ impl ReconfigVrfPlan {
         for vrf in vrftable.values() {
             let vrfid = vrf.vrfid;
             if let Some(cfg) = config.get_vrf(vrfid) {
-                if vrf.as_config() != *cfg {
-                    to_modify.push(cfg.clone());
-                } else {
+                if vrf.as_config() == *cfg {
                     to_keep.push(vrfid);
+                } else {
+                    to_modify.push(cfg.clone());
                 }
             } else if vrfid != 0 {
                 // default has vrfid of 0 and should not be deleted
@@ -145,7 +145,7 @@ impl ReconfigVrfPlan {
                 vrf.set_status(VrfStatus::Deleting);
                 vrf.check_deletion();
                 if vrf.can_be_deleted() {
-                    vrftable.remove_vrf(*vrfid, iftw);
+                    let _ = vrftable.remove_vrf(*vrfid, iftw);
                 } else {
                     vrftable.unset_vni(*vrfid)?;
                 }
@@ -171,11 +171,11 @@ impl ReconfigVrfPlan {
                 let vrfid = vrf.vrfid;
                 // update name if needed
                 if vrf.name != cfg.name {
-                    vrf.name = cfg.name.clone();
+                    vrf.name.clone_from(&cfg.name);
                 }
                 // update description if needed
                 if vrf.description != cfg.description {
-                    vrf.description = cfg.description.clone();
+                    vrf.description.clone_from(&cfg.description);
                 }
                 // update table-id id needed
                 if vrf.tableid != cfg.tableid {
@@ -254,8 +254,8 @@ impl Vrf {
     pub(crate) fn as_config(&self) -> RouterVrfConfig {
         RouterVrfConfig {
             vrfid: self.vrfid,
-            name: self.name.to_owned(),
-            description: self.description.to_owned(),
+            name: self.name.clone(),
+            description: self.description.clone(),
             tableid: self.tableid,
             vni: self.vni,
         }

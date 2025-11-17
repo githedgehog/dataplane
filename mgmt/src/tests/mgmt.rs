@@ -39,7 +39,7 @@ pub mod test {
 
     use config::{ExternalConfig, GwConfig};
 
-    use routing::frr::renderer::builder::Render;
+    use routing::Render;
 
     use crate::processor::confbuild::internal::build_internal_config;
     use crate::processor::proc::ConfigProcessor;

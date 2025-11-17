@@ -39,10 +39,10 @@ impl ReconfigInterfacePlan {
         for iface in iftable.values() {
             let ifindex = iface.ifindex;
             if let Some(cfg) = config.get_interface(ifindex) {
-                if iface.as_config() != *cfg {
-                    to_modify.push(cfg.clone());
-                } else {
+                if iface.as_config() == *cfg {
                     to_keep.push(ifindex);
+                } else {
+                    to_modify.push(cfg.clone());
                 }
             } else {
                 to_delete.push(ifindex);
@@ -61,11 +61,10 @@ impl ReconfigInterfacePlan {
         }
     }
 
-    fn enforce_deletions(&self, iftw: &mut IfTableWriter) -> Result<(), RouterError> {
+    fn enforce_deletions(&self, iftw: &mut IfTableWriter) {
         for ifindex in &self.to_delete {
             iftw.del_interface(*ifindex);
         }
-        Ok(())
     }
     fn enforce_additions(
         &self,
@@ -76,12 +75,12 @@ impl ReconfigInterfacePlan {
             iftw.add_interface(ifconfig.clone())?;
             // attach
             match ifconfig.attach_cfg {
-                Some(AttachConfig::VRF(vrfid)) => {
-                    iftw.attach_interface_to_vrf(ifconfig.ifindex, vrfid, vrftable)?
+                Some(AttachConfig::Vrf(vrfid)) => {
+                    iftw.attach_interface_to_vrf(ifconfig.ifindex, vrfid, vrftable)?;
                 }
-                Some(AttachConfig::BD) => todo!(),
+                Some(AttachConfig::BridgeDomain) => todo!(),
                 _ => {}
-            };
+            }
         }
         Ok(())
     }
@@ -96,11 +95,11 @@ impl ReconfigInterfacePlan {
             // attach / re-attach / detach
             match ifconfig.attach_cfg {
                 None => iftw.detach_interface(ifconfig.ifindex),
-                Some(AttachConfig::VRF(vrfid)) => {
-                    iftw.attach_interface_to_vrf(ifconfig.ifindex, vrfid, vrftable)?
+                Some(AttachConfig::Vrf(vrfid)) => {
+                    iftw.attach_interface_to_vrf(ifconfig.ifindex, vrfid, vrftable)?;
                 }
-                Some(AttachConfig::BD) => todo!(),
-            };
+                Some(AttachConfig::BridgeDomain) => todo!(),
+            }
         }
         Ok(())
     }
@@ -110,10 +109,10 @@ impl ReconfigInterfacePlan {
         iftw: &mut IfTableWriter,
         vrftable: &VrfTable,
     ) -> Result<(), RouterError> {
-        self.enforce_deletions(iftw)?;
+        self.enforce_deletions(iftw);
         self.enforce_changes(iftw, vrftable)?;
         self.enforce_additions(iftw, vrftable)?;
-        debug!("Successfully applied Interface configurations");
+        debug!("Successfully applied interface configurations");
         Ok(())
     }
 }
@@ -128,14 +127,11 @@ impl Interface {
         RouterInterfaceConfig {
             ifindex: self.ifindex,
             name: self.name.clone(),
-            description: self.description.to_owned(),
+            description: self.description.clone(),
             iftype: self.iftype.clone(),
             admin_state: self.admin_state,
             mtu: self.mtu,
-            attach_cfg: self
-                .attachment
-                .as_ref()
-                .map(|attachment| attachment.as_config()),
+            attach_cfg: self.attachment.as_ref().map(Attachment::as_config),
         }
     }
 }
@@ -145,8 +141,8 @@ impl Attachment {
     pub(crate) fn as_config(&self) -> AttachConfig {
         match self {
             // FIXME: this should always be FibKey::Id
-            Attachment::VRF(fibkey) => AttachConfig::VRF(fibkey.as_u32()),
-            Attachment::BD => AttachConfig::BD,
+            Attachment::Vrf(fibkey) => AttachConfig::Vrf(fibkey.as_u32()),
+            Attachment::BridgeDomain => AttachConfig::BridgeDomain,
         }
     }
 }

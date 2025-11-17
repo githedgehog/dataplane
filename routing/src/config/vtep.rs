@@ -3,7 +3,6 @@
 
 //! Router VTEP configuration
 
-use crate::RouterError;
 use crate::{evpn::Vtep, routingdb::RoutingDb};
 use tracing::info;
 
@@ -12,7 +11,7 @@ impl Vtep {
     // we validate that the config has a correct vtep
     pub(crate) fn apply(&self, db: &mut RoutingDb) {
         let vtep = &mut db.vtep;
-        let (ip) = self.get_ip().unwrap_or_else(|| unreachable!());
+        let ip = self.get_ip().unwrap_or_else(|| unreachable!());
         if Some(ip) != vtep.get_ip() {
             vtep.set_ip(ip);
             info!("Updated VTEP ip address set to {ip}");
@@ -30,6 +29,6 @@ impl Vtep {
                 let vtep = vrf.get_vtep();
                 vrf.vni.is_some() && (vtep != Some(self.clone()))
             })
-            .for_each(|vrf| vrf.set_vtep(vtep))
+            .for_each(|vrf| vrf.set_vtep(vtep));
     }
 }

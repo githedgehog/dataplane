@@ -4,9 +4,11 @@
 //! Config renderer: route maps
 
 use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render, Rendered};
-use config::internal::routing::routemap::*;
+use config::internal::routing::routemap::{
+    Community, MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch, RouteMapSetAction,
+    RouteMapTable,
+};
 
-/* Impl Display */
 impl Rendered for MatchingPolicy {
     fn rendered(&self) -> String {
         match self {
@@ -31,7 +33,6 @@ impl Rendered for Community {
     }
 }
 
-/* Impl Render */
 impl Render for RouteMapSetAction {
     type Context = ();
     type Output = String;
@@ -62,7 +63,9 @@ impl Render for Vec<RouteMapSetAction> {
     type Output = ConfigBuilder;
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
-        self.iter().for_each(|e| config += e.render(&()));
+        for action in self {
+            config += action.render(&());
+        }
         config
     }
 }
@@ -98,7 +101,9 @@ impl Render for Vec<RouteMapMatch> {
     type Output = ConfigBuilder;
     fn render(&self, _ctx: &Self::Context) -> Self::Output {
         let mut config = ConfigBuilder::new();
-        self.iter().for_each(|m| config += m.render(&()));
+        for m in self {
+            config += m.render(&());
+        }
         config
     }
 }
@@ -131,7 +136,7 @@ impl Render for RouteMap {
 impl Render for RouteMapTable {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
         self.values().for_each(|plist| cfg += plist.render(&()));
         cfg

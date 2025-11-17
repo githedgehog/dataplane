@@ -3,8 +3,6 @@
 
 //! Router configuration
 
-#![allow(unused)]
-
 mod interface;
 mod vrf;
 mod vtep;
@@ -20,7 +18,6 @@ use config::GenId;
 use net::interface::InterfaceIndex;
 use net::vxlan::Vni;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::format;
 use tracing::{debug, error};
 
 use crate::config::interface::ReconfigInterfacePlan;
@@ -43,6 +40,7 @@ pub struct RouterConfig {
 
 /// Builder methods
 impl RouterConfig {
+    #[must_use]
     pub fn new(genid: GenId) -> Self {
         Self {
             genid,
@@ -52,6 +50,7 @@ impl RouterConfig {
             frr_cfg: None,
         }
     }
+    #[must_use]
     pub fn genid(&self) -> GenId {
         self.genid
     }
@@ -67,6 +66,7 @@ impl RouterConfig {
     pub fn set_frr_config(&mut self, frr_cfg: FrrConfig) {
         self.frr_cfg = Some(frr_cfg);
     }
+    #[must_use]
     pub fn get_frr_config(&self) -> &Option<FrrConfig> {
         &self.frr_cfg
     }
@@ -296,7 +296,7 @@ use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConf
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x2]),
         }));
-        ifconfig.set_attach_cfg(Some(AttachConfig::VRF(100)));
+        ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(100)));
         config.add_interface(ifconfig);
 
         let eth1_idx = InterfaceIndex::try_new(11).unwrap();
@@ -339,7 +339,7 @@ use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConf
     #[test]
     fn test_config_initial() {
         let mut db = create_routing_database();
-        let mut config = build_router_config();
+        let config = build_router_config();
         test_apply_config(&config, &mut db).expect("Should succeed");
     }
 
@@ -447,7 +447,7 @@ use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConf
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
             mac: Mac::from([0x0, 0xFF, 0xaa, 0xbb, 0xcc, 0xdd]),
         }));
-        ifconfig.set_attach_cfg(Some(AttachConfig::VRF(101)));
+        ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(101)));
         test_apply_config(&config, &mut db).expect("Should succeed");
 
         debug!("━━━━━━━━ Test: Detach interface");

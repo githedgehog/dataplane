@@ -4,7 +4,10 @@
 //! Config renderer: prefix list
 
 use crate::frr::renderer::builder::{ConfigBuilder, Render, Rendered};
-use config::internal::routing::prefixlist::*;
+use config::internal::routing::prefixlist::{
+    IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
+    PrefixListTable,
+};
 
 /* Impl Display */
 impl Rendered for PrefixListMatchLen {
@@ -62,7 +65,7 @@ impl Render for PrefixListEntry {
 impl Render for PrefixList {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut config = ConfigBuilder::new();
         let pfx = format!("{} prefix-list {}", self.ipver.rendered(), self.name);
         if let Some(description) = &self.description {
@@ -77,7 +80,7 @@ impl Render for PrefixList {
 impl Render for PrefixListTable {
     type Context = ();
     type Output = ConfigBuilder;
-    fn render(&self, _: &Self::Context) -> ConfigBuilder {
+    fn render(&self, (): &Self::Context) -> ConfigBuilder {
         let mut cfg = ConfigBuilder::new();
         self.values().for_each(|plist| cfg += plist.render(&()));
         cfg

@@ -12,18 +12,13 @@ use crate::processor::confbuild::namegen::VpcInterfacesNames;
 use std::collections::HashMap;
 use tracing::{debug, error};
 
-use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
-use routing::interfaces::interface::{AttachConfig, IfDataEthernet, IfState, IfType};
-
 use config::internal::interfaces::interface::InterfaceConfig;
 use config::internal::routing::vrf::VrfConfig;
 use config::{ConfigError, GwConfig, InternalConfig};
+use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
 
-use routing::frr::renderer::builder::Render;
-
-use routing::evpn::Vtep;
-use routing::rib::vrf::{RouterVrfConfig, VrfId};
-use routing::{config::RouterConfig, interfaces::interface::RouterInterfaceConfig};
+use routing::{AttachConfig, IfDataEthernet, IfState, IfType};
+use routing::{Render, RouterConfig, RouterInterfaceConfig, RouterVrfConfig, VrfId, Vtep};
 
 fn generate_router_vrf_config(
     internal: &InternalConfig,
@@ -102,7 +97,7 @@ fn build_router_interface_config(
     }
 
     // attach to the indicated VRF
-    new.set_attach_cfg(Some(AttachConfig::VRF(vrfid)));
+    new.set_attach_cfg(Some(AttachConfig::Vrf(vrfid)));
 
     Ok(new)
 }

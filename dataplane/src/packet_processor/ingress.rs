@@ -13,8 +13,7 @@ use net::headers::{TryEth, TryIp};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 
-use routing::interfaces::iftablerw::IfTableReader;
-use routing::interfaces::interface::{Attachment, IfState, IfType, Interface};
+use routing::{Attachment, IfState, IfTableReader, IfType, Interface};
 
 use tracectl::trace_target;
 trace_target!("ingress", LevelFilter::WARN, &["pipeline"]);
@@ -47,7 +46,7 @@ impl Ingress {
         let nfi = self.name();
         let ifname = &interface.name;
         match &interface.attachment {
-            Some(Attachment::VRF(fibkey)) => {
+            Some(Attachment::Vrf(fibkey)) => {
                 if packet.try_ip().is_none() {
                     debug!("{nfi}: Processing of non-ip traffic on {ifname} is not supported");
                     packet.done(DoneReason::NotIp);
@@ -57,7 +56,7 @@ impl Ingress {
                 debug!("{nfi}: Packet is for VRF {vrfid}");
                 packet.get_meta_mut().vrf = Some(vrfid);
             }
-            Some(Attachment::BD) => {
+            Some(Attachment::BridgeDomain) => {
                 debug!("{nfi}: Bridge domains are not supported");
                 packet.done(DoneReason::InterfaceUnsupported);
             }

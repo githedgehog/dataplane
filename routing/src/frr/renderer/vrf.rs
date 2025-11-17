@@ -6,7 +6,6 @@
 use crate::frr::renderer::builder::{ConfigBuilder, MARKER, Render};
 use config::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 
-/* impl Render */
 impl Render for VrfConfig {
     type Context = ();
     type Output = ConfigBuilder;
@@ -44,6 +43,7 @@ impl Render for VrfConfigTable {
     }
 }
 
+#[must_use]
 fn render_vrf_bgp(vrf: &VrfConfig) -> ConfigBuilder {
     let mut cfg = ConfigBuilder::new();
     if let Some(bgp) = vrf.bgp.as_ref() {
@@ -51,6 +51,8 @@ fn render_vrf_bgp(vrf: &VrfConfig) -> ConfigBuilder {
     }
     cfg
 }
+
+#[must_use]
 fn render_vrf_ospf(vrf: &VrfConfig) -> ConfigBuilder {
     let mut cfg = ConfigBuilder::new();
     if let Some(ospf) = vrf.ospf.as_ref() {
@@ -58,6 +60,8 @@ fn render_vrf_ospf(vrf: &VrfConfig) -> ConfigBuilder {
     }
     cfg
 }
+
+#[must_use]
 pub fn render_vrfs_bgp(vrf_table: &VrfConfigTable) -> ConfigBuilder {
     let mut cfg = ConfigBuilder::new();
     vrf_table
@@ -65,6 +69,8 @@ pub fn render_vrfs_bgp(vrf_table: &VrfConfigTable) -> ConfigBuilder {
         .for_each(|vrf| cfg += render_vrf_bgp(vrf));
     cfg
 }
+
+#[must_use]
 pub fn render_vrfs_ospf(vrf_table: &VrfConfigTable) -> ConfigBuilder {
     let mut cfg = ConfigBuilder::new();
     vrf_table

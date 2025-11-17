@@ -13,26 +13,20 @@ use pipeline::NetworkFunction;
 use std::net::IpAddr;
 use tracing::{debug, error, warn};
 
-use routing::fib::fibobjects::{EgressObject, FibEntry, PktInstruction};
-use routing::fib::fibtable::FibTableReader;
-use routing::fib::fibtype::FibKey;
-
-use routing::evpn::Vtep;
-use routing::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
-use routing::rib::vrf::VrfId;
+use routing::{
+    EgressObject, Encapsulation, FibEntry, FibKey, FibTableReader, PktInstruction, VrfId, Vtep,
+    VxlanEncapsulation,
+};
 
 use net::headers::Headers;
 use net::headers::Net;
 use net::interface::InterfaceIndex;
 use net::ip::NextHeader;
-use net::ipv4::Ipv4;
-use net::ipv4::UnicastIpv4Addr;
-use net::ipv6::Ipv6;
-use net::ipv6::UnicastIpv6Addr;
+use net::ipv4::{Ipv4, UnicastIpv4Addr};
+use net::ipv6::{Ipv6, UnicastIpv6Addr};
 use net::packet::VpcDiscriminant;
 use net::udp::UdpEncap;
-use net::vxlan::Vxlan;
-use net::vxlan::VxlanEncap;
+use net::vxlan::{Vxlan, VxlanEncap};
 
 use tracectl::trace_target;
 trace_target!("ip-forward", LevelFilter::WARN, &["pipeline"]);
