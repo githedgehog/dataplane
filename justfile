@@ -17,6 +17,13 @@ dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
+# List out the available commands
+[private]
+[default]
+@default:
+    just --list --justfile {{ justfile() }}
+
+
 version_extra := ""
 version := env("VERSION", "") || `git describe --tags --dirty --always` + version_extra
 
@@ -129,10 +136,6 @@ _define_truncate128 := 'truncate128() { printf -- "%s" "${1::128}" ; }'
 [private]
 _build_time := datetime_utc("%+")
 
-# List out the available commands
-[private]
-@default:
-    just --list --justfile {{ justfile() }}
 
 # Run cargo with RUSTFLAGS computed based on profile
 [script]
