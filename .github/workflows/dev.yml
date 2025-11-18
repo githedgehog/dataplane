@@ -431,6 +431,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+
       - name: Login to ghcr.io
         uses: docker/login-action@v3
         with:
@@ -441,3 +447,45 @@ jobs:
       - name: Push release container
         run: |
           just push-release-container
+
+      # Bump dataplane in the fabricator repository
+
+      - name: Checkout fabricator repository
+        uses: actions/checkout@v5
+        with:
+          repository: githedgehog/fabricator
+          path: fab-repo
+          persist-credentials: false
+
+      - name: Bump dataplane in fabricator
+        working-directory: fab-repo
+        run: |
+          sed -i "s/^\tDataplaneVersion.*/\tDataplaneVersion=meta.Version(\"${{ github.ref_name }}\")/" pkg/fab/versions.go
+          go fmt pkg/fab/versions.go
+
+      - name: Generate token for the fabricator repository
+        uses: actions/create-github-app-token@v2
+        id: fab-app-token
+        with:
+          app-id: ${{ secrets.FAB_APP_ID }}
+          private-key: ${{ secrets.FAB_PRIVATE_KEY }}
+          repositories: |
+            fabricator
+
+      - name: Create Pull Request for fabricator
+        uses: peter-evans/create-pull-request@v7
+        id: fab-pr
+        with:
+          token: ${{ steps.fab-app-token.outputs.token }}
+          path: fab-repo
+          branch: pr/auto/dataplane-bump
+          commit-message: |
+            bump: dataplane to ${{ github.ref_name }}
+
+            This is an automated commit created by GitHub Actions workflow,
+            in the dataplane repository.
+          signoff: true
+          title: "bump: dataplane to ${{ github.ref_name }}"
+          body: |
+            This is an automated Pull Request created by GitHub Actions workflow,
+            in the dataplane repository.
