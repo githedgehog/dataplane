@@ -482,6 +482,17 @@ push-container: build-container && version
       sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
     fi
 
+# Publish release container image
+[script]
+push-release-container:
+    {{ _define_truncate128 }}
+    sudo -E docker pull \
+      "{{ _container_repo }}:$(truncate128 "{{ _slug }}.release")"
+    sudo -E docker tag \
+      "{{ _container_repo }}:$(truncate128 "{{ _slug }}.release")" \
+      "{{ _container_repo }}:{{ version }}"
+    sudo -E docker push "{{ _container_repo }}:{{ version }}"
+
 # Print names of container images to build or push
 [script]
 print-container-tags:
