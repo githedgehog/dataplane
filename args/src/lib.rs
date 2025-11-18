@@ -957,8 +957,8 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 }
 
 #[derive(Parser, serde::Serialize)]
-#[command(name = "Hedgehog Fabric Gateway dataplane")]
-#[command(version = "1.0")] // FIXME
+#[command(name = "Hedgehog Gateway dataplane version:")]
+#[command(version = option_env!("VERSION").unwrap_or("dev"))]
 #[command(about = "A dataplane for hedgehog's fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CmdArgs {
