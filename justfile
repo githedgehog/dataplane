@@ -17,6 +17,13 @@ dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
+version_extra := ""
+version := env("VERSION", "") || `git describe --tags --dirty --always` + version_extra
+
+# Print version that will be used in the build
+version:
+  @echo "Using version: {{version}}"
+
 # Set to FUZZ to run the full fuzzer in the fuzz recipe
 _test_type := "DEFAULT"
 
@@ -193,6 +200,7 @@ compile-env *args:
       --env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
       --env DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}" \
       --env TEST_TYPE="{{ _test_type }}" \
+      --env VERSION="{{ version }}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
@@ -392,7 +400,7 @@ sh *args:
 
 # Build containers in a sterile environment
 [script]
-build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane" "--package=dataplane-cli")
+build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane" "--package=dataplane-cli") && version
     {{ _just_debuggable_ }}
     {{ _define_truncate128 }}
     mkdir -p "artifact/{{ target }}/{{ profile }}"
@@ -460,7 +468,7 @@ build-container-quick: (compile-env "cargo" "--locked" "build" ("--target=" + ta
 
 # Build and push containers
 [script]
-push-container: build-container
+push-container: build-container && version
     {{ _define_truncate128 }}
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
