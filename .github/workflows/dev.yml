@@ -82,7 +82,7 @@ jobs:
 
   check:
     needs: [check_changes]
-    if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
     permissions:
       checks: "write"
       pull-requests: "write"
@@ -324,7 +324,7 @@ jobs:
           limit-access-to-actor: true
 
   vlab:
-    if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
     needs:
       - check
 
