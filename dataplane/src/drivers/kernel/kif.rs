@@ -90,11 +90,47 @@ impl Kif {
 }
 
 /// Get the ifindex of the interface with the given name.
-pub fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<InterfaceIndex> {
-    interfaces
+pub fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> io::Result<InterfaceIndex> {
+    let pos = interfaces
         .iter()
         .position(|interface| interface.name == name)
-        .and_then(|pos| InterfaceIndex::try_new(interfaces[pos].index).ok())
+        .ok_or_else(|| io::Error::other(format!("Unknown interface '{name}'")))?;
+
+    let ifindex = InterfaceIndex::try_new(interfaces[pos].index).map_err(io::Error::other)?;
+
+    Ok(ifindex)
+}
+
+macro_rules! INTERFACE_FMT {
+    ($ifindex:expr, $name:expr, $mac:expr, $opstate:expr, $admstate:expr) => {
+        format_args!(
+            "{:>8} {:<16} {:<20} {:<12} {:<6}",
+            $ifindex, $name, $mac, $opstate, $admstate
+        )
+    };
+}
+
+fn log_kernel_interfaces(interfaces: &[Interface], msg: &str) {
+    info!("━━━━━━━━━━━━━━━ {} ━━━━━━━━━━━━━━━", msg);
+    info!(
+        "{}",
+        INTERFACE_FMT!("ifindex", "name", "mac", "OpState", "AdmState"),
+    );
+    for interface in interfaces {
+        let mac = interface
+            .mac_addr
+            .map_or_else(|| "none".to_string(), |genid| genid.to_string());
+        info!(
+            "{}",
+            INTERFACE_FMT!(
+                interface.index,
+                interface.name,
+                mac,
+                interface.oper_state.to_string(),
+                if interface.is_up() { "up" } else { "down" }
+            )
+        );
+    }
 }
 
 /// Build a table of kernel interfaces to receive packets from (or send to).
@@ -103,47 +139,30 @@ pub fn get_interface_ifindex(interfaces: &[Interface], name: &str) -> Option<Int
 pub fn get_interfaces(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Result<Vec<Kif>> {
     /* learn about existing kernel network interfaces. We need these to know their ifindex  */
     let interfaces = netdev::get_interfaces();
+    log_kernel_interfaces(interfaces.as_slice(), "Available kernel interfaces");
 
-    /* build kiftable */
+    /* build kif vector */
     let mut kifs = Vec::new();
 
     /* check what interfaces we're interested in from args */
     let ifnames: Vec<String> = args.into_iter().map(|x| x.as_ref().to_owned()).collect();
     if ifnames.is_empty() {
         warn!("No interfaces have been specified. No packet will be processed!");
-        warn!("Consider specifying them with --interface. ANY captures over all interfaces.");
         return Ok(kifs);
     }
 
-    if ifnames.len() == 1 && ifnames[0].eq_ignore_ascii_case("ANY") {
-        /* use all interfaces */
-        for interface in &interfaces {
-            let if_index = match InterfaceIndex::try_new(interface.index) {
-                Ok(if_index) => if_index,
-                Err(e) => match e {
-                    net::interface::InterfaceIndexError::Zero => {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-                    }
-                },
-            };
-            match Kif::new(if_index, &interface.name) {
-                Ok(kif) => kifs.push(kif),
-                Err(e) => error!("Skipping interface '{}': {e}", interface.name),
-            }
-        }
-    } else {
-        /* use only the interfaces specified in args */
-        for name in &ifnames {
-            if let Some(ifindex) = get_interface_ifindex(&interfaces, name) {
-                match Kif::new(ifindex, name) {
-                    Ok(kif) => kifs.push(kif),
-                    Err(e) => error!("Skipping interface '{name}': {e}"),
-                }
-            } else {
-                warn!("Could not find ifindex of interface '{name}'");
-            }
-        }
+    /* populate vector with a [`Kif`] if the interface exists, else fail */
+    for ifname in &ifnames {
+        let if_index = get_interface_ifindex(&interfaces, ifname)?;
+        kifs.push(Kif::new(if_index, ifname)?);
     }
+
+    /* interfaces that will be used */
+    let to_use: Vec<_> = interfaces
+        .iter()
+        .filter_map(|i| ifnames.contains(&i.name).then_some(i.clone()))
+        .collect();
+    log_kernel_interfaces(to_use.as_slice(), "Will use the following interfaces");
 
     Ok(kifs)
 }
