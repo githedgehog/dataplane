@@ -144,7 +144,7 @@ fn main() {
     .expect("Failed to start gRPC server");
 
     /* start driver with the provided pipeline builder */
-    match args.driver_name() {
+    let e = match args.driver_name() {
         "dpdk" => {
             info!("Using driver DPDK...");
             todo!();
@@ -156,12 +156,17 @@ fn main() {
                 args.kernel_interfaces(),
                 args.kernel_num_workers(),
                 &pipeline_factory,
-            );
+            )
         }
         other => {
             error!("Unknown driver '{other}'. Aborting...");
             panic!("Packet processing pipeline failed to start. Aborting...");
         }
+    };
+
+    if let Err(e) = e {
+        error!("Failed to start driver: {e}");
+        std::process::exit(-1);
     }
 
     let exit_code = stop_rx.recv().expect("failed to receive stop signal");
