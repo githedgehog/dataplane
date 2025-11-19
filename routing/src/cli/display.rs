@@ -13,11 +13,11 @@
 //!    - Still, FIXME(fredi): make that distinction clearer
 
 use crate::atable::adjacency::{Adjacency, AdjacencyTable};
-use crate::cpi::{CpiStats, CpiStatus, StatsRow};
 use crate::fib::fibgroupstore::FibRoute;
 use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::fib::fibtype::{Fib, FibKey};
 use crate::frr::frrmi::{FrrAppliedConfig, Frrmi, FrrmiStats};
+use crate::router::cpi::{CpiStats, CpiStatus, StatsRow};
 
 use crate::rib::VrfTable;
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
@@ -29,8 +29,8 @@ use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
+use super::pretty_utils::{Heading, line};
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
-use crate::pretty_utils::{Heading, line};
 
 use chrono::DateTime;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};

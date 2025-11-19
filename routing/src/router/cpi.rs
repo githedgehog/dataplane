@@ -4,10 +4,11 @@
 //! Main processing functions of the Control-plane interface (CPI)
 
 use crate::evpn::RmacEntry;
-use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
-use crate::rio::Rio;
 use crate::routingdb::RoutingDb;
-use crate::rpc_adapt::is_evpn_route;
+
+use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
+use crate::router::rio::Rio;
+use crate::router::rpc_adapt::is_evpn_route;
 
 use bytes::Bytes;
 use chrono::{DateTime, Local};
@@ -121,22 +122,13 @@ fn build_connect_info(synt: u64) -> ConnectInfo {
 /* convenience trait */
 trait RpcOperation {
     type ObjectStore;
-    fn connect(&self, _stats: &mut Self::ObjectStore, _: &SocketAddr) -> RpcResultCode
-    where
-        Self: Sized,
-    {
+    fn connect(&self, _stats: &mut Self::ObjectStore, _: &SocketAddr) -> RpcResultCode {
         RpcResultCode::InvalidRequest
     }
-    fn add(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
-    where
-        Self: Sized,
-    {
+    fn add(&self, _db: &mut Self::ObjectStore) -> RpcResultCode {
         RpcResultCode::InvalidRequest
     }
-    fn del(&self, _db: &mut Self::ObjectStore) -> RpcResultCode
-    where
-        Self: Sized,
-    {
+    fn del(&self, _db: &mut Self::ObjectStore) -> RpcResultCode {
         RpcResultCode::InvalidRequest
     }
 }
@@ -186,7 +178,6 @@ fn nonlocal_nhop(iproute: &IpRoute) -> bool {
     }
     false
 }
-
 fn on_vrf_lookup_fail(have_config: bool, vrfid: VrfId) -> RpcResultCode {
     error!("Unable to find VRF with id {vrfid}!!");
     if have_config {
@@ -294,7 +285,7 @@ impl RpcOperation for IfAddress {
     }
 }
 
-/* message builders */
+/* RPC message builders */
 fn build_response_msg(
     req: &RpcRequest,
     rescode: RpcResultCode,
@@ -322,7 +313,8 @@ fn build_control_msg(refresh: u8) -> RpcMsg {
     let control = RpcControl { refresh };
     control.wrap_in_msg()
 }
-/* message senders */
+
+/* RPC message senders */
 fn rpc_send_response(
     rio: &mut Rio,
     peer: &SocketAddr,
@@ -459,8 +451,8 @@ fn handle_rpc_msg(rio: &mut Rio, peer: &SocketAddr, msg: &RpcMsg, db: &mut Routi
     }
 }
 
-/* process rx data from UX sock */
-pub fn process_rx_data(rio: &mut Rio, peer: &SocketAddr, data: &[u8], db: &mut RoutingDb) {
+/* process data from CPI */
+pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &[u8], db: &mut RoutingDb) {
     trace!("CPI: recvd {} bytes from {}...", data.len(), peer.pretty());
     let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
     rio.cpistats.last_msg_rx = Some(Local::now());

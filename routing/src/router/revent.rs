@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Router events and evenytlog
+//! Router events and eventlog
 
-use crate::cpi::CpiStatus;
 use crate::event::EventLog;
+use crate::router::cpi::CpiStatus;
 use config::GenId;
 use std::cell::RefCell;
 use std::fmt::Display;

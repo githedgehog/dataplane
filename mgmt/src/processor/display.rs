@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use chrono::{DateTime, Utc};
-use routing::pretty_utils::Heading;
+use routing::Heading;
 use std::fmt::Display;
 
 use crate::processor::gwconfigdb::GwConfigDatabase;

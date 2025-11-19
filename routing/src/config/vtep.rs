@@ -3,7 +3,8 @@
 
 //! Router VTEP configuration
 
-use crate::{evpn::Vtep, routingdb::RoutingDb};
+use crate::evpn::Vtep;
+use crate::routingdb::RoutingDb;
 use tracing::info;
 
 impl Vtep {
@@ -14,7 +15,7 @@ impl Vtep {
         let ip = self.get_ip().unwrap_or_else(|| unreachable!());
         if Some(ip) != vtep.get_ip() {
             vtep.set_ip(ip);
-            info!("Updated VTEP ip address set to {ip}");
+            info!("Updated VTEP ip address to {ip}");
         }
         let mac = self.get_mac().unwrap_or_else(|| unreachable!());
         if Some(mac) != vtep.get_mac() {

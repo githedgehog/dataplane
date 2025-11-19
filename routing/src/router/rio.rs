@@ -4,15 +4,16 @@
 //! Router IO, which includes the control-plane interface CPI and the FRR management interface (FRRMI)
 
 use crate::atable::atablerw::AtableReader;
-use crate::cli::handle_cli_request;
+use crate::cli::handler::handle_cli_request;
 use crate::config::FrrConfig;
-use crate::cpi::{CpiStats, CpiStatus, process_rx_data, rpc_send_control};
-use crate::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
-use crate::revent::{ROUTER_EVENTS, RouterEvent};
+
+use crate::router::cpi::{CpiStats, CpiStatus, process_cpi_data, rpc_send_control};
+use crate::router::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
+use crate::router::revent::{ROUTER_EVENTS, RouterEvent};
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliRequest, CliSerialize};
@@ -351,7 +352,7 @@ pub(crate) fn start_rio(
                     CPSOCK => {
                         while event.is_readable() {
                             if let Ok((len, peer)) = rio.cpi_sock.recv_from(buf.as_mut_slice()) {
-                                process_rx_data(&mut rio, &peer, &buf[..len], &mut db);
+                                process_cpi_data(&mut rio, &peer, &buf[..len], &mut db);
                             } else {
                                 break;
                             }
@@ -433,7 +434,7 @@ mod tests {
     use crate::errors::RouterError;
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
-    use crate::rio::{RioConf, start_rio};
+    use crate::router::rio::{RioConf, start_rio};
     use std::thread;
     use std::time::Duration;
 

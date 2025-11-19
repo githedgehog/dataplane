@@ -10,7 +10,7 @@ use std::rc::Rc;
 use tracing::debug;
 
 #[cfg(test)]
-use crate::pretty_utils::Frame;
+use crate::cli::pretty_utils::Frame;
 
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
