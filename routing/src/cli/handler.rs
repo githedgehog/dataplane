@@ -5,16 +5,18 @@
 
 #![allow(clippy::unnecessary_wraps)]
 
-use crate::cpi::rpc_send_control;
-use crate::display::IfTableAddress;
-use crate::display::{FibGroups, FibViewV4, FibViewV6};
-use crate::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
+use super::display::IfTableAddress;
+use super::display::{FibGroups, FibViewV4, FibViewV6};
+use super::display::{VrfV4Nexthops, VrfV6Nexthops, VrfViewV4, VrfViewV6};
+
 use crate::fib::fibtype::{FibRouteV4Filter, FibRouteV6Filter};
-use crate::revent::ROUTER_EVENTS;
 use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
-use crate::rio::Rio;
+
+use crate::router::cpi::rpc_send_control;
+use crate::router::revent::ROUTER_EVENTS;
+use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};

@@ -421,10 +421,10 @@ impl VrfTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::pretty_utils::Frame;
     use crate::fib::fibobjects::{EgressObject, PktInstruction};
     use crate::fib::fibtype::FibKey;
     use crate::interfaces::tests::build_test_iftable_left_right;
-    use crate::pretty_utils::Frame;
     use crate::rib::encapsulation::Encapsulation;
     use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
     use crate::rib::vrf::tests::{

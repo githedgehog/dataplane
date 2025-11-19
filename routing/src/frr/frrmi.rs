@@ -11,7 +11,7 @@ use std::{collections::VecDeque, time::Duration};
 use thiserror::Error;
 
 use crate::config::FrrConfig;
-use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
+use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use config::GenId;
 
 #[allow(unused)]

@@ -3,6 +3,13 @@
 
 //! Module that implements a router instance
 
+pub(crate) mod cpi;
+pub(crate) mod ctl;
+#[macro_use]
+pub(crate) mod revent;
+pub(crate) mod rio;
+pub(crate) mod rpc_adapt;
+
 use derive_builder::Builder;
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -10,11 +17,11 @@ use tracing::{debug, error};
 
 use crate::atable::atablerw::{AtableReader, AtableReaderFactory};
 use crate::atable::resolver::AtResolver;
-use crate::ctl::RouterCtlSender;
 use crate::errors::RouterError;
 use crate::fib::fibtable::{FibTableReader, FibTableReaderFactory, FibTableWriter};
 use crate::interfaces::iftablerw::{IfTableReader, IfTableReaderFactory, IfTableWriter};
-use crate::rio::{RioConf, RioHandle, start_rio};
+use crate::router::ctl::RouterCtlSender;
+use crate::router::rio::{RioConf, RioHandle, start_rio};
 
 use args::DEFAULT_DP_UX_PATH;
 use args::DEFAULT_DP_UX_PATH_CLI;
@@ -56,7 +63,6 @@ pub struct Router {
     iftr: IfTableReader,
     fibtr: FibTableReader,
 }
-
 
 impl Router {
     /// Build the router IO configuration from the router configuration

@@ -15,8 +15,8 @@ use tracing::{debug, error, info, warn};
 use crate::RouterError;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
-use crate::revent::{ROUTER_EVENTS, RouterEvent, revent};
-use crate::rio::{CPSOCK, Rio};
+use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
+use crate::router::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
 
 type RouterCtlReplyTx = AsyncSender<RouterCtlReply>;

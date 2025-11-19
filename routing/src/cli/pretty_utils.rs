@@ -6,6 +6,7 @@
 use std::fmt::Display;
 const LINE_WIDTH: usize = 81;
 
+#[allow(unused)]
 pub struct Frame(pub String);
 impl Display for Frame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
