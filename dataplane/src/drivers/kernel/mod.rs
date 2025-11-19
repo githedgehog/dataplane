@@ -24,6 +24,7 @@ use tracectl::trace_target;
 #[allow(unused)]
 use tracing::{debug, error, info, trace, warn};
 
+use super::DriverError;
 use super::tokio_util::run_in_local_tokio_runtime;
 use kif::{Kif, bring_kifs_up};
 use worker::Worker;
@@ -70,53 +71,44 @@ impl DriverKernel {
     /// - `args`: kernel driver CLI parameters (e.g., `--interface` list)
     /// - `workers`: number of worker threads / pipelines
     /// - `setup_pipeline`: factory returning a **fresh** `DynPipeline<TestBuffer>` per worker
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// # Errors
+    ///    Returns [`DriverError`] in case the driver fails to start successfully.
     pub fn start(
         stop_tx: std::sync::mpsc::Sender<i32>,
         args: impl IntoIterator<Item = impl AsRef<str> + Clone>,
         num_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
-    ) {
+    ) -> Result<(), DriverError> {
         info!("Collecting interfaces from config");
-        let interfaces = match kif::get_interfaces(args) {
-            Ok(t) => t,
-            Err(e) => {
-                error!("Failed to initialize kernel interface table: {e}");
-                return;
-            }
-        };
+        let interfaces = kif::get_interfaces(args)?;
 
         // ensure that the kernel interfaces for rx/tx are up
-        if let Err(e) =
-            run_in_local_tokio_runtime(async || bring_kifs_up(interfaces.as_slice()).await)
-        {
-            error!("Interface bring up failed: {e}");
-            return;
-        }
+        run_in_local_tokio_runtime(async || bring_kifs_up(interfaces.as_slice()).await)?;
 
         // Spawn workers
         let worker_handles =
             Self::spawn_workers(num_workers, setup_pipeline, interfaces.as_slice());
 
         let control_builder = thread::Builder::new().name("kernel-driver-controller".to_string());
-        #[allow(clippy::expect_used)]
-        control_builder
-            .spawn(move || {
-                for (id, handle) in worker_handles.into_iter().enumerate() {
-                    info!("Waiting for workers to finish");
-                    match handle.join() {
-                        Ok(result) => match result {
-                            Ok(()) => info!("Worker {id} exited successfully"),
-                            Err(e) => error!("Worker {id} exited with error: {e}"),
-                        },
-                        Err(e) => error!("Unable to spawn worker {id} error: {e:?}"),
-                    }
+        control_builder.spawn(move || {
+            for (id, handle) in worker_handles.into_iter().enumerate() {
+                info!("Waiting for workers to finish");
+                match handle.join() {
+                    Ok(result) => match result {
+                        Ok(()) => info!("Worker {id} exited successfully"),
+                        Err(e) => error!("Worker {id} exited with error: {e}"),
+                    },
+                    Err(e) => error!("Unable to spawn worker {id} error: {e:?}"),
                 }
+            }
 
-                // Exiting with error as it's not expected for all workers to finish
-                error!("All workers finished unexpectedly");
-                stop_tx.send(1).expect("Failed to send stop signal");
-            })
-            .expect("Failed to spawn kernel driver control thread");
+            // Exiting with error as it's not expected for all workers to finish
+            error!("All workers finished unexpectedly");
+            #[allow(clippy::expect_used)]
+            stop_tx.send(1).expect("Failed to send stop signal");
+        })?;
+
+        Ok(())
     }
 }

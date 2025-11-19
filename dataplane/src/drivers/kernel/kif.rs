@@ -9,7 +9,7 @@ use net::interface::InterfaceIndex;
 use rtnetlink::packet_route::link::LinkFlags;
 use rtnetlink::{Handle, LinkUnspec};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone)]
 /// Simple representation of a kernel interface.
@@ -141,17 +141,14 @@ pub fn get_interfaces(args: impl IntoIterator<Item = impl AsRef<str>>) -> io::Re
     let interfaces = netdev::get_interfaces();
     log_kernel_interfaces(interfaces.as_slice(), "Available kernel interfaces");
 
-    /* build kif vector */
-    let mut kifs = Vec::new();
-
     /* check what interfaces we're interested in from args */
     let ifnames: Vec<String> = args.into_iter().map(|x| x.as_ref().to_owned()).collect();
     if ifnames.is_empty() {
-        warn!("No interfaces have been specified. No packet will be processed!");
-        return Ok(kifs);
+        return Err(io::Error::other("At least one interface must be specified"));
     }
 
     /* populate vector with a [`Kif`] if the interface exists, else fail */
+    let mut kifs = Vec::new();
     for ifname in &ifnames {
         let if_index = get_interface_ifindex(&interfaces, ifname)?;
         kifs.push(Kif::new(if_index, ifname)?);
