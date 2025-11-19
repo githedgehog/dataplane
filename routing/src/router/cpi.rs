@@ -452,11 +452,11 @@ fn handle_rpc_msg(rio: &mut Rio, peer: &SocketAddr, msg: &RpcMsg, db: &mut Routi
 }
 
 /* process data from CPI */
-pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &[u8], db: &mut RoutingDb) {
+pub fn process_cpi_data(rio: &mut Rio, peer: &SocketAddr, data: &mut Bytes, db: &mut RoutingDb) {
     trace!("CPI: recvd {} bytes from {}...", data.len(), peer.pretty());
-    let mut buf_rx = Bytes::copy_from_slice(data); // TODO: avoid this copy
     rio.cpistats.last_msg_rx = Some(Local::now());
-    match RpcMsg::decode(&mut buf_rx) {
+
+    match RpcMsg::decode(data) {
         Ok(msg) => handle_rpc_msg(rio, peer, &msg, db),
         Err(e) => {
             rio.cpistats.decode_failures += 1;
