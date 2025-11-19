@@ -16,6 +16,7 @@ use crate::router::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent};
 use crate::routingdb::RoutingDb;
 
+use bytes::BytesMut;
 use cli::cliproto::{CliRequest, CliSerialize};
 use dplane_rpc::socks::RpcCachedSock;
 
@@ -323,7 +324,7 @@ pub(crate) fn start_rio(
         info!("CLI: Listening at {}.", &rio.cli_sock_path);
         info!("FRRMI: will connect to {}.", &rio.frrmi.get_remote());
         let mut events = Events::with_capacity(64);
-        let mut buf = vec![0; 1024];
+        let mut buf = BytesMut::with_capacity(2048); // reused by cpi / cli
 
         /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(fibtw, iftw, atabler);
@@ -351,8 +352,10 @@ pub(crate) fn start_rio(
                 match event.token() {
                     CPSOCK => {
                         while event.is_readable() {
-                            if let Ok((len, peer)) = rio.cpi_sock.recv_from(buf.as_mut_slice()) {
-                                process_cpi_data(&mut rio, &peer, &buf[..len], &mut db);
+                            buf.resize(2048, 0);
+                            if let Ok((len, peer)) = rio.cpi_sock.recv_from(buf.as_mut()) {
+                                let mut data = buf.split_to(len).freeze();
+                                process_cpi_data(&mut rio, &peer, &mut data, &mut db);
                             } else {
                                 break;
                             }
@@ -371,7 +374,8 @@ pub(crate) fn start_rio(
                     }
                     CLISOCK => {
                         while event.is_readable() {
-                            if let Ok((len, peer)) = rio.clisock.recv_from(buf.as_mut_slice()) {
+                            buf.resize(2048, 0);
+                            if let Ok((len, peer)) = rio.clisock.recv_from(buf.as_mut()) {
                                 if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
                                     handle_cli_request(&mut rio, &peer, request, &db);
                                 }
