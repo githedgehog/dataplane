@@ -7,17 +7,18 @@ use argsparse::{ArgsError, CliArgs};
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
-use std::collections::HashMap;
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
 use std::rc::Rc;
 use terminal::Terminal;
 
-pub mod argsparse;
-pub mod cmdtree;
-pub mod cmdtree_dp;
-pub mod completions;
-pub mod terminal;
+use crate::terminal::TermInput;
+
+pub(crate) mod argsparse;
+pub(crate) mod cmdtree;
+pub(crate) mod cmdtree_dp;
+pub(crate) mod completions;
+pub(crate) mod terminal;
 
 const DEFAULT_CLI_BIND: &str = "/var/run/dataplane/cliclient.sock";
 const DEFAULT_DATAPLANE_PATH: &str = "/var/run/dataplane/cli.sock";
@@ -93,12 +94,10 @@ fn execute_remote_action(
     args: &CliArgs,          // action arguments
     terminal: &mut Terminal, // this terminal
 ) {
-    // don't issue request if we're not connected to dataplane
     if !terminal.is_connected() {
         print_err!("Not connnected to dataplane.");
         return;
     }
-
     // serialize request and send it
     if let Ok(request) = CliRequest::new(action, args.remote.clone()).serialize() {
         match terminal.sock.send(&request) {
@@ -144,23 +143,6 @@ fn execute_action(
     }
 }
 
-/// Build a map of arguments from line input by user
-fn get_args(line: &str) -> HashMap<String, String> {
-    let mut args = HashMap::new();
-    let mut token_args: Vec<&str> = line.split_whitespace().collect();
-    token_args = token_args
-        .iter()
-        .filter(|token| token.contains("="))
-        .cloned()
-        .collect();
-    for targ in token_args.iter() {
-        if let Some((arg, arg_value)) = targ.split_once("=") {
-            args.insert(arg.to_owned(), arg_value.to_owned());
-        }
-    }
-    args
-}
-
 fn show_bad_arg(input_line: &str, argname: &str) {
     if let Some((good, _bad)) = input_line.split_once(argname) {
         println!(" {}{} {}", good, argname.red(), "??".red());
@@ -168,14 +150,13 @@ fn show_bad_arg(input_line: &str, argname: &str) {
 }
 
 /// Build arguments from map of arguments
-fn process_args(input_line: &str) -> Result<CliArgs, ()> {
-    let args_map = get_args(input_line);
-    let args = CliArgs::from_args_map(args_map);
+fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
+    let args = CliArgs::from_args_map(input.get_args().clone());
     match args {
         Err(ArgsError::UnrecognizedArgs(args_map)) => {
             print_err!(" Unrecognized arguments");
             for (arg, _value) in args_map.iter() {
-                show_bad_arg(input_line, arg);
+                show_bad_arg(input.get_line(), arg);
             }
             Err(())
         }
@@ -202,7 +183,7 @@ fn main() {
         let mut input = terminal.prompt();
         if let Some(node) = cmds.find_best(input.get_tokens()) {
             if let Some(action) = &node.action {
-                if let Ok(args) = process_args(input.get_line()) {
+                if let Ok(args) = process_args(&input) {
                     execute_action(*action, &args, &mut terminal);
                 }
             } else if node.depth > 0 {
