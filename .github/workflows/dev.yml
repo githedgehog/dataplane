@@ -305,7 +305,7 @@ jobs:
         name: "run clippy"
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
-            ${{matrix.profile.sterile}} cargo clippy --all-targets --all-features -- -D warnings
+            ${{matrix.profile.sterile}} cargo clippy --workspace --no-deps --all-targets --all-features -- -D warnings
 
       - id: "docs"
         name: "run rustdoc"

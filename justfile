@@ -530,7 +530,7 @@ print-container-tags:
 
 # Run Clippy like you're in CI
 [script]
-clippy *args: (cargo "clippy" "--all-targets" "--all-features" args "--" "-D" "warnings")
+clippy *args: (cargo "clippy" "--workspace" "--no-deps" "--all-targets" "--all-features" args "--" "-D" "warnings")
 
 # Serve rustdoc output locally (using port 8000)
 [script]
