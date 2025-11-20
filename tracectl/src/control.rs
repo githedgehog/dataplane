@@ -372,7 +372,7 @@ impl TracingControl {
         Ok(db.default)
     }
 
-    /// Parse a string made of comma-separated tag=level; level = [off,error,warn,info,debug,trace]
+    /// Parse a string made of comma-separated tag=level; level = \[`off,error,warn,info,debug,trace`\]
     fn parse_tracing_config(input: &str) -> Result<OrderMap<String, LevelFilter>, TraceCtlError> {
         let mut result = OrderMap::new();
 
