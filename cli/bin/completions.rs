@@ -9,7 +9,6 @@ use rustyline::completion::Completer;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use std::collections::VecDeque;
 use std::rc::Rc;
 
 #[derive(Default)]
@@ -33,79 +32,85 @@ impl Hinter for CmdCompleter {
 impl Highlighter for CmdCompleter {}
 impl Validator for CmdCompleter {}
 impl Helper for CmdCompleter {}
+
 impl Completer for CmdCompleter {
-    type Candidate = String; // may want this to be s/t different
+    type Candidate = String;
+
     fn complete(
         &self,
         line: &str,
         pos: usize,
         _ctx: &rustyline::Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-        let mut matched: VecDeque<&str> = VecDeque::new();
-        let mut left: VecDeque<&str> = line.split_whitespace().collect();
-        let node = self.cmdtree.lookup(&mut left, &mut matched);
-        let mut candidates: Vec<String> =
-            node.children.values().map(|cmd| cmd.name.clone()).collect();
+        let input = &line[..pos];
+        let tokens: Vec<String> = input.split_whitespace().map(|s| s.to_string()).collect();
+        let mut candidates = Vec::new();
+        let empty = "".to_string();
 
-        // if line has args, don't offer child nodes: only expect args/choices
-        if line.contains("=") {
-            candidates.truncate(0);
+        let (path_tokens, last) = if input.ends_with(' ') {
+            (tokens.as_slice(), &empty)
+        } else {
+            let split = tokens.split_at(tokens.len().saturating_sub(1));
+            (split.0, split.1.last().unwrap_or(&empty))
+        };
+
+        // starting at root, walk down the tree with the tokens
+        let mut node = self.cmdtree.as_ref();
+        for t in path_tokens {
+            // stop if we step on an option
+            if t.contains('=') {
+                break;
+            }
+            if let Some(child) = node.children.get(t) {
+                node = child;
+            } else {
+                // node does not have t as children
+                return Ok((pos - last.len(), candidates /* empty */));
+            }
         }
 
-        // remove completed arg pairs from leftovers
-        left = left
-            .iter()
-            .filter(|word| match word.split_once("=") {
-                Some((_arg, val)) => val.is_empty(),
-                None => true,
-            })
-            .cloned()
-            .collect();
+        // If last token ends with '=', do not attempt to complete the value,
+        // except if the node has args and the arg is recognizable and has choices.
+        // In that case, expose the choices. If input is arg=XYZ, then expose only
+        // the choices that start with xyz.
+        if last.contains('=') {
+            let (maybearg, value) = last.split_once('=').unwrap_or_else(|| unreachable!());
+            if let Some(arg) = node.find_arg(maybearg) {
+                candidates.clear(); // sanity
+                if !arg.choices.is_empty() {
+                    let mut choices: Vec<_> = arg.choices.to_vec();
+                    candidates.append(&mut choices);
+                }
+                if let Some(prefetch) = &arg.prefetcher {
+                    let mut values = prefetch();
+                    candidates.append(&mut values);
+                }
+                // input is arg=fragment
+                if !value.is_empty() {
+                    candidates.retain(|c| c.starts_with(value));
+                    return Ok((pos - value.len(), candidates));
+                }
+            }
+            return Ok((pos - last.len(), candidates));
+        }
 
-        // always offer args if there, except those already in the line
+        // let args be candidates with "=", unless they are in the input line already.
+        // If the arg is declared as multi, show it regardless since it may appear multiple times
         for arg in &node.args {
-            if !line.contains(&arg.name) {
+            if arg.name.starts_with(last) && (!input.contains(&arg.name) || arg.multi) {
                 candidates.push(arg.name.clone() + "=");
             }
         }
 
-        // FIXME
-        if let Some(word) = left.front() {
-            if word.contains("=") {
-                #[allow(clippy::collapsible_if)]
-                if let Some((arg_side, value_side)) = word.split_once("=") {
-                    if let Some(arg) = node.find_arg(arg_side) {
-                        // if left side of = is arg and it has choices, offer them
-                        if !arg.choices.is_empty() {
-                            candidates.truncate(0); //  not needed. the next code truncates
-                            candidates = arg.choices.iter().filter(|_| true).cloned().collect();
-                        }
-                        if !value_side.is_empty() {
-                            candidates = candidates
-                                .iter()
-                                .filter(|choice| choice.starts_with(value_side))
-                                .cloned()
-                                .collect();
-                        }
-                    }
+        // if we did not fill candidates (there are no args), offer children
+        if candidates.is_empty() {
+            for c in node.children.values() {
+                if c.name.starts_with(last) {
+                    candidates.push(c.name.clone());
                 }
-            } else if !word.is_empty() {
-                candidates = candidates
-                    .iter()
-                    .filter(|cand| cand.to_lowercase().starts_with(word))
-                    .cloned()
-                    .collect();
             }
         }
 
-        let mut newpos = 0;
-        if !matched.is_empty() {
-            let last = matched.pop_back().unwrap();
-            newpos = line.find(last).unwrap() + last.len() + 1;
-            if newpos > pos {
-                newpos = pos;
-            }
-        }
-        Ok((newpos, candidates))
+        Ok((pos - last.len(), candidates))
     }
 }
