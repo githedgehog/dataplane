@@ -266,10 +266,8 @@ impl Display for PacketMeta {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  metadata:")?;
         write!(f, "   ")?;
-        fmt_opt(f, " iport", self.iport, false)?;
         fmt_opt(f, " iif", self.iif, false)?;
         fmt_opt(f, " oif", self.oif, false)?;
-        fmt_opt(f, " oport", self.oport, true)?;
         fmt_opt(f, "    src-vpcd", self.src_vpcd, false)?;
         fmt_opt(f, "    dst-vpcd", self.dst_vpcd, true)?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
