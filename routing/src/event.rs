@@ -136,7 +136,7 @@ mod test {
         TEST.with(|el| {
             let el = el.borrow();
             println!("{el}");
-        })
+        });
     }
 
     #[test]
@@ -159,6 +159,6 @@ mod test {
         TEST.with(|el| {
             let el = el.borrow();
             println!("{el}");
-        })
+        });
     }
 }

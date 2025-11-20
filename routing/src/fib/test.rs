@@ -67,12 +67,12 @@ mod tests {
 
             let mut fibgroups = HashMap::new();
             fibgroups.insert(1, build_fibgroup(&[e1.clone(), e2.clone()]));
-            fibgroups.insert(2, build_fibgroup(&[e4.clone()]));
-            fibgroups.insert(3, build_fibgroup(&[e7.clone()]));
-            fibgroups.insert(4, build_fibgroup(&[e8.clone()]));
-            fibgroups.insert(5, build_fibgroup(&[e5.clone()]));
+            fibgroups.insert(2, build_fibgroup(std::slice::from_ref(&e4)));
+            fibgroups.insert(3, build_fibgroup(std::slice::from_ref(&e7)));
+            fibgroups.insert(4, build_fibgroup(std::slice::from_ref(&e8)));
+            fibgroups.insert(5, build_fibgroup(std::slice::from_ref(&e5)));
             fibgroups.insert(6, build_fibgroup(&[e5.clone(), e6.clone()]));
-            fibgroups.insert(7, build_fibgroup(&[e3.clone()]));
+            fibgroups.insert(7, build_fibgroup(std::slice::from_ref(&e3)));
             fibgroups.insert(
                 8,
                 build_fibgroup(&[e3.clone(), e4.clone(), e5.clone(), e6.clone(), e7.clone()]),
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_concurrency_fib() {
-        const NUM_PACKETS: u64 = 1000_00;
+        const NUM_PACKETS: u64 = 100_000;
         const NUM_WORKERS: u16 = 4;
 
         // sync main thread - worker thread(s)
@@ -212,13 +212,13 @@ mod tests {
             }
 
             // every 10 loops replace route and fibgroup
-            if updates % 10 == 0 {
+            if updates.is_multiple_of(10) {
                 fibw.register_fibgroup(&nhkey, fibgroup, false);
                 fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
                 route_replaces += 1;
                 fibw.publish();
             }
-            if updates % 101 == 0 {
+            if updates.is_multiple_of(101) {
                 fibw.del_fibroute(prefix);
                 fibw.publish();
                 route_deletions += 1;
@@ -284,7 +284,7 @@ mod tests {
                                 let (hit, _fibentry) = fib.lpm_entry_prefix(&packet);
                                 if hit == prefix {
                                     prefix_hits += 1;
-                                    if prefix_hits % TENTH == 0 {
+                                    if prefix_hits.is_multiple_of(TENTH) {
                                         println!("Worker {n} is {} % done", prefix_hits * 100 / NUM_PACKETS);
                                     }
 
@@ -332,18 +332,18 @@ mod tests {
                 fibw = Some(fibtw.add_fib(vrfid, None));
             }
             if let Some(fibw) = &mut fibw {
-                if updates % 100 == 0 {
+                if updates.is_multiple_of(100) {
                     let fibgroup = randomrouter.random_pick_fibgroup(&mut rng);
                     fibw.register_fibgroup(&nhkey, fibgroup, true);
                     fibw.add_fibroute(prefix, vec![nhkey.clone()], true);
                 }
-                if updates % 150 == 0 {
+                if updates.is_multiple_of(150) {
                     fibw.del_fibroute(prefix);
                     fibw.publish();
                 }
             }
 
-            if updates % 50 == 0 && fibw.is_some() {
+            if updates.is_multiple_of(50) && fibw.is_some() {
                 fibtw.del_fib(1, None);
                 thread::sleep(Duration::from_millis(15));
                 if true {
@@ -363,7 +363,7 @@ mod tests {
             }
         }
         let duration = start.elapsed();
-        println!("Test duration: {:?}", duration);
+        println!("Test duration: {duration:?}");
     }
 
     // Tests fib reader utilities returning guards
@@ -376,7 +376,7 @@ mod tests {
         let prefix = Prefix::from("192.168.1.0/24");
         let nhkey = NhopKey::with_address(&IpAddr::from_str("7.0.0.1").unwrap());
         let e1 = build_fib_entry_egress(1, "10.0.1.1", "eth1");
-        let fibgroup1 = build_fibgroup(&[e1.clone()]);
+        let fibgroup1 = build_fibgroup(std::slice::from_ref(&e1));
         fibw.register_fibgroup(&nhkey, &fibgroup1, false);
         fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
         fibw.publish();
@@ -396,7 +396,7 @@ mod tests {
 
         // attempt to modify the route by modifying the fibgroup
         let e2 = build_fib_entry_egress(2, "10.0.2.1", "eth2");
-        let fibgroup2 = build_fibgroup(&[e2.clone()]);
+        let fibgroup2 = build_fibgroup(std::slice::from_ref(&e2));
         fibw.register_fibgroup(&nhkey, &fibgroup2, false);
         fibw.add_fibroute(prefix, vec![nhkey.clone()], false);
         fibw.publish();

@@ -26,16 +26,15 @@ pub mod fake_frr_agent {
             match sock.try_read(&mut chunk_buffer) {
                 Ok(0) => return Err("Peer left".to_string()),
                 Ok(n) => data.extend_from_slice(&chunk_buffer[..n]),
-                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    continue;
-                }
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e.to_string()),
-            };
+            }
         }
         Ok(data.into())
     }
 
     /// Receive a message made of |length|genid|data. This applies to both requests and responses.
+    #[allow(clippy::cast_possible_truncation)]
     async fn receive_msg(sock: &mut UnixStream) -> Result<(GenId, String), String> {
         /* data length as 8 octets*/
         let len_buf = do_recv(sock, 8).await?;
@@ -88,7 +87,7 @@ pub mod fake_frr_agent {
     }
 
     /// Create a fake frr-agent async task for testing.
-    /// The agent can be stopped by calling abort() on the returned handle.
+    /// The agent can be stopped by calling `abort()` on the returned handle.
     pub async fn fake_frr_agent(agent_address: &str) -> JoinHandle<()> {
         debug!("Starting fake frr-agent at {agent_address}...");
 

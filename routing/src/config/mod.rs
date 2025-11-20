@@ -352,7 +352,7 @@ use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConf
         // modify the config to make it invalid: let two vrfs have the same vni
         let conf1 = config.get_vrf(100).expect("Should find vrf config");
         assert!(conf1.vni.is_some());
-        let duped_vni = conf1.vni.clone();
+        let duped_vni = conf1.vni;
 
         let conf2 = config.get_vrf_mut(101).expect("Should find vrf config");
         conf2.reset_vni(duped_vni);

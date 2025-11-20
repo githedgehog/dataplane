@@ -89,6 +89,8 @@ impl Render for PrefixListTable {
 
 #[cfg(test)]
 #[allow(dead_code)]
+#[allow(clippy::unwrap_used)]
+#[allow(clippy::pedantic)]
 mod tests {
     use super::*;
     use lpm::prefix::Prefix;

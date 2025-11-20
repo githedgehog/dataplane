@@ -347,8 +347,8 @@ pub mod tests {
         // create several fibgroups of distinct sizes
         let g1 = build_fibgroup(&[e1.clone(), e2.clone()]);
         let g2 = build_fibgroup(&[e3.clone(), e4.clone(), e5.clone(), e6.clone()]);
-        let g3 = build_fibgroup(&[e7.clone()]);
-        let g4 = build_fibgroup(&[e8.clone()]);
+        let g3 = build_fibgroup(std::slice::from_ref(&e7));
+        let g4 = build_fibgroup(std::slice::from_ref(&e8));
 
         // create dummy nhop keys whose contents do not matter other than for storing each fibgroup
         let key1 = NhopKey::with_address(&IpAddr::from_str("8.0.0.1").unwrap());
@@ -382,15 +382,15 @@ pub mod tests {
 
         // select one entry in the fibroute by index and check that it is correct
         // this route has all of the fibgroups
-        assert_eq!(&*fibroute.get_fibentry(0), &e1);
-        assert_eq!(&*fibroute.get_fibentry(0), &e1);
-        assert_eq!(&*fibroute.get_fibentry(1), &e2);
-        assert_eq!(&*fibroute.get_fibentry(2), &e3);
-        assert_eq!(&*fibroute.get_fibentry(3), &e4);
-        assert_eq!(&*fibroute.get_fibentry(4), &e5);
-        assert_eq!(&*fibroute.get_fibentry(5), &e6);
-        assert_eq!(&*fibroute.get_fibentry(6), &e7);
-        assert_eq!(&*fibroute.get_fibentry(7), &e8);
+        assert_eq!(fibroute.get_fibentry(0), &e1);
+        assert_eq!(fibroute.get_fibentry(0), &e1);
+        assert_eq!(fibroute.get_fibentry(1), &e2);
+        assert_eq!(fibroute.get_fibentry(2), &e3);
+        assert_eq!(fibroute.get_fibentry(3), &e4);
+        assert_eq!(fibroute.get_fibentry(4), &e5);
+        assert_eq!(fibroute.get_fibentry(5), &e6);
+        assert_eq!(fibroute.get_fibentry(6), &e7);
+        assert_eq!(fibroute.get_fibentry(7), &e8);
 
         // attempt to remove fibgroups: none should be removed from the store
         store.del(&key1);
@@ -434,8 +434,8 @@ pub mod tests {
         // create several fibgroups of distinct sizes
         let g1 = build_fibgroup(&[e1.clone(), e2.clone()]);
         let g2 = build_fibgroup(&[e3.clone(), e4.clone(), e5.clone(), e6.clone()]);
-        let g3 = build_fibgroup(&[e7.clone()]);
-        let g4 = build_fibgroup(&[e8.clone()]);
+        let g3 = build_fibgroup(std::slice::from_ref(&e7));
+        let g4 = build_fibgroup(std::slice::from_ref(&e8));
 
         // create a dummy nhop key whose contents do not matter other than for storing each fibgroup
         let key1 = NhopKey::with_address(&IpAddr::from_str("8.0.0.1").unwrap());

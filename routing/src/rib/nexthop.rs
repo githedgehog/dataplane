@@ -730,7 +730,7 @@ mod tests {
 
         let res = n.quick_resolve();
         assert_eq!(res.len(), 3, "Should resolve over 3 interfaces");
-        for k in res.iter() {
+        for k in &res {
             assert!(k.ifindex.is_some());
         }
         println!("{:#?}", &res);
@@ -749,7 +749,7 @@ mod tests {
 
         let res = n.quick_resolve();
         assert_eq!(res.len(), 3, "Should resolve over 3 interfaces");
-        for k in res.iter() {
+        for k in &res {
             assert!(k.ifindex.is_some());
         }
         println!("{:#?}", &res);
