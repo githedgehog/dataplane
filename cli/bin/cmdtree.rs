@@ -100,11 +100,11 @@ impl Node {
             //unnamed commands that will not show up
             cmd.set_depth(self.depth);
             for child in cmd.children.into_values() {
-                self.children.insert(child.name.to_owned(), child);
+                self.children.insert(child.name.clone(), child);
             }
         } else {
             cmd.set_depth(self.depth + 1);
-            self.children.insert(cmd.name.to_owned(), cmd);
+            self.children.insert(cmd.name.clone(), cmd);
         }
     }
 
@@ -119,16 +119,13 @@ impl Node {
         matched: &mut VecDeque<&'a str>,
     ) -> &Self {
         if let Some(word) = tokens.pop_front() {
-            match self.children.get(word) {
-                Some(child) => {
-                    matched.push_back(word);
-                    child.lookup(tokens, matched)
-                }
-                None => {
-                    // put the non-matched word back
-                    tokens.push_front(word);
-                    self
-                }
+            if let Some(child) = self.children.get(word) {
+                matched.push_back(word);
+                child.lookup(tokens, matched)
+            } else {
+                // put the non-matched word back
+                tokens.push_front(word);
+                self
             }
         } else {
             self

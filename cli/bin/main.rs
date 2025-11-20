@@ -3,6 +3,8 @@
 
 //! Adds main parser for command arguments
 
+#![deny(clippy::all, clippy::pedantic)]
+
 use argsparse::{ArgsError, CliArgs};
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
@@ -46,13 +48,13 @@ fn ask_user(question: &str) -> bool {
             "yes" => return true,
             "no" => return false,
             _ => {}
-        };
+        }
     }
 }
 
 /// Receive the response, synchronously. This function may block the caller,
-/// which is the desired behavior. Now, unfortunately the peek() and the like
-/// methods of UnixDatagram are not stable. This creates an issue because if
+/// which is the desired behavior. Now, unfortunately the `peek()` and the like
+/// methods of `UnixDatagram` are not stable. This creates an issue because if
 /// a message has length L and we request to read fewer octets, the excess ones
 /// will be lost. We could request a very large L, but that would require
 /// allocating a big buffer (no big deal), but its size could sooner or later be
@@ -64,17 +66,18 @@ fn ask_user(question: &str) -> bool {
 fn process_cli_response(sock: &UnixDatagram) {
     let mut rx_buff = vec![0u8; 1024];
     let mut msg_size_wire = [0u8; 8];
-    let msg_size: u64;
 
     if let Err(e) = sock.recv(msg_size_wire.as_mut()) {
         print_err!("Error receiving msg size: {e}");
         return;
-    } else {
-        msg_size = u64::from_ne_bytes(msg_size_wire);
-        if msg_size as usize > rx_buff.capacity() {
-            rx_buff.resize(msg_size as usize, 0);
-        }
     }
+    let msg_size = u64::from_ne_bytes(msg_size_wire);
+    #[allow(clippy::cast_possible_truncation)]
+    if msg_size as usize > rx_buff.capacity() {
+        rx_buff.resize(msg_size as usize, 0);
+    }
+
+    #[allow(clippy::single_match_else)]
     match sock.recv(rx_buff.as_mut_slice()) {
         Ok(rx_len) => match CliResponse::deserialize(&rx_buff[0..rx_len]) {
             Ok(response) => match &response.result {
@@ -155,7 +158,7 @@ fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
     match args {
         Err(ArgsError::UnrecognizedArgs(args_map)) => {
             print_err!(" Unrecognized arguments");
-            for (arg, _value) in args_map.iter() {
+            for arg in args_map.keys() {
                 show_bad_arg(input.get_line(), arg);
             }
             Err(())
@@ -171,7 +174,7 @@ fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
 fn main() {
     // build command tree
     let cmds = Rc::new(gw_cmd_tree());
-    let mut terminal = Terminal::new("dataplane", cmds.clone());
+    let mut terminal = Terminal::new("dataplane", &cmds);
     terminal.clear();
 
     // be polite
@@ -188,18 +191,18 @@ fn main() {
                 }
             } else if node.depth > 0 {
                 print_err!("No action associated to command");
-                if !node.children.is_empty() {
+                if node.children.is_empty() {
+                    print_err!("Command is not implemented");
+                } else {
                     print_err!("Options are:");
                     node.show_children();
-                } else {
-                    print_err!("Command is not implemented");
                 }
             } else {
                 print_err!("syntax error");
                 bad_syntax = true;
             }
         }
-        if !bad_syntax || input.get_line().starts_with("#") {
+        if !bad_syntax || input.get_line().starts_with('#') {
             terminal.add_history_entry(input.get_line().to_owned());
         }
     }
