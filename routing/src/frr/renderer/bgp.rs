@@ -499,6 +499,7 @@ pub mod tests {
     use std::str::FromStr;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_bgp_render() {
         let mut bgp = BgpConfig::new(65000);
         bgp.set_router_id(Ipv4Addr::from_str("7.0.0.100").expect("Bad address"));

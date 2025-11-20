@@ -159,7 +159,7 @@ pub mod tests {
         let mut count = 1;
         while count <= times {
             if let Some(atable) = atabler.enter() {
-                println!("{}", *atable)
+                println!("{}", *atable);
             }
             thread::sleep(Duration::from_secs(1));
             count += 1;

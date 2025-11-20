@@ -419,6 +419,8 @@ impl VrfTable {
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::match_same_arms)]
 mod tests {
     use super::*;
     use crate::cli::pretty_utils::Frame;
@@ -798,11 +800,11 @@ mod tests {
     fn show_fibgroups(vrf: &Vrf, destination: &str) {
         let (_prefix, route) = vrf.lpm(mk_addr(destination));
         println!("nhops to {destination} are");
-        for shim in route.s_nhops.iter() {
+        for shim in &route.s_nhops {
             let nhop = &*shim.rc;
             println!("{nhop}");
         }
-        for shim in route.s_nhops.iter() {
+        for shim in &route.s_nhops {
             let nhop = &*shim.rc;
             let fibgroup = nhop.fibgroup.borrow().clone();
             println!("fibgroup of nhop {nhop}:\n\n{fibgroup}");

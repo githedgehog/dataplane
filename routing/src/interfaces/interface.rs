@@ -197,7 +197,7 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Attach an [`Interface`] to the fib corresponding to a [`crate::rib::vrf::Vrf`]
+    /// Attach an [`Interface`] to the fib corresponding to a vrf
     //////////////////////////////////////////////////////////////////
     pub fn attach_vrf(&mut self, fibkey: FibKey) {
         self.attachment = Some(Attachment::Vrf(fibkey));

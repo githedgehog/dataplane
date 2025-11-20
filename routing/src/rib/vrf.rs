@@ -136,7 +136,7 @@ pub struct Vrf {
 }
 
 //////////////////////////////////////////////////////////////////////////////////
-/// A [`RouterVrfConfig`] contains the configuration to create a [`Vrf`]
+/// A [`RouterVrfConfig`] contains the configuration to create a vrf
 //////////////////////////////////////////////////////////////////////////////////
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouterVrfConfig {
@@ -694,6 +694,7 @@ impl Vrf {
 
 #[cfg(test)]
 #[rustfmt::skip]
+#[allow(clippy::cast_sign_loss)]
 pub mod tests {
     use net::interface::InterfaceIndex;
 

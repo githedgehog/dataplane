@@ -25,8 +25,8 @@ use crate::rib::vrf::VrfId;
 use tracing::{debug, error, info, trace, warn};
 
 #[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-/// A type used to access a [`Fib`] or to identify it.
-/// As an identifier, only the variant `FibKey::Id` is allowed.
+// A type used to access a [`Fib`] or to identify it.
+// As an identifier, only the variant `FibKey::Id` is allowed.
 pub enum FibKey {
     Unset,
     Id(VrfId),
