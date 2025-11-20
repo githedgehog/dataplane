@@ -33,7 +33,7 @@ pub enum ArgsError {
     UnknownProtocol(String),
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct CliArgs {
     pub connpath: Option<String>,     /* connection path; this is local */
     pub bind_address: Option<String>, /* address to bind unix sock to */

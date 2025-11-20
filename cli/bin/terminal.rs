@@ -8,6 +8,7 @@ use colored::Colorize;
 use rustyline::config::{ColorMode, CompletionType, Config};
 use rustyline::history::MemHistory;
 use rustyline::{Cmd, Event, KeyCode, KeyEvent, Modifiers};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
@@ -59,6 +60,7 @@ pub struct Terminal {
 pub struct TermInput {
     line: String,
     tokens: VecDeque<String>,
+    args: HashMap<String, String>,
 }
 #[allow(unused)]
 impl TermInput {
@@ -67,6 +69,9 @@ impl TermInput {
     }
     pub fn get_tokens(&mut self) -> &mut VecDeque<String> {
         &mut self.tokens
+    }
+    pub fn get_args(&self) -> &HashMap<String, String> {
+        &self.args
     }
 }
 
@@ -120,14 +125,22 @@ impl Terminal {
     }
     fn proc_line(&mut self, line: &str) -> Option<TermInput> {
         let mut split = line.split_whitespace();
-        if let Some(word) = split.next() {
-            let mut args: VecDeque<String> = VecDeque::new();
-            args.push_back(word.to_owned());
-            split.by_ref().for_each(|x| args.push_back(x.to_owned()));
-
+        let mut tokens: VecDeque<String> = VecDeque::new();
+        let mut args = HashMap::new();
+        for word in split {
+            if word.contains("=") {
+                if let Some((arg, arg_value)) = word.split_once("=") {
+                    args.insert(arg.to_owned(), arg_value.to_owned());
+                }
+            } else {
+                tokens.push_back(word.to_owned());
+            }
+        }
+        if !tokens.is_empty() {
             Some(TermInput {
                 line: line.to_owned(),
-                tokens: args,
+                tokens,
+                args,
             })
         } else {
             None
