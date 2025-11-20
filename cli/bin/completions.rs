@@ -43,9 +43,9 @@ impl Completer for CmdCompleter {
         _ctx: &rustyline::Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
         let input = &line[..pos];
-        let tokens: Vec<String> = input.split_whitespace().map(|s| s.to_string()).collect();
+        let tokens: Vec<String> = input.split_whitespace().map(ToString::to_string).collect();
         let mut candidates = Vec::new();
-        let empty = "".to_string();
+        let empty = String::new();
 
         let (path_tokens, last) = if input.ends_with(' ') {
             (tokens.as_slice(), &empty)
@@ -78,7 +78,7 @@ impl Completer for CmdCompleter {
             if let Some(arg) = node.find_arg(maybearg) {
                 candidates.clear(); // sanity
                 if !arg.choices.is_empty() {
-                    let mut choices: Vec<_> = arg.choices.to_vec();
+                    let mut choices: Vec<_> = arg.choices.clone();
                     candidates.append(&mut choices);
                 }
                 if let Some(prefetch) = &arg.prefetcher {

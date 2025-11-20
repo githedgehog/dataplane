@@ -77,7 +77,7 @@ impl TermInput {
 
 #[allow(unused)]
 impl Terminal {
-    pub fn new(prompt: &str, cmdtree: Rc<Node>) -> Self {
+    pub fn new(prompt: &str, cmdtree: &Rc<Node>) -> Self {
         let mut term = Self {
             prompt: prompt.to_owned(),
             prompt_name: prompt.to_owned(),
@@ -119,38 +119,40 @@ impl Terminal {
     pub fn get_helper(&self) -> Option<&CmdCompleter> {
         self.editor.helper()
     }
+    #[allow(clippy::unused_self)]
     pub fn clear(&self) {
         print!("\x1b[H\x1b[2J");
         let _ = stdout().flush();
     }
-    fn proc_line(&mut self, line: &str) -> Option<TermInput> {
+    #[allow(clippy::unused_self)]
+    fn proc_line(&self, line: &str) -> Option<TermInput> {
         let mut split = line.split_whitespace();
         let mut tokens: VecDeque<String> = VecDeque::new();
         let mut args = HashMap::new();
         for word in split {
-            if word.contains("=") {
-                if let Some((arg, arg_value)) = word.split_once("=") {
+            if word.contains('=') {
+                if let Some((arg, arg_value)) = word.split_once('=') {
                     args.insert(arg.to_owned(), arg_value.to_owned());
                 }
             } else {
                 tokens.push_back(word.to_owned());
             }
         }
-        if !tokens.is_empty() {
+        if tokens.is_empty() {
+            None
+        } else {
             Some(TermInput {
                 line: line.to_owned(),
                 tokens,
                 args,
             })
-        } else {
-            None
         }
     }
     fn set_prompt(&mut self) {
         if self.connected {
-            self.prompt = self.prompt_name.to_owned() + "(✔)# ";
+            self.prompt = self.prompt_name.clone() + "(✔)# ";
         } else {
-            self.prompt = self.prompt_name.to_owned() + "(✖)# ";
+            self.prompt = self.prompt_name.clone() + "(✖)# ";
         }
     }
     pub fn prompt(&mut self) -> TermInput {

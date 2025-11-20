@@ -68,7 +68,7 @@ impl CliArgs {
                 }
                 args.remote.prefix = Some((pfx, pxf_len));
             } else {
-                return Err(ArgsError::BadPrefixFormat(prefix.to_owned()));
+                return Err(ArgsError::BadPrefixFormat(prefix.clone()));
             }
         }
         if let Some(path) = args_map.remove("path") {
@@ -103,18 +103,16 @@ impl CliArgs {
             if ifname.is_empty() {
                 return Err(ArgsError::MissingValue("ifname"));
             }
-            args.remote.ifname = Some(ifname).clone();
+            args.remote.ifname.clone_from(&Some(ifname));
         }
         if let Some(level) = args_map.remove("level") {
             if level.is_empty() {
                 return Err(ArgsError::MissingValue("level"));
-            } else {
-                let level = level.to_uppercase();
-                args.remote.loglevel = Some(
-                    Level::from_str(level.as_str())
-                        .map_err(|_| ArgsError::UnknownLogLevel(level))?,
-                );
             }
+            let level = level.to_uppercase();
+            args.remote.loglevel = Some(
+                Level::from_str(level.as_str()).map_err(|_| ArgsError::UnknownLogLevel(level))?,
+            );
         }
         if let Some(protocol) = args_map.remove("protocol") {
             if protocol.is_empty() {
@@ -125,10 +123,10 @@ impl CliArgs {
                     .map_err(|_| ArgsError::UnknownProtocol(protocol))?,
             );
         }
-        if !args_map.is_empty() {
-            Err(ArgsError::UnrecognizedArgs(args_map))
-        } else {
+        if args_map.is_empty() {
             Ok(args)
+        } else {
+            Err(ArgsError::UnrecognizedArgs(args_map))
         }
     }
 }
