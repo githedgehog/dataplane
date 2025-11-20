@@ -17,23 +17,6 @@ use tracing::error;
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
 
-/// A driver-agnostic, opaque identifier for a port. This type
-/// should only be read / written by drivers and ingress / egress stages.
-#[derive(Clone, Copy, Debug, PartialEq, Hash, Eq)]
-#[repr(transparent)]
-pub struct PortIndex(u16);
-impl PortIndex {
-    #[must_use]
-    pub const fn new(value: u16) -> Self {
-        Self(value)
-    }
-}
-impl Display for PortIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 #[derive(Copy, Clone, Debug, Default)]
 pub struct BridgeDomain(u32);
 #[allow(unused)]
@@ -136,12 +119,10 @@ bitflags! {
 #[derive(Debug, Default, Clone)]
 pub struct PacketMeta {
     flags: MetaFlags,
-    pub iport: Option<PortIndex>, /* ingress port index - set on rx by driver, read by ingress */
     pub iif: Option<InterfaceIndex>, /* incoming interface: set by ingress stage */
     pub oif: Option<InterfaceIndex>, /* outgoing interface - set by IO manager for outgoing traffic or forwarding functions */
-    pub oport: Option<PortIndex>, /* egress port index - set by egress stage, read by driver for xmit */
-    pub nh_addr: Option<IpAddr>,  /* IP address of next-hop */
-    pub vrf: Option<VrfId>,       /* for IP packet, the VRF to use to route it */
+    pub nh_addr: Option<IpAddr>,     /* IP address of next-hop */
+    pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
