@@ -7,10 +7,14 @@ use colored::Colorize;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
+pub(crate) type Prefetcher = fn() -> Vec<String>;
+
 #[derive(Clone, Default, Debug)]
 pub struct NodeArg {
     pub name: String,
     pub choices: Vec<String>,
+    pub multi: bool,
+    pub prefetcher: Option<Prefetcher>,
 }
 
 #[allow(unused)]
@@ -19,10 +23,20 @@ impl NodeArg {
         Self {
             name: name.to_owned(),
             choices: Vec::new(),
+            multi: false,
+            prefetcher: None,
         }
+    }
+    pub fn prefetcher(mut self, prefetcher: Prefetcher) -> Self {
+        self.prefetcher = Some(prefetcher);
+        self
     }
     pub fn choice(mut self, choice: &str) -> Self {
         self.choices.push(choice.to_owned());
+        self
+    }
+    pub fn multi(mut self) -> Self {
+        self.multi = true;
         self
     }
     pub fn add_choice(&mut self, choice: &str) {
@@ -128,6 +142,16 @@ impl Node {
             }
         } else {
             Some(self)
+        }
+    }
+    pub fn get_node(&self, tokens: &mut VecDeque<String>) -> Option<&Self> {
+        if let Some(word) = tokens.pop_front() {
+            match self.children.get(word.as_str()) {
+                Some(child) => child.get_node(tokens),
+                None => None,
+            }
+        } else {
+            None
         }
     }
     pub fn show_children(&self) {

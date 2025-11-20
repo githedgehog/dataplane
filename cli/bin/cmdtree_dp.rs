@@ -9,6 +9,11 @@ use log::Level;
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
 
+fn vrf_prefetcher() -> Vec<String> {
+    // todo
+    vec![]
+}
+
 fn cmd_show_router_cpi() -> Node {
     let mut root = Node::new("cpi");
     root += Node::new("stats")
@@ -79,9 +84,10 @@ fn cmd_show_ip() -> Node {
     let mut routes = Node::new("route")
         .desc("Display IPv4 routes")
         .action(CliAction::ShowRouterIpv4Routes as u16)
-        .arg("prefix")
-        .arg("vrfid");
+        .arg("prefix");
 
+    let arg = NodeArg::new("vrfid").prefetcher(vrf_prefetcher);
+    routes = routes.arg_add(arg);
     let mut arg = NodeArg::new("protocol");
     RouteProtocol::iter().for_each(|proto| arg.add_choice(proto.as_ref()));
     routes = routes.arg_add(arg);
