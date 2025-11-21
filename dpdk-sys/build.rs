@@ -59,6 +59,8 @@ fn bind(path: &Path, sysroot: &str) {
         .clang_arg(format!("-I{sysroot}/include"))
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
+        .rust_edition(bindgen::RustEdition::Edition2024)
+        .wrap_unsafe_ops(true)
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(path.join("generated.rs"))
