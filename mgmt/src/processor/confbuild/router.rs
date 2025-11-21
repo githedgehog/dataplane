@@ -15,6 +15,7 @@ use tracing::{debug, error};
 use config::internal::interfaces::interface::InterfaceConfig;
 use config::internal::routing::vrf::VrfConfig;
 use config::{ConfigError, GwConfig, InternalConfig};
+use net::eth::mac::{Mac, SourceMac};
 use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
 
 use routing::{AttachConfig, IfDataEthernet, IfState, IfType};
@@ -85,9 +86,12 @@ fn build_router_interface_config(
                 error!("{msg}");
                 return Err(ConfigError::InternalFailure(msg));
             };
-            new.set_iftype(IfType::Ethernet(IfDataEthernet {
-                mac: mac.octets().into(),
-            }));
+            let Ok(mac) = SourceMac::new(Mac::from(mac.octets())) else {
+                let msg = format!("Mac {mac} of interface '{name}' is invalid");
+                error!("{msg}");
+                return Err(ConfigError::InternalFailure(msg));
+            };
+            new.set_iftype(IfType::Ethernet(IfDataEthernet { mac }));
         }
         _ => {
             let msg = format!("Unsupported type of interface: {kiface:#?}");
