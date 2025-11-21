@@ -3,6 +3,7 @@
 
 //! Network interface model
 
+use crate::RouterError;
 use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
 use net::eth::mac::Mac;
@@ -16,7 +17,44 @@ use std::collections::HashSet;
 use tracing::{debug, error, info};
 
 /// An Ipv4 or Ipv6 address and mask configured on an interface
-pub type IfAddress = (IpAddr, u8);
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+pub struct IfAddr {
+    address: IpAddr,
+    mask_len: u8,
+}
+impl IfAddr {
+    /// Tell if an `IpAddr` plus a mask length are suitable to be configured on a network interface.
+    pub fn is_valid_ifaddr(address: IpAddr, mask_len: u8) -> Result<(), RouterError> {
+        if address.is_multicast() || address.is_unspecified() {
+            Err(RouterError::InvalidAddress(address))
+        } else if address.is_ipv4() && mask_len > 32
+            || address.is_ipv6() && mask_len > 128
+            || mask_len == 0
+        {
+            Err(RouterError::InvalidMask(mask_len))
+        } else {
+            Ok(())
+        }
+    }
+    /// An Ipv4 or Ipv6 address and mask length that can be configured on an interface.
+    ///
+    /// # Errors
+    ///
+    /// This function returns `RouterError` if the provided address is not suitable
+    /// for a network interface or the mask is not legal.
+    pub fn new(address: IpAddr, mask_len: u8) -> Result<Self, RouterError> {
+        Self::is_valid_ifaddr(address, mask_len)?;
+        Ok(Self { address, mask_len })
+    }
+    #[must_use]
+    pub fn address(&self) -> IpAddr {
+        self.address
+    }
+    #[must_use]
+    pub fn mask_len(&self) -> u8 {
+        self.mask_len
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for ethernet interfaces
@@ -132,7 +170,7 @@ pub struct Interface {
     pub mtu: Option<Mtu>,
     /* -- state -- */
     pub oper_state: IfState,
-    pub addresses: HashSet<IfAddress>,
+    pub addresses: HashSet<IfAddr>,
     pub attachment: Option<Attachment>,
 }
 
@@ -217,15 +255,15 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Add (assign) an IP address to an [`Interface`]
     //////////////////////////////////////////////////////////////////
-    pub fn add_ifaddr(&mut self, ifaddr: &IfAddress) {
-        self.addresses.insert(*ifaddr);
+    pub fn add_ifaddr(&mut self, ifaddr: IfAddr) {
+        self.addresses.insert(ifaddr);
     }
 
     //////////////////////////////////////////////////////////////////
     /// Del (unassign) an IP address from an [`Interface`]
     //////////////////////////////////////////////////////////////////
-    pub fn del_ifaddr(&mut self, ifaddr: &IfAddress) {
-        self.addresses.remove(ifaddr);
+    pub fn del_ifaddr(&mut self, ifaddr: IfAddr) {
+        self.addresses.remove(&ifaddr);
     }
 
     //////////////////////////////////////////////////////////////////
@@ -233,9 +271,10 @@ impl Interface {
     /// (regardless of the mask)
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn has_address(&self, address: &IpAddr) -> bool {
-        for (addr, _) in &self.addresses {
-            if addr == address {
+    #[cfg(test)]
+    pub fn has_address(&self, address: IpAddr) -> bool {
+        for ifaddr in &self.addresses {
+            if ifaddr.address == address {
                 return true;
             }
         }

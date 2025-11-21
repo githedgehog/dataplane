@@ -26,8 +26,8 @@ use crate::rib::vrf::{Route, RouteFlags, RouteOrigin, ShimNhop, Vrf, VrfStatus};
 
 use crate::interfaces::iftable::IfTable;
 use crate::interfaces::interface::Attachment;
+use crate::interfaces::interface::{IfAddr, IfState, IfType, Interface};
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
-use crate::interfaces::interface::{IfState, IfType, Interface};
 
 use super::pretty_utils::{Heading, line};
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
@@ -517,6 +517,12 @@ impl Display for IfTable {
     }
 }
 //========================= Interface addresses ================================//
+impl Display for IfAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.address(), self.mask_len())
+    }
+}
+
 #[repr(transparent)]
 pub struct IfTableAddress<'a>(pub &'a IfTable);
 
@@ -538,8 +544,8 @@ fn fmt_interface_addresses(f: &mut std::fmt::Formatter<'_>, iface: &Interface) -
         "{}",
         format_args!(INTERFACE_ADDR_FMT!(), iface.name, iface.oper_state, "")
     )?;
-    for (addr, mask_len) in &iface.addresses {
-        write!(f, " {addr}/{mask_len}")?;
+    for ifaddr in &iface.addresses {
+        write!(f, " {ifaddr}")?;
     }
     writeln!(f)
 }
