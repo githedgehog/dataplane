@@ -117,7 +117,7 @@ impl Ingress {
                     let dmac = eth.destination().inner();
                     if dmac.is_broadcast() {
                         self.interface_ingress_eth_bcast(interface, packet);
-                    } else if dmac == if_mac {
+                    } else if dmac == if_mac.inner() {
                         self.interface_ingress_eth_ucast_local(interface, packet);
                     } else {
                         self.interface_ingress_eth_non_local(interface, dmac, packet);

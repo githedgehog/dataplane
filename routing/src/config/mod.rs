@@ -235,9 +235,9 @@ mod tests {
     use tracing_test::traced_test;
     use tracing::debug;
     use net::{route::RouteTableId, vxlan::Vni};
-    use net::eth::mac::Mac;
-use net::interface::InterfaceIndex;
-use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConfig, RouterInterfaceConfig}, rib::vrf::RouterVrfConfig};
+    use net::eth::mac::{Mac, SourceMac};
+    use net::interface::InterfaceIndex;
+    use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConfig, RouterInterfaceConfig}, rib::vrf::RouterVrfConfig};
     use crate::interfaces::interface::IfState;
     use crate::interfaces::interface::IfType;
     use crate::interfaces::interface::IfDataEthernet;
@@ -294,7 +294,7 @@ use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConf
         ifconfig.set_description("Interface to Spine-1");
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x2]),
+            mac: SourceMac::try_from("00:aa:00:00:00:02").unwrap()
         }));
         ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(100)));
         config.add_interface(ifconfig);
@@ -304,7 +304,7 @@ use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConf
         ifconfig.set_description("Interface to Spine-2");
         ifconfig.set_admin_state(IfState::Up);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
+            mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap()
         }));
         config.add_interface(ifconfig);
 
@@ -445,7 +445,7 @@ use crate::{config::RouterConfig, evpn::Vtep, interfaces::interface::{AttachConf
         ifconfig.set_description("Interface with changed config");
         ifconfig.set_admin_state(IfState::Down);
         ifconfig.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xFF, 0xaa, 0xbb, 0xcc, 0xdd]),
+            mac: SourceMac::try_from("00:ff:aa:bb:cc:dd").unwrap()
         }));
         ifconfig.set_attach_cfg(Some(AttachConfig::Vrf(101)));
         test_apply_config(&config, &mut db).expect("Should succeed");

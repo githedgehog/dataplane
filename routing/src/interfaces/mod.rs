@@ -17,7 +17,7 @@ pub mod tests {
         IfAddr, IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
     };
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
-    use net::eth::mac::Mac;
+    use net::eth::mac::SourceMac;
     use net::interface::InterfaceIndex;
     use net::vlan::Vid;
     use std::net::IpAddr;
@@ -40,7 +40,7 @@ pub mod tests {
         eth0.set_admin_state(IfState::Up);
         eth0.set_description("Uplink to the Moon");
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
+            mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
         }));
 
         /* create Eth1 */
@@ -49,7 +49,7 @@ pub mod tests {
         eth1.set_admin_state(IfState::Up);
         eth1.set_description("Downlink from Mars");
         eth1.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
+            mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
         }));
 
         /* create Eth2 */
@@ -58,7 +58,7 @@ pub mod tests {
         eth2.set_admin_state(IfState::Up);
         eth2.set_description("Downlink from Sun");
         eth2.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x3]),
+            mac: SourceMac::try_from("00:cc:00:00:00:03").unwrap(),
         }));
 
         /* create vlan.100 */
@@ -67,7 +67,7 @@ pub mod tests {
         vlan100.set_admin_state(IfState::Up);
         vlan100.set_description("External customer 1");
         vlan100.set_iftype(IfType::Dot1q(IfDataDot1q {
-            mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
+            mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
             vlanid: Vid::new(100).unwrap(),
         }));
 
@@ -77,7 +77,7 @@ pub mod tests {
         vlan200.set_admin_state(IfState::Up);
         vlan200.set_description("External customer 2");
         vlan200.set_iftype(IfType::Dot1q(IfDataDot1q {
-            mac: Mac::from([0x0, 0xbb, 0x0, 0x0, 0x0, 0x2]),
+            mac: SourceMac::try_from("00:bb:00:00:00:02").unwrap(),
             vlanid: Vid::new(200).unwrap(),
         }));
 
@@ -148,7 +148,7 @@ pub mod tests {
         let eth0_idx = InterfaceIndex::try_new(2).unwrap();
         let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
+            mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
         }));
 
         /* add to interface table */
@@ -158,14 +158,14 @@ pub mod tests {
         /* test get_mac */
         let iface = iftable.get_interface(eth0_idx).expect("Should be there");
         assert_eq!(
-            Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
+            SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
             iface.get_mac().unwrap()
         );
 
         /* Add interface again -- idempotence */
         let mut eth0 = RouterInterfaceConfig::new("eth0", eth0_idx);
         eth0.set_iftype(IfType::Ethernet(IfDataEthernet {
-            mac: Mac::from([0x0, 0xaa, 0x0, 0x0, 0x0, 0x1]),
+            mac: SourceMac::try_from("00:aa:00:00:00:01").unwrap(),
         }));
         let iface = iftable.add_interface(&eth0);
         assert!(iface.is_err_and(|e| matches!(e, RouterError::InterfaceExists(_))));

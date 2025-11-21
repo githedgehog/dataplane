@@ -6,7 +6,7 @@
 use crate::RouterError;
 use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
-use net::eth::mac::Mac;
+use net::eth::mac::SourceMac;
 use net::interface::{InterfaceIndex, Mtu};
 use net::vlan::Vid;
 use std::net::IpAddr;
@@ -59,28 +59,28 @@ impl IfAddr {
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
-    pub mac: Mac,
+    pub mac: SourceMac,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
-    pub mac: Mac,
+    pub mac: SourceMac,
     pub vlanid: Vid,
 }
 
-/// Trait that interfaces having a [`Mac`] should implement.
+/// Trait that interfaces having a mac address should implement.
 trait HasMac {
-    fn get_mac(&self) -> &Mac;
+    fn get_mac(&self) -> &SourceMac;
 }
 
 impl HasMac for IfDataEthernet {
-    fn get_mac(&self) -> &Mac {
+    fn get_mac(&self) -> &SourceMac {
         &self.mac
     }
 }
 impl HasMac for IfDataDot1q {
-    fn get_mac(&self) -> &Mac {
+    fn get_mac(&self) -> &SourceMac {
         &self.mac
     }
 }
@@ -282,10 +282,10 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get the [`Mac`] address of an [`Interface`], if any
+    /// Get the MAC address of an [`Interface`], if any
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn get_mac(&self) -> Option<Mac> {
+    pub fn get_mac(&self) -> Option<SourceMac> {
         match &self.iftype {
             IfType::Ethernet(inner) => Some(*inner.get_mac()),
             IfType::Dot1q(inner) => Some(*inner.get_mac()),
