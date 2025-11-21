@@ -21,7 +21,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 #[cfg(test)]
 use std::str::FromStr;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use tracectl::trace_target;
 trace_target!("next-hops", LevelFilter::WARN, &["routing-full"]);
@@ -159,7 +159,6 @@ impl Hash for Nhop {
     }
 }
 
-
 impl Nhop {
     //////////////////////////////////////////////////////////////////
     /// Create a new Nhop object from a key object
@@ -184,34 +183,46 @@ impl Nhop {
     ///     correct as those with explicit recursion, as long as the references are kept up to date.
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
-    pub fn add_resolver(&self, resolver: Rc<Nhop>) {
+    pub fn add_resolver(&self, resolver: Rc<Nhop>) -> &Self {
         let Ok(mut resolvers) = self.resolvers.try_borrow_mut() else {
             error!("Failed to add resolver: try-borrow-mut failed!. Nhop={self:#?}");
-            return;
+            return self;
         };
         resolvers.push(resolver);
+        self
+    }
+
+    /// Recursive method to check if a next-hop resolves via another, `checked`.
+    /// We use this method to avoid resolution loops that would happen in case of routing loops.
+    /// Resolution loops would cause us to stack overflow. This method is recursive, but
+    /// short-circuits in case of loop. The method takes the advantage that there cannot be two
+    /// next-hops with the same key.
+    fn resolves_with(&self, checked: &Nhop) -> bool {
+        // resolve to oneself is forbidden
+        if self.key == checked.key {
+            error!("Loop detected!: {} resolves with {}", checked.key, self.key);
+            return true;
+        }
+        // resolvers should not refer back to the checked next-hop
+        let resolvers = self.resolvers.borrow();
+        resolvers.iter().any(|res| res.resolves_with(checked))
     }
 
     /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
     pub fn lazy_resolve(&self, vrf: &Vrf) {
         if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
-            return; /* done */
+            return;
         }
         let Some(a) = self.key.address else {
-            warn!("Got forwarding nexthop without address nor ifindex!");
+            error!("Got forwarding nexthop with neither address nor ifindex!: {self}");
             return;
         };
         debug!("Resolving {a} with vrf '{}'...", vrf.name);
         let (prefix, route) = vrf.lpm(a);
-        debug!("Address {a} resolves with with route to {prefix}:");
+        debug!("Address {a} resolves with route to {prefix}");
         let mut resolvers = Vec::with_capacity(route.s_nhops.len());
         for nh in &route.s_nhops {
-            if *nh.rc == *self {
-                error!(
-                    "Resolution loop!: {a} resolves with route to {prefix} via {}",
-                    nh.rc
-                );
-            } else {
+            if !nh.rc.resolves_with(self) {
                 debug!(" -> {}", nh.rc);
                 resolvers.push(nh.rc.clone());
             }
@@ -820,5 +831,51 @@ mod tests {
         let res = store.resolve_by_addr(&("7.0.0.1".parse().unwrap()));
         assert!(res.is_some());
         println!("{:#?}", &res);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_loop_prevention() {
+        let mut store = NhopStore::new();
+
+        let i1_k = NhopKey::with_ifindex(1);
+        let i2_k = NhopKey::with_ifindex(2);
+        let a = NhopKey::from_address("10.0.1.1");
+        let b = NhopKey::from_address("10.0.2.1");
+        let x = NhopKey::from_address("192.168.1.1");
+        let y = NhopKey::from_address("192.168.2.1");
+        let checked = NhopKey::from_address("7.0.0.1");
+
+        let i1 = store.add_nhop(&i1_k);
+        let i2 = store.add_nhop(&i2_k);
+        let a = store.add_nhop(&a);
+        let b = store.add_nhop(&b);
+        let x = store.add_nhop(&x);
+        let y = store.add_nhop(&y);
+        let checked = store.add_nhop(&checked);
+
+        a.add_resolver(i1.clone());
+        b.add_resolver(i2.clone());
+        x.add_resolver(a.clone());
+        y.add_resolver(b.clone());
+        checked.add_resolver(x.clone());
+        checked.add_resolver(y.clone());
+        store.dump();
+
+        assert!(!i1.resolves_with(checked.as_ref()));
+        assert!(!i1.resolves_with(a.as_ref()));
+        assert!(!i1.resolves_with(x.as_ref()));
+        assert!(!a.resolves_with(x.as_ref()));
+
+        assert!(i1.resolves_with(i1.as_ref()));
+        assert!(a.resolves_with(i1.as_ref()));
+        assert!(x.resolves_with(i1.as_ref()));
+
+        assert!(!y.resolves_with(checked.as_ref()));
+        assert!(!a.resolves_with(checked.as_ref()));
+        assert!(!x.resolves_with(checked.as_ref()));
+
+        a.add_resolver(checked.clone());
+        assert!(a.resolves_with(checked.as_ref()));
     }
 }
