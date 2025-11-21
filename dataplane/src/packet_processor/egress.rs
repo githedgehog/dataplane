@@ -6,15 +6,11 @@
 use std::net::IpAddr;
 use tracing::{debug, error, warn};
 
+use net::buffer::PacketBufferMut;
 use net::eth::Eth;
 use net::eth::ethtype::EthType;
-use net::eth::mac::{DestinationMac, SourceMac};
-use net::{
-    buffer::PacketBufferMut,
-    headers::{TryIpv4, TryIpv6},
-};
-
-use net::headers::TryEthMut;
+use net::eth::mac::DestinationMac;
+use net::headers::{TryEthMut, TryIpv4, TryIpv6};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
@@ -64,15 +60,8 @@ impl Egress {
         let ifname = &interface.name;
 
         /* lookup mac to source frame from */
-        let Some(our_mac) = interface.get_mac() else {
+        let Some(src_mac) = interface.get_mac() else {
             error!("{nfi}: Failed to get mac address of interface {ifname}!");
-            packet.done(DoneReason::InternalFailure);
-            return;
-        };
-
-        /* Check if it can be used as source mac */
-        let Ok(src_mac) = SourceMac::new(our_mac) else {
-            error!("MAC {our_mac} of interface {ifname} can't be used as source!");
             packet.done(DoneReason::InternalFailure);
             return;
         };
