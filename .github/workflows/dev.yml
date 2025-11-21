@@ -314,7 +314,7 @@ jobs:
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
             target=x86_64-unknown-linux-gnu \
-            ${{matrix.profile.sterile}} cargo doc
+            ${{matrix.profile.sterile}} cargo doc --no-deps
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
