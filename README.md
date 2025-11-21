@@ -271,8 +271,6 @@ No other crate (other than `dataplane`) (tier-4) should depend on `mgmt`.
 **Figure**: full workspace dependency graph.
 Note that tier-1 packages (like net) never depend on tier-2 packages (like nat).
 
-</figure>
-
 ## License
 
 The Dataplane of the Hedgehog Open Fabric Network is licensed under the [Apache License, Version 2.0](LICENSE).
