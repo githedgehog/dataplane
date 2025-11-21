@@ -40,7 +40,7 @@ impl VrfTable {
             fibtablew,
         };
         /* create default vrf: this can't fail */
-        let _ = vrftable.add_vrf(&RouterVrfConfig::new(0, "default"));
+        let _ = vrftable.add_vrf(&RouterVrfConfig::new(Vrf::DEFAULT_VRFID, "default"));
         vrftable
     }
 
@@ -84,9 +84,9 @@ impl VrfTable {
         Ok(())
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// set the vni for a certain VRF that is already in the vrf table
-    //////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////
+    /// set the vni for a certain `Vrf` that is already in the `VrfTable`
+    /////////////////////////////////////////////////////////////////////
     pub fn set_vni(&mut self, vrfid: VrfId, vni: Vni) -> Result<(), RouterError> {
         if let Ok(vrf) = self.get_vrf_by_vni(vni) {
             if vrf.vrfid != vrfid {
@@ -247,18 +247,18 @@ impl VrfTable {
         self.by_id.get(&vrfid).ok_or(RouterError::NoSuchVrf)
     }
 
-    fn is_default_vrf(vrf: &Vrf) -> bool {
-        vrf.vrfid == 0
-    }
-
     #[allow(unused)]
     pub fn get_default_vrf(&self) -> &Vrf {
-        self.by_id.get(&0_u32).unwrap_or_else(|| unreachable!())
+        self.by_id
+            .get(&Vrf::DEFAULT_VRFID)
+            .unwrap_or_else(|| unreachable!())
     }
 
     #[allow(unused)]
     pub fn get_default_vrf_mut(&mut self) -> &mut Vrf {
-        self.by_id.get_mut(&0_u32).unwrap_or_else(|| unreachable!())
+        self.by_id
+            .get_mut(&Vrf::DEFAULT_VRFID)
+            .unwrap_or_else(|| unreachable!())
     }
 
     //////////////////////////////////////////////////////////////////
@@ -287,10 +287,10 @@ impl VrfTable {
     /// Get a mutable reference to a Vrf and an immutable one to the default VRF
     //////////////////////////////////////////////////////////////////
     pub fn get_with_default_mut(&mut self, vrfid: VrfId) -> Result<(&mut Vrf, &Vrf), RouterError> {
-        if vrfid == 0 {
+        if vrfid == Vrf::DEFAULT_VRFID {
             return Err(RouterError::Internal("Bug: misuse of vrf lookup"));
         }
-        match self.by_id.get_disjoint_mut([&vrfid, &0]) {
+        match self.by_id.get_disjoint_mut([&vrfid, &Vrf::DEFAULT_VRFID]) {
             [Some(vrf), Some(vrf0)] => Ok((vrf, vrf0)),
             [None, Some(_vrf0)] => {
                 error!("Unable to find vrf with id {vrfid}");
@@ -363,9 +363,8 @@ impl VrfTable {
     /// hash table and use it separately?
     //////////////////////////////////////////////////////////////////
     fn values_mut_except_default(&mut self) -> (impl Iterator<Item = &mut Vrf>, &mut Vrf) {
-        let (vrfs, mut vrf0): (Vec<_>, Vec<_>) = self
-            .values_mut()
-            .partition(|vrf| !Self::is_default_vrf(vrf));
+        let (vrfs, mut vrf0): (Vec<_>, Vec<_>) =
+            self.values_mut().partition(|vrf| !Vrf::is_default_vrf(vrf));
         let vrf0 = vrf0.pop().expect("Default VRF should always be present");
         (vrfs.into_iter(), vrf0)
     }

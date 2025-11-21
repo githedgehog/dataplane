@@ -184,6 +184,9 @@ pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
 pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
 
 impl Vrf {
+    /// The `VrfId` of the default `Vrf`.
+    pub const DEFAULT_VRFID: VrfId = 0;
+
     /////////////////////////////////////////////////////////////////////////
     /// Create a new [`Vrf`]
     /////////////////////////////////////////////////////////////////////////
@@ -265,7 +268,7 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
     pub fn set_status(&mut self, status: VrfStatus) {
         // the default vrf (vrfid = 0) can't be deleted and it's always active
-        if self.status != status && self.vrfid != 0 {
+        if self.status != status && !self.is_default_vrf() {
             self.status = status;
             debug!("Vrf {} status changed to {status}", self.name);
         }
@@ -293,6 +296,13 @@ impl Vrf {
                 }
             }
         }
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    /// Tell if a vrf is the default vrf
+    /////////////////////////////////////////////////////////////////////////
+    pub fn is_default_vrf(&self) -> bool {
+        self.vrfid == Self::DEFAULT_VRFID
     }
 
     /////////////////////////////////////////////////////////////////////////
