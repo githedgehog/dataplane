@@ -309,7 +309,7 @@ jobs:
 
       - id: "docs"
         name: "run rustdoc"
-        if: ${{matrix.profile.name == 'release'}}
+        if: ${{ matrix.profile.name == 'release' && !contains(github.event.pull_request.labels.*.name, 'disable-docs') }}
         run: |
           RUSTDOCFLAGS="-D warnings --document-private-items --allow rustdoc::all" just \
             debug_justfile="${{matrix.debug_justfile}}" \
