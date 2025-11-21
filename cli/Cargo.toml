@@ -18,3 +18,8 @@ serde = {workspace = true, features = ["derive", "serde_derive"]}
 strum = { workspace = true }
 thiserror = { workspace = true }
 
+[build-dependencies]
+# internal
+dpdk-sysroot-helper = { workspace = true }
+
+# external
