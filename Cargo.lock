@@ -1014,6 +1014,7 @@ dependencies = [
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-dpdk",
+ "dataplane-dpdk-sysroot-helper",
  "dataplane-id",
  "dataplane-mgmt",
  "dataplane-nat",
@@ -1078,6 +1079,7 @@ version = "0.1.0"
 dependencies = [
  "bincode2",
  "colored",
+ "dataplane-dpdk-sysroot-helper",
  "log",
  "rustyline",
  "serde",
