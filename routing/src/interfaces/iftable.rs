@@ -5,7 +5,7 @@
 
 use crate::errors::RouterError;
 use crate::fib::fibtype::FibKey;
-use crate::interfaces::interface::{IfAddress, IfState, Interface, RouterInterfaceConfig};
+use crate::interfaces::interface::{IfAddr, IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
 use std::collections::HashMap;
 
@@ -14,7 +14,7 @@ use net::interface::InterfaceIndex;
 use tracing::{debug, error, info};
 
 #[derive(Clone)]
-/// A table of network interface objects, keyed by some ifindex (u32)
+/// A table of network interface objects, keyed by `InterfaceIndex`
 pub struct IfTable {
     by_index: HashMap<InterfaceIndex, Interface, RandomState>,
 }
@@ -124,7 +124,7 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Assign an Ip address to an [`Interface`]
+    /// Assign an [`IfAddress`] to an [`Interface`]
     ///
     /// # Errors
     ///
@@ -133,7 +133,7 @@ impl IfTable {
     pub(crate) fn add_ifaddr(
         &mut self,
         ifindex: InterfaceIndex,
-        ifaddr: &IfAddress,
+        ifaddr: IfAddr,
     ) -> Result<(), RouterError> {
         self.by_index
             .get_mut(&ifindex)
@@ -145,9 +145,9 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////
     /// Un-assign an Ip address from an interface.
     //////////////////////////////////////////////////////////////////
-    pub(crate) fn del_ifaddr(&mut self, ifindex: InterfaceIndex, ifaddr: &IfAddress) {
+    pub(crate) fn del_ifaddr(&mut self, ifindex: InterfaceIndex, ifaddr: IfAddr) {
         if let Some(iface) = self.by_index.get_mut(&ifindex) {
-            iface.del_ifaddr(&(ifaddr.0, ifaddr.1));
+            iface.del_ifaddr(ifaddr);
         }
         // if interface does not exist or the address was not configured,
         // we'll do nothing

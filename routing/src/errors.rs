@@ -5,6 +5,7 @@
 
 use crate::fib::fibtype::FibKey;
 use net::interface::InterfaceIndex;
+use std::net::IpAddr;
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -29,6 +30,12 @@ pub enum RouterError {
 
     #[error("Invalid socket path '{0}'")]
     InvalidPath(String),
+
+    #[error("Invalid interface mask length '{0}'")]
+    InvalidMask(u8),
+
+    #[error("Invalid interface address '{0}'")]
+    InvalidAddress(IpAddr),
 
     #[error("Internal error: {0}")]
     Internal(&'static str),

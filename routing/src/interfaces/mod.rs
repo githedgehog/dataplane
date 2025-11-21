@@ -14,7 +14,7 @@ pub mod tests {
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
     use crate::interfaces::interface::{
-        IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
+        IfAddr, IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
     };
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use net::eth::mac::Mac;
@@ -135,8 +135,8 @@ pub mod tests {
 
         /* Add an ip address (the interface is in the iftable) */
         let address = IpAddr::from_str("10.0.0.1").expect("Bad address");
-        eth0.add_ifaddr(&(address, 24));
-        assert!(eth0.has_address(&address));
+        eth0.add_ifaddr(IfAddr::new(address, 24).unwrap());
+        assert!(eth0.has_address(address));
     }
 
     #[test]
