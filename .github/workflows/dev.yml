@@ -364,6 +364,7 @@ jobs:
       vpcmode: ${{ matrix.vpcmode }}
       releasetest: ${{ contains(github.event.pull_request.labels.*.name, 'ci:+release') || inputs.enable_release_tests == true }}
       hybrid: ${{ matrix.hybrid }}
+      upgradefrom: ${{ matrix.upgradefrom }}
 
     strategy:
       fail-fast: false
@@ -378,16 +379,29 @@ jobs:
           - iso
         vpcmode:
           - l2vni
-          - l3vni
         hybrid:
           - false
+        upgradefrom:
+          - ""
+          - "25.05"
         include:
+          # gateway l3vni
+          - fabricmode: spine-leaf
+            gateway: true
+            includeonie: false
+            buildmode: iso
+            vpcmode: l3vni
+            hybrid: false
+            upgradefrom: ""
+
+          # hlab gateway l2vni
           - fabricmode: spine-leaf
             gateway: true
             includeonie: false
             buildmode: iso
             vpcmode: l2vni
             hybrid: true
+            upgradefrom: ""
 
   summary:
     name: "Summary"
