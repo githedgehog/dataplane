@@ -310,6 +310,9 @@ pub enum SourceMacParseError {
     /// Not a [`Mac`] at all
     #[error("length error: invalid MAC {0:?}")]
     NotAMac(Vec<u8>),
+    /// Error when parsing from string
+    #[error("invalid format: {0}")]
+    ParseError(#[from] MacFromStringError),
 }
 
 /// Errors which can occur while setting the destination [`Mac`] of a [`Packet`]
@@ -351,6 +354,14 @@ impl TryFrom<Mac> for SourceMac {
 
     fn try_from(value: Mac) -> Result<Self, Self::Error> {
         SourceMac::new(value)
+    }
+}
+
+impl TryFrom<&str> for SourceMac {
+    type Error = SourceMacParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(SourceMac::try_from(Mac::try_from(value)?)?)
     }
 }
 
