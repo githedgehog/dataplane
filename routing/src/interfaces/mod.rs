@@ -136,7 +136,7 @@ pub mod tests {
 
         /* Add an ip address (the interface is in the iftable) */
         let address = IpAddr::from_str("10.0.0.1").expect("Bad address");
-        eth0.add_ifaddr(IfAddr::new(address, 24).unwrap());
+        let _ = eth0.add_ifaddr(IfAddr::new(address, 24).unwrap());
         assert!(eth0.has_address(address));
     }
 

@@ -136,22 +136,38 @@ impl IfTable {
         ifindex: InterfaceIndex,
         ifaddr: IfAddr,
     ) -> Result<(), RouterError> {
-        self.by_index
+        let iface = self
+            .by_index
             .get_mut(&ifindex)
-            .ok_or(RouterError::NoSuchInterface(ifindex))?
-            .add_ifaddr(ifaddr);
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        if !iface.add_ifaddr(ifaddr) {
+            debug!("Address {ifaddr} was already configured in interface {ifindex}");
+        }
         Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
     /// Un-assign an Ip address from an interface.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the interface or the address/mask are not found
     //////////////////////////////////////////////////////////////////
-    pub(crate) fn del_ifaddr(&mut self, ifindex: InterfaceIndex, ifaddr: IfAddr) {
-        if let Some(iface) = self.by_index.get_mut(&ifindex) {
-            iface.del_ifaddr(ifaddr);
-        }
-        // if interface does not exist or the address was not configured,
-        // we'll do nothing
+    pub(crate) fn del_ifaddr(
+        &mut self,
+        ifindex: InterfaceIndex,
+        ifaddr: IfAddr,
+    ) -> Result<(), RouterError> {
+        let iface = self
+            .by_index
+            .get_mut(&ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        iface
+            .del_ifaddr(ifaddr)
+            .then_some(())
+            .ok_or(RouterError::NoSuchAddress(ifaddr))
     }
 
     //////////////////////////////////////////////////////////////////////
