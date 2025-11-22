@@ -7,7 +7,6 @@ use crate::evpn::RmacEntry;
 use crate::rib::Vrf;
 use crate::routingdb::RoutingDb;
 
-use crate::interfaces::interface::IfAddr;
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::Rio;
 use crate::router::rpc_adapt::is_evpn_route;
@@ -24,6 +23,7 @@ use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::Wire;
 
 use net::interface::InterfaceIndex;
+use net::interface::address::IfAddr;
 use std::os::unix::net::SocketAddr;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
