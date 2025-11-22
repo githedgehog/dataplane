@@ -2,7 +2,9 @@ ARG BASE
 FROM $BASE AS dataplane
 ARG ARTIFACT
 ARG ARTIFACT_CLI
-COPY --link --chown=0:0 "${ARTIFACT}" /dataplane
-COPY --link --chown=0:0 "${ARTIFACT_CLI}" /dataplane-cli
+ARG ARTIFACT_INIT
+COPY --link --chown=0:0 "${ARTIFACT}" /bin/dataplane
+COPY --link --chown=0:0 "${ARTIFACT_INIT}" /bin/dataplane-init
+COPY --link --chown=0:0 "${ARTIFACT_CLI}" /bin/dataplane-cli
 WORKDIR /
-ENTRYPOINT ["/dataplane"]
+ENTRYPOINT ["/bin/dataplane-init"]
