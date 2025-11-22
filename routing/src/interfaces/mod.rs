@@ -14,11 +14,12 @@ pub mod tests {
     use crate::interfaces::iftable::IfTable;
     use crate::interfaces::iftablerw::{IfTableReader, IfTableWriter};
     use crate::interfaces::interface::{
-        IfAddr, IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
+        IfDataDot1q, IfDataEthernet, IfState, IfType, RouterInterfaceConfig,
     };
     use crate::rib::vrf::{RouterVrfConfig, Vrf};
     use net::eth::mac::SourceMac;
     use net::interface::InterfaceIndex;
+    use net::interface::address::IfAddr;
     use net::vlan::Vid;
     use std::net::IpAddr;
     use std::str::FromStr;

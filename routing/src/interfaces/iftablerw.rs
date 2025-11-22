@@ -6,12 +6,13 @@
 use crate::errors::RouterError;
 use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftable::IfTable;
-use crate::interfaces::interface::{IfAddr, IfState, RouterInterfaceConfig};
+use crate::interfaces::interface::{IfState, RouterInterfaceConfig};
 use crate::rib::vrf::VrfId;
 use crate::rib::vrftable::VrfTable;
 use left_right::ReadHandleFactory;
 use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::interface::InterfaceIndex;
+use net::interface::address::IfAddr;
 
 use tracing::debug;
 

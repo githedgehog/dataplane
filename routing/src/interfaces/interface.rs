@@ -3,58 +3,20 @@
 
 //! Network interface model
 
-use crate::RouterError;
 use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
 use net::eth::mac::SourceMac;
+use net::interface::address::IfAddr;
 use net::interface::{InterfaceIndex, Mtu};
 use net::vlan::Vid;
-use std::net::IpAddr;
 
 use std::collections::HashSet;
 
+#[cfg(test)]
+use std::net::IpAddr;
+
 #[allow(unused)]
 use tracing::{debug, error, info};
-
-/// An Ipv4 or Ipv6 address and mask configured on an interface
-#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
-pub struct IfAddr {
-    address: IpAddr,
-    mask_len: u8,
-}
-impl IfAddr {
-    /// Tell if an `IpAddr` plus a mask length are suitable to be configured on a network interface.
-    pub fn is_valid_ifaddr(address: IpAddr, mask_len: u8) -> Result<(), RouterError> {
-        if address.is_multicast() || address.is_unspecified() {
-            Err(RouterError::InvalidAddress(address))
-        } else if address.is_ipv4() && mask_len > 32
-            || address.is_ipv6() && mask_len > 128
-            || mask_len == 0
-        {
-            Err(RouterError::InvalidMask(mask_len))
-        } else {
-            Ok(())
-        }
-    }
-    /// An Ipv4 or Ipv6 address and mask length that can be configured on an interface.
-    ///
-    /// # Errors
-    ///
-    /// This function returns `RouterError` if the provided address is not suitable
-    /// for a network interface or the mask is not legal.
-    pub fn new(address: IpAddr, mask_len: u8) -> Result<Self, RouterError> {
-        Self::is_valid_ifaddr(address, mask_len)?;
-        Ok(Self { address, mask_len })
-    }
-    #[must_use]
-    pub fn address(&self) -> IpAddr {
-        self.address
-    }
-    #[must_use]
-    pub fn mask_len(&self) -> u8 {
-        self.mask_len
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for ethernet interfaces
@@ -274,7 +236,7 @@ impl Interface {
     #[cfg(test)]
     pub fn has_address(&self, address: IpAddr) -> bool {
         for ifaddr in &self.addresses {
-            if ifaddr.address == address {
+            if ifaddr.address() == address {
                 return true;
             }
         }

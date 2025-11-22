@@ -5,8 +5,9 @@
 
 use crate::errors::RouterError;
 use crate::fib::fibtype::FibKey;
-use crate::interfaces::interface::{IfAddr, IfState, Interface, RouterInterfaceConfig};
+use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
+use net::interface::address::IfAddr;
 use std::collections::HashMap;
 
 use net::interface::InterfaceIndex;
