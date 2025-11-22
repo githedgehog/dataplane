@@ -4,6 +4,7 @@
 //! Main processing functions of the Control-plane interface (CPI)
 
 use crate::evpn::RmacEntry;
+use crate::rib::Vrf;
 use crate::routingdb::RoutingDb;
 
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
@@ -196,7 +197,7 @@ impl RpcOperation for IpRoute {
         let vrftable = &mut db.vrftable;
         let iftabler = &db.iftw.as_reader();
 
-        if self.vrfid != 0 && (is_evpn_route(self) || nonlocal_nhop(self)) {
+        if self.vrfid != Vrf::DEFAULT_VRFID && (is_evpn_route(self) || nonlocal_nhop(self)) {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 error!("Unable to get vrf with id {}", self.vrfid);
                 return RpcResultCode::Failure;
@@ -216,7 +217,8 @@ impl RpcOperation for IpRoute {
         let rmac_store = &db.rmac_store;
         let vrftable = &mut db.vrftable;
 
-        if self.vrfid != 0 {
+        #[allow(clippy::if_not_else)]
+        if self.vrfid != Vrf::DEFAULT_VRFID {
             let Ok((vrf, vrf0)) = vrftable.get_with_default_mut(self.vrfid) else {
                 return on_vrf_lookup_fail(db.have_config(), self.vrfid);
             };

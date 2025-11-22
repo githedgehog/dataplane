@@ -95,7 +95,7 @@ impl NhopKey {
         }
     }
     #[cfg(test)]
-    pub fn expect_from(address: &str) -> Self {
+    pub fn from_address(address: &str) -> Self {
         Self {
             address: Some(IpAddr::from_str(address).expect("Bad address")),
             ..Default::default()
@@ -103,10 +103,10 @@ impl NhopKey {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn with_addr_ifindex(address: &IpAddr, ifindex: InterfaceIndex) -> Self {
+    pub fn with_addr_ifindex(address: &str, ifindex: u32) -> Self {
         Self {
-            address: Some(*address),
-            ifindex: Some(ifindex),
+            address: Some(IpAddr::from_str(address).expect("Bad address")),
+            ifindex: Some(InterfaceIndex::try_new(ifindex).expect("Bad ifindex")),
             ..Default::default()
         }
     }
@@ -120,9 +120,9 @@ impl NhopKey {
     }
     #[cfg(test)]
     #[must_use]
-    pub fn with_ifindex(ifindex: InterfaceIndex) -> Self {
+    pub fn with_ifindex(ifindex: u32) -> Self {
         Self {
-            ifindex: Some(ifindex),
+            ifindex: Some(InterfaceIndex::try_new(ifindex).unwrap()),
             ..Default::default()
         }
     }
@@ -159,7 +159,6 @@ impl Hash for Nhop {
     }
 }
 
-#[allow(clippy::mutable_key_type)]
 impl Nhop {
     //////////////////////////////////////////////////////////////////
     /// Create a new Nhop object from a key object
@@ -185,33 +184,45 @@ impl Nhop {
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
     pub fn add_resolver(&self, resolver: Rc<Nhop>) -> &Self {
-        if let Ok(mut resolvers) = self.resolvers.try_borrow_mut() {
-            resolvers.push(resolver);
-        } else {
+        let Ok(mut resolvers) = self.resolvers.try_borrow_mut() else {
             error!("Failed to add resolver: try-borrow-mut failed!. Nhop={self:#?}");
-        }
+            return self;
+        };
+        resolvers.push(resolver);
         self
+    }
+
+    /// Recursive method to check if a next-hop resolves via another, `checked`.
+    /// We use this method to avoid resolution loops that would happen in case of routing loops.
+    /// Resolution loops would cause us to stack overflow. This method is recursive, but
+    /// short-circuits in case of loop. The method takes the advantage that there cannot be two
+    /// next-hops with the same key.
+    fn resolves_with(&self, checked: &Nhop) -> bool {
+        // resolve to oneself is forbidden
+        if self.key == checked.key {
+            error!("Loop detected!: {} resolves with {}", checked.key, self.key);
+            return true;
+        }
+        // resolvers should not refer back to the checked next-hop
+        let resolvers = self.resolvers.borrow();
+        resolvers.iter().any(|res| res.resolves_with(checked))
     }
 
     /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
     pub fn lazy_resolve(&self, vrf: &Vrf) {
         if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
-            return; /* done */
+            return;
         }
         let Some(a) = self.key.address else {
-            return; /* done */
+            error!("Got forwarding nexthop with neither address nor ifindex!: {self}");
+            return;
         };
-        let mut resolvers = Vec::new();
-        debug!("Resolving {a} with vrf '{}'({})", vrf.name, vrf.vrfid);
+        debug!("Resolving {a} with vrf '{}'...", vrf.name);
         let (prefix, route) = vrf.lpm(a);
-        debug!("Address {a} resolves with route to {prefix}:");
+        debug!("Address {a} resolves with route to {prefix}");
+        let mut resolvers = Vec::with_capacity(route.s_nhops.len());
         for nh in &route.s_nhops {
-            if *nh.rc == *self {
-                error!(
-                    "Resolution loop!: {a} resolves with route to {prefix} via {}",
-                    nh.rc
-                );
-            } else {
+            if !nh.rc.resolves_with(self) {
                 debug!(" -> {}", nh.rc);
                 resolvers.push(nh.rc.clone());
             }
@@ -223,47 +234,47 @@ impl Nhop {
     /// Auxiliary recursive method used by `Nhop::quick_resolve()`.
     #[cfg(test)]
     fn quick_resolve_rec(&self, result: &mut BTreeSet<NhopKey>) {
-        if let Ok(resolvers_of_this) = self.resolvers.try_borrow_mut() {
-            if resolvers_of_this.is_empty() {
-                /* next-hop has no resolvers */
-                if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
-                    result.insert(self.key.clone());
-                } else {
-                    // This should not happen. The vrf will be such that there's always
-                    // a default route (with legitimate next-hops or a default one with action drop).
-                    // So all next-hops should resolve, at the very least, to the default route.
-                    // If we get here, we probably failed to update the resolution dependencies.
-                    error!("Unable to resolve next-hop {:#?} !!", &self.key);
-                }
+        let Ok(resolvers) = self.resolvers.try_borrow_mut() else {
+            error!("Try-borrow-mut() failed on next-hop resolvers!");
+            return;
+        };
+        if resolvers.is_empty() {
+            // next-hop has no resolvers
+            if self.key.ifindex.is_some() || self.key.fwaction == FwAction::Drop {
+                result.insert(self.key.clone());
             } else {
-                /* check resolvers */
-                for r in resolvers_of_this.iter() {
-                    if let Some(i) = r.key.ifindex {
-                        /* Take into account that some nhops may already be partially resolved, meaning
-                        they include an address AND an ifindex */
-                        let address = r.key.address.map_or(self.key.address, |_| r.key.address);
-                        result.insert(NhopKey::new(
-                            r.key.origin,
-                            address,
-                            Some(i),
-                            self.key.encap,
-                            self.key.fwaction,
-                            self.key.ifname.clone(),
-                        ));
-                    } else {
-                        r.quick_resolve_rec(result);
-                    }
-                }
+                // This should not happen. The vrf will be such that there's always
+                // a default route (with legitimate next-hops or a default one with action drop).
+                // So all next-hops should resolve, at the very least, to the default route.
+                // If we get here, we probably failed to update the resolution dependencies.
+                error!("Unable to resolve next-hop {:#?} !!", &self.key);
             }
         } else {
-            error!("Try-borrow-mut failed on resolvers!");
+            // check resolvers
+            for r in resolvers.iter() {
+                if let Some(i) = r.key.ifindex {
+                    // Take into account that some nhops may already be partially resolved, meaning
+                    // they include an address AND an ifindex
+                    let address = r.key.address.map_or(self.key.address, |_| r.key.address);
+                    result.insert(NhopKey::new(
+                        r.key.origin,
+                        address,
+                        Some(i),
+                        self.key.encap,
+                        self.key.fwaction,
+                        self.key.ifname.clone(),
+                    ));
+                } else {
+                    r.quick_resolve_rec(result);
+                }
+            }
         }
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     /// This method is just a proof of concept. The idea is that if the next-hop dependencies are up-to-date,
     /// a next-hop can be resolved by those. This allows us to replace an expensive LPM recursion (multiple LPMs)
-    /// by a small recursion in the next-hop store, which is stateful and persists the results (to be done).
+    /// by a small recursion in the next-hop store, which is stateful and persists the results.
     //////////////////////////////////////////////////////////////////////////////////////////////////////
     #[cfg(test)]
     pub fn quick_resolve(&self) -> BTreeSet<NhopKey> {
@@ -288,6 +299,15 @@ impl NhopStore {
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Tell if the next-hop store is empty
+    //////////////////////////////////////////////////////////////////
+    #[must_use]
+    #[allow(unused)]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     //////////////////////////////////////////////////////////////////
@@ -415,24 +435,29 @@ impl NhopStore {
 
 #[cfg(test)]
 mod tests {
-    use tracing_test::traced_test;
-
     use crate::rib::nexthop::*;
     use std::rc::Rc;
+    use tracing_test::traced_test;
 
     #[traced_test]
     #[test]
+    /// Tests the correct behavior of the next-hop store
     fn test_nhop_store_minimal() {
         let mut store = NhopStore::new();
-        let nh_key = NhopKey::expect_from("10.0.1.1");
+        let nh_key = NhopKey::from_address("10.0.1.1");
 
-        /* add a nhop. We're not keeping the returned reference. Therefore, its refcount will remain at 1 */
-        let _ = store.add_nhop(&nh_key);
+        /* add a nhop */
+        let nhref = store.add_nhop(&nh_key);
+        assert_eq!(store.get_nhop_rc_count(&nh_key), 2);
+
+        /* if we drop the reference, the refcount is updated */
+        drop(nhref);
+        assert_eq!(store.get_nhop_rc_count(&nh_key), 1);
 
         /* check it's there */
         assert!(store.contains(&nh_key));
 
-        /* get it */
+        /* get method does not increment the refcount */
         let nh = store.get_nhop(&nh_key).expect("Should find it");
         assert_eq!(Rc::strong_count(nh), 1, "Must be 1");
 
@@ -444,9 +469,10 @@ mod tests {
 
     #[traced_test]
     #[test]
-    fn test_nhop_reuse() {
+    /// Tests the correct deletion of next-hops
+    fn test_nhop_reuse_and_deletion() {
         let mut store = NhopStore::new();
-        let nh_key = NhopKey::expect_from("10.0.1.1");
+        let nh_key = NhopKey::from_address("10.0.1.1");
 
         /* add a nhop and keep a reference to it */
         let r1 = store.add_nhop(&nh_key);
@@ -457,10 +483,9 @@ mod tests {
 
         /* add it again. No new next-hop should be added */
         let r2 = store.add_nhop(&nh_key);
-
         assert_eq!(store.len(), 1);
 
-        /* get it */
+        /* get it: since add_nhop returns a reference and we keep it, refcount should be 3 */
         let nh = store.get_nhop(&nh_key).unwrap();
         assert_eq!(Rc::strong_count(nh), 3);
 
@@ -469,25 +494,30 @@ mod tests {
         assert_eq!(num_refs, 3);
 
         /* drop references */
+        let _ = nh;
         drop(r1);
+        assert!(!store.del_nhop(&nh_key));
+        assert_eq!(store.get_nhop_rc_count(&nh_key), 2);
         drop(r2);
-        assert_eq!(Rc::strong_count(nh), 1);
-        store.dump();
+        assert_eq!(store.get_nhop_rc_count(&nh_key), 1);
+        assert!(store.del_nhop(&nh_key));
+        assert_eq!(store.len(), 0);
     }
 
     #[traced_test]
     #[test]
-    fn test_nhop_store_basic() {
+    /// Tests the correct next-hops reference counts
+    fn test_nhop_ref_counts() {
         let mut store = NhopStore::new();
 
         /* Create KEYS for some next-hop */
-        let n1_k = NhopKey::expect_from("10.0.1.1");
-        let n2_k = NhopKey::expect_from("10.0.2.1");
-        let n3_k = NhopKey::expect_from("10.0.3.1");
+        let n1_k = NhopKey::from_address("10.0.1.1");
+        let n2_k = NhopKey::from_address("10.0.2.1");
+        let n3_k = NhopKey::from_address("10.0.3.1");
 
-        let i1_k = NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap());
-        let i2_k = NhopKey::with_ifindex(InterfaceIndex::try_new(2).unwrap());
-        let i3_k = NhopKey::with_ifindex(InterfaceIndex::try_new(3).unwrap());
+        let i1_k = NhopKey::with_ifindex(1);
+        let i2_k = NhopKey::with_ifindex(2);
+        let i3_k = NhopKey::with_ifindex(3);
 
         /* Add some next-hops and references */
         {
@@ -530,13 +560,12 @@ mod tests {
     fn test_nhop_store_shared_resolvers() {
         let mut store = NhopStore::new();
 
-        let i1_k = NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap());
-
-        let n1_k = NhopKey::expect_from("11.0.0.1");
-        let n2_k = NhopKey::expect_from("11.0.0.2");
-        let n3_k = NhopKey::expect_from("11.0.0.3");
-        let n4_k = NhopKey::expect_from("11.0.0.4");
-        let n5_k = NhopKey::expect_from("11.0.0.5");
+        let i1_k = NhopKey::with_ifindex(1);
+        let n1_k = NhopKey::from_address("11.0.0.1");
+        let n2_k = NhopKey::from_address("11.0.0.2");
+        let n3_k = NhopKey::from_address("11.0.0.3");
+        let n4_k = NhopKey::from_address("11.0.0.4");
+        let n5_k = NhopKey::from_address("11.0.0.5");
 
         /* create 5 next-hops all resolving to the same one */
         let i1 = store.add_nhop(&i1_k);
@@ -561,25 +590,27 @@ mod tests {
         store.del_nhop(&n3_k);
         store.del_nhop(&n2_k);
         store.del_nhop(&n1_k);
-        drop(i1);
-        store.dump();
+        assert_eq!(store.len(), 1);
 
-        store.flush_resolvers();
-        store.dump();
+        /* remove common resolver */
+        drop(i1);
+        store.del_nhop(&i1_k);
+        assert!(store.is_empty());
     }
 
     #[traced_test]
     #[test]
+    /// Tests flushing of next-hop resolution data
     fn test_nhop_store_flush_resolvers() {
         let mut store = NhopStore::new();
 
-        let i1_k = NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap());
+        let i1_k = NhopKey::with_ifindex(1);
 
-        let n1_k = NhopKey::expect_from("11.0.0.1");
-        let n2_k = NhopKey::expect_from("11.0.0.2");
-        let n3_k = NhopKey::expect_from("11.0.0.3");
-        let n4_k = NhopKey::expect_from("11.0.0.4");
-        let n5_k = NhopKey::expect_from("11.0.0.5");
+        let n1_k = NhopKey::from_address("11.0.0.1");
+        let n2_k = NhopKey::from_address("11.0.0.2");
+        let n3_k = NhopKey::from_address("11.0.0.3");
+        let n4_k = NhopKey::from_address("11.0.0.4");
+        let n5_k = NhopKey::from_address("11.0.0.5");
 
         /* create 5 next-hops all resolving to the same one */
         let i1 = store.add_nhop(&i1_k);
@@ -589,8 +620,10 @@ mod tests {
         store.add_nhop(&n4_k).add_resolver(i1.clone());
         store.add_nhop(&n5_k).add_resolver(i1.clone());
         drop(i1);
+        assert_eq!(store.get_nhop_rc_count(&i1_k), 6);
         store.dump();
         store.flush_resolvers();
+        assert_eq!(store.get_nhop_rc_count(&i1_k), 1);
         store.dump();
     }
 
@@ -600,21 +633,21 @@ mod tests {
         let mut store = NhopStore::new();
 
         /* add "interface" next-hops */
-        let i1 = store.add_nhop(&NhopKey::with_ifindex(InterfaceIndex::try_new(1).unwrap()));
-        let i2 = store.add_nhop(&NhopKey::with_ifindex(InterfaceIndex::try_new(2).unwrap()));
-        let i3 = store.add_nhop(&NhopKey::with_ifindex(InterfaceIndex::try_new(3).unwrap()));
+        let i1 = store.add_nhop(&NhopKey::with_ifindex(1));
+        let i2 = store.add_nhop(&NhopKey::with_ifindex(2));
+        let i3 = store.add_nhop(&NhopKey::with_ifindex(3));
 
         /* add "adjacent" nexthops */
-        let a1 = store.add_nhop(&NhopKey::expect_from("10.0.0.1"));
-        let a2 = store.add_nhop(&NhopKey::expect_from("10.0.0.5"));
-        let a3 = store.add_nhop(&NhopKey::expect_from("10.0.0.9"));
+        let a1 = store.add_nhop(&NhopKey::from_address("10.0.0.1"));
+        let a2 = store.add_nhop(&NhopKey::from_address("10.0.0.5"));
+        let a3 = store.add_nhop(&NhopKey::from_address("10.0.0.9"));
 
         /* add "non-adjacent" nexthops */
-        let b1 = store.add_nhop(&NhopKey::expect_from("172.16.0.1"));
-        let b2 = store.add_nhop(&NhopKey::expect_from("172.16.0.2"));
+        let b1 = store.add_nhop(&NhopKey::from_address("172.16.0.1"));
+        let b2 = store.add_nhop(&NhopKey::from_address("172.16.0.2"));
 
         /* add even farther next-hop */
-        let n = store.add_nhop(&NhopKey::expect_from("7.0.0.1"));
+        let n = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
 
         /* Add resolvers */
         a1.add_resolver(i1);
@@ -639,25 +672,16 @@ mod tests {
         let mut store = NhopStore::new();
 
         /* add "adjacent" nexthops with interface resolved */
-        let a1 = store.add_nhop(&NhopKey::with_addr_ifindex(
-            &("10.0.0.1".parse().unwrap()),
-            InterfaceIndex::try_new(1).unwrap(),
-        ));
-        let a2 = store.add_nhop(&NhopKey::with_addr_ifindex(
-            &("10.0.0.5".parse().unwrap()),
-            InterfaceIndex::try_new(2).unwrap(),
-        ));
-        let a3 = store.add_nhop(&NhopKey::with_addr_ifindex(
-            &("10.0.0.9".parse().unwrap()),
-            InterfaceIndex::try_new(3).unwrap(),
-        ));
+        let a1 = store.add_nhop(&NhopKey::with_addr_ifindex("10.0.0.1", 1));
+        let a2 = store.add_nhop(&NhopKey::with_addr_ifindex("10.0.0.5", 2));
+        let a3 = store.add_nhop(&NhopKey::with_addr_ifindex("10.0.0.9", 3));
 
         // add "non-adjacent" nexthops
-        let b1 = store.add_nhop(&NhopKey::expect_from("172.16.0.1"));
-        let b2 = store.add_nhop(&NhopKey::expect_from("172.16.0.2"));
+        let b1 = store.add_nhop(&NhopKey::from_address("172.16.0.1"));
+        let b2 = store.add_nhop(&NhopKey::from_address("172.16.0.2"));
 
         // add even further next-hop
-        let n = store.add_nhop(&NhopKey::expect_from("7.0.0.1"));
+        let n = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
 
         /* Add resolutions */
         b1.add_resolver(a1);
@@ -681,20 +705,20 @@ mod tests {
 
         /* direct resolution to drop */
         store
-            .add_nhop(&NhopKey::expect_from("172.16.0.1"))
+            .add_nhop(&NhopKey::from_address("172.16.0.1"))
             .add_resolver(nh_drop.clone());
 
         /* indirect resolution to drop */
-        let intermediate = store.add_nhop(&NhopKey::expect_from("10.0.0.1"));
+        let intermediate = store.add_nhop(&NhopKey::from_address("10.0.0.1"));
         intermediate.add_resolver(nh_drop);
 
         /* nh that resolves to intermediate */
         store
-            .add_nhop(&NhopKey::expect_from("7.0.0.1"))
+            .add_nhop(&NhopKey::from_address("7.0.0.1"))
             .add_resolver(intermediate);
 
         /* add next-hop that does not resolve to anything */
-        let _ = store.add_nhop(&NhopKey::expect_from("8.0.0.1"));
+        let _ = store.add_nhop(&NhopKey::from_address("8.0.0.1"));
 
         store
     }
@@ -707,15 +731,35 @@ mod tests {
         store.dump();
 
         /* get the next-hop 7.0.0.1 */
-        let key = NhopKey::expect_from("7.0.0.1");
+        let key = NhopKey::from_address("7.0.0.1");
 
         /* It has no extra reference */
         assert_eq!(store.get_nhop_rc_count(&key), 1);
         store.dump();
 
+        /* check resolvers refcount */
+        assert_eq!(
+            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.1")),
+            2
+        );
+        assert_eq!(
+            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.2")),
+            2
+        );
+
         /* Delete nexthop. Since it has no extra reference it should be gone */
         store.del_nhop(&key);
         assert!(!store.contains(&key));
+
+        /* resolvers refcount is decreased */
+        assert_eq!(
+            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.1")),
+            1
+        );
+        assert_eq!(
+            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.2")),
+            1
+        );
     }
 
     #[test]
@@ -725,14 +769,14 @@ mod tests {
         store.dump();
 
         /* get next-hop 7.0.0.1 */
-        let key = NhopKey::expect_from("7.0.0.1");
+        let key = NhopKey::from_address("7.0.0.1");
         let n = store.get_nhop(&key).expect("Should be there");
 
         let res = n.quick_resolve();
         assert_eq!(res.len(), 3, "Should resolve over 3 interfaces");
-        for k in &res {
-            assert!(k.ifindex.is_some());
-        }
+        assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.1", 1)));
+        assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.5", 2)));
+        assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.9", 3)));
         println!("{:#?}", &res);
     }
 
@@ -744,14 +788,14 @@ mod tests {
         store.dump();
 
         /* get next-hop 7.0.0.1 */
-        let key = NhopKey::expect_from("7.0.0.1");
+        let key = NhopKey::from_address("7.0.0.1");
         let n = store.get_nhop(&key).unwrap();
 
         let res = n.quick_resolve();
         assert_eq!(res.len(), 3, "Should resolve over 3 interfaces");
-        for k in &res {
-            assert!(k.ifindex.is_some());
-        }
+        assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.1", 1)));
+        assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.5", 2)));
+        assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.9", 3)));
         println!("{:#?}", &res);
     }
 
@@ -761,7 +805,7 @@ mod tests {
         store.dump();
 
         {
-            let key = NhopKey::expect_from("172.16.0.1");
+            let key = NhopKey::from_address("172.16.0.1");
             let n = store.get_nhop(&key).expect("Next-hop should be there");
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");
@@ -772,7 +816,7 @@ mod tests {
             );
         }
         {
-            let key = NhopKey::expect_from("7.0.0.1");
+            let key = NhopKey::from_address("7.0.0.1");
             let n = store.get_nhop(&key).expect("Next-hop should be there");
             let mut res = n.quick_resolve();
             assert_eq!(res.len(), 1, "Should get just one nhop key");
@@ -787,5 +831,51 @@ mod tests {
         let res = store.resolve_by_addr(&("7.0.0.1".parse().unwrap()));
         assert!(res.is_some());
         println!("{:#?}", &res);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_loop_prevention() {
+        let mut store = NhopStore::new();
+
+        let i1_k = NhopKey::with_ifindex(1);
+        let i2_k = NhopKey::with_ifindex(2);
+        let a = NhopKey::from_address("10.0.1.1");
+        let b = NhopKey::from_address("10.0.2.1");
+        let x = NhopKey::from_address("192.168.1.1");
+        let y = NhopKey::from_address("192.168.2.1");
+        let checked = NhopKey::from_address("7.0.0.1");
+
+        let i1 = store.add_nhop(&i1_k);
+        let i2 = store.add_nhop(&i2_k);
+        let a = store.add_nhop(&a);
+        let b = store.add_nhop(&b);
+        let x = store.add_nhop(&x);
+        let y = store.add_nhop(&y);
+        let checked = store.add_nhop(&checked);
+
+        a.add_resolver(i1.clone());
+        b.add_resolver(i2.clone());
+        x.add_resolver(a.clone());
+        y.add_resolver(b.clone());
+        checked.add_resolver(x.clone());
+        checked.add_resolver(y.clone());
+        store.dump();
+
+        assert!(!i1.resolves_with(checked.as_ref()));
+        assert!(!i1.resolves_with(a.as_ref()));
+        assert!(!i1.resolves_with(x.as_ref()));
+        assert!(!a.resolves_with(x.as_ref()));
+
+        assert!(i1.resolves_with(i1.as_ref()));
+        assert!(a.resolves_with(i1.as_ref()));
+        assert!(x.resolves_with(i1.as_ref()));
+
+        assert!(!y.resolves_with(checked.as_ref()));
+        assert!(!a.resolves_with(checked.as_ref()));
+        assert!(!x.resolves_with(checked.as_ref()));
+
+        a.add_resolver(checked.clone());
+        assert!(a.resolves_with(checked.as_ref()));
     }
 }
