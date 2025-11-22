@@ -14,7 +14,7 @@ use left_right::{Absorb, ReadGuard, ReadHandle, WriteHandle};
 use net::interface::InterfaceIndex;
 use net::interface::address::IfAddr;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[allow(unused)]
 enum IfTableChange {
@@ -45,9 +45,15 @@ impl Absorb<IfTableChange> for IfTable {
             IfTableChange::Detach(ifindex) => self.detach_interface_from_vrf(*ifindex),
             IfTableChange::DetachFromVrf(fibid) => self.detach_interfaces_from_vrf(*fibid),
             IfTableChange::AddIpAddress((ifindex, ifaddr)) => {
-                let _ = self.add_ifaddr(*ifindex, *ifaddr);
+                if let Err(e) = self.add_ifaddr(*ifindex, *ifaddr) {
+                    warn!("Could not add interface address {ifaddr}: {e}");
+                }
             }
-            IfTableChange::DelIpAddress((ifindex, ifaddr)) => self.del_ifaddr(*ifindex, *ifaddr),
+            IfTableChange::DelIpAddress((ifindex, ifaddr)) => {
+                if let Err(e) = self.del_ifaddr(*ifindex, *ifaddr) {
+                    warn!("Could not remove interface address {ifaddr}: {e}");
+                }
+            }
             IfTableChange::UpdateOpState((ifindex, state)) => {
                 self.set_iface_oper_state(*ifindex, *state);
             }

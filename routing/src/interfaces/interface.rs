@@ -141,7 +141,7 @@ impl Interface {
     /// Create an [`Interface`] object from [`RouterInterfaceConfig`]
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new(config: &RouterInterfaceConfig) -> Self {
+    pub(crate) fn new(config: &RouterInterfaceConfig) -> Self {
         Interface {
             name: config.name.clone(),
             ifindex: config.ifindex,
@@ -165,7 +165,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Set the operational state of an [`Interface`]
     //////////////////////////////////////////////////////////////////
-    pub fn set_oper_state(&mut self, state: IfState) {
+    pub(crate) fn set_oper_state(&mut self, state: IfState) {
         if self.oper_state != state {
             info!(
                 "Operational state of interface {} changed: {} -> {}",
@@ -178,7 +178,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Set the administrative state of an [`Interface`]
     //////////////////////////////////////////////////////////////////
-    pub fn set_admin_state(&mut self, state: IfState) {
+    pub(crate) fn set_admin_state(&mut self, state: IfState) {
         if self.admin_state != state {
             info!(
                 "Admin state of interface {} changed: {} -> {}",
@@ -190,7 +190,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Detach an [`Interface`], unconditionally
     //////////////////////////////////////////////////////////////////
-    pub fn detach(&mut self) {
+    pub(crate) fn detach(&mut self) {
         if let Some(attachment) = self.attachment.take() {
             debug!("Detached interface {} from {attachment}", self.name);
         }
@@ -199,7 +199,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Attach an [`Interface`] to the fib corresponding to a vrf
     //////////////////////////////////////////////////////////////////
-    pub fn attach_vrf(&mut self, fibkey: FibKey) {
+    pub(crate) fn attach_vrf(&mut self, fibkey: FibKey) {
         self.attachment = Some(Attachment::Vrf(fibkey));
     }
 
@@ -207,7 +207,7 @@ impl Interface {
     /// Tell if an [`Interface`] is attached to a Fib with the given Id
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
+    pub(crate) fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
         match &self.attachment {
             Some(Attachment::Vrf(key)) => *key == fibid,
             _ => false,
@@ -215,17 +215,21 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Add (assign) an IP address to an [`Interface`]
+    /// Add an [`IfAddr`] (Ip address and mask) to an [`Interface`].
+    /// Returns true if the address was not there, false otherwise
     //////////////////////////////////////////////////////////////////
-    pub fn add_ifaddr(&mut self, ifaddr: IfAddr) {
-        self.addresses.insert(ifaddr);
+    #[must_use]
+    pub(crate) fn add_ifaddr(&mut self, ifaddr: IfAddr) -> bool {
+        self.addresses.insert(ifaddr)
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Del (unassign) an IP address from an [`Interface`]
+    /// Del (unassign) an IP address from an [`Interface`].
+    /// Returns true if the address was present.
     //////////////////////////////////////////////////////////////////
-    pub fn del_ifaddr(&mut self, ifaddr: IfAddr) {
-        self.addresses.remove(&ifaddr);
+    #[must_use]
+    pub(crate) fn del_ifaddr(&mut self, ifaddr: IfAddr) -> bool {
+        self.addresses.remove(&ifaddr)
     }
 
     //////////////////////////////////////////////////////////////////
@@ -234,7 +238,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     #[must_use]
     #[cfg(test)]
-    pub fn has_address(&self, address: IpAddr) -> bool {
+    pub(crate) fn has_address(&self, address: IpAddr) -> bool {
         for ifaddr in &self.addresses {
             if ifaddr.address() == address {
                 return true;
