@@ -29,6 +29,7 @@
 #![warn(clippy::all)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![deny(rustdoc::all)]
+#![allow(rustdoc::broken_intra_doc_links)]
 #![allow(private_bounds)]
 extern crate alloc;
 extern crate core;

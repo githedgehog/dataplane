@@ -3,6 +3,7 @@
 
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
+#![allow(rustdoc::broken_intra_doc_links)]
 #![allow(clippy::missing_errors_doc)]
 
 //! Network Address Translation (NAT) for the dataplane

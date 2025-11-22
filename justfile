@@ -171,8 +171,24 @@ cargo *args:
       declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
     fi
 
-    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} ${RUSTFLAGS} --html-in-header $(pwd)/scripts/doc/custom-header.html"
+    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} ${RUSTFLAGS} --html-in-header $(pwd)/scripts/doc/custom-header.html --document-private-items"
     ./compile-env/bin/cargo "${extra_args[@]}"
+
+
+# Here we may list external crates for which we want docs because
+# the workspace crates' documentations refer to them.
+external := "left-right etherparse dataplane-dpdk-sys"
+
+# Generate docs for the crates in this project
+[script]
+docs:
+    export RUSTDOCFLAGS="--html-in-header $(pwd)/scripts/doc/custom-header.html --document-private-items --allow rustdoc::all"
+    for crate in {{ external }}; do
+       echo "Documenting $crate..."
+       ./compile-env/bin/cargo doc -p $crate --no-deps
+    done
+    ./compile-env/bin/cargo doc --workspace --no-deps
+
 
 # Run the (very minimal) compile environment
 [script]
@@ -514,7 +530,7 @@ print-container-tags:
 
 # Run Clippy like you're in CI
 [script]
-clippy *args: (cargo "clippy" "--all-targets" "--all-features" args "--" "-D" "warnings")
+clippy *args: (cargo "clippy" "--workspace" "--no-deps" "--all-targets" "--all-features" args "--" "-D" "warnings")
 
 # Serve rustdoc output locally (using port 8000)
 [script]

@@ -305,16 +305,17 @@ jobs:
         name: "run clippy"
         run: |
           just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
-            ${{matrix.profile.sterile}} cargo clippy --all-targets --all-features -- -D warnings
+            ${{matrix.profile.sterile}} cargo clippy --workspace --no-deps --all-targets --all-features -- -D warnings
 
       - id: "docs"
         name: "run rustdoc"
+        if: ${{ matrix.profile.name == 'release' && !contains(github.event.pull_request.labels.*.name, 'disable-docs') }}
         run: |
-          RUSTDOCFLAGS="-D warnings" just \
+          RUSTDOCFLAGS="-D warnings --document-private-items --allow rustdoc::all" just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
             target=x86_64-unknown-linux-gnu \
-            ${{matrix.profile.sterile}} cargo doc
+            ${{matrix.profile.sterile}} cargo doc --workspace --no-deps
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
