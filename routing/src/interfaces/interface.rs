@@ -5,44 +5,44 @@
 
 use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
-use net::eth::mac::Mac;
+use net::eth::mac::SourceMac;
+use net::interface::address::IfAddr;
 use net::interface::{InterfaceIndex, Mtu};
 use net::vlan::Vid;
-use std::net::IpAddr;
 
 use std::collections::HashSet;
+
+#[cfg(test)]
+use std::net::IpAddr;
 
 #[allow(unused)]
 use tracing::{debug, error, info};
 
-/// An Ipv4 or Ipv6 address and mask configured on an interface
-pub type IfAddress = (IpAddr, u8);
-
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for ethernet interfaces
 pub struct IfDataEthernet {
-    pub mac: Mac,
+    pub mac: SourceMac,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 /// Specific data for vlan (sub)interfaces
 pub struct IfDataDot1q {
-    pub mac: Mac,
+    pub mac: SourceMac,
     pub vlanid: Vid,
 }
 
-/// Trait that interfaces having a [`Mac`] should implement.
+/// Trait that interfaces having a mac address should implement.
 trait HasMac {
-    fn get_mac(&self) -> &Mac;
+    fn get_mac(&self) -> &SourceMac;
 }
 
 impl HasMac for IfDataEthernet {
-    fn get_mac(&self) -> &Mac {
+    fn get_mac(&self) -> &SourceMac {
         &self.mac
     }
 }
 impl HasMac for IfDataDot1q {
-    fn get_mac(&self) -> &Mac {
+    fn get_mac(&self) -> &SourceMac {
         &self.mac
     }
 }
@@ -132,7 +132,7 @@ pub struct Interface {
     pub mtu: Option<Mtu>,
     /* -- state -- */
     pub oper_state: IfState,
-    pub addresses: HashSet<IfAddress>,
+    pub addresses: HashSet<IfAddr>,
     pub attachment: Option<Attachment>,
 }
 
@@ -141,7 +141,7 @@ impl Interface {
     /// Create an [`Interface`] object from [`RouterInterfaceConfig`]
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new(config: &RouterInterfaceConfig) -> Self {
+    pub(crate) fn new(config: &RouterInterfaceConfig) -> Self {
         Interface {
             name: config.name.clone(),
             ifindex: config.ifindex,
@@ -165,7 +165,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Set the operational state of an [`Interface`]
     //////////////////////////////////////////////////////////////////
-    pub fn set_oper_state(&mut self, state: IfState) {
+    pub(crate) fn set_oper_state(&mut self, state: IfState) {
         if self.oper_state != state {
             info!(
                 "Operational state of interface {} changed: {} -> {}",
@@ -178,7 +178,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Set the administrative state of an [`Interface`]
     //////////////////////////////////////////////////////////////////
-    pub fn set_admin_state(&mut self, state: IfState) {
+    pub(crate) fn set_admin_state(&mut self, state: IfState) {
         if self.admin_state != state {
             info!(
                 "Admin state of interface {} changed: {} -> {}",
@@ -190,7 +190,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Detach an [`Interface`], unconditionally
     //////////////////////////////////////////////////////////////////
-    pub fn detach(&mut self) {
+    pub(crate) fn detach(&mut self) {
         if let Some(attachment) = self.attachment.take() {
             debug!("Detached interface {} from {attachment}", self.name);
         }
@@ -199,7 +199,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     /// Attach an [`Interface`] to the fib corresponding to a vrf
     //////////////////////////////////////////////////////////////////
-    pub fn attach_vrf(&mut self, fibkey: FibKey) {
+    pub(crate) fn attach_vrf(&mut self, fibkey: FibKey) {
         self.attachment = Some(Attachment::Vrf(fibkey));
     }
 
@@ -207,7 +207,7 @@ impl Interface {
     /// Tell if an [`Interface`] is attached to a Fib with the given Id
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
+    pub(crate) fn is_attached_to_fib(&self, fibid: FibKey) -> bool {
         match &self.attachment {
             Some(Attachment::Vrf(key)) => *key == fibid,
             _ => false,
@@ -215,17 +215,21 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Add (assign) an IP address to an [`Interface`]
+    /// Add an [`IfAddr`] (Ip address and mask) to an [`Interface`].
+    /// Returns true if the address was not there, false otherwise
     //////////////////////////////////////////////////////////////////
-    pub fn add_ifaddr(&mut self, ifaddr: &IfAddress) {
-        self.addresses.insert(*ifaddr);
+    #[must_use]
+    pub(crate) fn add_ifaddr(&mut self, ifaddr: IfAddr) -> bool {
+        self.addresses.insert(ifaddr)
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Del (unassign) an IP address from an [`Interface`]
+    /// Del (unassign) an IP address from an [`Interface`].
+    /// Returns true if the address was present.
     //////////////////////////////////////////////////////////////////
-    pub fn del_ifaddr(&mut self, ifaddr: &IfAddress) {
-        self.addresses.remove(ifaddr);
+    #[must_use]
+    pub(crate) fn del_ifaddr(&mut self, ifaddr: IfAddr) -> bool {
+        self.addresses.remove(&ifaddr)
     }
 
     //////////////////////////////////////////////////////////////////
@@ -233,9 +237,10 @@ impl Interface {
     /// (regardless of the mask)
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn has_address(&self, address: &IpAddr) -> bool {
-        for (addr, _) in &self.addresses {
-            if addr == address {
+    #[cfg(test)]
+    pub(crate) fn has_address(&self, address: IpAddr) -> bool {
+        for ifaddr in &self.addresses {
+            if ifaddr.address() == address {
                 return true;
             }
         }
@@ -243,10 +248,10 @@ impl Interface {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Get the [`Mac`] address of an [`Interface`], if any
+    /// Get the MAC address of an [`Interface`], if any
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn get_mac(&self) -> Option<Mac> {
+    pub fn get_mac(&self) -> Option<SourceMac> {
         match &self.iftype {
             IfType::Ethernet(inner) => Some(*inner.get_mac()),
             IfType::Dot1q(inner) => Some(*inner.get_mac()),

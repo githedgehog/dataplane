@@ -538,8 +538,8 @@ fn fmt_interface_addresses(f: &mut std::fmt::Formatter<'_>, iface: &Interface) -
         "{}",
         format_args!(INTERFACE_ADDR_FMT!(), iface.name, iface.oper_state, "")
     )?;
-    for (addr, mask_len) in &iface.addresses {
-        write!(f, " {addr}/{mask_len}")?;
+    for ifaddr in &iface.addresses {
+        write!(f, " {ifaddr}")?;
     }
     writeln!(f)
 }

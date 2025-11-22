@@ -5,6 +5,7 @@
 
 use crate::fib::fibtype::FibKey;
 use net::interface::InterfaceIndex;
+use net::interface::address::{IfAddr, IfAddrError};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -14,6 +15,9 @@ pub enum RouterError {
 
     #[error("No such VRF")]
     NoSuchVrf,
+
+    #[error("No interface address {0}")]
+    NoSuchAddress(IfAddr),
 
     #[error("A VRF with id {0} already exists")]
     VrfExists(u32),
@@ -47,4 +51,7 @@ pub enum RouterError {
 
     #[error("Fib error: {0}")]
     FibError(#[from] left_right_tlcache::ReadHandleCacheError<FibKey>),
+
+    #[error("Invalid interface address: {0}")]
+    IfAddressError(#[from] IfAddrError),
 }

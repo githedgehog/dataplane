@@ -4,11 +4,10 @@
 //! Main processing functions of the Control-plane interface (CPI)
 
 use crate::evpn::RmacEntry;
-use crate::routingdb::RoutingDb;
-
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::Rio;
 use crate::router::rpc_adapt::is_evpn_route;
+use crate::routingdb::RoutingDb;
 
 use bytes::Bytes;
 use chrono::{DateTime, Local};
@@ -20,7 +19,9 @@ use dplane_rpc::msg::{
 use dplane_rpc::socks::Pretty;
 use dplane_rpc::socks::RpcCachedSock;
 use dplane_rpc::wire::Wire;
+
 use net::interface::InterfaceIndex;
+use net::interface::address::IfAddr;
 use std::os::unix::net::SocketAddr;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -260,6 +261,10 @@ impl RpcOperation for Rmac {
 impl RpcOperation for IfAddress {
     type ObjectStore = RoutingDb;
     fn add(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let Ok(ifaddr) = IfAddr::new(self.address, self.mask_len) else {
+            error!("Invalid interface address: {self}");
+            return RpcResultCode::InvalidRequest;
+        };
         let ifindex = match InterfaceIndex::try_new(self.ifindex) {
             Ok(idx) => idx,
             Err(e) => {
@@ -267,11 +272,14 @@ impl RpcOperation for IfAddress {
                 return RpcResultCode::InvalidRequest;
             }
         };
-        db.iftw
-            .add_ip_address(ifindex, (self.address, self.mask_len));
+        db.iftw.add_ip_address(ifindex, ifaddr);
         RpcResultCode::Ok
     }
     fn del(&self, db: &mut Self::ObjectStore) -> RpcResultCode {
+        let Ok(ifaddr) = IfAddr::new(self.address, self.mask_len) else {
+            error!("Invalid interface address: {self}");
+            return RpcResultCode::InvalidRequest;
+        };
         let ifindex = match InterfaceIndex::try_new(self.ifindex) {
             Ok(idx) => idx,
             Err(e) => {
@@ -279,8 +287,7 @@ impl RpcOperation for IfAddress {
                 return RpcResultCode::InvalidRequest;
             }
         };
-        db.iftw
-            .del_ip_address(ifindex, (self.address, self.mask_len));
+        db.iftw.del_ip_address(ifindex, ifaddr);
         RpcResultCode::Ok
     }
 }

@@ -5,8 +5,9 @@
 
 use crate::errors::RouterError;
 use crate::fib::fibtype::FibKey;
-use crate::interfaces::interface::{IfAddress, IfState, Interface, RouterInterfaceConfig};
+use crate::interfaces::interface::{IfState, Interface, RouterInterfaceConfig};
 use ahash::RandomState;
+use net::interface::address::IfAddr;
 use std::collections::HashMap;
 
 use net::interface::InterfaceIndex;
@@ -14,7 +15,7 @@ use net::interface::InterfaceIndex;
 use tracing::{debug, error, info};
 
 #[derive(Clone)]
-/// A table of network interface objects, keyed by some ifindex (u32)
+/// A table of network interface objects, keyed by `InterfaceIndex`
 pub struct IfTable {
     by_index: HashMap<InterfaceIndex, Interface, RandomState>,
 }
@@ -124,7 +125,7 @@ impl IfTable {
     }
 
     //////////////////////////////////////////////////////////////////
-    /// Assign an Ip address to an [`Interface`]
+    /// Assign an [`IfAddress`] to an [`Interface`]
     ///
     /// # Errors
     ///
@@ -133,24 +134,40 @@ impl IfTable {
     pub(crate) fn add_ifaddr(
         &mut self,
         ifindex: InterfaceIndex,
-        ifaddr: &IfAddress,
+        ifaddr: IfAddr,
     ) -> Result<(), RouterError> {
-        self.by_index
+        let iface = self
+            .by_index
             .get_mut(&ifindex)
-            .ok_or(RouterError::NoSuchInterface(ifindex))?
-            .add_ifaddr(ifaddr);
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        if !iface.add_ifaddr(ifaddr) {
+            debug!("Address {ifaddr} was already configured in interface {ifindex}");
+        }
         Ok(())
     }
 
     //////////////////////////////////////////////////////////////////
     /// Un-assign an Ip address from an interface.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the interface or the address/mask are not found
     //////////////////////////////////////////////////////////////////
-    pub(crate) fn del_ifaddr(&mut self, ifindex: InterfaceIndex, ifaddr: &IfAddress) {
-        if let Some(iface) = self.by_index.get_mut(&ifindex) {
-            iface.del_ifaddr(&(ifaddr.0, ifaddr.1));
-        }
-        // if interface does not exist or the address was not configured,
-        // we'll do nothing
+    pub(crate) fn del_ifaddr(
+        &mut self,
+        ifindex: InterfaceIndex,
+        ifaddr: IfAddr,
+    ) -> Result<(), RouterError> {
+        let iface = self
+            .by_index
+            .get_mut(&ifindex)
+            .ok_or(RouterError::NoSuchInterface(ifindex))?;
+
+        iface
+            .del_ifaddr(ifaddr)
+            .then_some(())
+            .ok_or(RouterError::NoSuchAddress(ifaddr))
     }
 
     //////////////////////////////////////////////////////////////////////
