@@ -17,6 +17,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZero;
 use tracing::error;
 
+pub mod address;
 mod bridge;
 pub mod display;
 mod mtu;
