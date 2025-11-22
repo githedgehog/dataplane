@@ -9,9 +9,11 @@ mod drivers;
 mod packet_processor;
 mod statistics;
 
+use std::path::PathBuf;
+
 use crate::packet_processor::start_router;
 use crate::statistics::MetricsServer;
-use args::{CmdArgs, Parser};
+use args::{LaunchConfiguration, TracingConfigSection};
 
 use drivers::kernel::DriverKernel;
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
@@ -35,62 +37,71 @@ fn init_logging() {
         .expect("Setting default loglevel failed");
 }
 
-fn process_tracing_cmds(args: &CmdArgs) {
-    if let Some(tracing) = args.tracing()
+fn process_tracing_cmds(cfg: &TracingConfigSection) {
+    if let Some(tracing) = &cfg.config
         && let Err(e) = get_trace_ctl().setup_from_string(tracing)
     {
         error!("Invalid tracing configuration: {e}");
         panic!("Invalid tracing configuration: {e}");
     }
-    if args.show_tracing_tags() {
-        let out = get_trace_ctl()
-            .as_string_by_tag()
-            .unwrap_or_else(|e| e.to_string());
-        println!("{out}");
-        std::process::exit(0);
+    match cfg.show.tags {
+        args::TracingDisplayOption::Hide => {}
+        args::TracingDisplayOption::Show => {
+            let out = get_trace_ctl()
+                .as_string_by_tag()
+                .unwrap_or_else(|e| e.to_string());
+            println!("{out}");
+            std::process::exit(0);
+        }
     }
-    if args.show_tracing_targets() {
+    if cfg.show.targets == args::TracingDisplayOption::Show {
         let out = get_trace_ctl()
             .as_string()
             .unwrap_or_else(|e| e.to_string());
         println!("{out}");
         std::process::exit(0);
     }
-    if args.tracing_config_generate() {
-        let out = get_trace_ctl()
-            .as_config_string()
-            .unwrap_or_else(|e| e.to_string());
-        println!("{out}");
-        std::process::exit(0);
-    }
+    // if args.tracing_config_generate() {
+    //     let out = get_trace_ctl()
+    //         .as_config_string()
+    //         .unwrap_or_else(|e| e.to_string());
+    //     println!("{out}");
+    //     std::process::exit(0);
+    // }
 }
 
 fn main() {
+    let launch_config = LaunchConfiguration::inherit();
     init_logging();
-    let args = CmdArgs::parse();
-    let agent_running = args.pyroscope_url().and_then(|url| {
-        match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
-            .backend(pprof_backend(
-                PprofConfig::new()
-                    .sample_rate(100) // Hz
-                    .report_thread_name(),
-            ))
-            .build()
-        {
-            Ok(agent) => match agent.start() {
-                Ok(running) => Some(running),
+    let agent_running = launch_config
+        .profiling
+        .pyroscope_url
+        .as_ref()
+        .and_then(|url| {
+            match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
+                .backend(pprof_backend(
+                    PprofConfig::new()
+                        .sample_rate(launch_config.profiling.frequency) // Hz
+                        .report_thread_name(),
+                ))
+                .build()
+            {
+                Ok(agent) => match agent.start() {
+                    Ok(running) => Some(running),
+                    Err(e) => {
+                        error!("Pyroscope start failed: {e}");
+                        None
+                    }
+                },
                 Err(e) => {
-                    error!("Pyroscope start failed: {e}");
+                    error!("Pyroscope build failed: {e}");
                     None
                 }
-            },
-            Err(e) => {
-                error!("Pyroscope build failed: {e}");
-                None
             }
-        }
-    });
-    process_tracing_cmds(&args);
+        });
+    info!("launch config: {launch_config:?}");
+    process_tracing_cmds(&launch_config.tracing);
+
     info!("Starting gateway process...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
@@ -102,19 +113,13 @@ fn main() {
     })
     .expect("failed to set SIGINT handler");
 
-    let grpc_addr = match args.grpc_address() {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!("Invalid gRPC address configuration: {e}");
-            panic!("Management service configuration error. Aborting...");
-        }
-    };
+    let grpc_addr = launch_config.config_server.address;
 
     /* router parameters */
     let Ok(config) = RouterParamsBuilder::default()
-        .cli_sock_path(args.cli_sock_path())
-        .cpi_sock_path(args.cpi_sock_path())
-        .frr_agent_path(args.frr_agent_path())
+        .cli_sock_path(PathBuf::from(launch_config.cli.cli_sock_path))
+        .cpi_sock_path(PathBuf::from(launch_config.routing.control_plane_socket))
+        .frr_agent_path(PathBuf::from(launch_config.routing.frr_agent_socket))
         .build()
     else {
         error!("Bad router configuration");
@@ -124,7 +129,7 @@ fn main() {
     // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
     let setup = start_router(config).expect("failed to start router");
 
-    MetricsServer::new(args.metrics_address(), setup.stats);
+    let _metrics_server = MetricsServer::new(launch_config.metrics.address, setup.stats);
 
     // pipeline builder
     let pipeline_factory = setup.pipeline;
@@ -144,29 +149,29 @@ fn main() {
     .expect("Failed to start gRPC server");
 
     /* start driver with the provided pipeline builder */
-    let e = match args.driver_name() {
-        "dpdk" => {
+    match launch_config.driver {
+        args::DriverConfigSection::Dpdk(_driver_config) => {
             info!("Using driver DPDK...");
             todo!();
         }
-        "kernel" => {
+        args::DriverConfigSection::Kernel(driver_config) => {
             info!("Using driver kernel...");
+            let interfaces = driver_config.interfaces.iter().map(|iface| match &iface.port {
+                args::NetworkDeviceDescription::Pci(pci_address) => {
+                    error!("unable to launch kernel driver with pci device specified: {pci_address}");
+                    panic!("unable to launch kernel driver with pci device specified: {pci_address}");
+                },
+                args::NetworkDeviceDescription::Kernel(interface_name) => {
+                    interface_name
+                },
+            });
             DriverKernel::start(
                 stop_tx.clone(),
-                args.kernel_interfaces(),
-                args.kernel_num_workers(),
+                interfaces,
+                launch_config.dataplane_workers,
                 &pipeline_factory,
             )
         }
-        other => {
-            error!("Unknown driver '{other}'. Aborting...");
-            panic!("Packet processing pipeline failed to start. Aborting...");
-        }
-    };
-
-    if let Err(e) = e {
-        error!("Failed to start driver: {e}");
-        std::process::exit(-1);
     }
 
     let exit_code = stop_rx.recv().expect("failed to receive stop signal");

@@ -1041,6 +1041,7 @@ dependencies = [
  "parking_lot",
  "pyroscope",
  "pyroscope_pprofrs",
+ "rkyv",
  "rtnetlink",
  "serde",
  "thiserror 2.0.17",
