@@ -14,8 +14,7 @@ use crate::statistics::MetricsServer;
 use args::{CmdArgs, Parser};
 
 use drivers::kernel::DriverKernel;
-
-use mgmt::processor::launch::start_mgmt;
+use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
@@ -127,19 +126,21 @@ fn main() {
 
     MetricsServer::new(args.metrics_address(), setup.stats);
 
-    /* pipeline builder */
+    // pipeline builder
     let pipeline_factory = setup.pipeline;
 
     /* start management */
-    start_mgmt(
+    start_mgmt(MgmtParams {
         grpc_addr,
-        setup.router.get_ctl_tx(),
-        setup.nattablew,
-        setup.natallocatorw,
-        setup.vpcdtablesw,
-        setup.vpcmapw,
-        setup.vpc_stats_store,
-    )
+        processor_params: ConfigProcessorParams {
+            router_ctl: setup.router.get_ctl_tx(),
+            vpcmapw: setup.vpcmapw,
+            nattablesw: setup.nattablesw,
+            natallocatorw: setup.natallocatorw,
+            vpcdtablesw: setup.vpcdtablesw,
+            vpc_stats_store: setup.vpc_stats_store,
+        },
+    })
     .expect("Failed to start gRPC server");
 
     /* start driver with the provided pipeline builder */

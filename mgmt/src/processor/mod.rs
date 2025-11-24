@@ -4,8 +4,8 @@
 //! Dataplane configuration processor.
 //! This module implements the core logic to determine and build internal configurations.
 
-pub mod confbuild;
+pub(crate) mod confbuild;
 mod display;
-pub mod gwconfigdb;
-pub mod launch;
-pub mod proc;
+pub(crate) mod gwconfigdb;
+pub(crate) mod launch;
+pub(crate) mod proc;

@@ -3,7 +3,7 @@
 
 use crate::processor::proc::ConfigChannelRequest;
 use crate::processor::proc::ConfigProcessor;
-
+use args::GrpcAddress;
 use std::fmt::Display;
 use std::io::Error;
 use std::net::SocketAddr;
@@ -16,17 +16,10 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::Stream;
 
-use nat::stateful::NatAllocatorWriter;
-use nat::stateless::NatTablesWriter;
-use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
-use routing::RouterCtlSender;
-
 use crate::grpc::server::create_config_service;
+use crate::processor::proc::ConfigProcessorParams;
 use tonic::transport::Server;
-
-use stats::VpcMapName;
 use tracing::{debug, error, info, warn};
-use vpcmap::map::VpcMapWriter;
 
 /// Start the gRPC server on TCP
 async fn start_grpc_server_tcp(
@@ -161,20 +154,17 @@ impl Display for ServerAddress {
     }
 }
 
+pub struct MgmtParams {
+    pub grpc_addr: GrpcAddress,
+    pub processor_params: ConfigProcessorParams,
+}
+
 /// Start the mgmt service with either type of socket
-pub fn start_mgmt(
-    grpc_addr: args::GrpcAddress,
-    router_ctl: RouterCtlSender,
-    nattablew: NatTablesWriter,
-    natallocatorw: NatAllocatorWriter,
-    vpcdtablesw: VpcDiscTablesWriter,
-    vpcmapw: VpcMapWriter<VpcMapName>,
-    vps_stats_store: std::sync::Arc<stats::VpcStatsStore>,
-) -> Result<std::thread::JoinHandle<()>, Error> {
+pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Error> {
     /* build server address from provided grpc address */
-    let server_address = match grpc_addr {
-        args::GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
-        args::GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.into()),
+    let server_address = match params.grpc_addr {
+        GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
+        GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.into()),
     };
     debug!("Will start gRPC listening on {server_address}");
 
@@ -192,15 +182,8 @@ pub fn start_mgmt(
 
             /* block thread to run gRPC and configuration processor */
             rt.block_on(async {
-                let (processor, tx) = ConfigProcessor::new(
-                    router_ctl,
-                    vpcmapw,
-                    nattablew,
-                    natallocatorw,
-                    vpcdtablesw,
-                    vps_stats_store,
-                );
-                tokio::task::spawn(async { processor.run().await });
+                let (processor, tx) = ConfigProcessor::new(params.processor_params);
+                tokio::spawn(async { processor.run().await });
 
                 // Start the appropriate server based on address type
                 let result = match server_address {

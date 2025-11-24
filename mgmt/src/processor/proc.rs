@@ -79,20 +79,6 @@ impl ConfigChannelRequest {
     }
 }
 
-/// A configuration processor entity. This is the RPC-independent entity responsible for
-/// accepting/rejecting configurations, storing them in the configuration database and
-/// applying them.
-pub(crate) struct ConfigProcessor {
-    config_db: GwConfigDatabase,
-    rx: mpsc::Receiver<ConfigChannelRequest>,
-    router_ctl: RouterCtlSender,
-    vpc_mgr: VpcManager<RequiredInformationBase>,
-    vpcmapw: VpcMapWriter<VpcMapName>,
-    nattablew: NatTablesWriter,
-    natallocatorw: NatAllocatorWriter,
-    vnitablesw: VpcDiscTablesWriter,
-    vpc_stats_store: Arc<VpcStatsStore>,
-}
 /// Populate FRR status into the dataplane status structure
 pub async fn populate_status_with_frr(
     status: &mut DataplaneStatus,
@@ -103,8 +89,37 @@ pub async fn populate_status_with_frr(
     if let Ok(Some(FrrAppliedConfig { genid, .. })) = router_ctl.get_frr_applied_config().await {
         frr = frr.set_applied_config_gen(genid);
     }
-
     status.set_frr_status(frr);
+}
+
+/// A configuration processor entity. This is the RPC-independent entity responsible for
+/// accepting/rejecting configurations, storing them in the configuration database and
+/// applying them.
+pub(crate) struct ConfigProcessor {
+    config_db: GwConfigDatabase,
+    rx: mpsc::Receiver<ConfigChannelRequest>,
+    vpc_mgr: VpcManager<RequiredInformationBase>,
+    proc_params: ConfigProcessorParams,
+}
+
+pub struct ConfigProcessorParams {
+    // channel to router
+    pub router_ctl: RouterCtlSender,
+
+    // writer for vpc mapping table
+    pub vpcmapw: VpcMapWriter<VpcMapName>,
+
+    // writer for stateless NAT tables
+    pub nattablesw: NatTablesWriter,
+
+    // writer for stateful NAT allocator
+    pub natallocatorw: NatAllocatorWriter,
+
+    // writer for VPC routing table
+    pub vpcdtablesw: VpcDiscTablesWriter,
+
+    // store for vpc stats
+    pub vpc_stats_store: Arc<VpcStatsStore>,
 }
 
 impl ConfigProcessor {
@@ -114,14 +129,7 @@ impl ConfigProcessor {
     /// Create a [`ConfigProcessor`]
     /////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn new(
-        router_ctl: RouterCtlSender,
-        vpcmapw: VpcMapWriter<VpcMapName>,
-        nattablew: NatTablesWriter,
-        natallocatorw: NatAllocatorWriter,
-        vnitablesw: VpcDiscTablesWriter,
-        vpc_stats_store: Arc<stats::VpcStatsStore>,
-    ) -> (Self, Sender<ConfigChannelRequest>) {
+    pub(crate) fn new(proc_params: ConfigProcessorParams) -> (Self, Sender<ConfigChannelRequest>) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
 
@@ -133,16 +141,11 @@ impl ConfigProcessor {
         let netlink = Arc::new(netlink);
         let vpc_mgr = VpcManager::<RequiredInformationBase>::new(netlink);
 
-        let processor = Self {
+        let processor = ConfigProcessor {
             config_db: GwConfigDatabase::new(),
             rx,
-            router_ctl,
             vpc_mgr,
-            vpcmapw,
-            nattablew,
-            natallocatorw,
-            vnitablesw,
-            vpc_stats_store,
+            proc_params,
         };
         (processor, tx)
     }
@@ -190,15 +193,16 @@ impl ConfigProcessor {
             debug!("The current config is {}", current.genid());
         }
 
+        // FIXME(fredi): pass &mut self.params
         apply_gw_config(
             &self.vpc_mgr,
             &mut config,
             current.as_deref(),
-            &mut self.router_ctl,
-            &mut self.vpcmapw,
-            &mut self.nattablew,
-            &mut self.natallocatorw,
-            &mut self.vnitablesw,
+            &mut self.proc_params.router_ctl,
+            &mut self.proc_params.vpcmapw,
+            &mut self.proc_params.nattablesw,
+            &mut self.proc_params.natallocatorw,
+            &mut self.proc_params.vpcdtablesw,
         )
         .await?;
 
@@ -219,15 +223,16 @@ impl ConfigProcessor {
         let rollback_cfg = current.unwrap_or(ExternalConfig::BLANK_GENID);
         info!("Rolling back to config '{rollback_cfg}'...");
         if let Some(prior) = self.config_db.get_mut(rollback_cfg) {
+            // FIXME(fredi): pass &mut self.params
             let _ = apply_gw_config(
                 &self.vpc_mgr,
                 prior,
                 None,
-                &mut self.router_ctl,
-                &mut self.vpcmapw,
-                &mut self.nattablew,
-                &mut self.natallocatorw,
-                &mut self.vnitablesw,
+                &mut self.proc_params.router_ctl,
+                &mut self.proc_params.vpcmapw,
+                &mut self.proc_params.nattablesw,
+                &mut self.proc_params.natallocatorw,
+                &mut self.proc_params.vpcdtablesw,
             )
             .await;
         }
@@ -262,9 +267,11 @@ impl ConfigProcessor {
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
         let mut status = DataplaneStatus::new();
 
-        let names = self.vpc_stats_store.snapshot_names().await;
-        let pair_snap = self.vpc_stats_store.snapshot_pairs().await;
-        let vpc_snap = self.vpc_stats_store.snapshot_vpcs().await;
+        let stats_store = &self.proc_params.vpc_stats_store;
+
+        let names = stats_store.snapshot_names().await;
+        let pair_snap = stats_store.snapshot_pairs().await;
+        let vpc_snap = stats_store.snapshot_vpcs().await;
 
         // Helper to check if a flow stats has any traffic
         #[inline]
@@ -375,7 +382,7 @@ impl ConfigProcessor {
         }
 
         // FRR minimal info
-        populate_status_with_frr(&mut status, &mut self.router_ctl).await;
+        populate_status_with_frr(&mut status, &mut self.proc_params.router_ctl).await;
 
         ConfigResponse::GetDataplaneStatus(Box::new(status))
     }
@@ -587,6 +594,7 @@ fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
 
 #[allow(clippy::too_many_arguments)]
 /// Main function to apply a config
+// FIXME(fredi): receive &mut self.params
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
     config: &mut GwConfig,
