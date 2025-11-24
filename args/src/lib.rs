@@ -848,6 +848,7 @@ impl FinalizedMemFile {
     /// 7. panics if the provided memfd can not be `seek`ed to the start of the file (very unlikely)
     /// 8. panics if the provided memfd can not be marked as close-on-exec (very unlikely)
     #[instrument(level = "debug", skip(fd))]
+    #[allow(unsafe_code)] // external contract documented and checked as well as I can for now
     pub unsafe fn from_fd(fd: OwnedFd) -> FinalizedMemFile {
         // TODO: is procfs actually mounted at /proc?  Are we reading the correct file.  Annoying to fix this properly.
         let os_str =
@@ -860,19 +861,21 @@ impl FinalizedMemFile {
             .map_err(|_| std::io::Error::other("file descriptor readlink returned invalid unicode"))
             .into_diagnostic()
             .unwrap();
-        if !readlink_result.starts_with("/memfd:") {
-            panic!("supplied file descriptor is not a memfd: {readlink_result}");
-        }
+        assert!(
+            readlink_result.starts_with("/memfd:"),
+            "supplied file descriptor is not a memfd: {readlink_result}"
+        );
         let stat = nix::sys::stat::fstat(fd.as_fd())
             .into_diagnostic()
             .wrap_err("failed to stat memfd")
             .unwrap();
-        if stat.st_mode != 0o100400 {
-            panic!(
-                "finalized memfd not in read only mode: given mode is {:o}",
-                stat.st_mode
-            );
-        }
+        const EXPECTED_PERMISSIONS: u32 = 0o10_400; // expect read only + sticky bit
+        assert!(
+            stat.st_mode == EXPECTED_PERMISSIONS,
+            "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
+            stat.st_mode
+        );
+
         let Some(seals) = SealFlag::from_bits(
             nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
                 .into_diagnostic()
@@ -885,11 +888,10 @@ impl FinalizedMemFile {
             | SealFlag::F_SEAL_SHRINK
             | SealFlag::F_SEAL_WRITE
             | SealFlag::F_SEAL_SEAL;
-        if !seals.contains(expected_bits) {
-            panic!(
-                "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
-            );
-        }
+        assert!(
+            seals.contains(expected_bits),
+            "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
+        );
         let mut file = std::fs::File::from(fd);
         file.seek(SeekFrom::Start(0))
             .into_diagnostic()
