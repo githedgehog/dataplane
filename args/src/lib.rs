@@ -480,7 +480,11 @@ pub struct CliConfigSection {
     pub cli_sock_path: String,
 }
 
-/// Configuration which defines how metrics are collected from the dataplane.
+/// Configuration for metrics collection and export.
+///
+/// Defines the HTTP endpoint where Prometheus-compatible metrics are exposed.
+/// Metrics include packet counters, latency statistics, and other operational
+/// telemetry.
 #[derive(
     Debug,
     PartialEq,
@@ -494,6 +498,7 @@ pub struct CliConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct MetricsConfigSection {
+    /// Socket address (IP and port) where metrics HTTP endpoint listens
     pub address: SocketAddr,
 }
 
