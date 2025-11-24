@@ -1326,6 +1326,10 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
 }
 
 impl CmdArgs {
+    /// Get the configured driver name.
+    ///
+    /// Returns `"dpdk"` if no driver was explicitly specified (the default),
+    /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
     pub fn driver_name(&self) -> &str {
         match &self.driver {
             None => "dpdk",
@@ -1333,23 +1337,79 @@ impl CmdArgs {
         }
     }
 
+    /// Check if the `--show-tracing-tags` flag was set.
+    ///
+    /// When true, the application should display available tracing tags and exit.
+    ///
+    /// # Returns
+    ///
+    /// `true` if `--show-tracing-tags` was passed, `false` otherwise.
     pub fn show_tracing_tags(&self) -> bool {
         self.show_tracing_tags
     }
+
+    /// Check if the `--show-tracing-targets` flag was set.
+    ///
+    /// When true, the application should display configurable tracing targets and exit.
+    ///
+    /// # Returns
+    ///
+    /// `true` if `--show-tracing-targets` was passed, `false` otherwise.
     pub fn show_tracing_targets(&self) -> bool {
         self.show_tracing_targets
     }
+
+    /// Check if the `--tracing-config-generate` flag was set.
+    ///
+    /// When true, the application should generate a tracing configuration string
+    /// as output and exit.
+    ///
+    /// # Returns
+    ///
+    /// `true` if `--tracing-config-generate` was passed, `false` otherwise.
     pub fn tracing_config_generate(&self) -> bool {
         self.tracing_config_generate
     }
+
+    /// Get the tracing configuration string, if provided.
+    ///
+    /// Returns the value of the `--tracing` argument, which specifies log levels
+    /// for different components in the format `target1=level1,target2=level2`.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&String)` if a tracing configuration was provided, `None` otherwise.
     pub fn tracing(&self) -> Option<&String> {
         self.tracing.as_ref()
     }
 
+    /// Get the number of worker threads for the kernel driver.
+    ///
+    /// This value comes from the `--num-workers` argument (default: 1, range: 1-64).
+    ///
+    /// # Returns
+    ///
+    /// The number of worker threads as a `usize`.
+    ///
+    /// # Note
+    ///
+    /// This value is only relevant when using the kernel driver. The DPDK driver
+    /// uses its own threading model configured via EAL arguments.
     pub fn kernel_num_workers(&self) -> usize {
         self.num_workers.into()
     }
-    // backwards-compatible, to deprecate
+
+    /// Get the list of kernel network interfaces to use.
+    ///
+    /// Returns the interfaces specified via `--interface` arguments.
+    ///
+    /// # Returns
+    ///
+    /// A vector of interface name strings (e.g., `vec!["eth0", "eth1"]`).
+    ///
+    /// # Note
+    ///
+    /// This is only used with the kernel driver.
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface
             .iter()
@@ -1362,7 +1422,16 @@ impl CmdArgs {
         self.interface.iter().cloned()
     }
 
-    /// Get the gRPC server address configuration
+    /// Parse and validate the gRPC server address configuration.
+    ///
+    /// This method interprets the `--grpc-address` and `--grpc-unix-socket` arguments
+    /// to determine the appropriate gRPC listening address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Unix socket path is not absolute when `--grpc-unix-socket` is set
+    /// - TCP address cannot be parsed as a valid `IP:PORT` combination
     pub fn grpc_address(&self) -> Result<GrpcAddress, String> {
         // If UNIX socket flag is set, treat the address as a UNIX socket path
         if self.grpc_unix_socket {
@@ -1387,19 +1456,31 @@ impl CmdArgs {
         }
     }
 
+    /// Get the control plane interface socket path.
+    ///
+    /// Returns the path where FRR (Free Range Routing) sends route updates to the dataplane.
     pub fn cpi_sock_path(&self) -> String {
         self.cpi_sock_path.clone()
     }
 
+    /// Get the CLI socket path.
+    ///
+    /// Returns the path where the dataplane CLI server listens for client connections.
     pub fn cli_sock_path(&self) -> String {
         self.cli_sock_path.clone()
     }
 
+    /// Get the FRR agent socket path.
+    ///
+    /// Returns the path to connect to the FRR agent that controls FRR configuration reloads.
     pub fn frr_agent_path(&self) -> String {
         self.frr_agent_path.clone()
     }
 
-    /// Get the metrics bind address, returns None if metrics are disabled
+    /// Get the Prometheus metrics HTTP endpoint address.
+    ///
+    /// Returns the socket address (IP and port) where the dataplane exposes
+    /// Prometheus-compatible metrics for scraping.
     pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
     }
