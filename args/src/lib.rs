@@ -1330,6 +1330,7 @@ impl CmdArgs {
     ///
     /// Returns `"dpdk"` if no driver was explicitly specified (the default),
     /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
+    #[must_use]
     pub fn driver_name(&self) -> &str {
         match &self.driver {
             None => "dpdk",
@@ -1344,6 +1345,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `true` if `--show-tracing-tags` was passed, `false` otherwise.
+    #[must_use]
     pub fn show_tracing_tags(&self) -> bool {
         self.show_tracing_tags
     }
@@ -1355,6 +1357,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `true` if `--show-tracing-targets` was passed, `false` otherwise.
+    #[must_use]
     pub fn show_tracing_targets(&self) -> bool {
         self.show_tracing_targets
     }
@@ -1367,6 +1370,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `true` if `--tracing-config-generate` was passed, `false` otherwise.
+    #[must_use]
     pub fn tracing_config_generate(&self) -> bool {
         self.tracing_config_generate
     }
@@ -1379,6 +1383,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `Some(&String)` if a tracing configuration was provided, `None` otherwise.
+    #[must_use]
     pub fn tracing(&self) -> Option<&String> {
         self.tracing.as_ref()
     }
@@ -1395,6 +1400,7 @@ impl CmdArgs {
     ///
     /// This value is only relevant when using the kernel driver. The DPDK driver
     /// uses its own threading model configured via EAL arguments.
+    #[must_use]
     pub fn kernel_num_workers(&self) -> usize {
         self.num_workers.into()
     }
@@ -1410,6 +1416,7 @@ impl CmdArgs {
     /// # Note
     ///
     /// This is only used with the kernel driver.
+    #[must_use]
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface
             .iter()
@@ -1459,6 +1466,7 @@ impl CmdArgs {
     /// Get the control plane interface socket path.
     ///
     /// Returns the path where FRR (Free Range Routing) sends route updates to the dataplane.
+    #[must_use]
     pub fn cpi_sock_path(&self) -> String {
         self.cpi_sock_path.clone()
     }
@@ -1466,6 +1474,7 @@ impl CmdArgs {
     /// Get the CLI socket path.
     ///
     /// Returns the path where the dataplane CLI server listens for client connections.
+    #[must_use]
     pub fn cli_sock_path(&self) -> String {
         self.cli_sock_path.clone()
     }
@@ -1473,6 +1482,7 @@ impl CmdArgs {
     /// Get the FRR agent socket path.
     ///
     /// Returns the path to connect to the FRR agent that controls FRR configuration reloads.
+    #[must_use]
     pub fn frr_agent_path(&self) -> String {
         self.frr_agent_path.clone()
     }
@@ -1481,10 +1491,12 @@ impl CmdArgs {
     ///
     /// Returns the socket address (IP and port) where the dataplane exposes
     /// Prometheus-compatible metrics for scraping.
+    #[must_use]
     pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
     }
 
+    #[must_use]
     pub fn pyroscope_url(&self) -> Option<&url::Url> {
         self.pyroscope_url.as_ref()
     }
