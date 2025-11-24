@@ -593,8 +593,10 @@ pub struct RoutingConfigSection {
     pub frr_agent_socket: String,
 }
 
-/// Configuration section for the parameters of the dynamic configuration server which supplies
-/// updated configuration to the dataplane at runtime.
+/// Configuration for the dynamic configuration server.
+///
+/// The configuration server provides runtime configuration updates to the dataplane
+/// via gRPC. This allows modifying dataplane behavior without restarting the process.
 #[derive(
     Debug,
     PartialEq,
@@ -608,6 +610,7 @@ pub struct RoutingConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct ConfigServerSection {
+    /// gRPC server address (TCP or Unix socket)
     pub address: GrpcAddress,
 }
 
