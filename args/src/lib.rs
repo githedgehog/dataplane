@@ -706,6 +706,8 @@ impl LaunchConfiguration {
     /// - Deserialization fails (corrupt or invalid data)
     ///
     /// These panics are intentional as the dataplane cannot start without valid configuration.
+    #[must_use]
+    #[allow(unsafe_code)] // no-escape from unsafety in this function as it involves constraints the compiler can't see
     pub fn inherit() -> LaunchConfiguration {
         let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
         let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
