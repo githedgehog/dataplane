@@ -516,7 +516,9 @@ pub struct MetricsConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct TracingConfigSection {
+    /// Display options for trace output
     pub show: TracingShowSection,
+    /// Tracing configuration string (e.g., "default=info,nat=debug")
     pub config: Option<String>, // TODO: stronger typing on this config?
 }
 
