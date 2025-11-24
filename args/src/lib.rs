@@ -701,16 +701,39 @@ impl LaunchConfiguration {
     /// The parent process must pass the integrity check (SHA-384 hash) file at this
     /// file descriptor number.
     pub const STANDARD_INTEGRITY_CHECK_FD: RawFd = 30;
+
+    /// Standard file descriptor number for the configuration memfd.
+    ///
+    /// The parent process must pass the serialized configuration file at this
+    /// file descriptor number.
     pub const STANDARD_CONFIG_FD: RawFd = 40;
 
-    /// Inherit a launch configuration from your parent process (assuming it correctly specified one).
+    /// Inherit the launch configuration from the parent process.
     ///
-    /// This method assumes that agreed upon file descriptor numbers are assigned by the parent.
+    /// This method is called by the dataplane worker process to receive its configuration
+    /// from the init process. It expects two sealed memory file descriptors at the standard
+    /// FD numbers ([`STANDARD_INTEGRITY_CHECK_FD`](Self::STANDARD_INTEGRITY_CHECK_FD) and
+    /// [`STANDARD_CONFIG_FD`](Self::STANDARD_CONFIG_FD)).
+    ///
+    /// # Process
+    ///
+    /// 1. Receives integrity check and configuration file descriptors
+    /// 2. Validates the SHA-384 hash matches the configuration
+    /// 3. Memory-maps the configuration for zero-copy access
+    /// 4. Validates the archived data structure (alignment, bounds, enum variants)
+    /// 5. Deserializes the configuration
     ///
     /// # Panics
     ///
-    /// This method is intended for use at system startup and makes little attempt to recover from errors.
-    /// This method will panic if the configuration is missing, invalid, or otherwise impossible to manipulate.
+    /// This method is designed for early process initialization and will panic if:
+    ///
+    /// - File descriptors are missing or invalid
+    /// - Integrity check validation fails (hash mismatch)
+    /// - Memory mapping fails
+    /// - Archived data is misaligned or has invalid size
+    /// - Deserialization fails (corrupt or invalid data)
+    ///
+    /// These panics are intentional as the dataplane cannot start without valid configuration.
     pub fn inherit() -> LaunchConfiguration {
         let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
         let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
@@ -729,28 +752,23 @@ impl LaunchConfiguration {
             .wrap_err("failed to memory map launch configuration")
             .unwrap();
 
-        {
-            // VERY IMPORTANT: we must check for unaligned pointer here or risk undefined behavior.
-            // There is absolutely no reason to keep this pointer alive past this scope.
-            // Don't let it escape the scope (even if it is aligned).
-            const EXPECTED_ALIGNMENT: usize = std::mem::align_of::<ArchivedLaunchConfiguration>();
-            const {
-                if !EXPECTED_ALIGNMENT.is_power_of_two() {
-                    panic!("nonsense alignment computed for ArchivedLaunchConfiguration");
-                }
-            }
-            let potentially_invalid_pointer =
-                launch_config_memmap.as_ptr() as *const ArchivedLaunchConfiguration;
-            if !potentially_invalid_pointer.is_aligned() {
-                panic!(
-                    "invalid alignment for ArchivedLaunchConfiguration found in inherited memfd"
-                );
-            }
-        }
+        // VERY IMPORTANT: we must check for unaligned pointer here or risk undefined behavior.
 
-        if launch_config_memmap.as_ref().len() < size_of::<ArchivedLaunchConfiguration>() {
-            panic!("invalid size for inherited memfd");
-        }
+        // deactivate the lint because checking for alignment is _exactly_ what we are doing here
+        #[allow(clippy::cast_ptr_alignment)]
+        let is_aligned = launch_config_memmap
+            .as_ptr()
+            .cast::<ArchivedLaunchConfiguration>()
+            .is_aligned();
+        assert!(
+            is_aligned,
+            "invalid alignment for ArchivedLaunchConfiguration found in inherited memfd"
+        );
+
+        assert!(
+            launch_config_memmap.as_ref().len() >= size_of::<ArchivedLaunchConfiguration>(),
+            "invalid size for inherited memfd"
+        );
 
         // we slightly abuse the access method here just to get byte level validation.
         // The actual objective here is to ensure all enums are valid and that all pointers point within the
@@ -785,7 +803,6 @@ impl AsFinalizedMemFile for LaunchConfiguration {
             .into_diagnostic()
             .wrap_err("failed to write dataplane configuration to memfd")
             .unwrap();
-        // seal the memfd
         memfd.finalize()
     }
 }
