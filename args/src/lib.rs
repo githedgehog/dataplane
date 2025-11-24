@@ -66,20 +66,26 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub enum PortArg {
-    PCI(PciAddress),       // DPDK driver
-    KERNEL(InterfaceName), // kernel driver
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(
+    CheckBytes,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 #[allow(unused)]
 pub struct InterfaceArg {
     pub interface: InterfaceName,
-    pub port: Option<PortArg>,
+    pub port: NetworkDeviceDescription,
 }
 
-impl FromStr for PortArg {
+impl FromStr for NetworkDeviceDescription {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let (disc, value) = input
@@ -89,12 +95,12 @@ impl FromStr for PortArg {
         match disc {
             "pci" => {
                 let pciaddr = PciAddress::try_from(value).map_err(|e| e.to_string())?;
-                Ok(PortArg::PCI(pciaddr))
+                Ok(NetworkDeviceDescription::Pci(pciaddr))
             }
             "kernel" => {
                 let kernelif = InterfaceName::try_from(value)
                     .map_err(|e| format!("Bad kernel interface name: {e}"))?;
-                Ok(PortArg::KERNEL(kernelif))
+                Ok(NetworkDeviceDescription::Kernel(kernelif))
             }
             _ => Err(format!(
                 "Unknown discriminant '{disc}': allowed values are pci|kernel"
@@ -106,26 +112,13 @@ impl FromStr for PortArg {
 impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        match input.split_once('=') {
-            Some((first, second)) => {
-                let interface = InterfaceName::try_from(first)
-                    .map_err(|e| format!("Bad interface name: {e}"))?;
-
-                let port = PortArg::from_str(second)?;
-                Ok(InterfaceArg {
-                    interface,
-                    port: Some(port),
-                })
-            }
-            // this branch will go away
-            None => {
-                let interface = InterfaceName::try_from(input)
-                    .map_err(|e| format!("Bad interface name: {e}"))?;
-                Ok(InterfaceArg {
-                    interface,
-                    port: None,
-                })
-            }
+        if let Some((first, second)) = input.split_once('=') {
+            let interface =
+                InterfaceName::try_from(first).map_err(|e| format!("Bad interface name: {e}"))?;
+            let port = NetworkDeviceDescription::from_str(second)?;
+            Ok(InterfaceArg { interface, port })
+        } else {
+            Err(format!("invalid interface argument: {input}"))
         }
     }
 }
