@@ -437,6 +437,11 @@ pub struct DpdkDriverConfigSection {
     pub eal_args: Vec<String>,
 }
 
+/// Configuration for the Linux kernel networking driver.
+///
+/// Uses the standard Linux kernel network stack for packet processing.
+/// This is suitable for development, testing, or environments without
+/// DPDK-compatible hardware.
 #[derive(
     Debug,
     PartialEq,
@@ -450,7 +455,8 @@ pub struct DpdkDriverConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct KernelDriverConfigSection {
-    pub interfaces: Vec<InterfaceName>,
+    /// Kernel network interfaces to manage
+    pub interfaces: Vec<InterfaceArg>,
 }
 
 /// Configuration for the command line interface of the dataplane
