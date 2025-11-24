@@ -162,22 +162,19 @@ pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 #[derive(Debug)]
 pub struct MemFile(std::fs::File);
 
-/// A type wrapper around [`MemFile`] for memfd files which are emphatically NOT intended for any kind of data mutation
-/// ever again.
+/// An immutable, sealed memory file descriptor that cannot be modified.
 ///
 /// Multiple protections are in place to deny all attempts to mutate the memory contents of these files.
 /// These protections make this type of file suitable for as-safe-as-practical zero-copy deserialization of data
 /// structure serialized by one process and given to a different process.
 ///
-/// Protections include both basic linux DAC read only mode, as well as write, truncation, and extension sealing, as well
-/// as sealing the seals in place to prevent their removal.
+/// # Integrity Properties
 ///
-/// # Note
+/// Multiple protections are enforced to prevent any data mutation:
 ///
 /// If these files contain secrets (or even if they don't), it is usually best to mark the file as close-on-exec to
 /// further mitigate opportunities for the data to be corrupted / mutated.
 /// This task, by its nature, can not be done by the parent process (or the child would not get the file descriptor).
-///
 /// As a consequence, this marking step should be taken as soon as the file is received by the child process.
 /// The (unsafe) method [`FinalizedMemFile::from_fd`] takes this action automatically, and is the recommended way to
 /// receive and read the file from child processes.
@@ -213,13 +210,14 @@ impl MemFile {
     ///
     /// # Panics
     ///
-    /// This method is intended for use only during early process initialization and make no attempt to recover from
+    /// This method is intended for use only during early process initialization and makes no attempt to recover from
     /// errors.
     ///
     /// This method will panic if
     ///
     /// 1. The file can not be modified to exclude write operations (basically chmod 400)
     /// 2. if the file can not be sealed against extension, truncation, mutation, and any attempt to remove the seals.
+    #[must_use]
     pub fn finalize(self) -> FinalizedMemFile {
         let mut this = self;
         // mark the file as read only
