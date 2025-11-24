@@ -571,7 +571,10 @@ pub struct TracingShowSection {
     pub targets: TracingDisplayOption,
 }
 
-/// Configuration which defines the interaction between the dataplane and the routing control plane.
+/// Configuration for routing control plane integration.
+///
+/// Defines how the dataplane communicates with FRR (Free Range Routing) and
+/// related routing components.
 #[derive(
     Debug,
     PartialEq,
@@ -584,7 +587,9 @@ pub struct TracingShowSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct RoutingConfigSection {
+    /// Unix socket path for receiving route updates from FRR
     pub control_plane_socket: String,
+    /// Unix socket path for FRR agent communication
     pub frr_agent_socket: String,
 }
 
