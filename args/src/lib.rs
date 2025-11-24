@@ -522,6 +522,9 @@ pub struct TracingConfigSection {
     pub config: Option<String>, // TODO: stronger typing on this config?
 }
 
+/// Display option for trace metadata elements.
+///
+/// Controls whether specific metadata is shown in trace output.
 #[derive(
     Debug,
     Default,
@@ -538,11 +541,16 @@ pub struct TracingConfigSection {
 #[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum TracingDisplayOption {
+    /// Hide this metadata element
     #[default]
     Hide,
+    /// Show this metadata element
     Show,
 }
 
+/// Display configuration for trace metadata.
+///
+/// Controls which metadata elements are included in trace output.
 #[derive(
     Debug,
     Default,
