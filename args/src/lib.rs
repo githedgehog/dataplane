@@ -1138,26 +1138,19 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
     type Error = InvalidCmdArguments;
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
-        let use_nics: Vec<_> = value
-            .interfaces()
-            .map(|x| match x.port {
-                Some(PortArg::KERNEL(name)) => NetworkDeviceDescription::Kernel(name),
-                Some(PortArg::PCI(address)) => NetworkDeviceDescription::Pci(address),
-                None => todo!(), // I am not clear what this case means
-            })
-            .collect();
         Ok(LaunchConfiguration {
             config_server: ConfigServerSection {
                 address: value
                     .grpc_address()
                     .map_err(InvalidCmdArguments::InvalidGrpcAddress)?,
             },
+            dataplane_workers: value.num_workers.into(),
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = use_nics
-                        .iter()
-                        .map(|nic| match nic {
+                    let eal_args = value
+                        .interfaces()
+                        .map(|nic| match nic.port {
                             NetworkDeviceDescription::Pci(pci_address) => {
                                 Ok(["--allow".to_string(), format!("{pci_address}")])
                             }
@@ -1171,23 +1164,15 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         .into_iter()
                         .flatten()
                         .collect();
-                    DriverConfigSection::Dpdk(DpdkDriverConfigSection { use_nics, eal_args })
+
+                    DriverConfigSection::Dpdk(DpdkDriverConfigSection {
+                        interfaces: value.interfaces().collect(),
+                        eal_args,
+                    })
                 }
                 Some(driver) if driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
-                        interfaces: use_nics
-                            .iter()
-                            .map(|nic| match nic {
-                                NetworkDeviceDescription::Pci(address) => {
-                                    Err(InvalidCmdArguments::UnsupportedByDriver(
-                                        UnsupportedByDriver::Kernel(*address),
-                                    ))
-                                }
-                                NetworkDeviceDescription::Kernel(interface) => {
-                                    Ok(interface.clone())
-                                }
-                            })
-                            .collect::<Result<_, _>>()?,
+                        interfaces: value.interfaces().collect(),
                     })
                 }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
@@ -1202,19 +1187,25 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             tracing: TracingConfigSection {
                 show: TracingShowSection {
-                    tags: match value.show_tracing_tags() {
-                        true => TracingDisplayOption::Show,
-                        false => TracingDisplayOption::Hide,
+                    tags: if value.show_tracing_tags() {
+                        TracingDisplayOption::Show
+                    } else {
+                        TracingDisplayOption::Hide
                     },
-                    targets: match value.show_tracing_targets() {
-                        true => TracingDisplayOption::Show,
-                        false => TracingDisplayOption::Hide,
+                    targets: if value.show_tracing_targets() {
+                        TracingDisplayOption::Show
+                    } else {
+                        TracingDisplayOption::Hide
                     },
                 },
                 config: value.tracing.clone(),
             },
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
+            },
+            profiling: ProfilingConfigSection {
+                pyroscope_url: value.pyroscope_url().map(std::string::ToString::to_string),
+                frequency: ProfilingConfigSection::DEFAULT_FREQUENCY,
             },
         })
     }
