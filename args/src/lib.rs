@@ -129,8 +129,21 @@ use bytecheck::CheckBytes;
 use nix::fcntl::{FcntlArg, FdFlag};
 use nix::{fcntl::SealFlag, sys::memfd::MFdFlags};
 
+/// Default path to the dataplane's control plane unix socket.
+///
+/// This socket is used by FRR to send route update messages to the dataplane process.
 pub const DEFAULT_DP_UX_PATH: &str = "/var/run/frr/hh/dataplane.sock";
+
+/// Default path to the dataplane's CLI socket.
+///
+/// This socket is used to accept connections from the dataplane CLI tool for
+/// runtime inspection and control.
 pub const DEFAULT_DP_UX_PATH_CLI: &str = "/var/run/dataplane/cli.sock";
+
+/// Default path to the FRR agent socket.
+///
+/// This socket is used to connect to the FRR agent that controls FRR
+/// configuration reloads.
 pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 
 /// A type wrapper around [`std::fs::File`] which is reserved to describe linux [memfd] files.
