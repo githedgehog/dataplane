@@ -565,7 +565,9 @@ pub enum TracingDisplayOption {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct TracingShowSection {
+    /// Whether to display span/event tags
     pub tags: TracingDisplayOption,
+    /// Whether to display target module paths
     pub targets: TracingDisplayOption,
 }
 
