@@ -905,7 +905,14 @@ impl FinalizedMemFile {
         FinalizedMemFile(MemFile(file))
     }
 
-    /// Validate this file using an [`IntegrityCheck`] serialized into the provided check_file
+    /// Validate this file using an [`IntegrityCheck`] serialized into the provided `check_file`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if
+    ///
+    /// 1. unable to read the integrity check file
+    /// 2. invalid file (checksum mismatch)
     pub fn validate(&mut self, check_file: FinalizedMemFile) -> Result<(), miette::Report> {
         let mut check_file = check_file;
         check_file
