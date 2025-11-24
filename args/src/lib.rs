@@ -807,9 +807,16 @@ impl AsFinalizedMemFile for LaunchConfiguration {
     }
 }
 
-/// Trait for data which may be "frozen" into a [`FinalizedMemFile`]
+/// Trait for data that can be serialized into a sealed memory file descriptor.
+///
+/// Types implementing this trait can be converted into a [`FinalizedMemFile`],
+/// which provides strong immutability guarantees suitable for inter-process
+/// communication.
 pub trait AsFinalizedMemFile {
-    /// Consume self and convert it into a [`FinalizedMemFile`]
+    /// Serialize and seal this data into a [`FinalizedMemFile`].
+    ///
+    /// The returned file is immutable and suitable for zero-copy deserialization
+    /// in other processes.
     fn finalize(&self) -> FinalizedMemFile;
 }
 
