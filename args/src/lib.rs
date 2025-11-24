@@ -362,6 +362,22 @@ pub enum DriverConfigSection {
     Kernel(KernelDriverConfigSection),
 }
 
+/// Description of a network device by its bus address.
+///
+/// Currently supports PCI-addressed devices, which is the standard addressing
+/// scheme for NICs in modern systems.
+///
+/// # Example
+///
+/// ```
+/// use dataplane_args::NetworkDeviceDescription;
+/// use hardware::pci::address::PciAddress;
+///
+/// // PCI device at bus 0000:01:00.0
+/// let device = NetworkDeviceDescription::Pci(
+///     PciAddress::try_from("0000:01:00.0").unwrap()
+/// );
+/// ```
 #[derive(
     Debug,
     Ord,
@@ -378,7 +394,9 @@ pub enum DriverConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum NetworkDeviceDescription {
+    /// The PCI address of the network device to be used
     Pci(hardware::pci::address::PciAddress),
+    /// The kernel's name for net network interface
     Kernel(InterfaceName),
 }
 
