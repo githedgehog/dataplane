@@ -1511,7 +1511,7 @@ mod tests {
     use hardware::pci::function::Function;
     use net::interface::InterfaceName;
 
-    use crate::{InterfaceArg, PortArg};
+    use crate::{InterfaceArg, NetworkDeviceDescription};
     use std::str::FromStr;
 
     #[test]
@@ -1521,12 +1521,12 @@ mod tests {
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
         assert_eq!(
             spec.port,
-            Some(PortArg::PCI(PciAddress::new(
+            NetworkDeviceDescription::Pci(PciAddress::new(
                 Domain::from(0),
                 Bus::new(2),
                 Device::try_from(1).unwrap(),
                 Function::try_from(7).unwrap()
-            )))
+            ))
         );
 
         // interface + port as kernel interface
@@ -1534,15 +1534,8 @@ mod tests {
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
         assert_eq!(
             spec.port,
-            Some(PortArg::KERNEL(
-                InterfaceName::try_from("enp2s1.100").unwrap()
-            ))
+            NetworkDeviceDescription::Kernel(InterfaceName::try_from("enp2s1.100").unwrap())
         );
-
-        // interface only (backwards compatibility)
-        let spec = InterfaceArg::from_str("GbEth1.9000").unwrap();
-        assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
-        assert!(spec.port.is_none());
 
         // bad pci address
         assert!(InterfaceArg::from_str("GbEth1.9000=pci@0000:02:01").is_err());
