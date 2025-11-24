@@ -413,23 +413,11 @@ impl Display for NetworkDeviceDescription {
     }
 }
 
-pub type KiB = NonZero<u64>;
-
-#[derive(
-    Debug,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    rkyv::Archive,
-)]
-pub enum WorkerStackSize {
-    #[default]
-    Default,
-    Size(KiB),
-}
-
+/// Configuration for the DPDK (Data Plane Development Kit) driver.
+///
+/// DPDK provides kernel-bypass networking for high-performance packet processing.
+/// This configuration specifies which NICs to use and how to initialize the DPDK
+/// Environment Abstraction Layer (EAL).
 #[derive(
     Debug,
     PartialEq,
@@ -443,7 +431,9 @@ pub enum WorkerStackSize {
 )]
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct DpdkDriverConfigSection {
-    pub use_nics: Vec<NetworkDeviceDescription>,
+    /// Network devices to use with DPDK (identified by PCI address)
+    pub interfaces: Vec<InterfaceArg>,
+    /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
 }
 
