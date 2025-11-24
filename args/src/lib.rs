@@ -325,7 +325,23 @@ pub enum GrpcAddress {
     UnixSocket(String),
 }
 
-/// Configuration for the driver used by the dataplane to process packets.
+/// Configuration for the packet processing driver used by the dataplane.
+///
+/// The dataplane supports two packet processing backends:
+///
+/// - **DPDK (Data Plane Development Kit)**: High-performance userspace driver for
+///   specialized network hardware. Provides kernel-bypass networking with direct access
+///   to NIC hardware via PCI.
+///
+/// - **Kernel**: Standard Linux kernel networking stack. Uses traditional network
+///   interfaces and kernel packet processing.
+///
+/// # Choosing a Driver
+///
+/// - Use **DPDK** for maximum performance on supported hardware, typically in production
+///   environments with dedicated NICs.
+/// - Use **Kernel** for development, testing, or environments without DPDK-compatible
+///   hardware.
 #[derive(
     Debug,
     PartialEq,
@@ -340,7 +356,9 @@ pub enum GrpcAddress {
 #[serde(rename_all = "snake_case")]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum DriverConfigSection {
+    /// DPDK userspace driver configuration
     Dpdk(DpdkDriverConfigSection),
+    /// Linux kernel driver configuration
     Kernel(KernelDriverConfigSection),
 }
 
