@@ -42,7 +42,7 @@ pub mod test {
     use routing::Render;
 
     use crate::processor::confbuild::internal::build_internal_config;
-    use crate::processor::proc::ConfigProcessor;
+    use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
     use routing::{Router, RouterParamsBuilder};
     use tracing::debug;
 
@@ -377,7 +377,7 @@ pub mod test {
         let mut router = router.unwrap();
 
         /* router control */
-        let ctl = router.get_ctl_tx();
+        let router_ctl = router.get_ctl_tx();
 
         /* vpcmappings for vpc name resolution for vpc stats */
         let vpcmapw = VpcMapWriter::<VpcMapName>::new();
@@ -389,21 +389,24 @@ pub mod test {
         let natallocatorw = NatAllocatorWriter::new();
 
         /* crate VniTables for dst_vni_lookup */
-        let vnitablesw = VpcDiscTablesWriter::new();
+        let vpcdtablesw = VpcDiscTablesWriter::new();
 
         /* NEW: VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();
 
-        /* build config processor to test the processing of a config. The processor embeds the config database
-        and has the frrmi. In this test, we don't use any channel to communicate the config. */
-        let (mut processor, _sender) = ConfigProcessor::new(
-            ctl,
+        /* build configuration of mgmt config processor */
+        let processor_config = ConfigProcessorParams {
+            router_ctl,
             vpcmapw,
             nattablesw,
             natallocatorw,
-            vnitablesw,
-            vpc_stats_store, // <-- pass the Arc here
-        );
+            vpcdtablesw,
+            vpc_stats_store,
+        };
+
+        /* start config processor to test the processing of a config. The processor embeds the config database
+        and has the frrmi. In this test, we don't use any channel to communicate the config. */
+        let (mut processor, _) = ConfigProcessor::new(processor_config);
 
         /* let the processor process the config */
         match processor.process_incoming_config(config).await {
