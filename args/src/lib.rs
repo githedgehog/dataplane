@@ -614,16 +614,28 @@ pub struct ConfigServerSection {
     pub address: GrpcAddress,
 }
 
-/// The configuration of the dataplane.
+/// Complete dataplane launch configuration.
 ///
-/// This structure should be computed from the command line arguments supplied to the dataplane-init.
+/// This structure contains all configuration parameters needed to initialize and run
+/// the dataplane process. It is typically constructed from command-line arguments in
+/// the `dataplane-init` process, then serialized and passed to the `dataplane` worker
+/// process via sealed memory file descriptors.
+///
+/// # Architecture
+///
+/// The configuration flow:
+///
+/// 1. **Init Process**: Parses [`CmdArgs`] and converts to [`LaunchConfiguration`]
+/// 2. **Serialization**: Configuration is serialized using `rkyv` for zero-copy access
+/// 3. **Transfer**: Passed via sealed memfd to the worker process
+/// 4. **Worker Process**: Calls [`LaunchConfiguration::inherit()`] to access the config
+///
 // TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
 #[derive(
     Debug,
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -631,12 +643,22 @@ pub struct ConfigServerSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct LaunchConfiguration {
+    /// Dynamic configuration server settings
     pub config_server: ConfigServerSection,
+    /// Number of dataplane worker threads / cores
+    pub dataplane_workers: usize,
+    /// Packet processing driver configuration
     pub driver: DriverConfigSection,
+    /// CLI server configuration
     pub cli: CliConfigSection,
+    /// Routing control plane integration
     pub routing: RoutingConfigSection,
+    /// Logging and tracing configuration
     pub tracing: TracingConfigSection,
+    /// Metrics collection configuration
     pub metrics: MetricsConfigSection,
+    /// Profileing collection configuration
+    pub profiling: ProfilingConfigSection,
 }
 
 #[derive(
