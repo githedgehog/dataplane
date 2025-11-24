@@ -47,6 +47,9 @@
 //!   This can't be done in the parent process, but should be done by the child process as soon as the file descriptor
 //!   is identified.
 
+#![deny(unsafe_code, clippy::pedantic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 pub use clap::Parser;
 use hardware::pci::address::InvalidPciAddress;
 use hardware::pci::address::PciAddress;
