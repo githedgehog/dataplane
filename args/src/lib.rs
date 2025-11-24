@@ -821,6 +821,7 @@ impl FinalizedMemFile {
     ///
     /// You should generally only call this method as when you are about to hand the file to a child process which is
     /// expecting such a file descriptor.
+    #[must_use]
     pub fn to_owned_fd(self) -> OwnedFd {
         OwnedFd::from(self.0.0)
     }
