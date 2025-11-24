@@ -459,7 +459,10 @@ pub struct KernelDriverConfigSection {
     pub interfaces: Vec<InterfaceArg>,
 }
 
-/// Configuration for the command line interface of the dataplane
+/// Configuration for the dataplane's command-line interface (CLI).
+///
+/// Specifies where the CLI server listens for connections from CLI clients
+/// that want to inspect or control the running dataplane.
 #[derive(
     Debug,
     PartialEq,
@@ -473,6 +476,7 @@ pub struct KernelDriverConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct CliConfigSection {
+    /// Unix socket path for CLI connections
     pub cli_sock_path: String,
 }
 
