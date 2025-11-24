@@ -47,6 +47,9 @@
 //!   This can't be done in the parent process, but should be done by the child process as soon as the file descriptor
 //!   is identified.
 
+#![deny(unsafe_code, clippy::pedantic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 pub use clap::Parser;
 use hardware::pci::address::InvalidPciAddress;
 use hardware::pci::address::PciAddress;
@@ -57,7 +60,6 @@ use sha2::Digest;
 use std::borrow::Borrow;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
-use std::num::NonZero;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -108,26 +110,22 @@ impl FromStr for PortArg {
 impl FromStr for InterfaceArg {
     type Err = String;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        match input.split_once('=') {
-            Some((first, second)) => {
-                let interface = InterfaceName::try_from(first)
-                    .map_err(|e| format!("Bad interface name: {e}"))?;
+        if let Some((first, second)) = input.split_once('=') {
+            let interface =
+                InterfaceName::try_from(first).map_err(|e| format!("Bad interface name: {e}"))?;
 
-                let port = PortArg::from_str(second)?;
-                Ok(InterfaceArg {
-                    interface,
-                    port: Some(port),
-                })
-            }
-            // this branch will go away
-            None => {
-                let interface = InterfaceName::try_from(input)
-                    .map_err(|e| format!("Bad interface name: {e}"))?;
-                Ok(InterfaceArg {
-                    interface,
-                    port: None,
-                })
-            }
+            let port = PortArg::from_str(second)?;
+            Ok(InterfaceArg {
+                interface,
+                port: Some(port),
+            })
+        } else {
+            let interface =
+                InterfaceName::try_from(input).map_err(|e| format!("Bad interface name: {e}"))?;
+            Ok(InterfaceArg {
+                interface,
+                port: None,
+            })
         }
     }
 }
@@ -195,6 +193,7 @@ impl MemFile {
     /// # Panics
     ///
     /// Panics if the operating system is unable to allocate an in-memory file descriptor.
+    #[must_use]
     pub fn new() -> MemFile {
         let id: id::Id<MemFile> = id::Id::new();
         let descriptor =
@@ -225,6 +224,7 @@ impl MemFile {
     ///
     /// 1. The file can not be modified to exclude write operations (basically chmod 400)
     /// 2. if the file can not be sealed against extension, truncation, mutation, and any attempt to remove the seals.
+    #[must_use]
     pub fn finalize(self) -> FinalizedMemFile {
         let mut this = self;
         // mark the file as read only
@@ -656,6 +656,8 @@ impl LaunchConfiguration {
     /// - Deserialization fails (corrupt or invalid data)
     ///
     /// These panics are intentional as the dataplane cannot start without valid configuration.
+    #[must_use]
+    #[allow(unsafe_code)] // no-escape from unsafety in this function as it involves constraints the compiler can't see
     pub fn inherit() -> LaunchConfiguration {
         let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
         let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
@@ -769,6 +771,7 @@ impl FinalizedMemFile {
     ///
     /// You should generally only call this method as when you are about to hand the file to a child process which is
     /// expecting such a file descriptor.
+    #[must_use]
     pub fn to_owned_fd(self) -> OwnedFd {
         OwnedFd::from(self.0.0)
     }
@@ -795,6 +798,7 @@ impl FinalizedMemFile {
     /// 7. panics if the provided memfd can not be `seek`ed to the start of the file (very unlikely)
     /// 8. panics if the provided memfd can not be marked as close-on-exec (very unlikely)
     #[instrument(level = "debug", skip(fd))]
+    #[allow(unsafe_code)] // external contract documented and checked as well as I can for now
     pub unsafe fn from_fd(fd: OwnedFd) -> FinalizedMemFile {
         // TODO: is procfs actually mounted at /proc?  Are we reading the correct file.  Annoying to fix this properly.
         let os_str =
@@ -807,19 +811,21 @@ impl FinalizedMemFile {
             .map_err(|_| std::io::Error::other("file descriptor readlink returned invalid unicode"))
             .into_diagnostic()
             .unwrap();
-        if !readlink_result.starts_with("/memfd:") {
-            panic!("supplied file descriptor is not a memfd: {readlink_result}");
-        }
+        assert!(
+            readlink_result.starts_with("/memfd:"),
+            "supplied file descriptor is not a memfd: {readlink_result}"
+        );
         let stat = nix::sys::stat::fstat(fd.as_fd())
             .into_diagnostic()
             .wrap_err("failed to stat memfd")
             .unwrap();
-        if stat.st_mode != 0o100400 {
-            panic!(
-                "finalized memfd not in read only mode: given mode is {:o}",
-                stat.st_mode
-            );
-        }
+        const EXPECTED_PERMISSIONS: u32 = nix::libc::S_IFREG | nix::libc::S_IRUSR; // regular file | owner read-only
+        assert!(
+            stat.st_mode == EXPECTED_PERMISSIONS,
+            "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
+            stat.st_mode
+        );
+
         let Some(seals) = SealFlag::from_bits(
             nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
                 .into_diagnostic()
@@ -832,11 +838,10 @@ impl FinalizedMemFile {
             | SealFlag::F_SEAL_SHRINK
             | SealFlag::F_SEAL_WRITE
             | SealFlag::F_SEAL_SEAL;
-        if !seals.contains(expected_bits) {
-            panic!(
-                "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
-            );
-        }
+        assert!(
+            seals.contains(expected_bits),
+            "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
+        );
         let mut file = std::fs::File::from(fd);
         file.seek(SeekFrom::Start(0))
             .into_diagnostic()
@@ -1107,13 +1112,15 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             tracing: TracingConfigSection {
                 show: TracingShowSection {
-                    tags: match value.show_tracing_tags() {
-                        true => TracingDisplayOption::Show,
-                        false => TracingDisplayOption::Hide,
+                    tags: if value.show_tracing_tags() {
+                        TracingDisplayOption::Show
+                    } else {
+                        TracingDisplayOption::Hide
                     },
-                    targets: match value.show_tracing_targets() {
-                        true => TracingDisplayOption::Show,
-                        false => TracingDisplayOption::Hide,
+                    targets: if value.show_tracing_targets() {
+                        TracingDisplayOption::Show
+                    } else {
+                        TracingDisplayOption::Hide
                     },
                 },
                 config: value.tracing.clone(),
@@ -1248,6 +1255,7 @@ impl CmdArgs {
     ///
     /// Returns `"dpdk"` if no driver was explicitly specified (the default),
     /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
+    #[must_use]
     pub fn driver_name(&self) -> &str {
         match &self.driver {
             None => "dpdk",
@@ -1262,6 +1270,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `true` if `--show-tracing-tags` was passed, `false` otherwise.
+    #[must_use]
     pub fn show_tracing_tags(&self) -> bool {
         self.show_tracing_tags
     }
@@ -1273,6 +1282,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `true` if `--show-tracing-targets` was passed, `false` otherwise.
+    #[must_use]
     pub fn show_tracing_targets(&self) -> bool {
         self.show_tracing_targets
     }
@@ -1285,6 +1295,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `true` if `--tracing-config-generate` was passed, `false` otherwise.
+    #[must_use]
     pub fn tracing_config_generate(&self) -> bool {
         self.tracing_config_generate
     }
@@ -1297,6 +1308,7 @@ impl CmdArgs {
     /// # Returns
     ///
     /// `Some(&String)` if a tracing configuration was provided, `None` otherwise.
+    #[must_use]
     pub fn tracing(&self) -> Option<&String> {
         self.tracing.as_ref()
     }
@@ -1313,6 +1325,7 @@ impl CmdArgs {
     ///
     /// This value is only relevant when using the kernel driver. The DPDK driver
     /// uses its own threading model configured via EAL arguments.
+    #[must_use]
     pub fn kernel_num_workers(&self) -> usize {
         self.num_workers.into()
     }
@@ -1328,6 +1341,7 @@ impl CmdArgs {
     /// # Note
     ///
     /// This is only used with the kernel driver.
+    #[must_use]
     pub fn kernel_interfaces(&self) -> Vec<String> {
         self.interface
             .iter()
@@ -1377,6 +1391,7 @@ impl CmdArgs {
     /// Get the control plane interface socket path.
     ///
     /// Returns the path where FRR (Free Range Routing) sends route updates to the dataplane.
+    #[must_use]
     pub fn cpi_sock_path(&self) -> String {
         self.cpi_sock_path.clone()
     }
@@ -1384,6 +1399,7 @@ impl CmdArgs {
     /// Get the CLI socket path.
     ///
     /// Returns the path where the dataplane CLI server listens for client connections.
+    #[must_use]
     pub fn cli_sock_path(&self) -> String {
         self.cli_sock_path.clone()
     }
@@ -1391,6 +1407,7 @@ impl CmdArgs {
     /// Get the FRR agent socket path.
     ///
     /// Returns the path to connect to the FRR agent that controls FRR configuration reloads.
+    #[must_use]
     pub fn frr_agent_path(&self) -> String {
         self.frr_agent_path.clone()
     }
@@ -1399,10 +1416,12 @@ impl CmdArgs {
     ///
     /// Returns the socket address (IP and port) where the dataplane exposes
     /// Prometheus-compatible metrics for scraping.
+    #[must_use]
     pub fn metrics_address(&self) -> SocketAddr {
         self.metrics_address
     }
 
+    #[must_use]
     pub fn pyroscope_url(&self) -> Option<&url::Url> {
         self.pyroscope_url.as_ref()
     }
