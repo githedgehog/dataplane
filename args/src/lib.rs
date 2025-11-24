@@ -319,7 +319,9 @@ impl From<MemFile> for FinalizedMemFile {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum GrpcAddress {
+    /// TCP socket address (IP address and port)
     Tcp(SocketAddr),
+    /// Unix domain socket path
     UnixSocket(String),
 }
 
