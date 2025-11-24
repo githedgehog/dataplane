@@ -148,13 +148,15 @@ pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 
 /// A type wrapper around [`std::fs::File`] which is reserved to describe linux [memfd] files.
 ///
-/// Our main use case for these files is passing ephemeral, launch-time configuration data to
-/// the dataplane process from the dataplane-init process.
+/// Memory file descriptors are anonymous, file-like objects that exist only in memory
+/// and are not backed by any filesystem. They are particularly useful for passing
+/// ephemeral configuration data between processes.
 ///
-/// # Note
+/// # Mutability
 ///
-/// [`MemFile`] is intended for mutation.  Use the [`MemFile::finalize`] method to create a [`FinalizedMemFile`] to pass
-/// to child processes.
+/// [`MemFile`] is intended for mutation during construction. Once you've written your
+/// data, use [`MemFile::finalize`] to create a [`FinalizedMemFile`] which provides
+/// strong immutability guarantees suitable for inter-process sharing.
 ///
 /// [memfd]: https://man7.org/linux/man-pages/man2/memfd_create.2.html
 #[derive(Debug)]
@@ -183,6 +185,11 @@ pub struct FinalizedMemFile(MemFile);
 
 impl MemFile {
     /// Create a new, blank [`MemFile`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system is unable to allocate an in-memory file descriptor.
+    #[must_use]
     pub fn new() -> MemFile {
         let id: id::Id<MemFile> = id::Id::new();
         let descriptor =
