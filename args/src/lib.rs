@@ -61,7 +61,6 @@ use std::borrow::Borrow;
 use std::fmt::Display;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
-use std::num::NonZero;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
