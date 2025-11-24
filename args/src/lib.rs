@@ -954,23 +954,46 @@ pub enum IntegrityCheckError {
     WrongCheckFileLength(u64),
 }
 
+/// Size of SHA-384 hash in bytes (384 bits / 8 = 48 bytes).
 const SHA384_BYTE_LEN: usize = 384 / 8;
-const INTEGRITY_CHECK_BYTE_LEN: usize = SHA384_BYTE_LEN;
 
+/// Current size of integrity check in bytes (currently SHA-384).
+pub const INTEGRITY_CHECK_BYTE_LEN: usize = SHA384_BYTE_LEN;
+
+/// Internal representation of SHA-384 hash bytes.
 #[repr(transparent)]
 #[derive(Debug, PartialEq, Eq)]
 struct Sha384Bytes([u8; SHA384_BYTE_LEN]);
 
-/// An integrity check for a file.
+/// Cryptographic integrity check for validating file contents.
 ///
-/// Currently implemented as SHA384, but without any contractual requirement to continue using that hash in the future.
+/// Currently implemented using SHA-384, providing a cryptographically secure hash
+/// that can detect any tampering or corruption of the file contents. The hash
+/// implementation may change in future versions without API changes.
+///
+/// # Use Cases
+///
+/// - Validating configuration files passed between processes
+/// - Detecting corruption in sealed memory file descriptors
+/// - Ensuring data integrity during process handoff
+///
+/// # Security Properties
+///
+/// SHA-384 is a member of the SHA-2 family and provides:
+///
+/// - 384-bit (48-byte) hash output
+/// - Cryptographic collision resistance
+/// - Pre-image resistance (cannot reverse the hash to find the original data)
 #[must_use]
 #[derive(Debug, PartialEq, Eq)]
 pub struct IntegrityCheck {
     sha384: Sha384Bytes,
 }
 
-/// A byte array which may hold an [`IntegrityCheck`]
+/// Byte array representation of an [`IntegrityCheck`].
+///
+/// This type can hold the serialized form of an integrity check (currently 48 bytes
+/// for SHA-384).
 pub type IntegrityCheckBytes = [u8; INTEGRITY_CHECK_BYTE_LEN];
 
 impl IntegrityCheck {
