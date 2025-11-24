@@ -1060,12 +1060,31 @@ impl AsFinalizedMemFile for IntegrityCheck {
     }
 }
 
+/// Errors that can occur when parsing or validating command-line arguments.
+///
+/// These errors occur during the conversion from [`CmdArgs`] to [`LaunchConfiguration`]
+/// when argument values are invalid or inconsistent.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum InvalidCmdArguments {
+    /// Invalid gRPC address specification.
+    ///
+    /// This occurs when:
+    /// - TCP address cannot be parsed as `IP:PORT`
+    /// - Unix socket path is not absolute when `--grpc-unix-socket` is set
     #[error("Illegal grpc address: {0}")]
     InvalidGrpcAddress(String), // TODO: this should have a stronger error type
+
+    /// Invalid PCI device address format.
+    ///
+    /// PCI addresses must follow the format: `domain:bus:device.function`
+    /// (e.g., `0000:01:00.0`)
     #[error(transparent)]
     InvalidPciAddress(#[from] InvalidPciAddress),
+
+    /// Invalid network interface name.
+    ///
+    /// Interface names must be valid Linux network interface names
+    /// (e.g., `eth0`, `ens3`)
     #[error(transparent)]
     InvalidInterfaceName(#[from] IllegalInterfaceName),
     #[error("\"{0}\" is not a valid driver.  Must be dpdk or kernel")]
