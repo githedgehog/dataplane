@@ -941,8 +941,13 @@ impl FinalizedMemFile {
     }
 }
 
+/// Errors that can occur during integrity check validation.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum IntegrityCheckError {
+    /// The integrity check file has an incorrect size.
+    ///
+    /// This typically indicates file corruption or an attempt to use an incompatible
+    /// hash algorithm. The expected size is [`INTEGRITY_CHECK_BYTE_LEN`].
     #[error(
         "wrong check file length for hash type; received {0} bytes, expected {SHA384_BYTE_LEN} bytes"
     )]
