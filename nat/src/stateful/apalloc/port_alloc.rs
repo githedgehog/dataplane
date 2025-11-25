@@ -95,6 +95,20 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_no_randomness() -> Self {
+        let base_ports = (0..=255).collect::<Vec<_>>();
+        // Do not shuffle
+        let blocks = std::array::from_fn(|i| AllocatorPortBlock::new(base_ports[i]));
+        Self {
+            blocks,
+            usable_blocks: AtomicU16::new(256),
+            current_alloc_index: AtomicUsize::new(0),
+            thread_blocks: ThreadPortMap::new(),
+            allocated_blocks: AllocatedPortBlockMap::new(),
+        }
+    }
+
     #[concurrency_mode(std)]
     fn shuffle_slice<T>(slice: &mut [T]) {
         let mut rng = rand::rng();

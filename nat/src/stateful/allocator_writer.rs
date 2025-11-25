@@ -65,13 +65,22 @@ impl NatAllocatorWriter {
         self.get_reader().factory()
     }
 
-    pub fn update_allocator(&mut self, vpc_table: &VpcTable) -> Result<(), ConfigError> {
+    fn update_allocator_and_set_randomness(
+        &mut self,
+        vpc_table: &VpcTable,
+        #[allow(unused_variables)] disable_randomness: bool,
+    ) -> Result<(), ConfigError> {
         let new_config = StatefulNatConfig::new(vpc_table);
 
         let old_allocator_guard = self.allocator.load();
         let Some(old_allocator) = old_allocator_guard.as_deref() else {
             // No existing allocator, build a new one
+            #[cfg(test)]
+            let new_allocator =
+                Self::build_new_allocator(&new_config)?.set_disable_randomness(disable_randomness);
+            #[cfg(not(test))]
             let new_allocator = Self::build_new_allocator(&new_config)?;
+
             self.allocator.store(Some(Arc::new(new_allocator)));
             self.config = new_config;
             return Ok(());
@@ -89,6 +98,18 @@ impl NatAllocatorWriter {
         self.config = new_config;
         debug!("Updated allocator for stateful NAT");
         Ok(())
+    }
+
+    pub fn update_allocator(&mut self, vpc_table: &VpcTable) -> Result<(), ConfigError> {
+        self.update_allocator_and_set_randomness(vpc_table, false)
+    }
+
+    #[cfg(test)]
+    pub fn update_allocator_and_turn_off_randomness(
+        &mut self,
+        vpc_table: &VpcTable,
+    ) -> Result<(), ConfigError> {
+        self.update_allocator_and_set_randomness(vpc_table, true)
     }
 
     fn build_new_allocator(config: &StatefulNatConfig) -> Result<NatDefaultAllocator, ConfigError> {
