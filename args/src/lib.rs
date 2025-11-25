@@ -1,6 +1,52 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Argument parsing and configuration management for the dataplane.
+//!
+//! This crate provides the infrastructure for safely passing configuration from the
+//! `dataplane-init` process to the `dataplane` worker process using Linux memory file
+//! descriptors (memfd). This approach enables zero-copy deserialization while maintaining
+//! strong security guarantees through file sealing mechanisms.
+//!
+//! # Architecture
+//!
+//! The configuration flow follows this pattern:
+//!
+//! 1. **Parent Process (dataplane-init)**:
+//!    - Parses command-line arguments using [`CmdArgs`]
+//!    - Converts arguments into a [`LaunchConfiguration`]
+//!    - Serializes the configuration using `rkyv` for zero-copy deserialization
+//!    - Writes serialized data to a [`MemFile`] and finalizes it into a [`FinalizedMemFile`]
+//!    - Computes an [`IntegrityCheck`] (SHA-384 hash) of the configuration
+//!    - Passes both file descriptors to the child process at known FD numbers
+//!
+//! 2. **Child Process (dataplane)**:
+//!    - Inherits the configuration via [`LaunchConfiguration::inherit()`]
+//!    - Validates the integrity check matches the configuration
+//!    - Memory-maps the sealed memfd for zero-copy access
+//!    - Accesses the configuration through the rkyv archive format
+//!
+//! # Key Types
+//!
+//! - [`CmdArgs`]: Command-line argument parser using clap
+//! - [`LaunchConfiguration`]: Complete dataplane configuration (driver, routing, metrics, etc.)
+//! - [`MemFile`]: Mutable memfd wrapper for building configuration
+//! - [`FinalizedMemFile`]: Immutable, sealed memfd for safe inter-process sharing
+//! - [`IntegrityCheck`]: SHA-384-based validation for configuration integrity check
+//!
+//! # `FinalizedMemFile` Integrity
+//!
+//! [`FinalizedMemFile`] provides multiple layers of protection:
+//!
+//! - **Read-only mode**: File permissions are set to 0o400 (owner read-only)
+//! - **Sealed against modification**: `F_SEAL_WRITE`, `F_SEAL_GROW`, `F_SEAL_SHRINK` prevent changes
+//! - **Sealed seals**: `F_SEAL_SEAL` prevents removing the seals
+//! - **Integrity checking**: SHA-384 hash validates the configuration hasn't been tampered with or corrupted.
+//! - (optional) **Close-on-exec**: we have the ability to mark `MemFd` as close-on-exec to prevent accidental leaking
+//!   to subprocesses.
+//!   This can't be done in the parent process, but should be done by the child process as soon as the file descriptor
+//!   is identified.
+
 pub use clap::Parser;
 use hardware::pci::address::InvalidPciAddress;
 use hardware::pci::address::PciAddress;
