@@ -148,6 +148,7 @@ Add the following to your `.vscode/settings.json` file:
   "rust-analyzer.server.path": "./compile-env/bin/rust-analyzer",
   "rust-analyzer.cargo.sysroot": "./compile-env",
   "rust-analyzer.server.extraEnv": {
+    "RUSTC_BOOTSTRAP": "1",
     "RUSTC": "<absolute path to dataplane directory>/compile-env/bin/rustc",
     "CARGO": "<absolute path to dataplane directory>/compile-env/bin/cargo"
   }
@@ -194,6 +195,7 @@ Save the following to the `.zed/settings.json` file:
       "binary": {
         "path": "<absolute path to dataplane directory>/compile-env/bin/rust-analyzer",
         "env": {
+          "RUSTC_BOOTSTRAP": "1",
           "PATH": "<absolute path to dataplane directory>/compile-env/bin"
         }
       },
