@@ -342,18 +342,6 @@ pub enum GrpcAddress {
 ///   environments with dedicated NICs.
 /// - Use **Kernel** for development, testing, or environments without DPDK-compatible
 ///   hardware.
-///
-/// # Example
-///
-/// ```
-/// use dataplane_args::{DriverConfigSection, KernelDriverConfigSection};
-/// use net::interface::InterfaceName;
-///
-/// // Kernel driver configuration
-/// let kernel_config = DriverConfigSection::Kernel(KernelDriverConfigSection {
-///     interfaces: vec![],
-/// });
-/// ```
 #[derive(
     Debug,
     PartialEq,
