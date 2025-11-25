@@ -242,6 +242,8 @@ pub struct NatDefaultAllocator {
     pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
     exempt4: ExemptTable<Ipv4Addr>,
     exempt6: ExemptTable<Ipv6Addr>,
+    #[cfg(test)]
+    disable_randomness: bool,
 }
 
 impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatDefaultAllocator {
@@ -253,6 +255,8 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
             pools_dst66: PoolTable::new(),
             exempt4: ExemptTable::new(),
             exempt6: ExemptTable::new(),
+            #[cfg(test)]
+            disable_randomness: false,
         }
     }
 
@@ -260,14 +264,24 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         &self,
         flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(flow_key, &self.pools_src44, &self.pools_dst44)
+        Self::allocate_from_tables(
+            flow_key,
+            &self.pools_src44,
+            &self.pools_dst44,
+            self.must_disable_randomness(),
+        )
     }
 
     fn allocate_v6(
         &self,
         flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(flow_key, &self.pools_src66, &self.pools_dst66)
+        Self::allocate_from_tables(
+            flow_key,
+            &self.pools_src66,
+            &self.pools_dst66,
+            self.must_disable_randomness(),
+        )
     }
 
     fn is_exempt_v4(&self, flow_key: &FlowKey) -> Result<bool, AllocatorError> {
@@ -302,6 +316,7 @@ impl NatDefaultAllocator {
         flow_key: &FlowKey,
         pools_src: &PoolTable<I, I>,
         pools_dst: &PoolTable<I, I>,
+        disable_randomness: bool,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
@@ -341,7 +356,8 @@ impl NatDefaultAllocator {
 
         // Allocate IP and ports from pools, for source and destination NAT
         let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
-        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt, allow_null)?;
+        let (src_mapping, dst_mapping) =
+            Self::get_mapping(pool_src_opt, pool_dst_opt, allow_null, disable_randomness)?;
 
         // Now based on the previous allocation, we need to "reserve" IP and ports for the reverse
         // path for the flow. First retrieve the relevant address pools.
@@ -359,8 +375,12 @@ impl NatDefaultAllocator {
         };
 
         // Reserve IP and ports for the reverse path for the flow.
-        let (reverse_src_mapping, reverse_dst_mapping) =
-            Self::get_reverse_mapping(flow_key, reverse_pool_src_opt, reverse_pool_dst_opt)?;
+        let (reverse_src_mapping, reverse_dst_mapping) = Self::get_reverse_mapping(
+            flow_key,
+            reverse_pool_src_opt,
+            reverse_pool_dst_opt,
+            disable_randomness,
+        )?;
 
         Ok(AllocationResult {
             src: src_mapping,
@@ -370,6 +390,16 @@ impl NatDefaultAllocator {
             src_flow_idle_timeout: pool_src_opt.and_then(IpAllocator::idle_timeout),
             dst_flow_idle_timeout: pool_dst_opt.and_then(IpAllocator::idle_timeout),
         })
+    }
+
+    #[cfg(test)]
+    const fn must_disable_randomness(&self) -> bool {
+        self.disable_randomness
+    }
+    #[cfg(not(test))]
+    #[allow(clippy::unused_self)]
+    const fn must_disable_randomness(&self) -> bool {
+        false
     }
 
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
@@ -411,6 +441,7 @@ impl NatDefaultAllocator {
         pool_src_opt: Option<&alloc::IpAllocator<I>>,
         pool_dst_opt: Option<&alloc::IpAllocator<I>>,
         allow_null: bool,
+        disable_randomness: bool,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         // Allocate IP and ports for source and destination NAT.
         //
@@ -424,12 +455,12 @@ impl NatDefaultAllocator {
         // port/identifier value for the src_mapping, even though we'll never use it. (This does not
         // apply to TCP or UDP, for which we need and use both ports).
         let src_mapping = match pool_src_opt {
-            Some(pool_src) => Some(pool_src.allocate(allow_null)?),
+            Some(pool_src) => Some(pool_src.allocate(allow_null, disable_randomness)?),
             None => None,
         };
 
         let dst_mapping = match pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.allocate(allow_null)?),
+            Some(pool_dst) => Some(pool_dst.allocate(allow_null, disable_randomness)?),
             None => None,
         };
 
@@ -440,6 +471,7 @@ impl NatDefaultAllocator {
         flow_key: &FlowKey,
         reverse_pool_src_opt: Option<&alloc::IpAllocator<I>>,
         reverse_pool_dst_opt: Option<&alloc::IpAllocator<I>>,
+        disable_randomness: bool,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         let reverse_src_mapping = match reverse_pool_src_opt {
             Some(pool_src) => {
@@ -462,6 +494,7 @@ impl NatDefaultAllocator {
                         )
                     })?,
                     reservation_src_port_number,
+                    disable_randomness,
                 )?)
             }
             None => None,
@@ -482,6 +515,7 @@ impl NatDefaultAllocator {
                         )
                     })?,
                     reservation_dst_port_number,
+                    disable_randomness,
                 )?)
             }
             None => None,
@@ -499,6 +533,13 @@ impl NatDefaultAllocator {
             )),
             IcmpProtoKey::Unsupported => Err(AllocatorError::UnsupportedIcmpCategory),
         }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn set_disable_randomness(mut self, disable_randomness: bool) -> Self {
+        self.disable_randomness = disable_randomness;
+        self
     }
 }
 
