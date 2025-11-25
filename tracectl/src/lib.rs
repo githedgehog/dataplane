@@ -3,6 +3,9 @@
 
 //! Crate to control tracing dynamically at runtime
 
+#![deny(clippy::all, clippy::pedantic)]
+#![allow(clippy::missing_errors_doc)]
+
 pub mod control;
 pub mod display;
 pub mod targets;
