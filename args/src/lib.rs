@@ -658,6 +658,41 @@ pub struct LaunchConfiguration {
     pub tracing: TracingConfigSection,
     /// Metrics collection configuration
     pub metrics: MetricsConfigSection,
+    /// Profiling configuration
+    pub profiling: ProfilingConfigSection,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct ProfilingConfigSection {
+    /// The Pyroscope server URL
+    pub pyroscope_url: Option<String>,
+    /// Frequency with which we collect stack traces
+    pub frequency: u32,
+}
+
+impl ProfilingConfigSection {
+    pub const DEFAULT_FREQUENCY: u32 = 100;
+}
+
+impl Default for ProfilingConfigSection {
+    fn default() -> Self {
+        Self {
+            pyroscope_url: None,
+            frequency: Self::DEFAULT_FREQUENCY,
+        }
+    }
 }
 
 impl LaunchConfiguration {
@@ -1153,6 +1188,10 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             },
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
+            },
+            profiling: ProfilingConfigSection {
+                pyroscope_url: value.pyroscope_url().map(std::string::ToString::to_string),
+                frequency: ProfilingConfigSection::DEFAULT_FREQUENCY,
             },
         })
     }
