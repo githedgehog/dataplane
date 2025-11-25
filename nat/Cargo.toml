@@ -31,6 +31,7 @@ tracing = { workspace = true }
 # internal
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
+tracectl = { workspace = true }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
