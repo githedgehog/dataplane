@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::ip::UnicastIpAddr;
 use std::fmt::Display;
 use std::net::IpAddr;
 use thiserror::Error;
@@ -19,45 +20,30 @@ pub enum IfAddrError {
 /// An Ipv4 or Ipv6 address and mask configured on an interface
 #[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
 pub struct IfAddr {
-    address: IpAddr,
+    address: UnicastIpAddr,
     mask_len: u8,
 }
 impl IfAddr {
-    /// Tell if an [`IpAddr`] plus a mask length are suitable to be configured on a network interface.
+    /// Create an Ipv4 or Ipv6 address and mask length to be configured on an interface.
     ///
     /// # Errors
     ///
     /// This function returns [`IfAddrError`] if the provided address is not suitable
     /// for a network interface or the mask is not legal.
-    pub fn is_valid_ifaddr(address: IpAddr, mask_len: u8) -> Result<(), IfAddrError> {
-        if let IpAddr::V4(a) = address
-            && a.is_broadcast()
-        {
-            Err(IfAddrError::InvalidAddress(address))
-        } else if address.is_multicast() || address.is_unspecified() {
-            Err(IfAddrError::InvalidAddress(address))
-        } else if address.is_ipv4() && mask_len > 32
+    pub fn new(address: IpAddr, mask_len: u8) -> Result<Self, IfAddrError> {
+        let address = UnicastIpAddr::try_from(address).map_err(IfAddrError::InvalidAddress)?;
+        if address.is_ipv4() && mask_len > 32
             || address.is_ipv6() && mask_len > 128
             || mask_len == 0
         {
             Err(IfAddrError::InvalidMask(mask_len))
         } else {
-            Ok(())
+            Ok(Self { address, mask_len })
         }
     }
 
-    /// Create an Ipv4 or Ipv6 address and mask length to be configured on an interface.
-    ///
-    /// # Errors
-    ///
-    /// Same as those of [`IfAddr::is_valid_ifaddr`]
-    pub fn new(address: IpAddr, mask_len: u8) -> Result<Self, IfAddrError> {
-        Self::is_valid_ifaddr(address, mask_len)?;
-        Ok(Self { address, mask_len })
-    }
-
     #[must_use]
-    pub fn address(&self) -> IpAddr {
+    pub fn address(&self) -> UnicastIpAddr {
         self.address
     }
 
