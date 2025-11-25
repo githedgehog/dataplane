@@ -13,7 +13,7 @@ use net::vlan::Vid;
 use std::collections::HashSet;
 
 #[cfg(test)]
-use std::net::IpAddr;
+use net::ip::UnicastIpAddr;
 
 #[allow(unused)]
 use tracing::{debug, error, info};
@@ -238,7 +238,7 @@ impl Interface {
     //////////////////////////////////////////////////////////////////
     #[must_use]
     #[cfg(test)]
-    pub(crate) fn has_address(&self, address: IpAddr) -> bool {
+    pub(crate) fn has_address(&self, address: UnicastIpAddr) -> bool {
         for ifaddr in &self.addresses {
             if ifaddr.address() == address {
                 return true;

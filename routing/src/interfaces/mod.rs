@@ -20,6 +20,7 @@ pub mod tests {
     use net::eth::mac::SourceMac;
     use net::interface::InterfaceIndex;
     use net::interface::address::IfAddr;
+    use net::ip::UnicastIpAddr;
     use net::vlan::Vid;
     use std::net::IpAddr;
     use std::str::FromStr;
@@ -137,7 +138,7 @@ pub mod tests {
         /* Add an ip address (the interface is in the iftable) */
         let address = IpAddr::from_str("10.0.0.1").expect("Bad address");
         let _ = eth0.add_ifaddr(IfAddr::new(address, 24).unwrap());
-        assert!(eth0.has_address(address));
+        assert!(eth0.has_address(UnicastIpAddr::try_from(address).unwrap()));
     }
 
     #[test]
