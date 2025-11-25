@@ -694,6 +694,10 @@ impl Default for ProfilingConfigSection {
 }
 
 impl LaunchConfiguration {
+    /// Standard file descriptor number for the integrity check memfd.
+    ///
+    /// The parent process must pass the integrity check (SHA-384 hash) file at this
+    /// file descriptor number.
     pub const STANDARD_INTEGRITY_CHECK_FD: RawFd = 30;
 
     /// Standard file descriptor number for the configuration memfd.
