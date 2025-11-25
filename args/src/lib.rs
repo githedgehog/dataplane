@@ -639,6 +639,38 @@ pub struct LaunchConfiguration {
     pub metrics: MetricsConfigSection,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct ProfilingConfigSection {
+    /// The URL of the pryroscope url
+    pub pyroscope_url: Option<String>,
+    /// Frequency with which we collect stack traces
+    pub frequency: u32,
+}
+
+impl ProfilingConfigSection {
+    pub const DEFAULT_FREQUENCY: u32 = 100;
+}
+
+impl Default for ProfilingConfigSection {
+    fn default() -> Self {
+        Self {
+            pyroscope_url: None,
+            frequency: Self::DEFAULT_FREQUENCY,
+        }
+    }
+}
+
 impl LaunchConfiguration {
     pub const STANDARD_INTEGRITY_CHECK_FD: RawFd = 30;
     pub const STANDARD_CONFIG_FD: RawFd = 40;
