@@ -43,6 +43,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
     use std::time::Duration;
+    use tracectl::get_trace_ctl;
     use tracing_test::traced_test;
 
     const FIVE_MINUTES: Duration = Duration::from_secs(5 * 60);
@@ -1229,9 +1230,12 @@ mod tests {
     }
 
     #[test]
-    #[traced_test]
     #[allow(clippy::too_many_lines)]
     fn test_full_config_unidirectional_nat_overlapping_destination() {
+        get_trace_ctl()
+            .setup_from_string("vpc-routing=debug,flow-lookup=debug,stateful-nat=debug")
+            .unwrap();
+
         let mut config =
             build_sample_config(build_overlay_3vpcs_unidirectional_nat_overlapping_addr());
         config.validate().unwrap();
