@@ -33,7 +33,7 @@ impl UnicastIpv4Addr {
     ///
     /// Returns the supplied address back in the [`Err`] case if it is not a unicast address.
     pub fn new(ip: Ipv4Addr) -> Result<UnicastIpv4Addr, Ipv4Addr> {
-        if ip.is_multicast() {
+        if ip.is_multicast() || ip.is_broadcast() {
             Err(ip)
         } else {
             Ok(UnicastIpv4Addr(ip))
