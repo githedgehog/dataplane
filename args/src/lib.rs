@@ -640,7 +640,15 @@ pub struct LaunchConfiguration {
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct ProfilingConfigSection {
