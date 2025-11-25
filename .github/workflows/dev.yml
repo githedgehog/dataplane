@@ -77,7 +77,7 @@ jobs:
         with:
           filters: |
             devfiles:
-              - '!(README.md|LICENSE|.gitignore|.github/**)'
+              - '!(README.md|LICENSE|.gitattributes|.gitignore|.github/**)'
               - '.github/workflows/dev.yml'
 
   check:
