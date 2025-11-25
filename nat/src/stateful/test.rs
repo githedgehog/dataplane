@@ -1319,8 +1319,11 @@ mod tests {
         let mut nat = StatefulNat::new("stateful-nat", flow_table.clone(), allocator.get_reader());
 
         // Check that we can validate the allocator
+        //
+        // When we build the allocator, turn off randomness to check whether we may get collisions
+        // for port allocation
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_allocator_and_turn_off_randomness(&config.external.overlay.vpc_table)
             .unwrap();
 
         // NAT: expose12 <-> expose21
@@ -1373,9 +1376,11 @@ mod tests {
         assert_eq!(return_done_reason, None);
 
         /////////////////////////////////////////////////////////////////
-        // Still with the second NAT stage, send a packet from VPC-3 to VPC-2.
+        // Still with the second NAT stage, send a packet from VPC-3 to VPC-2, using same IPs and
+        // ports as for VPC-1 to VPC-2.
         // Check that updating the flow table for this new connection does not affect destination
-        // VPC discriminant lookup from the flow table for the previous connection.
+        // VPC discriminant lookup from the flow table for the previous connection; in other words,
+        // check that there's no session or allocation conflict.
 
         // Reverse path from previous connection: 5.0.0.5 -> 2.0.0.0, session is still valid
         let (
@@ -1402,9 +1407,10 @@ mod tests {
         assert_eq!(return_output_dst_port, orig_src_port);
         assert_eq!(return_done_reason, None);
 
-        // NAT: expose32 <-> expose23 - Connection from VPC-3 to VPC-2
+        // NAT: expose32 <-> expose23 - Connection from VPC-3 to VPC-2, using the same IPs and ports
+        // as for VPC-1 to VPC-2 connection
         let (orig_src_32, orig_dst_32, orig_src_port_32, orig_dst_port_32) =
-            ("1.0.0.4", "5.0.0.12", 8887, 800);
+            ("1.0.0.18", "5.0.0.5", 9998, 443);
         let target_src_32 = "2.0.0.0";
         let (
             dst_vpcd_32,
@@ -1451,73 +1457,32 @@ mod tests {
             output_dst_port,
             output_src_port,
         );
-        assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
-        assert_eq!(return_output_src, addr_v4(orig_dst));
-        assert_eq!(return_output_dst, addr_v4(orig_src));
-        assert_eq!(return_output_src_port, orig_dst_port);
-        assert_eq!(return_output_dst_port, orig_src_port);
-        assert_eq!(return_done_reason, None);
 
-        /////////////////////////////////////////////////////////////////
-        // Send another packet from VPC-3 to VPC-2, using same IPs and ports as for VPC-1 to VPC-2.
-        // Check that there's no session or allocation conflict.
+        // We created a conflict in the session table: two identical sessions that differ only from
+        // their destination VPC discriminant, but the entries for destination VPC lookup have this
+        // field set to None (because we ignore it at the lookup time). So we can't find the
+        // destination VPC discriminant anymore.
+        //
+        // Without collisions, we'd expect the following:
+        //
+        //    assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
+        //    assert_eq!(return_output_src, addr_v4(orig_dst));
+        //    assert_eq!(return_output_dst, addr_v4(orig_src));
+        //    assert_eq!(return_output_src_port, orig_dst_port);
+        //    assert_eq!(return_output_dst_port, orig_src_port);
+        //    assert_eq!(return_done_reason, Some(DoneReason::Unroutable));
+        //
+        // See https://github.com/githedgehog/dataplane/issues/1083
 
-        // NAT: expose32 <-> expose23 - Connection from VPC-3 to VPC-2, using the same IPs and ports
-        // as for VPC-1 to VPC-2 connection
-        let (orig_src_32, orig_dst_32, orig_src_port_32, orig_dst_port_32) =
-            ("1.0.0.18", "5.0.0.5", 9998, 443);
-        let target_src_32 = "2.0.0.0";
-        let (
-            dst_vpcd_32,
-            output_src_32,
-            output_dst_32,
-            output_src_port_32,
-            output_dst_port_32,
-            done_reason_32,
-        ) = check_packet_with_vpcd_lookup(
-            &mut nat,
-            &mut vpcdlookup,
-            Some(&mut flow_lookup),
-            vni(300), // from VPC-3
-            orig_src_32,
-            orig_dst_32,
-            orig_src_port_32,
-            orig_dst_port_32,
-        );
-        assert_eq!(dst_vpcd_32, Some(VpcDiscriminant::VNI(vni(200))));
-        assert_eq!(output_src_32, addr_v4(target_src_32));
-        assert_eq!(output_dst_32, addr_v4(orig_dst_32));
-        assert!(
-            output_src_port_32 % 256 == 1 && output_src_port_32 != 1 || output_src_port_32 == 2,
-            "{output_src_port_32}"
-        );
-        assert_eq!(output_dst_port_32, orig_dst_port_32);
-        assert_eq!(done_reason_32, None);
-
-        // Back to 5.0.0.5 -> 2.0.0.0 from VPC-2 to VPC-1
-        let (
-            return_vpcd,
-            return_output_src,
-            return_output_dst,
-            return_output_src_port,
-            return_output_dst_port,
-            return_done_reason,
-        ) = check_packet_with_vpcd_lookup(
-            &mut nat,
-            &mut vpcdlookup,
-            Some(&mut flow_lookup),
-            vni(200), // from VPC-2 again
-            orig_dst,
-            target_src,
-            output_dst_port,
-            output_src_port,
-        );
-        assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
-        assert_eq!(return_output_src, addr_v4(orig_dst));
-        assert_eq!(return_output_dst, addr_v4(orig_src));
-        assert_eq!(return_output_src_port, orig_dst_port);
-        assert_eq!(return_output_dst_port, orig_src_port);
-        assert_eq!(return_done_reason, None);
+        // Why `None` and not `VpcDiscriminant::VNI(vni(300))`, from the newer session table entry?
+        // The value does not get correctly overwritten in the session table,
+        // see https://github.com/githedgehog/dataplane/issues/1085
+        assert_eq!(return_vpcd, None);
+        assert_eq!(return_output_src, addr_v4(orig_dst)); // not NATed
+        assert_eq!(return_output_dst, addr_v4(target_src)); // not NATed
+        assert_eq!(return_output_src_port, output_dst_port); // not NATed
+        assert_eq!(return_output_dst_port, output_src_port); // not NATed
+        assert_eq!(return_done_reason, Some(DoneReason::Unroutable));
     }
 
     fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
