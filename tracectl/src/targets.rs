@@ -14,6 +14,7 @@ pub struct STarget {
     pub(crate) custom: bool,
 }
 impl STarget {
+    #[must_use]
     pub const fn new(
         target: &'static str,
         name: &'static str,

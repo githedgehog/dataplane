@@ -94,6 +94,7 @@ impl Resolver for ResolveByLevel {
 #[allow(unused)]
 struct ResolveByTagSize;
 impl Resolver for ResolveByTagSize {
+    #[allow(clippy::comparison_chain)]
     fn resolve<'a>(&self, a: &'a ResolvedTarget, b: &'a ResolvedTarget) -> &'a ResolvedTarget {
         if a.tagsize < b.tagsize {
             a
@@ -221,9 +222,9 @@ impl TargetCfgDb {
         Ok(changed)
     }
     fn check_tags(&self, tags: &[&str]) -> Result<(), TraceCtlError> {
-        for tag in tags.iter() {
+        for tag in tags {
             if !self.tags.contains_key(tag) {
-                return Err(TraceCtlError::UnknownTag(tag.to_string()));
+                return Err(TraceCtlError::UnknownTag((*tag).to_string()));
             }
         }
         Ok(())
@@ -234,7 +235,7 @@ impl TargetCfgDb {
         default: Option<LevelFilter>,
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
         resolver: &dyn Resolver,
-    ) -> Result<u32, TraceCtlError> {
+    ) -> u32 {
         self.reset();
 
         // build a pre-configurartion where we resolve target levels through a resolver
@@ -254,7 +255,7 @@ impl TargetCfgDb {
 
         // Update the internal database of targets according to the resolved preconfig
         // The internal database only understands targets and loglevels.
-        for (targetname, resolved) in map.iter() {
+        for (targetname, resolved) in &map {
             let target = self
                 .targets
                 .get_mut(targetname)
@@ -273,7 +274,7 @@ impl TargetCfgDb {
             self.default = level;
             changed += 1;
         }
-        Ok(changed)
+        changed
     }
 }
 
@@ -304,7 +305,7 @@ impl TracingControl {
             eprintln!("Failed to set global tracing subscriber: {e} !!");
         }
         if let Err(e) = color_eyre::install() {
-            eprintln!("Failed to initialize color_eyre:\n{e}")
+            eprintln!("Failed to initialize color_eyre:\n{e}");
         }
         Self {
             db: Arc::new(Mutex::new(db)),
@@ -339,6 +340,7 @@ impl TracingControl {
 
 /// Get a reference to a static [`TracingControl`], initializing it if needed
 static TRACING_CTL: LazyLock<TracingControl> = LazyLock::new(TracingControl::new);
+#[must_use]
 pub fn get_trace_ctl() -> &'static TracingControl {
     #[allow(clippy::explicit_auto_deref)] // needed by mechanics of lazy lock
     &*TRACING_CTL
@@ -347,7 +349,7 @@ pub fn get_trace_ctl() -> &'static TracingControl {
 // public methods for TracingControl
 impl TracingControl {
     pub fn init() {
-        get_trace_ctl();
+        let _ = get_trace_ctl();
     }
     fn set_tag_level(&self, tag: &str, level: LevelFilter) -> Result<(), TraceCtlError> {
         let mut db = self.lock()?;
@@ -390,7 +392,7 @@ impl TracingControl {
         Ok(result)
     }
     /// Setup the tracing configuration from an input string. This is meant to be called from the cmd line.
-    /// Unlike reconfigure(), target levels are set in order, the latest ones overriding the prior.
+    /// Unlike `reconfigure()`, target levels are set in order, the latest ones overriding the prior.
     pub fn setup_from_string(&self, input: &str) -> Result<(), TraceCtlError> {
         let config = Self::parse_tracing_config(input)?;
 
@@ -405,18 +407,27 @@ impl TracingControl {
     }
 
     #[cfg(test)]
+    #[allow(clippy::missing_panics_doc)]
     pub fn get_tags(&self) -> impl Iterator<Item = Tag> {
         self.db.lock().unwrap().tags.clone().into_values()
     }
+
     #[cfg(test)]
+    #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn get_tag(&self, tag: &str) -> Option<Tag> {
         self.db.lock().unwrap().tags.get(tag).cloned()
     }
+
     #[cfg(test)]
+    #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn get_target(&self, target: &str) -> Option<TargetCfg> {
         self.db.lock().unwrap().targets.get(target).cloned()
     }
+
     #[cfg(test)]
+    #[allow(clippy::missing_panics_doc)]
     pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = TargetCfg> {
         let db = self.db.lock().unwrap();
         db.tag_targets(tag)
@@ -424,9 +435,11 @@ impl TracingControl {
             .collect::<Vec<_>>()
             .into_iter()
     }
+
     pub fn as_config_string(&self) -> Result<String, TraceCtlError> {
         Ok(self.lock()?.as_config_string())
     }
+
     fn reconfigure_internal<'a>(
         &self,
         default: Option<LevelFilter>,
@@ -434,7 +447,7 @@ impl TracingControl {
         resolver: &dyn Resolver,
     ) -> Result<(), TraceCtlError> {
         let mut db = self.lock()?;
-        let changed = db.reconfigure(default, tag_config, resolver)?;
+        let changed = db.reconfigure(default, tag_config, resolver);
         if changed > 0 {
             self.reload_filter
                 .reload(db.env_filter())
@@ -442,6 +455,7 @@ impl TracingControl {
         }
         Ok(())
     }
+
     /// Main method to reconfigure tracing
     pub fn reconfigure<'a>(
         &self,
@@ -465,6 +479,8 @@ impl TracingControl {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::items_after_statements)]
+
     use crate::control::{Tag, TracingControl, get_trace_ctl};
     use crate::targets::TRACING_TARGETS;
     use crate::{LevelFilter, custom_target, trace_target};
