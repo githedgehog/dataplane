@@ -1,0 +1,2 @@
+k8s-intf/src/generated/** linguist-generated
+k8s-intf/src/generated/mod.rs -linguist-generated
