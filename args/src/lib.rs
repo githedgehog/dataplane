@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Argument parsing and configuration management for the Hedgehog dataplane.
+//! Argument parsing and configuration management for the dataplane.
 //!
 //! This crate provides the infrastructure for safely passing configuration from the
 //! `dataplane-init` process to the `dataplane` worker process using Linux memory file
