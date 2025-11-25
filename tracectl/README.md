@@ -168,3 +168,13 @@ The tracing controller has several other methods to:
 The first two methods may not seem too useful (other than for custom targets) since implicit target names may be unstable.
 However, they are added to be able to look up the config for third-party targets. Also, one may always be able to discover the real (unstable) target names
 by retrieving the set of targets having a given tag, provided that targets are given at least one tag. Therefore, the recommendation is to *define at least one dedicated tag for each target, be it implicit or custom*.
+
+### Usage in tests
+Right now, the tracectl creates a default subscriber. This can interfere with tests annotated as `#[traced_test]`.
+If you have a test and want to see logs and control the log levels of targets defined in other crates, the simplest is to:
+* remove the `#[traced_test]`
+* call ```get_trace_ctl().setup_from_string(TRACING_CONFIG).unwrap()``` at the beginning of the test, where `TRACING_CONFIG` is a string
+containing the desired configuration, such as `mgmt=info,routing=debug,pipeline=off`.
+
+This is conveninent since you only need to import `get_trace_ctl()`.
+Make sure to call `unwrap()` so that tests break if a target gets renamed.
