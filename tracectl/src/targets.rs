@@ -31,6 +31,8 @@ impl STarget {
     }
 }
 
+// make sure this is not optimized out
+#[used]
 #[distributed_slice]
 pub static TRACING_TARGETS: [STarget];
 
