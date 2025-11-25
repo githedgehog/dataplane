@@ -87,6 +87,18 @@ impl UnicastIpAddr {
             UnicastIpAddr::V6(ip) => IpAddr::V6(ip.inner()),
         }
     }
+
+    /// Tell if the address is IPv4
+    #[must_use]
+    pub const fn is_ipv4(&self) -> bool {
+        matches!(self, UnicastIpAddr::V4(_))
+    }
+
+    /// Tell if the address is IPv6
+    #[must_use]
+    pub const fn is_ipv6(&self) -> bool {
+        matches!(self, UnicastIpAddr::V6(_))
+    }
 }
 
 impl Debug for UnicastIpAddr {
