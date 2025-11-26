@@ -320,7 +320,7 @@ impl NatDefaultAllocator {
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
-        let (src_vpc_id, dst_vpc_id) = Self::check_and_get_discriminants(flow_key)?;
+        let (src_vpc_id, dst_vpc_id) = Self::get_vpc_discriminants(flow_key)?;
 
         // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
@@ -417,7 +417,7 @@ impl NatDefaultAllocator {
         }
     }
 
-    fn check_and_get_discriminants(
+    fn get_vpc_discriminants(
         flow_key: &FlowKey,
     ) -> Result<(VpcDiscriminant, VpcDiscriminant), AllocatorError> {
         let src_vpc_id = flow_key
@@ -429,12 +429,7 @@ impl NatDefaultAllocator {
             .dst_vpcd()
             .ok_or(AllocatorError::MissingDiscriminant)?;
 
-        // We only support VNIs at the moment
-        #[allow(unreachable_patterns)]
-        match (src_vpc_id, dst_vpc_id) {
-            (VpcDiscriminant::VNI(_), VpcDiscriminant::VNI(_)) => Ok((src_vpc_id, dst_vpc_id)),
-            _ => Err(AllocatorError::UnsupportedDiscriminant),
-        }
+        Ok((src_vpc_id, dst_vpc_id))
     }
 
     fn get_mapping<I: NatIpWithBitmap>(
