@@ -104,14 +104,14 @@ impl PerVniTable {
 pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
     for vpc in vpc_table.values() {
-        let mut table = PerVniTable::new(vpc.vni);
+        let mut table = PerVniTable::new();
         for peering in &vpc.peerings {
             let dst_vni = vpc_table.get_remote_vni(peering);
             table
                 .add_peering(peering, dst_vni)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
-        nat_tables.add_table(table);
+        nat_tables.add_table(table, vpc.vni);
     }
     Ok(nat_tables)
 }
@@ -175,7 +175,7 @@ mod tests {
         src_vpc.peerings.push(peering.clone());
         vpctable.add(src_vpc).unwrap();
 
-        let mut vni_table = PerVniTable::new(src_vni);
+        let mut vni_table = PerVniTable::new();
         vni_table
             .add_peering(&peering, dst_vni)
             .expect("Failed to build NAT tables");
