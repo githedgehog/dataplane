@@ -187,7 +187,7 @@ impl StatefulNat {
     }
 
     fn create_session_with_dst_vpcd<I: NatIpWithBitmap>(
-        &mut self,
+        &self,
         flow_key: &FlowKey,
         dst_vpcd: VpcDiscriminant,
         state: NatFlowState<I>,
@@ -218,7 +218,7 @@ impl StatefulNat {
     }
 
     fn create_session<I: NatIpWithBitmap>(
-        &mut self,
+        &self,
         flow_key: &FlowKey,
         state: NatFlowState<I>,
         idle_timeout: Duration,
@@ -583,7 +583,7 @@ impl StatefulNat {
     }
 
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
-        &mut self,
+        &self,
         packet: &mut Packet<Buf>,
         flow_key: &FlowKey,
         src_vpc_id: VpcDiscriminant,
@@ -650,7 +650,7 @@ impl StatefulNat {
     }
 
     fn nat_packet<Buf: PacketBufferMut>(
-        &mut self,
+        &self,
         packet: &mut Packet<Buf>,
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
@@ -675,7 +675,7 @@ impl StatefulNat {
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`StatefulNat::process`] to iterate over packets.
-    fn process_packet<Buf: PacketBufferMut>(&mut self, packet: &mut Packet<Buf>) {
+    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         // TODO: What if no VNI
         let Some(src_vpc_id) = Self::get_src_vpc_id(packet) else {
             warn!(
