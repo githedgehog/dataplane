@@ -142,10 +142,6 @@ impl StatefulNat {
         packet.get_meta().dst_vpcd
     }
 
-    fn extract_flow_key<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<FlowKey> {
-        FlowKey::try_from(Uni(packet)).ok()
-    }
-
     // Look up for a session for a packet, based on attached flow key.
     // On success, update session timeout.
     fn lookup_session<I: NatIpWithBitmap, Buf: PacketBufferMut>(
@@ -593,8 +589,8 @@ impl StatefulNat {
             debug!("{}: Found session, translating packet", self.name());
             return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
         }
-
-        let flow_key = Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
+        let flow_key =
+            FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
 
         if let Some(allocator) = self.allocator.get()
             && I::is_exempt(allocator, &flow_key).map_err(StatefulNatError::AllocationFailure)?
