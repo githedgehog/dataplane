@@ -27,7 +27,6 @@ use pkt_meta::flow_table::flow_key::{IcmpProtoKey, Uni};
 use pkt_meta::flow_table::{FlowKey, FlowKeyData, FlowTable, IpProtoKey};
 use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::num::NonZero;
 use std::time::{Duration, Instant};
 
 #[allow(unused)]
@@ -234,29 +233,34 @@ impl StatefulNat {
         packet: &mut Packet<Buf>,
         state: &NatTranslationData,
     ) -> Result<(), StatefulNatError> {
-        let (target_src_addr, target_dst_addr, target_src_port, target_dst_port) = (
-            state.src_addr,
-            state.dst_addr,
-            state.src_port,
-            state.dst_port,
-        );
-
+        // translate ip fields
         let net = packet.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
-        let (old_src_ip, old_dst_ip) = (net.src_addr(), net.dst_addr());
-        if let (Some(target_src_ip), Some(target_src_port)) = (target_src_addr, target_src_port) {
+        let (src_ip, dst_ip) = (net.src_addr(), net.dst_addr());
+
+        if let Some(target_src_ip) = state.src_addr {
             net.try_set_source(
                 target_src_ip
                     .try_into()
                     .map_err(|_| StatefulNatError::NotUnicast(target_src_ip))?,
             )
             .map_err(|_| StatefulNatError::InvalidIpVersion)?;
+        }
+        if let Some(target_dst_ip) = state.dst_addr {
+            net.try_set_destination(target_dst_ip)
+                .map_err(|_| StatefulNatError::InvalidIpVersion)?;
+        }
+        let (new_src_ip, new_dst_ip) = (net.src_addr(), net.dst_addr());
 
-            let transport = packet
-                .try_transport_mut()
-                .ok_or(StatefulNatError::BadTransportHeader)?;
-            match transport {
-                Transport::Tcp(_) | Transport::Udp(_) => {
-                    let old_src_port = transport.src_port().map_or(0, NonZero::<u16>::get);
+        // translate transport fields
+        let transport = packet
+            .try_transport_mut()
+            .ok_or(StatefulNatError::BadTransportHeader)?;
+        let (src_port, dst_port) = (transport.src_port(), transport.dst_port());
+        let id = transport.identifier();
+
+        match transport {
+            Transport::Tcp(_) | Transport::Udp(_) => {
+                if let Some(target_src_port) = state.src_port {
                     transport
                         .try_set_source(
                             target_src_port.try_into().map_err(|_| {
@@ -264,64 +268,45 @@ impl StatefulNat {
                             })?,
                         )
                         .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                    debug!(
-                        "{nfi}: Source-NAT translated {old_src_ip}:{old_src_port:?} -> {target_src_ip}:{target_src_port:?}",
-                    );
                 }
-                Transport::Icmp4(_) | Transport::Icmp6(_) => {
-                    let old_identifier = transport.identifier();
-                    transport
-                        .try_set_identifier(target_src_port.as_u16())
-                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                    debug!(
-                        "{nfi}: Source-NAT translated {old_src_ip}:{old_identifier:?} -> {target_src_ip}:{target_src_port:?}",
-                    );
-                }
-            }
-        }
-
-        let net = packet.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
-        if let (Some(target_dst_ip), Some(target_dst_port)) = (target_dst_addr, target_dst_port) {
-            net.try_set_destination(target_dst_ip)
-                .map_err(|_| StatefulNatError::InvalidIpVersion)?;
-
-            let transport = packet
-                .try_transport_mut()
-                .ok_or(StatefulNatError::BadTransportHeader)?;
-            match transport {
-                Transport::Tcp(_) | Transport::Udp(_) => {
-                    let old_dst_port = transport.dst_port().map_or(0, NonZero::<u16>::get);
+                if let Some(target_dst_port) = state.dst_port {
+                    let new_dst_port = target_dst_port.as_u16();
                     transport
                         .try_set_destination(
-                            target_dst_port.try_into().map_err(|_| {
+                            new_dst_port.try_into().map_err(|_| {
                                 StatefulNatError::InvalidPort(target_dst_port.as_u16())
                             })?,
                         )
                         .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                    debug!(
-                        "{nfi}: Destination-NAT translated {old_dst_ip}:{old_dst_port:?} -> {target_dst_ip}:{target_dst_port:?}",
-                    );
-                }
-                Transport::Icmp4(_) | Transport::Icmp6(_) => {
-                    let old_identifier = transport.identifier();
-                    let new_identifier;
-                    // We may not need to set the identifier for ICMP Echo messages, as we may have
-                    // done it above using target_src_port. But if target_src_port is None, we need
-                    // to set it here using target_dst_port.
-                    if let Some(src_port) = target_src_port {
-                        new_identifier = src_port.as_u16();
-                    } else {
-                        // We haven't set the identifier yet.
-                        new_identifier = target_dst_port.as_u16();
-                        transport
-                            .try_set_identifier(new_identifier)
-                            .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                    }
-                    debug!(
-                        "{nfi}: Destination-NAT translated {old_dst_ip}:{old_identifier:?} -> {target_dst_ip}:{new_identifier:?}",
-                    );
                 }
             }
+            Transport::Icmp4(_) | Transport::Icmp6(_) => {
+                if let Some(old_identifier) = transport.identifier() {
+                    //FIXME(Quentin): set identifier independently of ports
+                    let new_identifier = if let Some(target_src_port) = state.src_port {
+                        target_src_port.as_u16()
+                    } else if let Some(target_dst_port) = state.dst_port {
+                        target_dst_port.as_u16()
+                    } else {
+                        old_identifier
+                    };
+                    transport
+                        .try_set_identifier(new_identifier)
+                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                }
+            }
+        }
+
+        if id.is_some() {
+            let new_id = transport.identifier();
+            debug!(
+                "{nfi}: translated src={src_ip} dst={dst_ip} id:{id:?} -> src={new_src_ip} dst={new_dst_ip} id:{new_id:?}"
+            );
+        } else {
+            let (new_src_port, new_dst_port) = (transport.src_port(), transport.dst_port());
+            debug!(
+                "{nfi}: translated src={src_ip}:{src_port:?} dst={dst_ip}:{dst_port:?} -> src={new_src_ip}:{new_src_port:?} dst={new_dst_ip}:{new_dst_port:?}"
+            );
         }
         Ok(())
     }
