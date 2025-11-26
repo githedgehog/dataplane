@@ -574,12 +574,18 @@ impl StatefulNat {
             debug!("{}: Found session, translating packet", self.name());
             return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
         }
+
+        let Some(allocator) = self.allocator.get() else {
+            // No allocator set - We refuse to process this packet further, as we can't allocate a
+            // new session or check if the packet is exempt.
+            return Err(StatefulNatError::NoAllocator);
+        };
+
+        // build flow key
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
 
-        if let Some(allocator) = self.allocator.get()
-            && I::is_exempt(allocator, &flow_key).map_err(StatefulNatError::AllocationFailure)?
-        {
+        if I::is_exempt(allocator.clone(), &flow_key).map_err(StatefulNatError::AllocationFailure)? {
             // Packet is allowed to go through without NAT, leave it unchanged
             debug!("{}: Packet exempt from NAT", self.name());
             return Ok(false);
@@ -588,14 +594,8 @@ impl StatefulNat {
         match self.deal_with_icmp_error_msg::<Buf, I>(packet, &flow_key) {
             Err(e) => return Err(e),     // Something wrong happened
             Ok(true) => return Ok(true), // ICMP Error message, and we completed translation
-            Ok(false) => {}              // Not a translated ICMP Error message, just keeps going
+            Ok(false) => {}              // Not a translated ICMP Error message, just keep going
         }
-
-        let Some(allocator) = self.allocator.get() else {
-            // No allocator set - We refuse to process this packet further, as we can't allocate a
-            // new session.
-            return Err(StatefulNatError::NoAllocator);
-        };
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         let alloc =
