@@ -150,7 +150,7 @@ impl StatefulNat {
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
         flow_info.reset_expiry(state.idle_timeout).ok()?;
-        let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
+        let translation_data = Self::get_translation_data(&state.src_alloc, &state.dst_alloc);
         Some(translation_data)
     }
 
@@ -177,7 +177,7 @@ impl StatefulNat {
         let flow_info = self.sessions.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
-        let translation_data = Self::get_translation_info(&state.src_alloc, &state.dst_alloc);
+        let translation_data = Self::get_translation_data(&state.src_alloc, &state.dst_alloc);
         Some((translation_data, state.idle_timeout))
     }
 
@@ -312,7 +312,7 @@ impl StatefulNat {
     }
 
     #[allow(clippy::ref_option)]
-    fn get_translation_info<I: NatIpWithBitmap>(
+    fn get_translation_data<I: NatIpWithBitmap>(
         src_alloc: &Option<AllocatedIpPort<I>>,
         dst_alloc: &Option<AllocatedIpPort<I>>,
     ) -> NatTranslationData {
@@ -481,7 +481,7 @@ impl StatefulNat {
         );
 
         // Swap back source and destination for the inner packet
-        let translation_data = Self::get_translation_info(&state.dst_alloc, &state.src_alloc);
+        let translation_data = Self::get_translation_data(&state.dst_alloc, &state.src_alloc);
         Some(translation_data)
     }
 
@@ -585,7 +585,9 @@ impl StatefulNat {
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
 
-        if I::is_exempt(allocator.clone(), &flow_key).map_err(StatefulNatError::AllocationFailure)? {
+        if I::is_exempt(allocator.clone(), &flow_key)
+            .map_err(StatefulNatError::AllocationFailure)?
+        {
             // Packet is allowed to go through without NAT, leave it unchanged
             debug!("{}: Packet exempt from NAT", self.name());
             return Ok(false);
@@ -610,7 +612,7 @@ impl StatefulNat {
         // least one timeout set.
         let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
 
-        let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
+        let translation_data = Self::get_translation_data(&alloc.src, &alloc.dst);
         let mut reverse_flow_key =
             Self::new_reverse_session(&flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
@@ -628,7 +630,7 @@ impl StatefulNat {
             idle_timeout,
         );
 
-        Self::stateful_translate::<Buf>(self.name(), packet, &translation_info).and(Ok(true))
+        Self::stateful_translate::<Buf>(self.name(), packet, &translation_data).and(Ok(true))
     }
 
     fn nat_packet<Buf: PacketBufferMut>(
