@@ -200,18 +200,18 @@ mod tests {
 
         let mut nat_table = NatTables::new();
 
-        let mut vni_table1 = PerVniTable::new(vni1);
+        let mut vni_table1 = PerVniTable::new();
         vni_table1
             .add_peering(&peering1, vni2)
             .expect("Failed to build NAT tables");
 
-        let mut vni_table2 = PerVniTable::new(vni2);
+        let mut vni_table2 = PerVniTable::new();
         vni_table2
             .add_peering(&peering2, vni1)
             .expect("Failed to build NAT tables");
 
-        nat_table.add_table(vni_table1);
-        nat_table.add_table(vni_table2);
+        nat_table.add_table(vni_table1, vni1);
+        nat_table.add_table(vni_table2, vni2);
 
         nat_table
     }

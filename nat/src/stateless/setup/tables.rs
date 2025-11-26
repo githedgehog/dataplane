@@ -31,8 +31,8 @@ impl NatTables {
     }
 
     /// Adds a new table for the given `Vni`
-    pub fn add_table(&mut self, table: PerVniTable) {
-        self.0.insert(table.vni.into(), table);
+    pub fn add_table(&mut self, table: PerVniTable, vni: Vni) {
+        self.0.insert(vni.into(), table);
     }
 
     /// Provide a reference to a `PerVniTable` for the given `Vni` if it exists
@@ -52,7 +52,6 @@ impl Default for NatTables {
 /// given source VNI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerVniTable {
-    pub vni: Vni,
     pub dst_nat: NatRuleTable,
     pub src_nat: HashMap<Vni, NatRuleTable>,
 }
@@ -60,9 +59,9 @@ pub struct PerVniTable {
 impl PerVniTable {
     /// Creates a new empty [`PerVniTable`]
     #[must_use]
-    pub fn new(vni: Vni) -> Self {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
         Self {
-            vni,
             dst_nat: NatRuleTable::new(),
             src_nat: HashMap::new(),
         }
