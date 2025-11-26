@@ -585,7 +585,6 @@ impl StatefulNat {
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
         &self,
         packet: &mut Packet<Buf>,
-        flow_key: &FlowKey,
         src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
@@ -595,15 +594,17 @@ impl StatefulNat {
             return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
         }
 
+        let flow_key = Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
+
         if let Some(allocator) = self.allocator.get()
-            && I::is_exempt(allocator, flow_key).map_err(StatefulNatError::AllocationFailure)?
+            && I::is_exempt(allocator, &flow_key).map_err(StatefulNatError::AllocationFailure)?
         {
             // Packet is allowed to go through without NAT, leave it unchanged
             debug!("{}: Packet exempt from NAT", self.name());
             return Ok(false);
         }
 
-        match self.deal_with_icmp_error_msg::<Buf, I>(packet, flow_key) {
+        match self.deal_with_icmp_error_msg::<Buf, I>(packet, &flow_key) {
             Err(e) => return Err(e),     // Something wrong happened
             Ok(true) => return Ok(true), // ICMP Error message, and we completed translation
             Ok(false) => {}              // Not a translated ICMP Error message, just keeps going
@@ -617,7 +618,7 @@ impl StatefulNat {
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         let alloc =
-            I::allocate(allocator, flow_key).map_err(StatefulNatError::AllocationFailure)?;
+            I::allocate(allocator, &flow_key).map_err(StatefulNatError::AllocationFailure)?;
         // If we didn't find source NAT translation information, we should deny the creation of a
         // new session: we don't allow packets "from the outside" to create new sessions.
         debug_assert!(alloc.src.is_some());
@@ -630,10 +631,10 @@ impl StatefulNat {
 
         let translation_info = Self::get_translation_info(&alloc.src, &alloc.dst);
         let mut reverse_flow_key =
-            Self::new_reverse_session(flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
+            Self::new_reverse_session(&flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
 
-        self.create_session(flow_key, forward_state, idle_timeout);
+        self.create_session(&flow_key, forward_state, idle_timeout);
         self.create_session(&reverse_flow_key, reverse_state.clone(), idle_timeout);
         // Remove destination VPC information from the flow key, and add a third entry so we can
         // look up for this flow even if we don't know the destination VPC discriminant for the
@@ -661,15 +662,9 @@ impl StatefulNat {
             error!("{nfi}: Failed to get IP headers!");
             return Err(StatefulNatError::BadIpHeader);
         };
-
-        let flow_key = Self::extract_flow_key(packet).ok_or(StatefulNatError::TupleParseError)?;
         match net {
-            Net::Ipv4(_) => {
-                self.translate_packet::<Buf, Ipv4Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
-            }
-            Net::Ipv6(_) => {
-                self.translate_packet::<Buf, Ipv6Addr>(packet, &flow_key, src_vpc_id, dst_vpc_id)
-            }
+            Net::Ipv4(_) => self.translate_packet::<Buf, Ipv4Addr>(packet, src_vpc_id, dst_vpc_id),
+            Net::Ipv6(_) => self.translate_packet::<Buf, Ipv6Addr>(packet, src_vpc_id, dst_vpc_id),
         }
     }
 
