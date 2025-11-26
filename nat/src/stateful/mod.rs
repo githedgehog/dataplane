@@ -181,6 +181,10 @@ impl StatefulNat {
         Some((translation_data, state.idle_timeout))
     }
 
+    fn session_timeout_time(timeout: Duration) -> Instant {
+        Instant::now() + timeout
+    }
+
     fn create_session_with_dst_vpcd<I: NatIpWithBitmap>(
         &self,
         flow_key: &FlowKey,
@@ -188,10 +192,6 @@ impl StatefulNat {
         state: NatFlowState<I>,
         idle_timeout: Duration,
     ) {
-        fn session_timeout_time(timeout: Duration) -> Instant {
-            Instant::now() + timeout
-        }
-
         debug!(
             "{}: Creating new flow session entry: {} -> {}",
             self.name(),
@@ -199,16 +199,18 @@ impl StatefulNat {
             state
         );
 
-        let flow_info = FlowInfo::new(session_timeout_time(idle_timeout));
-        let mut write_guard = flow_info.locked.write().unwrap();
-        // Write NAT state
-        write_guard.nat_state = Some(Box::new(state));
-        // Write destination VPC information, so that pipeline can look it up from the flow table
-        // when it's not possibly to uniquely determine the destination VPC from source VPC and
-        // packet's destination address.
-        write_guard.dst_vpc_info = Some(Box::new(dst_vpcd));
-        drop(write_guard);
-
+        let flow_info = FlowInfo::new(Self::session_timeout_time(idle_timeout));
+        if let Ok(mut write_guard) = flow_info.locked.write() {
+            // Write NAT state
+            write_guard.nat_state = Some(Box::new(state));
+            // Write destination VPC information, so that pipeline can look it up from the flow table
+            // when it's not possibly to uniquely determine the destination VPC from source VPC and
+            // packet's destination address.
+            write_guard.dst_vpc_info = Some(Box::new(dst_vpcd));
+        } else {
+            // flow info is just locally created
+            unreachable!()
+        }
         self.sessions.insert(*flow_key, flow_info);
     }
 
@@ -606,13 +608,14 @@ impl StatefulNat {
         // new session: we don't allow packets "from the outside" to create new sessions.
         debug_assert!(alloc.src.is_some());
 
-        debug!("{}: Allocated translation data: {}", self.name(), alloc);
+        debug!("{}: Allocated translation data: {alloc}", self.name());
 
         // Given that at least one of alloc.src or alloc.dst is set, we should always have at
         // least one timeout set.
         let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
 
         let translation_data = Self::get_translation_data(&alloc.src, &alloc.dst);
+
         let mut reverse_flow_key =
             Self::new_reverse_session(&flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
