@@ -172,7 +172,7 @@ cargo *args:
     fi
 
     export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} ${RUSTFLAGS} --html-in-header $(pwd)/scripts/doc/custom-header.html"
-    ./compile-env/bin/cargo "${extra_args[@]}"
+    cargo "${extra_args[@]}"
 
 # Run the (very minimal) compile environment
 [script]

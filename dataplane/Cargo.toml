@@ -5,6 +5,10 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+# [lib]
+# crate-type = ["staticlib"]
+# path = "src/main.rs"
+
 [dependencies]
 afpacket = { workspace = true, features = ["async-tokio"] }
 args = { workspace = true }

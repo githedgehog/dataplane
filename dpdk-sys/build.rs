@@ -71,8 +71,8 @@ fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let sysroot = dpdk_sysroot_helper::get_sysroot();
 
-    println!("cargo:rustc-link-arg=--sysroot={sysroot}");
-    println!("cargo:rustc-link-search=all={sysroot}/lib");
+    // println!("cargo:rustc-link-arg=--sysroot={sysroot}");
+    println!("cargo:rustc-link-search=native={sysroot}/lib");
 
     // NOTE: DPDK absolutely requires whole-archive in the linking command.
     // While I find this very questionable, it is what it is.
