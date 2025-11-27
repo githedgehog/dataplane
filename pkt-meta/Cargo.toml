@@ -24,7 +24,7 @@ left-right = { workspace = true }
 linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
-priority-queue = { workspace = true }
+priority-queue = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 thread_local = { workspace = true }
 tracectl = { workspace = true }

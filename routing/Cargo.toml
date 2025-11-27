@@ -16,22 +16,22 @@ config = { workspace = true }
 dplane-rpc = { workspace = true }
 left-right-tlcache = { workspace = true }
 lpm = { workspace = true }
-net = { workspace = true }
+net = { workspace = true, features = ["test_buffer"] }
 tracectl = { workspace = true }
 
 # external
 ahash = { workspace = true }
 bitflags = { workspace = true }
-bytes = { workspace = true, features = ["serde"] }
-chrono = { workspace = true, features = ["clock"] }
-derive_builder = { workspace = true, features = ["default", "std"] }
+bytes = { workspace = true }
+chrono = { workspace = true }
+derive_builder = { workspace = true }
 ipnet = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
-mio = { workspace = true, features = ["os-ext", "net"] }
-serde = { workspace = true, features = ["derive"] }
+mio = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 
 # arp resolver
@@ -42,6 +42,6 @@ netdev = { workspace = true }
 bolero = { workspace = true, default-features = false }
 concurrency = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
-rand = { workspace = true, default-features = false, features = ["thread_rng"] }
-tracing-test = { workspace = true, features = [] }
+rand = { workspace = true }
+tracing-test = { workspace = true }
 

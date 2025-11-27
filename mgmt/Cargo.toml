@@ -38,20 +38,20 @@ vpcmap = { workspace = true }
 async-trait = { workspace = true }
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 bytes = { workspace = true }
-caps = { workspace = true, default-features = false, features = [] }
+caps = { workspace = true }
 chrono = { workspace = true }
-derive_builder = { workspace = true, default-features = false, features = ["default"] }
-futures = { workspace = true, features = ["default"] }
+derive_builder = { workspace = true }
+futures = { workspace = true }
 linkme = { workspace = true }
-multi_index_map = { workspace = true, features = ["serde"] }
+multi_index_map = { workspace = true}
 netdev = { workspace = true }
-rtnetlink = { workspace = true, features = ["default", "tokio"] }
-serde = { workspace = true, features = ["rc", "derive"] }
+rtnetlink = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
-tracing = { workspace = true, features = ["attributes"] }
+tracing = { workspace = true }
 tracing-test = { workspace = true }
 
 [dev-dependencies]
