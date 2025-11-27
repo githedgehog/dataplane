@@ -147,14 +147,32 @@ impl NatTableValue {
         Self { ranges: Vec::new() }
     }
 
+    /// Adds a new range to the structure.
+    ///
+    /// Note: When possible, the new range is merged with the latest range in the list; so there is
+    /// no guarantee, when calling this method, that the new range is added as a separate range, and
+    /// that `self.ranges.len()` will be incremented.
     pub fn add_range(&mut self, range: TrieRange) {
-        self.ranges.push(range);
+        if self.ranges.is_empty() {
+            self.push(range);
+            return;
+        }
+
+        let last_range = self.ranges.last_mut().unwrap_or_else(|| {
+            // We checked ranges vector is not empty
+            unreachable!()
+        });
+        last_range.merge(&range).unwrap_or_else(|| self.push(range));
     }
 
     #[cfg(test)]
     #[must_use]
     pub fn ranges(&self) -> &Vec<TrieRange> {
         &self.ranges
+    }
+
+    fn push(&mut self, range: TrieRange) {
+        self.ranges.push(range);
     }
 
     /// Returns the total number of IP addresses covered by the ranges in this value.
@@ -245,5 +263,41 @@ impl TrieRange {
                 start.to_bits().saturating_add(offset),
             ))),
         }
+    }
+
+    // Merges the current IP address range with the next range, if possible.
+    //
+    // Merging is possible if both ranges are of the same IP version and the next range starts right
+    // after the current range ends.
+    //
+    // # Returns
+    //
+    // Returns `Some(())` if the ranges were merged, or `None` otherwise.
+    fn merge(&mut self, next: &TrieRange) -> Option<()> {
+        // Always merge on the "right side". This is because we call this method when processing
+        // ranges obtained from prefixes in a BTreeSet, so they are ordered, and we process the
+        // smaller ones first; if we try to merge a new one into an existing one, it's a "bigger"
+        // one, so we merge on the right side.
+        if self.start > next.start || self.end >= next.start {
+            return None;
+        }
+        match (self.end, next.start) {
+            (IpAddr::V4(self_end), IpAddr::V4(next_start)) => {
+                // No overflow because we checked self.end < other.start
+                if self_end.to_bits() + 1 == next_start.to_bits() {
+                    self.end = next.end;
+                    return Some(());
+                }
+            }
+            (IpAddr::V6(self_end), IpAddr::V6(next_start)) => {
+                // No overflow because we checked self.end < other.start
+                if self_end.to_bits() + 1 == next_start.to_bits() {
+                    self.end = next.end;
+                    return Some(());
+                }
+            }
+            _ => return None,
+        }
+        None
     }
 }
