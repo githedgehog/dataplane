@@ -2,8 +2,10 @@
 // Copyright Open Network Fabric Authors
 
 use ahash::RandomState;
+use lpm::prefix::{IpPrefix, Prefix, PrefixSize};
+use lpm::trie::IpPrefixTrie;
 use net::vxlan::Vni;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::debug;
@@ -20,7 +22,7 @@ pub enum NatTablesError {
 /// An object containing the rules for the NAT pipeline stage, not in terms of states for the
 /// different connections established, but instead holding the base rules for stateful or static
 /// NAT.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct NatTables(HashMap<u32, PerVniTable, RandomState>);
 
 impl NatTables {
@@ -50,7 +52,7 @@ impl Default for NatTables {
 
 /// A table containing all rules for both source and destination static NAT, for packets with a
 /// given source VNI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PerVniTable {
     pub dst_nat: NatRuleTable,
     pub src_nat: HashMap<Vni, NatRuleTable>,
@@ -70,151 +72,178 @@ impl PerVniTable {
     #[must_use]
     pub fn find_src_mapping(&self, addr: &IpAddr, dst_vni: Vni) -> Option<IpAddr> {
         debug!("Looking up source mapping for address: {addr}, dst_vni: {dst_vni}");
-        let ranges = self.src_nat.get(&dst_vni)?.lookup(addr)?;
-        Some(map_ip_nat(&ranges, addr))
+        let (prefix, ranges) = self.src_nat.get(&dst_vni)?.lookup(addr)?;
+        let offset = addr_offset_in_prefix(&prefix, addr)?;
+        debug!("Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}");
+        ranges.get_entry(offset)
     }
 
     #[must_use]
     pub fn find_dst_mapping(&self, addr: &IpAddr) -> Option<IpAddr> {
         debug!("Looking up destination mapping for address: {addr}");
-        let ranges = self.dst_nat.lookup(addr)?;
-        Some(map_ip_nat(&ranges, addr))
+        let (prefix, ranges) = self.dst_nat.lookup(addr)?;
+        let offset = addr_offset_in_prefix(&prefix, addr)?;
+        debug!("Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}");
+        ranges.get_entry(offset)
     }
 }
 
-fn map_ip_nat(ranges: &NatTableValue, addr: &IpAddr) -> IpAddr {
-    let offset = addr_offset_in_range(&ranges.orig_range_start, addr);
-    debug!(
-        "Mapping {addr} from range {}-{} to range starting at {}: found offset {offset}",
-        ranges.orig_range_start, ranges.orig_range_end, ranges.target_range_start
-    );
-    addr_from_offset(&ranges.target_range_start, offset)
-}
-
-fn addr_offset_in_range(range_start: &IpAddr, addr: &IpAddr) -> u128 {
-    match (range_start, addr) {
-        (IpAddr::V4(range_start), IpAddr::V4(addr)) => {
-            assert!(addr >= range_start);
-            u128::from(addr.to_bits() - range_start.to_bits())
-        }
-        (IpAddr::V6(range_start), IpAddr::V6(addr)) => {
-            assert!(addr >= range_start);
-            addr.to_bits() - range_start.to_bits()
-        }
-        _ => unreachable!(),
+fn addr_offset_in_prefix(prefix: &Prefix, addr: &IpAddr) -> Option<u128> {
+    if !prefix.covers_addr(addr) {
+        return None;
     }
-}
-
-fn addr_from_offset(range_start: &IpAddr, offset: u128) -> IpAddr {
-    match range_start {
-        IpAddr::V4(range_start) => {
-            let offset_v4 = u32::try_from(offset).unwrap_or_else(|_| unreachable!());
-            let bits = range_start.to_bits() + offset_v4;
-            IpAddr::V4(Ipv4Addr::from(bits))
-        }
-        IpAddr::V6(range_start) => {
-            let bits = range_start.to_bits() + offset;
-            IpAddr::V6(Ipv6Addr::from(bits))
-        }
+    match (prefix, addr) {
+        (Prefix::IPV4(p), IpAddr::V4(a)) => Some(u128::from(a.to_bits() - p.network().to_bits())),
+        (Prefix::IPV6(p), IpAddr::V6(a)) => Some(a.to_bits() - p.network().to_bits()),
+        _ => None,
     }
 }
 
 /// From a current address prefix, find the target address prefix.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct NatRuleTable {
-    pub rules_v4: BTreeMap<Ipv4Addr, (Ipv4Addr, Ipv4Addr)>,
-    pub rules_v6: BTreeMap<Ipv6Addr, (Ipv6Addr, Ipv6Addr)>,
-}
+#[derive(Debug, Default, Clone)]
+pub struct NatRuleTable(IpPrefixTrie<NatTableValue>);
 
 impl NatRuleTable {
     #[must_use]
     /// Creates a new empty [`NatRuleTable`]
     pub fn new() -> Self {
-        Self {
-            rules_v4: BTreeMap::new(),
-            rules_v6: BTreeMap::new(),
-        }
+        Self(IpPrefixTrie::new())
     }
 
     /// Inserts a new entry in the table
     ///
-    /// # Errors
+    /// # Returns
     ///
-    /// Returns an error if the IP version of the address does not match the IP version of the IP
-    /// addresses in the value.
-    pub fn insert(&mut self, value: &NatTableValue) -> Result<(), NatTablesError> {
-        match (
-            value.orig_range_start,
-            value.orig_range_end,
-            value.target_range_start,
-        ) {
-            (IpAddr::V4(start), IpAddr::V4(end), IpAddr::V4(target)) => {
-                if self.rules_v4.insert(start, (end, target)).is_some() {
-                    return Err(NatTablesError::EntryExists);
-                }
-            }
-            (IpAddr::V6(start), IpAddr::V6(end), IpAddr::V6(target)) => {
-                if self.rules_v6.insert(start, (end, target)).is_some() {
-                    return Err(NatTablesError::EntryExists);
-                }
-            }
-            _ => {
-                return Err(NatTablesError::BadIpVersion);
-            }
-        }
-        Ok(())
+    /// Returns the previous value associated with the prefix if it existed, or `None` otherwise.
+    pub fn insert(&mut self, prefix: Prefix, value: NatTableValue) -> Option<NatTableValue> {
+        self.0.insert(prefix, value)
     }
 
     /// Looks up for the value associated with the given address.
     ///
     /// # Returns
     ///
-    /// Returns the value associated with the given address if it is present in the table. If the
-    /// address is not present, it returns `None`.
+    /// Returns the value associated with the longest prefix match for the given address.
+    /// If the address does not match any prefix, it returns `None`.
     #[must_use]
-    pub fn lookup(&self, addr: &IpAddr) -> Option<NatTableValue> {
-        match addr {
-            IpAddr::V4(ip) => {
-                let value = self
-                    .rules_v4
-                    .range(..=ip)
-                    .next_back()
-                    .map(|v| NatTableValue {
-                        orig_range_start: IpAddr::V4(*v.0),
-                        orig_range_end: IpAddr::V4(v.1.0),
-                        target_range_start: IpAddr::V4(v.1.1),
-                    });
-                match value {
-                    Some(v) if v.orig_range_end < *ip => None,
-                    Some(v) => Some(v),
-                    None => None,
-                }
-            }
-            IpAddr::V6(ip) => {
-                let value = self
-                    .rules_v6
-                    .range(..=ip)
-                    .next_back()
-                    .map(|v| NatTableValue {
-                        orig_range_start: IpAddr::V6(*v.0),
-                        orig_range_end: IpAddr::V6(v.1.0),
-                        target_range_start: IpAddr::V6(v.1.1),
-                    });
-                match value {
-                    Some(v) if v.orig_range_end < *ip => None,
-                    Some(v) => Some(v),
-                    None => None,
-                }
-            }
-        }
+    pub fn lookup(&self, addr: &IpAddr) -> Option<(Prefix, &NatTableValue)> {
+        self.0.lookup(*addr)
     }
 }
 
-/// A value associated with a prefix in the table, and that encapsulates all information required to
-/// perform the address mapping for stateless NAT.
+/// This is the struct used as a value for the LPM trie lookup that we use to store the NAT ranges.
+/// For a given prefix used as a key in the trie, this struct associates a list of ranges to map to.
+/// The total number of IP addresses covered by the ranges is supposed to be equal to the addresses
+/// in the prefix, so that we can establish a one-to-one mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatTableValue {
-    pub orig_range_start: IpAddr,
-    pub orig_range_end: IpAddr,
-    pub target_range_start: IpAddr,
+    ranges: Vec<TrieRange>,
+}
+
+impl NatTableValue {
+    #[must_use]
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self { ranges: Vec::new() }
+    }
+
+    pub fn add_range(&mut self, range: TrieRange) {
+        self.ranges.push(range);
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn ranges(&self) -> &Vec<TrieRange> {
+        &self.ranges
+    }
+
+    /// Returns the total number of IP addresses covered by the ranges in this value.
+    pub fn ip_len(&self) -> PrefixSize {
+        let sum = self.ranges.iter().map(TrieRange::ip_len).sum();
+        debug_assert!(sum < PrefixSize::Overflow);
+        sum
+    }
+
+    /// Returns the IP address at the given offset in the ranges in this value.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(addr)` if the offset is valid within the total number of elements covered by
+    /// the ranges, or `None` otherwise.
+    fn get_entry(&self, entry_offset: u128) -> Option<IpAddr> {
+        if entry_offset >= self.ip_len() {
+            return None;
+        }
+
+        let mut offset = PrefixSize::U128(entry_offset);
+        for range in &self.ranges {
+            if offset < range.ip_len() {
+                // We never grow offset, it cannot overflow a u128
+                return range.get_entry(offset.try_into().unwrap_or_else(|_| unreachable!()));
+            }
+            offset -= range.ip_len();
+        }
+        None
+    }
+}
+
+// Represents an IP address range, with a start and an end address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrieRange {
+    start: IpAddr,
+    end: IpAddr,
+}
+
+impl TrieRange {
+    #[must_use]
+    pub fn new(start: IpAddr, end: IpAddr) -> Self {
+        debug_assert!(start <= end, "start: {start}, end: {end}");
+        debug_assert!(
+            start.is_ipv4() == end.is_ipv4(),
+            "start: {start}, end: {end}"
+        );
+        Self { start, end }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn contains(&self, addr: &IpAddr) -> bool {
+        self.start <= *addr && *addr <= self.end
+    }
+
+    // Returns the number of IP addresses covered by the range.
+    fn ip_len(&self) -> PrefixSize {
+        match (self.start, self.end) {
+            (IpAddr::V4(start), IpAddr::V4(end)) => {
+                PrefixSize::U128(u128::from(end.to_bits().saturating_sub(start.to_bits())) + 1)
+            }
+            (IpAddr::V6(start), IpAddr::V6(end))
+                if start.to_bits() == 0 && end.to_bits() == u128::MAX =>
+            {
+                PrefixSize::Ipv6MaxAddrs
+            }
+            (IpAddr::V6(start), IpAddr::V6(end)) => {
+                PrefixSize::U128(end.to_bits().saturating_sub(start.to_bits()) + 1)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn get_entry(&self, offset: u128) -> Option<IpAddr> {
+        // This check also ensures that offset <= u32::MAX in the case of IPv4
+        if offset >= self.ip_len() {
+            return None;
+        }
+
+        match self.start {
+            IpAddr::V4(start) => {
+                Some(IpAddr::V4(Ipv4Addr::from(start.to_bits().saturating_add(
+                    u32::try_from(offset).unwrap_or_else(|_| unreachable!()),
+                ))))
+            }
+            IpAddr::V6(start) => Some(IpAddr::V6(Ipv6Addr::from(
+                start.to_bits().saturating_add(offset),
+            ))),
+        }
+    }
 }
