@@ -346,10 +346,7 @@ mod tests {
         assert_eq!(prefix, "2.0.0.0/16".into());
         assert_eq!(
             *value.ranges(),
-            vec![
-                TrieRange::new(addr_v4("11.0.1.0"), addr_v4("11.0.255.255")),
-                TrieRange::new(addr_v4("11.1.0.0"), addr_v4("11.1.0.255"))
-            ],
+            vec![TrieRange::new(addr_v4("11.0.1.0"), addr_v4("11.1.0.255")),],
         );
 
         let (prefix, value) = nat_ranges
@@ -359,10 +356,7 @@ mod tests {
         assert_eq!(prefix, "2.1.0.0/16".into());
         assert_eq!(
             *value.ranges(),
-            vec![
-                TrieRange::new(addr_v4("11.1.1.0"), addr_v4("11.1.255.255")),
-                TrieRange::new(addr_v4("11.2.0.0"), addr_v4("11.2.0.255"))
-            ],
+            vec![TrieRange::new(addr_v4("11.1.1.0"), addr_v4("11.2.0.255"))],
         );
 
         let (prefix, value) = nat_ranges
@@ -372,10 +366,7 @@ mod tests {
         assert_eq!(prefix, "2.2.0.0/16".into());
         assert_eq!(
             *value.ranges(),
-            vec![
-                TrieRange::new(addr_v4("11.2.1.0"), addr_v4("11.2.255.255")),
-                TrieRange::new(addr_v4("11.3.0.0"), addr_v4("11.3.0.255"))
-            ],
+            vec![TrieRange::new(addr_v4("11.2.1.0"), addr_v4("11.3.0.255"))],
         );
 
         let (prefix, value) = nat_ranges
@@ -385,10 +376,7 @@ mod tests {
         assert_eq!(prefix, "2.3.0.0/16".into());
         assert_eq!(
             *value.ranges(),
-            vec![
-                TrieRange::new(addr_v4("11.3.1.0"), addr_v4("11.3.255.255")),
-                TrieRange::new(addr_v4("11.4.0.0"), addr_v4("11.4.0.255"))
-            ],
+            vec![TrieRange::new(addr_v4("11.3.1.0"), addr_v4("11.4.0.255"))],
         );
     }
 }
