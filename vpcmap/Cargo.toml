@@ -11,7 +11,7 @@ bolero = ["dep:bolero", "net/bolero"]
 
 
 [dependencies]
-ahash = { workspace = true, features = ["no-rng"] }
+ahash = { workspace = true }
 bolero = { workspace = true, optional = true }
 left-right = { workspace = true }
 net = { workspace = true }

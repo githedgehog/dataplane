@@ -9,7 +9,7 @@ license = "Apache-2.0"
 default = []
 netdevsim = []
 
-bolero = ["dep:bolero", "id/bolero"]
+bolero = ["dep:bolero", "id/bolero", "test_buffer"]
 test_buffer = []
 
 [dependencies]
@@ -19,7 +19,7 @@ bitflags = { workspace = true }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
 bytecheck = { workspace = true }
 concurrency = { workspace = true }
-derive_builder = { workspace = true, features = ["alloc"] }
+derive_builder = { workspace = true }
 etherparse = { workspace = true, features = ["std"] }
 flow-info = { workspace = true }
 id = { workspace = true }
