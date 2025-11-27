@@ -21,30 +21,30 @@ use std::collections::BTreeSet;
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum NatPeeringError {
-    #[error("entry already exists")]
-    EntryExists,
+    #[error("entry {0} already exists")]
+    EntryExists(Prefix),
     #[error("failed to split prefix {0}")]
     SplitPrefixError(Prefix),
     #[error("malformed peering")]
     MalformedPeering,
 }
 
-fn generate_nat_values<'a>(
+pub(crate) fn generate_nat_values<'a>(
     prefixes_to_update: &'a BTreeSet<Prefix>,
     prefixes_to_point_to: &'a BTreeSet<Prefix>,
-) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
+) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
     range_builder::RangeBuilder::<'a>::new(prefixes_to_update, prefixes_to_point_to)
 }
 
 fn generate_public_values(
     expose: &VpcExpose,
-) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
+) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
     generate_nat_values(&expose.ips, expose.as_range_or_empty())
 }
 
 fn generate_private_values(
     expose: &VpcExpose,
-) -> impl Iterator<Item = Result<NatTableValue, NatPeeringError>> {
+) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
     generate_nat_values(expose.as_range_or_empty(), &expose.ips)
 }
 
@@ -76,10 +76,12 @@ impl PerVniTable {
                 let peering_table = self.src_nat.entry(dst_vni).or_default();
 
                 // For each private prefix, add an entry containing the set of public prefixes
-                generate_public_values(expose).try_for_each(|value| {
-                    peering_table
-                        .insert(&value?)
-                        .map_err(|_| NatPeeringError::EntryExists)
+                generate_public_values(expose).try_for_each(|res| {
+                    let (prefix, value) = res?;
+                    if peering_table.insert(prefix, value).is_some() {
+                        return Err(NatPeeringError::EntryExists(prefix));
+                    }
+                    Ok(())
                 })
             })?;
 
@@ -89,10 +91,12 @@ impl PerVniTable {
             .stateless_nat_exposes()
             .try_for_each(|expose| {
                 // For each public prefix, add an entry containing the set of private prefixes
-                generate_private_values(expose).try_for_each(|value| {
-                    self.dst_nat
-                        .insert(&value?)
-                        .map_err(|_| NatPeeringError::EntryExists)
+                generate_private_values(expose).try_for_each(|res| {
+                    let (prefix, value) = res?;
+                    if self.dst_nat.insert(prefix, value).is_some() {
+                        return Err(NatPeeringError::EntryExists(prefix));
+                    }
+                    Ok(())
                 })
             })?;
 
