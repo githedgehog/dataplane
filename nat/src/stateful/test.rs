@@ -1437,7 +1437,7 @@ mod tests {
         assert_eq!(output_src_32, addr_v4(target_src_32));
         assert_eq!(output_dst_32, addr_v4(orig_dst_32));
         assert!(
-            output_src_port_32.is_multiple_of(256) || output_src_port_32 == 1,
+            output_src_port_32 % 256 == 1 || output_src_port_32 != 1 && output_src_port_32 == 2,
             "{output_src_port_32}"
         );
         assert_eq!(output_dst_port_32, orig_dst_port_32);
@@ -1462,31 +1462,12 @@ mod tests {
             output_src_port,
         );
 
-        // We created a conflict in the session table: two identical sessions that differ only from
-        // their destination VPC discriminant, but the entries for destination VPC lookup have this
-        // field set to None (because we ignore it at the lookup time). So we can't find the
-        // destination VPC discriminant anymore.
-        //
-        // Without collisions, we'd expect the following:
-        //
-        //    assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
-        //    assert_eq!(return_output_src, addr_v4(orig_dst));
-        //    assert_eq!(return_output_dst, addr_v4(orig_src));
-        //    assert_eq!(return_output_src_port, orig_dst_port);
-        //    assert_eq!(return_output_dst_port, orig_src_port);
-        //    assert_eq!(return_done_reason, Some(DoneReason::Unroutable));
-        //
-        // See https://github.com/githedgehog/dataplane/issues/1083
-
-        // Why `None` and not `VpcDiscriminant::VNI(vni(300))`, from the newer session table entry?
-        // The value does not get correctly overwritten in the session table,
-        // see https://github.com/githedgehog/dataplane/issues/1085
-        assert_eq!(return_vpcd, None);
-        assert_eq!(return_output_src, addr_v4(orig_dst)); // not NATed
-        assert_eq!(return_output_dst, addr_v4(target_src)); // not NATed
-        assert_eq!(return_output_src_port, output_dst_port); // not NATed
-        assert_eq!(return_output_dst_port, output_src_port); // not NATed
-        assert_eq!(return_done_reason, Some(DoneReason::Unroutable));
+        assert_eq!(return_vpcd, Some(VpcDiscriminant::VNI(vni(100))));
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(orig_src));
+        assert_eq!(return_output_src_port, orig_dst_port);
+        assert_eq!(return_output_dst_port, orig_src_port);
+        assert_eq!(return_done_reason, None);
     }
 
     fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
