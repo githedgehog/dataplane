@@ -59,10 +59,10 @@ impl NatDefaultAllocator {
 
         // Update tables for source NAT
         self.build_exempt_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
-        self.build_src_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
+        self.build_src_nat_pool_for_expose(&new_peering, dst_vpc_id)?;
 
         // Update table for destination NAT
-        self.build_dst_nat_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
+        self.build_dst_nat_pool_for_expose(&new_peering, dst_vpc_id)?;
 
         Ok(())
     }
@@ -93,12 +93,10 @@ impl NatDefaultAllocator {
     fn build_src_nat_pool_for_expose(
         &mut self,
         peering: &Peering,
-        src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
         build_nat_pool_generic(
             &peering.local,
-            src_vpc_id,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_44,
             VpcExpose::as_range_or_empty,
@@ -109,7 +107,6 @@ impl NatDefaultAllocator {
 
         build_nat_pool_generic(
             &peering.local,
-            src_vpc_id,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_66,
             VpcExpose::as_range_or_empty,
@@ -122,12 +119,10 @@ impl NatDefaultAllocator {
     fn build_dst_nat_pool_for_expose(
         &mut self,
         peering: &Peering,
-        src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
         build_nat_pool_generic(
             &peering.remote,
-            src_vpc_id,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_44,
             |expose| &expose.ips,
@@ -138,7 +133,6 @@ impl NatDefaultAllocator {
 
         build_nat_pool_generic(
             &peering.remote,
-            src_vpc_id,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_66,
             |expose| &expose.ips,
@@ -152,7 +146,6 @@ impl NatDefaultAllocator {
 #[allow(clippy::too_many_arguments)]
 fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G, H>(
     manifest: &'a VpcManifest,
-    src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
     // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
     exposes_filter: F,
@@ -181,7 +174,6 @@ where
         add_pool_entries(
             table,
             target_prefixes_from_expose(expose),
-            src_vpc_id,
             dst_vpc_id,
             &tcp_ip_allocator,
             &udp_ip_allocator,
@@ -195,7 +187,6 @@ where
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
     prefixes: &BTreeSet<Prefix>,
-    src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
@@ -203,7 +194,7 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     icmp_proto: NextHeader,
 ) -> Result<(), AllocatorError> {
     for prefix in prefixes {
-        let key = pool_table_tcp_key_for_expose(prefix, src_vpc_id, dst_vpc_id)?;
+        let key = pool_table_tcp_key_for_expose(prefix, dst_vpc_id)?;
         insert_per_proto_entries(
             table,
             key,
@@ -274,13 +265,11 @@ fn create_natpool<J: NatIpWithBitmap>(
 
 fn pool_table_tcp_key_for_expose<I: NatIp>(
     prefix: &Prefix,
-    src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
 ) -> Result<PoolTableKey<I>, AllocatorError> {
     let (addr, addr_range_end) = prefix_bounds(prefix)?;
     Ok(PoolTableKey::new(
         NextHeader::TCP,
-        src_vpc_id,
         dst_vpc_id,
         addr,
         addr_range_end,
