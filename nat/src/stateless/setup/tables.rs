@@ -31,8 +31,8 @@ impl NatTables {
     }
 
     /// Adds a new table for the given `Vni`
-    pub fn add_table(&mut self, table: PerVniTable) {
-        self.0.insert(table.vni.into(), table);
+    pub fn add_table(&mut self, table: PerVniTable, vni: Vni) {
+        self.0.insert(vni.into(), table);
     }
 
     /// Provide a reference to a `PerVniTable` for the given `Vni` if it exists
@@ -52,7 +52,6 @@ impl Default for NatTables {
 /// given source VNI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerVniTable {
-    pub vni: Vni,
     pub dst_nat: NatRuleTable,
     pub src_nat: HashMap<Vni, NatRuleTable>,
 }
@@ -60,48 +59,63 @@ pub struct PerVniTable {
 impl PerVniTable {
     /// Creates a new empty [`PerVniTable`]
     #[must_use]
-    pub fn new(vni: Vni) -> Self {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
         Self {
-            vni,
             dst_nat: NatRuleTable::new(),
             src_nat: HashMap::new(),
         }
     }
 
-    /// Search for the NAT ranges information for source NAT associated to the given address.
-    ///
-    /// # Returns
-    ///
-    /// Returns the NAT ranges information associated with the given address if it is present in the
-    /// table. If the address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_src_prefixes(&self, addr: &IpAddr, dst_vni: Vni) -> Option<NatTableValue> {
-        debug!("Looking up src prefixes for address: {addr}, dst_vni: {dst_vni}...");
-        self.src_nat.get(&dst_vni)?.lookup(addr)
+    pub fn find_src_mapping(&self, addr: &IpAddr, dst_vni: Vni) -> Option<IpAddr> {
+        debug!("Looking up source mapping for address: {addr}, dst_vni: {dst_vni}");
+        let ranges = self.src_nat.get(&dst_vni)?.lookup(addr)?;
+        Some(map_ip_nat(&ranges, addr))
     }
 
-    /// Search for the NAT ranges information for destination NAT associated to the given address.
-    ///
-    /// # Returns
-    ///
-    /// Returns the NAT ranges information associated with the given address if it is present in the
-    /// table. If the address is not present, it returns `None`.
     #[must_use]
-    pub fn lookup_dst_prefixes(&self, addr: &IpAddr) -> Option<NatTableValue> {
-        debug!("Looking up dst prefixes for address: {addr}...");
-        self.dst_nat.lookup(addr)
+    pub fn find_dst_mapping(&self, addr: &IpAddr) -> Option<IpAddr> {
+        debug!("Looking up destination mapping for address: {addr}");
+        let ranges = self.dst_nat.lookup(addr)?;
+        Some(map_ip_nat(&ranges, addr))
     }
+}
 
-    /// Calls `lookup_src_prefixes` and `lookup_dst_prefixes` for the given pair of src/dst addresses.
-    pub(crate) fn find_nat_ranges(
-        &self,
-        src: IpAddr,
-        dst: IpAddr,
-        dst_vni: Vni,
-    ) -> (Option<NatTableValue>, Option<NatTableValue>) {
-        let src_nat_ranges = self.lookup_src_prefixes(&src, dst_vni);
-        let dst_nat_ranges = self.lookup_dst_prefixes(&dst);
-        (src_nat_ranges, dst_nat_ranges)
+fn map_ip_nat(ranges: &NatTableValue, addr: &IpAddr) -> IpAddr {
+    let offset = addr_offset_in_range(&ranges.orig_range_start, addr);
+    debug!(
+        "Mapping {addr} from range {}-{} to range starting at {}: found offset {offset}",
+        ranges.orig_range_start, ranges.orig_range_end, ranges.target_range_start
+    );
+    addr_from_offset(&ranges.target_range_start, offset)
+}
+
+fn addr_offset_in_range(range_start: &IpAddr, addr: &IpAddr) -> u128 {
+    match (range_start, addr) {
+        (IpAddr::V4(range_start), IpAddr::V4(addr)) => {
+            assert!(addr >= range_start);
+            u128::from(addr.to_bits() - range_start.to_bits())
+        }
+        (IpAddr::V6(range_start), IpAddr::V6(addr)) => {
+            assert!(addr >= range_start);
+            addr.to_bits() - range_start.to_bits()
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn addr_from_offset(range_start: &IpAddr, offset: u128) -> IpAddr {
+    match range_start {
+        IpAddr::V4(range_start) => {
+            let offset_v4 = u32::try_from(offset).unwrap_or_else(|_| unreachable!());
+            let bits = range_start.to_bits() + offset_v4;
+            IpAddr::V4(Ipv4Addr::from(bits))
+        }
+        IpAddr::V6(range_start) => {
+            let bits = range_start.to_bits() + offset;
+            IpAddr::V6(Ipv6Addr::from(bits))
+        }
     }
 }
 

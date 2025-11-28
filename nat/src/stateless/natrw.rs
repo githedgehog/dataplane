@@ -3,13 +3,11 @@
 
 //! Stateless NAT left-right configuration wrapper
 
-#![allow(unused)]
-
 use left_right::new_from_empty;
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use tracing::debug;
 
-use crate::stateless::setup::tables::{NatTableValue, NatTables};
+use crate::stateless::setup::tables::NatTables;
 
 enum NatTablesChange {
     UpdateNatTables(NatTables),
@@ -55,7 +53,7 @@ impl NatTablesWriter {
     #[must_use]
     #[allow(clippy::new_without_default)]
     pub fn new() -> NatTablesWriter {
-        let (w, r) = new_from_empty::<NatTables, NatTablesChange>(NatTables::new());
+        let (w, _) = new_from_empty::<NatTables, NatTablesChange>(NatTables::new());
         NatTablesWriter(w)
     }
     #[must_use]

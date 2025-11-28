@@ -14,16 +14,13 @@ use crate::icmp_error_msg::{
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryHeadersMut, TryInnerIp, TryIpMut};
-use net::ipv4::UnicastIpv4Addr;
-use net::ipv6::UnicastIpv6Addr;
+use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use setup::tables::{NatTableValue, NatTables, PerVniTable};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use thiserror::Error;
-
-#[allow(unused)]
 use tracing::{debug, error, warn};
 
 use tracectl::trace_target;
@@ -38,62 +35,10 @@ enum StatelessNatError {
     #[error("Invalid address {0}")]
     // this should not happen if the nat tables contained sanitized data
     InvalidAddress(IpAddr),
-    #[error("Failed to map IP address: {0}")]
-    MappingError(IpAddr),
-    #[error("Failed to map IP address offset: {0}")]
-    MappingOffsetError(u128),
     #[error("Can't find NAT tables for VNI {0}")]
     MissingTable(Vni),
     #[error("Failed to translate ICMP inner packet: {0}")]
     IcmpErrorMsg(IcmpErrorMsgError),
-}
-
-fn addr_offset_in_range(range_start: &IpAddr, addr: &IpAddr) -> Result<u128, StatelessNatError> {
-    match (range_start, addr) {
-        (IpAddr::V4(range_start), IpAddr::V4(addr)) => {
-            let addr_bits = addr.to_bits();
-            if addr_bits < range_start.to_bits() {
-                return Err(StatelessNatError::MappingError(IpAddr::V4(*addr)));
-            }
-            Ok(u128::from(addr_bits - range_start.to_bits()))
-        }
-        (IpAddr::V6(range_start), IpAddr::V6(addr)) => {
-            let addr_bits = addr.to_bits();
-            if addr_bits < range_start.to_bits() {
-                return Err(StatelessNatError::MappingError(IpAddr::V6(*addr)));
-            }
-            Ok(addr_bits - range_start.to_bits())
-        }
-        _ => Err(StatelessNatError::MappingError(*addr)),
-    }
-}
-
-fn addr_from_offset(range_start: &IpAddr, offset: u128) -> Result<IpAddr, StatelessNatError> {
-    match range_start {
-        IpAddr::V4(range_start) => {
-            let bits = range_start.to_bits()
-                + u32::try_from(offset)
-                    .map_err(|_| StatelessNatError::MappingOffsetError(offset))?;
-            Ok(IpAddr::V4(Ipv4Addr::from(bits)))
-        }
-        IpAddr::V6(range_start) => {
-            let bits = range_start.to_bits() + offset;
-            Ok(IpAddr::V6(Ipv6Addr::from(bits)))
-        }
-    }
-}
-
-fn map_ip_nat(
-    stage_name: &str,
-    ranges: &NatTableValue,
-    current_ip: &IpAddr,
-) -> Result<IpAddr, StatelessNatError> {
-    let offset = addr_offset_in_range(&ranges.orig_range_start, current_ip)?;
-    debug!(
-        "{stage_name}: Mapping {current_ip} from range {}-{} to range {}: found offset {offset}",
-        ranges.orig_range_start, ranges.orig_range_end, ranges.target_range_start
-    );
-    addr_from_offset(&ranges.target_range_start, offset)
 }
 
 /// A NAT processor, implementing the [`NetworkFunction`] trait. [`StatelessNat`] processes packets
@@ -104,7 +49,6 @@ pub struct StatelessNat {
     tablesr: NatTablesReader,
 }
 
-#[allow(clippy::new_without_default)]
 impl StatelessNat {
     /// Creates a new [`StatelessNat`] processor, providing a writer to its internal `NatTables`.
     #[must_use]
@@ -135,76 +79,23 @@ impl StatelessNat {
         &self.name
     }
 
-    /// Translate packet source ip address.
-    /// # Errors
-    /// Returns `NatError::UnsupportedTranslation` if the translation is unsupported. On success, returns `Ok` indicating
-    /// if the address did actually change or not, since the NAT module may map it to the same address.
-    fn translate_src(
-        &self,
-        net: &mut Net,
-        ranges_src_nat: &NatTableValue,
-    ) -> Result<bool, StatelessNatError> {
+    fn translate_src(&self, net: &mut Net, target_src: IpAddr) -> Result<(), StatelessNatError> {
+        let new_src = UnicastIpAddr::try_from(target_src)
+            .map_err(|_| StatelessNatError::InvalidAddress(target_src))?;
         let nfi = self.name();
-        let current_src = net.src_addr();
-        let target_src = map_ip_nat(nfi, ranges_src_nat, &current_src)
-            .map_err(|_| StatelessNatError::MappingError(current_src))?;
-        if target_src == current_src {
-            return Ok(false);
-        }
-        match (net, target_src) {
-            (Net::Ipv4(hdr), IpAddr::V4(src)) => {
-                debug!("{nfi}: Changing ipv4 src: {current_src} -> {src}");
-                hdr.set_source(
-                    UnicastIpv4Addr::new(src)
-                        .map_err(|_| StatelessNatError::InvalidAddress(target_src))?,
-                );
-                Ok(true)
-            }
-            (Net::Ipv6(hdr), IpAddr::V6(src)) => {
-                debug!("{nfi}: Changing ipv6 src: {current_src} -> {src}");
-                hdr.set_source(
-                    UnicastIpv6Addr::new(src)
-                        .map_err(|_| StatelessNatError::InvalidAddress(target_src))?,
-                );
-                Ok(true)
-            }
-            _ => Err(StatelessNatError::UnsupportedTranslation),
-        }
+        debug!("{nfi}: Changing IP src: {} -> {new_src}", net.src_addr());
+        net.try_set_source(new_src)
+            .map_err(|_| StatelessNatError::UnsupportedTranslation)
     }
 
-    /// Translate packet destination ip address.
-    /// # Errors
-    /// Returns `NatError::UnsupportedTranslation` if the translation is unsupported. On success, returns `Ok` indicating
-    /// if the address did actually change or not, since the NAT module may map it to the same address.
-    fn translate_dst(
-        &self,
-        net: &mut Net,
-        ranges_dst_nat: &NatTableValue,
-    ) -> Result<bool, StatelessNatError> {
+    fn translate_dst(&self, net: &mut Net, target_dst: IpAddr) -> Result<(), StatelessNatError> {
         let nfi = self.name();
-        let current_dst = net.dst_addr();
-        let target_dst = map_ip_nat(nfi, ranges_dst_nat, &current_dst)
-            .map_err(|_| StatelessNatError::MappingError(current_dst))?;
-        if target_dst == current_dst {
-            return Ok(false);
-        }
-        match (net, target_dst) {
-            (Net::Ipv4(hdr), IpAddr::V4(dst)) => {
-                debug!("{nfi}: Changing ipv4 dst: {current_dst} -> {dst}");
-                hdr.set_destination(dst);
-                Ok(true)
-            }
-            (Net::Ipv6(hdr), IpAddr::V6(dst)) => {
-                debug!("{nfi}: Changing ipv6 dst: {current_dst} -> {dst}");
-                hdr.set_destination(dst);
-                Ok(true)
-            }
-            _ => Err(StatelessNatError::UnsupportedTranslation),
-        }
+        debug!("{nfi}: Changing IP dst: {} -> {target_dst}", net.dst_addr());
+        net.try_set_destination(target_dst)
+            .map_err(|_| StatelessNatError::UnsupportedTranslation)
     }
 
     fn find_translation_icmp_inner<Buf: PacketBufferMut>(
-        &self,
         table: &PerVniTable,
         packet: &Packet<Buf>,
         dst_vni: Vni,
@@ -213,11 +104,8 @@ impl StatelessNat {
         // Note how we swap addresses to find NAT ranges: we're sending the inner packet back
         // without swapping source and destination in the header, so we need to swap the ranges we
         // get from the tables lookup.
-        let (dst_ranges, src_ranges) =
-            table.find_nat_ranges(net.dst_addr(), net.src_addr(), dst_vni);
-
-        let src_addr = src_ranges.and_then(|r| map_ip_nat(self.name(), &r, &net.src_addr()).ok());
-        let dst_addr = dst_ranges.and_then(|r| map_ip_nat(self.name(), &r, &net.dst_addr()).ok());
+        let src_addr = table.find_dst_mapping(&net.src_addr());
+        let dst_addr = table.find_src_mapping(&net.dst_addr(), dst_vni);
         Some(NatTranslationData {
             src_addr,
             dst_addr,
@@ -226,7 +114,6 @@ impl StatelessNat {
     }
 
     fn translate_icmp_inner_packet_if_any<Buf: PacketBufferMut>(
-        &self,
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
         dst_vni: Vni,
@@ -237,7 +124,7 @@ impl StatelessNat {
             Ok(true) => {} // Translation needed, carry on
         }
 
-        let Some(state) = self.find_translation_icmp_inner(table, packet, dst_vni) else {
+        let Some(state) = Self::find_translation_icmp_inner(table, packet, dst_vni) else {
             return Err(StatelessNatError::UnsupportedTranslation);
         };
         stateful_translate_icmp_inner::<Buf>(packet, &state)
@@ -269,17 +156,20 @@ impl StatelessNat {
             return Err(StatelessNatError::MissingTable(src_vni));
         };
 
-        let (src_ranges, dst_ranges) =
-            table.find_nat_ranges(net.src_addr(), net.dst_addr(), dst_vni);
-
-        // will set to true if packet is modified
         let mut modified = false;
-        if let Some(ranges_src) = src_ranges {
-            modified |= self.translate_src(net, &ranges_src)?;
-        }
 
-        if let Some(ranges_dst) = dst_ranges {
-            modified |= self.translate_dst(net, &ranges_dst)?;
+        // Run NAT
+        if let Some(new_src) = table.find_src_mapping(&net.src_addr(), dst_vni)
+            && new_src != net.src_addr()
+        {
+            self.translate_src(net, new_src)?;
+            modified = true;
+        }
+        if let Some(new_dst) = table.find_dst_mapping(&net.dst_addr())
+            && new_dst != net.dst_addr()
+        {
+            self.translate_dst(net, new_dst)?;
+            modified = true;
         }
 
         // If we modified the outer header of the packet, check whether this is an ICMP Error
@@ -287,14 +177,13 @@ impl StatelessNat {
         if !modified {
             return Ok(false);
         }
-        self.translate_icmp_inner_packet_if_any(table, packet, dst_vni)?;
+        Self::translate_icmp_inner_packet_if_any(table, packet, dst_vni)?;
 
         Ok(modified)
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`StatelessNat::process`] to iterate over packets.
-    #[allow(clippy::unused_self)]
     fn process_packet<Buf: PacketBufferMut>(
         &self,
         nat_tables: &NatTables,
@@ -347,8 +236,6 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
         StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::InvalidPort(_)) => DoneReason::Malformed,
 
         StatelessNatError::InvalidAddress(_)
-        | StatelessNatError::MappingError(_)
-        | StatelessNatError::MappingOffsetError(_)
         | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::NotUnicast(_)) => {
             DoneReason::NatFailure
         }
