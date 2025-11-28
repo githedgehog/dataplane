@@ -91,23 +91,15 @@ mod test_alloc;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PoolTableKey<I: NatIp> {
     protocol: NextHeader,
-    src_id: VpcDiscriminant,
     dst_id: VpcDiscriminant,
     addr: I,
     addr_range_end: I,
 }
 
 impl<I: NatIp> PoolTableKey<I> {
-    fn new(
-        protocol: NextHeader,
-        src_id: VpcDiscriminant,
-        dst_id: VpcDiscriminant,
-        addr: I,
-        addr_range_end: I,
-    ) -> Self {
+    fn new(protocol: NextHeader, dst_id: VpcDiscriminant, addr: I, addr_range_end: I) -> Self {
         Self {
             protocol,
-            src_id,
             dst_id,
             addr,
             addr_range_end,
@@ -136,7 +128,6 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
         match self.0.range(..=key).next_back() {
             Some((k, v))
                 if k.addr_range_end >= key.addr
-                    && k.src_id == key.src_id
                     && k.dst_id == key.dst_id
                     && k.protocol == key.protocol =>
             {
@@ -149,11 +140,10 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
     fn get_entry(
         &self,
         protocol: NextHeader,
-        src_id: VpcDiscriminant,
         dst_id: VpcDiscriminant,
         addr: I,
     ) -> Option<&alloc::IpAllocator<J>> {
-        let key = PoolTableKey::new(protocol, src_id, dst_id, addr, max_range::<I>());
+        let key = PoolTableKey::new(protocol, dst_id, addr, max_range::<I>());
         self.get(&key)
     }
 
@@ -325,7 +315,6 @@ impl NatDefaultAllocator {
         // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
             next_header,
-            src_vpc_id,
             dst_vpc_id,
             NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
                 AllocatorError::InternalIssue(
@@ -345,7 +334,6 @@ impl NatDefaultAllocator {
         // Get address pools for destination
         let pool_dst_opt = pools_dst.get_entry(
             next_header,
-            src_vpc_id,
             dst_vpc_id,
             NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
                 AllocatorError::InternalIssue(
@@ -363,13 +351,13 @@ impl NatDefaultAllocator {
         // path for the flow. First retrieve the relevant address pools.
 
         let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
-            pools_src.get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
+            pools_src.get_entry(next_header, src_vpc_id, mapping.ip())
         } else {
             None
         };
 
         let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
-            pools_dst.get_entry(next_header, dst_vpc_id, src_vpc_id, mapping.ip())
+            pools_dst.get_entry(next_header, src_vpc_id, mapping.ip())
         } else {
             None
         };
@@ -561,17 +549,11 @@ mod tests {
     fn vpcd(vpc_id: u32) -> VpcDiscriminant {
         VpcDiscriminant::VNI(Vni::new_checked(vpc_id).unwrap())
     }
-    fn vpcd1() -> VpcDiscriminant {
-        vpcd(1)
-    }
     fn vpcd2() -> VpcDiscriminant {
         vpcd(2)
     }
     fn vpcd3() -> VpcDiscriminant {
         vpcd(3)
-    }
-    fn vpcd4() -> VpcDiscriminant {
-        vpcd(4)
     }
 
     // Ensure that keys are sorted first by L4 protocol type, then by VPC IDs, and then by IP
@@ -582,14 +564,12 @@ mod tests {
     fn test_key_order() {
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
@@ -598,14 +578,12 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
@@ -614,14 +592,12 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 2),
             Ipv4Addr::new(255, 255, 255, 255),
@@ -630,130 +606,28 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(2, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
         let key2 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 255, 255, 255),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         assert!(key1 > key2);
 
-        // Mixing IDs
-
-        let key1 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd2(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(1, 1, 1, 1),
-        );
-        let key2 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(255, 255, 255, 255),
-        );
-        assert!(key1 > key2);
-
-        let key1 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(255, 255, 255, 255),
-        );
-        let key2 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd2(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 2),
-            Ipv4Addr::new(1, 1, 1, 1),
-        );
-        assert!(key1 < key2);
-
-        let key1 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd2(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(255, 255, 255, 255),
-        );
-        let key2 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd3(),
-            Ipv4Addr::new(2, 2, 2, 2),
-            Ipv4Addr::new(1, 1, 1, 1),
-        );
-        assert!(key1 > key2);
-
-        let key1 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd2(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(255, 255, 255, 255),
-        );
-        let key2 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd3(),
-            Ipv4Addr::new(255, 255, 255, 255),
-            Ipv4Addr::new(1, 1, 1, 1),
-        );
-        assert!(key1 > key2);
-
-        let key1 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd2(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(1, 1, 1, 1),
-        );
-        let key2 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd4(),
-            Ipv4Addr::new(255, 255, 255, 255),
-            Ipv4Addr::new(255, 255, 255, 255),
-        );
-        assert!(key1 > key2);
-
-        let key1 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd3(),
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(255, 255, 255, 255),
-        );
-        let key2 = PoolTableKey::new(
-            NextHeader::TCP,
-            vpcd1(),
-            vpcd4(),
-            Ipv4Addr::new(255, 255, 255, 255),
-            Ipv4Addr::new(1, 1, 1, 1),
-        );
-        assert!(key1 < key2);
-
         // Mixing protocols
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::UDP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(255, 255, 255, 255),
@@ -762,14 +636,12 @@ mod tests {
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,
-            vpcd2(),
             vpcd3(),
             Ipv4Addr::new(2, 2, 2, 2),
             Ipv4Addr::new(255, 255, 255, 255),
         );
         let key2 = PoolTableKey::new(
             NextHeader::UDP,
-            vpcd1(),
             vpcd2(),
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
