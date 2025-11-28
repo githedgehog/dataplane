@@ -573,8 +573,6 @@ mod bolero_tests {
 
     struct IpSpace {
         root: Box<PrefixNode>,
-        #[allow(unused)]
-        is_ipv4: bool,
     }
 
     // A binary tree that represents the space of IP addresses available for a given IP version.
@@ -596,7 +594,6 @@ mod bolero_tests {
                     child_left: None,
                     child_right: None,
                 }),
-                is_ipv4,
             }
         }
 
