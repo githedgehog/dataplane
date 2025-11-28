@@ -53,15 +53,14 @@ impl StatelessNat {
     /// Creates a new [`StatelessNat`] processor, providing a writer to its internal `NatTables`.
     #[must_use]
     pub fn new(name: &str) -> (Self, NatTablesWriter) {
-        #![allow(clippy::similar_names)]
-        let tablesw = NatTablesWriter::new();
-        let tablesr = tablesw.get_reader();
+        let writer = NatTablesWriter::new();
+        let reader = writer.get_reader();
         (
             Self {
                 name: name.to_string(),
-                tablesr,
+                tablesr: reader,
             },
-            tablesw,
+            writer,
         )
     }
     /// Creates a new [`StatelessNat`] processor as `new()`, but uses the provided `NatTablesReader`.

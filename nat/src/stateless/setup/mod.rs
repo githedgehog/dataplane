@@ -5,7 +5,6 @@
 
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
-#![allow(clippy::missing_errors_doc)]
 
 pub mod range_builder;
 pub mod tables;
@@ -105,6 +104,10 @@ impl PerVniTable {
 }
 
 /// Main function to build the NAT configuration (`NatTables`) for a given `VpcTable`.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::FailureApply`] if the configuration for some NAT peering cannot be built.
 pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
     for vpc in vpc_table.values() {
