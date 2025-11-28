@@ -82,14 +82,12 @@ mod context {
 
     pub fn get_ip_allocator_v4(
         pool: &mut PoolTable<Ipv4Addr, Ipv4Addr>,
-        src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         protocol: NextHeader,
         src_ip: Ipv4Addr,
     ) -> &IpAllocator<Ipv4Addr> {
         pool.get(&PoolTableKey::new(
             protocol,
-            src_vpcd,
             dst_vpcd,
             src_ip,
             Ipv4Addr::from_str("255.255.255.255").unwrap(),
@@ -202,8 +200,7 @@ mod std_tests {
                 .pools_src44
                 .0
                 .keys()
-                .all(|k| (k.src_id == vpcd1() && k.dst_id == vpcd2())
-                    || (k.src_id == vpcd2() && k.dst_id == vpcd1()))
+                .all(|k| k.dst_id == vpcd2() || k.dst_id == vpcd1())
         );
         // One entry for each ".ip()" from the VPCExpose objects,
         // after exclusion ranges have been applied
@@ -231,8 +228,7 @@ mod std_tests {
                 .pools_dst44
                 .0
                 .keys()
-                .all(|k| (k.src_id == vpcd1() && k.dst_id == vpcd2())
-                    || (k.src_id == vpcd2() && k.dst_id == vpcd1()))
+                .all(|k| k.dst_id == vpcd2() || k.dst_id == vpcd1())
         );
         // One entry for each ".as_range()" from the VPCExpose objects,
         // after exclusion ranges have been applied
@@ -262,7 +258,6 @@ mod std_tests {
             .pools_src44
             .get(&PoolTableKey::new(
                 NextHeader::TCP,
-                vpcd1(),
                 vpcd2(),
                 addr_v4("1.1.0.0"),
                 addr_v4("255.255.255.255"),
@@ -278,7 +273,6 @@ mod std_tests {
             .pools_dst44
             .get(&PoolTableKey::new(
                 NextHeader::TCP,
-                vpcd1(),
                 vpcd2(),
                 addr_v4("10.3.0.0"),
                 addr_v4("255.255.255.255"),
@@ -307,7 +301,6 @@ mod std_tests {
         let mut allocator = build_allocator().unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -345,7 +338,6 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -359,7 +351,6 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -391,7 +382,6 @@ mod std_tests {
         let mut allocator = build_allocator().unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -402,7 +392,6 @@ mod std_tests {
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
@@ -418,7 +407,6 @@ mod std_tests {
         // Check number of allocated IPs for TCP after we have allocated for TCP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -430,7 +418,6 @@ mod std_tests {
         // Check number of allocated IPs for UDP after we have allocated for TCP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
@@ -446,7 +433,6 @@ mod std_tests {
         // Check number of allocated IPs for TCP after we have allocated for UDP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::TCP,
             addr_v4("1.1.0.0"),
@@ -458,7 +444,6 @@ mod std_tests {
         // Check number of allocated IPs for UDP after we have allocated for UDP
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
-            vpcd1(),
             vpcd2(),
             NextHeader::UDP,
             addr_v4("1.1.0.0"),
@@ -632,7 +617,6 @@ mod tests_shuttle {
             let mut allocator_again = Arc::try_unwrap(allocator_arc).unwrap();
             let (bitmap, in_use) = get_ip_allocator_v4(
                 &mut allocator_again.pools_src44,
-                vpcd1(),
                 vpcd2(),
                 NextHeader::TCP,
                 addr_v4("1.1.0.0"),
