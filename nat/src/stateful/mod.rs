@@ -233,13 +233,16 @@ impl StatefulNat {
     fn stateful_translate<Buf: PacketBufferMut>(
         nfi: &String,
         packet: &mut Packet<Buf>,
-        state: &NatTranslationData,
+        translate: &NatTranslationData,
     ) -> Result<(), StatefulNatError> {
+        debug_assert!(translate.src_port.is_none() || translate.src_addr.is_some());
+        debug_assert!(translate.dst_port.is_none() || translate.dst_addr.is_some());
+
         // translate ip fields
         let net = packet.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
         let (src_ip, dst_ip) = (net.src_addr(), net.dst_addr());
 
-        if let Some(target_src_ip) = state.src_addr {
+        if let Some(target_src_ip) = translate.src_addr {
             net.try_set_source(
                 target_src_ip
                     .try_into()
@@ -247,7 +250,7 @@ impl StatefulNat {
             )
             .map_err(|_| StatefulNatError::InvalidIpVersion)?;
         }
-        if let Some(target_dst_ip) = state.dst_addr {
+        if let Some(target_dst_ip) = translate.dst_addr {
             net.try_set_destination(target_dst_ip)
                 .map_err(|_| StatefulNatError::InvalidIpVersion)?;
         }
@@ -262,7 +265,7 @@ impl StatefulNat {
 
         match transport {
             Transport::Tcp(_) | Transport::Udp(_) => {
-                if let Some(target_src_port) = state.src_port {
+                if let Some(target_src_port) = translate.src_port {
                     transport
                         .try_set_source(
                             target_src_port.try_into().map_err(|_| {
@@ -271,7 +274,7 @@ impl StatefulNat {
                         )
                         .map_err(|_| StatefulNatError::BadTransportHeader)?;
                 }
-                if let Some(target_dst_port) = state.dst_port {
+                if let Some(target_dst_port) = translate.dst_port {
                     let new_dst_port = target_dst_port.as_u16();
                     transport
                         .try_set_destination(
@@ -285,9 +288,9 @@ impl StatefulNat {
             Transport::Icmp4(_) | Transport::Icmp6(_) => {
                 if let Some(old_identifier) = transport.identifier() {
                     //FIXME(Quentin): set identifier independently of ports
-                    let new_identifier = if let Some(target_src_port) = state.src_port {
+                    let new_identifier = if let Some(target_src_port) = translate.src_port {
                         target_src_port.as_u16()
-                    } else if let Some(target_dst_port) = state.dst_port {
+                    } else if let Some(target_dst_port) = translate.dst_port {
                         target_dst_port.as_u16()
                     } else {
                         old_identifier
@@ -572,9 +575,9 @@ impl StatefulNat {
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
-        if let Some(state) = Self::lookup_session::<I, Buf>(packet) {
+        if let Some(translate) = Self::lookup_session::<I, Buf>(packet) {
             debug!("{}: Found session, translating packet", self.name());
-            return Self::stateful_translate(self.name(), packet, &state).and(Ok(true));
+            return Self::stateful_translate(self.name(), packet, &translate).and(Ok(true));
         }
 
         let Some(allocator) = self.allocator.get() else {
