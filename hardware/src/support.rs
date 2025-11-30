@@ -144,10 +144,11 @@ impl SupportedDevice {
         use SupportedDevice::*;
         match self {
             IntelE1000 => {
-                const DEVICES: [DeviceId; 1] = [
+                const DEVICES: [DeviceId; 2] = [
                     // TODO: this is somewhat confusing as this card seems to have many sub-models
                     // 82574L Gigabit Network Connection
                     DeviceId::new(0x10d3),
+                    DeviceId::new(0x100e),
                 ];
                 DEVICES.as_slice()
             }
