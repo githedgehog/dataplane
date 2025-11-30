@@ -50,6 +50,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
+    let stats_collector_cancel = params.cancelation_token.child_token();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
 
@@ -58,8 +59,11 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     // Build stats collector + writer, wiring the same store instance in
     // Also returns stats store handle for gRPC server access
-    let (stats, writer, vpc_stats_store) =
-        StatsCollector::new_with_store(vpcmapw.get_reader(), vpc_stats_store.clone());
+    let (stats, writer, vpc_stats_store) = StatsCollector::new_with_store(
+        vpcmapw.get_reader(),
+        vpc_stats_store.clone(),
+        stats_collector_cancel,
+    );
 
     let flow_table = Arc::new(FlowTable::default());
 
@@ -90,18 +94,25 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
+        // DynPipeline::new()
+        //     .add_stage(dumper1)
+        //     .add_stage(stage_ingress)
+        //     .add_stage(iprouter1)
+        //     .add_stage(dst_vpcd_lookup)
+        //     .add_stage(flow_lookup_nf)
+        //     .add_stage(stateless_nat)
+        //     .add_stage(stateful_nat)
+        //     .add_stage(iprouter2)
+        //     .add_stage(stage_egress)
+        //     .add_stage(dumper2)
+        //     .add_stage(pktio_worker)
+        //     .add_stage(flow_expirations_nf)
+        //     .add_stage(stats_stage)
         DynPipeline::new()
-            .add_stage(stage_ingress)
-            .add_stage(iprouter1)
-            .add_stage(dst_vpcd_lookup)
-            .add_stage(flow_lookup_nf)
-            .add_stage(stateless_nat)
-            .add_stage(stateful_nat)
-            .add_stage(iprouter2)
-            .add_stage(stage_egress)
-            .add_stage(flow_expirations_nf)
-            .add_stage(pktdump)
-            .add_stage(stats_stage)
+        .add_stage(dumper1)
+        // .add_stage(stage_egress)
+        .add_stage(pktio_worker)
+        .add_stage(dumper2)
     };
 
     Ok(InternalSetup {
