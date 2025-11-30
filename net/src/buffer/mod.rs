@@ -19,12 +19,19 @@ impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + Debug + 'static {}
 
 /// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
 pub trait PacketBufferMut:
-    PacketBuffer + AsMut<[u8]> + Prepend + Send + TrimFromStart + TrimFromEnd + Headroom + Tailroom
+    PacketBuffer + AsMut<[u8]> + Append + Prepend + Send + TrimFromStart + TrimFromEnd + Headroom + Tailroom
 {
 }
+
+#[allow(missing_docs)]
+pub trait Pool<B> {
+    fn allocate(&mut self) -> B;
+}
+
 impl<T> PacketBufferMut for T where
     T: PacketBuffer
         + AsMut<[u8]>
+        + Append
         + Prepend
         + Send
         + TrimFromStart
@@ -32,6 +39,34 @@ impl<T> PacketBufferMut for T where
         + Headroom
         + Tailroom
 {
+}
+
+/// Trait representing the ability to create buffer pools
+pub trait BufferPool: Send + Sync {
+    /// The type of the buffer provided by this type
+    type Buffer: PacketBufferMut;
+
+    /// Provide a packet buffer
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if a buffer could not be provided
+    fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError>;
+}
+
+/// Trait representing the ability to create a new [`BufferPool`]
+pub trait NewBufferPool: Sized {
+    /// Configuration required to create a buffer pool
+    type Config<'a>;
+    /// Errors which may occur when creating a buffer pool.
+    type Error: std::error::Error;
+    /// Create a buffer pool.
+    ///
+    /// # Errors
+    ///
+    /// Implementations are expected to return errors if a pool can not
+    /// be built to match the supplied configuration.
+    fn new_pool(args: Self::Config<'_>) -> Result<Self, Self::Error>;
 }
 
 /// Trait representing the ability to get the unused headroom in a packet buffer.
