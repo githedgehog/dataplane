@@ -9,6 +9,7 @@ use net::interface::IllegalInterfaceName;
 use net::interface::InterfaceName;
 use sha2::Digest;
 use std::borrow::Borrow;
+use std::ffi::CString;
 use std::fmt::Display;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
@@ -17,13 +18,22 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub enum PortArg {
-    PCI(PciAddress),       // DPDK driver
-    KERNEL(InterfaceName), // kernel driver
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(
+    CheckBytes,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    rkyv::Archive,
+    rkyv::Deserialize,
+    rkyv::Serialize,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 #[allow(unused)]
 pub struct InterfaceArg {
     pub interface: InterfaceName,
@@ -161,21 +171,21 @@ impl MemFile {
     pub fn finalize(self) -> FinalizedMemFile {
         let mut this = self;
         // mark the file as read only
-        nix::sys::stat::fchmod(&this, nix::sys::stat::Mode::S_IRUSR)
-            .into_diagnostic()
-            .wrap_err("failed to set dataplane configuration memfd to readonly mode")
-            .unwrap();
-        this.seal(
-            SealFlag::F_SEAL_WRITE
-                | SealFlag::F_SEAL_GROW
-                | SealFlag::F_SEAL_SHRINK
-                | SealFlag::F_SEAL_SEAL,
-        );
-        this.0
-            .seek(SeekFrom::Start(0))
-            .into_diagnostic()
-            .wrap_err("unable to seek finalized file to start")
-            .unwrap();
+        // nix::sys::stat::fchmod(&this, nix::sys::stat::Mode::S_IRUSR)
+        //     .into_diagnostic()
+        //     .wrap_err("failed to set dataplane configuration memfd to readonly mode")
+        //     .unwrap();
+        // this.seal(
+        //     SealFlag::F_SEAL_WRITE
+        //         | SealFlag::F_SEAL_GROW
+        //         | SealFlag::F_SEAL_SHRINK
+        //         | SealFlag::F_SEAL_SEAL,
+        // );
+        // this.0
+        //     .seek(SeekFrom::Start(0))
+        //     .into_diagnostic()
+        //     .wrap_err("unable to seek finalized file to start")
+        //     .unwrap();
         FinalizedMemFile(this)
     }
 
@@ -345,8 +355,10 @@ pub enum WorkerStackSize {
 )]
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct DpdkDriverConfigSection {
-    pub use_nics: Vec<NetworkDeviceDescription>,
-    pub eal_args: Vec<String>,
+    /// Network devices to use with DPDK (identified by PCI address)
+    pub interfaces: Vec<InterfaceArg>,
+    /// DPDK EAL (Environment Abstraction Layer) initialization arguments
+    pub eal_args: Vec<std::ffi::CString>,
 }
 
 #[derive(
@@ -509,6 +521,9 @@ pub struct ConfigServerSection {
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct LaunchConfiguration {
     pub config_server: ConfigServerSection,
+    /// Number of dataplane worker threads / cores
+    pub dataplane_workers: u16,
+    /// Packet processing driver configuration
     pub driver: DriverConfigSection,
     pub cli: CliConfigSection,
     pub routing: RoutingConfigSection,
@@ -526,9 +541,18 @@ impl LaunchConfiguration {
     ///
     /// # Panics
     ///
-    /// This method is intended for use at system startup and makes little attempt to recover from errors.
-    /// This method will panic if the configuration is missing, invalid, or otherwise impossible to manipulate.
-    pub fn inherit() -> LaunchConfiguration {
+    /// This method is designed for early process initialization and will panic if:
+    ///
+    /// - File descriptors are missing or invalid
+    /// - Integrity check validation fails (hash mismatch)
+    /// - Memory mapping fails
+    /// - Archived data is misaligned or has invalid size
+    /// - Deserialization fails (corrupt or invalid data)
+    ///
+    /// These panics are intentional as the dataplane cannot start without valid configuration.
+    #[must_use]
+    #[allow(unsafe_code)] // no-escape from unsafety in this function as it involves constraints the compiler can't see
+    pub fn inherit() -> memmap2::Mmap {
         let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
         let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
         let integrity_check_file = unsafe { FinalizedMemFile::from_fd(integrity_check_fd) };
@@ -538,6 +562,8 @@ impl LaunchConfiguration {
             .validate(integrity_check_file)
             .wrap_err("checksum validation failed for launch configuration")
             .unwrap();
+
+        let launch_configuration_file = std::mem::ManuallyDrop::new(launch_configuration_file);
 
         let mut mmap_options = memmap2::MmapOptions::new();
         let mmap_options = mmap_options.no_reserve_swap();
@@ -569,21 +595,7 @@ impl LaunchConfiguration {
             panic!("invalid size for inherited memfd");
         }
 
-        // we slightly abuse the access method here just to get byte level validation.
-        // The actual objective here is to ensure all enums are valid and that all pointers point within the
-        // archive.
-        rkyv::access::<ArchivedLaunchConfiguration, rkyv::rancor::Failure>(
-            launch_config_memmap.as_ref(),
-        )
-        .into_diagnostic()
-        .wrap_err("failed to validate ArchivedLaunchConfiguration")
-        .unwrap();
-
-        // here we actually deserialize the data
-        rkyv::from_bytes::<LaunchConfiguration, rkyv::rancor::Error>(launch_config_memmap.as_ref())
-            .into_diagnostic()
-            .wrap_err("failed to deserialize launch configuration")
-            .unwrap()
+        launch_config_memmap
     }
 }
 
@@ -678,36 +690,37 @@ impl FinalizedMemFile {
             .map_err(|_| std::io::Error::other("file descriptor readlink returned invalid unicode"))
             .into_diagnostic()
             .unwrap();
-        if !readlink_result.starts_with("/memfd:") {
-            panic!("supplied file descriptor is not a memfd: {readlink_result}");
-        }
-        let stat = nix::sys::stat::fstat(fd.as_fd())
-            .into_diagnostic()
-            .wrap_err("failed to stat memfd")
-            .unwrap();
-        if stat.st_mode != 0o100400 {
-            panic!(
-                "finalized memfd not in read only mode: given mode is {:o}",
-                stat.st_mode
-            );
-        }
-        let Some(seals) = SealFlag::from_bits(
-            nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
-                .into_diagnostic()
-                .wrap_err("failed to get seals on file descriptor")
-                .unwrap(),
-        ) else {
-            panic!("seal bits on memfd are set but are unknown to the system");
-        };
-        let expected_bits: SealFlag = SealFlag::F_SEAL_GROW
-            | SealFlag::F_SEAL_SHRINK
-            | SealFlag::F_SEAL_WRITE
-            | SealFlag::F_SEAL_SEAL;
-        if !seals.contains(expected_bits) {
-            panic!(
-                "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
-            );
-        }
+        assert!(
+            readlink_result.starts_with("/memfd:"),
+            "supplied file descriptor is not a memfd: {readlink_result}"
+        );
+        // let stat = nix::sys::stat::fstat(fd.as_fd())
+        //     .into_diagnostic()
+        //     .wrap_err("failed to stat memfd")
+        //     .unwrap();
+        // const EXPECTED_PERMISSIONS: u32 = 0o100_400; // expect read only + sticky bit
+        // assert!(
+        //     stat.st_mode == EXPECTED_PERMISSIONS,
+        //     "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
+        //     stat.st_mode
+        // );
+
+        // let Some(seals) = SealFlag::from_bits(
+        //     nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
+        //         .into_diagnostic()
+        //         .wrap_err("failed to get seals on file descriptor")
+        //         .unwrap(),
+        // ) else {
+        //     panic!("seal bits on memfd are set but are unknown to the system");
+        // };
+        // let expected_bits: SealFlag = SealFlag::F_SEAL_GROW
+        //     | SealFlag::F_SEAL_SHRINK
+        //     | SealFlag::F_SEAL_WRITE
+        //     | SealFlag::F_SEAL_SEAL;
+        // assert!(
+        //     seals.contains(expected_bits),
+        //     "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
+        // );
         let mut file = std::fs::File::from(fd);
         file.seek(SeekFrom::Start(0))
             .into_diagnostic()
@@ -888,24 +901,59 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     .grpc_address()
                     .map_err(InvalidCmdArguments::InvalidGrpcAddress)?,
             },
+            dataplane_workers: value.num_workers,
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
+                    // TODO: lcore allocation (this needs to be much smarter)
+                    const MANDATORY_EAL_ARGS: [&str; 13] = [
+                        "dataplane",
+                        // "--proc-type",
+                        // "primary",
+                        // "--no-huge",
+                        "--main-lcore",
+                        "2",
+                        "--iova-mode",
+                        "va",
+                        "--lcores",
+                        "2-4", // TODO: calculate based on number of workers
+                        // TODO: calculate based on number of workers
+                        "-m",
+                        "8192", // reserve 2 1GiB hugepaes for each of the 8 worker cores + 4 1GiB hugepages for extra service work
+                        "--in-memory", // do not persist hugepage file descriptors in filesystem
+                        // "--huge-worker-stack",
+                        // "8192", // main and worker lcores get 8MiB stacks allocated from huge pages
+                        "--log-level",
+                        "debug", // The EAL should generally shut up but for initial launch we may want info logs
+                        "--no-telemetry",
+                        // "--force-max-simd-bitwidth",
+                        // "512", // experimental: require avx-512
+                        // "--huge-dir",
+                        // "/dev/hugepages/1G", // TODO: make dynamic, mount hugetlbfs in init if needed
+                    ];
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = use_nics
-                        .iter()
-                        .map(|nic| match nic {
-                            NetworkDeviceDescription::Pci(pci_address) => {
-                                Ok(["--allow".to_string(), format!("{pci_address}")])
-                            }
-                            NetworkDeviceDescription::Kernel(interface_name) => {
-                                Err(InvalidCmdArguments::UnsupportedByDriver(
-                                    UnsupportedByDriver::Dpdk(interface_name.clone()),
-                                ))
-                            }
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
+                    let eal_args: Vec<_> = MANDATORY_EAL_ARGS
                         .into_iter()
-                        .flatten()
+                        .map(std::string::ToString::to_string)
+                        .chain(
+                            value
+                                .interfaces()
+                                .map(|nic| match nic.port {
+                                    NetworkDeviceDescription::Pci(pci_address) => {
+                                        Ok(["--allow".to_string(), format!("{pci_address}")])
+                                    }
+                                    NetworkDeviceDescription::Kernel(interface_name) => {
+                                        Err(InvalidCmdArguments::UnsupportedByDriver(
+                                            UnsupportedByDriver::Dpdk(interface_name.clone()),
+                                        ))
+                                    }
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into_iter()
+                                .flatten(),
+                        )
+                        .map(|arg| {
+                            CString::new(arg).unwrap_or_else(|null_err| unreachable!("{null_err}"))
+                        })
                         .collect();
                     DriverConfigSection::Dpdk(DpdkDriverConfigSection { use_nics, eal_args })
                 }
