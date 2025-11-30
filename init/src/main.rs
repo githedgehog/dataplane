@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 #![doc = include_str!("../README.md")]
-#![deny(clippy::pedantic, missing_docs)]
+#![deny(clippy::pedantic)]
 
-use hardware::nic::{BindToVfioPci, PciNic};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Display, os::unix::process::CommandExt};
 
 use args::{AsFinalizedMemFile, LaunchConfiguration, NetworkDeviceDescription, Parser};
 use command_fds::{CommandFdExt, FdMapping};

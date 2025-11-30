@@ -3,6 +3,8 @@
 
 //! Toy implementation of [`PacketBuffer`] which is useful for testing.
 
+#![cfg(any(doc, test, feature = "test_buffer"))]
+
 use std::convert::Infallible;
 
 #[cfg(any(test, feature = "bolero"))]

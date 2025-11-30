@@ -42,6 +42,7 @@ impl<T> PacketBufferMut for T where
 }
 
 /// Trait representing the ability to create buffer pools
+#[cfg(any(doc, test, feature = "test_buffer"))]
 pub trait BufferPool: Send + Sync {
     /// The type of the buffer provided by this type
     type Buffer: PacketBufferMut;
@@ -51,7 +52,7 @@ pub trait BufferPool: Send + Sync {
     /// # Errors
     ///
     /// Returns [`Self::Error`] if a buffer could not be provided
-    fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError>;
+    fn new_buffer(&self) -> Result<Self::Buffer, crate::buffer::test_buffer::BufferAllocationError>;
 }
 
 /// Trait representing the ability to create a new [`BufferPool`]

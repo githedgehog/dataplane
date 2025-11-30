@@ -13,7 +13,9 @@ serde = ["dep:serde"]
 
 dpdk-sys = { workspace = true }
 errno = { workspace = true }
-net = { workspace = true }
+hardware = { workspace = true }
+net = { workspace = true, features = ["test_buffer"] } # TODO: it is nonsense to depend on test_buffer here
+tracectl = { workspace = true }
 
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }

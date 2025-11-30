@@ -7,17 +7,24 @@ license = "Apache-2.0"
 
 [dependencies]
 # internal
+args = { workspace = true }
 hardware = { workspace = true, features = ["serde", "scan"] }
 id = { workspace = true }
 sysfs = { workspace = true }
 
 # external
+color-eyre = { workspace = true }
+command-fds = { workspace = true, features = [] }
+miette = { workspace = true }
 nix = { workspace = true, features = ["mount", "fs"] }
 procfs = { workspace = true, features = [] }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
+tracing-error = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
