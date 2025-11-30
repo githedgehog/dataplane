@@ -10,7 +10,7 @@ use crate::{dev, mem, socket};
 use errno::Errno;
 use std::ffi::c_int;
 use std::ptr::null_mut;
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 /// A DPDK receive queue index.
 ///
@@ -178,11 +178,11 @@ impl RxQueue {
     pub fn receive(&self) -> impl Iterator<Item = Mbuf> {
         let mut pkts: [*mut dpdk_sys::rte_mbuf; RxQueue::PKT_BURST_SIZE] =
             [null_mut(); RxQueue::PKT_BURST_SIZE];
-        trace!(
-            "Polling for packets from rx queue {queue} on dev {dev}",
-            queue = self.config.queue_index.as_u16(),
-            dev = self.dev.as_u16()
-        );
+        // trace!(
+        //     "Polling for packets from rx queue {queue} on dev {dev}",
+        //     queue = self.config.queue_index.as_u16(),
+        //     dev = self.dev.as_u16()
+        // );
         let nb_rx = unsafe {
             dpdk_sys::rte_eth_rx_burst(
                 self.dev.as_u16(),
@@ -191,11 +191,14 @@ impl RxQueue {
                 RxQueue::PKT_BURST_SIZE as u16,
             )
         };
-        trace!(
-            "Received {nb_rx} packets from rx queue {queue} on dev {dev}",
-            queue = self.config.queue_index.as_u16(),
-            dev = self.dev.as_u16()
-        );
+        if nb_rx > 0 {
+            info!(
+                "Received {nb_rx} packets from rx queue {queue} on dev {dev}",
+                queue = self.config.queue_index.as_u16(),
+                dev = self.dev.as_u16()
+            );
+        }
+
         // SAFETY: we should never get a null pointer for anything inside the advertised bounds
         // of the receive buffer
         (0..nb_rx).map(move |i| unsafe { Mbuf::new_from_raw_unchecked(pkts[i as usize]) })

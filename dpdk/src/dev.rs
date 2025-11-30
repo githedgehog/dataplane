@@ -5,10 +5,15 @@
 
 use alloc::format;
 use alloc::vec::Vec;
+use args::NetworkDeviceDescription;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
-use tracing::{debug, error, info};
+use dpdk_sys::rte_eth_hash_function::RTE_ETH_HASH_FUNCTION_DEFAULT;
+use hardware::pci::address::{InvalidPciAddress, PciAddress};
+use net::interface::{IllegalInterfaceName, InterfaceIndex, InterfaceName};
+use std::str;
+use tracing::{debug, error, info, trace};
 
 use crate::eal::Eal;
 use crate::queue;
@@ -20,7 +25,6 @@ use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
-use queue::{rx, tx};
 
 /// Defaults for the RX queue
 pub(crate) mod rx_queue_defaults {
@@ -88,55 +92,47 @@ impl DevIndex {
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
 
-        if ret != 0 {
-            return match ret {
-                errno::NEG_ENOTSUP => {
-                    error!(
-                        "Device information not supported for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::NotSupported)
-                }
-                errno::NEG_ENODEV => {
-                    error!(
-                        "Device information not available for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::NotAvailable)
-                }
-                errno::NEG_EINVAL => {
-                    error!(
-                        "Invalid argument when getting device info for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::InvalidArgument)
-                }
-                val => {
-                    let unknown = match StandardErrno::parse_i32(val) {
-                        Ok(standard) => {
-                            return Err(DevInfoError::UnknownStandard(standard));
-                        }
-                        Err(unknown) => unknown,
-                    };
-                    error!(
-                        "Unknown error when getting device info for port {index}: {val} (error code: {unknown:?})",
-                        index = self.0,
-                        val = val
-                    );
-                    Err(DevInfoError::Unknown(Errno(val)))
-                }
-            };
-            // error!(
-            //     "Failed to get device info for port {index}: {err}",
-            //     index = self.0
-            // );
-            // return Err(err);
-        }
-
-        Ok(DevInfo {
-            index: DevIndex(self.0),
-            inner: dev_info,
-        })
+        return match ret {
+            0 => Ok(DevInfo {
+                index: DevIndex(self.0),
+                inner: dev_info,
+            }),
+            errno::NEG_ENOTSUP => {
+                error!(
+                    "Device information not supported for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::NotSupported)
+            }
+            errno::NEG_ENODEV => {
+                error!(
+                    "Device information not available for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::NotAvailable)
+            }
+            errno::NEG_EINVAL => {
+                error!(
+                    "Invalid argument when getting device info for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::InvalidArgument)
+            }
+            val => {
+                let unknown = match StandardErrno::parse_i32(val) {
+                    Ok(standard) => {
+                        return Err(DevInfoError::UnknownStandard(standard));
+                    }
+                    Err(unknown) => unknown,
+                };
+                error!(
+                    "Unknown error when getting device info for port {index}: {val} (error code: {unknown:?})",
+                    index = self.0,
+                    val = val
+                );
+                Err(DevInfoError::Unknown(Errno(val)))
+            }
+        };
     }
 
     /// Get the [`SocketId`] of the device associated with this device index.
@@ -196,11 +192,11 @@ impl From<DevIndex> for u16 {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug)]
 /// TODO: add `rx_offloads` support
 pub struct DevConfig {
-    // /// Information about the device.
-    // pub info: DevInfo<'info>,
+    pub description: NetworkDeviceDescription,
+    pub tap: InterfaceIndex,
     /// The number of receive queues to be made available after device initialization.
     pub num_rx_queues: u16,
     /// The number of transmit queues to be made available after device initialization.
@@ -230,7 +226,7 @@ pub enum DevConfigError {
 
 impl DevConfig {
     /// Apply the configuration to the device.
-    pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
+    pub fn apply(self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
@@ -247,6 +243,7 @@ impl DevConfig {
             rxmode: rte_eth_rxmode {
                 mtu: rx_queue_defaults::RX_MTU,
                 mq_mode: RTE_ETH_MQ_RX_RSS,
+                // mq_mode: 0,
                 max_lro_pkt_size: rx_queue_defaults::MAX_LRO,
                 offloads: {
                     let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
@@ -255,6 +252,14 @@ impl DevConfig {
                 },
                 ..Default::default()
             },
+            // rx_adv_conf: rte_eth_conf__bindgen_ty_1 {
+            //     rss_conf: rte_eth_rss_conf {
+            //         rss_hf: dev.inner.flow_type_rss_offloads,
+            //         algorithm: RTE_ETH_HASH_FUNCTION_DEFAULT,
+            //         ..Default::default()
+            //     },
+            //     ..Default::default()
+            // },
             ..Default::default()
         };
 
@@ -282,10 +287,10 @@ impl DevConfig {
         }
         Ok(Dev {
             info: dev,
-            config: *self,
-            rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
-            tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
-            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            rx_queues: Vec::with_capacity(self.num_rx_queues.into()),
+            tx_queues: Vec::with_capacity(self.num_tx_queues.into()),
+            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues.into()),
+            config: self,
         })
     }
 }
@@ -599,8 +604,6 @@ impl Iterator for DevIterator {
     fn next(&mut self) -> Option<DevInfo> {
         let cursor = self.cursor;
 
-        debug!("Checking port {cursor}");
-
         let port_id =
             unsafe { rte_eth_find_next_owned_by(cursor.as_u16(), u64::from(RTE_ETH_DEV_NO_OWNER)) };
 
@@ -608,6 +611,7 @@ impl Iterator for DevIterator {
         if port_id >= u64::from(RTE_MAX_ETHPORTS) {
             return None;
         }
+        trace!("checking port {cursor}");
 
         // For whatever reason, DPDK can't decide if port_id is `u16` or `u64`.
         self.cursor = DevIndex(port_id as u16 + 1);
@@ -687,6 +691,14 @@ impl Manager {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidNetworkDeviceName {
+    #[error("network device has invalid name (not legal utf8)")]
+    Utf8(#[from] str::Utf8Error),
+    #[error("name {0} is not a valid PCI address ({1}) or a valid network interface name ({2})")]
+    Illegal(String, InvalidPciAddress, IllegalInterfaceName),
+}
+
 impl DevInfo {
     /// Get the port index of the device.
     #[must_use]
@@ -700,6 +712,32 @@ impl DevInfo {
     #[must_use]
     pub fn if_index(&self) -> u32 {
         self.inner.if_index
+    }
+
+    /// Examine the device and determine its description (if possible).
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if
+    ///
+    /// 1. The DPDK supplied name is not legal Utf8
+    /// 2. The supplied name can not be interpreted as a [`NetworkDeviceDescription`]
+    pub fn description(&self) -> Result<NetworkDeviceDescription, InvalidNetworkDeviceName> {
+        let out = unsafe { CStr::from_ptr(rte_dev_name(self.inner.device) as *mut _) }.to_str()?;
+        Ok(match PciAddress::try_from(out) {
+            Ok(out) => NetworkDeviceDescription::Pci(out),
+            Err(invalid_pci) => {
+                trace!("device not valid PCI: {invalid_pci}");
+                match InterfaceName::try_from(out) {
+                    Ok(name) => NetworkDeviceDescription::Kernel(name),
+                    Err(illegal_interface_name) => Err(InvalidNetworkDeviceName::Illegal(
+                        out.to_string(),
+                        invalid_pci,
+                        illegal_interface_name,
+                    ))?,
+                }
+            }
+        })
     }
 
     #[allow(clippy::expect_used)]
@@ -740,10 +778,10 @@ pub struct Dev {
     pub(crate) hairpin_queues: Vec<HairpinQueue>,
 }
 
-impl Dev {
+impl<'driver> Dev {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
-    pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
+    pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), queue::rx::ConfigFailure> {
         let rx_queue = RxQueue::setup(self, config)?;
         self.rx_queues.push(rx_queue);
         Ok(())
@@ -751,7 +789,7 @@ impl Dev {
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`TxQueue`]
-    pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), tx::ConfigFailure> {
+    pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), queue::tx::ConfigFailure> {
         let tx_queue = TxQueue::setup(self, config)?;
         self.tx_queues.push(tx_queue);
         Ok(())
@@ -809,19 +847,7 @@ impl Dev {
             .iter()
             .find(|x| x.config.queue_index == index)
     }
-}
 
-pub struct StartedDev {
-    /// The device info
-    pub info: DevInfo,
-    /// The configuration of the device.
-    pub config: DevConfig,
-    pub rx_queues: Vec<RxQueue>,
-    pub tx_queues: Vec<TxQueue>,
-    pub hairpin_queues: Vec<HairpinQueue>,
-}
-
-impl Dev {
     pub fn stop(&mut self) -> Result<(), ErrorCode> {
         info!("Stopping device {port}", port = self.info.index());
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
@@ -850,6 +876,16 @@ impl Dev {
         }
     }
 }
+
+// pub struct StartedDev<'driver> {
+//     /// The device info
+//     pub info: DevInfo,
+//     /// The configuration of the device.
+//     pub config: DevConfig<'driver>,
+//     pub rx_queues: Vec<RxQueue>,
+//     pub tx_queues: Vec<TxQueue>,
+//     pub hairpin_queues: Vec<HairpinQueue>,
+// }
 
 /// The state of a [`Dev`]
 #[derive(Debug, PartialEq)]

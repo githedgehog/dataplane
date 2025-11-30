@@ -2,10 +2,10 @@
 // Copyright Open Network Fabric Authors
 
 use crate::eal::{Eal, EalErrno};
-use crate::mem::RteAllocator;
 use core::ffi::{c_int, c_uint, c_void};
 use core::fmt::Debug;
-use tracing::{info, warn};
+use errno::ErrorCode;
+use tracing::{debug, info, warn};
 
 #[repr(transparent)]
 #[derive(Debug)]
@@ -71,7 +71,15 @@ impl Iterator for LCoreIdIterator {
             return None;
         }
         self.current = LCoreId(next);
-        Some(LCoreId(next))
+        if unsafe { dpdk_sys::rte_get_main_lcore() } == next {
+            return self.next();
+        }
+        if unsafe { dpdk_sys::rte_eal_lcore_role(next) } == dpdk_sys::rte_lcore_role_t::ROLE_NON_EAL
+        {
+            self.next()
+        } else {
+            Some(LCoreId(next))
+        }
     }
 }
 
@@ -106,17 +114,13 @@ impl ServiceThread<'_> {
             .name(name.as_ref().to_string())
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, move || {
-                info!("Initializing RTE Lcore");
-                let ret = unsafe { dpdk_sys::rte_thread_register() };
-                if ret != 0 {
-                    let errno = unsafe { dpdk_sys::rte_errno_get() };
-                    let msg = format!("rte thread exited with code {ret}, errno: {errno}");
-                    Eal::fatal_error(msg)
-                }
+                Self::register_current_thread();
                 let thread_id = unsafe { dpdk_sys::rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
                 run();
-                unsafe { dpdk_sys::rte_thread_unregister() };
+                unsafe {
+                    Self::unregister_current_thread();
+                };
             })
             .expect("could not create EalThread");
         let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
@@ -127,24 +131,88 @@ impl ServiceThread<'_> {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
+    pub fn register_current_thread() {
+        debug!("initializing RTE Lcore");
+        let ret = unsafe { dpdk_sys::rte_thread_register() };
+        if ret != 0 {
+            let errno = unsafe { dpdk_sys::rte_errno_get() };
+            let msg = format!("rte thread exited with code {ret}, errno: {errno}");
+            Eal::fatal_error(msg)
+        }
+    }
+
+    /// De-register / free the RTE lcore id / thread local slots
+    ///
+    /// # Safety
+    ///
+    /// * It only makes sense to call this function on a registered RTE lcore.
+    /// * Don't unregister an lcore if it still needs DPDK functions.
+    #[tracing::instrument(level = "debug")]
+    pub unsafe fn unregister_current_thread() {
+        debug!("tearing down RTE Lcore");
+        unsafe { dpdk_sys::rte_thread_unregister() };
+    }
+
+    #[cold]
+    pub fn register_thread_spawn_hook() {
+        std::thread::add_spawn_hook(|t| {
+            match t.name() {
+                Some(name) => {
+                    warn!(
+                        "registering thread \"{name}\" (id {id:?}) with the DPDK EAL",
+                        id = t.id()
+                    );
+                }
+                None => {
+                    warn!(
+                        "registering nameless thread wit id {:?} with the DPDK EAL",
+                        t.id()
+                    );
+                }
+            }
+            Self::register_current_thread
+        })
+    }
+
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn join(self) -> std::thread::Result<()> {
         self.handle.join()
     }
 }
 
-#[allow(unused)]
+#[derive(Debug)]
 pub struct WorkerThread {
     lcore_id: LCoreId,
 }
 
+impl From<LCoreId> for WorkerThread {
+    fn from(value: LCoreId) -> Self {
+        Self { lcore_id: value }
+    }
+}
+
+#[repr(i32)]
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerThreadLaunchError {
+    /// Worker thread is not in the waiting state
+    #[error("attempt to launch function on worker thread which is not in the waiting state")]
+    Busy = -errno::EBUSY,
+    /// Unable to write to workerthread's pipe
+    #[error(
+        "unable to write to worker thread's pipe when attempting to launch function on that thread"
+    )]
+    Pipe = -errno::EPIPE,
+    /// Unexpected errno when launching worker thread
+    #[error("unexpected error when launching worker thread: {0}")]
+    Unexpected(ErrorCode),
+}
+
 impl WorkerThread {
+    /// This can only run on the main lcore
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
-    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
-        RteAllocator::assert_initialized();
-        #[inline]
+    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) -> Result<LCoreId, WorkerThreadLaunchError> {
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
-            RteAllocator::assert_initialized();
             let task = unsafe {
                 Box::from_raw(
                     arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
@@ -154,13 +222,33 @@ impl WorkerThread {
             0
         }
         let task = Box::new(f);
-        EalErrno::assert(unsafe {
+        let res = unsafe {
             dpdk_sys::rte_eal_remote_launch(
                 Some(_launch::<T>),
                 Box::leak(task) as *mut _ as _,
                 lcore.0 as c_uint,
             )
-        });
+        };
+        match res {
+            0 => Ok(lcore),
+            errno::NEG_EBUSY => Err(WorkerThreadLaunchError::Busy),
+            errno::NEG_EPIPE => Err(WorkerThreadLaunchError::Pipe),
+            other => Err(WorkerThreadLaunchError::Unexpected(ErrorCode::parse(other))),
+        }
+    }
+
+    /// main lcore only.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub fn join(&self) {
+        info!(
+            "joining WorkerThread with rte lcore id {thread_id:?}",
+            thread_id = self.lcore_id
+        );
+        EalErrno::assert(unsafe { dpdk_sys::rte_eal_wait_lcore(self.lcore_id.0) });
+        info!(
+            "joined WorkerThread with rte lcore id {thread_id:?}",
+            thread_id = self.lcore_id
+        );
     }
 }
 

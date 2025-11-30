@@ -11,10 +11,19 @@ serde = ["dep:serde"]
 
 [dependencies]
 
+args = { workspace = true }
 dpdk-sys = { workspace = true }
+driver = { workspace = true }
 errno = { workspace = true }
+hardware = { workspace = true }
 net = { workspace = true }
+tracectl = { workspace = true }
 
+ctrlc = { workspace = true, features = ["termination"] }
+libc = { workspace = true }
+linkme = { workspace = true }
+nix = { workspace = true }
+rkyv = { workspace = true, features = [] }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
