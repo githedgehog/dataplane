@@ -1,0 +1,33 @@
+[package]
+name = "dataplane-trap"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+# internal
+args = { workspace = true }
+interface-manager = { workspace = true }
+net = { workspace = true }
+pipeline = { workspace = true }
+tracectl = { workspace = true }
+
+# external
+ahash = { workspace = true }
+dpdk = { workspace = true }
+futures = { workspace = true }
+kanal = { workspace = true, features = ["async"] }
+linkme = { workspace = true }
+rtnetlink = { workspace = true, features = ["default", "tokio"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+caps = { workspace = true }
+fixin = { workspace = true }
+netdev = { workspace = true }
+rand = { workspace = true }
+tracing-test = { workspace = true }
+test-utils = { workspace = true }
