@@ -11,6 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io;
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
@@ -160,7 +161,7 @@ pub struct MgmtParams {
 }
 
 /// Start the mgmt service with either type of socket
-pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Error> {
+pub async fn start_mgmt(params: MgmtParams) -> Result<tokio::task::JoinHandle<()>, Error> {
     /* build server address from provided grpc address */
     let server_address = match params.grpc_addr {
         GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
@@ -168,31 +169,16 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
     };
     debug!("Will start gRPC listening on {server_address}");
 
-    std::thread::Builder::new()
-        .name("mgmt".to_string())
-        .spawn(move || {
-            debug!("Starting dataplane management thread");
+    let (processor, tx) = ConfigProcessor::new(params.processor_params);
+    let processor = tokio::spawn(processor.run());
 
-            /* create tokio runtime */
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .expect("Tokio runtime creation failed");
-
-            /* block thread to run gRPC and configuration processor */
-            rt.block_on(async {
-                let (processor, tx) = ConfigProcessor::new(params.processor_params);
-                tokio::spawn(async { processor.run().await });
-
-                // Start the appropriate server based on address type
-                let result = match server_address {
-                    ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
-                    ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
-                };
-                if let Err(e) = result {
-                    error!("Failed to start gRPC server: {e}");
-                }
-            });
-        })
+    // Start the appropriate server based on address type
+    let result = match server_address {
+        ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
+        ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
+    };
+    if let Err(e) = result {
+        error!("Failed to start gRPC server: {e}");
+    }
+    Ok(processor)
 }
