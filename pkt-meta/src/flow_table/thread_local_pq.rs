@@ -11,7 +11,7 @@ use concurrency::sync::RwLock;
 // We aren't using the hash table feature right now, though we may want it later.
 use priority_queue::PriorityQueue;
 use thread_local::ThreadLocal;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use tracectl::trace_target;
 trace_target!(
@@ -210,7 +210,7 @@ where
         on_reaped: impl Fn(K, V),
     ) -> usize {
         let mut expired = Vec::new();
-        debug!(
+        trace!(
             "Reaping expired flows at {:?}, queue size {}",
             now,
             pq.len()
@@ -234,7 +234,7 @@ where
             }
         }
 
-        debug!(
+        trace!(
             "Found {} expired flows at {:?}, queue size {}",
             expired.len(),
             now,
