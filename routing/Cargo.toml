@@ -32,6 +32,7 @@ mio = { workspace = true, features = ["os-ext", "net"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 # arp resolver
@@ -44,4 +45,3 @@ concurrency = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 rand = { workspace = true, default-features = false, features = ["thread_rng"] }
 tracing-test = { workspace = true, features = [] }
-
