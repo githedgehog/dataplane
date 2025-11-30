@@ -6,9 +6,14 @@ use multi_index_map::MultiIndexMap;
 use net::buffer::{PacketBuffer, PacketBufferMut};
 use net::interface::InterfaceName;
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use std::num::NonZero;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::os::fd::AsFd;
+use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
+#[allow(unused)]
 use tracing::error;
+use tracing::{debug, info};
 
 /// The planned properties of a dummy interface.
 #[derive(
@@ -31,7 +36,9 @@ pub struct TapDevicePropertiesSpec {}
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct TapDevice {
-    file: tokio::fs::File,
+    ifindex: InterfaceIndex,
+    name: InterfaceName,
+    async_fd: AsyncFd<std::fs::File>,
 }
 
 mod helper {
@@ -227,8 +234,57 @@ impl TapDevice {
     /// If the tap device cannot be opened or created, an `io::Error` is returned.
     #[cold]
     #[tracing::instrument(level = "info")]
-    pub async fn open(name: &InterfaceName) -> Result<(), std::io::Error> {
-        helper::InterfaceRequest::new(name.clone()).create().await
+    pub async fn open(name: &InterfaceName) -> Result<Self, std::io::Error> {
+        let async_fd = helper::InterfaceRequest::new(name.clone()).create()?;
+        let ifindex = if_nametoindex(name.as_ref())?;
+        let ifindex = InterfaceIndex::try_new(ifindex).unwrap_or_else(|_| unreachable!());
+        Ok(TapDevice {
+            name: name.clone(),
+            async_fd,
+            ifindex,
+        })
+    }
+
+    /// Get a reference to the name of a `TapDevice`
+    #[must_use]
+    pub fn name(&self) -> &InterfaceName {
+        &self.name
+    }
+
+    /// Get a reference to the name of a `TapDevice`
+    #[must_use]
+    pub fn ifindex(&self) -> InterfaceIndex {
+        self.ifindex
+    }
+
+    /// Write the provided buffer to the tap. In principle, a single write operation should suffice to
+    /// write a buffer. This method will not return until that happens or an error occurs.
+    ///
+    /// # Errors
+    ///
+    /// If the file descriptor of the tap device cannot be written to, a [`tokio::io::Error`] is returned.
+    async fn do_write<Buf: PacketBuffer>(&self, buf: Buf) -> tokio::io::Result<usize> {
+        let fd = self.async_fd.as_fd();
+        let data = buf.as_ref();
+        let len = data.len();
+        let mut w = 0;
+        loop {
+            let mut guard = self.async_fd.writable().await?;
+            match nix::unistd::write(fd, &data[w..]) {
+                Ok(n) => {
+                    w += n;
+                    if w == len {
+                        return Ok(w);
+                    }
+                }
+                Err(nix::errno::Errno::EINTR) => {}
+                Err(nix::errno::Errno::EWOULDBLOCK) => guard.clear_ready(),
+                Err(e) => {
+                    error!("Error writing to tap {}: {e:?}", self.name);
+                    return Err(e.into());
+                }
+            }
+        }
     }
 
     /// Read a packet from the tap, filling out the provided buffer with the contents of the packet.
@@ -241,23 +297,54 @@ impl TapDevice {
     ///
     /// This method should not panic assuming that all types involved uphold required invariants.
     #[tracing::instrument(level = "trace")]
+    #[allow(clippy::unwrap_used, clippy::panic)] // temporary
     pub async fn read<Buf: PacketBufferMut>(
         &mut self,
         buf: &mut Buf,
     ) -> Result<NonZero<u16>, tokio::io::Error> {
-        let bytes_read = self.file.read(buf.as_mut()).await?;
-        let bytes_read = match u16::try_from(bytes_read) {
-            Ok(bytes_read) => bytes_read,
+        let slice = match buf.append(buf.tailroom()) {
+            Ok(slice) => slice,
             Err(err) => {
-                error!("nonsense packet length received: {err}");
-                return Err(tokio::io::Error::other(err));
+                error!("unable to expand buffer: {err:?}");
+                unreachable!("unable to expand buffer: {err:?}");
             }
         };
-        let Some(bytes_read) = NonZero::new(bytes_read) else {
-            return Err(tokio::io::Error::new(
-                tokio::io::ErrorKind::UnexpectedEof,
-                "unexpected EOF on tap device",
-            ));
+        let bytes_read = match self.async_fd.readable().await {
+            Ok(mut guard) => {
+                if !guard.ready().is_readable() {
+                    todo!();
+                }
+                guard.try_io(|x| {
+                    match x.get_ref().read(slice) {
+                    Ok(bytes_read) => {
+                        let bytes_read = match u16::try_from(bytes_read) {
+                            Ok(bytes_read) => bytes_read,
+                            Err(err) => {
+                                error!("nonsense number of bytes read from tap: {err:?} (greater than u16::MAX)");
+                                panic!("nonsense number of bytes read from tap: {err:?} (greater than u16::MAX)");
+                            },
+                        };
+                        let bytes_read = match NonZero::<u16>::try_from(bytes_read) {
+                            Ok(bytes_read) => bytes_read,
+                            Err(err) => {
+                                error!("{err:?} (no bytes available on tap? device closed?)");
+                                panic!("{err:?} (no bytes available on tap? device closed?)");
+                            }
+                        };
+                        Ok(bytes_read)
+                    }
+                    Err(err) => {
+                        error!("unable to read from tap: {err:?}");
+                        Err(err)
+                    }
+                }})
+                .unwrap().unwrap()
+            }
+
+            Err(err) => {
+                error!("failed waiting for tap to be readable: {err:?}");
+                panic!("failed waiting for tap to be readable: {err:?}");
+            }
         };
         let orig_len = match u16::try_from(buf.as_ref().len()) {
             Ok(orig_len) => orig_len,
@@ -274,7 +361,7 @@ impl TapDevice {
             ));
         }
         #[allow(clippy::expect_used)] // memory integrity requirement already checked
-        buf.trim_from_end(orig_len - bytes_read.get())
+        buf.trim_from_end(orig_len.strict_sub(bytes_read.get()))
             .expect("failed to trim buffer: illegal memory manipulation");
         Ok(bytes_read)
     }

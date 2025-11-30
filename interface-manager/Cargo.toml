@@ -27,7 +27,7 @@ rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["std"] }
 static_assertions = { workspace = true, features = [] }
 thiserror = { workspace = true, features = ["std"] }
-tokio = { workspace = true, default-features = false, features = ["fs", "io-util"] }
+tokio = { workspace = true, default-features = false, features = ["fs", "io-util", "io-std"] }
 tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
@@ -36,4 +36,3 @@ net = { workspace = true, features = ["bolero"] }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
-
