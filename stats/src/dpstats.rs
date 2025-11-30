@@ -12,6 +12,7 @@ use concurrency::sync::Arc;
 use kanal::ReceiveError;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
 
@@ -82,6 +83,8 @@ pub struct StatsCollector {
     updates: PacketStatsReader,
     /// Shared store for snapshots/rates usable by gRPC, CLI, etc.
     vpc_store: Arc<VpcStatsStore>,
+    /// shutdown the stats collector
+    cancel_token: tokio_util::sync::CancellationToken,
 }
 
 impl StatsCollector {
@@ -89,11 +92,18 @@ impl StatsCollector {
     const TIME_TICK: Duration = Duration::from_secs(1);
 
     #[tracing::instrument(level = "info")]
-    pub fn new(vpcmap_r: VpcMapReader<VpcMapName>) -> (StatsCollector, PacketStatsWriter) {
+    pub fn new(
+        vpcmap_r: VpcMapReader<VpcMapName>,
+        cancel_token: CancellationToken,
+    ) -> (StatsCollector, PacketStatsWriter) {
         // Allocate a store for this collector; keep it internal in this overload.
         let store = VpcStatsStore::new();
-        let (collector, writer, _store) = Self::new_with_store(vpcmap_r, store);
+        let (collector, writer, _store) = Self::new_with_store(vpcmap_r, store, cancel_token);
         (collector, writer)
+    }
+
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     /// Returns (collector, writer, store).
@@ -101,6 +111,7 @@ impl StatsCollector {
     pub fn new_with_store(
         vpcmap_r: VpcMapReader<VpcMapName>,
         vpc_store: Arc<VpcStatsStore>,
+        cancel_token: CancellationToken,
     ) -> (StatsCollector, PacketStatsWriter, Arc<VpcStatsStore>) {
         let (s, r) = kanal::bounded(Self::DEFAULT_CHANNEL_CAPACITY);
 
@@ -150,6 +161,7 @@ impl StatsCollector {
             vpcmap_r,
             updates,
             vpc_store,
+            cancel_token,
         };
         let writer = PacketStatsWriter(s);
         (stats, writer, store_clone)
@@ -179,6 +191,10 @@ impl StatsCollector {
         loop {
             trace!("waiting on metrics");
             tokio::select! {
+                () = self.cancel_token.cancelled() => {
+                    info!("stats collector canceled, shutting down stats");
+                    return;
+                }
                 () = tokio::time::sleep(Self::TIME_TICK) => {
                     trace!("no stats received in window");
                     self.update(None).await;
@@ -192,8 +208,8 @@ impl StatsCollector {
                         Err(err) => {
                             match err {
                                 ReceiveError::Closed => {
-                                    error!("stats receiver closed!");
-                                    panic!("stats receiver closed");
+                                    info!("stats receiver closed");
+                                    return;
                                 }
                                 ReceiveError::SendClosed => {
                                     info!("all stats senders are closed");
