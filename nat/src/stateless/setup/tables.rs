@@ -2,6 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use ahash::RandomState;
+use bnum::BUint;
+use bnum::cast::CastFrom;
 use lpm::prefix::{IpPrefix, Prefix, PrefixSize};
 use lpm::trie::IpPrefixTrie;
 use net::vxlan::Vni;
@@ -70,21 +72,56 @@ impl PerVniTable {
     }
 
     #[must_use]
-    pub fn find_src_mapping(&self, addr: &IpAddr, dst_vni: Vni) -> Option<IpAddr> {
-        debug!("Looking up source mapping for address: {addr}, dst_vni: {dst_vni}");
-        let (prefix, ranges) = self.src_nat.get(&dst_vni)?.lookup(addr)?;
-        let offset = addr_offset_in_prefix(&prefix, addr)?;
-        debug!("Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}");
-        ranges.get_entry(offset)
+    pub fn find_src_mapping(
+        &self,
+        addr: &IpAddr,
+        port: Option<u16>,
+        dst_vni: Vni,
+    ) -> Option<(IpAddr, Option<u16>)> {
+        debug!("Looking up source mapping for address: {addr}, port: {port:?}, dst_vni: {dst_vni}");
+        Self::find_mapping(addr, port, self.src_nat.get(&dst_vni)?)
     }
 
     #[must_use]
-    pub fn find_dst_mapping(&self, addr: &IpAddr) -> Option<IpAddr> {
-        debug!("Looking up destination mapping for address: {addr}");
-        let (prefix, ranges) = self.dst_nat.lookup(addr)?;
-        let offset = addr_offset_in_prefix(&prefix, addr)?;
-        debug!("Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}");
-        ranges.get_entry(offset)
+    pub fn find_dst_mapping(
+        &self,
+        addr: &IpAddr,
+        port: Option<u16>,
+    ) -> Option<(IpAddr, Option<u16>)> {
+        debug!("Looking up destination mapping for address: {addr}, port: {port:?}");
+        Self::find_mapping(addr, port, &self.dst_nat)
+    }
+
+    fn find_mapping(
+        addr: &IpAddr,
+        port_opt: Option<u16>,
+        table: &NatRuleTable,
+    ) -> Option<(IpAddr, Option<u16>)> {
+        let (prefix, value) = table.lookup(addr, port_opt)?;
+        match value {
+            NatTableValue::Nat(ranges) => {
+                let offset = addr_offset_in_prefix(&prefix, addr)?;
+                debug!(
+                    "Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}"
+                );
+                ranges.get_entry(offset).map(|addr| (addr, None))
+            }
+            NatTableValue::Pat(ranges) => {
+                let port = port_opt?; // We expect a port for PAT; no mapping if we have none
+                let offset = addr_offset_in_prefix_with_ports(
+                    &prefix,
+                    &ranges.prefix_port_range,
+                    addr,
+                    port,
+                )?;
+                debug!(
+                    "Mapping {addr}:{port:?} from prefix {prefix} to ranges {ranges:?}: found offset {offset}"
+                );
+                ranges
+                    .get_entry(offset)
+                    .map(|(new_addr, new_port)| (new_addr, Some(new_port)))
+            }
+        }
     }
 }
 
@@ -97,6 +134,22 @@ fn addr_offset_in_prefix(prefix: &Prefix, addr: &IpAddr) -> Option<u128> {
         (Prefix::IPV6(p), IpAddr::V6(a)) => Some(a.to_bits() - p.network().to_bits()),
         _ => None,
     }
+}
+
+fn addr_offset_in_prefix_with_ports(
+    prefix: &Prefix,
+    port_range: &PortRange,
+    addr: &IpAddr,
+    port: u16,
+) -> Option<PortAddrSize> {
+    if !port_range.contains(port) {
+        return None;
+    }
+    let ip_offset = addr_offset_in_prefix(prefix, addr)?;
+    let port_offset = port - port_range.start;
+    Some(PortAddrSize::from(
+        ip_offset * u128::from(port_range.len()) + u128::from(port_offset),
+    ))
 }
 
 /// From a current address prefix, find the target address prefix.
@@ -126,8 +179,26 @@ impl NatRuleTable {
     /// Returns the value associated with the longest prefix match for the given address.
     /// If the address does not match any prefix, it returns `None`.
     #[must_use]
-    pub fn lookup(&self, addr: &IpAddr) -> Option<(Prefix, &NatTableValue)> {
-        self.0.lookup(*addr)
+    pub fn lookup(&self, addr: &IpAddr, port_opt: Option<u16>) -> Option<(Prefix, &NatTableValue)> {
+        // If we have a matching NatTableValue::Nat for the address, return it
+        let result = self.0.lookup(*addr);
+        if matches!(result, Some((_prefix, NatTableValue::Nat(_value)))) {
+            return result;
+        }
+
+        // Else, we need to check all matching IP prefixes (not necessarily the longest), and their
+        // port ranges. We expect the trie to contain only one matching IP prefix matching the
+        // address and associated to a port range matching the port, so we return the first we find.
+        let port = port_opt?;
+        let matching_entries = self.0.matching_entries(*addr);
+        for (prefix, value) in matching_entries {
+            if let NatTableValue::Pat(pat_value) = value
+                && pat_value.prefix_port_range.contains(port)
+            {
+                return Some((prefix, value));
+            }
+        }
+        None
     }
 }
 
@@ -136,11 +207,17 @@ impl NatRuleTable {
 /// The total number of IP addresses covered by the ranges is supposed to be equal to the addresses
 /// in the prefix, so that we can establish a one-to-one mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatTableValue {
-    ranges: Vec<TrieRange>,
+pub enum NatTableValue {
+    Nat(AddrTranslationValue),
+    Pat(PortAddrTranslationValue),
 }
 
-impl NatTableValue {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddrTranslationValue {
+    ranges: Vec<IpRange>,
+}
+
+impl AddrTranslationValue {
     #[must_use]
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
@@ -152,7 +229,7 @@ impl NatTableValue {
     /// Note: When possible, the new range is merged with the latest range in the list; so there is
     /// no guarantee, when calling this method, that the new range is added as a separate range, and
     /// that `self.ranges.len()` will be incremented.
-    pub fn add_range(&mut self, range: TrieRange) {
+    pub fn add_range(&mut self, range: IpRange) {
         if self.ranges.is_empty() {
             self.push(range);
             return;
@@ -167,17 +244,17 @@ impl NatTableValue {
 
     #[cfg(test)]
     #[must_use]
-    pub fn ranges(&self) -> &Vec<TrieRange> {
+    pub fn ranges(&self) -> &Vec<IpRange> {
         &self.ranges
     }
 
-    fn push(&mut self, range: TrieRange) {
+    fn push(&mut self, range: IpRange) {
         self.ranges.push(range);
     }
 
     /// Returns the total number of IP addresses covered by the ranges in this value.
     pub fn ip_len(&self) -> PrefixSize {
-        let sum = self.ranges.iter().map(TrieRange::ip_len).sum();
+        let sum = self.ranges.iter().map(IpRange::len).sum();
         debug_assert!(sum < PrefixSize::Overflow);
         sum
     }
@@ -195,24 +272,102 @@ impl NatTableValue {
 
         let mut offset = PrefixSize::U128(entry_offset);
         for range in &self.ranges {
-            if offset < range.ip_len() {
+            if offset < range.len() {
                 // We never grow offset, it cannot overflow a u128
                 return range.get_entry(offset.try_into().unwrap_or_else(|_| unreachable!()));
             }
-            offset -= range.ip_len();
+            offset -= range.len();
         }
         None
     }
 }
 
+pub type PortAddrSize = BUint<3>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortAddrTranslationValue {
+    prefix_port_range: PortRange,
+    ranges: Vec<IpPortRange>,
+}
+
+impl PortAddrTranslationValue {
+    fn ip_len(&self) -> PrefixSize {
+        let sum = self.ranges.iter().map(IpPortRange::ip_len).sum();
+        debug_assert!(sum < PrefixSize::Overflow);
+        sum
+    }
+
+    fn size(&self) -> PortAddrSize {
+        self.ranges.iter().map(IpPortRange::size).sum()
+    }
+
+    fn get_entry(&self, entry_offset: PortAddrSize) -> Option<(IpAddr, u16)> {
+        if entry_offset >= self.size() {
+            return None;
+        }
+
+        let mut offset = entry_offset;
+        for range in &self.ranges {
+            if offset < range.size() {
+                return range.get_entry(offset);
+            }
+            offset -= range.size();
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpPortRange {
+    ip_range: IpRange,
+    port_range: PortRange,
+}
+
+impl IpPortRange {
+    fn ip_len(&self) -> PrefixSize {
+        self.ip_range.len()
+    }
+
+    fn port_len(&self) -> u16 {
+        self.port_range.len()
+    }
+
+    fn size(&self) -> PortAddrSize {
+        let ip_len = match self.ip_len() {
+            PrefixSize::U128(len) => PortAddrSize::from(len),
+            PrefixSize::Ipv6MaxAddrs => PortAddrSize::from(u128::MAX) + 1,
+            PrefixSize::Overflow => unreachable!(),
+        };
+        ip_len * PortAddrSize::from(self.port_len())
+    }
+
+    fn get_entry(&self, offset: PortAddrSize) -> Option<(IpAddr, u16)> {
+        if offset >= self.size() {
+            return None;
+        }
+
+        let port_range_len = PortAddrSize::from(self.port_range.len());
+        let ip_offset_tmp = offset / port_range_len;
+        debug_assert!(ip_offset_tmp <= PortAddrSize::from(u128::MAX));
+        let ip_offset = u128::cast_from(ip_offset_tmp);
+        let port_offset = (offset % port_range_len)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!()); // Modulo using a u128::from(u16)
+
+        self.ip_range
+            .get_entry(ip_offset)
+            .zip(self.port_range.get_entry(port_offset))
+    }
+}
+
 // Represents an IP address range, with a start and an end address.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrieRange {
+pub struct IpRange {
     start: IpAddr,
     end: IpAddr,
 }
 
-impl TrieRange {
+impl IpRange {
     #[must_use]
     pub fn new(start: IpAddr, end: IpAddr) -> Self {
         debug_assert!(start <= end, "start: {start}, end: {end}");
@@ -230,7 +385,7 @@ impl TrieRange {
     }
 
     // Returns the number of IP addresses covered by the range.
-    fn ip_len(&self) -> PrefixSize {
+    fn len(&self) -> PrefixSize {
         match (self.start, self.end) {
             (IpAddr::V4(start), IpAddr::V4(end)) => {
                 PrefixSize::U128(u128::from(end.to_bits().saturating_sub(start.to_bits())) + 1)
@@ -249,7 +404,7 @@ impl TrieRange {
 
     fn get_entry(&self, offset: u128) -> Option<IpAddr> {
         // This check also ensures that offset <= u32::MAX in the case of IPv4
-        if offset >= self.ip_len() {
+        if offset >= self.len() {
             return None;
         }
 
@@ -273,7 +428,7 @@ impl TrieRange {
     // # Returns
     //
     // Returns `Some(())` if the ranges were merged, or `None` otherwise.
-    fn merge(&mut self, next: &TrieRange) -> Option<()> {
+    fn merge(&mut self, next: &IpRange) -> Option<()> {
         // Always merge on the "right side". This is because we call this method when processing
         // ranges obtained from prefixes in a BTreeSet, so they are ordered, and we process the
         // smaller ones first; if we try to merge a new one into an existing one, it's a "bigger"
@@ -297,6 +452,48 @@ impl TrieRange {
                 }
             }
             _ => return None,
+        }
+        None
+    }
+}
+
+// Represents a port range, with a start and an end port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortRange {
+    start: u16,
+    end: u16,
+}
+
+impl PortRange {
+    #[must_use]
+    pub fn new(start: u16, end: u16) -> Self {
+        debug_assert!(start <= end, "start: {start}, end: {end}");
+        Self { start, end }
+    }
+
+    #[must_use]
+    pub fn contains(&self, port: u16) -> bool {
+        self.start <= port && port <= self.end
+    }
+
+    fn len(&self) -> u16 {
+        self.end - self.start + 1
+    }
+
+    fn get_entry(&self, offset: u16) -> Option<u16> {
+        if offset >= self.len() {
+            return None;
+        }
+        Some(self.start + offset)
+    }
+
+    fn merge(&mut self, next: &PortRange) -> Option<()> {
+        if self.start > next.start || self.end >= next.start {
+            return None;
+        }
+        if self.end + 1 == next.start {
+            self.end = next.end;
+            return Some(());
         }
         None
     }

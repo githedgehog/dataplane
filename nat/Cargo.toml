@@ -11,6 +11,7 @@ shuttle = ["concurrency/shuttle", "dep:shuttle"]
 [dependencies]
 ahash = { workspace = true }
 arc-swap = { workspace = true }
+bnum = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
 flow-info = { workspace = true }

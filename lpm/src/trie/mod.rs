@@ -53,6 +53,10 @@ pub trait TrieMap {
     where
         A: Into<Self::Prefix>;
 
+    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>
+    where
+        A: Into<Self::Prefix>;
+
     fn remove<B>(&mut self, prefix: B) -> Option<Self::Value>
     where
         B: Borrow<Self::Prefix>;
@@ -94,6 +98,24 @@ impl<V: Clone> IpPrefixTrie<V> {
         match addr.into() {
             IpAddr::V4(ip) => self.ipv4.lookup(ip).map(|(k, v)| (Prefix::IPV4(*k), v)),
             IpAddr::V6(ip) => self.ipv6.lookup(ip).map(|(k, v)| (Prefix::IPV6(*k), v)),
+        }
+    }
+
+    pub fn matching_entries<Q>(&self, addr: Q) -> Box<dyn Iterator<Item = (Prefix, &V)> + '_>
+    where
+        Q: Into<IpAddr>,
+    {
+        match addr.into() {
+            IpAddr::V4(ip) => Box::new(
+                self.ipv4
+                    .matching_entries(ip)
+                    .map(|(k, v)| (Prefix::IPV4(*k), v)),
+            ),
+            IpAddr::V6(ip) => Box::new(
+                self.ipv6
+                    .matching_entries(ip)
+                    .map(|(k, v)| (Prefix::IPV6(*k), v)),
+            ),
         }
     }
 
