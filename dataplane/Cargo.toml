@@ -23,7 +23,7 @@ linkme = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
-mio = { workspace = true, features = ["os-ext", "net"] }
+mio = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 nix = { workspace = true }
@@ -36,8 +36,8 @@ pkt-meta = { workspace = true }
 pyroscope = { workspace = true }
 pyroscope_pprofrs = { workspace = true }
 routing = { workspace = true }
-rtnetlink = { workspace = true, features = ["default", "tokio"] }
-serde = { workspace = true, features = ["derive"] }
+rtnetlink = { workspace = true }
+serde = { workspace = true }
 stats = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

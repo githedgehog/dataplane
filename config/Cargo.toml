@@ -14,7 +14,7 @@ lpm = { workspace = true }
 tracectl = { workspace = true }
 
 # external
-derive_builder = { workspace = true, default-features = false, features = ["default"] }
+derive_builder = { workspace = true, default-features = false }
 linkme = { workspace = true }
 multi_index_map = { workspace = true, features = ["serde"] }
 ordermap = { workspace = true, features = ["std"] }
