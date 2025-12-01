@@ -158,7 +158,7 @@ tokio-stream = { version = "0.1.17", default-features = false, features = [] }
 tonic = { version = "0.14.2", default-features = false, features = [] }
 tracing = { version = "0.1.43", default-features = false, features = ["attributes"] } # attribute feature is so commonly used that we should just leave it on globally
 tracing-error = { version = "0.2.1", features = [] }
-tracing-subscriber = { version = "0.3.20", default-features = false, features = [] }
+tracing-subscriber = { version = "0.3.22", default-features = false, features = [] }
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
 ureq = { version = "3.1.4", default-features = false, features = [] }
 url = { version = "2.5.7", default-features = false, features = [] }
