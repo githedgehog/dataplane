@@ -115,7 +115,7 @@ loom = { version = "0.7.2", default-features = false, features = [] }
 mac_address = { version = "1.1.8", default-features = false, features = [] }
 memmap2 = { version = "0.9.9", default-features = false, features = [] }
 metrics = { version = "0.24.3", default-features = false, features = [] }
-metrics-exporter-prometheus = { version = "0.17.2", default-features = false, features = [] }
+metrics-exporter-prometheus = { version = "0.18.0", default-features = false, features = [] }
 miette = { version = "7.6.0", default-features = false, features = [] }
 mio = { version = "1.1.0", default-features = false, features = [] }
 multi_index_map = { version = "0.15.0", default-features = false, features = [] }
