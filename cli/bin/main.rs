@@ -6,13 +6,15 @@
 #![deny(clippy::all, clippy::pedantic)]
 
 use argsparse::{ArgsError, CliArgs};
+use clap::Parser;
+use cmdline::Cmdline;
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
 use std::rc::Rc;
-use terminal::{Terminal, TermInput};
+use terminal::{TermInput, Terminal};
 
 mod argsparse;
 mod cmdline;
@@ -20,9 +22,6 @@ mod cmdtree;
 mod cmdtree_dp;
 mod completions;
 mod terminal;
-
-const DEFAULT_CLI_BIND: &str = "/var/run/dataplane/cliclient.sock";
-const DEFAULT_DATAPLANE_PATH: &str = "/var/run/dataplane/cli.sock";
 
 #[rustfmt::skip]
 fn greetings() {
@@ -118,8 +117,9 @@ fn execute_remote_action(
 }
 
 fn execute_action(
-    action: u16,             // action to perform
-    args: &CliArgs,          // action arguments
+    action: u16,    // action to perform
+    args: &CliArgs, // action arguments
+    cmdline: &Cmdline,
     terminal: &mut Terminal, // this terminal
 ) {
     let cli_action = action.try_into().expect("Bad action code");
@@ -132,12 +132,12 @@ fn execute_action(
             let path = args
                 .connpath
                 .clone()
-                .unwrap_or_else(|| DEFAULT_DATAPLANE_PATH.to_owned());
+                .unwrap_or_else(|| cmdline.path.clone());
 
             let bind_addr = args
                 .bind_address
                 .clone()
-                .unwrap_or_else(|| DEFAULT_CLI_BIND.to_owned());
+                .unwrap_or_else(|| cmdline.bind_address.clone());
             terminal.connect(&bind_addr, &path);
         }
         // all others are remote
@@ -171,6 +171,9 @@ fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
 }
 
 fn main() {
+    // parse cmd line
+    let cmdline = cmdline::Cmdline::parse();
+
     // build command tree
     let cmds = Rc::new(gw_cmd_tree());
     let mut terminal = Terminal::new("dataplane", &cmds);
@@ -179,6 +182,8 @@ fn main() {
     // be polite
     greetings();
 
+    terminal.connect(&cmdline.bind_address, &cmdline.path);
+
     // infinite loop until user quits
     while terminal.runs() {
         let mut bad_syntax = false;
@@ -186,7 +191,7 @@ fn main() {
         if let Some(node) = cmds.find_best(input.get_tokens()) {
             if let Some(action) = &node.action {
                 if let Ok(args) = process_args(&input) {
-                    execute_action(*action, &args, &mut terminal);
+                    execute_action(*action, &args, &cmdline, &mut terminal);
                 }
             } else if node.depth > 0 {
                 print_err!("No action associated to command");
