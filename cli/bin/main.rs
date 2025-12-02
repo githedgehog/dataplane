@@ -188,6 +188,9 @@ fn main() {
     while terminal.runs() {
         let mut bad_syntax = false;
         let mut input = terminal.prompt();
+        if !terminal.is_connected() {
+            terminal.connect(&cmdline.bind_address, &cmdline.path);
+        }
         if let Some(node) = cmds.find_best(input.get_tokens()) {
             if let Some(action) = &node.action {
                 if let Ok(args) = process_args(&input) {
