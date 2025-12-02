@@ -108,6 +108,11 @@ mod contract {
                     raw[2],
                     raw[3],
                 )))
+            } else if ip.is_broadcast() {
+                // Note: is_broadcast() means "is 255.255.255.255?", it doesn't account for the
+                // current network in use. So when we reach this case we can just replace by any
+                // valid unicast address.
+                Some(UnicastIpv4Addr(Ipv4Addr::new(1, 1, 1, 1)))
             } else {
                 Some(UnicastIpv4Addr(ip))
             }
