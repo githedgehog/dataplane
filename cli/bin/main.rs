@@ -12,15 +12,14 @@ use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
 use std::rc::Rc;
-use terminal::Terminal;
+use terminal::{Terminal, TermInput};
 
-use crate::terminal::TermInput;
-
-pub(crate) mod argsparse;
-pub(crate) mod cmdtree;
-pub(crate) mod cmdtree_dp;
-pub(crate) mod completions;
-pub(crate) mod terminal;
+mod argsparse;
+mod cmdline;
+mod cmdtree;
+mod cmdtree_dp;
+mod completions;
+mod terminal;
 
 const DEFAULT_CLI_BIND: &str = "/var/run/dataplane/cliclient.sock";
 const DEFAULT_DATAPLANE_PATH: &str = "/var/run/dataplane/cli.sock";
