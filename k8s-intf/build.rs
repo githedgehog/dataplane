@@ -54,7 +54,7 @@ fn fixup_types(raw: String) -> String {
 fn generate_rust_for_crd(crd_content: &str) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
-        .args(["-Af", "-"])
+        .args(["-D", "PartialEq", "-Af", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
