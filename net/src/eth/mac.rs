@@ -4,7 +4,10 @@
 //! Mac address type and logic.
 
 use arrayvec::ArrayVec;
-use std::fmt::{Debug, Display, LowerHex, UpperHex};
+use std::{
+    fmt::{Debug, Display, LowerHex, UpperHex},
+    str::FromStr,
+};
 
 /// A [MAC Address] type.
 ///
@@ -77,6 +80,14 @@ impl TryFrom<&str> for Mac {
         };
 
         Ok(Mac(octets))
+    }
+}
+
+impl FromStr for Mac {
+    type Err = MacFromStringError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Mac::try_from(value)
     }
 }
 
@@ -362,6 +373,14 @@ impl TryFrom<&str> for SourceMac {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Ok(SourceMac::try_from(Mac::try_from(value)?)?)
+    }
+}
+
+impl FromStr for SourceMac {
+    type Err = SourceMacParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        SourceMac::try_from(s)
     }
 }
 
