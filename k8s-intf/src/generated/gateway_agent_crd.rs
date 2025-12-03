@@ -37,7 +37,7 @@ pub struct GatewayAgentSpec {
 pub struct GatewayAgentGateway {
     /// ASN is the ASN of the gateway
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asn: Option<i32>,
+    pub asn: Option<u32>,
     /// Interfaces is a map of interface names to their configurations
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<BTreeMap<String, GatewayAgentGatewayInterfaces>>,
@@ -61,7 +61,7 @@ pub struct GatewayAgentGateway {
     pub vtep_mac: Option<String>,
     /// VTEPMTU is the MTU for the VTEP interface
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "vtepMTU")]
-    pub vtep_mtu: Option<i32>,
+    pub vtep_mtu: Option<u32>,
     /// Workers defines the number of worker threads to use for dataplane
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workers: Option<i64>,
@@ -78,7 +78,7 @@ pub struct GatewayAgentGatewayInterfaces {
     pub kernel: Option<String>,
     /// MTU for the interface
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mtu: Option<i32>,
+    pub mtu: Option<u32>,
     /// PCI address of the interface (required for DPDK driver), e.g. 0000:00:01.0
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pci: Option<String>,
@@ -98,7 +98,7 @@ pub struct GatewayAgentGatewayLogs {
 pub struct GatewayAgentGatewayNeighbors {
     /// ASN is the remote ASN of the BGP neighbor
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asn: Option<i32>,
+    pub asn: Option<u32>,
     /// IP is the IP address of the BGP neighbor
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
