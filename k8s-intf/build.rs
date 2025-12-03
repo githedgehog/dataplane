@@ -37,6 +37,20 @@ const LICENSE_PREAMBLE: &str = "// SPDX-License-Identifier: Apache-2.0
 
 ";
 
+/// Fixup the types in the generated Rust code
+///
+/// This is gross, but needed.  OpenAPI v3 does not have any unsigned types
+/// and so go types like uint32 in go become i32, this rewrites the known fields
+/// from i32 to u32 in the generated file.
+///
+/// By rewriting the types, serde_json used by kube-rs should parse the
+/// json correctly.
+fn fixup_types(raw: String) -> String {
+    raw.replace("asn: Option<i32>", "asn: Option<u32>")
+        // This should get both vtep_mtu and plain mtu
+        .replace("mtu: Option<i32>", "mtu: Option<u32>")
+}
+
 fn generate_rust_for_crd(crd_content: &str) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
@@ -64,7 +78,8 @@ fn generate_rust_for_crd(crd_content: &str) -> String {
         panic!("kopium failed: {}", String::from_utf8_lossy(&output.stderr));
     }
 
-    String::from_utf8(output.stdout).expect("Failed to convert kopium output to string")
+    let raw = String::from_utf8(output.stdout).expect("Failed to convert kopium output to string");
+    fixup_types(raw)
 }
 
 fn main() {
