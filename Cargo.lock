@@ -1289,6 +1289,8 @@ dependencies = [
 name = "dataplane-k8s-intf"
 version = "0.1.0"
 dependencies = [
+ "bolero",
+ "dataplane-hardware",
  "dotenvy",
  "k8s-openapi",
  "kube",

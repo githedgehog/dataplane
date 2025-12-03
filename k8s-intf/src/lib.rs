@@ -4,6 +4,9 @@
 //! A library to pull dataplane config from k8s
 
 #![deny(clippy::all, clippy::pedantic)]
+
+#[cfg(any(test, feature = "bolero"))]
+pub mod bolero;
 pub mod generated;
 
 pub mod gateway_agent_crd {
