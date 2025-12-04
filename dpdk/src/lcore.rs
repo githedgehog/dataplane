@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::eal::{Eal, EalErrno};
-use crate::mem::RteAllocator;
+use crate::eal::Eal;
 use core::ffi::{c_int, c_uint, c_void};
 use core::fmt::Debug;
-use tracing::{info, warn};
+use errno::ErrorCode;
+use tracing::{debug, info, warn};
 
 #[repr(transparent)]
 #[derive(Debug)]
