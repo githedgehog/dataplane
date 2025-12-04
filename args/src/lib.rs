@@ -309,15 +309,7 @@ impl From<MemFile> for FinalizedMemFile {
 
 /// Enum to represent either a TCP socket address or a UNIX socket path
 #[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    rkyv::Archive,
+    Debug, Clone, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum GrpcAddress {
@@ -345,14 +337,7 @@ pub enum GrpcAddress {
 /// - Use **Kernel** for development, testing, or environments without DPDK-compatible
 ///   hardware.
 #[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    rkyv::Archive,
+    Debug, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
 #[serde(tag = "driver")]
 #[serde(rename_all = "snake_case")]
@@ -425,7 +410,6 @@ impl Display for NetworkDeviceDescription {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -449,7 +433,6 @@ pub struct DpdkDriverConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -470,7 +453,6 @@ pub struct KernelDriverConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -492,7 +474,6 @@ pub struct CliConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -510,7 +491,6 @@ pub struct MetricsConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -533,7 +513,6 @@ pub struct TracingConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -559,7 +538,6 @@ pub enum TracingDisplayOption {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -578,14 +556,7 @@ pub struct TracingShowSection {
 /// Defines how the dataplane communicates with FRR (Free Range Routing) and
 /// related routing components.
 #[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    rkyv::Archive,
+    Debug, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct RoutingConfigSection {
@@ -604,7 +575,6 @@ pub struct RoutingConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -638,7 +608,6 @@ pub struct ConfigServerSection {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -668,7 +637,6 @@ pub struct LaunchConfiguration {
     PartialEq,
     Eq,
     serde::Serialize,
-    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
