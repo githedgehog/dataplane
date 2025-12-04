@@ -88,55 +88,47 @@ impl DevIndex {
 
         let ret = unsafe { rte_eth_dev_info_get(self.0, &mut dev_info) };
 
-        if ret != 0 {
-            return match ret {
-                errno::NEG_ENOTSUP => {
-                    error!(
-                        "Device information not supported for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::NotSupported)
-                }
-                errno::NEG_ENODEV => {
-                    error!(
-                        "Device information not available for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::NotAvailable)
-                }
-                errno::NEG_EINVAL => {
-                    error!(
-                        "Invalid argument when getting device info for port {index}",
-                        index = self.0
-                    );
-                    Err(DevInfoError::InvalidArgument)
-                }
-                val => {
-                    let unknown = match StandardErrno::parse_i32(val) {
-                        Ok(standard) => {
-                            return Err(DevInfoError::UnknownStandard(standard));
-                        }
-                        Err(unknown) => unknown,
-                    };
-                    error!(
-                        "Unknown error when getting device info for port {index}: {val} (error code: {unknown:?})",
-                        index = self.0,
-                        val = val
-                    );
-                    Err(DevInfoError::Unknown(Errno(val)))
-                }
-            };
-            // error!(
-            //     "Failed to get device info for port {index}: {err}",
-            //     index = self.0
-            // );
-            // return Err(err);
-        }
-
-        Ok(DevInfo {
-            index: DevIndex(self.0),
-            inner: dev_info,
-        })
+        return match ret {
+            0 => Ok(DevInfo {
+                index: DevIndex(self.0),
+                inner: dev_info,
+            }),
+            errno::NEG_ENOTSUP => {
+                error!(
+                    "Device information not supported for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::NotSupported)
+            }
+            errno::NEG_ENODEV => {
+                error!(
+                    "Device information not available for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::NotAvailable)
+            }
+            errno::NEG_EINVAL => {
+                error!(
+                    "Invalid argument when getting device info for port {index}",
+                    index = self.0
+                );
+                Err(DevInfoError::InvalidArgument)
+            }
+            val => {
+                let unknown = match StandardErrno::parse_i32(val) {
+                    Ok(standard) => {
+                        return Err(DevInfoError::UnknownStandard(standard));
+                    }
+                    Err(unknown) => unknown,
+                };
+                error!(
+                    "Unknown error when getting device info for port {index}: {val} (error code: {unknown:?})",
+                    index = self.0,
+                    val = val
+                );
+                Err(DevInfoError::Unknown(Errno(val)))
+            }
+        };
     }
 
     /// Get the [`SocketId`] of the device associated with this device index.
