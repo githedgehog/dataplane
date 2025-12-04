@@ -141,12 +141,8 @@ impl TxQueue {
     pub(crate) const PKT_BURST_SIZE: usize = 64;
 
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&self, packets: impl IntoIterator<Item = Mbuf>) {
-        let mut packets: Vec<_> = packets.into_iter().collect();
+    pub fn transmit(&self, packets: &mut Vec<Mbuf>) {
         let mut offset = 0;
-        if packets.is_empty() {
-            return;
-        }
         while offset < packets.len() {
             trace!(
                 "Transmitting packets to tx queue {queue} on dev {dev}",
@@ -168,6 +164,7 @@ impl TxQueue {
                 dev = self.dev.as_u16()
             );
         }
+        packets.clear();
     }
 }
 
