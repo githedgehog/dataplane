@@ -175,35 +175,6 @@ impl Eal {
     }
 }
 
-impl Drop for Eal {
-    /// Clean up the DPDK Environment Abstraction Layer (EAL).
-    ///
-    /// This is called automatically when the `Eal` is dropped and generally should not be called
-    /// manually.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the EAL cleanup fails for some reason.
-    /// EAL cleanup failure is potentially serious as it can leak hugepage file descriptors and
-    /// make application restart complex.
-    ///
-    /// Failure to clean up the EAL is almost certainly an unrecoverable error anyway.
-    #[cold]
-    #[allow(clippy::panic)]
-    #[tracing::instrument(level = "info", skip(self))]
-    fn drop(&mut self) {
-        info!("waiting on EAL threads");
-        unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
-        info!("Closing EAL");
-        let ret = unsafe { dpdk_sys::rte_eal_cleanup() };
-        if ret != 0 {
-            let panic_msg = format!("Failed to cleanup EAL: error {ret}");
-            error!("{panic_msg}");
-            panic!("{panic_msg}");
-        }
-    }
-}
-
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 pub struct EalErrno(c_int);
