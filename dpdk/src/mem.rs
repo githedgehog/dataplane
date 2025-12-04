@@ -88,6 +88,16 @@ impl Display for Pool {
     }
 }
 
+impl NewBufferPool for Pool {
+    type Config<'a> = PoolConfig;
+
+    type Error = InvalidMemPoolConfig;
+
+    fn new_pool(config: Self::Config<'_>) -> Result<Self, Self::Error> {
+        Pool::new_pkt_pool(config)
+    }
+}
+
 impl BufferPool for Pool {
     type Buffer = Mbuf;
     fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError> {
