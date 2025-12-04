@@ -415,8 +415,6 @@ impl Display for NetworkDeviceDescription {
     }
 }
 
-pub type KiB = NonZero<u64>;
-
 #[derive(
     Debug,
     Default,
