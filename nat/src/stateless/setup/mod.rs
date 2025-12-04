@@ -31,8 +31,19 @@ pub enum NatPeeringError {
 pub(crate) fn generate_nat_values<'a>(
     prefixes_to_update: &'a BTreeSet<Prefix>,
     prefixes_to_point_to: &'a BTreeSet<Prefix>,
-) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
-    range_builder::RangeBuilder::<'a>::new(prefixes_to_update, prefixes_to_point_to)
+) -> Box<dyn Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> + 'a> {
+    let this_is_an_expose_block_with_port_ranges = false;
+    if this_is_an_expose_block_with_port_ranges {
+        Box::new(range_builder::AddrPortRangeBuilder::<'a>::new(
+            prefixes_to_update,
+            prefixes_to_point_to,
+        ))
+    } else {
+        Box::new(range_builder::AddrRangeBuilder::<'a>::new(
+            prefixes_to_update,
+            prefixes_to_point_to,
+        ))
+    }
 }
 
 fn generate_public_values(

@@ -2,7 +2,11 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
-use super::tables::{AddrTranslationValue, IpRange, NatTableValue};
+use super::tables::{
+    AddrTranslationValue, IpPortRange, IpRange, NatTableValue, PortAddrSize,
+    PortAddrTranslationValue, PortRange,
+};
+use bnum::cast::CastFrom;
 use lpm::prefix::{Prefix, PrefixSize};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -58,6 +62,56 @@ fn add_offset_to_address(addr: &IpAddr, offset: PrefixSize) -> Result<IpAddr, Na
     }
 }
 
+// Within the IP and port combinated space, move a given IP and port "forward" by a given offset.
+//
+// # Returns
+//
+// Returns the new IP address and port, or an error if the offset is too large for the IP address
+// space and port range.
+//
+// # Example
+//
+// If we have:
+//
+// - Current address: 1.1.1.1
+// - Current port: 4800
+// - Port range: 4000-4999 (1000 ports)
+// - Offset: 6400
+//
+// Then we get:
+//
+// - New address: 1.1.1.8
+// - New port: 4200
+fn add_offset_to_address_and_port(
+    addr: &IpAddr,
+    port: u16,
+    port_range: PortRange,
+    offset: PortAddrSize,
+) -> Result<(IpAddr, u16), NatPeeringError> {
+    let covered_ips_big = offset / PortAddrSize::from(port_range.len()); // example: 6 ips
+    let port_difference_big = offset % PortAddrSize::from(port_range.len()); // example: 400 ports
+
+    debug_assert!(covered_ips_big <= PortAddrSize::from(u128::MAX));
+    let mut covered_ips = PrefixSize::U128(u128::cast_from(covered_ips_big));
+    debug_assert!(port_difference_big <= PortAddrSize::from(u16::MAX));
+    let port_difference = u16::cast_from(port_difference_big);
+
+    // In our example: port 4800 + 400 > 4999, so we need to cover one more IP and to roll over port
+    // number to 4200
+    if port + port_difference > port_range.end() {
+        covered_ips += 1; // example: now 7 IPs
+    }
+    // In our example:
+    // - new IP: 1.1.1.1 + 7 = 1.1.1.8
+    // - new port: 4000 + ((4800 + 6400) % 1000) = 4200
+    let new_ip = add_offset_to_address(addr, covered_ips)?;
+    let new_port = port_range.start()
+        + u16::try_from(u32::from(port + port_difference) % port_range.len())
+            // port_range.len() is <= (u16::MAX + 1), so we always have the modulo result <= u16::MAX
+            .unwrap_or_else(|_| unreachable!());
+    Ok((new_ip, new_port))
+}
+
 /// A builder for IP address ranges.
 ///
 /// The generated ranges are used in the stateless NAT tables to associate ranges of IP addresses
@@ -66,7 +120,7 @@ fn add_offset_to_address(addr: &IpAddr, offset: PrefixSize) -> Result<IpAddr, Na
 /// table, and then look up the range associated to the prefix in the NAT table, to find the
 /// corresponding mapping.
 #[derive(Debug)]
-pub struct RangeBuilder<'a> {
+pub struct AddrRangeBuilder<'a> {
     // The list of "original" prefixes (the prefixes we want to translate)
     prefix_iter_orig: std::collections::btree_set::Iter<'a, Prefix>,
     // The list of "target" prefixes (the prefixes we want to translate the original prefixes to)
@@ -79,7 +133,7 @@ pub struct RangeBuilder<'a> {
     offset_cursor: PrefixSize,
 }
 
-impl<'a> RangeBuilder<'a> {
+impl<'a> AddrRangeBuilder<'a> {
     pub fn new(
         prefixes_to_update: &'a BTreeSet<Prefix>,
         prefixes_to_point_to: &'a BTreeSet<Prefix>,
@@ -114,7 +168,7 @@ impl<'a> RangeBuilder<'a> {
 /// [`NatTableValue`]. This range picking is done by advancing cursors for the current target
 /// prefix, for the start IP address of the current range, and the offset of this IP address within
 /// the current target prefix.
-impl Iterator for RangeBuilder<'_> {
+impl Iterator for AddrRangeBuilder<'_> {
     type Item = Result<(Prefix, NatTableValue), NatPeeringError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -197,6 +251,332 @@ impl Iterator for RangeBuilder<'_> {
     }
 }
 
+/// A structure containing a prefix and a port range.
+#[derive(Debug, Copy, Clone)]
+pub struct PrefixWithPortRange {
+    prefix: Prefix,
+    ports: PortRange,
+}
+
+// TODO: Collapse with IpPortRange in table.rs
+impl PrefixWithPortRange {
+    #[must_use]
+    pub fn new(prefix: Prefix, ports: PortRange) -> Self {
+        Self { prefix, ports }
+    }
+
+    fn ip_len(&self) -> PrefixSize {
+        self.prefix.size()
+    }
+
+    fn port_len(&self) -> u32 {
+        self.ports.len()
+    }
+
+    fn size(&self) -> PortAddrSize {
+        let ip_len = match self.ip_len() {
+            PrefixSize::U128(len) => PortAddrSize::from(len),
+            PrefixSize::Ipv6MaxAddrs => PortAddrSize::from(u128::MAX) + 1,
+            PrefixSize::Overflow => unreachable!(),
+        };
+        ip_len * PortAddrSize::from(self.port_len())
+    }
+
+    fn max_theoretical_size() -> PortAddrSize {
+        (PortAddrSize::from(u128::MAX) + 1) * (PortAddrSize::from(u16::MAX) + 1)
+    }
+}
+
+type PrefixIter<'a> = std::collections::btree_set::Iter<'a, Prefix>;
+
+/// A builder for IP address ranges.
+///
+/// The generated ranges are used in the stateless NAT tables to associate ranges of IP addresses
+/// with prefixes. Prefixes and associated ranges are used as keys and values in the NAT tables.
+/// When translating an IP address, we look up the prefix associated to the IP address in the NAT
+/// table, and then look up the range associated to the prefix in the NAT table, to find the
+/// corresponding mapping.
+#[derive(Debug)]
+pub struct AddrPortRangeBuilder<'a> {
+    // The list of "original" prefixes (the prefixes we want to translate)
+    prefix_iter_orig: std::iter::Map<PrefixIter<'a>, fn(&Prefix) -> PrefixWithPortRange>,
+    // The list of "target" prefixes (the prefixes we want to translate the original prefixes to)
+    prefix_iter_target: std::iter::Map<PrefixIter<'a>, fn(&Prefix) -> PrefixWithPortRange>,
+    // The current target prefix we're processing
+    prefix_cursor: Option<PrefixWithPortRange>,
+    // The start address of the current IP range we're processing, within the current target prefix
+    addr_port_cursor: Option<(IpAddr, u16)>,
+    // The current offset of the IP and port ranges we're processing, within the current target
+    // prefix and port range
+    offset_cursor: PortAddrSize,
+}
+
+impl<'a> AddrPortRangeBuilder<'a> {
+    pub fn new(
+        prefixes_to_update: &'a BTreeSet<Prefix>, // FIXME: Vec<PrefixWithPortRange>
+        prefixes_to_point_to: &'a BTreeSet<Prefix>, // FIXME: Vec<PrefixWithPortRange>
+    ) -> Self {
+        // FIXME: Get port ranges from config
+        fn dummy_map(p: &Prefix) -> PrefixWithPortRange {
+            let dummy_port_range = PortRange::new(1, 65535);
+            PrefixWithPortRange::new(*p, dummy_port_range)
+        }
+
+        let mut builder = Self {
+            prefix_iter_orig: prefixes_to_update.iter().map(dummy_map), // FIXME
+            prefix_iter_target: prefixes_to_point_to.iter().map(dummy_map), // FIXME
+            prefix_cursor: None,
+            addr_port_cursor: None,
+            offset_cursor: PortAddrSize::from(0u8),
+        };
+
+        builder.prefix_cursor = builder.prefix_iter_target.next();
+        builder.addr_port_cursor = builder
+            .prefix_cursor
+            .map(|cursor| (Prefix::as_address(&cursor.prefix), cursor.ports.start()));
+
+        builder
+    }
+}
+
+/// The range builder is implemented as an iterator. Each iteration returns a tuple containing a
+/// prefix and a corresponding [`NatTableValue`], which contains the ranges associated to the prefix.
+///
+/// The idea behind this builder is that we don't always get a one-to-one mapping between original
+/// prefixes to translate, and target prefixes to translate to, because the lists of prefixes can
+/// contain prefixes of different sizes (as long as the total size of the list is the same). As a
+/// consequence, a given original prefix may map to a list of fragment of prefixes that are not
+/// necessarily CIDR prefixes.
+///
+/// To build these IP ranges, the idea is the following: we consider a virtual "flat list" of all
+/// target prefixes. For each original prefix, we pick the next IP ranges from this list, until we
+/// cover the number of elements in the original prefix, and add these ranges to a
+/// [`NatTableValue`]. This range picking is done by advancing cursors for the current target
+/// prefix, for the start IP address of the current range, and the offset of this IP address within
+/// the current target prefix.
+impl Iterator for AddrPortRangeBuilder<'_> {
+    type Item = Result<(Prefix, NatTableValue), NatPeeringError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset_cursor >= PrefixWithPortRange::max_theoretical_size() {
+            // We have covered the whole IPv6 address space multiplied by the whole range space, we
+            // have no reason to go any further.
+            return None;
+        }
+
+        let orig_prefix = self.prefix_iter_orig.next()?;
+        let mut value = PortAddrTranslationValue::new();
+
+        let orig_prefix_size = orig_prefix.size();
+        let mut orig_offset_cursor = PortAddrSize::from(0u8);
+        let mut processed_ranges_size = PortAddrSize::from(0u8);
+
+        // Add ranges until we've covered the number of elements in the original prefix
+        while processed_ranges_size < orig_prefix_size {
+            let Some(target_prefix) = self.prefix_cursor else {
+                // Both prefix lists (origin and target prefix lists) have the same size so we
+                // should reach the end of both lists at the same time. If we have no more target
+                // prefixes available, then we did a mistake.
+                return Some(Err(NatPeeringError::MalformedPeering));
+            };
+            let target_prefix_size = target_prefix.size();
+            let target_prefix_remaining_size = target_prefix_size - self.offset_cursor;
+            let orig_prefix_remaining_size = orig_prefix_size - orig_offset_cursor;
+            let Some(addr_port_cursor) = self.addr_port_cursor else {
+                return Some(Err(NatPeeringError::MalformedPeering));
+            };
+
+            // Compute range size:
+            // - If the current target IP range considered has more elements than the remaining
+            //   portion of the original prefix, we just need to cover the remaining portion of the
+            //   original prefix.
+            // - Otherwise, we use the remaining portion of the target IP range, and we'll pick the
+            //   next target IP range for the next loop iteration.
+            let range_size = if target_prefix_remaining_size > orig_prefix_remaining_size {
+                orig_prefix_remaining_size
+            } else {
+                target_prefix_remaining_size
+            };
+
+            // Compute and insert new range(s)
+            let Ok(range_end) = add_offset_to_address_and_port(
+                &addr_port_cursor.0,
+                addr_port_cursor.1,
+                target_prefix.ports,
+                range_size - PortAddrSize::from(1u8),
+            ) else {
+                return Some(Err(NatPeeringError::MalformedPeering));
+            };
+            let ranges = create_new_ranges(addr_port_cursor, range_end, target_prefix.ports);
+            value.add_ranges(ranges);
+
+            // Update state for next loop iteration (if original prefix is not fully covered), or
+            // next iterator call
+
+            processed_ranges_size += range_size;
+            // Do not update orig_offset_cursor if we're done processing the current prefix
+            // (we'd risk an overflow if we reached the end of the IP space)
+            if processed_ranges_size < orig_prefix_size {
+                orig_offset_cursor += range_size;
+            }
+
+            // Update cursors. If we "used up" the whole target prefix, move to the next one.
+            if range_size == target_prefix_remaining_size {
+                self.prefix_cursor = self.prefix_iter_target.next();
+                self.addr_port_cursor = self.prefix_cursor.map(|prefix_and_ports| {
+                    (
+                        prefix_and_ports.prefix.as_address(),
+                        prefix_and_ports.ports.start(),
+                    )
+                });
+                self.offset_cursor = PortAddrSize::from(0u8);
+            } else {
+                let Ok(new_addr_cursor) = add_offset_to_address_and_port(
+                    &addr_port_cursor.0,
+                    addr_port_cursor.1,
+                    target_prefix.ports,
+                    range_size,
+                ) else {
+                    return Some(Err(NatPeeringError::MalformedPeering));
+                };
+                self.addr_port_cursor = Some(new_addr_cursor);
+                self.offset_cursor += range_size;
+            }
+        }
+
+        Some(Ok((orig_prefix.prefix, NatTableValue::Pat(value))))
+    }
+}
+
+// Say we have:
+//
+// - Current original prefix is a /25 (128 addresses), with a port range containing 300 ports
+// - Current target prefix is 1.0.1.0/24 with port ranges 4000-4999, but we already started to map
+//   it against the previous original prefix, so the start cursor doesn't align with the start of the
+//   target prefix
+// - start cursor at 1.0.1.1, port 4500,
+// - end cursor at 1.0.1.39, port 4899,
+//
+// End cursor calculated by adding original_prefix_size * original_port_range_size = 128 * 300 = 38400
+// which covers the following three ranges:
+//
+// - Range 1: IP 1.0.1.1, ports 4500 to 4999 (500 ports)
+// - Range 2: IP 1.0.1.2 to 1.0.1.38, ports 4000 to 4999 (37 * 1000 = 37000 ports)
+// - Range 3: IP 1.0.1.39, ports 4000 to 4899 (900 ports)
+//
+// Total: 500 + 37000 + 900 = 38400 {IP, port} mappings
+//
+// Because offsets may align with the port range associated with the target prefix, as in the
+// previous example, we end up creating up to three ranges.
+fn create_new_ranges(
+    addr_port_cursor: (IpAddr, u16),
+    range_end: (IpAddr, u16),
+    target_range_ports: PortRange,
+) -> Vec<IpPortRange> {
+    debug_assert!(addr_port_cursor.1 >= target_range_ports.start());
+    debug_assert!(range_end.1 <= target_range_ports.end());
+
+    let mut ranges = Vec::new();
+    let ip_addr_diff = ip_addr_diff(&addr_port_cursor.0, &range_end.0);
+
+    match ip_addr_diff {
+        0 => {
+            debug_assert!(addr_port_cursor.0 == range_end.0);
+            // We're only covering a single IP address. Create the relevant port range over this single
+            // address and return.
+            ranges.push(IpPortRange::new(
+                IpRange::new(addr_port_cursor.0, range_end.0),
+                PortRange::new(addr_port_cursor.1, range_end.1),
+            ));
+        }
+        1 => {
+            // We're covering the start and end addresses.
+            if addr_port_cursor.1 == target_range_ports.start()
+                && range_end.1 == target_range_ports.end()
+            {
+                // The start and end ports are aligned with the port range associated with the
+                // target prefix, we can cover these with a single range.
+                ranges.push(IpPortRange::new(
+                    IpRange::new(addr_port_cursor.0, range_end.0),
+                    target_range_ports,
+                ));
+            } else {
+                // The start and end ports are not aligned with the port range associated with the
+                // target prefix, we need two ranges, one for each of the two IP addresses.
+                ranges.push(IpPortRange::new(
+                    IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
+                    PortRange::new(addr_port_cursor.1, target_range_ports.end()),
+                ));
+                ranges.push(IpPortRange::new(
+                    IpRange::new(range_end.0, range_end.0),
+                    PortRange::new(target_range_ports.start(), range_end.1),
+                ));
+            }
+        }
+        _ => {
+            let mut start_middle_range = addr_port_cursor;
+            let mut end_middle_range = range_end;
+
+            // If cursor doesn't align with the start of the port range associated with the target
+            // prefix, create a first range to compensate the difference, for the first IP in the
+            // range (in our example: IP 1.0.1.1, ports 4500 to 4999)
+            if addr_port_cursor.1 != target_range_ports.start() {
+                ranges.push(IpPortRange::new(
+                    IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
+                    PortRange::new(addr_port_cursor.1, target_range_ports.end()),
+                ));
+                // Compute start of middle range, in our example: IP 1.0.1.2, port 4000
+                start_middle_range = (
+                    add_offset_to_address(&addr_port_cursor.0, PrefixSize::U128(1))
+                        .unwrap_or_else(|_| unreachable!()),
+                    target_range_ports.start(),
+                );
+            }
+
+            // If range_end doesn't align with the end of the port range associated with the target
+            // prefix, compute the end of the middle range (in our example: IP 1.0.1.39, port 4000)
+            if range_end.1 != target_range_ports.end() {
+                end_middle_range = (decrement_ip_addr(&range_end.0), target_range_ports.end());
+            }
+
+            // Insert the middle range, covering IP addresses for which we use all ports in the port
+            // range associated with the target prefix (in our example: IPs 1.0.1.2 to 1.0.1.38,
+            // ports 4000-4999)
+            ranges.push(IpPortRange::new(
+                IpRange::new(start_middle_range.0, end_middle_range.0),
+                PortRange::new(start_middle_range.1, end_middle_range.1),
+            ));
+
+            // If range end doesn't align with the end of the port range associated with the target prefix,
+            // create a third range to compensate the difference, for the last IP in the range (in
+            // our example: IP 1.0.1.39, ports 4000 to 4899)
+            if range_end.1 != target_range_ports.end() {
+                ranges.push(IpPortRange::new(
+                    IpRange::new(range_end.0, range_end.0),
+                    PortRange::new(target_range_ports.start(), range_end.1),
+                ));
+            }
+        }
+    }
+
+    ranges
+}
+
+fn ip_addr_diff(addr1: &IpAddr, addr2: &IpAddr) -> u128 {
+    match (addr1, addr2) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => u128::from(a.to_bits() - b.to_bits()),
+        (IpAddr::V6(a), IpAddr::V6(b)) => a.to_bits() - b.to_bits(),
+        _ => unreachable!(),
+    }
+}
+
+fn decrement_ip_addr(addr: &IpAddr) -> IpAddr {
+    match addr {
+        IpAddr::V4(a) => IpAddr::V4(a.to_bits().saturating_sub(1).into()),
+        IpAddr::V6(a) => IpAddr::V6(a.to_bits().saturating_sub(1).into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::generate_nat_values;
@@ -239,50 +619,50 @@ mod tests {
 
         let mut nat_ranges = generate_nat_values(&prefixes_to_update, &prefixes_to_point_to);
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.0.0"), addr_v4("10.0.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.1.0"), addr_v4("10.0.1.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "3.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.2.0"), addr_v4("10.0.2.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "4.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.3.0"), addr_v4("10.0.3.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "5.0.0.0/16".into());
         assert_eq!(
             *value.ranges(),
@@ -292,10 +672,10 @@ mod tests {
             ],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "6.0.0.0/32".into());
         assert_eq!(
             *value.ranges(),
@@ -341,80 +721,80 @@ mod tests {
 
         let mut nat_ranges = generate_nat_values(&prefixes_to_update, &prefixes_to_point_to);
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.0.0"), addr_v4("10.0.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.1.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.1.0"), addr_v4("10.0.1.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.2.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.2.0"), addr_v4("10.0.2.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.3.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.0.0.0"), addr_v4("11.0.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.0.0.0/16".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.0.1.0"), addr_v4("11.1.0.255")),],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.1.0.0/16".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.1.1.0"), addr_v4("11.2.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.2.0.0/16".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.2.1.0"), addr_v4("11.3.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.3.0.0/16".into());
         assert_eq!(
             *value.ranges(),
@@ -798,6 +1178,9 @@ mod bolero_tests {
                         .into_iter()
                         .fold(PrefixSize::U128(0), |sum, result| {
                             let (_, value) = result.unwrap();
+                            let NatTableValue::Nat(value) = value else {
+                                panic!("Unexpected value type: {value:?}");
+                            };
                             sum + value.ip_len()
                         });
                 assert_eq!(ranges_size, orig_ranges_size);

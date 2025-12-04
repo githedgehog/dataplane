@@ -12,6 +12,8 @@ use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::debug;
 
+pub type PortAddrSize = BUint<3>;
+
 /// Error type for [`NatTables`] operations.
 #[derive(thiserror::Error, Debug)]
 pub enum NatTablesError {
@@ -110,7 +112,7 @@ impl PerVniTable {
                 let port = port_opt?; // We expect a port for PAT; no mapping if we have none
                 let offset = addr_offset_in_prefix_with_ports(
                     &prefix,
-                    &ranges.prefix_port_range,
+                    ranges.prefix_port_range,
                     addr,
                     port,
                 )?;
@@ -138,7 +140,7 @@ fn addr_offset_in_prefix(prefix: &Prefix, addr: &IpAddr) -> Option<u128> {
 
 fn addr_offset_in_prefix_with_ports(
     prefix: &Prefix,
-    port_range: &PortRange,
+    port_range: PortRange,
     addr: &IpAddr,
     port: u16,
 ) -> Option<PortAddrSize> {
@@ -282,8 +284,6 @@ impl AddrTranslationValue {
     }
 }
 
-pub type PortAddrSize = BUint<3>;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortAddrTranslationValue {
     prefix_port_range: PortRange,
@@ -291,10 +291,41 @@ pub struct PortAddrTranslationValue {
 }
 
 impl PortAddrTranslationValue {
-    fn ip_len(&self) -> PrefixSize {
-        let sum = self.ranges.iter().map(IpPortRange::ip_len).sum();
-        debug_assert!(sum < PrefixSize::Overflow);
-        sum
+    #[must_use]
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            prefix_port_range: PortRange::new(0, 0),
+            ranges: Vec::new(),
+        }
+    }
+
+    /// Adds a new range to the structure.
+    ///
+    /// Note: When possible, the new range is merged with the latest range in the list; so there is
+    /// no guarantee, when calling this method, that the new range is added as a separate range, and
+    /// that `self.ranges.len()` will be incremented.
+    pub fn add_ranges(&mut self, new_ranges: Vec<IpPortRange>) {
+        for range in new_ranges {
+            if self.is_empty() {
+                self.push(range);
+                return;
+            }
+
+            let last_range = self.ranges.last_mut().unwrap_or_else(|| {
+                // We checked ranges vector is not empty
+                unreachable!()
+            });
+            last_range.merge(&range).unwrap_or_else(|| self.push(range));
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    fn push(&mut self, range: IpPortRange) {
+        self.ranges.push(range);
     }
 
     fn size(&self) -> PortAddrSize {
@@ -324,11 +355,19 @@ pub struct IpPortRange {
 }
 
 impl IpPortRange {
+    #[must_use]
+    pub fn new(ip_range: IpRange, port_range: PortRange) -> Self {
+        Self {
+            ip_range,
+            port_range,
+        }
+    }
+
     fn ip_len(&self) -> PrefixSize {
         self.ip_range.len()
     }
 
-    fn port_len(&self) -> u16 {
+    fn port_len(&self) -> u32 {
         self.port_range.len()
     }
 
@@ -357,6 +396,42 @@ impl IpPortRange {
         self.ip_range
             .get_entry(ip_offset)
             .zip(self.port_range.get_entry(port_offset))
+    }
+
+    // Merges the current IP address and port ranges with the next ranges, if possible.
+    //
+    // Merging is possible if:
+    // - both ranges are of the same IP version, and
+    // - either:
+    //   - case 1:
+    //     - port ranges are identical, and
+    //     - the next IP range starts right after the current IP range ends
+    //     - example: 1.0.1.0/24 (1-100) and 1.0.2.0/24 (1-100) -> 1.0.1.0 to 1.0.2.255 (1-100)
+    //   - case 2:
+    //     - IP ranges are identical, and
+    //     - the next port range starts right after the current port range ends
+    //     - example: 1.0.1.0/24 (1-100) and 1.0.1.0/24 (101-300) -> 1.0.1.0/24 (1-300)
+    //
+    // # Returns
+    //
+    // Returns `Some(())` if the ranges were merged, or `None` otherwise.
+    fn merge(&mut self, next: &IpPortRange) -> Option<()> {
+        // Always merge on the "right side". This is because we call this method assuming that
+        // ranges are ordered (by IP range start, then port range start values), and we process the
+        // smaller ones first; if we try to merge a new one into an existing one, it's a "bigger"
+        // one, so we merge on the right side.
+
+        // Case 1: port ranges are identical
+        if self.port_range == next.port_range {
+            self.ip_range.merge(&next.ip_range);
+            return Some(());
+        }
+
+        // Case 2: IP ranges are identical
+        if self.ip_range == next.ip_range {
+            return self.port_range.merge(next.port_range);
+        }
+        None
     }
 }
 
@@ -458,7 +533,7 @@ impl IpRange {
 }
 
 // Represents a port range, with a start and an end port.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct PortRange {
     start: u16,
     end: u16,
@@ -476,18 +551,30 @@ impl PortRange {
         self.start <= port && port <= self.end
     }
 
-    fn len(&self) -> u16 {
-        self.end - self.start + 1
+    #[must_use]
+    pub fn start(&self) -> u16 {
+        self.start
     }
 
-    fn get_entry(&self, offset: u16) -> Option<u16> {
-        if offset >= self.len() {
+    #[must_use]
+    pub fn end(&self) -> u16 {
+        self.end
+    }
+
+    #[allow(clippy::len_without_is_empty)]
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        u32::from(self.end - self.start) + 1
+    }
+
+    fn get_entry(self, offset: u16) -> Option<u16> {
+        if u32::from(offset) >= self.len() {
             return None;
         }
         Some(self.start + offset)
     }
 
-    fn merge(&mut self, next: &PortRange) -> Option<()> {
+    fn merge(&mut self, next: PortRange) -> Option<()> {
         if self.start > next.start || self.end >= next.start {
             return None;
         }
