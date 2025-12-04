@@ -160,6 +160,19 @@ impl Pool {
         &self.0.config
     }
 
+    pub fn alloc(&self) -> Mbuf {
+        let ptr = unsafe { dpdk_sys::rte_pktmbuf_alloc(self.0.as_mut_ptr()) };
+        let ptr = match NonNull::new(ptr) {
+            Some(ptr) => ptr,
+            None => {
+                EalErrno::assert(errno::NEG_ENOENT);
+                unreachable!()
+            } // TODO: this may be a little drastic
+        };
+        // TODO: add a safer new_from_raw impl to Mbuf
+        unsafe { Mbuf::new_from_raw_unchecked(ptr.as_ptr()) }
+    }
+
     #[must_use]
     pub fn alloc_bulk(&self, num: usize) -> Vec<Mbuf> {
         // SAFETY: we should never have any null ptrs come back if ret passes check
