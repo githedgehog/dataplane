@@ -24,7 +24,6 @@ use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
-use queue::{rx, tx};
 
 /// Defaults for the RX queue
 pub(crate) mod rx_queue_defaults {
