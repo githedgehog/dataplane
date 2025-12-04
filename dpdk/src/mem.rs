@@ -429,6 +429,16 @@ impl Drop for PoolInner {
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct Mbuf {
+    // In the future this should likely be a `Unique<...>` instead of a `NonNull<...>`,
+    // at which point we can drop the `PhantomData` marker, which is here to move this type from co-variance to
+    // invariance, and to inform the compiler that we functionally "own" this `dpdk_sys::rte_mbuf`.
+    // But `Unique` is not yet stabilized, and so we have a phantom data.
+    //
+    // One consequence of this design is that we must _never_ allow `Mbuf` to implement Copy (which it trivially could,
+    // since this is just a pointer).
+    //
+    // Fortunately, you can never `impl Copy` for any type which implements `Drop` so we are categorically safe from
+    // from that.
     pub(crate) raw: NonNull<dpdk_sys::rte_mbuf>,
     marker: PhantomData<dpdk_sys::rte_mbuf>,
 }
