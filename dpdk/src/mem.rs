@@ -267,9 +267,9 @@ impl Default for PoolParams {
     fn default() -> PoolParams {
         PoolParams {
             size: (1 << 15) - 1,
-            cache_size: 256,
-            private_size: 256,
-            data_size: 2048,
+            cache_size: 256,   // guess for best choice, adjust as profiling suggests
+            private_size: 512, // guess for most useful value, adjust as needed
+            data_size: 8192,   // guess for most useful value, adjust as needed
             socket_id: SocketId::current(),
         }
     }
