@@ -196,9 +196,7 @@ impl WorkerThread {
         lcore: LCoreId,
         f: T,
     ) -> Result<LCoreId, WorkerThreadLaunchError> {
-        RteAllocator::assert_initialized();
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
-            RteAllocator::assert_initialized();
             let task = unsafe {
                 Box::from_raw(
                     arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
