@@ -188,7 +188,7 @@ impl From<DevIndex> for u16 {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug)]
 /// TODO: add `rx_offloads` support
 pub struct DevConfig {
     // /// Information about the device.
