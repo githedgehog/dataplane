@@ -687,6 +687,14 @@ impl Manager {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidNetworkDeviceName {
+    #[error("network device has invalid name (not legal utf8)")]
+    Utf8(#[from] str::Utf8Error),
+    #[error("name {0} is not a valid PCI address ({1}) or a valid network interface name ({2})")]
+    Illegal(String, InvalidPciAddress, IllegalInterfaceName),
+}
+
 impl DevInfo {
     /// Get the port index of the device.
     #[must_use]
