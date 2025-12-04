@@ -5,6 +5,8 @@ pub mod bgp;
 pub mod interface;
 pub mod support;
 
+use std::collections::BTreeMap;
+
 /// A type on which implement `bolero::TypeGenerator` for legal values of `T`
 ///
 /// Generally, `bolero` type generators should generate all possible values of `T` so that it is possible to test validation logic, etc.
@@ -26,4 +28,25 @@ impl<T> AsRef<T> for LegalValue<T> {
 pub trait Normalize {
     #[must_use]
     fn normalize(&self) -> Self;
+}
+
+impl<T> Normalize for Vec<T>
+where
+    T: Normalize,
+{
+    fn normalize(&self) -> Self {
+        self.iter().map(T::normalize).collect()
+    }
+}
+
+impl<K, V> Normalize for BTreeMap<K, V>
+where
+    K: Ord + Clone,
+    V: Normalize,
+{
+    fn normalize(&self) -> Self {
+        self.iter()
+            .map(|(k, v)| (k.clone(), v.normalize()))
+            .collect()
+    }
 }
