@@ -160,7 +160,7 @@ impl ServiceThread<'_> {
     }
 }
 
-#[allow(unused)]
+#[derive(Debug)]
 pub struct WorkerThread {
     lcore_id: LCoreId,
 }
