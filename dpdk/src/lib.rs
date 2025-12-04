@@ -35,9 +35,6 @@ use tracectl::trace_target;
 const DPDK: &str = "dpdk";
 trace_target!(DPDK, LevelFilter::INFO, &["drivers"]);
 
-extern crate alloc;
-extern crate core;
-
 pub mod dev;
 pub mod eal;
 pub mod flow;
