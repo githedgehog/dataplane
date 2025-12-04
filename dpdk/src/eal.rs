@@ -2,13 +2,28 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK Environment Abstraction Layer (EAL)
-use crate::mem::RteAllocator;
+
 use crate::{dev, lcore, mem, socket};
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
-use dpdk_sys;
-use std::ffi::CStr;
-use tracing::{error, info, warn};
+use std::alloc::{Allocator, Layout, System};
+use std::convert::Infallible;
+use std::ffi::{CStr, CString};
+use std::io::Write;
+use std::os::raw::c_char;
+use tracing::{error, info};
+
+#[repr(u8)]
+enum EalState {
+    Configured,
+    Started,
+    Stopped,
+}
+
+// sealed
+trait State {
+    const STATE: EalState;
+}
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
@@ -17,7 +32,13 @@ use tracing::{error, info, warn};
 #[derive(Debug)]
 #[repr(transparent)]
 #[non_exhaustive]
-pub struct Eal {
+pub struct Eal<S: State> {
+    // todo: make private
+    pub state: S,
+}
+
+#[non_exhaustive]
+pub struct Started {
     /// The memory manager.
     ///
     /// You can find memory services here, including memory pools and mem buffers.
@@ -39,7 +60,22 @@ pub struct Eal {
     // TODO: flow
 }
 
-unsafe impl Sync for Eal {}
+#[non_exhaustive]
+pub struct Stopped;
+
+impl State for Configured {
+    const STATE: EalState = EalState::Configured;
+}
+
+impl State for Started {
+    const STATE: EalState = EalState::Started;
+}
+
+impl State for Stopped {
+    const STATE: EalState = EalState::Stopped;
+}
+
+unsafe impl Sync for Eal<Started> {}
 
 /// Error type for EAL initialization failures.
 #[derive(Debug, thiserror::Error)]
@@ -57,9 +93,11 @@ pub enum InitError {
     UnknownError(i32),
 }
 
-#[repr(transparent)]
 #[derive(Debug)]
-struct ValidatedEalArgs(Vec<CString>);
+pub struct EalArgs {
+    pub argc: c_int,
+    pub argv: *mut *mut c_char,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum IllegalEalArguments {
@@ -71,34 +109,34 @@ pub enum IllegalEalArguments {
     NullByte,
 }
 
-impl ValidatedEalArgs {
+impl EalArgs {
     #[cold]
-    #[tracing::instrument(level = "info", skip(args), ret)]
-    fn new(
-        args: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<ValidatedEalArgs, IllegalEalArguments> {
-        let args: Vec<_> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
-        let len = args.len();
-        if len > c_int::MAX as usize {
-            return Err(IllegalEalArguments::TooLong(len));
-        }
-        match args.iter().find(|s| !s.is_ascii()) {
-            None => {}
-            Some(_) => return Err(IllegalEalArguments::NonAscii),
-        }
-        let args_as_c_strings: Result<Vec<_>, _> =
-            args.iter().map(|s| CString::new(s.as_bytes())).collect();
+    pub fn new(args: &rkyv::Archived<Vec<std::ffi::CString>>) -> EalArgs {
+        let mut system_args: Vec<*mut i8, System> = Vec::with_capacity_in(args.len(), System);
+        for arg in args.iter() {
+            let bytes = arg.as_bytes_with_nul();
+            // args are over-aligned to (hopefully) make debug easier if we need to disect memory
+            const EAL_ARG_ALIGNMENT: usize = 64;
+            let layout = Layout::from_size_align(bytes.len(), EAL_ARG_ALIGNMENT)
+                .unwrap_or_else(|e| unreachable!("invalid layout: {e}"));
 
-        // Account for the possibility of an illegal null byte in the arguments.
-        let args_as_c_strings = match args_as_c_strings {
-            Ok(c_strs) => c_strs,
-            Err(_null_err) => return Err(IllegalEalArguments::NullByte),
-        };
-
-        Ok(ValidatedEalArgs(args_as_c_strings))
+            #[allow(clippy::expect_used)] // very unlikely and a fatal error in any case.
+            let mut x = System
+                .allocate_zeroed(layout)
+                .expect("unable to allocate memory for eal arguments");
+            unsafe { x.as_mut() }.copy_from_slice(bytes);
+            system_args.push(
+                Box::leak(unsafe { Box::from_raw_in(x.as_ptr(), System) }).as_mut_ptr() as *mut i8,
+            )
+        }
+        let boxed_slice = system_args.into_boxed_slice();
+        let argc = boxed_slice.len() as c_int;
+        let argv = Box::leak(boxed_slice).as_mut_ptr();
+        EalArgs { argc, argv }
     }
 }
 
+// TODO: absorb into state machine
 /// Initialize the DPDK Environment Abstraction Layer (EAL).
 ///
 /// # Panics
@@ -110,37 +148,21 @@ impl ValidatedEalArgs {
 /// 3. The EAL initialization fails.
 /// 4. The EAL has already been initialized.
 #[cold]
-pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    // NOTE: We need to be careful about freeing memory here!
-    // After _init is called, we swap to another memory allocator (the dpdk allocator).
-    // We can't free memory from the system allocator using the DPDK allocator.
-    // The easiest way around this issue is
-    // to make sure the memory used for initialization is completely freed
-    // before swapping allocators.
-    // The easiest way I know how to do that is by bundling the pre-shift logic into its own scope.
-    // The system memory will be free by the time this scope closes.
-    let eal = {
-        let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
-            Eal::fatal_error(e.to_string());
-        });
-        let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
-        let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
-        if ret < 0 {
-            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
-        }
-        Eal {
-            mem: mem::Manager::init(),
-            dev: dev::Manager::init(),
-            socket: socket::Manager::init(),
-            lcore: lcore::Manager::init(),
-        }
-    };
-    // Shift to the DPDK allocator
-    RteAllocator::mark_initialized();
-    eal
+pub fn init(args: EalArgs) -> Started {
+    let ret = unsafe { dpdk_sys::rte_eal_init(args.argc, args.argv) };
+    if ret < 0 {
+        EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+    }
+    // lcore::ServiceThread::register_thread_spawn_hook();
+    Started {
+        mem: mem::Manager::init(),
+        dev: dev::Manager::init(),
+        socket: socket::Manager::init(),
+        lcore: lcore::Manager::init(),
+    }
 }
 
-impl Eal {
+impl Eal<Started> {
     /// Returns `true` if the [`Eal`] is using the PCI bus.
     ///
     /// This is mostly a safe wrapper around [`dpdk_sys::rte_eal_has_pci`]
@@ -190,5 +212,118 @@ impl EalErrno {
         let ret_msg = unsafe { CStr::from_ptr(ret_msg) };
         let ret_msg = ret_msg.to_str().expect("dpdk message is not valid unicode");
         Eal::fatal_error(ret_msg)
+    }
+}
+
+pub struct Configured {
+    args: EalArgs,
+}
+
+impl driver::Configure for Eal<Configured> {
+    type Configuration = EalArgs;
+    type Configured = Eal<Configured>;
+    type Error = Infallible; // TODO: real error types
+
+    // memory allocation ok after this call if Ok
+    // thread creation ok after this call if Ok
+    fn configure(configuration: Self::Configuration) -> Result<Self::Configured, Infallible> {
+        // TODO: proper validation of args or construct EalArgs from something more friendly
+        Ok(Eal {
+            state: Configured {
+                args: configuration,
+            },
+        })
+    }
+}
+
+impl driver::Start for Eal<Configured> {
+    type Started = Eal<Started>;
+    type Error = Infallible;
+
+    // Start the Eal.
+    fn start(self) -> Result<Self::Started, Self::Error> {
+        let ret = unsafe { dpdk_sys::rte_eal_init(self.state.args.argc, self.state.args.argv) };
+        if ret < 0 {
+            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+        }
+        let ret = unsafe { dpdk_sys::rte_mp_disable() };
+        if !ret {
+            error!("multi-process not currently supported");
+            unsafe { libc::_exit(1) };
+        }
+        Ok(Eal {
+            state: Started {
+                mem: mem::Manager::init(),
+                dev: dev::Manager::init(),
+                socket: socket::Manager::init(),
+                lcore: lcore::Manager::init(),
+            },
+        })
+    }
+}
+
+impl driver::Stop for Eal<Started> {
+    type Outcome = Eal<Stopped>;
+    type Error = Infallible;
+
+    #[allow(clippy::unwrap_used)]
+    fn stop(self) -> Result<Self::Outcome, Self::Error> {
+        std::io::stdout().flush().unwrap();
+        std::io::stderr().flush().unwrap();
+        info!("waiting on EAL threads");
+        unsafe { dpdk_sys::rte_eal_mp_wait_lcore() };
+        if unsafe { dpdk_sys::rte_eal_cleanup() } != 0 {
+            eprintln!("failed to clean up EAL");
+            std::io::stdout().flush().unwrap();
+            std::io::stderr().flush().unwrap();
+            unsafe {
+                // _exit explicitly does not call exit handlers
+                libc::_exit(1);
+            }
+        }
+        info!("eal closed successfully");
+        Ok(Eal { state: Stopped })
+    }
+}
+
+impl<S> Drop for Eal<S>
+where
+    S: State,
+{
+    fn drop(&mut self) {
+        match S::STATE {
+            EalState::Configured => {
+                // EAL not started so nothing to shut down
+            }
+            EalState::Started => {
+                error!("EAL dropped while in started state");
+                // This is an exceptional situation so we take some extra defensive steps here.
+                // try to make sure we have written out all our log messages before we crash.
+                std::io::stdout()
+                    .flush()
+                    .unwrap_or_else(|_| std::process::abort());
+                std::io::stderr()
+                    .flush()
+                    .unwrap_or_else(|_| std::process::abort());
+                unsafe {
+                    libc::_exit(1);
+                }
+            }
+            EalState::Stopped => {
+                std::io::stdout()
+                    .flush()
+                    .unwrap_or_else(|_| std::process::abort());
+                std::io::stderr()
+                    .flush()
+                    .unwrap_or_else(|_| std::process::abort());
+                info!("EAL dropped");
+                std::io::stdout()
+                    .flush()
+                    .unwrap_or_else(|_| std::process::abort());
+                std::io::stderr()
+                    .flush()
+                    .unwrap_or_else(|_| std::process::abort());
+            }
+        }
     }
 }
