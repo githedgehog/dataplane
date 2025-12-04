@@ -9,6 +9,7 @@ license = "Apache-2.0"
 testing = ["dep:bolero"]
 
 [dependencies]
+bnum = { workspace = true }
 bolero = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["serde"] }
 linkme = { workspace = true }

@@ -3,13 +3,17 @@
 
 use super::NatPeeringError;
 use super::tables::{
-    AddrTranslationValue, IpPortRange, IpRange, NatTableValue, PortAddrSize,
-    PortAddrTranslationValue, PortRange,
+    AddrTranslationValue, IpPortRange, IpRange, NatTableValue, PortAddrTranslationValue,
 };
 use bnum::cast::CastFrom;
+use lpm::prefix::with_ports::{IpRangeWithPorts, PortRange, PrefixWithPorts, PrefixWithPortsSize};
 use lpm::prefix::{Prefix, PrefixSize};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
+
+fn max_theoretical_size() -> PrefixWithPortsSize {
+    (PrefixWithPortsSize::from(u128::MAX) + 1) * (PrefixWithPortsSize::from(u16::MAX) + 1)
+}
 
 // Add a given `PrefixSize` to a given `u128` offset in the IP space.
 fn add_prefix_size(
@@ -86,14 +90,14 @@ fn add_offset_to_address_and_port(
     addr: &IpAddr,
     port: u16,
     port_range: PortRange,
-    offset: PortAddrSize,
+    offset: PrefixWithPortsSize,
 ) -> Result<(IpAddr, u16), NatPeeringError> {
-    let covered_ips_big = offset / PortAddrSize::from(port_range.len()); // example: 6 ips
-    let port_difference_big = offset % PortAddrSize::from(port_range.len()); // example: 400 ports
+    let covered_ips_big = offset / PrefixWithPortsSize::from(port_range.len()); // example: 6 ips
+    let port_difference_big = offset % PrefixWithPortsSize::from(port_range.len()); // example: 400 ports
 
-    debug_assert!(covered_ips_big <= PortAddrSize::from(u128::MAX));
+    debug_assert!(covered_ips_big <= PrefixWithPortsSize::from(u128::MAX));
     let mut covered_ips = PrefixSize::U128(u128::cast_from(covered_ips_big));
-    debug_assert!(port_difference_big <= PortAddrSize::from(u16::MAX));
+    debug_assert!(port_difference_big <= PrefixWithPortsSize::from(u16::MAX));
     let port_difference = u16::cast_from(port_difference_big);
 
     // In our example: port 4800 + 400 > 4999, so we need to cover one more IP and to roll over port
@@ -251,42 +255,6 @@ impl Iterator for AddrRangeBuilder<'_> {
     }
 }
 
-/// A structure containing a prefix and a port range.
-#[derive(Debug, Copy, Clone)]
-pub struct PrefixWithPortRange {
-    prefix: Prefix,
-    ports: PortRange,
-}
-
-// TODO: Collapse with IpPortRange in table.rs
-impl PrefixWithPortRange {
-    #[must_use]
-    pub fn new(prefix: Prefix, ports: PortRange) -> Self {
-        Self { prefix, ports }
-    }
-
-    fn ip_len(&self) -> PrefixSize {
-        self.prefix.size()
-    }
-
-    fn port_len(&self) -> usize {
-        self.ports.len()
-    }
-
-    fn size(&self) -> PortAddrSize {
-        let ip_len = match self.ip_len() {
-            PrefixSize::U128(len) => PortAddrSize::from(len),
-            PrefixSize::Ipv6MaxAddrs => PortAddrSize::from(u128::MAX) + 1,
-            PrefixSize::Overflow => unreachable!(),
-        };
-        ip_len * PortAddrSize::from(self.port_len())
-    }
-
-    fn max_theoretical_size() -> PortAddrSize {
-        (PortAddrSize::from(u128::MAX) + 1) * (PortAddrSize::from(u16::MAX) + 1)
-    }
-}
-
 type PrefixIter<'a> = std::collections::btree_set::Iter<'a, Prefix>;
 
 /// A builder for IP address ranges.
@@ -299,27 +267,27 @@ type PrefixIter<'a> = std::collections::btree_set::Iter<'a, Prefix>;
 #[derive(Debug)]
 pub struct AddrPortRangeBuilder<'a> {
     // The list of "original" prefixes (the prefixes we want to translate)
-    prefix_iter_orig: std::iter::Map<PrefixIter<'a>, fn(&Prefix) -> PrefixWithPortRange>,
+    prefix_iter_orig: std::iter::Map<PrefixIter<'a>, fn(&Prefix) -> PrefixWithPorts>,
     // The list of "target" prefixes (the prefixes we want to translate the original prefixes to)
-    prefix_iter_target: std::iter::Map<PrefixIter<'a>, fn(&Prefix) -> PrefixWithPortRange>,
+    prefix_iter_target: std::iter::Map<PrefixIter<'a>, fn(&Prefix) -> PrefixWithPorts>,
     // The current target prefix we're processing
-    prefix_cursor: Option<PrefixWithPortRange>,
+    prefix_cursor: Option<PrefixWithPorts>,
     // The start address of the current IP range we're processing, within the current target prefix
     addr_port_cursor: Option<(IpAddr, u16)>,
     // The current offset of the IP and port ranges we're processing, within the current target
     // prefix and port range
-    offset_cursor: PortAddrSize,
+    offset_cursor: PrefixWithPortsSize,
 }
 
 impl<'a> AddrPortRangeBuilder<'a> {
     pub fn new(
-        prefixes_to_update: &'a BTreeSet<Prefix>, // FIXME: Vec<PrefixWithPortRange>
-        prefixes_to_point_to: &'a BTreeSet<Prefix>, // FIXME: Vec<PrefixWithPortRange>
+        prefixes_to_update: &'a BTreeSet<Prefix>, // FIXME: Vec<PrefixWithPorts>
+        prefixes_to_point_to: &'a BTreeSet<Prefix>, // FIXME: Vec<PrefixWithPorts>
     ) -> Self {
         // FIXME: Get port ranges from config
-        fn dummy_map(p: &Prefix) -> PrefixWithPortRange {
-            let dummy_port_range = PortRange::new(1, 65535);
-            PrefixWithPortRange::new(*p, dummy_port_range)
+        fn dummy_map(p: &Prefix) -> PrefixWithPorts {
+            let dummy_port_range = PortRange::new_checked(1, 65535).unwrap();
+            PrefixWithPorts::new(*p, dummy_port_range)
         }
 
         let mut builder = Self {
@@ -327,13 +295,13 @@ impl<'a> AddrPortRangeBuilder<'a> {
             prefix_iter_target: prefixes_to_point_to.iter().map(dummy_map), // FIXME
             prefix_cursor: None,
             addr_port_cursor: None,
-            offset_cursor: PortAddrSize::from(0u8),
+            offset_cursor: PrefixWithPortsSize::from(0u8),
         };
 
         builder.prefix_cursor = builder.prefix_iter_target.next();
         builder.addr_port_cursor = builder
             .prefix_cursor
-            .map(|cursor| (Prefix::as_address(&cursor.prefix), cursor.ports.start()));
+            .map(|cursor| (Prefix::as_address(&cursor.prefix()), cursor.ports().start()));
 
         builder
     }
@@ -358,7 +326,7 @@ impl Iterator for AddrPortRangeBuilder<'_> {
     type Item = Result<(Prefix, NatTableValue), NatPeeringError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.offset_cursor >= PrefixWithPortRange::max_theoretical_size() {
+        if self.offset_cursor >= max_theoretical_size() {
             // We have covered the whole IPv6 address space multiplied by the whole range space, we
             // have no reason to go any further.
             return None;
@@ -368,8 +336,8 @@ impl Iterator for AddrPortRangeBuilder<'_> {
         let mut value = PortAddrTranslationValue::new();
 
         let orig_prefix_size = orig_prefix.size();
-        let mut orig_offset_cursor = PortAddrSize::from(0u8);
-        let mut processed_ranges_size = PortAddrSize::from(0u8);
+        let mut orig_offset_cursor = PrefixWithPortsSize::from(0u8);
+        let mut processed_ranges_size = PrefixWithPortsSize::from(0u8);
 
         // Add ranges until we've covered the number of elements in the original prefix
         while processed_ranges_size < orig_prefix_size {
@@ -402,12 +370,12 @@ impl Iterator for AddrPortRangeBuilder<'_> {
             let Ok(range_end) = add_offset_to_address_and_port(
                 &addr_port_cursor.0,
                 addr_port_cursor.1,
-                target_prefix.ports,
-                range_size - PortAddrSize::from(1u8),
+                target_prefix.ports(),
+                range_size - PrefixWithPortsSize::from(1u8),
             ) else {
                 return Some(Err(NatPeeringError::MalformedPeering));
             };
-            let ranges = create_new_ranges(addr_port_cursor, range_end, target_prefix.ports);
+            let ranges = create_new_ranges(addr_port_cursor, range_end, target_prefix.ports());
             value.add_ranges(ranges);
 
             // Update state for next loop iteration (if original prefix is not fully covered), or
@@ -425,16 +393,16 @@ impl Iterator for AddrPortRangeBuilder<'_> {
                 self.prefix_cursor = self.prefix_iter_target.next();
                 self.addr_port_cursor = self.prefix_cursor.map(|prefix_and_ports| {
                     (
-                        prefix_and_ports.prefix.as_address(),
-                        prefix_and_ports.ports.start(),
+                        prefix_and_ports.prefix().as_address(),
+                        prefix_and_ports.ports().start(),
                     )
                 });
-                self.offset_cursor = PortAddrSize::from(0u8);
+                self.offset_cursor = PrefixWithPortsSize::from(0u8);
             } else {
                 let Ok(new_addr_cursor) = add_offset_to_address_and_port(
                     &addr_port_cursor.0,
                     addr_port_cursor.1,
-                    target_prefix.ports,
+                    target_prefix.ports(),
                     range_size,
                 ) else {
                     return Some(Err(NatPeeringError::MalformedPeering));
@@ -444,7 +412,7 @@ impl Iterator for AddrPortRangeBuilder<'_> {
             }
         }
 
-        Some(Ok((orig_prefix.prefix, NatTableValue::Pat(value))))
+        Some(Ok((orig_prefix.prefix(), NatTableValue::Pat(value))))
     }
 }
 
@@ -486,7 +454,8 @@ fn create_new_ranges(
             // address and return.
             ranges.push(IpPortRange::new(
                 IpRange::new(addr_port_cursor.0, range_end.0),
-                PortRange::new(addr_port_cursor.1, range_end.1),
+                PortRange::new_checked(addr_port_cursor.1, range_end.1)
+                    .unwrap_or_else(|_| unreachable!()),
             ));
         }
         1 => {
@@ -505,11 +474,13 @@ fn create_new_ranges(
                 // target prefix, we need two ranges, one for each of the two IP addresses.
                 ranges.push(IpPortRange::new(
                     IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
-                    PortRange::new(addr_port_cursor.1, target_range_ports.end()),
+                    PortRange::new_checked(addr_port_cursor.1, target_range_ports.end())
+                        .unwrap_or_else(|_| unreachable!()),
                 ));
                 ranges.push(IpPortRange::new(
                     IpRange::new(range_end.0, range_end.0),
-                    PortRange::new(target_range_ports.start(), range_end.1),
+                    PortRange::new_checked(target_range_ports.start(), range_end.1)
+                        .unwrap_or_else(|_| unreachable!()),
                 ));
             }
         }
@@ -523,7 +494,8 @@ fn create_new_ranges(
             if addr_port_cursor.1 != target_range_ports.start() {
                 ranges.push(IpPortRange::new(
                     IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
-                    PortRange::new(addr_port_cursor.1, target_range_ports.end()),
+                    PortRange::new_checked(addr_port_cursor.1, target_range_ports.end())
+                        .unwrap_or_else(|_| unreachable!()),
                 ));
                 // Compute start of middle range, in our example: IP 1.0.1.2, port 4000
                 start_middle_range = (
@@ -544,7 +516,8 @@ fn create_new_ranges(
             // ports 4000-4999)
             ranges.push(IpPortRange::new(
                 IpRange::new(start_middle_range.0, end_middle_range.0),
-                PortRange::new(start_middle_range.1, end_middle_range.1),
+                PortRange::new_checked(start_middle_range.1, end_middle_range.1)
+                    .unwrap_or_else(|_| unreachable!()),
             ));
 
             // If range end doesn't align with the end of the port range associated with the target prefix,
@@ -553,7 +526,8 @@ fn create_new_ranges(
             if range_end.1 != target_range_ports.end() {
                 ranges.push(IpPortRange::new(
                     IpRange::new(range_end.0, range_end.0),
-                    PortRange::new(target_range_ports.start(), range_end.1),
+                    PortRange::new_checked(target_range_ports.start(), range_end.1)
+                        .unwrap_or_else(|_| unreachable!()),
                 ));
             }
         }

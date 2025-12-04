@@ -2,8 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use ahash::RandomState;
-use bnum::BUint;
 use bnum::cast::CastFrom;
+use lpm::prefix::with_ports::{PortRange, PrefixWithPortsSize};
 use lpm::prefix::{IpPrefix, Prefix, PrefixSize};
 use lpm::trie::IpPrefixTrie;
 use net::vxlan::Vni;
@@ -11,8 +11,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::debug;
-
-pub type PortAddrSize = BUint<3>;
 
 /// Error type for [`NatTables`] operations.
 #[derive(thiserror::Error, Debug)]
@@ -143,13 +141,13 @@ fn addr_offset_in_prefix_with_ports(
     port_range: PortRange,
     addr: &IpAddr,
     port: u16,
-) -> Option<PortAddrSize> {
+) -> Option<PrefixWithPortsSize> {
     if !port_range.contains(port) {
         return None;
     }
     let ip_offset = addr_offset_in_prefix(prefix, addr)?;
-    let port_offset = port - port_range.start;
-    Some(PortAddrSize::from(
+    let port_offset = port - port_range.start();
+    Some(PrefixWithPortsSize::from(
         ip_offset
             * u128::try_from(port_range.len()).unwrap_or_else(|_| {
                 // Assume conversion from usize to u128 never fails
@@ -300,7 +298,7 @@ impl PortAddrTranslationValue {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            prefix_port_range: PortRange::new(0, 0),
+            prefix_port_range: PortRange::new_checked(0, 0).unwrap_or_else(|_| unreachable!()),
             ranges: Vec::new(),
         }
     }
@@ -333,11 +331,11 @@ impl PortAddrTranslationValue {
         self.ranges.push(range);
     }
 
-    fn size(&self) -> PortAddrSize {
+    fn size(&self) -> PrefixWithPortsSize {
         self.ranges.iter().map(IpPortRange::size).sum()
     }
 
-    fn get_entry(&self, entry_offset: PortAddrSize) -> Option<(IpAddr, u16)> {
+    fn get_entry(&self, entry_offset: PrefixWithPortsSize) -> Option<(IpAddr, u16)> {
         if entry_offset >= self.size() {
             return None;
         }
@@ -376,23 +374,23 @@ impl IpPortRange {
         self.port_range.len()
     }
 
-    fn size(&self) -> PortAddrSize {
+    fn size(&self) -> PrefixWithPortsSize {
         let ip_len = match self.ip_len() {
-            PrefixSize::U128(len) => PortAddrSize::from(len),
-            PrefixSize::Ipv6MaxAddrs => PortAddrSize::from(u128::MAX) + 1,
+            PrefixSize::U128(len) => PrefixWithPortsSize::from(len),
+            PrefixSize::Ipv6MaxAddrs => PrefixWithPortsSize::from(u128::MAX) + 1,
             PrefixSize::Overflow => unreachable!(),
         };
-        ip_len * PortAddrSize::from(self.port_len())
+        ip_len * PrefixWithPortsSize::from(self.port_len())
     }
 
-    fn get_entry(&self, offset: PortAddrSize) -> Option<(IpAddr, u16)> {
+    fn get_entry(&self, offset: PrefixWithPortsSize) -> Option<(IpAddr, u16)> {
         if offset >= self.size() {
             return None;
         }
 
-        let port_range_len = PortAddrSize::from(self.port_range.len());
+        let port_range_len = PrefixWithPortsSize::from(self.port_range.len());
         let ip_offset_tmp = offset / port_range_len;
-        debug_assert!(ip_offset_tmp <= PortAddrSize::from(u128::MAX));
+        debug_assert!(ip_offset_tmp <= PrefixWithPortsSize::from(u128::MAX));
         let ip_offset = u128::cast_from(ip_offset_tmp);
         let port_offset = (offset % port_range_len)
             .try_into()
@@ -532,60 +530,6 @@ impl IpRange {
                 }
             }
             _ => return None,
-        }
-        None
-    }
-}
-
-// Represents a port range, with a start and an end port.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct PortRange {
-    start: u16,
-    end: u16,
-}
-
-impl PortRange {
-    #[must_use]
-    pub fn new(start: u16, end: u16) -> Self {
-        debug_assert!(start <= end, "start: {start}, end: {end}");
-        Self { start, end }
-    }
-
-    #[must_use]
-    pub fn contains(&self, port: u16) -> bool {
-        self.start <= port && port <= self.end
-    }
-
-    #[must_use]
-    pub fn start(&self) -> u16 {
-        self.start
-    }
-
-    #[must_use]
-    pub fn end(&self) -> u16 {
-        self.end
-    }
-
-    #[allow(clippy::len_without_is_empty)]
-    #[must_use]
-    pub fn len(&self) -> usize {
-        usize::from(self.end - self.start) + 1
-    }
-
-    fn get_entry(self, offset: u16) -> Option<u16> {
-        if usize::from(offset) >= self.len() {
-            return None;
-        }
-        Some(self.start + offset)
-    }
-
-    fn merge(&mut self, next: PortRange) -> Option<()> {
-        if self.start > next.start || self.end >= next.start {
-            return None;
-        }
-        if self.end + 1 == next.start {
-            self.end = next.end;
-            return Some(());
         }
         None
     }

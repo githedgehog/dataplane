@@ -1318,6 +1318,7 @@ dependencies = [
 name = "dataplane-lpm"
 version = "0.1.0"
 dependencies = [
+ "bnum",
  "bolero",
  "dataplane-tracectl",
  "ipnet",
