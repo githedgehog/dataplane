@@ -15,6 +15,7 @@ use core::ptr::NonNull;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
 use errno::Errno;
+use net::buffer::{BufferAllocationError, BufferPool, NewBufferPool};
 use tracing::{error, info, warn};
 
 use dpdk_sys::{
