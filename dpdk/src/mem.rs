@@ -5,8 +5,7 @@
 
 use crate::eal::{Eal, EalErrno};
 use crate::socket::SocketId;
-use alloc::format;
-use alloc::string::String;
+use std::format;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
 use core::ffi::c_uint;
