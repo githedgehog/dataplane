@@ -4,10 +4,6 @@
 //! DPDK Environment Abstraction Layer (EAL)
 use crate::mem::RteAllocator;
 use crate::{dev, lcore, mem, socket};
-use alloc::ffi::CString;
-use alloc::format;
-use alloc::string::ToString;
-use alloc::vec::Vec;
 use core::ffi::c_int;
 use core::fmt::{Debug, Display};
 use dpdk_sys;
