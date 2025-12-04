@@ -981,7 +981,7 @@ pub enum IntegrityCheckError {
 const SHA384_BYTE_LEN: usize = 384 / 8;
 
 /// Current size of integrity check in bytes (currently SHA-384).
-const INTEGRITY_CHECK_BYTE_LEN: usize = SHA384_BYTE_LEN;
+pub const INTEGRITY_CHECK_BYTE_LEN: usize = SHA384_BYTE_LEN;
 
 /// Internal representation of SHA-384 hash bytes.
 #[repr(transparent)]
