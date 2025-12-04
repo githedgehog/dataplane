@@ -601,8 +601,6 @@ impl Iterator for DevIterator {
     fn next(&mut self) -> Option<DevInfo> {
         let cursor = self.cursor;
 
-        debug!("Checking port {cursor}");
-
         let port_id =
             unsafe { rte_eth_find_next_owned_by(cursor.as_u16(), u64::from(RTE_ETH_DEV_NO_OWNER)) };
 
@@ -610,6 +608,7 @@ impl Iterator for DevIterator {
         if port_id >= u64::from(RTE_MAX_ETHPORTS) {
             return None;
         }
+        trace!("checking port {cursor}");
 
         // For whatever reason, DPDK can't decide if port_id is `u16` or `u64`.
         self.cursor = DevIndex(port_id as u16 + 1);
