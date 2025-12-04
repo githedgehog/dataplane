@@ -26,6 +26,7 @@
 //! This crate uses lints to discourage casual use of `unwrap`, `expect`, and `panic` to help
 //! encourage this practice.
 
+#![feature(allocator_api, thread_spawn_hook)]
 #![warn(clippy::all)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![deny(rustdoc::all)]
