@@ -3,6 +3,7 @@
 
 //! Ethernet device management.
 
+use dpdk_sys::rte_eth_hash_function::RTE_ETH_HASH_FUNCTION_DEFAULT;
 use std::format;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
