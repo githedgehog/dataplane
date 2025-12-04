@@ -63,13 +63,19 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum PortArg {
     PCI(PciAddress),       // DPDK driver
     KERNEL(InterfaceName), // kernel driver
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 #[allow(unused)]
 pub struct InterfaceArg {
     pub interface: InterfaceName,
