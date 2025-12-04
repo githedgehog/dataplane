@@ -71,7 +71,15 @@ impl Iterator for LCoreIdIterator {
             return None;
         }
         self.current = LCoreId(next);
-        Some(LCoreId(next))
+        if unsafe { dpdk_sys::rte_get_main_lcore() } == next {
+            return self.next();
+        }
+        if unsafe { dpdk_sys::rte_eal_lcore_role(next) } == dpdk_sys::rte_lcore_role_t::ROLE_NON_EAL
+        {
+            self.next()
+        } else {
+            Some(LCoreId(next))
+        }
     }
 }
 
