@@ -283,17 +283,22 @@ pub struct PoolConfig {
 }
 
 /// Ways in which a memory pool name can be invalid.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, thiserror::Error)]
 pub enum InvalidMemPoolName {
     /// The name is not valid ASCII.
+    #[error("memory pool name is not valid ascii: {0}")]
     NotAscii(String),
     /// The name is too long.
+    #[error("{0}")]
     TooLong(String),
     /// The name is empty.
+    #[error("memory pool name is empty: {0}")]
     Empty(String),
     /// The name does not start with an ASCII letter.
+    #[error("{0}")]
     DoesNotStartWithAsciiLetter(String),
     /// Contains null bytes.
+    #[error("{0}")]
     ContainsNullBytes(String),
 }
 
