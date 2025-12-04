@@ -249,6 +249,14 @@ impl DevConfig {
                 },
                 ..Default::default()
             },
+            rx_adv_conf: rte_eth_conf__bindgen_ty_1 {
+                rss_conf: rte_eth_rss_conf {
+                    rss_hf: dev.inner.flow_type_rss_offloads,
+                    algorithm: RTE_ETH_HASH_FUNCTION_DEFAULT,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             ..Default::default()
         };
 
