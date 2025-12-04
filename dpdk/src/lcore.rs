@@ -192,9 +192,11 @@ impl WorkerThread {
     ///
     /// This can only run on the main lcore
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
-    pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
+    pub fn launch<T: Send + FnOnce()>(
+        lcore: LCoreId,
+        f: T,
+    ) -> Result<LCoreId, WorkerThreadLaunchError> {
         RteAllocator::assert_initialized();
-        #[inline]
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
             RteAllocator::assert_initialized();
             let task = unsafe {
@@ -206,13 +208,19 @@ impl WorkerThread {
             0
         }
         let task = Box::new(f);
-        EalErrno::assert(unsafe {
+        let res = unsafe {
             dpdk_sys::rte_eal_remote_launch(
                 Some(_launch::<T>),
                 Box::leak(task) as *mut _ as _,
                 lcore.0 as c_uint,
             )
-        });
+        };
+        match res {
+            0 => Ok(lcore),
+            errno::NEG_EBUSY => Err(WorkerThreadLaunchError::Busy),
+            errno::NEG_EPIPE => Err(WorkerThreadLaunchError::Pipe),
+            other => Err(WorkerThreadLaunchError::Unexpected(ErrorCode::parse(other))),
+        }
     }
 }
 
