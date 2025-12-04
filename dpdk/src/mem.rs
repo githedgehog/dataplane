@@ -302,14 +302,14 @@ pub enum InvalidMemPoolName {
     ContainsNullBytes(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 /// Ways in which a memory pool config can be invalid.
 pub enum InvalidMemPoolConfig {
     /// The name of the pool is illegal.
+    #[error(transparent)]
     InvalidName(InvalidMemPoolName),
     /// The parameters of the pool are illegal.
-    ///
-    /// TODO: this should be a more detailed error.
+    #[error("the parameters of the memory pool are illegal ({0:?}): {1}")]
     InvalidParams(Errno, String),
 }
 
