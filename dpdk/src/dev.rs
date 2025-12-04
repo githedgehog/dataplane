@@ -224,7 +224,7 @@ pub enum DevConfigError {
 
 impl DevConfig {
     /// Apply the configuration to the device.
-    pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
+    pub fn apply(self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
