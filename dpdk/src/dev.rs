@@ -848,19 +848,7 @@ impl Dev {
             .iter()
             .find(|x| x.config.queue_index == index)
     }
-}
 
-pub struct StartedDev {
-    /// The device info
-    pub info: DevInfo,
-    /// The configuration of the device.
-    pub config: DevConfig,
-    pub rx_queues: Vec<RxQueue>,
-    pub tx_queues: Vec<TxQueue>,
-    pub hairpin_queues: Vec<HairpinQueue>,
-}
-
-impl Dev {
     pub fn stop(&mut self) -> Result<(), ErrorCode> {
         info!("Stopping device {port}", port = self.info.index());
         let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
