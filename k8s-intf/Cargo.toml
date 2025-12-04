@@ -6,7 +6,7 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-bolero = ["dep:bolero", "dep:hardware"]
+bolero = ["dep:bolero", "dep:hardware", "dep:net"]
 
 [dependencies]
 # internal
@@ -16,6 +16,7 @@ bolero = { workspace = true, optional = true }
 hardware = { workspace = true, optional = true, features = ["bolero"] }
 kube = { workspace = true, features = ["derive"] }
 k8s-openapi = { workspace = true, features = ["latest", "schemars", "std"] }
+net = { workspace = true, optional = true, features = ["bolero"] }
 schemars = { workspace = true, features = ["derive", "std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,6 +24,7 @@ serde_json = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true }
 hardware = { workspace = true, features = ["bolero"] }
+net = { workspace = true, features = ["bolero"] }
 
 [build-dependencies]
 dotenvy = { workspace = true, features = [] }
