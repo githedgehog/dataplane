@@ -3,7 +3,7 @@
 
 //! DPDK memory management wrappers.
 
-use crate::eal::{Eal, EalErrno};
+use crate::eal::EalErrno;
 use crate::socket::SocketId;
 use std::format;
 use core::ffi::c_uint;
