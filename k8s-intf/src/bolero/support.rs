@@ -1,104 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Open Network Fabric Authors
 
-use bolero::{Driver, TypeGenerator, ValueGenerator};
+use bolero::{Driver, ValueGenerator};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Bound;
 
-pub fn gen_from_chars<D: Driver>(
-    d: &mut D,
-    chars: &str,
-    min: std::ops::Bound<&usize>,
-    max: std::ops::Bound<&usize>,
-) -> Option<String> {
-    let len = d.gen_usize(min, max)?;
-    (0..len)
-        .map(|_| {
-            chars
-                .chars()
-                .nth(d.gen_usize(Bound::Included(&0), Bound::Excluded(&chars.len()))?)
-        })
-        .collect()
-}
-
-pub struct Ipv4AddrString(pub String);
-
-impl TypeGenerator for Ipv4AddrString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        Some(Ipv4AddrString(
-            Ipv4Addr::from(d.gen_u32(
-                Bound::Included(&0x1000_0000_u32),
-                Bound::Excluded(&0xffff_ffff_u32),
-            )?)
-            .to_string(),
-        ))
-    }
-}
-
-pub struct Ipv6AddrString(pub String);
-
-impl TypeGenerator for Ipv6AddrString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        Some(Ipv6AddrString(
-            Ipv6Addr::from(d.gen_u128(
-                Bound::Included(&0x0000_0000_0000_0000_0000_0000_0000_0001_u128),
-                Bound::Excluded(&0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff_u128),
-            )?)
-            .to_string(),
-        ))
-    }
-}
-
-pub struct IpAddrString(pub String);
-
-impl TypeGenerator for IpAddrString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let is_ipv4 = d.gen_bool(None)?;
-        if is_ipv4 {
-            Some(IpAddrString(d.produce::<Ipv4AddrString>()?.0))
-        } else {
-            Some(IpAddrString(d.produce::<Ipv6AddrString>()?.0))
-        }
-    }
-}
-
-pub struct V4CidrString(pub String);
-pub struct V6CidrString(pub String);
-pub struct CidrString(pub String);
-
 fn v4cdir_from_bytes(addr_bytes: u32, mask: u8) -> String {
-    // Remove this allow once we upgrade to Rust 1.87.0
-    #[allow(unstable_name_collisions)]
     let and_mask = u32::MAX.unbounded_shl(32 - u32::from(mask));
     let addr = Ipv4Addr::from(addr_bytes & and_mask);
     format!("{addr}/{mask}")
 }
 
 fn v6cdir_from_bytes(addr_bytes: u128, mask: u8) -> String {
-    // Remove this allow once we upgrade to Rust 1.87.0
-    #[allow(unstable_name_collisions)]
     let and_mask = u128::MAX.unbounded_shl(128 - u32::from(mask));
     let addr = Ipv6Addr::from(addr_bytes & and_mask);
     format!("{addr}/{mask}")
 }
 
-impl TypeGenerator for V4CidrString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let mask = d.gen_u8(Bound::Included(&0), Bound::Included(&32))?;
-        let addr_bytes = d.produce::<u32>()?;
-        Some(V4CidrString(v4cdir_from_bytes(addr_bytes, mask)))
-    }
-}
-
-impl TypeGenerator for V6CidrString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let mask: u8 = d.gen_u8(Bound::Included(&0), Bound::Included(&128))?;
-        let addr_bytes = d.produce::<u128>()?;
-        Some(V6CidrString(v6cdir_from_bytes(addr_bytes, mask)))
-    }
-}
-
-#[derive(Debug)]
 pub struct UniqueV4CidrGenerator {
     count: u16,
     mask: u8,
@@ -211,17 +129,6 @@ impl ValueGenerator for UniqueV6CidrGenerator {
             addr_bytes = addr_bytes.wrapping_add(1);
         }
         Some(cidrs)
-    }
-}
-
-impl TypeGenerator for CidrString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let is_ipv4 = d.gen_bool(None)?;
-        if is_ipv4 {
-            Some(CidrString(d.produce::<V4CidrString>()?.0))
-        } else {
-            Some(CidrString(d.produce::<V6CidrString>()?.0))
-        }
     }
 }
 
@@ -342,115 +249,6 @@ impl ValueGenerator for UniqueV6InterfaceAddressGenerator {
             }
         }
         Some(addrs)
-    }
-}
-
-pub const ALPHA_NUMERIC_CHARS: &str =
-    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-pub struct SourceMacAddrString(String);
-impl SourceMacAddrString {
-    #[must_use]
-    pub fn inner(&self) -> &str {
-        &self.0
-    }
-}
-
-impl AsRef<str> for SourceMacAddrString {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-// Only generate lower case hex characters for mac addresses
-// because we cannot customize PartialEq for generated types
-// that use this, and we want to be able to compare generated
-// mac addresses with each other without concern for case.
-impl TypeGenerator for SourceMacAddrString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        // Generate a random 48-bit MAC address
-        // Set the least significant bit of the mac to 0 for unicast
-        // Start at 2 so the we don't accidentally generate 01:00:00:00:00:00
-        // and then clear it to 00:00:00:00:00:00
-        let mac = d.gen_u64(Bound::Included(&2), Bound::Excluded(&0xffff_ffff_ffff_u64))?
-            & 0xffff_ffff_fffe;
-
-        let bytes = [
-            (mac & 0xff) as u8,
-            ((mac >> 8) & 0xff) as u8,
-            ((mac >> 16) & 0xff) as u8,
-            ((mac >> 24) & 0xff) as u8,
-            ((mac >> 32) & 0xff) as u8,
-            ((mac >> 40) & 0xff) as u8,
-        ];
-        let mac_str = format!(
-            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
-        );
-        Some(SourceMacAddrString(mac_str))
-    }
-}
-
-pub struct LinuxIfName(pub String);
-const IF_NAME_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
-const IF_NAME_MAX_LEN: usize = 16;
-
-impl TypeGenerator for LinuxIfName {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        gen_from_chars(
-            d,
-            IF_NAME_CHARS,
-            Bound::Included(&1),
-            Bound::Included(&IF_NAME_MAX_LEN),
-        )
-        .map(LinuxIfName)
-    }
-}
-
-pub struct LinuxIfNamesGenerator {
-    pub count: u16,
-}
-
-impl ValueGenerator for LinuxIfNamesGenerator {
-    type Output = Vec<String>;
-
-    fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
-        let ifnames = (0..self.count)
-            .map(|i| {
-                Some(format!(
-                    "{}{i}",
-                    gen_from_chars(
-                        d,
-                        IF_NAME_CHARS,
-                        Bound::Included(&1),
-                        Bound::Included(&(IF_NAME_MAX_LEN - 8)),
-                    )?
-                ))
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some(ifnames)
-    }
-}
-pub struct K8sObjectNameString(pub String);
-
-const K8S_END_CHAR: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
-const K8S_OTHER_CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-";
-const K8S_OBJ_MAX_LEN: usize = 63;
-
-impl TypeGenerator for K8sObjectNameString {
-    fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let len = d.gen_usize(Bound::Included(&2), Bound::Included(&K8S_OBJ_MAX_LEN))?;
-        let first_char = gen_from_chars(d, K8S_END_CHAR, Bound::Included(&1), Bound::Included(&1))?;
-        let middle_chars = gen_from_chars(
-            d,
-            K8S_OTHER_CHARS,
-            Bound::Included(&0),
-            Bound::Excluded(&(len - 2)),
-        )?;
-        let end_char = gen_from_chars(d, K8S_END_CHAR, Bound::Included(&0), Bound::Excluded(&1))?;
-
-        Some(K8sObjectNameString(format!(
-            "{first_char}{middle_chars}{end_char}"
-        )))
     }
 }
 
