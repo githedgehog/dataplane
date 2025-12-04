@@ -188,6 +188,9 @@ pub enum WorkerThreadLaunchError {
 }
 
 impl WorkerThread {
+    /// Launch a DPDK worker thread.
+    ///
+    /// This can only run on the main lcore
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
     pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
         RteAllocator::assert_initialized();
