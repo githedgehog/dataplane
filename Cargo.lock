@@ -1175,12 +1175,19 @@ dependencies = [
 name = "dataplane-dpdk"
 version = "0.1.0"
 dependencies = [
+ "ctrlc",
+ "dataplane-args",
  "dataplane-dpdk-sys",
  "dataplane-dpdk-sysroot-helper",
+ "dataplane-driver",
  "dataplane-errno",
  "dataplane-hardware",
  "dataplane-net",
  "dataplane-tracectl",
+ "libc 1.0.0-alpha.1",
+ "linkme",
+ "nix 0.30.1",
+ "rkyv",
  "serde",
  "thiserror 2.0.17",
  "tracing",
