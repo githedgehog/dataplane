@@ -20,7 +20,6 @@ pub trait Start {
     fn start(self) -> Result<Self::Started, Self::Error>;
 }
 
-
 pub trait Stop {
     type Outcome;
     type Error;
