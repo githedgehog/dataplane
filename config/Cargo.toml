@@ -12,6 +12,7 @@ hardware = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }
 tracectl = { workspace = true }
+k8s-intf = { workspace = true }
 
 # external
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
@@ -26,6 +27,9 @@ tracing-test = { workspace = true }
 # internal
 pipeline = { workspace = true } # should be removed w/ NAT
 lpm = { workspace = true, features = ["testing"] }
+hardware = { workspace = true, features = ["bolero"] }
+k8s-intf = { workspace = true, features = ["bolero"] }
+
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }

@@ -1148,6 +1148,7 @@ dependencies = [
  "bolero",
  "caps",
  "dataplane-hardware",
+ "dataplane-k8s-intf",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
