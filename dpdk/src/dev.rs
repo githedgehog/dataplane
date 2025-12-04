@@ -782,7 +782,7 @@ pub struct Dev {
 impl Dev {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
-    pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
+    pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), queue::rx::ConfigFailure> {
         let rx_queue = RxQueue::setup(self, config)?;
         self.rx_queues.push(rx_queue);
         Ok(())
@@ -790,7 +790,7 @@ impl Dev {
 
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`TxQueue`]
-    pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), tx::ConfigFailure> {
+    pub fn new_tx_queue(&mut self, config: TxQueueConfig) -> Result<(), queue::tx::ConfigFailure> {
         let tx_queue = TxQueue::setup(self, config)?;
         self.tx_queues.push(tx_queue);
         Ok(())
