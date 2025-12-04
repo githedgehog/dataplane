@@ -191,8 +191,10 @@ impl From<DevIndex> for u16 {
 #[derive(Debug)]
 /// TODO: add `rx_offloads` support
 pub struct DevConfig {
-    // /// Information about the device.
-    // pub info: DevInfo<'info>,
+    /// Description of this device.
+    pub description: NetworkDeviceDescription,
+    /// The tap device associated with this device.  Used to inject / trap packets to the kernel.
+    pub tap: InterfaceIndex,
     /// The number of receive queues to be made available after device initialization.
     pub num_rx_queues: u16,
     /// The number of transmit queues to be made available after device initialization.
