@@ -426,6 +426,7 @@ impl Drop for PoolInner {
 /// It can be "safely" transmuted _to_ an `*mut rte_mbuf` under the assumption that
 /// standard borrowing rules are observed.
 #[repr(transparent)]
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct Mbuf {
     pub(crate) raw: NonNull<dpdk_sys::rte_mbuf>,
