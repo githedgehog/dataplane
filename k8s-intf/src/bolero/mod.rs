@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+pub mod bgp;
 pub mod interface;
 pub mod support;
 

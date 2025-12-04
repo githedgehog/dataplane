@@ -1291,6 +1291,7 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "dataplane-hardware",
+ "dataplane-net",
  "dotenvy",
  "k8s-openapi",
  "kube",
