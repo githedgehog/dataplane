@@ -55,7 +55,6 @@ use net::interface::IllegalInterfaceName;
 use net::interface::InterfaceName;
 use sha2::Digest;
 use std::borrow::Borrow;
-use std::fmt::Display;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::num::NonZero;
@@ -353,57 +352,6 @@ pub enum DriverConfigSection {
     Dpdk(DpdkDriverConfigSection),
     /// Linux kernel driver configuration
     Kernel(KernelDriverConfigSection),
-}
-
-/// Description of a network device by its bus address.
-///
-/// Currently supports PCI-addressed devices, which is the standard addressing
-/// scheme for NICs in modern systems.
-///
-/// # Example
-///
-/// ```
-/// use dataplane_args::NetworkDeviceDescription;
-/// use hardware::pci::address::PciAddress;
-///
-/// // PCI device at bus 0000:01:00.0
-/// let device = NetworkDeviceDescription::Pci(
-///     PciAddress::try_from("0000:01:00.0").unwrap()
-/// );
-/// ```
-#[derive(
-    Debug,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Eq,
-    Hash,
-    Clone,
-    serde::Serialize,
-    serde::Deserialize,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    rkyv::Archive,
-)]
-#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
-pub enum NetworkDeviceDescription {
-    /// The PCI address of the network device to be used
-    Pci(hardware::pci::address::PciAddress),
-    /// The kernel's name for net network interface
-    Kernel(InterfaceName),
-}
-
-impl Display for NetworkDeviceDescription {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NetworkDeviceDescription::Pci(addr) => {
-                write!(f, "pci@{addr}")
-            }
-            NetworkDeviceDescription::Kernel(name) => {
-                write!(f, "kernel@{name}")
-            }
-        }
-    }
 }
 
 /// Configuration for the DPDK (Data Plane Development Kit) driver.
@@ -1088,6 +1036,8 @@ pub enum InvalidCmdArguments {
     InvalidDriver(String),
     #[error("Must specify driver as dpdk or  kernel")]
     NoDriverSpecified,
+    #[error("No network interfaces specified")]
+    NoInterfacesSpecified,
     #[error(transparent)]
     UnsupportedByDriver(#[from] UnsupportedByDriver),
 }
@@ -1121,14 +1071,15 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     let eal_args = value
                         .interfaces()
                         .map(|nic| match nic.port {
-                            NetworkDeviceDescription::Pci(pci_address) => {
+                            Some(PortArg::PCI(pci_address)) => {
                                 Ok(["--allow".to_string(), format!("{pci_address}")])
                             }
-                            NetworkDeviceDescription::Kernel(interface_name) => {
+                            Some(PortArg::KERNEL(interface_name)) => {
                                 Err(InvalidCmdArguments::UnsupportedByDriver(
                                     UnsupportedByDriver::Dpdk(interface_name.clone()),
                                 ))
                             }
+                            None => Err(InvalidCmdArguments::NoInterfacesSpecified),
                         })
                         .collect::<Result<Vec<_>, _>>()?
                         .into_iter()
