@@ -285,9 +285,9 @@ impl DevConfig {
         Ok(Dev {
             info: dev,
             config: *self,
-            rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
-            tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
-            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            rx_queues: Vec::with_capacity(self.num_rx_queues.into()),
+            tx_queues: Vec::with_capacity(self.num_tx_queues.into()),
+            hairpin_queues: Vec::with_capacity(self.num_hairpin_queues.into()),
         })
     }
 }
