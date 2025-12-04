@@ -159,10 +159,6 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                     info!("starting worker thread runtime");
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_time()
-                        .max_blocking_threads(32) // deliberately very low.  No need for a lot of lcores here
-                        // .on_thread_stop(|| unsafe {
-                        //     dpdk::lcore::ServiceThread::unregister_current_thread();
-                        // })
                         .build()
                         .unwrap();
                     let _guard = runtime.enter();
