@@ -171,6 +171,22 @@ impl From<LCoreId> for WorkerThread {
     }
 }
 
+#[repr(i32)]
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerThreadLaunchError {
+    /// Worker thread is not in the waiting state
+    #[error("attempt to launch function on worker thread which is not in the waiting state")]
+    Busy = -errno::EBUSY,
+    /// Unable to write to workerthread's pipe
+    #[error(
+        "unable to write to worker thread's pipe when attempting to launch function on that thread"
+    )]
+    Pipe = -errno::EPIPE,
+    /// Unexpected errno when launching worker thread
+    #[error("unexpected error when launching worker thread: {0}")]
+    Unexpected(ErrorCode),
+}
+
 impl WorkerThread {
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
     pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
