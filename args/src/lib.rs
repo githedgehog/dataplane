@@ -434,7 +434,7 @@ impl Display for NetworkDeviceDescription {
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct DpdkDriverConfigSection {
     /// Network devices to use with DPDK (identified by PCI address)
-    pub use_nics: Vec<NetworkDeviceDescription>,
+    pub interfaces: Vec<InterfaceArg>,
     /// DPDK EAL (Environment Abstraction Layer) initialization arguments
     pub eal_args: Vec<String>,
 }
@@ -458,7 +458,7 @@ pub struct DpdkDriverConfigSection {
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct KernelDriverConfigSection {
     /// Kernel network interfaces to manage
-    pub interfaces: Vec<InterfaceName>,
+    pub interfaces: Vec<InterfaceArg>,
 }
 
 /// Configuration for the dataplane's command-line interface (CLI).
@@ -1135,14 +1135,6 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
     type Error = InvalidCmdArguments;
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
-        let use_nics: Vec<_> = value
-            .interfaces()
-            .map(|x| match x.port {
-                Some(PortArg::KERNEL(name)) => NetworkDeviceDescription::Kernel(name),
-                Some(PortArg::PCI(address)) => NetworkDeviceDescription::Pci(address),
-                None => todo!(), // I am not clear what this case means
-            })
-            .collect();
         Ok(LaunchConfiguration {
             config_server: ConfigServerSection {
                 address: value
@@ -1152,9 +1144,9 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = use_nics
-                        .iter()
-                        .map(|nic| match nic {
+                    let eal_args = value
+                        .interfaces()
+                        .map(|nic| match nic.port {
                             NetworkDeviceDescription::Pci(pci_address) => {
                                 Ok(["--allow".to_string(), format!("{pci_address}")])
                             }
@@ -1168,23 +1160,14 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                         .into_iter()
                         .flatten()
                         .collect();
-                    DriverConfigSection::Dpdk(DpdkDriverConfigSection { use_nics, eal_args })
+                    DriverConfigSection::Dpdk(DpdkDriverConfigSection {
+                        interfaces: value.interfaces().collect(),
+                        eal_args,
+                    })
                 }
                 Some(driver) if driver == "kernel" => {
                     DriverConfigSection::Kernel(KernelDriverConfigSection {
-                        interfaces: use_nics
-                            .iter()
-                            .map(|nic| match nic {
-                                NetworkDeviceDescription::Pci(address) => {
-                                    Err(InvalidCmdArguments::UnsupportedByDriver(
-                                        UnsupportedByDriver::Kernel(*address),
-                                    ))
-                                }
-                                NetworkDeviceDescription::Kernel(interface) => {
-                                    Ok(interface.clone())
-                                }
-                            })
-                            .collect::<Result<_, _>>()?,
+                        interfaces: value.interfaces().collect(),
                     })
                 }
                 Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
