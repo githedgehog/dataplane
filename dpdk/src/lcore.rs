@@ -165,6 +165,12 @@ pub struct WorkerThread {
     lcore_id: LCoreId,
 }
 
+impl From<LCoreId> for WorkerThread {
+    fn from(value: LCoreId) -> Self {
+        Self { lcore_id: value }
+    }
+}
+
 impl WorkerThread {
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
     pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
