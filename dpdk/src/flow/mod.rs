@@ -9,7 +9,6 @@
 
 use crate::dev::DevIndex;
 use crate::queue::tx::TxQueueIndex;
-use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
