@@ -49,6 +49,7 @@ fn fixup_types(raw: String) -> String {
     raw.replace("asn: Option<i32>", "asn: Option<u32>")
         // This should get both vtep_mtu and plain mtu
         .replace("mtu: Option<i32>", "mtu: Option<u32>")
+        .replace("workers: Option<i64>", "workers: Option<u8>") // Gateway Go code says this is a u8
 }
 
 fn generate_rust_for_crd(crd_content: &str) -> String {
