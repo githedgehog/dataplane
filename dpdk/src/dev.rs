@@ -703,6 +703,32 @@ impl DevInfo {
         self.inner.if_index
     }
 
+    /// Examine the device and determine its description (if possible).
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if
+    ///
+    /// 1. The DPDK supplied name is not legal Utf8
+    /// 2. The supplied name can not be interpreted as a [`NetworkDeviceDescription`]
+    pub fn description(&self) -> Result<NetworkDeviceDescription, InvalidNetworkDeviceName> {
+        let out = unsafe { CStr::from_ptr(rte_dev_name(self.inner.device) as *mut _) }.to_str()?;
+        Ok(match PciAddress::try_from(out) {
+            Ok(out) => NetworkDeviceDescription::Pci(out),
+            Err(invalid_pci) => {
+                trace!("device not valid PCI: {invalid_pci}");
+                match InterfaceName::try_from(out) {
+                    Ok(name) => NetworkDeviceDescription::Kernel(name),
+                    Err(illegal_interface_name) => Err(InvalidNetworkDeviceName::Illegal(
+                        out.to_string(),
+                        invalid_pci,
+                        illegal_interface_name,
+                    ))?,
+                }
+            }
+        })
+    }
+
     #[allow(clippy::expect_used)]
     #[tracing::instrument(level = "debug")]
     /// Get the driver name of the device.
