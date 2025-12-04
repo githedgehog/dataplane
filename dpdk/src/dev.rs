@@ -5,10 +5,14 @@
 
 use dpdk_sys::rte_eth_hash_function::RTE_ETH_HASH_FUNCTION_DEFAULT;
 use std::format;
+use args::NetworkDeviceDescription;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
-use tracing::{debug, error, info};
+use hardware::pci::address::{InvalidPciAddress, PciAddress};
+use net::interface::{IllegalInterfaceName, InterfaceIndex, InterfaceName};
+use std::str;
+use tracing::{debug, error, info, trace};
 
 use crate::eal::Eal;
 use crate::queue;
