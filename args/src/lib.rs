@@ -415,21 +415,6 @@ impl Display for NetworkDeviceDescription {
     }
 }
 
-#[derive(
-    Debug,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    rkyv::Archive,
-)]
-pub enum WorkerStackSize {
-    #[default]
-    Default,
-    Size(KiB),
-}
-
 /// Configuration for the DPDK (Data Plane Development Kit) driver.
 ///
 /// DPDK provides kernel-bypass networking for high-performance packet processing.
