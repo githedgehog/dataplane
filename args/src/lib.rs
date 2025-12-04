@@ -711,8 +711,8 @@ impl LaunchConfiguration {
 }
 
 impl AsFinalizedMemFile for LaunchConfiguration {
-    fn finalize(&self) -> FinalizedMemFile {
-        let serialized_config = rkyv::to_bytes::<rkyv::rancor::Error>(self)
+    fn finalize(self) -> FinalizedMemFile {
+        let serialized_config = rkyv::to_bytes::<rkyv::rancor::Error>(&self)
             .into_diagnostic()
             .wrap_err("failed to serialize dataplane configuration")
             .unwrap();
@@ -739,7 +739,7 @@ pub trait AsFinalizedMemFile {
     ///
     /// The returned file is immutable and suitable for zero-copy deserialization
     /// in other processes.
-    fn finalize(&self) -> FinalizedMemFile;
+    fn finalize(self) -> FinalizedMemFile;
 }
 
 impl FinalizedMemFile {
@@ -986,7 +986,7 @@ impl IntegrityCheck {
 
 impl AsFinalizedMemFile for IntegrityCheck {
     #[tracing::instrument(level = "info")]
-    fn finalize(&self) -> FinalizedMemFile {
+    fn finalize(self) -> FinalizedMemFile {
         let bytes = self.serialize();
         let mut memfd = MemFile::new();
         memfd
