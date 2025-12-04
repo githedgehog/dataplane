@@ -114,17 +114,13 @@ impl ServiceThread<'_> {
             .name(name.as_ref().to_string())
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, move || {
-                info!("Initializing RTE Lcore");
-                let ret = unsafe { dpdk_sys::rte_thread_register() };
-                if ret != 0 {
-                    let errno = unsafe { dpdk_sys::rte_errno_get() };
-                    let msg = format!("rte thread exited with code {ret}, errno: {errno}");
-                    Eal::fatal_error(msg)
-                }
+                Self::register_current_thread();
                 let thread_id = unsafe { dpdk_sys::rte_thread_self() };
                 send.send(thread_id).expect("could not send thread id");
                 run();
-                unsafe { dpdk_sys::rte_thread_unregister() };
+                unsafe {
+                    Self::unregister_current_thread();
+                };
             })
             .expect("could not create EalThread");
         let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
@@ -133,6 +129,29 @@ impl ServiceThread<'_> {
             priority: LCorePriority::RealTime,
             handle,
         }
+    }
+
+    #[tracing::instrument(level = "debug")]
+    pub fn register_current_thread() {
+        debug!("initializing RTE Lcore");
+        let ret = unsafe { dpdk_sys::rte_thread_register() };
+        if ret != 0 {
+            let errno = unsafe { dpdk_sys::rte_errno_get() };
+            let msg = format!("rte_thread_register exited with code {ret}, errno: {errno}");
+            Eal::fatal_error(msg)
+        }
+    }
+
+    /// De-register / free the RTE lcore id / thread local slots
+    ///
+    /// # Safety
+    ///
+    /// * It only makes sense to call this function on a registered RTE lcore.
+    /// * Don't unregister an lcore if it still needs DPDK functions.
+    #[tracing::instrument(level = "debug")]
+    pub unsafe fn unregister_current_thread() {
+        debug!("tearing down RTE Lcore");
+        unsafe { dpdk_sys::rte_thread_unregister() };
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
