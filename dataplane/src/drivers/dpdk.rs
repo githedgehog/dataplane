@@ -19,7 +19,7 @@ use dpdk::{dev, socket};
 use net::interface::InterfaceIndex;
 use net::packet::Packet;
 use pipeline::{DynPipeline, NetworkFunction};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 fn init_devices(config: &Configured<'_>) -> Vec<Dev> {
     config
@@ -93,45 +93,45 @@ fn init_devices(config: &Configured<'_>) -> Vec<Dev> {
 }
 
 #[non_exhaustive]
-pub struct Configuration<'driver> {
+pub struct Configuration<'eal> {
     pub interfaces: HashMap<NetworkDeviceDescription, InterfaceIndex>,
-    pub eal: &'driver Eal<'driver, eal::Started<'driver>>,
+    pub eal: &'eal Eal<eal::Started>,
     pub workers: u16,
     pub setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
 }
 
 #[non_exhaustive]
-pub struct Configured<'driver> {
+pub struct Configured<'eal> {
     interfaces: HashMap<NetworkDeviceDescription, InterfaceIndex>,
-    eal: &'driver Eal<'driver, eal::Started<'driver>>,
+    eal: &'eal Eal<eal::Started>,
     workers: u16,
     setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Mbuf>>,
 }
 
 #[non_exhaustive]
-pub struct Started<'driver> {
-    eal: &'driver Eal<'driver, eal::Started<'driver>>,
-    devices: Arc<Vec<Dev>>,
+pub struct Started<'eal> {
+    eal: &'eal Eal<eal::Started>,
+    devices: Arc<Vec<Dev>>, // TODO: scope lifetimes to ensure dev does not outlive EAL
     workers: Vec<LCoreId>,
 }
 
 #[non_exhaustive]
-pub struct Stopped<'driver> {
-    eal: &'driver Eal<'driver, eal::Started<'driver>>,
+pub struct Stopped<'eal> {
+    eal: &'eal Eal<eal::Started>,
 }
 
-pub struct Dpdk<S> {
+pub struct Dataplane<S> {
     // TODO: absolutely must not be pub at release
     pub state: S,
 }
 
-impl<'driver> driver::Configure for Dpdk<Configured<'driver>> {
-    type Configuration = Configuration<'driver>;
-    type Configured = Dpdk<Configured<'driver>>;
+impl<'eal> driver::Configure for Dataplane<Configured<'eal>> {
+    type Configuration = Configuration<'eal>;
+    type Configured = Dataplane<Configured<'eal>>;
     type Error = Infallible;
 
     fn configure(configuration: Self::Configuration) -> Result<Self::Configured, Self::Error> {
-        Ok(Self::Configured {
+        Ok(Dataplane {
             state: Configured {
                 interfaces: configuration.interfaces,
                 eal: configuration.eal,
@@ -142,8 +142,8 @@ impl<'driver> driver::Configure for Dpdk<Configured<'driver>> {
     }
 }
 
-impl<'config> driver::Start for Dpdk<Configured<'config>> {
-    type Started = Dpdk<self::Started<'config>>;
+impl<'eal> driver::Start for Dataplane<Configured<'eal>> {
+    type Started = Dataplane<self::Started<'eal>>;
 
     type Error = Infallible;
 
@@ -191,9 +191,11 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
                                         None
                                     }
                                 });
-                                let pkts: Vec<_> = pkts.inspect(|f| {
-                                    trace!("here's your packet: {f:?}");
-                                }).collect();
+                                let pkts: Vec<_> = pkts
+                                    .inspect(|f| {
+                                        trace!("here's your packet: {f:?}");
+                                    })
+                                    .collect();
                                 // error!("about to sleep in busy loop, got packet count {}", pkts.len());
                                 tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -245,8 +247,8 @@ impl<'config> driver::Start for Dpdk<Configured<'config>> {
     }
 }
 
-impl<'config> driver::Stop for Dpdk<Started<'config>> {
-    type Outcome = &'config Eal<'config, eal::Started<'config>>;
+impl<'eal> driver::Stop for Dataplane<Started<'eal>> {
+    type Outcome = &'eal Eal<eal::Started>;
 
     type Error = Infallible;
 
@@ -254,35 +256,3 @@ impl<'config> driver::Stop for Dpdk<Started<'config>> {
         Ok(self.state.eal)
     }
 }
-
-// impl driver::Configure for DpdkDriver<Config> {
-//     type Configuration = &'static ArchivedLaunchConfiguration;
-
-//     type Error = Infallible;
-
-//     fn configure<'a>(
-//         launch_config_archive: &'static ArchivedLaunchConfiguration,
-//     ) -> Result<Self, Self::Error> {
-//         match launch_config_archive.driver {
-//             args::ArchivedDriverConfigSection::Dpdk(s) => {
-//                 let x = s
-//                     .eal_args
-//                     .iter()
-//                     .map(|&x| {
-//                         let out: Vec<u8, System> = Vec::from(x.as_bytes_with_nul());
-//                         out
-//                     })
-//                     .collect::<Vec<Vec<u8, System>, System>>();
-//             }
-//             args::ArchivedDriverConfigSection::Kernel(_) => panic!(),
-//         }
-//         Ok(Self {
-//             state: args,
-//             launch_config,
-//         })
-//     }
-// }
-
-// pub struct DpdkDriver<T> {
-//     state: T
-// }
