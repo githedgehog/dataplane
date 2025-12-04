@@ -88,6 +88,13 @@ impl Display for Pool {
     }
 }
 
+impl BufferPool for Pool {
+    type Buffer = Mbuf;
+    fn new_buffer(&self) -> Result<Self::Buffer, BufferAllocationError> {
+        Ok(self.alloc())
+    }
+}
+
 impl Pool {
     pub(crate) fn inner(&self) -> &PoolInner {
         &self.0
