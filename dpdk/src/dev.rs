@@ -3,8 +3,7 @@
 
 //! Ethernet device management.
 
-use alloc::format;
-use alloc::vec::Vec;
+use std::format;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
