@@ -65,7 +65,7 @@ pub struct GatewayAgentGateway {
     pub vtep_mtu: Option<u32>,
     /// Workers defines the number of worker threads to use for dataplane
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workers: Option<i64>,
+    pub workers: Option<u8>,
 }
 
 /// Interfaces is a map of interface names to their configurations
