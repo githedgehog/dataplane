@@ -150,7 +150,12 @@ fn addr_offset_in_prefix_with_ports(
     let ip_offset = addr_offset_in_prefix(prefix, addr)?;
     let port_offset = port - port_range.start;
     Some(PortAddrSize::from(
-        ip_offset * u128::from(port_range.len()) + u128::from(port_offset),
+        ip_offset
+            * u128::try_from(port_range.len()).unwrap_or_else(|_| {
+                // Assume conversion from usize to u128 never fails
+                unreachable!()
+            })
+            + u128::from(port_offset),
     ))
 }
 
@@ -367,7 +372,7 @@ impl IpPortRange {
         self.ip_range.len()
     }
 
-    fn port_len(&self) -> u32 {
+    fn port_len(&self) -> usize {
         self.port_range.len()
     }
 
@@ -563,12 +568,12 @@ impl PortRange {
 
     #[allow(clippy::len_without_is_empty)]
     #[must_use]
-    pub fn len(&self) -> u32 {
-        u32::from(self.end - self.start) + 1
+    pub fn len(&self) -> usize {
+        usize::from(self.end - self.start) + 1
     }
 
     fn get_entry(self, offset: u16) -> Option<u16> {
-        if u32::from(offset) >= self.len() {
+        if usize::from(offset) >= self.len() {
             return None;
         }
         Some(self.start + offset)

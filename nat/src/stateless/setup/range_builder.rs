@@ -106,7 +106,7 @@ fn add_offset_to_address_and_port(
     // - new port: 4000 + ((4800 + 6400) % 1000) = 4200
     let new_ip = add_offset_to_address(addr, covered_ips)?;
     let new_port = port_range.start()
-        + u16::try_from(u32::from(port + port_difference) % port_range.len())
+        + u16::try_from(usize::from(port + port_difference) % port_range.len())
             // port_range.len() is <= (u16::MAX + 1), so we always have the modulo result <= u16::MAX
             .unwrap_or_else(|_| unreachable!());
     Ok((new_ip, new_port))
@@ -269,7 +269,7 @@ impl PrefixWithPortRange {
         self.prefix.size()
     }
 
-    fn port_len(&self) -> u32 {
+    fn port_len(&self) -> usize {
         self.ports.len()
     }
 
