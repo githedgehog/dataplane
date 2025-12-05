@@ -8,6 +8,7 @@
 pub mod bgp;
 pub mod interface;
 pub mod underlay;
+pub mod vpc;
 
 use thiserror::Error;
 
