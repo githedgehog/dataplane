@@ -81,6 +81,9 @@ jobs:
               - '.github/workflows/dev.yml'
 
   check:
+    env:
+      CACHE_REGISTRY: "run.h.hhdev.io:30000"
+      UPSTREAM_REGISTRY: "ghcr.io"
     needs: [check_changes]
     if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
     permissions:
@@ -114,9 +117,16 @@ jobs:
       - name: "login to ghcr.io"
         uses: "docker/login-action@v3"
         with:
-          registry: "ghcr.io"
+          registry: "${{ env.UPSTREAM_REGISTRY }}"
           username: "${{ github.actor }}"
           password: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "login to image cache"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.CACHE_REGISTRY }}"
+          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
+          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
 
       - name: "Checkout"
         uses: "actions/checkout@v6"
@@ -138,10 +148,11 @@ jobs:
           OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
           docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
           docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
-          docker pull ghcr.io/githedgehog/testn/n-vm:v0.0.9
+          docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
+            registry="${{env.CACHE_REGISTRY}}" \
             refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
@@ -150,6 +161,7 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
+            registry="${{env.CACHE_REGISTRY}}" \
             ${{matrix.profile.sterile}} cargo deny check
 
       - name: "push container"
@@ -158,6 +170,7 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
+            registry="${{env.UPSTREAM_REGISTRY}}" \
             target=x86_64-unknown-linux-gnu \
             push-container
 
@@ -202,6 +215,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
+              registry="${{env.CACHE_REGISTRY}}" \
               ${{matrix.profile.sterile}} coverage \
                 --status-level=none \
                 --final-status-level=skip \
@@ -212,6 +226,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
+              registry="${{env.CACHE_REGISTRY}}" \
               ${{matrix.profile.sterile}} cargo nextest run \
                 --cargo-profile=${{matrix.profile.name}} \
                 --status-level=none \
@@ -230,6 +245,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
+              registry="${{env.CACHE_REGISTRY}}" \
               ${{matrix.profile.sterile}} cargo nextest run \
                 --cargo-profile=${{matrix.profile.name}} \
                 --status-level=none \

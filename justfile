@@ -46,10 +46,14 @@ profile := "debug"
 _container_repo := "ghcr.io/githedgehog/dataplane"
 
 # Docker images
+
+# The respository to push images to or pull them from
+registry := "${REGISTRY_URL:-ghcr.io}"
+
 [private]
 _image_profile := if profile == "debug" { "debug" } else { "release" }
 [private]
-_dpdk_sys_container_repo := "ghcr.io/githedgehog/dpdk-sys"
+_dpdk_sys_container_repo := registry + "/githedgehog/dpdk-sys"
 [private]
 _dpdk_sys_container_tag := dpdk_sys_commit
 
