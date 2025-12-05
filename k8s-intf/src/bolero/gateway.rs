@@ -35,16 +35,8 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
         Some(LegalValue(GatewayAgentGateway {
             asn: Some(d.gen_u32(Bound::Included(&1), Bound::Unbounded)?),
             logs: None, // FIXME(manishv) Add a proper implementation
-            interfaces: if interfaces.is_empty() {
-                None
-            } else {
-                Some(interfaces)
-            },
-            neighbors: if neighbors.is_empty() {
-                None
-            } else {
-                Some(neighbors)
-            },
+            interfaces: Some(interfaces).filter(|i| !i.is_empty()),
+            neighbors: Some(neighbors).filter(|n| !n.is_empty()),
             profiling: None, // FIXME(manishv) Add a proper implementation
             protocol_ip: Some(d.produce::<UnicastIpv4Addr>()?.to_string()),
             vtep_ip: Some(format!(
@@ -64,20 +56,14 @@ impl Normalize for GatewayAgentGateway {
         GatewayAgentGateway {
             asn: self.asn,
             logs: self.logs.clone(),
-            interfaces: self.interfaces.clone().and_then(|item| {
-                if item.is_empty() {
-                    None
-                } else {
-                    Some(item.normalize())
-                }
-            }),
-            neighbors: self.neighbors.clone().and_then(|item| {
-                if item.is_empty() {
-                    None
-                } else {
-                    Some(item.normalize())
-                }
-            }),
+            interfaces: self
+                .interfaces
+                .clone()
+                .and_then(|item| Some(item.normalize()).filter(|i| !i.is_empty())),
+            neighbors: self
+                .neighbors
+                .clone()
+                .and_then(|item| Some(item.normalize()).filter(|i| !i.is_empty())),
             profiling: self.profiling.clone(),
             protocol_ip: self.protocol_ip.clone(),
             vtep_ip: self.vtep_ip.clone(),
