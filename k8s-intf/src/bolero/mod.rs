@@ -5,6 +5,7 @@ pub mod bgp;
 pub mod gateway;
 pub mod interface;
 pub mod support;
+pub mod vpc;
 
 use std::collections::BTreeMap;
 
