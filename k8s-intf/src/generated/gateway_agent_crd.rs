@@ -189,7 +189,7 @@ pub struct GatewayAgentVpcs {
     pub subnets: Option<BTreeMap<String, GatewayAgentVpcsSubnets>>,
     /// VNI is the VNI for the VPC
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vni: Option<i32>,
+    pub vni: Option<u32>,
 }
 
 /// Subnets is a map of all subnets in the VPC (incl. CIDRs, VNIs, etc) keyed by the subnet name
