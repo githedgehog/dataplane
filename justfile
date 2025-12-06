@@ -312,7 +312,7 @@ create-compile-env tmpfs="false":
     {{ _just_debuggable_ }}
     mkdir compile-env
     if [ {{ tmpfs }} = "true" ]; then
-        sudo mount -t tmpfs tmpfs ./compile-env
+        sudo -E mount --make-rshared -t tmpfs tmpfs ./compile-env
     fi
     sudo -E docker create --name dpdk-sys-compile-env-{{ _slug }} "{{ _compile_env_container }}" - fake
     sudo -E docker export dpdk-sys-compile-env-{{ _slug }} \
@@ -377,8 +377,7 @@ fake-nix refake="":
     sudo ln -rs ./compile-env/nix /nix
 
 # Run a "sterile" command
-sterile *args: \
-  (cargo "clean") \
+sterile *args:  && \
   (compile-env "just" \
     ("debug_justfile=" + debug_justfile) \
     ("target=" + target) \
@@ -387,6 +386,7 @@ sterile *args: \
     ("sanitizers=" + sanitizers) \
     args \
   )
+  rm -fr ./target/*
 
 # Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
 [script]
