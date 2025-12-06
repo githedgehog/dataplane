@@ -377,7 +377,7 @@ fake-nix refake="":
     sudo ln -rs ./compile-env/nix /nix
 
 # Run a "sterile" command
-sterile *args:  && \
+sterile *args: && \
   (compile-env "just" \
     ("debug_justfile=" + debug_justfile) \
     ("target=" + target) \
