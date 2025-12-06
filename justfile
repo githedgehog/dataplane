@@ -210,8 +210,8 @@ compile-env *args:
       --env VERSION="{{ version }}" \
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
-      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
-      --mount "type=bind,source=$(pwd)/compile-env,destination=$(pwd)/compile-env,bind-propagation=rprivate,readonly" \
+      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rshared" \
+      --mount "type=bind,source=$(pwd)/compile-env,destination=$(pwd)/compile-env,bind-propagation=rshared,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
       --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR}" \

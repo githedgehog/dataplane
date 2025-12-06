@@ -155,6 +155,8 @@ jobs:
             registry="${{env.CACHE_REGISTRY}}" \
             refresh-compile-env true
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
+          mkdir ./target
+          sudo mount --make-rshared -t tmpfs -o uid=$(id -u),gid=$(id -g) tmpfs ./target
 
       - name: "cargo deny check"
         run: |
