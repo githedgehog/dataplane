@@ -153,7 +153,7 @@ jobs:
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
             registry="${{env.CACHE_REGISTRY}}" \
-            refresh-compile-env
+            refresh-compile-env true
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
       - name: "cargo deny check"

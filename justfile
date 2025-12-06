@@ -211,6 +211,7 @@ compile-env *args:
       --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
       --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
       --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
+      --mount "type=bind,source=$(pwd)/compile-env,destination=$(pwd)/compile-env,bind-propagation=rprivate,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
       --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
       --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR}" \
@@ -307,9 +308,12 @@ teardown-test-env: umount-hugepages
 
 # Dump the compile-env container into a sysroot for use by the build
 [script]
-create-compile-env:
+create-compile-env tmpfs="false":
     {{ _just_debuggable_ }}
     mkdir compile-env
+    if [ {{ tmpfs }} = "true" ]; then
+        sudo mount -t tmpfs tmpfs ./compile-env
+    fi
     sudo -E docker create --name dpdk-sys-compile-env-{{ _slug }} "{{ _compile_env_container }}" - fake
     sudo -E docker export dpdk-sys-compile-env-{{ _slug }} \
       | tar --no-same-owner --no-same-permissions -xf - -C compile-env
@@ -318,13 +322,20 @@ create-compile-env:
 # remove the compile-env directory
 [confirm("Remove old compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
 [script]
-remove-compile-env:
+remove-compile-env tmpfs="false":
     {{ _just_debuggable_ }}
-    if [ -d compile-env ]; then sudo rm -rf compile-env; fi
+    if [ -d compile-env ]; then
+        if [ {{ tmpfs }} = "false" ]; then
+            sudo rm -fr compile-env
+        elif [ {{ tmpfs }} = "true" ]; then
+            sudo umount --lazy ./compile-env
+            rmdir ./compile-env
+        fi
+    fi
 
 # refresh the compile-env (clear and restore)
 [script]
-refresh-compile-env: pull remove-compile-env create-compile-env
+refresh-compile-env tmpfs="false": pull (remove-compile-env tmpfs) (create-compile-env tmpfs)
 
 # clean up (delete) old compile-env images from system
 [script]
