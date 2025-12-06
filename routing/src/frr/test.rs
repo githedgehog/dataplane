@@ -124,7 +124,6 @@ pub mod tests {
     use super::fake_frr_agent::*;
     use crate::config::RouterConfig;
     use crate::{Router, RouterParamsBuilder};
-    use std::thread;
     use std::time::Duration;
     use tracing_test::traced_test;
 
@@ -175,7 +174,7 @@ exit
             ctl.configure(router_config).await.unwrap();
 
             /* give some time to rio to send the request / frr-agent to reply */
-            thread::sleep(Duration::from_secs(1));
+            tokio::time::sleep(Duration::from_secs(1)).await;
 
             /* poll the config */
             let frr_applied = ctl.get_frr_applied_config().await.unwrap();
