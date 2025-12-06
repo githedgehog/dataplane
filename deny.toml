@@ -18,6 +18,9 @@ ignore = [
     "RUSTSEC-2023-0081",
     # instant is unmaintained but is needed by afpacket with the tokio feature, remove when we stop using this crate in favor of our own
     "RUSTSEC-2024-0384",
+    # rustls_pemfile is unmaintained, but we aren't actually even using it.  We don't enable the feature of bollard
+    # which would pull this in.
+    "RUSTSEC-2025-0134"
 ]
 
 [licenses]
