@@ -236,6 +236,14 @@ impl From<Prefix> for IpNet {
     }
 }
 
+impl FromStr for Prefix {
+    type Err = PrefixError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Prefix::try_from(PrefixString(s))
+    }
+}
+
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct PrefixString<'a>(pub &'a str);
