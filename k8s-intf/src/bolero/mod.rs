@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 pub mod bgp;
+pub mod expose;
 pub mod gateway;
 pub mod interface;
 pub mod support;
@@ -16,6 +17,12 @@ use std::collections::BTreeMap;
 /// Instead of having a custom named `bolero::ValueGenerator` struct, it is easier to implement `bolero::TypeGenerator` for `LegalValue<T>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LegalValue<T>(T);
+
+impl<T> LegalValue<T> {
+    pub fn take(self) -> T {
+        self.0
+    }
+}
 
 impl<T> AsRef<T> for LegalValue<T> {
     fn as_ref(&self) -> &T {
