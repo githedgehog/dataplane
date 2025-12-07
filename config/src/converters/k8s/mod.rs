@@ -8,6 +8,7 @@
 pub mod bgp;
 pub mod expose;
 pub mod interface;
+pub mod overlay;
 pub mod peering;
 pub mod underlay;
 pub mod vpc;
