@@ -51,6 +51,10 @@ fn fixup_types(raw: String) -> String {
         .replace("mtu: Option<i32>", "mtu: Option<u32>")
         .replace("vni: Option<i32>", "vni: Option<u32>")
         .replace("workers: Option<i64>", "workers: Option<u8>") // Gateway Go code says this is a u8
+        .replace(
+            "idle_timeout: Option<String>",
+            "idle_timeout: Option<std::time::Duration>",
+        )
 }
 
 fn generate_rust_for_crd(crd_content: &str) -> String {
