@@ -8,10 +8,15 @@
 pub mod bgp;
 pub mod expose;
 pub mod interface;
+pub mod peering;
 pub mod underlay;
 pub mod vpc;
 
+use std::collections::BTreeMap;
+
 use thiserror::Error;
+
+use lpm::prefix::Prefix;
 
 #[derive(Debug, Error)]
 pub enum FromK8sConversionError {
@@ -34,3 +39,6 @@ pub enum ToK8sConversionError {
     #[error("Source configuration cannot be converted: {0}")]
     Unsupported(String),
 }
+
+pub type SubnetMap = BTreeMap<String, Prefix>;
+pub type VpcSubnetMap = BTreeMap<String, SubnetMap>;

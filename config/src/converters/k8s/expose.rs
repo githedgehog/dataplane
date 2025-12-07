@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::collections::BTreeMap;
 use std::convert::TryFrom;
 
 use k8s_intf::gateway_agent_crd::{
@@ -10,13 +9,13 @@ use k8s_intf::gateway_agent_crd::{
 };
 use lpm::prefix::{Prefix, PrefixString};
 
-use crate::converters::k8s::FromK8sConversionError;
+use crate::converters::k8s::{FromK8sConversionError, SubnetMap};
 use crate::external::overlay::vpcpeering::VpcExpose;
 
 fn process_ip_block(
     vpc_expose: VpcExpose,
     ip: &GatewayAgentPeeringsPeeringExposeIps,
-    subnets: &BTreeMap<String, Prefix>,
+    subnets: &SubnetMap,
 ) -> Result<VpcExpose, FromK8sConversionError> {
     Ok(match (&ip.cidr, &ip.vpc_subnet, &ip.not) {
         (None, None, None) => {
@@ -98,19 +97,11 @@ fn process_as_block(
     })
 }
 
-impl
-    TryFrom<(
-        &BTreeMap<String, Prefix>,
-        &GatewayAgentPeeringsPeeringExpose,
-    )> for VpcExpose
-{
+impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
     type Error = FromK8sConversionError;
 
     fn try_from(
-        (subnets, expose): (
-            &BTreeMap<String, Prefix>,
-            &GatewayAgentPeeringsPeeringExpose,
-        ),
+        (subnets, expose): (&SubnetMap, &GatewayAgentPeeringsPeeringExpose),
     ) -> Result<Self, Self::Error> {
         let mut vpc_expose = VpcExpose::empty();
 
@@ -147,7 +138,7 @@ mod test {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn test_vpc_conversion() {
-        let subnets = BTreeMap::from([
+        let subnets = SubnetMap::from([
             (
                 "subnet1".to_string(),
                 "10.0.1.0/24".parse::<Prefix>().unwrap(),
