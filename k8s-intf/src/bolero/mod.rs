@@ -6,6 +6,7 @@ pub mod expose;
 pub mod gateway;
 pub mod interface;
 pub mod peering;
+pub mod spec;
 pub mod support;
 pub mod vpc;
 
