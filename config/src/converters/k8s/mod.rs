@@ -6,6 +6,7 @@
 #![deny(clippy::all, clippy::pedantic)]
 
 pub mod bgp;
+pub mod expose;
 pub mod interface;
 pub mod underlay;
 pub mod vpc;
