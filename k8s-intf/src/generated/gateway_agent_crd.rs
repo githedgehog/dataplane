@@ -172,7 +172,7 @@ pub struct GatewayAgentPeeringsPeeringExposeNat {
 pub struct GatewayAgentPeeringsPeeringExposeNatStateful {
     /// Time since the last packet after which flows are removed from the connection state table
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "idleTimeout")]
-    pub idle_timeout: Option<String>,
+    pub idle_timeout: Option<std::time::Duration>,
 }
 
 /// Use connection state tracking when performing NAT, use stateful NAT if omitted
