@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 
-use lpm::prefix::Prefix;
-
-use crate::bolero::LegalValue;
-use crate::bolero::support::{UniqueV4CidrGenerator, UniqueV6CidrGenerator};
+use crate::bolero::support::generate_prefixes;
+use crate::bolero::{LegalValue, SubnetMap};
 use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
@@ -21,39 +18,14 @@ use crate::gateway_agent_crd::{
 /// This is not exhaustive over all legal values due to the complexity
 /// of doing this.  The cidr generators in particular are not exhaustive.
 pub struct LegalValueExposeGenerator<'a> {
-    subnets: &'a BTreeMap<String, Prefix>,
+    subnets: &'a SubnetMap,
 }
 
 impl<'a> LegalValueExposeGenerator<'a> {
     #[must_use]
-    pub fn new(subnets: &'a BTreeMap<String, Prefix>) -> Self {
+    pub fn new(subnets: &'a SubnetMap) -> Self {
         Self { subnets }
     }
-}
-
-fn generate_v4_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr4_gen =
-        UniqueV4CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&32))?);
-    cidr4_gen.generate(d)
-}
-
-fn generate_v6_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
-    let cidr6_gen =
-        UniqueV6CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&128))?);
-    cidr6_gen.generate(d)
-}
-
-fn generate_prefixes<D: Driver>(d: &mut D, v4_count: u16, v6_count: u16) -> Option<Vec<String>> {
-    let mut prefixes = Vec::with_capacity(usize::from(v4_count) + usize::from(v6_count));
-    if v4_count > 0 {
-        let v4_prefixes = generate_v4_prefixes(d, v4_count)?;
-        prefixes.extend(v4_prefixes);
-    }
-    if v6_count > 0 {
-        let v6_prefixes = generate_v6_prefixes(d, v6_count)?;
-        prefixes.extend(v6_prefixes);
-    }
-    Some(prefixes)
 }
 
 impl ValueGenerator for LegalValueExposeGenerator<'_> {
@@ -64,7 +36,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         let num_nots = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;
         let num_subnets = std::cmp::max(
             self.subnets.len(),
-            usize::from(d.gen_u8(Bound::Included(&0), Bound::Included(&16))?),
+            d.gen_usize(Bound::Included(&0), Bound::Included(&16))?,
         );
 
         let num_as = d.gen_u16(Bound::Included(&0), Bound::Included(&16))?;

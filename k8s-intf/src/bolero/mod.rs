@@ -5,10 +5,13 @@ pub mod bgp;
 pub mod expose;
 pub mod gateway;
 pub mod interface;
+pub mod peering;
 pub mod support;
 pub mod vpc;
 
 use std::collections::BTreeMap;
+
+use lpm::prefix::Prefix;
 
 /// A type on which implement `bolero::TypeGenerator` for legal values of `T`
 ///
@@ -59,3 +62,13 @@ where
             .collect()
     }
 }
+
+// This is distinct from the SubnetMap in config/converters/k8s
+// since this type is only for the test library.  It should be
+// compatible with the SubnetMap in config/converters/k8s
+type SubnetMap = BTreeMap<String, Prefix>;
+
+// This is distinct from the VpcSubnetMap in config/converters/k8s
+// since this type is only for the test library.  It should be
+// compatible with the SubnetMap in config/converters/k8s
+type VpcSubnetMap = BTreeMap<String, SubnetMap>;

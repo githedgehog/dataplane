@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Open Network Fabric Authors
 
-use bolero::{Driver, ValueGenerator};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Bound;
+
+use bolero::{Driver, ValueGenerator};
 
 fn v4cdir_from_bytes(addr_bytes: u32, mask: u8) -> String {
     let and_mask = u32::MAX.unbounded_shl(32 - u32::from(mask));
@@ -255,6 +256,35 @@ impl ValueGenerator for UniqueV6InterfaceAddressGenerator {
 pub fn choose<T: Clone, D: Driver>(d: &mut D, choices: &[T]) -> Option<T> {
     let index = d.gen_usize(Bound::Included(&0), Bound::Excluded(&choices.len()))?;
     Some(choices[index].clone())
+}
+
+pub fn generate_v4_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
+    let cidr4_gen =
+        UniqueV4CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&32))?);
+    cidr4_gen.generate(d)
+}
+
+pub fn generate_v6_prefixes<D: Driver>(d: &mut D, count: u16) -> Option<Vec<String>> {
+    let cidr6_gen =
+        UniqueV6CidrGenerator::new(count, d.gen_u8(Bound::Included(&0), Bound::Included(&128))?);
+    cidr6_gen.generate(d)
+}
+
+pub fn generate_prefixes<D: Driver>(
+    d: &mut D,
+    v4_count: u16,
+    v6_count: u16,
+) -> Option<Vec<String>> {
+    let mut prefixes = Vec::with_capacity(usize::from(v4_count) + usize::from(v6_count));
+    if v4_count > 0 {
+        let v4_prefixes = generate_v4_prefixes(d, v4_count)?;
+        prefixes.extend(v4_prefixes);
+    }
+    if v6_count > 0 {
+        let v6_prefixes = generate_v6_prefixes(d, v6_count)?;
+        prefixes.extend(v6_prefixes);
+    }
+    Some(prefixes)
 }
 
 #[cfg(test)]
