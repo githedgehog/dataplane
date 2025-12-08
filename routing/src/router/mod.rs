@@ -13,8 +13,13 @@ pub(crate) mod rpc_adapt;
 use derive_builder::Builder;
 use std::fmt::Display;
 use std::path::PathBuf;
-use std::thread::JoinHandle;
 use tracing::{debug, error};
+
+// sockets
+use std::net::SocketAddr;
+
+// keep async task handle for BMP
+use tokio::task::JoinHandle;
 
 use crate::atable::atablerw::{AtableReader, AtableReaderFactory};
 use crate::atable::resolver::AtResolver;
@@ -29,12 +34,21 @@ use args::DEFAULT_DP_UX_PATH;
 use args::DEFAULT_DP_UX_PATH_CLI;
 use args::DEFAULT_FRR_AGENT_PATH;
 
-// bring BmpServerParams into scope (already added in args)
-use args::BmpServerParams;
-
 // mandatory dataplane status handle
-use concurrency::syn::{Arc, RwLock};
+use concurrency::sync::{Arc, RwLock};
 use config::internal::status::DataplaneStatus;
+
+#[derive(Clone, Debug)]
+pub struct BmpServerParams {
+    /// TCP bind address for the BMP listener
+    pub bind_addr: SocketAddr,
+    /// Periodic stats emit interval (milliseconds)
+    pub stats_interval_ms: u64,
+    /// Optional reconnect/backoff lower bound (milliseconds)
+    pub min_retry_ms: Option<u64>,
+    /// Optional reconnect/backoff upper bound (milliseconds)
+    pub max_retry_ms: Option<u64>,
+}
 
 /// Struct to configure router object. N.B we derive a builder type `RouterConfig`
 /// and provide defaults for each field.
@@ -55,6 +69,7 @@ pub struct RouterParams {
     // Optional BMP server parameters: whether to start server.
     #[builder(setter(strip_option), default)]
     pub bmp: Option<BmpServerParams>,
+
     // Mandatory dataplane status handle
     pub dp_status: Arc<RwLock<DataplaneStatus>>,
 }
@@ -77,7 +92,7 @@ pub struct Router {
     rio_handle: RioHandle,
     iftr: IfTableReader,
     fibtr: FibTableReader,
-    // keep BMP thread alive while Router lives
+    // keep BMP task alive while Router lives
     bmp_handle: Option<JoinHandle<()>>,
 }
 
@@ -135,9 +150,12 @@ impl Router {
         let bmp_handle = if let Some(bmp_params) = &params.bmp {
             debug!(
                 "{name}: Starting BMP server on {} (interval={}ms)",
-                bmp_params.bind, bmp_params.stats_interval_ms
+                bmp_params.bind_addr, bmp_params.stats_interval_ms
             );
-            Some(bmp::spawn_background(bmp_params, params.dp_status.clone()))
+            Some(bmp::spawn_background(
+                bmp_params.bind_addr,
+                params.dp_status.clone(),
+            ))
         } else {
             None
         };
@@ -155,13 +173,18 @@ impl Router {
         Ok(router)
     }
 
-    /// Stop this router. This stops the router IO thread and drops the interface table, adjacency table
-    /// vrf table and the fib table.
+    /// Stop this router. This stops the router IO task and drops the interface table, adjacency table,
+    /// VRF table and the FIB table.
     pub fn stop(&mut self) {
         if let Err(e) = self.rio_handle.finish() {
             error!("Failed to stop IO for router '{}': {e}", self.name);
         }
         self.resolver.stop();
+
+        // Abort BMP server task if running (Tokio handle).
+        if let Some(handle) = self.bmp_handle.take() {
+            handle.abort();
+        }
 
         debug!("Router '{}' is now stopped", self.name);
     }

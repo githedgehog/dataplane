@@ -1,76 +1,56 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![allow(unused)]
-
 pub mod bmp_render;
 pub mod handler;
 pub mod server;
 
-use std::thread::{self, JoinHandle};
+pub use handler::BmpHandler;
+pub use server::{BmpServer, BmpServerConfig};
 
-use args::BmpServerParams;
-use handler::BmpHandler;
-use server::{BmpServer, BmpServerConfig};
-use tracing::{debug, error};
-
-use concurrency::syn::{Arc, RwLock};
+use concurrency::sync::{Arc, RwLock};
 use config::internal::status::DataplaneStatus;
+use netgauze_bmp_pkt::BmpMessage;
+use tokio::task::JoinHandle;
+use tracing::info;
 
-/// A BMP handler that updates `DataplaneStatus` via `bmp_render::hande_bmp_message`.
-struct StatusUpdateHandler {
-    dp: Arc<RwLock<DataplaneStatus>>,
+/// Background BMP server runner that updates shared dataplane status.
+pub struct StatusHandler {
+    dp_status: Arc<RwLock<DataplaneStatus>>,
+}
+
+impl StatusHandler {
+    pub fn new(dp_status: Arc<RwLock<DataplaneStatus>>) -> Self {
+        Self { dp_status }
+    }
 }
 
 #[async_trait::async_trait]
-impl BmpHandler for StatusUpdateHandler {
-    async fn on_message(&self, _peer: std::net::SocketAddr, msg: netgauze_bmp_pkt::BmpMessage) {
-        if let Ok(mut guard) = self.dp.try_write() {
-            bmp_render::hande_bmp_message(&mut *guard, &msg);
-        } else {
-            // non-blocking: skip if lock not immediately available
-        }
-    }
-
-    async fn on_disconnect(&self, _peer: std::net::SocketAddr, _reason: &str) {
-        // no-op
+impl handler::BmpHandler for StatusHandler {
+    async fn on_message(&self, _peer: std::net::SocketAddr, msg: BmpMessage) {
+        // Your `concurrency::sync::RwLock` returns Result<Guard, PoisonError> like std::
+        let mut guard = self
+            .dp_status
+            .write()
+            .expect("dataplane status lock poisoned");
+        bmp_render::handle_bmp_message(&mut *guard, &msg);
     }
 }
 
-/// Spawn BMP server in a dedicated thread with its own Tokio runtime.
-/// Always uses `StatusUpdateHandler` to update `DataplaneStatus`.
+/// Spawn BMP server in background
 pub fn spawn_background(
-    params: &BmpServerParams,
+    bind: std::net::SocketAddr,
     dp_status: Arc<RwLock<DataplaneStatus>>,
 ) -> JoinHandle<()> {
-    let bind = params.bind;
-    let stats_interval_ms = params.stats_interval_ms;
-
-    thread::Builder::new()
-        .name("bmp-server".to_string())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .expect("failed to build BMP tokio runtime");
-
-            rt.block_on(async move {
-                let cfg = BmpServerConfig {
-                    bind_addr: bind,
-                    ..Default::default()
-                };
-
-                debug!(
-                    "BMP: starting StatusUpdateHandler on {bind}, interval={}ms",
-                    stats_interval_ms
-                );
-                let handler = StatusUpdateHandler { dp: dp_status };
-                let srv = BmpServer::new(cfg, handler);
-                if let Err(e) = srv.run().await {
-                    error!("BMP server exited with error: {e:#}");
-                }
-            });
-        })
-        .expect("failed to start bmp-server thread")
+    tokio::spawn(async move {
+        info!("starting BMP server on {}", bind);
+        let cfg = BmpServerConfig {
+            bind_addr: bind,
+            ..Default::default()
+        };
+        let srv = BmpServer::new(cfg, StatusHandler::new(dp_status));
+        if let Err(e) = srv.run().await {
+            tracing::error!("bmp server terminated: {e:#}");
+        }
+    })
 }

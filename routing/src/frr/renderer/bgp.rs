@@ -253,7 +253,6 @@ fn bgp_neigh_bool_switches(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
     /* extended link bw */
     if neigh.remove_private_as {
         cfg += format!(" {prefix} remove-private-AS");
-        ß
     }
 
     /* extended link bw */

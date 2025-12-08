@@ -1603,6 +1603,8 @@ name = "dataplane-routing"
 version = "0.7.0"
 dependencies = [
  "ahash",
+ "anyhow",
+ "async-trait",
  "bitflags 2.10.0",
  "bolero",
  "bytes",
@@ -1617,6 +1619,7 @@ dependencies = [
  "dataplane-tracectl",
  "derive_builder 0.20.2",
  "dplane-rpc",
+ "futures-util",
  "ipnet",
  "left-right",
  "linkme",
@@ -1629,6 +1632,8 @@ dependencies = [
  "serde",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-test",
 ]
