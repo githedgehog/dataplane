@@ -29,12 +29,6 @@ pub fn get_target_name() -> String {
         .to_string()
 }
 
-
-#[must_use]
-pub fn get_compile_env() -> String {
-    env::var("COMPILE_ENV").expect("COMPILE_ENV not set")
-}
-
 #[must_use]
 pub fn get_sysroot() -> String {
     let compile_env = env::var("COMPILE_ENV").expect("COMPILE_ENV not set");
