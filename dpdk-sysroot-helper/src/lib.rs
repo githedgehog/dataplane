@@ -29,10 +29,6 @@ pub fn get_target_name() -> String {
         .to_string()
 }
 
-#[must_use]
-pub fn get_project_root() -> String {
-    env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")
-}
 
 #[must_use]
 pub fn get_compile_env() -> String {
