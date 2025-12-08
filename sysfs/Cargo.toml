@@ -26,6 +26,5 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [build-dependencies]
 # internal
-dpdk-sysroot-helper = { workspace = true }
 
 # external
