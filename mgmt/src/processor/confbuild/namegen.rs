@@ -77,10 +77,7 @@ impl VpcConfigNames for Vpc {
         format!("ADV-TO-{}", &self.name.to_uppercase())
     }
     fn adv_plist_desc(&self) -> String {
-        format!(
-            "Prefixes allowed to advertised to {}",
-            &self.name.to_uppercase()
-        )
+        format!("Prefixes advertised to {}", &self.name.to_uppercase())
     }
     fn adv_rmap(&self) -> String {
         format!("ADV-TO-{}", &self.name.to_uppercase())
