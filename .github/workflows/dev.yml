@@ -141,6 +141,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends just
 
+      - name: "install rust from upstream"
+        if: ${{ matrix.profile.sterile != 'sterile' }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: "clippy,rustfmt"
+
       - name: "set up build environment"
         run: |
           REQUIRED_HUGEPAGES=512
@@ -149,14 +155,17 @@ jobs:
           docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
           docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
           docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
-          just --yes \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile=${{matrix.profile.name}} \
-            registry="${{env.CACHE_REGISTRY}}" \
-            refresh-compile-env
-          just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
+          if [ "${{matrix.profile.sterile}}" = "sterile" ]; then
+            just --yes \
+                debug_justfile="${{matrix.debug_justfile}}" \
+                profile=${{matrix.profile.name}} \
+                registry="${{env.CACHE_REGISTRY}}" \
+                refresh-compile-env
+            just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
+          fi
 
       - name: "cargo deny check"
+        if: ${{ matrix.profile.sterile == 'sterile' }}
         run: |
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
@@ -202,6 +211,16 @@ jobs:
             target=x86_64-unknown-linux-gnu \
             print-container-tags
 
+      - name: Install cargo-binstall
+        if: ${{ matrix.profile.sterile != 'sterile' }}
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install nextest and kopium
+        if: ${{ matrix.profile.sterile != 'sterile' }}
+        run: |
+            cargo binstall cargo-nextest --secure
+            cargo binstall kopium --secure
+
       - id: "test"
         name: "test"
         run: |
@@ -220,7 +239,7 @@ jobs:
                 --status-level=none \
                 --final-status-level=skip \
                 --message-format=libtest-json-plus > ./results.json
-          else
+          elif [ "${{ matrix.profile.sterile }}" = "sterile" ]; then
             echo "::notice::Running regular tests"
             just \
               debug_justfile="${{matrix.debug_justfile}}" \
@@ -254,6 +273,13 @@ jobs:
                 --features shuttle \
                 shuttle \
                 >> ./results.json
+          else
+              declare -rx NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+              cargo nextest run \
+                --status-level=none \
+                --final-status-level=skip \
+                --message-format=libtest-json-plus \
+                > ./results.json
           fi
           # look for any flakes (flakes have a #\\d+ match in their name field)
           jq \
@@ -339,17 +365,26 @@ jobs:
       - id: "clippy"
         name: "run clippy"
         run: |
-          just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
-            ${{matrix.profile.sterile}} cargo clippy --all-targets --all-features -- -D warnings
+          if [ "${{matrix.profile.sterile}}" != "sterile" ]; then
+            # you can't really get away with --all-features here since that enables dpdk
+            cargo clippy --all-targets -- -D warnings
+          else
+            just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
+                ${{matrix.profile.sterile}} cargo clippy --all-targets --all-features -- -D warnings
+          fi
 
       - id: "docs"
         name: "run rustdoc"
         run: |
-          RUSTDOCFLAGS="-D warnings" just \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile=${{matrix.profile.name}} \
-            target=x86_64-unknown-linux-gnu \
-            ${{matrix.profile.sterile}} cargo doc --no-deps
+          if [ "${{matrix.profile.sterile}}" != "sterile" ]; then
+            cargo doc --no-deps
+          else
+            RUSTDOCFLAGS="-D warnings" just \
+                debug_justfile="${{matrix.debug_justfile}}" \
+                profile=${{matrix.profile.name}} \
+                target=x86_64-unknown-linux-gnu \
+                ${{matrix.profile.sterile}} cargo doc --no-deps
+          fi
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
