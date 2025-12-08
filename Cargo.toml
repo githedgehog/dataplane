@@ -14,7 +14,6 @@ default-members = [
     "flow-info",
     "hardware",
     "id",
-    "init",
     "interface-manager",
     "k8s-intf",
     "left-right-tlcache",
