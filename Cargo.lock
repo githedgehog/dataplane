@@ -1534,7 +1534,6 @@ dependencies = [
 name = "dataplane-sysfs"
 version = "0.1.0"
 dependencies = [
- "dataplane-dpdk-sysroot-helper",
  "dataplane-id",
  "n-vm",
  "nix 0.30.1",
