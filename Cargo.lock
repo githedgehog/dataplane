@@ -1650,7 +1650,6 @@ dependencies = [
 name = "dataplane-sysfs"
 version = "0.7.0"
 dependencies = [
- "dataplane-dpdk-sysroot-helper",
  "dataplane-id",
  "nix 0.30.1",
  "procfs",
