@@ -21,7 +21,7 @@ impl Rendered for Community {
     fn rendered(&self) -> String {
         match self {
             Community::None => "none".to_string(),
-            Community::ASNVAL(asn, val) => format!("{asn}{val}"),
+            Community::ASNVAL(asn, val) => format!("{asn}:{val}"),
             Community::NoAdvertise => "no-advertise".to_string(),
             Community::NoPeer => "no-peer".to_string(),
             Community::NoExport => "no-export".to_string(),
@@ -172,7 +172,11 @@ mod tests {
                 "NHOP-PLIST".to_string(),
             ))
             .add_action(RouteMapSetAction::Community(
-                vec![Community::NoExport, Community::LocalAs],
+                vec![
+                    Community::NoExport,
+                    Community::LocalAs,
+                    Community::ASNVAL(100, 1),
+                ],
                 true,
             ));
         rmap.add_entry(None, entry).unwrap();
