@@ -43,3 +43,9 @@ pub fn get_sysroot() -> String {
         panic!("sysroot not found at {expected_sysroot}")
     }
 }
+
+pub fn use_sysroot() {
+    let sysroot = get_sysroot();
+    println!("cargo:rustc-link-search=all={sysroot}/lib");
+    println!("cargo:rustc-link-arg=--sysroot={sysroot}");
+}
