@@ -704,7 +704,6 @@ impl BgpConfig {
         self.af_ipv6unicast = Some(af_ipv6unicast);
     }
 
-    /* NEW: attach BMP options */
     pub fn set_bmp_options(&mut self, bmp: BmpOptions) -> &Self {
         self.bmp = Some(bmp);
         self

@@ -3,8 +3,8 @@
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
-use netgauze_bmp_pkt::codec::BmpCodec;
 use netgauze_bmp_pkt::BmpMessage;
+use netgauze_bmp_pkt::codec::BmpCodec;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 use tokio_util::codec::FramedRead;
@@ -104,7 +104,9 @@ async fn handle_peer<H: BmpHandler>(
                 handler.on_message(peer, BmpMessage::V4(msg)).await;
             }
             Err(e) => {
-                handler.on_disconnect(peer, &format!("decode error: {e}")).await;
+                handler
+                    .on_disconnect(peer, &format!("decode error: {e}"))
+                    .await;
                 return Ok(());
             }
         }
