@@ -121,8 +121,8 @@ struct VpcRoutingConfigIpv4 {
 
     /* advertise */
     adv_nets: Vec<Prefix>,
-    adv_rmap: RouteMap,    /* one entry per peer */
-    adv_plist: PrefixList, /* one prefix list, one entry per peer */
+    adv_rmap: RouteMap,
+    adv_plist: Vec<PrefixList>,
 
     /* static routes */
     sroutes: Vec<StaticRoute>,
@@ -136,7 +136,7 @@ impl VpcRoutingConfigIpv4 {
             vrf_imports: VrfImports::new().set_routemap(&vpc.import_rmap_ipv4()),
             adv_nets: vec![],
             adv_rmap: RouteMap::new(&vpc.adv_rmap()),
-            adv_plist: PrefixList::new(&vpc.adv_plist(), IpVer::V4, Some(vpc.adv_plist_desc())),
+            adv_plist: vec![],
             sroutes: vec![],
         }
     }
@@ -175,7 +175,12 @@ impl VpcRoutingConfigIpv4 {
         });
         self.adv_nets.extend(nets);
 
-        /* build adv prefix list */
+        /* build adv prefix list and route-map */
+        let mut adv_plist = PrefixList::new(
+            &vpc.adv_plist(&rmanifest.name),
+            IpVer::V4,
+            Some(vpc.adv_plist_desc(&rmanifest.name)),
+        );
         for expose in rmanifest.exposes.iter() {
             let prefixes = expose.public_ips().iter();
             let plists = prefixes.map(|prefix_with_ports| {
@@ -185,14 +190,16 @@ impl VpcRoutingConfigIpv4 {
                     None,
                 )
             });
-            self.adv_plist.add_entries(plists)?;
+            adv_plist.add_entries(plists)?;
         }
+        self.adv_plist.push(adv_plist);
 
         /* create adv route-map entry and add it */
-        let adv_rmap_e = RouteMapEntry::new(MatchingPolicy::Permit).add_match(
-            RouteMapMatch::Ipv4AddressPrefixList(self.adv_plist.name.clone()),
+        let adv_rmape = RouteMapEntry::new(MatchingPolicy::Permit).add_match(
+            RouteMapMatch::Ipv4AddressPrefixList(vpc.adv_plist(&rmanifest.name)),
         );
-        self.adv_rmap.add_entry(None, adv_rmap_e)?;
+
+        self.adv_rmap.add_entry(None, adv_rmape)?;
         Ok(())
     }
 
@@ -269,7 +276,7 @@ fn build_vpc_internal_config(
         }
 
         internal.add_route_map(vpc_rconfig.adv_rmap.clone());
-        internal.add_prefix_list(vpc_rconfig.adv_plist.clone());
+        internal.add_prefix_lists(vpc_rconfig.adv_plist.clone());
         vrf_cfg.add_static_routes(vpc_rconfig.sroutes.clone());
     }
 
