@@ -13,6 +13,7 @@ testing = []
 args = { workspace = true }
 cli = { workspace = true }
 config = { workspace = true }
+concurrency = { workspace = true }
 dplane-rpc = { workspace = true }
 left-right-tlcache = { workspace = true }
 lpm = { workspace = true }
@@ -21,10 +22,13 @@ tracectl = { workspace = true }
 
 # external
 ahash = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
 chrono = { workspace = true, features = ["clock"] }
 derive_builder = { workspace = true, features = ["default", "std"] }
+futures-util = { workspace = true }
 ipnet = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
@@ -33,7 +37,9 @@ netgauze-bgp-pkt = { workspace = true }
 netgauze-bmp-pkt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "net", "macros"] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }
 
 # arp resolver
@@ -46,4 +52,3 @@ concurrency = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 rand = { workspace = true, default-features = false, features = ["thread_rng"] }
 tracing-test = { workspace = true, features = [] }
-
