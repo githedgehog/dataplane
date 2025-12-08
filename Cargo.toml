@@ -103,7 +103,7 @@ futures = { version = "0.3.31", default-features = false, features = [] }
 hashbrown = { version = "0.16.1", default-features = false, features = [] }
 hwlocality = { version = "1.0.0-alpha.11", default-features = false, features = [] }
 hyper = { version = "1.8.1", default-features = false, features = [] }
-hyper-util = { version = "0.1.18", features = [] }
+hyper-util = { version = "0.1.19", features = [] }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
 k8s-openapi = { version = "0.26.0", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
