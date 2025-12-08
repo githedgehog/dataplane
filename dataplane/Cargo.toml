@@ -5,6 +5,11 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+default = []
+sysroot = ["dep:dpdk-sysroot-helper"]
+dpdk = ["sysroot", "dep:dpdk"]
+
 [dependencies]
 afpacket = { workspace = true, features = ["async-tokio"] }
 args = { workspace = true }
@@ -13,7 +18,7 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 axum-server = { workspace = true }
 concurrency = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }
-dpdk = { workspace = true }
+dpdk = { workspace = true, optional = true }
 dyn-iter = { workspace = true }
 futures = { workspace = true }
 gwname = { workspace = true }
@@ -60,6 +65,6 @@ tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 # internal
-dpdk-sysroot-helper = { workspace = true }
+dpdk-sysroot-helper = { workspace = true, optional = true }
 
 # external
