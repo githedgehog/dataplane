@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Minimal BMP server built on NetGauze 0.8.0
+//! - Frames a TCP stream with `BmpCodec`
+//! - Yields `netgauze_bmp_pkt::BmpMessage` items
+//! - Hands each item to a user-provided `BmpHandler`
+
 use anyhow::{Context, Result};
-use bytes::BytesMut;
-use netgauze_bmp_pkt::codec::BmpCodec;
+use concurrency::sync::Arc;
+use futures_util::StreamExt;
 use netgauze_bmp_pkt::BmpMessage;
+use netgauze_bmp_pkt::codec::BmpCodec;
+use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 use tokio_util::codec::FramedRead;
@@ -13,9 +20,11 @@ use crate::bmp::handler::BmpHandler;
 
 #[derive(Clone, Debug)]
 pub struct BmpServerConfig {
-    pub bind_addr: std::net::SocketAddr,
+    pub bind_addr: SocketAddr,
     pub tcp_nodelay: bool,
+    /// Reserved for future tuning (no stable API to set TCP recv buf on Tokio stream).
     pub tcp_recv_buf: Option<usize>,
+    /// Optional cap on simultaneously active peers.
     pub max_conns: Option<usize>,
 }
 
@@ -24,7 +33,7 @@ impl Default for BmpServerConfig {
         Self {
             bind_addr: "0.0.0.0:5000".parse().unwrap(),
             tcp_nodelay: true,
-            tcp_recv_buf: Some(1 << 20), // 1 MiB
+            tcp_recv_buf: Some(1 << 20),
             max_conns: None,
         }
     }
@@ -32,12 +41,15 @@ impl Default for BmpServerConfig {
 
 pub struct BmpServer<H: BmpHandler> {
     cfg: BmpServerConfig,
-    handler: H,
+    handler: Arc<H>,
 }
 
 impl<H: BmpHandler> BmpServer<H> {
     pub fn new(cfg: BmpServerConfig, handler: H) -> Self {
-        Self { cfg, handler }
+        Self {
+            cfg,
+            handler: Arc::new(handler),
+        }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -46,8 +58,8 @@ impl<H: BmpHandler> BmpServer<H> {
             .with_context(|| format!("bind {}", self.cfg.bind_addr))?;
         tracing::info!("BMP server listening on {}", self.cfg.bind_addr);
 
-        let mut tasks = JoinSet::new();
-        let mut active = 0usize;
+        let mut tasks: JoinSet<Result<()>> = JoinSet::new();
+        let mut active: usize = 0;
 
         loop {
             let (sock, peer) = listener.accept().await?;
@@ -57,58 +69,61 @@ impl<H: BmpHandler> BmpServer<H> {
                     continue;
                 }
             }
-            active += 1;
+
+            active = active.saturating_add(1);
             let cfg = self.cfg.clone();
-            let handler = &self.handler;
-            let handler = handler; // capture by move below
-            tasks.spawn(handle_peer(sock, peer, cfg, handler));
-            // Periodically reap finished tasks
-            while let Some(ready) = tasks.try_join_next()? {
-                ready?;
-                active = active.saturating_sub(1);
+            let handler = Arc::clone(&self.handler);
+
+            tasks.spawn(async move { handle_peer(sock, peer, cfg, handler).await });
+
+            // Reap finished connections (non-blocking)
+            while let Some(joined) = tasks.try_join_next() {
+                match joined {
+                    Ok(Ok(())) => active = active.saturating_sub(1),
+                    Ok(Err(e)) => {
+                        active = active.saturating_sub(1);
+                        tracing::warn!("bmp task error: {e:#}");
+                    }
+                    Err(e) => {
+                        active = active.saturating_sub(1);
+                        tracing::warn!("bmp task join error: {e:#}");
+                    }
+                }
             }
         }
     }
 }
 
 async fn handle_peer<H: BmpHandler>(
-    mut sock: TcpStream,
-    peer: std::net::SocketAddr,
+    sock: TcpStream,
+    peer: SocketAddr,
     cfg: BmpServerConfig,
-    handler: &H,
+    handler: Arc<H>,
 ) -> Result<()> {
     if cfg.tcp_nodelay {
         let _ = sock.set_nodelay(true);
     }
-    if let Some(sz) = cfg.tcp_recv_buf {
-        let _ = sock.set_recv_buffer_size(sz);
-    }
+    // NOTE: cfg.tcp_recv_buf kept for future tuning; Tokio has no stable API to set recv buf.
 
-    // Framed BMP stream using NetGauze’s codec
+    // Frame the stream as BMP
     let codec = BmpCodec::default();
-    let reader = FramedRead::new(sock, codec);
+    let mut reader = FramedRead::new(sock, codec);
 
-    tokio::pin!(reader);
-
-    // Use a scratch buffer for zero-copy clones if needed
-    let mut _scratch = BytesMut::new();
-
-    use futures_util::StreamExt;
-    let mut reader = reader;
     while let Some(frame) = reader.next().await {
         match frame {
-            Ok(BmpMessage::V3(msg)) => {
-                handler.on_message(peer, BmpMessage::V3(msg)).await;
-            }
-            Ok(BmpMessage::V4(msg)) => {
-                handler.on_message(peer, BmpMessage::V4(msg)).await;
+            Ok(msg) => {
+                // netgauze_bmp_pkt::BmpMessage for both v3 and v4
+                handler.on_message(peer, msg).await;
             }
             Err(e) => {
-                handler.on_disconnect(peer, &format!("decode error: {e}")).await;
+                handler
+                    .on_disconnect(peer, &format!("decode error: {e:?}"))
+                    .await;
                 return Ok(());
             }
         }
     }
+
     handler.on_disconnect(peer, "eof").await;
     Ok(())
 }
