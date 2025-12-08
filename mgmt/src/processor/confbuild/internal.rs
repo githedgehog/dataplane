@@ -6,6 +6,8 @@
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
+const IMPORT_VRFS: bool = false;
+
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
 use config::external::overlay::vpcpeering::VpcManifest;
@@ -78,6 +80,7 @@ fn build_vpc_drop_routes(rmanifest: &VpcManifest) -> Vec<StaticRoute> {
 }
 
 /// Build AF l2vpn EVPN config for a VPC VRF
+#[must_use]
 fn vpc_bgp_af_l2vpn_evpn(vpc: &Vpc) -> AfL2vpnEvpn {
     AfL2vpnEvpn::new()
         .set_adv_all_vni(false)
@@ -88,6 +91,7 @@ fn vpc_bgp_af_l2vpn_evpn(vpc: &Vpc) -> AfL2vpnEvpn {
 }
 
 /// Build BGP options for a VPC VRF
+#[must_use]
 fn vpc_bgp_options() -> BgpOptions {
     BgpOptions::new()
         .set_network_import_check(false)
@@ -111,6 +115,7 @@ struct VpcRoutingConfigIpv4 {
     sroutes: Vec<StaticRoute>,
 }
 impl VpcRoutingConfigIpv4 {
+    #[must_use]
     fn new(vpc: &Vpc) -> Self {
         Self {
             import_rmap: RouteMap::new(&vpc.import_rmap_ipv4()),
@@ -126,26 +131,28 @@ impl VpcRoutingConfigIpv4 {
         /* remote manifest */
         let rmanifest = &peer.remote;
 
-        /* we import from this vrf */
-        self.vrf_imports.add_vrf(peer.remote_id.vrf_name().as_ref());
-
-        /* build prefix list for the peer from its remote manifest */
-        let plist = vpc_import_prefix_list_for_peer(vpc, rmanifest)?;
-
         /* static drops for excluded prefixes (optional) */
         let mut statics = build_vpc_drop_routes(rmanifest);
         self.sroutes.append(&mut statics);
 
         /* create import route-map entry */
-        let import_rmap_e = RouteMapEntry::new(MatchingPolicy::Permit)
-            .add_match(RouteMapMatch::Ipv4AddressPrefixList(plist.name.clone()))
-            .add_match(RouteMapMatch::SrcVrf(peer.remote_id.vrf_name().to_string()));
+        if IMPORT_VRFS {
+            /* we import from this vrf */
+            self.vrf_imports.add_vrf(peer.remote_id.vrf_name().as_ref());
 
-        /* add entry */
-        self.import_rmap.add_entry(None, import_rmap_e)?;
+            /* build prefix list for the peer from its remote manifest */
+            let plist = vpc_import_prefix_list_for_peer(vpc, rmanifest)?;
 
-        /* add prefix list to vector */
-        self.import_plists.push(plist);
+            let import_rmap_e = RouteMapEntry::new(MatchingPolicy::Permit)
+                .add_match(RouteMapMatch::Ipv4AddressPrefixList(plist.name.clone()))
+                .add_match(RouteMapMatch::SrcVrf(peer.remote_id.vrf_name().to_string()));
+
+            /* add entry */
+            self.import_rmap.add_entry(None, import_rmap_e)?;
+
+            /* add prefix list to vector */
+            self.import_plists.push(plist);
+        }
 
         /* advertise */
         let nets = rmanifest.exposes.iter().flat_map(|e| e.public_ips().iter());
@@ -212,7 +219,9 @@ fn vpc_vrf_config(vpc: &Vpc) -> Result<VrfConfig, ConfigError> {
 
 fn vpc_bgp_af_ipv4_unicast(vpc_rconf: &VpcRoutingConfigIpv4) -> AfIpv4Ucast {
     let mut af = AfIpv4Ucast::new();
-    //af.set_vrf_imports(vpc_rconf.vrf_imports.clone());
+    if IMPORT_VRFS {
+        af.set_vrf_imports(vpc_rconf.vrf_imports.clone());
+    }
     af.add_networks(vpc_rconf.adv_nets.clone());
     af
 }
@@ -236,9 +245,13 @@ fn build_vpc_internal_config(
         vpc_rconfig.build_routing_config(vpc)?;
         bgp.set_af_ipv4unicast(vpc_bgp_af_ipv4_unicast(&vpc_rconfig));
         bgp.set_af_l2vpn_evpn(vpc_bgp_af_l2vpn_evpn(vpc));
-        internal.add_route_map(vpc_rconfig.import_rmap.clone());
+
+        if IMPORT_VRFS {
+            internal.add_route_map(vpc_rconfig.import_rmap.clone());
+            internal.add_prefix_lists(vpc_rconfig.import_plists.clone());
+        }
+
         internal.add_route_map(vpc_rconfig.adv_rmap.clone());
-        internal.add_prefix_lists(vpc_rconfig.import_plists.clone());
         internal.add_prefix_list(vpc_rconfig.adv_plist.clone());
         vrf_cfg.add_static_routes(vpc_rconfig.sroutes.clone());
     }
