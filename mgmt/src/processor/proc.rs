@@ -17,9 +17,7 @@ use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
 
-use config::internal::routing::bgp::BmpOptions;
-
-use crate::processor::confbuild::internal::build_internal_config;
+use crate::processor::confbuild::internal::build_internal_config_with_bmp;
 use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
@@ -46,6 +44,9 @@ use stats::VpcMapName;
 use stats::VpcStatsStore;
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::{VpcMap, VpcMapWriter};
+
+// ── NEW: bring in BmpOptions so we can pass it to internal builder
+use config::internal::routing::bgp::BmpOptions;
 
 /// Populate FRR status into the dataplane status structure
 pub async fn populate_status_with_frr(
@@ -92,8 +93,8 @@ pub struct ConfigProcessorParams {
     // read-handle to shared dataplane status
     pub dp_status_r: Arc<RwLock<DataplaneStatus>>,
 
-    // BMP client options for FRR render (None if BMP is disabled)
-    pub bmp_client: Option<BmpOptions>,
+    // ── NEW: optional BMP options to inject into InternalConfig
+    pub bmp_options: Option<BmpOptions>,
 }
 
 impl ConfigProcessor {
@@ -128,15 +129,9 @@ impl ConfigProcessor {
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         config.validate()?;
 
-        // Build internal config from external
-        let mut internal = build_internal_config(&config)?;
-
-        // ── NEW: inject BMP client options (if provided) into every BGP instance ──
-        if let Some(ref bmp) = self.proc_params.bmp_client {
-            inject_bmp_into_internal(&mut internal, bmp.clone());
-        }
-
-        // store internal back into config
+        // ── BMP-aware internal builder
+        let internal =
+            build_internal_config_with_bmp(&config, self.proc_params.bmp_options.clone())?;
         config.set_internal_config(internal);
 
         let e = match self.apply(config).await {
@@ -155,10 +150,9 @@ impl ConfigProcessor {
     #[allow(unused)]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         let mut blank = GwConfig::blank();
-        let mut internal = build_internal_config(&blank)?;
-        if let Some(ref bmp) = self.proc_params.bmp_client {
-            inject_bmp_into_internal(&mut internal, bmp.clone());
-        }
+        // ── BMP-aware internal builder (even for blank, so FRR reflects BMP if needed)
+        let internal =
+            build_internal_config_with_bmp(&blank, self.proc_params.bmp_options.clone())?;
         blank.set_internal_config(internal);
         self.apply(blank).await
     }
@@ -213,8 +207,14 @@ impl ConfigProcessor {
 
     /// RPC handler: get dataplane status
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
+        // NOTE: std::sync::RwLock::read() returns Result<Guard, PoisonError>.
+        // Unwrap the guard, then clone the status.
         let mut status: DataplaneStatus = {
-            let guard = self.proc_params.dp_status_r.read();
+            let guard = self
+                .proc_params
+                .dp_status_r
+                .read()
+                .expect("dp_status RwLock poisoned");
             guard.clone()
         };
 
@@ -604,15 +604,5 @@ impl ConfigProcessor {
 
         info!("Successfully applied config for genid {genid}");
         Ok(())
-    }
-}
-
-fn inject_bmp_into_internal(internal: &mut InternalConfig, bmp: BmpOptions) {
-    // We attach BMP options to every VRF that has a BGP instance.
-    // This keeps FRR render simple: wherever we render a 'router bgp ...' we have .bmp = Some(...)
-    for vrf in internal.vrfs_mut() {
-        if let Some(bgp) = vrf.bgp_mut() {
-            bgp.set_bmp_options(bmp.clone());
-        }
     }
 }

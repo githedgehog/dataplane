@@ -21,6 +21,9 @@ use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
 
 use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
+// ── NEW: allow injecting BMP config into InternalConfig
+use config::internal::routing::bgp::BmpOptions;
+
 use config::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
@@ -315,8 +318,13 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
-/// Top-level function to build internal config from external config
-pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
+/// Top-level function to build internal config from external config,
+/// **with optional BMP injection**.
+/// Prefer this in mgmt so FRR renderer emits BMP.
+pub fn build_internal_config_with_bmp(
+    config: &GwConfig,
+    bmp: Option<BmpOptions>,
+) -> Result<InternalConfig, ConfigError> {
     let genid = config.genid();
     debug!("Building internal config for gen {genid}");
     let external = &config.external;
@@ -325,6 +333,12 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     let mut internal = InternalConfig::new(external.device.clone());
     internal.add_vrf_config(external.underlay.vrf.clone())?;
     internal.set_vtep(external.underlay.vtep.clone());
+
+    /* Inject global BMP options if provided */
+    if let Some(b) = bmp {
+        // Assumes `InternalConfig::set_bmp_options(BmpOptions) -> &mut Self`
+        internal.set_bmp_options(b);
+    }
 
     /* Build overlay config */
     if let Some(bgp) = &external.underlay.vrf.bgp {
@@ -344,4 +358,10 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
         debug!("Internal config is:\n{internal:#?}");
     }
     Ok(internal)
+}
+
+/// Backward-compat shim: builds internal config **without BMP**.
+/// Existing call sites keep working; mgmt should switch to `build_internal_config_with_bmp`.
+pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
+    build_internal_config_with_bmp(config, None)
 }
