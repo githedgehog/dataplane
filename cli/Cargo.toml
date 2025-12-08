@@ -9,6 +9,10 @@ license = "Apache-2.0"
 name = "cli"
 path = "bin/main.rs"
 
+[features]
+default = []
+sysroot = ["dep:dpdk-sysroot-helper"]
+
 [dependencies]
 clap = { workspace = true, features = ["derive", "std", "usage"] }
 colored = "3.0.0"
@@ -21,6 +25,6 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 # internal
-dpdk-sysroot-helper = { workspace = true }
+dpdk-sysroot-helper = { workspace = true, optional = true }
 
 # external
