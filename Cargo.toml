@@ -85,6 +85,7 @@ vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { version = "0.8.12", default-features = false, features = [] }
 arc-swap = { version = "1.8.0", default-features = false, features = [] }
+anyhow = { version = "1.0.93", default-features = false, features = ["std"] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 async-trait = { version = "0.1.89", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
@@ -115,6 +116,7 @@ dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.19.0", default-features = false, features = [] }
 fixin = { git = "https://github.com/githedgehog/fixin", branch = "main", features = [] }
 futures = { version = "0.3.31", default-features = false, features = [] }
+futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
 hashbrown = { version = "0.16.1", default-features = false, features = [] }
 hwlocality = { version = "1.0.0-alpha.11", default-features = false, features = [] }
 hyper = { version = "1.8.1", default-features = false, features = [] }
@@ -141,6 +143,8 @@ multi_index_map = { version = "0.15.1", default-features = false, features = [] 
 n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.9", default-features = false, features = [], package = "n-vm" }
 netdev = { version = "0.40.0", default-features = false, features = [] }
 nix = { version = "0.31.1", default-features = false, features = [] }
+netgauze-bgp-pkt = { version = "0.8.0", features = [] } 
+netgauze-bmp-pkt = { version = "0.8.0", features = ["codec"] }
 num-derive = { version = "0.4.2", default-features = false, features = [] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
 once_cell = { version = "1.21.3", default-features = false, features = [] }
@@ -177,9 +181,17 @@ strum_macros = { version = "0.27.2", default-features = false, features = [] }
 syn = { version = "2.0.114", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
+<<<<<<< HEAD
 tokio = { version = "1.49.0", default-features = false, features = [] }
 tokio-stream = { version = "0.1.18", default-features = false, features = [] }
 tracing = { version = "0.1.44", default-features = false, features = [] }
+=======
+tokio = { version = "1.48.0", default-features = false, features = [] }
+tokio-stream = { version = "0.1.17", default-features = false, features = [] }
+tokio-util = { version = "0.7.13", default-features = false, features = ["codec"] }
+tonic = { version = "0.14.2", default-features = false, features = [] }
+tracing = { version = "0.1.43", default-features = false, features = [] }
+>>>>>>> 71f0b9f2 (feat(status): Populate routing and mgmt with BMP params)
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.22", default-features = false, features = [] }
 tracing-test = { version = "0.2.5", default-features = false, features = [] }

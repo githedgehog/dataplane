@@ -1144,6 +1144,7 @@ dependencies = [
  "ctrlc",
  "dataplane-args",
  "dataplane-concurrency",
+ "dataplane-config",
  "dataplane-dpdk",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-flow-entry",
@@ -1611,6 +1612,8 @@ name = "dataplane-routing"
 version = "0.10.0"
 dependencies = [
  "ahash",
+ "anyhow",
+ "async-trait",
  "bitflags 2.10.0",
  "bolero",
  "bytes",
@@ -1625,16 +1628,21 @@ dependencies = [
  "dataplane-tracectl",
  "derive_builder 0.20.2",
  "dplane-rpc",
+ "futures-util",
  "ipnet",
  "left-right",
  "linkme",
  "mio",
  "netdev",
+ "netgauze-bgp-pkt",
+ "netgauze-bmp-pkt",
  "procfs",
  "rand 0.9.2",
  "serde",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-test",
 ]
@@ -3506,6 +3514,90 @@ dependencies = [
  "once_cell",
  "plist",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "netgauze-bgp-pkt"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cf8f40cdffa0b68a787a69ced281c74cad461853cb8142b5958132efe31a9dc"
+dependencies = [
+ "byteorder",
+ "ipnet",
+ "netgauze-iana",
+ "netgauze-locate",
+ "netgauze-parse-utils",
+ "netgauze-serde-macros",
+ "nom",
+ "serde",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
+name = "netgauze-bmp-pkt"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12cc433b4d77a27647e48b72111b8e5c5d9febe4be28322f44719a312b92f4e4"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "chrono",
+ "either",
+ "ipnet",
+ "log",
+ "netgauze-bgp-pkt",
+ "netgauze-iana",
+ "netgauze-locate",
+ "netgauze-parse-utils",
+ "netgauze-serde-macros",
+ "nom",
+ "serde",
+ "strum",
+ "strum_macros",
+ "tokio-util",
+]
+
+[[package]]
+name = "netgauze-iana"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53f6ac1e8add680019185640a93f190533943d554430569aef2348633e9ea8a1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
+name = "netgauze-locate"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1edd0fa84c8ec376ed1882bb8f5d237437e2570ab887add7183463d880b9d78"
+dependencies = [
+ "nom",
+]
+
+[[package]]
+name = "netgauze-parse-utils"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6acae71d0c268bbc1178115202dde191cdc706989ef478a4e52ab1cbe0c178d"
+dependencies = [
+ "netgauze-locate",
+ "nom",
+ "serde",
+]
+
+[[package]]
+name = "netgauze-serde-macros"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9348ab7cabcac94bedc3f514db83306bfda1c87e87452bdeeeffc933aa85f47"
+dependencies = [
+ "quote",
+ "syn 2.0.111",
 ]
 
 [[package]]

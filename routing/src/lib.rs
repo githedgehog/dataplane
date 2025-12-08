@@ -28,7 +28,6 @@ mod routingdb;
 
 // re-exports
 pub use atable::atablerw::AtableReader;
-pub use bmp::handler::JsonLogHandler;
 pub use bmp::server::{BmpServer, BmpServerConfig};
 pub use config::RouterConfig;
 pub use errors::RouterError;
@@ -46,7 +45,7 @@ pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 
 pub use router::ctl::RouterCtlSender;
-pub use router::{Router, RouterParams, RouterParamsBuilder};
+pub use router::{BmpServerParams, Router, RouterParams, RouterParamsBuilder};
 
 pub use cli::pretty_utils::Heading;
 
