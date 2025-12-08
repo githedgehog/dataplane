@@ -29,6 +29,8 @@ ipnet = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
+netgauze-bgp-pkt = { workspace = true }
+netgauze-bmp-pkt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }

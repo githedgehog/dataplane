@@ -5,14 +5,14 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use netgauze_bgp_pkt::{
+    BgpMessage,
     nlri::{MPReachNLRI, MPUnreachNLRI},
     wire::deserializer::nlri::RouteType,
-    BgpMessage,
 };
 use netgauze_bmp_pkt::{
+    BmpMessage,
     peer::{PeerHeader, PeerType},
     v3::BmpMessageValue as V3,
-    BmpMessage,
 };
 
 use crate::config::internal::status::{
@@ -27,7 +27,6 @@ pub fn hande_bmp_message(status: &mut DataplaneStatus, msg: &BmpMessage) {
         handle(status, v);
     }
 }
-
 
 fn handle(status: &mut DataplaneStatus, m: &V3) {
     match m {
@@ -99,32 +98,39 @@ fn ensure_neighbor<'a>(
     key: &str,
 ) -> &'a mut BgpNeighborStatus {
     if status.bgp.is_none() {
-        status.set_bgp(BgpStatus { vrfs: HashMap::new() });
+        status.set_bgp(BgpStatus {
+            vrfs: HashMap::new(),
+        });
     }
     let bgp = status.bgp.as_mut().unwrap();
     let vrf_entry = bgp
         .vrfs
         .entry(vrf.to_string())
-        .or_insert_with(|| BgpVrfStatus { neighbors: HashMap::new() });
-    vrf_entry.neighbors.entry(key.to_string()).or_insert_with(|| BgpNeighborStatus {
-        enabled: true,
-        local_as: 0,
-        peer_as: 0,
-        peer_port: 0,
-        peer_group: String::new(),
-        remote_router_id: String::new(),
-        session_state: BgpNeighborSessionState::Idle,
-        connections_dropped: 0,
-        established_transitions: 0,
-        last_reset_reason: String::new(),
-        messages: Some(BgpMessages {
-            received: Some(BgpMessageCounters::new()),
-            sent: Some(BgpMessageCounters::new()),
-        }),
-        ipv4_unicast_prefixes: Some(BgpNeighborPrefixes::default()),
-        ipv6_unicast_prefixes: Some(BgpNeighborPrefixes::default()),
-        l2vpn_evpn_prefixes: None,
-    })
+        .or_insert_with(|| BgpVrfStatus {
+            neighbors: HashMap::new(),
+        });
+    vrf_entry
+        .neighbors
+        .entry(key.to_string())
+        .or_insert_with(|| BgpNeighborStatus {
+            enabled: true,
+            local_as: 0,
+            peer_as: 0,
+            peer_port: 0,
+            peer_group: String::new(),
+            remote_router_id: String::new(),
+            session_state: BgpNeighborSessionState::Idle,
+            connections_dropped: 0,
+            established_transitions: 0,
+            last_reset_reason: String::new(),
+            messages: Some(BgpMessages {
+                received: Some(BgpMessageCounters::new()),
+                sent: Some(BgpMessageCounters::new()),
+            }),
+            ipv4_unicast_prefixes: Some(BgpNeighborPrefixes::default()),
+            ipv6_unicast_prefixes: Some(BgpNeighborPrefixes::default()),
+            l2vpn_evpn_prefixes: None,
+        })
 }
 
 fn is_post_policy(ph: &PeerHeader) -> bool {
@@ -142,7 +148,10 @@ enum BgpMsgKind {
 }
 
 fn bump_msg(messages: &mut Option<BgpMessages>, received: bool, kind: BgpMsgKind) {
-    let m = messages.get_or_insert(BgpMessages { received: None, sent: None });
+    let m = messages.get_or_insert(BgpMessages {
+        received: None,
+        sent: None,
+    });
     let ctrs = if received {
         m.received.get_or_insert(BgpMessageCounters::new())
     } else {
@@ -206,20 +215,24 @@ fn account_mp_reach(
     v6pfx: &mut Option<BgpNeighborPrefixes>,
 ) {
     let cnt = mp.nlri().len() as u32;
-    if cnt == 0 { return; }
+    if cnt == 0 {
+        return;
+    }
     match mp.route_type() {
         RouteType::Ipv4Unicast => {
             let v = v4pfx.get_or_insert_with(Default::default);
-            if post_policy { v.sent = v.sent.saturating_add(cnt); }
-            else {
+            if post_policy {
+                v.sent = v.sent.saturating_add(cnt);
+            } else {
                 v.received = v.received.saturating_add(cnt);
                 v.received_pre_policy = v.received_pre_policy.saturating_add(cnt);
             }
         }
         RouteType::Ipv6Unicast => {
             let v = v6pfx.get_or_insert_with(Default::default);
-            if post_policy { v.sent = v.sent.saturating_add(cnt); }
-            else {
+            if post_policy {
+                v.sent = v.sent.saturating_add(cnt);
+            } else {
                 v.received = v.received.saturating_add(cnt);
                 v.received_pre_policy = v.received_pre_policy.saturating_add(cnt);
             }
@@ -235,7 +248,9 @@ fn account_mp_unreach(
     v6pfx: &mut Option<BgpNeighborPrefixes>,
 ) {
     let cnt = mpu.nlri().len() as u32;
-    if cnt == 0 { return; }
+    if cnt == 0 {
+        return;
+    }
     match mpu.route_type() {
         RouteType::Ipv4Unicast => {
             let _v = v4pfx.get_or_insert_with(Default::default);

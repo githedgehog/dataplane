@@ -3,7 +3,7 @@
 
 // !Configuration processor
 
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, RwLock};
 use std::collections::{HashMap, HashSet};
 
 use tokio::spawn;
@@ -19,6 +19,8 @@ use config::internal::status::{
 use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
+
+use config::internal::routing::bgp::BmpOptions;
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
@@ -120,6 +122,12 @@ pub struct ConfigProcessorParams {
 
     // store for vpc stats
     pub vpc_stats_store: Arc<VpcStatsStore>,
+
+    // read-handle to shared dataplane status
+    pub dp_status_r: Arc<RwLock<DataplaneStatus>>,
+
+    // BMP client options for FRR render (None if BMP is disabled)
+    pub bmp_client: Option<BmpOptions>,
 }
 
 impl ConfigProcessor {
@@ -159,8 +167,18 @@ impl ConfigProcessor {
             return Err(ConfigError::ConfigAlreadyExists(genid));
         }
         config.validate()?;
-        let internal = build_internal_config(&config)?;
+
+        // Build internal config from external
+        let mut internal = build_internal_config(&config)?;
+
+        // ── NEW: inject BMP client options (if provided) into every BGP instance ──
+        if let Some(ref bmp) = self.proc_params.bmp_client {
+            inject_bmp_into_internal(&mut internal, bmp.clone());
+        }
+
+        // store internal back into config
         config.set_internal_config(internal);
+
         let e = match self.apply(config).await {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -178,7 +196,10 @@ impl ConfigProcessor {
     #[allow(unused)]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         let mut blank = GwConfig::blank();
-        let internal = build_internal_config(&blank)?;
+        let mut internal = build_internal_config(&blank)?;
+        if let Some(ref bmp) = self.proc_params.bmp_client {
+            inject_bmp_into_internal(&mut internal, bmp.clone());
+        }
         blank.set_internal_config(internal);
         self.apply(blank).await
     }
@@ -265,7 +286,10 @@ impl ConfigProcessor {
 
     /// RPC handler: get dataplane status
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
-        let mut status = DataplaneStatus::new();
+        let mut status: DataplaneStatus = {
+            let guard = self.proc_params.dp_status_r.read();
+            guard.clone()
+        };
 
         let stats_store = &self.proc_params.vpc_stats_store;
 
@@ -337,7 +361,8 @@ impl ConfigProcessor {
             status.add_vpc(name, v);
         }
 
-        // Emit only pair counters with traffic
+        // Replace peering counters with the latest snapshot (only pairs with traffic)
+        status.vpc_peering_counters.clear();
         for ((src, dst), fs) in pairs_with_traffic {
             let src_name = name_of
                 .get(&src)
@@ -357,14 +382,15 @@ impl ConfigProcessor {
                     dst_vpc: dst_name,
                     packets: fs.ctr.packets,
                     bytes: fs.ctr.bytes,
-                    drops: 0, // TODO: Add this in a later release
+                    drops: 0,
                     pps: fs.rate.pps,
                     bps: fs.rate.bps,
                 },
             );
         }
 
-        // Emit per-VPC total counters (numeric; includes bytes)
+        // Replace per-VPC totals with the latest snapshot
+        status.vpc_counters.clear();
         for (disc, fs) in vpc_snap {
             let name = name_of
                 .get(&disc)
@@ -655,4 +681,14 @@ async fn apply_gw_config(
 
     info!("Successfully applied config for genid {genid}");
     Ok(())
+}
+
+fn inject_bmp_into_internal(internal: &mut InternalConfig, bmp: BmpOptions) {
+    // We attach BMP options to every VRF that has a BGP instance.
+    // This keeps FRR render simple: wherever we render a 'router bgp ...' we have .bmp = Some(...)
+    for vrf in internal.vrfs_mut() {
+        if let Some(bgp) = vrf.bgp_mut() {
+            bgp.set_bmp_options(bmp.clone());
+        }
+    }
 }
