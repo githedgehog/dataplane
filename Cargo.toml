@@ -9,7 +9,6 @@ default-members = [
     "dataplane",
     "errno",
     "flow-info",
-    "hardware",
     "id",
     "interface-manager",
     "k8s-intf",
