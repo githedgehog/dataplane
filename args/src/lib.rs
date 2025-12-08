@@ -1039,7 +1039,7 @@ pub enum InvalidCmdArguments {
     InvalidInterfaceName(#[from] IllegalInterfaceName),
     #[error("\"{0}\" is not a valid driver.  Must be dpdk or kernel")]
     InvalidDriver(String),
-    #[error("Must specify driver as dpdk or  kernel")]
+    #[error("Must specify driver as dpdk or kernel")]
     NoDriverSpecified,
     #[error("No network interfaces specified")]
     NoInterfacesSpecified,
