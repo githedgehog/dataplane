@@ -43,6 +43,7 @@ pub enum RouteMapSetAction {
 pub enum Community {
     None,
     ASNVAL(u16, u16),
+    String(String),
     NoAdvertise,
     NoExport,
     NoPeer,
