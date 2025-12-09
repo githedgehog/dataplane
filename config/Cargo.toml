@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 # internal
 gateway_config = { workspace = true }
+gwname = { workspace = true }
 hardware = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }

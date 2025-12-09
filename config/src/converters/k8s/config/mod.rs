@@ -6,9 +6,11 @@
 #![deny(clippy::all, clippy::pedantic)]
 
 pub mod bgp;
+pub mod communities;
 pub mod device;
 pub mod expose;
 pub mod gateway_config;
+pub mod gwgroups;
 pub mod interface;
 pub mod overlay;
 pub mod peering;

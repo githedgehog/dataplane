@@ -9,6 +9,7 @@ mod bgp;
 mod device;
 mod expose;
 mod gateway_config;
+mod gwgroups;
 mod interface;
 mod overlay;
 mod peering;
@@ -24,6 +25,8 @@ pub use device::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use expose::*;
 pub use gateway_config::*;
+#[allow(unused)] // Remove if we do anything but implement traits
+pub use gwgroups::*;
 #[allow(unused)] // Remove if we do anything but implement traits
 pub use interface::*;
 #[allow(unused)] // Remove if we do anything but implement traits
@@ -44,6 +47,8 @@ pub use vrf::*;
 #[cfg(test)]
 mod test {
     use gateway_config::GatewayConfig;
+    use gateway_config::GatewayGroupMember;
+    use gateway_config::config::GatewayGroup;
     use gateway_config::config::TracingConfig as ApiTracingConfig;
     use pretty_assertions::assert_eq;
 
@@ -51,6 +56,7 @@ mod test {
     use crate::converters::grpc::{
         convert_dataplane_status_from_grpc, convert_dataplane_status_to_grpc,
     };
+    use crate::external::communities::PriorityCommunityTable;
     use crate::internal::device::DeviceConfig;
     use crate::internal::interfaces::interface::InterfaceConfig;
 
@@ -305,6 +311,7 @@ mod test {
         let peering = gateway_config::VpcPeering {
             name: "vpc1-vpc2-peering".to_string(),
             r#for: vec![vpc1_entry, vpc2_entry],
+            gateway_group: "gw-group-1".to_string(),
         };
 
         // Create Overlay
@@ -313,12 +320,39 @@ mod test {
             peerings: vec![peering],
         };
 
+        // Create gateway group
+        let gw_group = GatewayGroup {
+            name: "gw-group-1".to_string(),
+            members: vec![
+                GatewayGroupMember {
+                    name: "gw1".to_owned(),
+                    priority: 1,
+                    ipaddress: "172.128.0.1".to_string(),
+                },
+                GatewayGroupMember {
+                    name: "gw2".to_owned(),
+                    priority: 2,
+                    ipaddress: "172.128.0.2".to_string(),
+                },
+            ],
+        };
+
+        // Create priority-to-community table
+        let mut commtable = PriorityCommunityTable::new();
+        commtable.insert(0, "65000:800").unwrap();
+        commtable.insert(1, "65000:801").unwrap();
+        commtable.insert(2, "65000:802").unwrap();
+        commtable.insert(3, "65000:803").unwrap();
+        commtable.insert(4, "65000:804").unwrap();
+
         // Create the full GatewayConfig
         GatewayConfig {
             generation: 42,
             device: Some(device),
             underlay: Some(underlay),
             overlay: Some(overlay),
+            gw_groups: vec![gw_group],
+            communities: commtable.inner().clone(),
         }
     }
 

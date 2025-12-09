@@ -49,7 +49,7 @@ pub mod test {
         let m1 = build_manifest_vpc1();
         let m2 = build_manifest_vpc2();
         // build vpc peering with the manifests
-        VpcPeering::new("VPC-1--VPC-2", m1, m2)
+        VpcPeering::new("VPC-1--VPC-2", m1, m2, None)
     }
 
     #[test]
@@ -377,22 +377,22 @@ pub mod test {
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-2");
-        let peering = VpcPeering::new("Peering-1", m1, m2);
+        let peering = VpcPeering::new("Peering-1", m1, m2, None);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-3");
-        let peering = VpcPeering::new("Peering-2", m1, m2);
+        let peering = VpcPeering::new("Peering-2", m1, m2, None);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-2");
         let m2 = VpcManifest::new("VPC-4");
-        let peering = VpcPeering::new("Peering-3", m1, m2);
+        let peering = VpcPeering::new("Peering-3", m1, m2, None);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-4");
-        let peering = VpcPeering::new("Peering-4", m1, m2);
+        let peering = VpcPeering::new("Peering-4", m1, m2, None);
         peering_table.add(peering).unwrap();
 
         // all peerings of VPC-1
@@ -490,6 +490,7 @@ pub mod test {
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
                 man_vpc2(),
+                None,
             ))
             .expect("Should succeed");
 
@@ -498,6 +499,7 @@ pub mod test {
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
                 man_vpc3(),
+                None,
             ))
             .expect("Should succeed");
 
@@ -506,6 +508,7 @@ pub mod test {
                 "VPC-1--VPC-4",
                 man_vpc1_with_vpc4(),
                 man_vpc4(),
+                None,
             ))
             .expect("Should succeed");
 
@@ -514,13 +517,14 @@ pub mod test {
                 "VPC-2--VPC-3",
                 man_vpc2_with_vpc3(),
                 man_vpc3(),
+                None,
             ))
             .expect("Should succeed");
 
         assert_eq!(peering_table.len(), 4);
 
         /* peering with empty name cannot be added to the table */
-        let peering_empty_name = VpcPeering::new("", man_vpc1_with_vpc2(), man_vpc2());
+        let peering_empty_name = VpcPeering::new("", man_vpc1_with_vpc2(), man_vpc2(), None);
         assert_eq!(
             peering_table.add(peering_empty_name),
             Err(ConfigError::MissingIdentifier("Peering name"))
@@ -529,7 +533,7 @@ pub mod test {
 
         /* peering with duplicate name cannot be added to the table */
         let peering_duplicate_name =
-            VpcPeering::new("VPC-1--VPC-2", man_vpc1_with_vpc2(), man_vpc2());
+            VpcPeering::new("VPC-1--VPC-2", man_vpc1_with_vpc2(), man_vpc2(), None);
         assert_eq!(
             peering_table.add(peering_duplicate_name),
             Err(ConfigError::DuplicateVpcPeeringId(

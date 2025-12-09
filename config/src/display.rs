@@ -83,10 +83,28 @@ fn fmt_remote_manifest(
     }
     Ok(())
 }
+fn fmt_peering_communities(f: &mut std::fmt::Formatter<'_>, peering: &Peering) -> std::fmt::Result {
+    write!(f, "   communities:")?;
+    if peering.adv_communities.is_empty() {
+        writeln!(f, "none")?;
+    } else {
+        for comm in &peering.adv_communities {
+            write!(f, " {comm}")?;
+        }
+        writeln!(f)?;
+    }
+    Ok(())
+}
 
 impl Display for Peering {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  ■ {}:", self.name)?;
+        write!(
+            f,
+            "   gwgroup: {}",
+            self.gwgroup.as_ref().map_or("none", |v| v)
+        )?;
+        fmt_peering_communities(f, self)?;
         fmt_local_manifest(f, &self.local)?;
         writeln!(f)?;
         fmt_remote_manifest(f, &self.remote, &self.remote_id)?;

@@ -28,8 +28,14 @@ pub enum ConfigError {
     DuplicateVpcPeeringId(String),
     #[error("Peering '{0}' refers to a VPC for which a peering already exists")]
     DuplicateVpcPeerings(String),
+    #[error("Duplicated gateway group '{0}'")]
+    DuplicateGroup(String),
+    #[error("Duplicated gateway group member '{0}'")]
+    DuplicateMember(String),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]
     NoSuchVpc(String),
+    #[error("A VPC peering object refers to non-existent group '{0}'")]
+    NoSuchGroup(String),
     #[error("'{0}' is not a valid VNI")]
     InvalidVpcVni(u32),
     #[error("Config with id {0} not found")]
@@ -83,6 +89,12 @@ pub enum ConfigError {
     // tracing
     #[error("Failed to set tracing configuration: {0}")]
     Tracing(#[from] tracectl::TraceCtlError),
+
+    // Community mappings
+    #[error("Priority {0} has no community mapping")]
+    UnmappedPriority(u32),
+    #[error("Communiity {0} is mapped from distinct priorities")]
+    DuplicateCommunity(String),
 }
 
 /// Result-like type for configurations

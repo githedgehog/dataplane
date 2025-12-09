@@ -6,6 +6,7 @@
 pub mod config;
 pub mod status;
 
+use crate::ConfigError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -18,6 +19,8 @@ pub enum FromK8sConversionError {
     ParseError(String),
     #[error("Internal CRD object conversion error: {0}")]
     InternalError(String),
+    #[error("Configuration error: {0}")]
+    ConfigError(#[from] ConfigError),
 }
 
 #[derive(Debug, Error)]
