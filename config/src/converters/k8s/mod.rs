@@ -8,6 +8,7 @@
 pub mod bgp;
 pub mod device;
 pub mod expose;
+pub mod gateway_config;
 pub mod interface;
 pub mod overlay;
 pub mod peering;
@@ -29,6 +30,8 @@ pub enum FromK8sConversionError {
     MissingData(String),
     #[error("Could not parse value: {0}")]
     ParseError(String),
+    #[error("Internal CRD object conversion error: {0}")]
+    InternalError(String),
 }
 
 #[derive(Debug, Error)]
