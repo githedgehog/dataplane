@@ -63,16 +63,16 @@ impl Render for BmpOptions {
         cfg += MARKER;
         cfg += format!("bmp targets {}", self.target_name);
 
-        // connect line
+        // connect line (FRR: `bmp connect HOST port <PORT> [min-retry ...|max-retry ...] [source-interface IFNAME]`)
         let mut connect = format!(" bmp connect {} port {}", self.connect_host, self.port);
         if let (Some(minr), Some(maxr)) = (self.min_retry_ms, self.max_retry_ms) {
             connect.push_str(&format!(" min-retry {minr} max-retry {maxr}"));
         }
         if let Some(src) = &self.source {
-            match src {
-                BmpSource::Address(ip) => connect.push_str(&format!(" source {}", ip)),
-                BmpSource::Interface(ifn) => connect.push_str(&format!(" source {}", ifn)),
+            if let BmpSource::Interface(ifn) = src {
+                connect.push_str(&format!(" source-interface {}", ifn));
             }
+            // NOTE: FRR BMP does not support binding by IP address; ignore BmpSource::Address.
         }
         cfg += connect;
 
@@ -90,7 +90,7 @@ impl Render for BmpOptions {
             cfg += " bmp monitor ipv6 unicast post-policy";
         }
 
-        // stats
+        // stats (FRR: `bmp stats [interval <ms>]`)
         cfg += format!(" bmp stats interval {}", self.stats_interval_ms);
 
         cfg += "exit";
@@ -514,7 +514,7 @@ impl Render for BgpConfig {
             config += format!(" bgp router-id {router_id}");
         }
 
-        /* BGP options: todo */
+        /* BGP options */
         config += self.options.render(&());
 
         /* BGP neighbors */
@@ -525,7 +525,7 @@ impl Render for BgpConfig {
             .as_ref()
             .map(|evpn| config += evpn.render(self));
 
-        /* Address family ipv4 unicast */
+        /* Address family ipv6 unicast */
         self.af_ipv6unicast
             .as_ref()
             .map(|evpn| config += evpn.render(self));
@@ -682,16 +682,16 @@ pub mod tests {
         /* set the IPv4 unicast config */
         bgp.set_af_ipv4unicast(af_ipv4);
 
-        /* AF ipv4 unicast */
+        /* AF ipv6 unicast */
         let mut af_ipv6 = AfIpv6Ucast::new();
 
-        /* configure ipv4 vrf imports */
+        /* configure ipv6 vrf imports */
         let mut imports = VrfImports::new().set_routemap("Import-into-vrf-1-ipv6");
         imports.add_vrf("VPC-2");
         imports.add_vrf("VPC-3");
         imports.add_vrf("VPC-4");
 
-        /* set the imports for Ipv6 */
+        /* set the imports for IPv6 */
         af_ipv6.set_vrf_imports(imports);
 
         /* add some network */
