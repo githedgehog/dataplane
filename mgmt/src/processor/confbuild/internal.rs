@@ -17,11 +17,9 @@ use std::net::Ipv4Addr;
 
 use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
 
+use config::internal::routing::bgp::BmpOptions;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
-// ── NEW: allow injecting BMP config into InternalConfig
-use config::internal::routing::bgp::BmpOptions;
-
 use config::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
@@ -184,12 +182,27 @@ impl VpcRoutingConfigIpv4 {
 }
 
 /// Build BGP config for a VPC VRF
-fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpConfig {
+fn vpc_vrf_bgp_config(
+    vpc: &Vpc,
+    asn: u32,
+    router_id: Option<Ipv4Addr>,
+    bmp: Option<&BmpOptions>,
+) -> BgpConfig {
     let mut bgp = BgpConfig::new(asn).set_vrf_name(vpc.vrf_name());
     if let Some(router_id) = router_id {
         bgp.set_router_id(router_id);
     }
     bgp.set_bgp_options(vpc_bgp_options());
+
+    // If global BMP is provided, clone and add this VRF to its import list,
+    // then attach that per-VRF BMP to the VRF BGP. The renderer can later
+    // collate all VRF names and emit `bmp import-vrf-view <vrf>` under default BGP.
+    if let Some(global_bmp) = bmp {
+        let mut per_vrf_bmp = global_bmp.clone();
+        per_vrf_bmp.push_import_vrf_view(vpc.vrf_name());
+        bgp.set_bmp_options(per_vrf_bmp);
+    }
+
     bgp
 }
 
@@ -225,6 +238,7 @@ fn build_vpc_internal_config(
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
+    bmp: Option<&BmpOptions>, /* NEW */
 ) -> ConfigResult {
     debug!("Building internal config for vpc '{}'", vpc.name);
 
@@ -232,7 +246,7 @@ fn build_vpc_internal_config(
     let mut vrf_cfg = vpc_vrf_config(vpc)?;
 
     /* build bgp config */
-    let mut bgp = vpc_vrf_bgp_config(vpc, asn, router_id);
+    let mut bgp = vpc_vrf_bgp_config(vpc, asn, router_id, bmp);
 
     if vpc.num_peerings() > 0 {
         let mut vpc_rconfig = VpcRoutingConfigIpv4::new(vpc); // fixme build from scratch / no mut
@@ -257,19 +271,23 @@ fn build_internal_overlay_config(
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
+    bmp: Option<&BmpOptions>,
 ) -> ConfigResult {
     debug!("Building overlay config ({} VPCs)", overlay.vpc_table.len());
 
     /* Vpcs and peerings */
     for vpc in overlay.vpc_table.values() {
-        build_vpc_internal_config(vpc, asn, router_id, internal)?;
+        build_vpc_internal_config(vpc, asn, router_id, internal, bmp)?;
     }
     Ok(())
 }
 
-/// Top-level function to build internal config from external config,
-/// **with optional BMP injection**.
-/// Prefer this in mgmt so FRR renderer emits BMP.
+/// Public entry — build without BMP
+pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
+    build_internal_config_with_bmp(config, None)
+}
+
+/// Public entry — build with BMP (global options replicated per VRF with import list)
 pub fn build_internal_config_with_bmp(
     config: &GwConfig,
     bmp: Option<BmpOptions>,
@@ -283,18 +301,18 @@ pub fn build_internal_config_with_bmp(
     internal.add_vrf_config(external.underlay.vrf.clone())?;
     internal.set_vtep(external.underlay.vtep.clone());
 
-    /* Inject global BMP options if provided */
-    if let Some(b) = bmp {
-        // Assumes `InternalConfig::set_bmp_options(BmpOptions) -> &mut Self`
-        internal.set_bmp_options(b);
-    }
-
     /* Build overlay config */
     if let Some(bgp) = &external.underlay.vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
         if !external.overlay.vpc_table.is_empty() {
-            build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
+            build_internal_overlay_config(
+                &external.overlay,
+                asn,
+                router_id,
+                &mut internal,
+                bmp.as_ref(), /* pass BMP down */
+            )?;
         } else {
             debug!("The configuration does not specify any VPCs...");
         }
@@ -307,10 +325,4 @@ pub fn build_internal_config_with_bmp(
         debug!("Internal config is:\n{internal:#?}");
     }
     Ok(internal)
-}
-
-/// Backward-compat shim: builds internal config **without BMP**.
-/// Existing call sites keep working; mgmt should switch to `build_internal_config_with_bmp`.
-pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
-    build_internal_config_with_bmp(config, None)
 }
