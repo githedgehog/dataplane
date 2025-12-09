@@ -45,7 +45,7 @@ use stats::VpcStatsStore;
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::{VpcMap, VpcMapWriter};
 
-// ── NEW: bring in BmpOptions so we can pass it to internal builder
+// bring in BmpOptions to pass through to internal config builder
 use config::internal::routing::bgp::BmpOptions;
 
 /// Populate FRR status into the dataplane status structure
@@ -93,7 +93,7 @@ pub struct ConfigProcessorParams {
     // read-handle to shared dataplane status
     pub dp_status_r: Arc<RwLock<DataplaneStatus>>,
 
-    // ── NEW: optional BMP options to inject into InternalConfig
+    // BMP options to inject into InternalConfig
     pub bmp_options: Option<BmpOptions>,
 }
 
@@ -129,7 +129,7 @@ impl ConfigProcessor {
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         config.validate()?;
 
-        // ── BMP-aware internal builder
+        // BMP-aware internal builder
         let internal =
             build_internal_config_with_bmp(&config, self.proc_params.bmp_options.clone())?;
         config.set_internal_config(internal);
@@ -150,7 +150,7 @@ impl ConfigProcessor {
     #[allow(unused)]
     async fn apply_blank_config(&mut self) -> ConfigResult {
         let mut blank = GwConfig::blank();
-        // ── BMP-aware internal builder (even for blank, so FRR reflects BMP if needed)
+        // BMP-aware internal builder (even for blank, so FRR reflects BMP if needed)
         let internal =
             build_internal_config_with_bmp(&blank, self.proc_params.bmp_options.clone())?;
         blank.set_internal_config(internal);
@@ -207,8 +207,7 @@ impl ConfigProcessor {
 
     /// RPC handler: get dataplane status
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
-        // NOTE: std::sync::RwLock::read() returns Result<Guard, PoisonError>.
-        // Unwrap the guard, then clone the status.
+        // std::sync::RwLock::read() -> Result<Guard, PoisonError>. Unwrap then clone.
         let mut status: DataplaneStatus = {
             let guard = self
                 .proc_params

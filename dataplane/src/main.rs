@@ -21,15 +21,14 @@ use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
 use gwname::{get_gw_name, set_gw_name};
-use routing::RouterParamsBuilder;
+use routing::{BmpServerParams, RouterParamsBuilder};
 use tracectl::{custom_target, get_trace_ctl, trace_target};
 
 use tracing::{error, info, level_filters::LevelFilter};
 
-use concurrency::syn::{Arc, RwLock};
+use concurrency::sync::{Arc, RwLock};
 use config::internal::routing::bgp::BmpOptions;
 use config::internal::status::DataplaneStatus;
-use routing::BmpServerParams;
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 custom_target!("Pyroscope", LevelFilter::INFO, &[]);
@@ -98,20 +97,23 @@ fn main() {
     init_logging();
 
     let (bmp_server_params, bmp_client_opts) = if args.bmp_enabled() {
-        let bind = args.bmp_address(); // SocketAddr
-        let interval_ms = args.bmp_interval_ms(); // u64
+        let bind = args.bmp_address();
+        let interval_ms = args.bmp_interval_ms();
 
         info!(
             "BMP: enabled, listening on {bind}, interval={}ms",
             interval_ms
         );
 
-        // Server params for routing BMP listener
+        // BMP server (for routing crate)
         let server = BmpServerParams {
             bind_addr: bind,
             stats_interval_ms: interval_ms,
+            min_retry_ms: None,
+            max_retry_ms: None,
         };
 
+        // BMP options for FRR (for internal config)
         let host = bind.ip().to_string();
         let port = bind.port();
         let client = BmpOptions::new("bmp1", host, port)
@@ -163,14 +165,19 @@ fn main() {
     .expect("failed to set SIGINT handler");
 
     /* router parameters */
-    let Ok(router_params) = RouterParamsBuilder::default()
+    let mut binding = RouterParamsBuilder::default();
+    let mut rp_builder = binding
         .cli_sock_path(args.cli_sock_path())
         .cpi_sock_path(args.cpi_sock_path())
         .frr_agent_path(args.frr_agent_path())
-        .bmp(bmp_server_params)
-        .dp_status(dp_status.clone())
-        .build()
-    else {
+        .dp_status(dp_status.clone());
+
+    // Only set BMP when it's enabled (strip_option setter expects the inner type)
+    if let Some(server) = bmp_server_params {
+        rp_builder = rp_builder.bmp(server);
+    }
+
+    let Ok(router_params) = rp_builder.build() else {
         error!("Bad router configuration");
         panic!("Bad router configuration");
     };
@@ -194,8 +201,8 @@ fn main() {
             natallocatorw: setup.natallocatorw,
             vpcdtablesw: setup.vpcdtablesw,
             vpc_stats_store: setup.vpc_stats_store,
-            dp_status: dp_status.clone(),
-            bmp_client: bmp_client_opts,
+            dp_status_r: dp_status.clone(),
+            bmp_options: bmp_client_opts,
         },
     })
     .expect("Failed to start management");
