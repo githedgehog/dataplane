@@ -25,10 +25,12 @@ use crate::external::overlay::vpcpeering::VpcPeering;
 /// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Peering {
-    pub name: String,        /* name of peering */
-    pub local: VpcManifest,  /* local manifest */
-    pub remote: VpcManifest, /* remote manifest */
-    pub remote_id: VpcId,
+    pub name: String,                 /* name of peering */
+    pub local: VpcManifest,           /* local manifest */
+    pub remote: VpcManifest,          /* remote manifest */
+    pub remote_id: VpcId,             /* Id of peer */
+    pub gwgroup: Option<String>,      /* gateway group serving this peering */
+    pub adv_communities: Vec<String>, /* communities with which to advertise prefixes in this peering */
 }
 
 #[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq)]
@@ -80,6 +82,7 @@ impl Vpc {
             peerings: vec![],
         })
     }
+
     /// Add an [`InterfaceConfig`] to this [`Vpc`]
     pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
         self.interfaces.add_interface_config(if_cfg);
@@ -98,6 +101,8 @@ impl Vpc {
                     local: local.clone(),
                     remote: remote.clone(),
                     remote_id: remote_id.clone(),
+                    gwgroup: p.gw_group.clone(),
+                    adv_communities: vec![],
                 }
             })
             .collect();
@@ -108,11 +113,13 @@ impl Vpc {
             debug!("Vpc '{}' has {} peerings", self.name, self.peerings.len());
         }
     }
+
     /// Tell how many peerings this VPC has
     #[must_use]
     pub fn num_peerings(&self) -> usize {
         self.peerings.len()
     }
+
     /// Tell if the peerings of this VPC have host routes
     #[must_use]
     pub fn has_peers_with_host_prefixes(&self) -> bool {
@@ -188,10 +195,12 @@ impl VpcTable {
     pub fn values(&self) -> impl Iterator<Item = &Vpc> {
         self.vpcs.values()
     }
+
     /// Iterate over [`Vpc`]s in a [`VpcTable`] mutably
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Vpc> {
         self.vpcs.values_mut()
     }
+
     /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
     pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for all VPCs..");
@@ -202,6 +211,7 @@ impl VpcTable {
     pub fn clear_vnis(&mut self) {
         self.vnis.clear();
     }
+
     /// Validate the [`VpcTable`]
     pub fn validate(&self) -> ConfigResult {
         for vpc in self.values() {

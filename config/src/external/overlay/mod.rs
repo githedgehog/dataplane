@@ -7,12 +7,12 @@ pub mod tests;
 pub mod vpc;
 pub mod vpcpeering;
 
-use crate::external::overlay::vpc::VpcIdMap;
-use crate::external::overlay::vpc::VpcTable;
-use crate::external::overlay::vpcpeering::VpcManifest;
-use crate::external::overlay::vpcpeering::VpcPeeringTable;
 use crate::{ConfigError, ConfigResult};
 use tracing::{debug, error};
+use vpc::VpcIdMap;
+use vpc::VpcTable;
+use vpcpeering::VpcManifest;
+use vpcpeering::VpcPeeringTable;
 
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
@@ -55,6 +55,7 @@ impl Overlay {
         /* collect peerings of every VPC */
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
+
         self.vpc_table.validate()?;
 
         debug!(

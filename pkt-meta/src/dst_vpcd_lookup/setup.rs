@@ -216,12 +216,16 @@ mod tests {
             local: manifest1.clone(),
             remote: manifest2.clone(),
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
+            gwgroup: None,
+            adv_communities: vec![],
         };
         let peering2 = Peering {
             name: "test_peering2".into(),
             local: manifest2,
             remote: manifest1,
             remote_id: "67890".try_into().expect("Failed to create VPC ID"),
+            gwgroup: None,
+            adv_communities: vec![],
         };
 
         let mut vpctable = VpcTable::new();
@@ -333,24 +337,32 @@ mod tests {
             local: manifest12.clone(),
             remote: manifest21.clone(),
             remote_id: "VPC02".try_into().unwrap(),
+            gwgroup: None,
+            adv_communities: vec![],
         };
         let peering21 = Peering {
             name: "VPC-2--VPC-1".into(),
             local: manifest21.clone(),
             remote: manifest12.clone(),
             remote_id: "VPC01".try_into().unwrap(),
+            gwgroup: None,
+            adv_communities: vec![],
         };
         let peering23 = Peering {
             name: "VPC-2--VPC-3".into(),
             local: manifest23.clone(),
             remote: manifest32.clone(),
             remote_id: "VPC03".try_into().unwrap(),
+            gwgroup: None,
+            adv_communities: vec![],
         };
         let peering32 = Peering {
             name: "VPC-3--VPC-2".into(),
             local: manifest32.clone(),
             remote: manifest23.clone(),
             remote_id: "VPC02".try_into().unwrap(),
+            gwgroup: None,
+            adv_communities: vec![],
         };
 
         let mut vpc_table = VpcTable::new();

@@ -7,6 +7,8 @@ mod tests {
     use crate::stateful::NatAllocatorWriter;
     use concurrency::sync::Arc;
     use config::external::ExternalConfigBuilder;
+    use config::external::communities::PriorityCommunityTable;
+    use config::external::gwgroup::GwGroupTable;
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -14,6 +16,7 @@ mod tests {
     };
     use config::external::underlay::Underlay;
     use config::internal::device::DeviceConfig;
+
     use config::internal::device::settings::DeviceSettings;
     use config::internal::interfaces::interface::{IfVtepConfig, InterfaceConfig, InterfaceType};
     use config::internal::routing::bgp::BgpConfig;
@@ -86,6 +89,9 @@ mod tests {
         external_builder.device(device_config);
         external_builder.underlay(underlay);
         external_builder.overlay(overlay);
+        external_builder.gwgroups(GwGroupTable::new());
+        external_builder.communities(PriorityCommunityTable::new());
+
         let external_config = external_builder
             .build()
             .expect("Failed to build external config");
@@ -245,11 +251,11 @@ mod tests {
         let mut manifest43 = VpcManifest::new("VPC-4");
         add_expose(&mut manifest43, expose431);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
-        let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13);
-        let peering14 = VpcPeering::new("VPC-1--VPC-4", manifest14, manifest41);
-        let peering24 = VpcPeering::new("VPC-2--VPC-4", manifest24, manifest42);
-        let peering34 = VpcPeering::new("VPC-3--VPC-4", manifest34, manifest43);
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
+        let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13, None);
+        let peering14 = VpcPeering::new("VPC-1--VPC-4", manifest14, manifest41, None);
+        let peering24 = VpcPeering::new("VPC-2--VPC-4", manifest24, manifest42, None);
+        let peering34 = VpcPeering::new("VPC-3--VPC-4", manifest34, manifest43, None);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -286,7 +292,7 @@ mod tests {
         let mut manifest21 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest21, expose211);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -548,7 +554,7 @@ mod tests {
         let mut manifest21 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest21, expose211);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -635,7 +641,7 @@ mod tests {
         let mut manifest21 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest21, expose211);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -1135,7 +1141,7 @@ mod tests {
         let mut manifest21 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest21, expose21);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
 
         // VPC-2 (no NAT) <-> VPC-3 (NAT)
         let expose32 = VpcExpose::empty()
@@ -1150,7 +1156,7 @@ mod tests {
         let mut manifest32 = VpcManifest::new("VPC-3");
         add_expose(&mut manifest32, expose32);
 
-        let peering23 = VpcPeering::new("VPC-2--VPC-3", manifest23, manifest32);
+        let peering23 = VpcPeering::new("VPC-2--VPC-3", manifest23, manifest32, None);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).unwrap();
@@ -1493,7 +1499,7 @@ mod tests {
         let mut manifest1_2 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest1_2, expose1_2);
 
-        let peering1 = VpcPeering::new("VPC-1--VPC-2--1", manifest1_1, manifest1_2);
+        let peering1 = VpcPeering::new("VPC-1--VPC-2--1", manifest1_1, manifest1_2, None);
 
         // Peering 2 - Overlap with Peering 1
 
@@ -1509,7 +1515,7 @@ mod tests {
         let mut manifest2_2 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest2_2, expose2_2);
 
-        let peering2 = VpcPeering::new("VPC-1--VPC-2--2", manifest2_1, manifest2_2);
+        let peering2 = VpcPeering::new("VPC-1--VPC-2--2", manifest2_1, manifest2_2, None);
 
         // Peering table
 
