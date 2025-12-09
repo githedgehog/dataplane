@@ -12,7 +12,7 @@ use concurrency::sync::{Arc, RwLock};
 use config::internal::status::DataplaneStatus;
 use netgauze_bmp_pkt::BmpMessage;
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{error, info};
 
 /// Background BMP server runner that updates shared dataplane status.
 pub struct StatusHandler {
@@ -28,7 +28,7 @@ impl StatusHandler {
 #[async_trait::async_trait]
 impl handler::BmpHandler for StatusHandler {
     async fn on_message(&self, _peer: std::net::SocketAddr, msg: BmpMessage) {
-        // Your `concurrency::sync::RwLock` returns Result<Guard, PoisonError> like std::
+        // `concurrency::sync::RwLock` mirrors std::sync::RwLock error semantics
         let mut guard = self
             .dp_status
             .write()
@@ -37,12 +37,18 @@ impl handler::BmpHandler for StatusHandler {
     }
 }
 
-/// Spawn BMP server in background
+/// Spawn BMP server in background.
+///
+/// This function is safe to call from both async and non-async contexts:
+/// - If a Tokio runtime is already present, the task is spawned on it.
+/// - If not, a new multi-thread runtime is created and **leaked** for the
+///   lifetime of the process so the returned JoinHandle remains valid.
 pub fn spawn_background(
     bind: std::net::SocketAddr,
     dp_status: Arc<RwLock<DataplaneStatus>>,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    // The future we want to run
+    let fut = async move {
         info!("starting BMP server on {}", bind);
         let cfg = BmpServerConfig {
             bind_addr: bind,
@@ -50,7 +56,21 @@ pub fn spawn_background(
         };
         let srv = BmpServer::new(cfg, StatusHandler::new(dp_status));
         if let Err(e) = srv.run().await {
-            tracing::error!("bmp server terminated: {e:#}");
+            error!("bmp server terminated: {e:#}");
         }
-    })
+    };
+
+    // Try to spawn on an existing runtime; if none, create one and leak it.
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.spawn(fut),
+        Err(_) => {
+            // No runtime in scope: build one and leak it for daemon lifetime.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build Tokio runtime for BMP");
+            let rt_static: &'static tokio::runtime::Runtime = Box::leak(Box::new(rt));
+            rt_static.spawn(fut)
+        }
+    }
 }
