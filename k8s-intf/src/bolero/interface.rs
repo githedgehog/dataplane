@@ -46,20 +46,11 @@ impl TypeGenerator for LegalValue<GatewayAgentGatewayInterfaces> {
 
 impl Normalize for GatewayAgentGatewayInterfaces {
     fn normalize(&self) -> Self {
-        let ips = match self.ips.as_ref() {
-            Some(ips) => {
-                if ips.is_empty() {
-                    None
-                } else {
-                    let mut ips = ips.clone();
-                    ips.sort();
-                    Some(ips)
-                }
-            }
-            None => None,
-        };
         GatewayAgentGatewayInterfaces {
-            ips,
+            ips: self.ips.clone().map(|mut ips| {
+                ips.sort();
+                ips
+            }),
             kernel: self.kernel.clone(),
             mtu: self.mtu,
             pci: self.pci.clone(),

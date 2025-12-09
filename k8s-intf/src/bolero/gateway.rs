@@ -10,6 +10,7 @@ use net::eth::mac::SourceMac;
 use net::ipv4::UnicastIpv4Addr;
 
 use crate::bolero::LegalValue;
+use crate::bolero::NoneIfEmpty;
 use crate::bolero::Normalize;
 use crate::gateway_agent_crd::{
     GatewayAgentGateway, GatewayAgentGatewayInterfaces, GatewayAgentGatewayNeighbors,
@@ -27,7 +28,7 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
         }
 
         let n_neighbors = d.gen_usize(Bound::Included(&0), Bound::Included(&10))?;
-        let mut neighbors = Vec::new();
+        let mut neighbors = Vec::with_capacity(n_neighbors);
         for _ in 0..n_neighbors {
             neighbors.push(d.produce::<LegalValue<GatewayAgentGatewayNeighbors>>()?.0);
         }
@@ -35,8 +36,8 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
         Some(LegalValue(GatewayAgentGateway {
             asn: Some(d.gen_u32(Bound::Included(&1), Bound::Unbounded)?),
             logs: None, // FIXME(manishv) Add a proper implementation
-            interfaces: Some(interfaces).filter(|i| !i.is_empty()),
-            neighbors: Some(neighbors).filter(|n| !n.is_empty()),
+            interfaces: interfaces.none_if_empty(),
+            neighbors: neighbors.none_if_empty(),
             profiling: None, // FIXME(manishv) Add a proper implementation
             protocol_ip: Some(d.produce::<UnicastIpv4Addr>()?.to_string()),
             vtep_ip: Some(format!(
@@ -58,12 +59,12 @@ impl Normalize for GatewayAgentGateway {
             logs: self.logs.clone(),
             interfaces: self
                 .interfaces
-                .clone()
-                .and_then(|item| Some(item.normalize()).filter(|i| !i.is_empty())),
+                .as_ref()
+                .and_then(|item| item.normalize().none_if_empty()),
             neighbors: self
                 .neighbors
-                .clone()
-                .and_then(|item| Some(item.normalize()).filter(|i| !i.is_empty())),
+                .as_ref()
+                .and_then(|item| item.normalize().none_if_empty()),
             profiling: self.profiling.clone(),
             protocol_ip: self.protocol_ip.clone(),
             vtep_ip: self.vtep_ip.clone(),

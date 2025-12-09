@@ -9,7 +9,7 @@ use bolero::{Driver, TypeGenerator, ValueGenerator};
 use lpm::prefix::Prefix;
 
 use crate::bolero::peering::LegalValuePeeringsGenerator;
-use crate::bolero::{LegalValue, SubnetMap, VpcSubnetMap};
+use crate::bolero::{LegalValue, NoneIfEmpty, SubnetMap, VpcSubnetMap};
 use crate::gateway_agent_crd::{GatewayAgentGateway, GatewayAgentSpec, GatewayAgentVpcs};
 
 fn extract_subnets(vpcs: &BTreeMap<String, GatewayAgentVpcs>) -> VpcSubnetMap {
@@ -63,8 +63,8 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
         Some(LegalValue(GatewayAgentSpec {
             agent_version: None,
             gateway: Some(d.produce::<LegalValue<GatewayAgentGateway>>()?.take()),
-            vpcs: Some(vpcs).filter(|v| !v.is_empty()),
-            peerings: Some(peerings).filter(|p| !p.is_empty()),
+            vpcs: vpcs.none_if_empty(),
+            peerings: peerings.none_if_empty(),
         }))
     }
 }

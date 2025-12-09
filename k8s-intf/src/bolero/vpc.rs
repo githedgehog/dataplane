@@ -7,14 +7,15 @@ use bolero::{Driver, TypeGenerator, ValueGenerator};
 
 use net::vxlan::Vni;
 
-use crate::bolero::LegalValue;
+use crate::bolero::{LegalValue, NoneIfEmpty};
 use crate::bolero::support::{UniqueV4CidrGenerator, UniqueV6CidrGenerator};
 use crate::gateway_agent_crd::{GatewayAgentVpcs, GatewayAgentVpcsSubnets};
 
 fn generate_internal_id<D: Driver>(d: &mut D) -> Option<String> {
     const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut result = String::new();
-    for _ in 0..5 {
+    const ID_LEN: usize = 5;
+    let mut result = String::with_capacity(ID_LEN);
+    for _ in 0..ID_LEN {
         let index = d.gen_usize(Bound::Included(&0), Bound::Excluded(&CHARS.len()))?;
         result.push(CHARS[index] as char);
     }
@@ -34,7 +35,7 @@ impl TypeGenerator for LegalValue<GatewayAgentVpcs> {
         let v4_gen = UniqueV4CidrGenerator::new(num_v4_cidrs, v4_masklen);
         let v6_gen = UniqueV6CidrGenerator::new(num_v6_cidrs, v6_masklen);
 
-        let subnets_cidrs = vec![v4_gen.generate(d)?, v6_gen.generate(d)?];
+        let subnets_cidrs = [v4_gen.generate(d)?, v6_gen.generate(d)?];
         let subnets = subnets_cidrs
             .into_iter()
             .flatten()
@@ -50,7 +51,7 @@ impl TypeGenerator for LegalValue<GatewayAgentVpcs> {
         Some(LegalValue(GatewayAgentVpcs {
             internal_id: Some(internal_id),
             vni: Some(vni.into()),
-            subnets: Some(subnets).filter(|s| !s.is_empty()),
+            subnets: subnets.none_if_empty(),
         }))
     }
 }

@@ -6,7 +6,7 @@ use std::ops::Bound;
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 
 use crate::bolero::support::generate_prefixes;
-use crate::bolero::{LegalValue, SubnetMap};
+use crate::bolero::{LegalValue, NoneIfEmpty, SubnetMap};
 use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
@@ -105,8 +105,8 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         let has_as = !final_as.is_empty();
 
         Some(GatewayAgentPeeringsPeeringExpose {
-            r#as: Some(final_as).filter(|f| !f.is_empty()),
-            ips: Some(final_ips).filter(|f| !f.is_empty()),
+            r#as: final_as.none_if_empty(),
+            ips: final_ips.none_if_empty(),
             nat: if has_as {
                 Some(
                     d.produce::<LegalValue<GatewayAgentPeeringsPeeringExposeNat>>()?

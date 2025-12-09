@@ -10,7 +10,7 @@ pub mod spec;
 pub mod support;
 pub mod vpc;
 
-use std::collections::BTreeMap;
+use std::{borrow::Borrow, collections::BTreeMap};
 
 use lpm::prefix::Prefix;
 
@@ -25,6 +25,12 @@ pub struct LegalValue<T>(T);
 impl<T> LegalValue<T> {
     pub fn take(self) -> T {
         self.0
+    }
+}
+
+impl<T> Borrow<T> for LegalValue<T> {
+    fn borrow(&self) -> &T {
+        &self.0
     }
 }
 
@@ -61,6 +67,31 @@ where
         self.iter()
             .map(|(k, v)| (k.clone(), v.normalize()))
             .collect()
+    }
+}
+
+/// A trait which maps a value to None if it is empty
+pub trait NoneIfEmpty {
+    /// Must return true if and only if the value is empty.
+    fn empty(&self) -> bool;
+
+    fn none_if_empty(self) -> Option<Self> where Self: Sized {
+        if self.empty() {
+            return None;
+        }
+        Some(self)
+    }
+}
+
+impl<K, V> NoneIfEmpty for BTreeMap<K, V> {
+    fn empty(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl<T> NoneIfEmpty for Vec<T> {
+    fn empty(&self) -> bool {
+        self.is_empty()
     }
 }
 

@@ -7,7 +7,7 @@ use std::ops::Bound;
 use bolero::{Driver, ValueGenerator};
 
 use crate::bolero::expose::LegalValueExposeGenerator;
-use crate::bolero::{SubnetMap, VpcSubnetMap};
+use crate::bolero::{NoneIfEmpty, SubnetMap, VpcSubnetMap};
 use crate::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeering};
 
 /// Generate legal values for `GatewayAgentPeeringsPeering`
@@ -36,7 +36,7 @@ impl ValueGenerator for LegalValuePeeringsPeeringGenerator<'_> {
             .collect::<Option<Vec<_>>>()?;
 
         Some(GatewayAgentPeeringsPeering {
-            expose: Some(expose).filter(|e| !e.is_empty()),
+            expose: expose.none_if_empty(),
         })
     }
 }
