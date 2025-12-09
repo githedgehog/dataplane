@@ -205,6 +205,10 @@ pub struct BmpOptions {
     pub monitor_ipv4_post: bool,
     pub monitor_ipv6_pre: bool,
     pub monitor_ipv6_post: bool,
+
+    /// VRFs/views to import into the default BMP instance:
+    /// renders as multiple `bmp import-vrf-view <vrf>`
+    pub import_vrf_views: Vec<String>,
 }
 
 impl Default for BmpOptions {
@@ -221,6 +225,7 @@ impl Default for BmpOptions {
             monitor_ipv4_post: true,
             monitor_ipv6_pre: false,
             monitor_ipv6_post: false,
+            import_vrf_views: Vec::new(),
         }
     }
 }
@@ -270,6 +275,26 @@ impl BmpOptions {
     pub fn monitor_ipv6(mut self, pre: bool, post: bool) -> Self {
         self.monitor_ipv6_pre = pre;
         self.monitor_ipv6_post = post;
+        self
+    }
+
+    #[must_use]
+    pub fn add_import_vrf_view<S: Into<String>>(mut self, vrf: S) -> Self {
+        self.import_vrf_views.push(vrf.into());
+        self
+    }
+
+    pub fn push_import_vrf_view<S: Into<String>>(&mut self, vrf: S) {
+        self.import_vrf_views.push(vrf.into());
+    }
+
+    #[must_use]
+    pub fn set_import_vrf_views<I, S>(mut self, vrfs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.import_vrf_views = vrfs.into_iter().map(Into::into).collect();
         self
     }
 }

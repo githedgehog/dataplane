@@ -1052,6 +1052,7 @@ dependencies = [
  "ctrlc",
  "dataplane-args",
  "dataplane-concurrency",
+ "dataplane-config",
  "dataplane-dpdk",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-id",
