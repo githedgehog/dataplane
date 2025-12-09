@@ -5,6 +5,12 @@
 #[allow(dead_code)]
 pub mod test {
     use caps::Capability::CAP_NET_ADMIN;
+    use config::external::communities::PriorityCommunityTable;
+    use config::external::gwgroup::GwGroup;
+    use config::external::gwgroup::GwGroupMember;
+    use config::external::gwgroup::GwGroupTable;
+
+    use fixin::wrap;
     use lpm::prefix::Prefix;
     use nat::stateful::NatAllocatorWriter;
     use nat::stateless::NatTablesWriter;
@@ -15,6 +21,7 @@ pub mod test {
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use test_utils::with_caps;
+    use test_utils::with_gw_name;
     use tracectl::get_trace_ctl;
     use tracing::error;
     use tracing_test::traced_test;
@@ -48,7 +55,7 @@ pub mod test {
     use tracing::debug;
 
     use stats::VpcMapName;
-    use stats::VpcStatsStore; // <-- added
+    use stats::VpcStatsStore;
     use vpcmap::map::VpcMapWriter;
 
     /* OVERLAY config sample builders */
@@ -123,6 +130,7 @@ pub mod test {
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
                 man_vpc2_with_vpc1(),
+                Some("gw-group-1".to_string()),
             ))
             .expect("Should succeed");
 
@@ -131,6 +139,7 @@ pub mod test {
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
                 man_vpc3_with_vpc1(),
+                Some("gw-group-1".to_string()),
             ))
             .expect("Should succeed");
 
@@ -311,6 +320,32 @@ pub mod test {
         }
     }
 
+    #[rustfmt::skip]
+    fn sample_gw_groups() -> GwGroupTable {
+        let mut gwt = GwGroupTable::new();
+        let mut group = GwGroup::new("gw-group-1");
+        group.add_member(GwGroupMember::new("gw1", 1, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 2, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 3, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        gwt.add_group(group).unwrap();
+
+        let mut group = GwGroup::new("gw-group-2");
+        group.add_member(GwGroupMember::new("gw2", 2, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 1, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        gwt.add_group(group).unwrap();
+        gwt
+    }
+
+    fn sample_community_table() -> PriorityCommunityTable {
+        let mut comtable = PriorityCommunityTable::new();
+        comtable.insert(0, "65000:800").unwrap();
+        comtable.insert(1, "65000:801").unwrap();
+        comtable.insert(2, "65000:802").unwrap();
+        comtable.insert(3, "65000:803").unwrap();
+        comtable.insert(4, "65000:804").unwrap();
+        comtable
+    }
+
     /* build sample external config as it would be received via gRPC */
     pub fn sample_external_config() -> ExternalConfig {
         /* build sample DEVICE config and add it to config */
@@ -322,19 +357,26 @@ pub mod test {
         /* build sample OVERLAY config (VPCs and peerings) and add it to config */
         let overlay = sample_overlay();
 
-        /* assemble external config */
-        let mut external_builder = ExternalConfigBuilder::default();
-        external_builder.genid(1);
-        external_builder.device(device_cfg);
-        external_builder.underlay(underlay);
-        external_builder.overlay(overlay);
-        external_builder.build().expect("Should succeed")
+        /* build sample gateway groups */
+        let groups = sample_gw_groups();
 
-        /* set VTEP configuration: FIXME, need to accommodate this to internal model */
-        //let vtep = VtepConfig::new(loopback, Mac::from([0x2, 0x0, 0x0, 0x0, 0xaa, 0xbb]));
+        /* build sample community table */
+        let comtable = sample_community_table();
+
+        /* assemble external config */
+        ExternalConfigBuilder::default()
+            .genid(1)
+            .device(device_cfg)
+            .underlay(underlay)
+            .overlay(overlay)
+            .gwgroups(groups)
+            .communities(comtable)
+            .build()
+            .expect("Should succeed")
     }
 
     #[traced_test]
+    #[wrap(with_gw_name())]
     #[test]
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
@@ -360,6 +402,7 @@ pub mod test {
 
         /* build sample external config */
         let external = sample_external_config();
+        println!("External config is:\n{external:#?}");
 
         /* build a gw config from a sample external config */
         let config = GwConfig::new(external);

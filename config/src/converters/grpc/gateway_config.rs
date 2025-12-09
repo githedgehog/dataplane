@@ -4,10 +4,13 @@
 use tracing::warn;
 
 use crate::external::ExternalConfigBuilder;
+use crate::external::communities::PriorityCommunityTable;
+use crate::external::gwgroup::{GwGroup, GwGroupTable};
 use crate::external::overlay::Overlay;
 use crate::external::underlay::Underlay;
 use crate::internal::device::{DeviceConfig, settings::DeviceSettings};
 use crate::{ExternalConfig, GwConfig};
+use gateway_config::config::GatewayGroup;
 
 // Helper Functions
 //--------------------------------------------------------------------------------
@@ -45,12 +48,29 @@ pub fn convert_gateway_config_from_grpc_with_defaults(
         Overlay::default()
     };
 
+    // convert gateway groups
+    let mut gw_groups = GwGroupTable::new();
+    for g in &grpc_config.gw_groups {
+        let group = GwGroup::try_from(g)?;
+        gw_groups.add_group(group).map_err(|e| e.to_string())?;
+    }
+
+    // convert community table
+    let mut comtable = PriorityCommunityTable::new();
+    for (prio, community) in &grpc_config.communities {
+        comtable
+            .insert(*prio, community)
+            .map_err(|e| e.to_string())?;
+    }
+
     // Create the ExternalConfig using the builder pattern
     let external_config = ExternalConfigBuilder::default()
         .genid(grpc_config.generation)
         .device(device_config)
         .underlay(underlay_config)
         .overlay(overlay_config)
+        .gwgroups(gw_groups)
+        .communities(comtable)
         .build()
         .map_err(|e| format!("Failed to build ExternalConfig: {e}"))?;
 
@@ -82,12 +102,29 @@ impl TryFrom<&gateway_config::GatewayConfig> for ExternalConfig {
             Err("Missing overlay configuration!".to_string())
         }?;
 
+        // convert gateway groups
+        let mut gw_groups = GwGroupTable::new();
+        for g in &grpc_config.gw_groups {
+            let group = GwGroup::try_from(g)?;
+            gw_groups.add_group(group).map_err(|e| e.to_string())?;
+        }
+
+        // convert community table
+        let mut comtable = PriorityCommunityTable::new();
+        for (prio, community) in &grpc_config.communities {
+            comtable
+                .insert(*prio, community)
+                .map_err(|e| e.to_string())?;
+        }
+
         // Create the ExternalConfig using the builder pattern
         let external_config = ExternalConfigBuilder::default()
             .genid(grpc_config.generation)
             .device(device_config)
             .underlay(underlay_config)
             .overlay(overlay_config)
+            .gwgroups(gw_groups)
+            .communities(comtable)
             .build()
             .map_err(|e| format!("Failed to build ExternalConfig: {e}"))?;
 
@@ -108,12 +145,21 @@ impl TryFrom<&ExternalConfig> for gateway_config::GatewayConfig {
         // Convert overlay config
         let overlay = gateway_config::Overlay::try_from(&external_config.overlay)?;
 
+        // Convert gateway groups
+        let gw_groups: Vec<_> = external_config
+            .gwgroups
+            .iter()
+            .map(|g| GatewayGroup::try_from(g).unwrap_or_else(|_| unreachable!()))
+            .collect();
+
         // Create the complete gRPC config
         Ok(gateway_config::GatewayConfig {
             generation: external_config.genid,
             device: Some(device),
             underlay: Some(underlay),
             overlay: Some(overlay),
+            gw_groups,
+            communities: external_config.communities.inner().clone(),
         })
     }
 }

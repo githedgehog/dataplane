@@ -5,6 +5,8 @@ use k8s_intf::gateway_agent_crd::GatewayAgent;
 
 use crate::DeviceConfig;
 use crate::converters::k8s::FromK8sConversionError;
+use crate::external::communities::PriorityCommunityTable;
+use crate::external::gwgroup::GwGroupTable;
 use crate::external::overlay::Overlay;
 use crate::external::underlay::Underlay;
 use crate::external::{ExternalConfig, ExternalConfigBuilder};
@@ -22,6 +24,13 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
                 "metadata.name not found".to_string(),
             ))?
             .as_str();
+
+        let Some(gen_id) = ga.metadata.generation else {
+            return Err(FromK8sConversionError::Invalid(format!(
+                "metadata.generation not found for {name}"
+            )));
+        };
+
         let device = DeviceConfig::try_from(ga)?;
         let underlay = Underlay::try_from(ga.spec.gateway.as_ref().ok_or(
             FromK8sConversionError::MissingData(format!(
@@ -29,16 +38,16 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
             )),
         )?)?;
         let overlay = Overlay::try_from(&ga.spec)?;
-        let Some(gen_id) = ga.metadata.generation else {
-            return Err(FromK8sConversionError::Invalid(format!(
-                "metadata.generation not found for {name}"
-            )));
-        };
+        let gwgroup_table = GwGroupTable::try_from(&ga.spec)?;
+        let comtable = PriorityCommunityTable::try_from(&ga.spec)?;
+
         let external_config = ExternalConfigBuilder::default()
             .genid(gen_id)
             .device(device)
             .underlay(underlay)
             .overlay(overlay)
+            .gwgroups(gwgroup_table)
+            .communities(comtable)
             .build()
             .map_err(|e| {
                 FromK8sConversionError::InternalError(format!(

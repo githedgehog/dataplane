@@ -7,6 +7,8 @@
 mod tests {
     use config::GwConfig;
     use config::external::ExternalConfigBuilder;
+    use config::external::communities::PriorityCommunityTable;
+    use config::external::gwgroup::GwGroupTable;
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -175,12 +177,16 @@ mod tests {
             local: manifest1.clone(),
             remote: manifest2.clone(),
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
+            gwgroup: None,
+            adv_communities: vec![],
         };
         let peering2 = Peering {
             name: "test_peering2".into(),
             local: manifest2,
             remote: manifest1,
             remote_id: "67890".try_into().expect("Failed to create VPC ID"),
+            gwgroup: None,
+            adv_communities: vec![],
         };
 
         // This code is extremely convoluted
@@ -461,11 +467,11 @@ mod tests {
         let mut manifest43 = VpcManifest::new("VPC-4");
         add_expose(&mut manifest43, expose431);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
-        let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13);
-        let peering14 = VpcPeering::new("VPC-1--VPC-4", manifest14, manifest41);
-        let peering24 = VpcPeering::new("VPC-2--VPC-4", manifest24, manifest42);
-        let peering34 = VpcPeering::new("VPC-3--VPC-4", manifest34, manifest43);
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
+        let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13, None);
+        let peering14 = VpcPeering::new("VPC-1--VPC-4", manifest14, manifest41, None);
+        let peering24 = VpcPeering::new("VPC-2--VPC-4", manifest24, manifest42, None);
+        let peering34 = VpcPeering::new("VPC-3--VPC-4", manifest34, manifest43, None);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -505,6 +511,8 @@ mod tests {
         external_builder.device(device_config);
         external_builder.underlay(underlay);
         external_builder.overlay(overlay);
+        external_builder.gwgroups(GwGroupTable::new());
+        external_builder.communities(PriorityCommunityTable::new());
         let external_config = external_builder
             .build()
             .expect("Failed to build external config");

@@ -62,7 +62,7 @@ impl Normalize for GatewayAgentGateway {
     fn normalize(&self) -> Self {
         GatewayAgentGateway {
             asn: self.asn,
-            groups: None, // FIXME(mvachhar) Add a proper implementation when used
+            groups: self.groups.clone(),
             logs: self.logs.clone(),
             interfaces: self
                 .interfaces

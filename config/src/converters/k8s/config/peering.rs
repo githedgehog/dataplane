@@ -31,6 +31,7 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
     fn try_from(
         (vpc_subnets, peering_name, peering): (&VpcSubnetMap, &str, &GatewayAgentPeerings),
     ) -> Result<Self, Self::Error> {
+        let gwgroup = peering.gateway_group.clone(); // we don't fail atm if not set
         if let Some(peering) = peering.peering.as_ref() {
             let num_peerings = peering.len();
             if peering.len() != 2 {
@@ -51,7 +52,7 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
             let right = manifests.pop().unwrap_or_else(|| unreachable!());
             let left = manifests.pop().unwrap_or_else(|| unreachable!());
 
-            Ok(VpcPeering::new(peering_name, left, right))
+            Ok(VpcPeering::new(peering_name, left, right, gwgroup))
         } else {
             Err(FromK8sConversionError::Invalid(
                 "Missing peering".to_string(),

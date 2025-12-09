@@ -24,8 +24,19 @@ impl TryFrom<&gateway_config::VpcPeering> for VpcPeering {
             )),
         }?;
 
+        let gwgroup = if peering.gateway_group.is_empty() {
+            None
+        } else {
+            Some(peering.gateway_group.clone())
+        };
+
         // Create the peering using the constructor
-        Ok(VpcPeering::new(&peering.name, vpc1_manifest, vpc2_manifest))
+        Ok(VpcPeering::new(
+            &peering.name,
+            vpc1_manifest,
+            vpc2_manifest,
+            gwgroup,
+        ))
     }
 }
 
@@ -40,6 +51,7 @@ impl TryFrom<&VpcPeering> for gateway_config::VpcPeering {
         Ok(gateway_config::VpcPeering {
             name: peering.name.clone(),
             r#for: vec![left_for, right_for],
+            gateway_group: peering.gw_group.clone().unwrap_or_default(),
         })
     }
 }
