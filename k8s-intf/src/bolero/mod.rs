@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 pub mod bgp;
+pub mod crd;
 pub mod expose;
 pub mod gateway;
 pub mod interface;
