@@ -5,6 +5,7 @@ pub mod bgp;
 pub mod expose;
 pub mod gateway;
 pub mod interface;
+pub mod logs;
 pub mod peering;
 pub mod spec;
 pub mod support;
