@@ -63,7 +63,7 @@ impl Render for BmpOptions {
         cfg += MARKER;
         cfg += format!("bmp targets {}", self.target_name);
 
-        // connect line (FRR: `bmp connect HOST port <PORT> [min-retry ...|max-retry ...] [source-interface IFNAME]`)
+        // connect line (FRR: `bmp connect HOST port <PORT> [min-retry ... max-retry ...] [source-interface IFNAME]`)
         let mut connect = format!(" bmp connect {} port {}", self.connect_host, self.port);
         if let (Some(minr), Some(maxr)) = (self.min_retry_ms, self.max_retry_ms) {
             connect.push_str(&format!(" min-retry {minr} max-retry {maxr}"));
@@ -72,7 +72,6 @@ impl Render for BmpOptions {
             if let BmpSource::Interface(ifn) = src {
                 connect.push_str(&format!(" source-interface {}", ifn));
             }
-            // NOTE: FRR BMP does not support binding by IP address; ignore BmpSource::Address.
         }
         cfg += connect;
 
@@ -90,8 +89,13 @@ impl Render for BmpOptions {
             cfg += " bmp monitor ipv6 unicast post-policy";
         }
 
-        // stats (FRR: `bmp stats [interval <ms>]`)
+        // stats (FRR: `bmp stats interval <ms>`)
         cfg += format!(" bmp stats interval {}", self.stats_interval_ms);
+
+        // import-vrf-view lines (rendered only under default VRF)
+        for vrf in &self.import_vrf_views {
+            cfg += format!(" bmp import-vrf-view {}", vrf);
+        }
 
         cfg += "exit";
         cfg += MARKER;
@@ -523,9 +527,11 @@ impl Render for BgpConfig {
             .as_ref()
             .map(|evpn| config += evpn.render(self));
 
-        /* BMP options */
-        if let Some(bmp) = &self.bmp {
-            config += bmp.render(&());
+        /* BMP options: only emit under the default VRF (global BGP context) */
+        if self.vrf.is_none() {
+            if let Some(bmp) = &self.bmp {
+                config += bmp.render(&());
+            }
         }
 
         config += "exit";
