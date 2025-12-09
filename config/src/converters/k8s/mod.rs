@@ -6,10 +6,12 @@
 #![deny(clippy::all, clippy::pedantic)]
 
 pub mod bgp;
+pub mod device;
 pub mod expose;
 pub mod interface;
 pub mod overlay;
 pub mod peering;
+pub mod tracecfg;
 pub mod underlay;
 pub mod vpc;
 
