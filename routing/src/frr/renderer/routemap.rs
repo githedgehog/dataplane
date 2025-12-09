@@ -22,6 +22,7 @@ impl Rendered for Community {
         match self {
             Community::None => "none".to_string(),
             Community::ASNVAL(asn, val) => format!("{asn}:{val}"),
+            Community::String(value) => value.clone(),
             Community::NoAdvertise => "no-advertise".to_string(),
             Community::NoPeer => "no-peer".to_string(),
             Community::NoExport => "no-export".to_string(),
@@ -176,6 +177,7 @@ mod tests {
                     Community::NoExport,
                     Community::LocalAs,
                     Community::ASNVAL(100, 1),
+                    Community::String("65000:8001".to_string()),
                 ],
                 true,
             ));
