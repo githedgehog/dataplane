@@ -226,28 +226,17 @@ impl VpcRoutingConfigIpv4 {
     }
 }
 
-/// Build BGP config for a VPC VRF
+/// Build BGP config for a VPC VRF (no BMP attached here!)
 fn vpc_vrf_bgp_config(
     vpc: &Vpc,
     asn: u32,
     router_id: Option<Ipv4Addr>,
-    bmp: Option<&BmpOptions>,
 ) -> BgpConfig {
     let mut bgp = BgpConfig::new(asn).set_vrf_name(vpc.vrf_name());
     if let Some(router_id) = router_id {
         bgp.set_router_id(router_id);
     }
     bgp.set_bgp_options(vpc_bgp_options());
-
-    // If global BMP is provided, clone and add this VRF to its import list,
-    // then attach that per-VRF BMP to the VRF BGP. The renderer can later
-    // collate all VRF names and emit `bmp import-vrf-view <vrf>` under default BGP.
-    if let Some(global_bmp) = bmp {
-        let mut per_vrf_bmp = global_bmp.clone();
-        per_vrf_bmp.push_import_vrf_view(vpc.vrf_name());
-        bgp.set_bmp_options(per_vrf_bmp);
-    }
-
     bgp
 }
 
@@ -285,15 +274,14 @@ fn build_vpc_internal_config(
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
-    bmp: Option<&BmpOptions>,
 ) -> ConfigResult {
     debug!("Building internal config for vpc '{}'", vpc.name);
 
     /* build VRF config */
     let mut vrf_cfg = vpc_vrf_config(vpc)?;
 
-    /* build bgp config */
-    let mut bgp = vpc_vrf_bgp_config(vpc, asn, router_id, bmp);
+    /* build bgp config (no BMP here) */
+    let mut bgp = vpc_vrf_bgp_config(vpc, asn, router_id);
 
     if vpc.num_peerings() > 0 {
         let mut vpc_rconfig = VpcRoutingConfigIpv4::new(vpc); // fixme build from scratch / no mut
@@ -322,13 +310,12 @@ fn build_internal_overlay_config(
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
-    bmp: Option<&BmpOptions>,
 ) -> ConfigResult {
     debug!("Building overlay config ({} VPCs)", overlay.vpc_table.len());
 
     /* Vpcs and peerings */
     for vpc in overlay.vpc_table.values() {
-        build_vpc_internal_config(vpc, asn, router_id, internal, bmp)?;
+        build_vpc_internal_config(vpc, asn, router_id, internal)?;
     }
     Ok(())
 }
@@ -338,7 +325,7 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     build_internal_config_with_bmp(config, None)
 }
 
-/// Public entry — build with BMP (global options replicated per VRF with import list)
+/// Public entry — build with BMP (global options injected into default VRF and import views)
 pub fn build_internal_config_with_bmp(
     config: &GwConfig,
     bmp: Option<BmpOptions>,
@@ -347,9 +334,23 @@ pub fn build_internal_config_with_bmp(
     debug!("Building internal config for gen {genid}");
     let external = &config.external;
 
-    /* Build internal config: device and underlay configs are copied as received */
+    // Prepare default VRF (possibly inject global BMP with VRF import views)
+    let mut default_vrf = external.underlay.vrf.clone();
+
+    // If BMP is provided and default VRF has BGP, attach BMP there and add import views
+    if let (Some(mut bmp_opts), Some(bgp_default)) = (bmp, default_vrf.bgp.as_mut()) {
+        // Collect all overlay VRF names to import
+        for vpc in external.overlay.vpc_table.values() {
+            // requires BmpOptions::push_import_vrf_view(String)
+            bmp_opts.push_import_vrf_view(vpc.vrf_name());
+        }
+        // Inject BMP into default VRF BGP
+        bgp_default.set_bmp_options(bmp_opts);
+    }
+
+    /* Build internal config: device and underlay configs are copied as received (with adjusted default_vrf) */
     let mut internal = InternalConfig::new(external.device.clone());
-    internal.add_vrf_config(external.underlay.vrf.clone())?;
+    internal.add_vrf_config(default_vrf)?;
     internal.set_vtep(external.underlay.vtep.clone());
 
     /* Build overlay config */
@@ -362,7 +363,6 @@ pub fn build_internal_config_with_bmp(
                 asn,
                 router_id,
                 &mut internal,
-                bmp.as_ref(), /* pass BMP down */
             )?;
         } else {
             debug!("The configuration does not specify any VPCs...");
