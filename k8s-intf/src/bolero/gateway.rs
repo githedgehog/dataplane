@@ -11,8 +11,10 @@ use net::ipv4::UnicastIpv4Addr;
 
 use crate::bolero::LegalValue;
 use crate::bolero::Normalize;
+
 use crate::gateway_agent_crd::{
-    GatewayAgentGateway, GatewayAgentGatewayInterfaces, GatewayAgentGatewayNeighbors,
+    GatewayAgentGateway, GatewayAgentGatewayInterfaces, GatewayAgentGatewayLogs,
+    GatewayAgentGatewayNeighbors,
 };
 
 impl TypeGenerator for LegalValue<GatewayAgentGateway> {
@@ -34,7 +36,7 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
 
         Some(LegalValue(GatewayAgentGateway {
             asn: Some(d.gen_u32(Bound::Included(&1), Bound::Unbounded)?),
-            logs: None, // FIXME(manishv) Add a proper implementation
+            logs: Some(d.produce::<LegalValue<GatewayAgentGatewayLogs>>()?.take()),
             interfaces: Some(interfaces).filter(|i| !i.is_empty()),
             neighbors: Some(neighbors).filter(|n| !n.is_empty()),
             profiling: None, // FIXME(manishv) Add a proper implementation
