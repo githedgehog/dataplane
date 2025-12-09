@@ -579,7 +579,7 @@ pub struct BmpConfigSection {
 /// 3. **Transfer**: Passed via sealed memfd to the worker process
 /// 4. **Worker Process**: Calls [`LaunchConfiguration::inherit()`] to access the config
 ///
-/// // TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
+/// TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
 #[derive(
     Debug,
     PartialEq,
@@ -1281,7 +1281,6 @@ elsewhere and copy it in the configuration directory. This mode is meant mostly 
     #[arg(long, default_value_t = false, help = "Enable BMP server")]
     bmp_enable: bool,
 
-    /// BMP bind address
     #[arg(
         long,
         value_name = "IP:PORT",
@@ -1290,7 +1289,6 @@ elsewhere and copy it in the configuration directory. This mode is meant mostly 
     )]
     bmp_address: SocketAddr,
 
-    /// BMP periodic interval for housekeeping/flush (ms)
     #[arg(
         long,
         value_name = "MILLISECONDS",
@@ -1446,7 +1444,7 @@ impl CmdArgs {
     #[must_use]
     pub fn get_name(&self) -> Option<&String> {
         self.name.as_ref()
-    // ===== BMP getters =====
+    }
     #[must_use]
     pub fn bmp_enabled(&self) -> bool {
         self.bmp_enable

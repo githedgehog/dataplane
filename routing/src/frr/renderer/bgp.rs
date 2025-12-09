@@ -12,7 +12,7 @@ use config::internal::routing::bgp::Redistribute;
 use config::internal::routing::bgp::VrfImports;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpNeighCapabilities, Protocol};
-use config::internal::routing::bgp::{BmpOptions, BmpSource};
+use config::internal::routing::bmp::{BmpOptions, BmpSource};
 
 /* impl Display */
 impl Rendered for BgpNeighType {
@@ -63,7 +63,7 @@ impl Render for BmpOptions {
         cfg += MARKER;
         cfg += format!("bmp targets {}", self.target_name);
 
-        // connect line (FRR: `bmp connect HOST port <PORT> [min-retry ...|max-retry ...] [source-interface IFNAME]`)
+        // connect line (FRR: `bmp connect HOST port <PORT> [min-retry ... max-retry ...] [source-interface IFNAME]`)
         let mut connect = format!(" bmp connect {} port {}", self.connect_host, self.port);
         if let (Some(minr), Some(maxr)) = (self.min_retry_ms, self.max_retry_ms) {
             connect.push_str(&format!(" min-retry {minr} max-retry {maxr}"));
@@ -72,7 +72,6 @@ impl Render for BmpOptions {
             if let BmpSource::Interface(ifn) = src {
                 connect.push_str(&format!(" source-interface {}", ifn));
             }
-            // NOTE: FRR BMP does not support binding by IP address; ignore BmpSource::Address.
         }
         cfg += connect;
 
@@ -90,8 +89,13 @@ impl Render for BmpOptions {
             cfg += " bmp monitor ipv6 unicast post-policy";
         }
 
-        // stats (FRR: `bmp stats [interval <ms>]`)
+        // stats (FRR: `bmp stats interval <ms>`)
         cfg += format!(" bmp stats interval {}", self.stats_interval_ms);
+
+        // import-vrf-view lines (rendered only under default VRF)
+        for vrf in &self.import_vrf_views {
+            cfg += format!(" bmp import-vrf-view {}", vrf);
+        }
 
         cfg += "exit";
         cfg += MARKER;
@@ -327,6 +331,7 @@ impl Render for AfIpv4Ucast {
         cfg += MARKER;
         cfg += "address-family ipv4 unicast";
 
+        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv4_unicast)
@@ -362,6 +367,7 @@ impl Render for AfIpv6Ucast {
         cfg += MARKER;
         cfg += "address-family ipv6 unicast";
 
+        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv6_unicast)
@@ -397,6 +403,7 @@ impl Render for AfL2vpnEvpn {
         cfg += MARKER;
         cfg += "address-family l2vpn evpn";
 
+        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.l2vpn_evpn)
@@ -514,7 +521,7 @@ impl Render for BgpConfig {
             config += format!(" bgp router-id {router_id}");
         }
 
-        /* BGP options */
+        /* BGP options: todo */
         config += self.options.render(&());
 
         /* BGP neighbors */
@@ -535,9 +542,11 @@ impl Render for BgpConfig {
             .as_ref()
             .map(|evpn| config += evpn.render(self));
 
-        /* BMP options */
-        if let Some(bmp) = &self.bmp {
-            config += bmp.render(&());
+        /* BMP options: only emit under the default VRF (global BGP context) */
+        if self.vrf.is_none() {
+            if let Some(bmp) = &self.bmp {
+                config += bmp.render(&());
+            }
         }
 
         config += "exit";
@@ -554,6 +563,7 @@ pub mod tests {
         AfL2vpnEvpn, BgpConfig, BgpNeighbor, NeighSendCommunities, Protocol, Redistribute,
         VrfImports,
     };
+    use config::internal::routing::bmp::{BmpOptions, BmpSource};
     use lpm::prefix::Prefix;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
@@ -575,6 +585,19 @@ pub mod tests {
             .set_listen_limit(256);
 
         bgp.set_bgp_options(options);
+
+        let bmp = BmpOptions::new("bmp1", "127.0.0.1", 5000)
+            .set_retry_ms(1_000, 20_000)
+            .set_stats_interval_ms(60_000)
+            .monitor_ipv4(true, true)
+            .monitor_ipv6(false, false);
+        let bmp = BmpOptions {
+            source: Some(BmpSource::Interface("lo".to_string())),
+            ..bmp
+        }
+        .add_import_vrf_view("VPC-2")
+        .add_import_vrf_view("VPC-3");
+        bgp.set_bmp_options(bmp);
 
         let n1 = BgpNeighbor::new_host(IpAddr::from_str("7.0.0.3").expect("Bad address"))
             .set_remote_as(65001)

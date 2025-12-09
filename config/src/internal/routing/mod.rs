@@ -5,6 +5,7 @@
 
 pub mod bfd;
 pub mod bgp;
+pub mod bmp;
 pub mod evpn;
 pub mod frr;
 pub mod ospf;

@@ -173,8 +173,8 @@ impl Router {
         Ok(router)
     }
 
-    /// Stop this router. This stops the router IO task and drops the interface table, adjacency table,
-    /// VRF table and the FIB table.
+    /// Stop this router. This stops the router IO thread and drops the interface table, adjacency table
+    /// vrf table and the fib table.
     pub fn stop(&mut self) {
         if let Err(e) = self.rio_handle.finish() {
             error!("Failed to stop IO for router '{}': {e}", self.name);

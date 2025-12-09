@@ -26,7 +26,7 @@ use tracectl::{custom_target, get_trace_ctl, trace_target};
 use tracing::{error, info, level_filters::LevelFilter};
 
 use concurrency::sync::{Arc, RwLock};
-use config::internal::routing::bgp::BmpOptions;
+use config::internal::routing::bmp::BmpOptions;
 use config::internal::status::DataplaneStatus;
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
@@ -85,19 +85,8 @@ fn process_tracing_cmds(args: &CmdArgs) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-fn main() {
-    let args = CmdArgs::parse();
-    let gwname = match init_name(&args) {
-        Ok(name) => name,
-        Err(e) => {
-            eprintln!("Failed to set gateway name: {e}");
-            std::process::exit(1);
-        }
-    };
-    init_logging(&gwname);
-
-    let (bmp_server_params, bmp_client_opts) = if args.bmp_enabled() {
+fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptions>) {
+    if args.bmp_enabled() {
         let bind = args.bmp_address();
         let interval_ms = args.bmp_interval_ms();
 
@@ -126,7 +115,22 @@ fn main() {
     } else {
         info!("BMP: disabled");
         (None, None)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn main() {
+    let args = CmdArgs::parse();
+    let gwname = match init_name(&args) {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!("Failed to set gateway name: {e}");
+            std::process::exit(1);
+        }
     };
+    init_logging(&gwname);
+
+    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
 
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 

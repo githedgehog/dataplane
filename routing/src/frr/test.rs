@@ -124,17 +124,23 @@ pub mod tests {
     use super::fake_frr_agent::*;
     use crate::config::RouterConfig;
     use crate::{Router, RouterParamsBuilder};
+    use concurrency::sync::{Arc, RwLock};
+    use config::internal::status::DataplaneStatus;
     use std::time::Duration;
+    use tokio::sync::watch;
     use tracing_test::traced_test;
 
     #[traced_test]
     #[tokio::test]
     async fn test_fake_frr_agent() {
+        let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
+
         /* set router params */
         let router_params = RouterParamsBuilder::default()
             .cpi_sock_path("/tmp/cpi.sock")
             .cli_sock_path("/tmp/cli.sock")
             .frr_agent_path("/tmp/frr-agent.sock")
+            .dp_status(dp_status)
             .build()
             .expect("Should succeed due to defaults");
 
