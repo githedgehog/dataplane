@@ -53,6 +53,9 @@ pub mod test {
     use stats::VpcStatsStore;
     use vpcmap::map::VpcMapWriter;
 
+    use concurrency::sync::{Arc, RwLock};
+    use config::internal::status::DataplaneStatus;
+
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
         let mut vpc_table = VpcTable::new();
@@ -430,6 +433,9 @@ pub mod test {
         /* create VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();
 
+        let dp_status_r: Arc<RwLock<DataplaneStatus>> =
+            Arc::new(RwLock::new(DataplaneStatus::new()));
+
         /* build configuration of mgmt config processor */
         let processor_config = ConfigProcessorParams {
             router_ctl,
@@ -438,6 +444,8 @@ pub mod test {
             natallocatorw,
             flowfilterw,
             vpc_stats_store,
+            dp_status_r,
+            bmp_options: None,
         };
 
         /* start config processor to test the processing of a config. The processor embeds the

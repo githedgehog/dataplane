@@ -293,7 +293,7 @@ fn build_vpc_internal_config(
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
-    bmp: Option<&BmpOptions>, /* NEW */
+    bmp: Option<&BmpOptions>,
 ) -> ConfigResult {
     debug!("Building internal config for vpc '{}'", vpc.name);
 
