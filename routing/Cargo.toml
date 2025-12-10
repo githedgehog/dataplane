@@ -20,7 +20,7 @@ net = { workspace = true }
 tracectl = { workspace = true }
 
 # external
-ahash = { workspace = true }
+ahash = { workspace = true, features = ["no-rng"] }
 bitflags = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
 chrono = { workspace = true, features = ["clock"] }
