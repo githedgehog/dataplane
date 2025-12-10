@@ -2,12 +2,14 @@
 // Copyright Open Network Fabric Authors
 
 use ahash::RandomState;
-use lpm::prefix::{IpPrefix, Prefix, PrefixSize};
+use bnum::cast::CastFrom;
+use lpm::prefix::{IpPrefix, IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize};
 use lpm::trie::IpPrefixTrie;
 use net::vxlan::Vni;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::ops::RangeBounds;
 use tracing::debug;
 
 /// Error type for [`NatTables`] operations.
@@ -17,6 +19,8 @@ pub enum NatTablesError {
     EntryExists,
     #[error("bad IP version")]
     BadIpVersion,
+    #[error("cannot discard port range")]
+    NeedsPortRange,
 }
 
 /// An object containing the rules for the NAT pipeline stage, not in terms of states for the
@@ -70,21 +74,60 @@ impl PerVniTable {
     }
 
     #[must_use]
-    pub fn find_src_mapping(&self, addr: &IpAddr, dst_vni: Vni) -> Option<IpAddr> {
-        debug!("Looking up source mapping for address: {addr}, dst_vni: {dst_vni}");
-        let (prefix, ranges) = self.src_nat.get(&dst_vni)?.lookup(addr)?;
-        let offset = addr_offset_in_prefix(&prefix, addr)?;
-        debug!("Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}");
-        ranges.get_entry(offset)
+    pub fn find_src_mapping(
+        &self,
+        addr: &IpAddr,
+        port: Option<u16>,
+        dst_vni: Vni,
+    ) -> Option<(IpAddr, Option<u16>)> {
+        debug!("Looking up source mapping for address: {addr}, port: {port:?}, dst_vni: {dst_vni}");
+        Self::find_mapping(addr, port, self.src_nat.get(&dst_vni)?)
     }
 
     #[must_use]
-    pub fn find_dst_mapping(&self, addr: &IpAddr) -> Option<IpAddr> {
-        debug!("Looking up destination mapping for address: {addr}");
-        let (prefix, ranges) = self.dst_nat.lookup(addr)?;
-        let offset = addr_offset_in_prefix(&prefix, addr)?;
-        debug!("Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}");
-        ranges.get_entry(offset)
+    pub fn find_dst_mapping(
+        &self,
+        addr: &IpAddr,
+        port: Option<u16>,
+    ) -> Option<(IpAddr, Option<u16>)> {
+        debug!("Looking up destination mapping for address: {addr}, port: {port:?}");
+        Self::find_mapping(addr, port, &self.dst_nat)
+    }
+
+    fn find_mapping(
+        addr: &IpAddr,
+        port_opt: Option<u16>,
+        table: &NatRuleTable,
+    ) -> Option<(IpAddr, Option<u16>)> {
+        let (prefix, value) = table.lookup(addr, port_opt)?;
+        match value {
+            NatTableValue::Nat(ranges) => {
+                let offset = addr_offset_in_prefix(&prefix, addr)?;
+                debug!(
+                    "Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}"
+                );
+                ranges.get_entry(offset).map(|addr| (addr, None))
+            }
+            NatTableValue::Pat(ranges) => {
+                let port = port_opt?; // We expect a port for PAT; no mapping if we have none
+                let offset = addr_offset_in_prefix_with_ports(
+                    &prefix,
+                    *ranges
+                        .prefix_port_ranges
+                        .iter()
+                        .find(|pr| pr.contains(&port))
+                        .unwrap_or_else(|| unreachable!()),
+                    addr,
+                    port,
+                )?;
+                debug!(
+                    "Mapping {addr}:{port:?} from prefix {prefix} to ranges {ranges:?}: found offset {offset}"
+                );
+                ranges
+                    .get_entry(offset)
+                    .map(|(new_addr, new_port)| (new_addr, Some(new_port)))
+            }
+        }
     }
 }
 
@@ -97,6 +140,27 @@ fn addr_offset_in_prefix(prefix: &Prefix, addr: &IpAddr) -> Option<u128> {
         (Prefix::IPV6(p), IpAddr::V6(a)) => Some(a.to_bits() - p.network().to_bits()),
         _ => None,
     }
+}
+
+fn addr_offset_in_prefix_with_ports(
+    prefix: &Prefix,
+    port_range: PortRange,
+    addr: &IpAddr,
+    port: u16,
+) -> Option<PrefixWithPortsSize> {
+    if !port_range.contains(&port) {
+        return None;
+    }
+    let ip_offset = addr_offset_in_prefix(prefix, addr)?;
+    let port_offset = port - port_range.start();
+    Some(PrefixWithPortsSize::from(
+        ip_offset
+            * u128::try_from(port_range.len()).unwrap_or_else(|_| {
+                // Assume conversion from usize to u128 never fails
+                unreachable!()
+            })
+            + u128::from(port_offset),
+    ))
 }
 
 /// From a current address prefix, find the target address prefix.
@@ -126,8 +190,29 @@ impl NatRuleTable {
     /// Returns the value associated with the longest prefix match for the given address.
     /// If the address does not match any prefix, it returns `None`.
     #[must_use]
-    pub fn lookup(&self, addr: &IpAddr) -> Option<(Prefix, &NatTableValue)> {
-        self.0.lookup(*addr)
+    pub fn lookup(&self, addr: &IpAddr, port_opt: Option<u16>) -> Option<(Prefix, &NatTableValue)> {
+        // If we have a matching NatTableValue::Nat for the address, return it
+        let result = self.0.lookup(*addr);
+        if matches!(result, Some((_prefix, NatTableValue::Nat(_value)))) {
+            return result;
+        }
+
+        // Else, we need to check all matching IP prefixes (not necessarily the longest), and their
+        // port ranges. We expect the trie to contain only one matching IP prefix matching the
+        // address and associated to a port range matching the port, so we return the first we find.
+        let port = port_opt?;
+        let matching_entries = self.0.matching_entries(*addr);
+        for (prefix, value) in matching_entries {
+            if let NatTableValue::Pat(pat_value) = value
+                && pat_value
+                    .prefix_port_ranges
+                    .iter()
+                    .any(|pr| pr.contains(&port))
+            {
+                return Some((prefix, value));
+            }
+        }
+        None
     }
 }
 
@@ -136,11 +221,17 @@ impl NatRuleTable {
 /// The total number of IP addresses covered by the ranges is supposed to be equal to the addresses
 /// in the prefix, so that we can establish a one-to-one mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatTableValue {
+pub enum NatTableValue {
+    Nat(AddrTranslationValue),
+    Pat(PortAddrTranslationValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddrTranslationValue {
     ranges: Vec<IpRange>,
 }
 
-impl NatTableValue {
+impl AddrTranslationValue {
     #[must_use]
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
@@ -202,6 +293,211 @@ impl NatTableValue {
             offset -= range.len();
         }
         None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortAddrTranslationValue {
+    prefix_port_ranges: BTreeSet<PortRange>,
+    ranges: Vec<IpPortRange>,
+}
+
+impl PortAddrTranslationValue {
+    #[must_use]
+    #[allow(clippy::new_without_default)]
+    pub fn new(prefix_port_ranges: BTreeSet<PortRange>) -> Self {
+        Self {
+            prefix_port_ranges,
+            ranges: Vec::new(),
+        }
+    }
+
+    /// Adds a new range to the structure.
+    ///
+    /// Note: When possible, the new range is merged with the latest range in the list; so there is
+    /// no guarantee, when calling this method, that the new range is added as a separate range, and
+    /// that `self.ranges.len()` will be incremented.
+    pub fn add_ranges(&mut self, new_ranges: Vec<IpPortRange>) {
+        for range in new_ranges {
+            if self.is_empty() {
+                self.push(range);
+                return;
+            }
+
+            let last_range = self.ranges.last_mut().unwrap_or_else(|| {
+                // We checked ranges vector is not empty
+                unreachable!()
+            });
+            last_range.merge(&range).unwrap_or_else(|| self.push(range));
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    fn push(&mut self, range: IpPortRange) {
+        self.ranges.push(range);
+    }
+
+    fn size(&self) -> PrefixWithPortsSize {
+        self.ranges.iter().map(IpPortRange::size).sum()
+    }
+
+    fn get_entry(&self, entry_offset: PrefixWithPortsSize) -> Option<(IpAddr, u16)> {
+        if entry_offset >= self.size() {
+            return None;
+        }
+
+        let mut offset = entry_offset;
+        for range in &self.ranges {
+            if offset < range.size() {
+                return range.get_entry(offset);
+            }
+            offset -= range.size();
+        }
+        None
+    }
+}
+
+impl From<AddrTranslationValue> for PortAddrTranslationValue {
+    fn from(value: AddrTranslationValue) -> Self {
+        Self {
+            prefix_port_ranges: BTreeSet::from([PortRange::new_max_range()]),
+            ranges: value
+                .ranges
+                .iter()
+                .map(|range| IpPortRange::new(range.clone(), PortRange::new_max_range()))
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<PortAddrTranslationValue> for AddrTranslationValue {
+    type Error = NatTablesError;
+
+    fn try_from(value: PortAddrTranslationValue) -> Result<Self, Self::Error> {
+        // If we use ports (other than full 0-65535), we can't convert
+        if value.prefix_port_ranges.len() != 1
+            || !value
+                .prefix_port_ranges
+                .first()
+                .unwrap_or_else(|| unreachable!())
+                .is_max_range()
+        {
+            return Err(NatTablesError::NeedsPortRange);
+        }
+        if value
+            .ranges
+            .iter()
+            .any(|range| !range.port_range.is_max_range())
+        {
+            return Err(NatTablesError::NeedsPortRange);
+        }
+        Ok(Self {
+            ranges: value
+                .ranges
+                .iter()
+                .map(|range| range.ip_range.clone())
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpPortRange {
+    ip_range: IpRange,
+    port_range: PortRange,
+}
+
+impl IpPortRange {
+    #[must_use]
+    pub fn new(ip_range: IpRange, port_range: PortRange) -> Self {
+        Self {
+            ip_range,
+            port_range,
+        }
+    }
+
+    fn get_entry(&self, offset: PrefixWithPortsSize) -> Option<(IpAddr, u16)> {
+        if offset >= self.size() {
+            return None;
+        }
+
+        let port_range_len = PrefixWithPortsSize::from(self.port_range.len());
+        let ip_offset_tmp = offset / port_range_len;
+        debug_assert!(ip_offset_tmp <= PrefixWithPortsSize::from(u128::MAX));
+        let ip_offset = u128::cast_from(ip_offset_tmp);
+        let port_offset = (offset % port_range_len)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!()); // Modulo using a u128::from(u16)
+
+        self.ip_range
+            .get_entry(ip_offset)
+            .zip(self.port_range.get_entry(port_offset))
+    }
+
+    // Merges the current IP address and port ranges with the next ranges, if possible.
+    //
+    // Merging is possible if:
+    // - both ranges are of the same IP version, and
+    // - either:
+    //   - case 1:
+    //     - port ranges are identical, and
+    //     - the next IP range starts right after the current IP range ends
+    //     - example: 1.0.1.0/24 (1-100) and 1.0.2.0/24 (1-100) -> 1.0.1.0 to 1.0.2.255 (1-100)
+    //   - case 2:
+    //     - IP ranges are identical, and
+    //     - the next port range starts right after the current port range ends
+    //     - example: 1.0.1.0/24 (1-100) and 1.0.1.0/24 (101-300) -> 1.0.1.0/24 (1-300)
+    //
+    // # Returns
+    //
+    // Returns `Some(())` if the ranges were merged, or `None` otherwise.
+    fn merge(&mut self, next: &IpPortRange) -> Option<()> {
+        // Always merge on the "right side". This is because we call this method assuming that
+        // ranges are ordered (by IP range start, then port range start values), and we process the
+        // smaller ones first; if we try to merge a new one into an existing one, it's a "bigger"
+        // one, so we merge on the right side.
+
+        // Case 1: port ranges are identical
+        if self.port_range == next.port_range {
+            return self.ip_range.merge(&next.ip_range);
+        }
+
+        // Case 2: IP ranges are identical
+        if self.ip_range == next.ip_range {
+            return self.port_range.merge(next.port_range);
+        }
+        None
+    }
+}
+
+// This type is private, so we only implement the methods we use. The trait gives us the .size()
+// method, without having to duplicate it across similar types.
+impl IpRangeWithPorts for IpPortRange {
+    fn addr_range_len(&self) -> PrefixSize {
+        self.ip_range.len()
+    }
+
+    fn port_range_len(&self) -> usize {
+        self.port_range.len()
+    }
+
+    fn covers(&self, _other: &Self) -> bool {
+        unimplemented!()
+    }
+
+    fn overlaps(&self, _other: &Self) -> bool {
+        unimplemented!()
+    }
+
+    fn intersection(&self, _other: &Self) -> Option<Self> {
+        unimplemented!()
+    }
+
+    fn subtract(&self, _other: &Self) -> Vec<Self> {
+        unimplemented!()
     }
 }
 

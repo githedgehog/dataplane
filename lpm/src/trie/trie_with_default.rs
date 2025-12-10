@@ -117,6 +117,13 @@ impl<T: TrieMap<Value: Default> + TrieMapFactory<T>> TrieMap for TrieMapWithDefa
         self.0.lookup(addr)
     }
 
+    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>
+    where
+        A: Into<Self::Prefix>,
+    {
+        self.0.matching_entries(addr)
+    }
+
     fn remove<P: Borrow<Self::Prefix>>(&mut self, prefix: P) -> Option<Self::Value> {
         if *prefix.borrow() == Self::Prefix::ROOT {
             warn!("Attempt to remove root prefix from trie: refusing operation!");

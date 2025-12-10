@@ -77,9 +77,9 @@ impl PerVniTable {
                 // For each private prefix, add an entry containing the set of public prefixes
                 generate_public_values(expose).try_for_each(|res| {
                     let (prefix, value) = res?;
-                    if peering_table.insert(prefix, value).is_some() {
-                        return Err(NatPeeringError::EntryExists(prefix));
-                    }
+                    // It's OK if the prefix already exists in the trie, we may try to insert it
+                    // multiple times if we have disjoint port ranges for this prefix.
+                    let _ = peering_table.insert(prefix, value);
                     Ok(())
                 })
             })?;
@@ -92,9 +92,9 @@ impl PerVniTable {
                 // For each public prefix, add an entry containing the set of private prefixes
                 generate_private_values(expose).try_for_each(|res| {
                     let (prefix, value) = res?;
-                    if self.dst_nat.insert(prefix, value).is_some() {
-                        return Err(NatPeeringError::EntryExists(prefix));
-                    }
+                    // It's OK if the prefix already exists in the trie, we may try to insert it
+                    // multiple times if we have disjoint port ranges for this prefix.
+                    let _ = self.dst_nat.insert(prefix, value);
                     Ok(())
                 })
             })?;
