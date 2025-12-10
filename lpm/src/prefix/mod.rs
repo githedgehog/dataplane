@@ -6,6 +6,9 @@
 pub mod ip;
 pub use ip::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
 
+pub mod with_ports;
+pub use with_ports::*;
+
 use crate::prefix::ip::IpPrefixColliding;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use serde::ser::SerializeStructVariant;
