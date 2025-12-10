@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
-use super::tables::{IpRange, NatTableValue};
+use super::tables::{AddrTranslationValue, IpRange, NatTableValue};
 use lpm::prefix::{Prefix, PrefixSize};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -124,7 +124,7 @@ impl Iterator for RangeBuilder<'_> {
         }
 
         let orig_prefix = self.prefix_iter_orig.next()?;
-        let mut value = NatTableValue::new();
+        let mut value = AddrTranslationValue::new();
 
         let orig_prefix_size = orig_prefix.size();
         let mut orig_offset_cursor = 0;
@@ -193,7 +193,7 @@ impl Iterator for RangeBuilder<'_> {
             }
         }
 
-        Some(Ok((*orig_prefix, value)))
+        Some(Ok((*orig_prefix, NatTableValue::Nat(value))))
     }
 }
 
@@ -240,50 +240,50 @@ mod tests {
 
         let mut nat_ranges = generate_nat_values(&prefixes_to_update, &prefixes_to_point_to);
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.0.0"), addr_v4("10.0.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.1.0"), addr_v4("10.0.1.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "3.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.2.0"), addr_v4("10.0.2.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "4.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.3.0"), addr_v4("10.0.3.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "5.0.0.0/16".into());
         assert_eq!(
             *value.ranges(),
@@ -293,10 +293,10 @@ mod tests {
             ],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "6.0.0.0/32".into());
         assert_eq!(
             *value.ranges(),
@@ -342,80 +342,80 @@ mod tests {
 
         let mut nat_ranges = generate_nat_values(&prefixes_to_update, &prefixes_to_point_to);
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.0.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.0.0"), addr_v4("10.0.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.1.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.1.0"), addr_v4("10.0.1.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.2.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("10.0.2.0"), addr_v4("10.0.2.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "1.0.3.0/24".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.0.0.0"), addr_v4("11.0.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.0.0.0/16".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.0.1.0"), addr_v4("11.1.0.255")),],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.1.0.0/16".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.1.1.0"), addr_v4("11.2.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.2.0.0/16".into());
         assert_eq!(
             *value.ranges(),
             vec![IpRange::new(addr_v4("11.2.1.0"), addr_v4("11.3.0.255"))],
         );
 
-        let (prefix, value) = nat_ranges
-            .next()
-            .expect("Failed to get next NAT values")
-            .expect("Error when building NAT value");
+        let (prefix, value) = nat_ranges.next().unwrap().unwrap();
+        let NatTableValue::Nat(value) = value else {
+            panic!("Unexpected value type: {value:?}");
+        };
         assert_eq!(prefix, "2.3.0.0/16".into());
         assert_eq!(
             *value.ranges(),
@@ -807,7 +807,9 @@ mod bolero_tests {
                     nat_ranges
                         .into_iter()
                         .fold(PrefixSize::U128(0), |sum, result| {
-                            let (_, value) = result.unwrap();
+                            let (_, NatTableValue::Nat(value)) = result.unwrap() else {
+                                panic!("Unexpected value type");
+                            };
                             sum + value.ip_len()
                         });
                 assert_eq!(ranges_size, orig_ranges_size);
