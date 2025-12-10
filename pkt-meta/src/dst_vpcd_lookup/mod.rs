@@ -5,11 +5,15 @@ use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle, 
 use std::collections::HashMap;
 use tracing::{debug, error, warn};
 
+use lpm::prefix::range_map::DisjointRangesBTreeMap;
+use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts};
 use lpm::trie::IpPrefixTrie;
 use net::buffer::PacketBufferMut;
-use net::headers::{TryHeaders, TryIp};
+use net::headers::{TryHeaders, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
+use std::net::IpAddr;
+use std::num::NonZero;
 
 pub mod setup;
 
@@ -114,8 +118,14 @@ impl VpcDiscTablesWriter {
 }
 
 #[derive(Debug, Clone)]
+enum VpcDiscriminantTableValue {
+    PortRangeTable(DisjointRangesBTreeMap<PortRange, Option<VpcDiscriminant>>),
+    NoPorts(Option<VpcDiscriminant>),
+}
+
+#[derive(Debug, Clone)]
 struct VpcDiscriminantTable {
-    dst_vpcds: IpPrefixTrie<Option<VpcDiscriminant>>,
+    dst_vpcds: IpPrefixTrie<VpcDiscriminantTableValue>,
 }
 
 impl VpcDiscriminantTable {
@@ -123,6 +133,80 @@ impl VpcDiscriminantTable {
         Self {
             dst_vpcds: IpPrefixTrie::new(),
         }
+    }
+
+    fn lookup(
+        &self,
+        addr: IpAddr,
+        port_opt: Option<u16>,
+    ) -> Option<(PrefixWithOptionalPorts, &Option<VpcDiscriminant>)> {
+        self.dst_vpcds
+            .lookup(addr)
+            .and_then(|(prefix, value)| match value {
+                VpcDiscriminantTableValue::PortRangeTable(port_ranges_table) => {
+                    let port = port_opt?;
+                    port_ranges_table.lookup(&port).map(|(port_range, vpcd)| {
+                        (
+                            PrefixWithOptionalPorts::new(prefix, Some(*port_range)),
+                            vpcd,
+                        )
+                    })
+                }
+                VpcDiscriminantTableValue::NoPorts(vpcd) => Some((prefix.into(), vpcd)),
+            })
+    }
+
+    fn insert(
+        &mut self,
+        prefix: PrefixWithOptionalPorts,
+        value: Option<VpcDiscriminant>,
+    ) -> Option<VpcDiscriminantTableValue> {
+        let (table_prefix, table_value) = match prefix.ports() {
+            Some(ports) => {
+                let mut port_ranges_table = DisjointRangesBTreeMap::new();
+                port_ranges_table.insert(ports, value);
+                (
+                    prefix.prefix(),
+                    VpcDiscriminantTableValue::PortRangeTable(port_ranges_table),
+                )
+            }
+            None => (prefix.prefix(), VpcDiscriminantTableValue::NoPorts(value)),
+        };
+        self.dst_vpcds.insert(table_prefix, table_value)
+    }
+
+    fn iter_for_prefix(
+        &self,
+        reference_prefix: &Prefix,
+    ) -> Box<dyn Iterator<Item = (PrefixWithOptionalPorts, &Option<VpcDiscriminant>)> + '_> {
+        Box::new(
+            self.dst_vpcds.iter_for_prefix(reference_prefix).flat_map(
+                |(prefix, value)| match value {
+                    VpcDiscriminantTableValue::PortRangeTable(port_ranges_table) => {
+                        Box::new(port_ranges_table.iter().map(move |(port_range, vpcd)| {
+                            (
+                                PrefixWithOptionalPorts::new(prefix, Some(*port_range)),
+                                vpcd,
+                            )
+                        }))
+                            as Box<
+                                dyn Iterator<
+                                    Item = (PrefixWithOptionalPorts, &Option<VpcDiscriminant>),
+                                >,
+                            >
+                    }
+                    VpcDiscriminantTableValue::NoPorts(vpcd) => Box::new(std::iter::once((
+                        PrefixWithOptionalPorts::new(prefix, None),
+                        vpcd,
+                    )))
+                        as Box<
+                            dyn Iterator<
+                                Item = (PrefixWithOptionalPorts, &Option<VpcDiscriminant>),
+                            >,
+                        >,
+                },
+            ),
+        )
     }
 }
 
@@ -166,9 +250,12 @@ impl DstVpcdLookup {
             return;
         };
         let dst_ip = net.dst_addr();
+        let dst_port = packet
+            .try_transport()
+            .and_then(|t| t.dst_port().map(NonZero::get));
+
         if let Some(vpcd_table) = tablesr.tables_by_discriminant.get(&src_vpcd) {
-            let dst_vpcd = vpcd_table.dst_vpcds.lookup(dst_ip);
-            if let Some((prefix, dst_vpcd_opt)) = dst_vpcd {
+            if let Some((prefix, dst_vpcd_opt)) = vpcd_table.lookup(dst_ip, dst_port) {
                 // We found an entry in the destination VPC discriminant table, which means there
                 // are valid destinations for this packet, but the value may still be None if we're
                 // not able to tell the right destination VPC uniquely from this lookup.
@@ -222,7 +309,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for DstVpcdLookup {
 
 #[cfg(test)]
 mod test {
-    use super::{DstVpcdLookup, VpcDiscTablesWriter, VpcDiscriminantTable, VpcDiscriminantTables};
+    use super::{
+        DstVpcdLookup, VpcDiscTablesWriter, VpcDiscriminantTable, VpcDiscriminantTableValue,
+        VpcDiscriminantTables,
+    };
     use lpm::prefix::Prefix;
     use net::buffer::TestBuffer;
     use net::headers::{Net, TryHeadersMut, TryIpMut};
@@ -277,19 +367,19 @@ mod test {
         let dst_vpcd_100_192_168_0_0_16 = VpcDiscriminant::VNI(vni102);
         vpcd_table_100.dst_vpcds.insert(
             Prefix::from("192.168.1.0/24"),
-            Some(dst_vpcd_100_192_168_1_0_24),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_100_192_168_1_0_24)),
         );
         vpcd_table_100.dst_vpcds.insert(
             Prefix::from("192.168.0.0/16"),
-            Some(dst_vpcd_100_192_168_0_0_16),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_100_192_168_0_0_16)),
         );
         vpcd_table_100.dst_vpcds.insert(
             Prefix::from("::192.168.1.0/120"),
-            Some(dst_vpcd_100_192_168_1_0_24),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_100_192_168_1_0_24)),
         );
         vpcd_table_100.dst_vpcds.insert(
             Prefix::from("::192.168.0.0/112"),
-            Some(dst_vpcd_100_192_168_0_0_16),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_100_192_168_0_0_16)),
         );
 
         // VNI 200
@@ -298,19 +388,19 @@ mod test {
         let dst_vpcd_200_192_168_0_0_16 = VpcDiscriminant::VNI(vni202);
         vpcd_table_200.dst_vpcds.insert(
             Prefix::from("192.168.2.0/24"),
-            Some(dst_vpcd_200_192_168_2_0_24),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_200_192_168_2_0_24)),
         );
         vpcd_table_200.dst_vpcds.insert(
             Prefix::from("192.168.2.0/16"),
-            Some(dst_vpcd_200_192_168_0_0_16),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_200_192_168_0_0_16)),
         );
         vpcd_table_200.dst_vpcds.insert(
             Prefix::from("::192.168.2.0/120"),
-            Some(dst_vpcd_200_192_168_2_0_24),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_200_192_168_2_0_24)),
         );
         vpcd_table_200.dst_vpcds.insert(
             Prefix::from("::192.168.0.0/112"),
-            Some(dst_vpcd_200_192_168_0_0_16),
+            VpcDiscriminantTableValue::NoPorts(Some(dst_vpcd_200_192_168_0_0_16)),
         );
 
         ////////////////////////////
