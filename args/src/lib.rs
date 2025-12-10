@@ -1248,6 +1248,9 @@ Passing all=level allows setting the log-level of all targets to level.
 E.g. default=error,all=info,nat=debug will set the default target to error, and all the registered targets to info, but enable debug for nat"
     )]
     tracing: Option<String>,
+
+    #[arg(long, help = "Set the name of this gateway")]
+    name: Option<String>,
 }
 
 impl CmdArgs {
@@ -1424,6 +1427,12 @@ impl CmdArgs {
     #[must_use]
     pub fn pyroscope_url(&self) -> Option<&url::Url> {
         self.pyroscope_url.as_ref()
+    }
+
+    /// Get the name to configure this gateway with.
+    #[must_use]
+    pub fn get_name(&self) -> Option<&String> {
+        self.name.as_ref()
     }
 }
 
