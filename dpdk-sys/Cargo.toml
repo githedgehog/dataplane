@@ -1,10 +1,10 @@
 [package]
 name = "dataplane-dpdk-sys"
-version = "0.0.1"
-edition = "2024"
 description = "Low-level bindings to the Data Plane Development Kit (DPDK)"
-publish = false
-license = "Apache-2.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
 
 [lib]
 doc = false
