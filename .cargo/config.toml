@@ -6,6 +6,17 @@ LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
 LIBRARY_PATH = { value = "compile-env/sysroot/x86_64-unknown-linux-gnu/debug/lib", relative = true, force = false }
 PKG_CONFIG_PATH = { value = "compile-env/sysroot/x86_64-unknown-linux-gnu/debug/lib/pkgconfig", relative = true, force = false }
 
+[unstable]
+build-std = [
+  "compiler_builtins",
+  "core",
+  "alloc",
+  "std",
+  "panic_unwind",
+  "proc_macro"
+]
+build-std-features = ["backtrace", "panic-unwind", "mem"]
+
 [build]
 rustflags = [
   "--cfg",
@@ -15,11 +26,43 @@ rustflags = [
 [target.x86_64-unknown-linux-gnu]
 runner = ["scripts/test-runner.sh"]
 rustflags = [
-  "--cfg",
-  "tokio_unstable",
+  "--cfg=tokio_unstable",
+  "-Cdebuginfo=full",
+  "-Cdwarf-version=5",
+  "-Clink-arg=--ld-path=./compile-env/bin/ld.lld",
+  "-Clinker=./compile-env/bin/clang",
+]
+
+[profile.dev]
+incremental = true
+rustflags = [
+  "-Ccodegen-units=64",
+  "-Cdebug-assertions=on",
+  "-Copt-level=0",
+  "-Coverflow-checks=on",
+  "-Ctarget-cpu=generic",
+]
+
+[profile.dev.build-override]
+rustflags = []
+
+[profile.release]
+incremental = false
+rustflags = [
+  "-Ccodegen-units=1",
+  "-Cdebug-assertions=off",
+  "-Cembed-bitcode=yes",
+  "-Clink-arg=-Wl,-O3,--lto-O3,-z,relro,-z,now,--lto-whole-program-visibility,--as-needed,--gc-sections",
+  "-Clink-arg=-flto=full",
+  "-Clto=fat",
   "-Clinker-plugin-lto",
   "-Copt-level=3",
-  "-Cembed-bitcode=yes",
-  "-Ccodegen-units=1",
+  "-Coverflow-checks=off",
   "-Crelro-level=full",
+  "-Ctarget-cpu=znver4",
+  "-Ztune-cpu=znver5",
+  "-Zsplit-lto-unit",
 ]
+
+[profile.release.build-override]
+rustflags = []
