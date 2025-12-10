@@ -85,7 +85,29 @@ fn generate_rust_for_crd(crd_content: &str) -> String {
     }
 
     let raw = String::from_utf8(output.stdout).expect("Failed to convert kopium output to string");
-    fixup_types(raw)
+
+    LICENSE_PREAMBLE.to_string() + &fixup_types(raw)
+}
+
+const GENERATED_OUTPUT_DIR: &str = "src/generated";
+const KOPIUM_OUTPUT_FILE: &str = "gateway_agent_crd.rs";
+
+fn kopium_output_path() -> PathBuf {
+    PathBuf::from(GENERATED_OUTPUT_DIR).join(KOPIUM_OUTPUT_FILE)
+}
+
+fn code_needs_regen(new_code: &str) -> bool {
+    if !fs::exists(kopium_output_path()).expect("Failed to check if output file exists") {
+        return true;
+    }
+
+    let old_code = fs::read_to_string(kopium_output_path());
+
+    if let Ok(old_code) = old_code {
+        return old_code != new_code;
+    }
+
+    true
 }
 
 fn main() {
@@ -93,16 +115,18 @@ fn main() {
     let agent_crd_contents = fetch_crd(&agent_crd_url);
     let agent_generated_code = generate_rust_for_crd(&agent_crd_contents);
 
+    if !code_needs_regen(&agent_generated_code) {
+        println!("cargo:note=No changes to code generated from CRD");
+        return;
+    }
+
     // Write the generated code
-    let output_dir = PathBuf::from("src/generated");
+    let output_dir = PathBuf::from(GENERATED_OUTPUT_DIR);
     fs::create_dir_all(&output_dir).expect("Failed to create output directory");
 
-    let output_file = output_dir.join("gateway_agent_crd.rs");
-    fs::write(
-        &output_file,
-        LICENSE_PREAMBLE.to_string() + &agent_generated_code,
-    )
-    .expect("Failed to write generated agent CRD code");
+    let output_file = kopium_output_path();
+    fs::write(&output_file, agent_generated_code)
+        .expect("Failed to write generated agent CRD code");
 
     println!(
         "cargo:note=Generated gateway agent CRD types written to {:?}",
