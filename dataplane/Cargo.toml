@@ -67,6 +67,3 @@ tracing-subscriber = { workspace = true }
 dpdk-sysroot-helper = { workspace = true, optional = true }
 
 # external
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
