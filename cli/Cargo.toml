@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autobins = false
 
 [[bin]]
 name = "cli"
@@ -14,10 +15,10 @@ default = []
 sysroot = ["dep:dpdk-sysroot-helper"]
 
 [dependencies]
+bincode2 = { workspace = true, features = [] }
 clap = { workspace = true, features = ["derive", "std", "usage"] }
-colored = "3.0.0"
-bincode2 = "2.0.1"
-log = { version = "^0.4.29", features = ["serde"]}
+colored = { workspace = true, features = [] }
+log = { workspace = true, features = ["serde"] }
 rustyline = { workspace = true , features = ["with-fuzzy", "custom-bindings"] }
 serde = {workspace = true, features = ["derive", "serde_derive"]}
 strum = { workspace = true }
