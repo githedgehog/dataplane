@@ -16,9 +16,11 @@ use args::{CmdArgs, Parser};
 use drivers::kernel::DriverKernel;
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
+use nix::unistd::gethostname;
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
+use gwname::{get_gw_name, set_gw_name};
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
 
@@ -29,8 +31,26 @@ custom_target!("tonic", LevelFilter::ERROR, &[]);
 custom_target!("h2", LevelFilter::ERROR, &[]);
 custom_target!("Pyroscope", LevelFilter::INFO, &[]);
 
+fn init_name(args: &CmdArgs) -> Result<(), String> {
+    if let Some(name) = args.get_name() {
+        set_gw_name(name)?;
+    } else {
+        let hostname =
+            gethostname().map_err(|errno| format!("Failed to get hostname: {}", errno.desc()))?;
+        let name = hostname
+            .to_str()
+            .ok_or_else(|| format!("Failed to convert hostname {}", hostname.display()))?;
+        set_gw_name(name)?;
+    }
+    Ok(())
+}
 fn init_logging() {
     let tctl = get_trace_ctl();
+    info!(
+        " ━━━━━━ Dataplane for '{}' started ━━━━━━",
+        get_gw_name().unwrap_or_else(|| unreachable!())
+    );
+
     tctl.set_default_level(LevelFilter::DEBUG)
         .expect("Setting default loglevel failed");
 }
@@ -67,8 +87,13 @@ fn process_tracing_cmds(args: &CmdArgs) {
 
 #[allow(clippy::too_many_lines)]
 fn main() {
-    init_logging();
     let args = CmdArgs::parse();
+    if let Err(e) = init_name(&args) {
+        eprintln!("Failed to set gateway name: {e}");
+        std::process::exit(1);
+    }
+    init_logging();
+
     let agent_running = args.pyroscope_url().and_then(|url| {
         match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
             .backend(pprof_backend(
