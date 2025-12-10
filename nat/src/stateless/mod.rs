@@ -7,19 +7,24 @@ pub mod natrw;
 pub mod setup;
 mod test;
 
-use crate::NatTranslationData;
 use crate::icmp_error_msg::{
     IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,
 };
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
+use crate::{NatPort, NatTranslationData};
 use net::buffer::PacketBufferMut;
-use net::headers::{Net, TryHeadersMut, TryInnerIp, TryIpMut};
+use net::headers::{
+    Net, Transport, TryEmbeddedTransport, TryInnerIp, TryIpMut, TryTransport, TryTransportMut,
+};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::tcp::TcpPort;
+use net::udp::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use setup::tables::{NatTableValue, NatTables, PerVniTable};
 use std::net::IpAddr;
+use std::num::NonZero;
 use thiserror::Error;
 use tracing::{debug, error, warn};
 
@@ -94,21 +99,133 @@ impl StatelessNat {
             .map_err(|_| StatelessNatError::UnsupportedTranslation)
     }
 
+    fn get_ports<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> (Option<u16>, Option<u16>) {
+        let Some(transport) = packet.try_transport() else {
+            return (None, None);
+        };
+        match transport {
+            Transport::Tcp(tcp) => (
+                Some(tcp.source().as_u16()),
+                Some(tcp.destination().as_u16()),
+            ),
+            Transport::Udp(udp) => (
+                Some(udp.source().as_u16()),
+                Some(udp.destination().as_u16()),
+            ),
+            Transport::Icmp4(_icmp4) => (None, None),
+            Transport::Icmp6(_icmp6) => (None, None),
+        }
+    }
+
+    fn translate_src_port<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        new_port: u16,
+    ) -> Result<(), StatelessNatError> {
+        let nfi = self.name();
+        let transport = packet
+            .try_transport_mut()
+            .ok_or(StatelessNatError::UnsupportedTranslation)?;
+        match transport {
+            Transport::Tcp(tcp) => {
+                debug!(
+                    "{nfi}: Changing L4 source port: {:?} -> {new_port}",
+                    tcp.source()
+                );
+                tcp.set_source(
+                    TcpPort::try_from(new_port)
+                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                );
+            }
+            Transport::Udp(udp) => {
+                debug!(
+                    "{nfi}: Changing L4 source port: {:?} -> {new_port}",
+                    udp.source()
+                );
+                udp.set_source(
+                    UdpPort::try_from(new_port)
+                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                );
+            }
+            Transport::Icmp4(_icmp4) => {
+                todo!()
+            }
+            Transport::Icmp6(_icmp6) => {
+                todo!()
+            }
+        }
+        Ok(())
+    }
+
+    fn translate_dst_port<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        new_port: u16,
+    ) -> Result<(), StatelessNatError> {
+        let nfi = self.name();
+        let transport = packet
+            .try_transport_mut()
+            .ok_or(StatelessNatError::UnsupportedTranslation)?;
+        match transport {
+            Transport::Tcp(tcp) => {
+                debug!(
+                    "{nfi}: Changing L4 destination port: {:?} -> {new_port}",
+                    tcp.destination()
+                );
+                tcp.set_destination(
+                    TcpPort::try_from(new_port)
+                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                );
+            }
+            Transport::Udp(udp) => {
+                debug!(
+                    "{nfi}: Changing L4 destination port: {:?} -> {new_port}",
+                    udp.destination()
+                );
+                udp.set_destination(
+                    UdpPort::try_from(new_port)
+                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                );
+            }
+            Transport::Icmp4(_icmp4) => {
+                todo!()
+            }
+            Transport::Icmp6(_icmp6) => {
+                todo!()
+            }
+        }
+        Ok(())
+    }
+
     fn find_translation_icmp_inner<Buf: PacketBufferMut>(
         table: &PerVniTable,
         packet: &Packet<Buf>,
         dst_vni: Vni,
     ) -> Option<NatTranslationData> {
         let net = packet.try_inner_ip()?;
+        let transport = packet.try_embedded_transport();
         // Note how we swap addresses to find NAT ranges: we're sending the inner packet back
         // without swapping source and destination in the header, so we need to swap the ranges we
         // get from the tables lookup.
-        let src_mapping = table.find_dst_mapping(&net.src_addr(), None); // FIXME
-        let dst_mapping = table.find_src_mapping(&net.dst_addr(), None, dst_vni); // FIXME
+        let src_mapping = table.find_dst_mapping(
+            &net.src_addr(),
+            transport.and_then(|t| t.destination().map(NonZero::get)),
+        );
+        let dst_mapping = table.find_src_mapping(
+            &net.dst_addr(),
+            transport.and_then(|t| t.destination().map(NonZero::get)),
+            dst_vni,
+        );
+
         Some(NatTranslationData {
             src_addr: src_mapping.map(|(addr, _)| addr),
             dst_addr: dst_mapping.map(|(addr, _)| addr),
-            ..Default::default()
+            src_port: src_mapping.and_then(|(_, port)| {
+                port.and_then(|port| NatPort::new_port_checked(port).ok()) // TODO: FIXME ICMP
+            }),
+            dst_port: dst_mapping.and_then(|(_, port)| {
+                port.and_then(|port| NatPort::new_port_checked(port).ok()) // TODO: FIXME ICMP
+            }),
         })
     }
 
@@ -143,9 +260,12 @@ impl StatelessNat {
     ) -> Result<bool, StatelessNatError> {
         let nfi = self.name();
 
-        // Get IP header
-        let Some(net) = packet.headers_mut().try_ip_mut() else {
-            error!("{nfi}: Failed to get IP headers!");
+        // Get source and destination IP addresses
+        let Some((src_addr, dst_addr)) = packet
+            .ip_source()
+            .and_then(|src| packet.ip_destination().map(|dst| (src, dst)))
+        else {
+            error!("{nfi}: Failed to get IP addresses!");
             return Err(StatelessNatError::NoIpHeader);
         };
 
@@ -155,20 +275,39 @@ impl StatelessNat {
             return Err(StatelessNatError::MissingTable(src_vni));
         };
 
+        let (src_port_opt, dst_port_opt) = Self::get_ports(packet);
         let mut modified = false;
 
         // Run NAT
-        if let Some((new_src_addr, _new_src_port)) = table.find_src_mapping(&net.src_addr(), None, dst_vni) // FIXME
-            && new_src_addr != net.src_addr()
+        if let Some((new_src_addr, new_src_port_opt)) =
+            table.find_src_mapping(&src_addr, src_port_opt, dst_vni)
         {
-            self.translate_src(net, new_src_addr)?;
-            modified = true;
+            let net = packet.try_ip_mut().ok_or(StatelessNatError::NoIpHeader)?;
+            if new_src_addr != src_addr {
+                self.translate_src(net, new_src_addr)?;
+                modified = true;
+            }
+            if let (Some(src_port), Some(new_src_port)) = (src_port_opt, new_src_port_opt)
+                && new_src_port != src_port
+            {
+                self.translate_src_port(packet, new_src_port)?;
+                modified = true;
+            }
         }
-        if let Some((new_dst_addr, _new_dst_port)) = table.find_dst_mapping(&net.dst_addr(), None) // FIXME
-            && new_dst_addr != net.dst_addr()
+        if let Some((new_dst_addr, new_dst_port_opt)) =
+            table.find_dst_mapping(&dst_addr, dst_port_opt)
         {
-            self.translate_dst(net, new_dst_addr)?;
-            modified = true;
+            let net = packet.try_ip_mut().ok_or(StatelessNatError::NoIpHeader)?;
+            if new_dst_addr != dst_addr {
+                self.translate_dst(net, new_dst_addr)?;
+                modified = true;
+            }
+            if let (Some(dst_port), Some(new_dst_port)) = (dst_port_opt, new_dst_port_opt)
+                && new_dst_port != dst_port
+            {
+                self.translate_dst_port(packet, new_dst_port)?;
+                modified = true;
+            }
         }
 
         // If we modified the outer header of the packet, check whether this is an ICMP Error
