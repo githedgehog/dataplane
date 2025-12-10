@@ -25,7 +25,7 @@ kanal = { workspace = true, features = ["async"] }
 linkme = { workspace = true }
 metrics = { workspace = true }
 multi_index_map = { workspace = true }
-rand = { workspace = true, features = ["std"] }
+rand = { workspace = true, features = ["thread_rng"] }
 serde = { workspace = true, features = ["derive"] }
 small-map = { workspace = true, features = [] }
 thiserror = { workspace = true }
