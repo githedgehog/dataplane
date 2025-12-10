@@ -1054,6 +1054,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-dpdk-sysroot-helper",
+ "dataplane-gwname",
  "dataplane-id",
  "dataplane-mgmt",
  "dataplane-nat",
