@@ -7,7 +7,7 @@ use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps,
 };
-use lpm::prefix::{Prefix, PrefixString};
+use lpm::prefix::{Prefix, PrefixString, PrefixWithOptionalPorts};
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::SubnetMap;
@@ -51,19 +51,19 @@ fn process_ip_block(
                     "Expose references unknown VPC subnet {subnet_name}"
                 ))
             })?;
-            vpc_expose.ip(*prefix)
+            vpc_expose.ip(PrefixWithOptionalPorts::from(*prefix)) // FIXME
         }
         (Some(cidr), None, None) => {
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
                 FromK8sConversionError::ParseError(format!("Invalid CIDR format: {cidr}: {e}"))
             })?;
-            vpc_expose.ip(prefix)
+            vpc_expose.ip(prefix.into()) // FIXME
         }
         (None, None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
                 FromK8sConversionError::Invalid(format!("Invalid CIDR format: {not}: {e}"))
             })?;
-            vpc_expose.not(prefix)
+            vpc_expose.not(prefix.into()) // FIXME
         }
     })
 }
@@ -87,13 +87,13 @@ fn process_as_block(
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
                 FromK8sConversionError::ParseError(format!("Invalid CIDR format: {cidr}: {e}"))
             })?;
-            vpc_expose.as_range(prefix)
+            vpc_expose.as_range(prefix.into()) // FIXME
         }
         (None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
                 FromK8sConversionError::Invalid(format!("Invalid CIDR format: {not}: {e}"))
             })?;
-            vpc_expose.not_as(prefix)
+            vpc_expose.not_as(prefix.into()) // FIXME
         }
     })
 }
@@ -162,12 +162,18 @@ mod test {
             .with_generator(expose_gen)
             .for_each(|k8s_expose| {
                 let expose = VpcExpose::try_from((&subnets, k8s_expose)).unwrap();
-                let mut ips = expose.ips.iter().map(Prefix::to_string).collect::<Vec<_>>();
+                // FIXME: Add support for port ranges
+                let mut ips = expose
+                    .ips
+                    .iter()
+                    .map(|p| p.prefix().to_string())
+                    .collect::<Vec<_>>();
                 ips.sort();
                 let mut nots = expose
                     .nots
                     .iter()
-                    .map(Prefix::to_string)
+                    // FIXME: Add support for port ranges
+                    .map(|p| p.prefix().to_string())
                     .collect::<Vec<_>>();
                 nots.sort();
 
@@ -175,13 +181,19 @@ mod test {
                     let mut ret = nat
                         .as_range
                         .iter()
-                        .map(Prefix::to_string)
+                        // FIXME: Add support for port ranges
+                        .map(|p| p.prefix().to_string())
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
                 });
                 let not_as = expose.nat.as_ref().map(|nat| {
-                    let mut ret = nat.not_as.iter().map(Prefix::to_string).collect::<Vec<_>>();
+                    // FIXME: Add support for port ranges
+                    let mut ret = nat
+                        .not_as
+                        .iter()
+                        .map(|p| p.prefix().to_string())
+                        .collect::<Vec<_>>();
                     ret.sort();
                     ret
                 });

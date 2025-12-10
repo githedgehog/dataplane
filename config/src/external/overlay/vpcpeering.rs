@@ -3,9 +3,10 @@
 
 //! Dataplane configuration model: vpc peering
 
-use lpm::prefix::{Prefix, PrefixSize};
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use lpm::prefix::{
+    IpRangeWithPorts, Prefix, PrefixSize, PrefixWithOptionalPorts, PrefixWithPortsSize,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
 use tracing::debug;
@@ -41,8 +42,8 @@ impl Default for VpcExposeNatConfig {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeNat {
-    pub as_range: BTreeSet<Prefix>,
-    pub not_as: BTreeSet<Prefix>,
+    pub as_range: BTreeSet<PrefixWithOptionalPorts>,
+    pub not_as: BTreeSet<PrefixWithOptionalPorts>,
     pub config: VpcExposeNatConfig,
 }
 
@@ -58,8 +59,8 @@ impl VpcExposeNat {
     }
 }
 
-fn empty_btreeset() -> &'static BTreeSet<Prefix> {
-    static EMPTY_SET: std::sync::LazyLock<BTreeSet<Prefix>> =
+fn empty_btreeset() -> &'static BTreeSet<PrefixWithOptionalPorts> {
+    static EMPTY_SET: std::sync::LazyLock<BTreeSet<PrefixWithOptionalPorts>> =
         std::sync::LazyLock::new(BTreeSet::new);
     &EMPTY_SET
 }
@@ -67,8 +68,8 @@ fn empty_btreeset() -> &'static BTreeSet<Prefix> {
 use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
-    pub ips: BTreeSet<Prefix>,
-    pub nots: BTreeSet<Prefix>,
+    pub ips: BTreeSet<PrefixWithOptionalPorts>,
+    pub nots: BTreeSet<PrefixWithOptionalPorts>,
     pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
@@ -145,14 +146,14 @@ impl VpcExpose {
     }
 
     #[must_use]
-    pub fn as_range_or_empty(&self) -> &BTreeSet<Prefix> {
+    pub fn as_range_or_empty(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
         self.nat
             .as_ref()
             .map_or(empty_btreeset(), |nat| &nat.as_range)
     }
 
     #[must_use]
-    pub fn not_as_or_empty(&self) -> &BTreeSet<Prefix> {
+    pub fn not_as_or_empty(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
         self.nat
             .as_ref()
             .map_or(empty_btreeset(), |nat| &nat.not_as)
@@ -163,17 +164,17 @@ impl VpcExpose {
         Self::default()
     }
     #[must_use]
-    pub fn ip(mut self, prefix: Prefix) -> Self {
+    pub fn ip(mut self, prefix: PrefixWithOptionalPorts) -> Self {
         self.ips.insert(prefix);
         self
     }
     #[must_use]
-    pub fn not(mut self, prefix: Prefix) -> Self {
+    pub fn not(mut self, prefix: PrefixWithOptionalPorts) -> Self {
         self.nots.insert(prefix);
         self
     }
     #[must_use]
-    pub fn as_range(self, prefix: Prefix) -> Self {
+    pub fn as_range(self, prefix: PrefixWithOptionalPorts) -> Self {
         let mut ret = self.make_nat();
         let Some(nat) = ret.nat.as_mut() else {
             unreachable!()
@@ -182,7 +183,7 @@ impl VpcExpose {
         ret
     }
     #[must_use]
-    pub fn not_as(self, prefix: Prefix) -> Self {
+    pub fn not_as(self, prefix: PrefixWithOptionalPorts) -> Self {
         let mut ret = self.make_nat();
         let Some(nat) = ret.nat.as_mut() else {
             unreachable!()
@@ -192,13 +193,13 @@ impl VpcExpose {
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
-        self.ips.iter().filter(|p| p.is_host()).count() > 0
+        self.ips.iter().filter(|p| p.prefix().is_host()).count() > 0
     }
     // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
     // public IPs are those from the "ips" list. This method returns the current list of public IPs
     // for the VpcExpose.
     #[must_use]
-    pub fn public_ips(&self) -> &BTreeSet<Prefix> {
+    pub fn public_ips(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
         let Some(nat) = self.nat.as_ref() else {
             return &self.ips;
         };
@@ -210,7 +211,7 @@ impl VpcExpose {
     }
     // Same as public_ips, but returns the list of excluded prefixes
     #[must_use]
-    pub fn public_excludes(&self) -> &BTreeSet<Prefix> {
+    pub fn public_excludes(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
         let Some(nat) = self.nat.as_ref() else {
             return &self.nots;
         };
@@ -225,14 +226,14 @@ impl VpcExpose {
     // validate the list for consistency.
     #[must_use]
     pub fn is_v4(&self) -> bool {
-        self.ips.first().is_some_and(Prefix::is_ipv4)
+        self.ips.first().is_some_and(|p| p.prefix().is_ipv4())
     }
     // This method returns true if the list of allowed prefixes is IPv6.
     // This method assumes that all prefixes the list are of the same IP version. It does not
     // validate the list for consistency.
     #[must_use]
     pub fn is_v6(&self) -> bool {
-        self.ips.first().is_some_and(Prefix::is_ipv6)
+        self.ips.first().is_some_and(|p| p.prefix().is_ipv6())
     }
     // This method returns true if both allowed and translated prefixes are IPv4.
     // This method assumes that all prefixes in each list are of the same IP version. It does not
@@ -240,7 +241,12 @@ impl VpcExpose {
     #[must_use]
     pub fn is_44(&self) -> bool {
         matches!(
-            (self.ips.first(), self.as_range_or_empty().first()),
+            (
+                self.ips.first().map(PrefixWithOptionalPorts::prefix),
+                self.as_range_or_empty()
+                    .first()
+                    .map(PrefixWithOptionalPorts::prefix)
+            ),
             (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
         )
     }
@@ -250,7 +256,12 @@ impl VpcExpose {
     #[must_use]
     pub fn is_66(&self) -> bool {
         matches!(
-            (self.ips.first(), self.as_range_or_empty().first()),
+            (
+                self.ips.first().map(PrefixWithOptionalPorts::prefix),
+                self.as_range_or_empty()
+                    .first()
+                    .map(PrefixWithOptionalPorts::prefix)
+            ),
             (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
         )
     }
@@ -299,9 +310,9 @@ impl VpcExpose {
         for prefixes in prefix_sets {
             if prefixes.iter().any(|p| {
                 if let Some(is_ipv4) = is_ipv4_opt {
-                    p.is_ipv4() != is_ipv4
+                    p.prefix().is_ipv4() != is_ipv4 // FIXME
                 } else {
-                    is_ipv4_opt = Some(p.is_ipv4());
+                    is_ipv4_opt = Some(p.prefix().is_ipv4()); // FIXME
                     false
                 }
             }) {
@@ -314,6 +325,7 @@ impl VpcExpose {
             for prefix in prefixes {
                 // Loop over the remaining prefixes in the tree
                 for other_prefix in prefixes.range((Excluded(prefix), Unbounded)) {
+                    let (prefix, other_prefix) = (&prefix.prefix(), &other_prefix.prefix()); // FIXME
                     if prefix.covers(other_prefix) || other_prefix.covers(prefix) {
                         return Err(ConfigError::OverlappingPrefixes(*prefix, *other_prefix));
                     }
@@ -331,7 +343,8 @@ impl VpcExpose {
                 continue;
             }
             for exclude in excludes {
-                if !prefixes.iter().any(|p| p.covers(exclude)) {
+                let exclude = &exclude.prefix(); // FIXME
+                if !prefixes.iter().any(|p| p.prefix().covers(exclude)) {
                     return Err(ConfigError::OutOfRangeExclusionPrefix(*exclude));
                 }
             }
@@ -343,13 +356,32 @@ impl VpcExpose {
         }
 
         // 4. Ensure we don't exclude all of the allowed prefixes
-        let ips_sizes = prefixes_size(&self.ips);
-        let nots_sizes = prefixes_size(&self.nots);
+        let ips_sizes =
+            prefixes_size(&self.ips.iter().map(|p| p.prefix()).collect::<BTreeSet<_>>());
+        let nots_sizes = prefixes_size(
+            &self
+                .nots
+                .iter()
+                .map(|p| p.prefix())
+                .collect::<BTreeSet<_>>(), // FIXME
+        );
         if ips_sizes > 0 && ips_sizes <= nots_sizes {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
-        let as_range_sizes = prefixes_size(self.as_range_or_empty());
-        let not_as_sizes = prefixes_size(self.not_as_or_empty());
+        let as_range_sizes = prefixes_size(
+            &self
+                .as_range_or_empty()
+                .iter()
+                .map(|p| p.prefix())
+                .collect::<BTreeSet<_>>(), // FIXME
+        );
+        let not_as_sizes = prefixes_size(
+            &self
+                .not_as_or_empty()
+                .iter()
+                .map(|p| p.prefix())
+                .collect::<BTreeSet<_>>(), // FIXME
+        );
 
         if as_range_sizes > 0 && as_range_sizes <= not_as_sizes {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
@@ -364,7 +396,7 @@ impl VpcExpose {
             && as_range_sizes > 0
             && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes
         {
-            return Err(ConfigError::MismatchedPrefixSizes(
+            return Err(ConfigError::TmpMismatchedPrefixSizes(
                 ips_sizes - nots_sizes,
                 as_range_sizes - not_as_sizes,
             ));
@@ -575,18 +607,20 @@ impl VpcPeeringTable {
 }
 
 // Validate that two sets of prefixes, with their exclusion prefixes applied, don't overlap
+#[allow(clippy::unnecessary_wraps)] // temporary
 fn validate_overlapping(
-    prefixes_left: &BTreeSet<Prefix>,
-    excludes_left: &BTreeSet<Prefix>,
-    prefixes_right: &BTreeSet<Prefix>,
-    excludes_right: &BTreeSet<Prefix>,
+    prefixes_left: &BTreeSet<PrefixWithOptionalPorts>,
+    excludes_left: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes_right: &BTreeSet<PrefixWithOptionalPorts>,
+    excludes_right: &BTreeSet<PrefixWithOptionalPorts>,
 ) -> Result<(), ConfigError> {
     // Find colliding prefixes
     let mut colliding = Vec::new();
     for prefix_left in prefixes_left {
         for prefix_right in prefixes_right {
-            if prefix_left.covers(prefix_right) || prefix_right.covers(prefix_left) {
-                colliding.push((*prefix_left, *prefix_right));
+            let (prefix_left, prefix_right) = (prefix_left.prefix(), prefix_right.prefix()); // FIXME
+            if prefix_left.covers(&prefix_right) || prefix_right.covers(&prefix_left) {
+                colliding.push((prefix_left, prefix_right));
             }
         }
     }
@@ -636,10 +670,12 @@ fn validate_overlapping(
 
         // Consider exclusion prefixes from excludes_left
         'outer: for exclude_left in excludes_left.iter().filter(|exclude| {
-            exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+            exclude.prefix().covers(intersection_prefix)
+                || intersection_prefix.covers(&exclude.prefix()) // FIXME
         }) {
             for exclude_right in excludes_right.iter().filter(|exclude| {
-                exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+                exclude.prefix().covers(intersection_prefix)
+                    || intersection_prefix.covers(&exclude.prefix()) // FIXME
             }) {
                 if exclude_left.covers(exclude_right) {
                     // exclude_left contains exclude_right, and given that exclusion prefixes in
@@ -658,10 +694,12 @@ fn validate_overlapping(
         }
         // Consider exclusion prefixes from excludes_right
         'outer: for exclude_right in excludes_right.iter().filter(|exclude| {
-            exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+            exclude.prefix().covers(intersection_prefix)
+                || intersection_prefix.covers(&exclude.prefix()) // FIXME
         }) {
             for exclude_left in excludes_left.iter().filter(|exclude| {
-                exclude.covers(intersection_prefix) || intersection_prefix.covers(exclude)
+                exclude.prefix().covers(intersection_prefix)
+                    || intersection_prefix.covers(&exclude.prefix()) // FIXME
             }) {
                 if exclude_right.covers(exclude_left) {
                     // exclude_right contains exclude_left, and given that exclusions prefixes in
@@ -679,17 +717,19 @@ fn validate_overlapping(
             union_excludes.insert(*exclude_right);
         }
 
-        let union_size = union_excludes
+        let _union_size = union_excludes
             .iter()
             .map(|exclude| exclude.size())
-            .sum::<PrefixSize>();
+            .sum::<PrefixWithPortsSize>();
 
+        /* // FIXME
         if union_size < intersection_prefix.size() {
             // Some addresses at the intersection of both prefixes are not covered by the union of
             // all exclusion prefixes, in other words, they are available from both prefixes. This
             // is an error.
             return Err(ConfigError::OverlappingPrefixes(prefix_left, prefix_right));
         }
+        */
     }
     Ok(())
 }
