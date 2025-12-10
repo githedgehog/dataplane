@@ -6,6 +6,8 @@
 pub mod ip;
 pub use ip::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
 
+pub mod range_map;
+
 pub mod with_ports;
 pub use with_ports::*;
 
