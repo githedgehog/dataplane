@@ -176,6 +176,127 @@ impl Prefix {
         }
     }
 
+    /// Split a CIDR prefix into two smaller prefixes of equal size, by adding one bit to the prefix
+    /// length.
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` if the prefix is a /32 (for IPv4) or /128 (for IPv6)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use dataplane_lpm::prefix::{Prefix, Ipv4Prefix, Ipv6Prefix};
+    /// # use std::str::FromStr;
+    /// fn prefix_v4(s: &str) -> Prefix {
+    ///     Prefix::from(Ipv4Prefix::from_str(s).unwrap())
+    /// }
+    ///
+    /// assert_eq!(
+    ///     prefix_v4("1.0.0.0/16").split(),
+    ///     Some((
+    ///         prefix_v4("1.0.0.0/17"),
+    ///         prefix_v4("1.0.128.0/17"),
+    ///     ))
+    /// );
+    /// assert_eq!(
+    ///     prefix_v4("1.0.0.0/24").split(),
+    ///     Some((
+    ///         prefix_v4("1.0.0.0/25"),
+    ///         prefix_v4("1.0.0.128/25"),
+    ///     ))
+    /// );
+    /// assert_eq!(
+    ///     prefix_v4("1.0.0.0/31").split(),
+    ///     Some((
+    ///         prefix_v4("1.0.0.0/32"),
+    ///         prefix_v4("1.0.0.1/32"),
+    ///     ))
+    /// );
+    ///
+    /// // We cannot split prefixes covering just one address
+    /// assert_eq!(prefix_v4("1.0.0.0/32").split(), None);
+    /// assert_eq!(Prefix::from(Ipv6Prefix::from_str("::/128").unwrap()).split(), None);
+    /// ```
+    #[must_use]
+    pub fn split(&self) -> Option<(Prefix, Prefix)> {
+        match self {
+            Prefix::IPV4(p) => p
+                .split()
+                .map(|(p1, p2)| (Prefix::IPV4(p1), Prefix::IPV4(p2))),
+            Prefix::IPV6(p) => p
+                .split()
+                .map(|(p1, p2)| (Prefix::IPV6(p1), Prefix::IPV6(p2))),
+        }
+    }
+
+    /// Subtract a given prefix to the current prefix. This results in "breaking apart" the current
+    /// prefix into smaller prefixes. These smaller prefixes cover all addresses from the original
+    /// prefix, except for the one from the subtracted prefix.
+    ///
+    /// # Example:
+    ///
+    /// ```rust
+    /// # use dataplane_lpm::prefix::{Prefix, Ipv4Prefix};
+    /// # use std::str::FromStr;
+    /// fn prefix_v4(s: &str) -> Prefix {
+    ///     Prefix::from(Ipv4Prefix::from_str(s).unwrap())
+    /// }
+    ///
+    /// let original_prefix = prefix_v4("1.0.3.0/24");
+    /// let subtracted_prefix = prefix_v4("1.0.3.64/26");
+    /// assert_eq!(
+    ///     original_prefix.subtract(&subtracted_prefix),
+    ///     [prefix_v4("1.0.3.128/25"), prefix_v4("1.0.3.0/26")]
+    /// );
+    ///
+    /// // Disjoint prefixes
+    /// let original_prefix = prefix_v4("1.0.3.4/32");
+    /// let subtracted_prefix = prefix_v4("1.0.3.64/26");
+    /// assert_eq!(
+    ///     original_prefix.subtract(&subtracted_prefix),
+    ///     [prefix_v4("1.0.3.4/32")]
+    /// );
+    ///
+    /// // Subtracted prefix covers original prefix
+    /// let original_prefix = prefix_v4("1.0.3.84/32");
+    /// let subtracted_prefix = prefix_v4("1.0.3.64/26");
+    /// assert_eq!(
+    ///     original_prefix.subtract(&subtracted_prefix),
+    ///     []
+    /// );
+    /// ```
+    #[must_use]
+    pub fn subtract(&self, other: &Prefix) -> Vec<Prefix> {
+        let mut result = Vec::new();
+        let mut prefix_covering_exclude = *self;
+
+        if !self.collides_with(other) {
+            result.push(*self);
+            return result;
+        }
+
+        if self.length() >= other.length() {
+            return result;
+        }
+        let len_diff = other.length() - self.length();
+
+        for _ in 0..len_diff {
+            let (subprefix_low, subprefix_high) = prefix_covering_exclude
+                .split()
+                .unwrap_or_else(|| unreachable!());
+
+            if subprefix_low.covers(other) {
+                result.push(subprefix_high);
+                prefix_covering_exclude = subprefix_low;
+            } else {
+                result.push(subprefix_low);
+                prefix_covering_exclude = subprefix_high;
+            }
+        }
+        result
+    }
+
     #[cfg(any(test, feature = "testing"))]
     #[allow(clippy::missing_panics_doc)]
     pub fn expect_from<T>(val: T) -> Self
