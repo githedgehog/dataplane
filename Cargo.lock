@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-dpdk-sys"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bindgen",
  "dataplane-dpdk-sysroot-helper",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-dpdk-sysroot-helper"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "dataplane-errno"
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-hardware"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bolero",
  "bytecheck",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-interface-manager"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bolero",
  "dataplane-net",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "dataplane-net"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ahash",
  "arrayvec",

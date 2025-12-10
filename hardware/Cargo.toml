@@ -1,10 +1,10 @@
 [package]
 name = "dataplane-hardware"
-version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
-publish = false
 description = "hardware scan and report library"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
 
 [features]
 default = []
