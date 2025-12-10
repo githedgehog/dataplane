@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::prefix::range_map::UpperBoundFrom;
 use crate::prefix::{Prefix, PrefixSize};
 use bnum::BUint;
 use std::fmt::Display;
+use std::ops::{Bound, RangeBounds};
 
 /// A type for the size of IP/port combinations for IP prefixes with associated port ranges.
 /// We need something larger than u128 to cover all possible combinations: the maximum value is
@@ -307,6 +309,26 @@ impl PortRange {
             return None;
         }
         Some(self.start + offset)
+    }
+}
+
+// Used for DisjointRangesBTreeMap
+impl UpperBoundFrom<u16> for PortRange {
+    fn upper_bound_from(port: u16) -> Self {
+        Self {
+            start: port,
+            end: u16::MAX,
+        }
+    }
+}
+
+// Used for DisjointRangesBTreeMap
+impl RangeBounds<u16> for PortRange {
+    fn start_bound(&self) -> Bound<&u16> {
+        Bound::Included(&self.start)
+    }
+    fn end_bound(&self) -> Bound<&u16> {
+        Bound::Included(&self.end)
     }
 }
 
