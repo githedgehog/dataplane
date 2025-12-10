@@ -312,6 +312,24 @@ impl From<MemFile> for FinalizedMemFile {
     }
 }
 
+/// General configuration section for the dataplane.
+///
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(Debug, PartialEq, Eq)))]
+pub struct GeneralConfigSection {
+    /// Name to give to this dataplane/gateway
+    name: Option<String>,
+}
+
 /// Enum to represent either a TCP socket address or a UNIX socket path
 #[derive(
     Debug, Clone, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
@@ -569,6 +587,8 @@ pub struct ConfigServerSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct LaunchConfiguration {
+    /// General configuration section
+    pub general: GeneralConfigSection,
     /// Dynamic configuration server settings
     pub config_server: ConfigServerSection,
     /// Packet processing driver configuration
@@ -1065,6 +1085,9 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
         Ok(LaunchConfiguration {
+            general: GeneralConfigSection {
+                name: value.get_name().cloned(),
+            },
             config_server: ConfigServerSection {
                 address: value
                     .grpc_address()
