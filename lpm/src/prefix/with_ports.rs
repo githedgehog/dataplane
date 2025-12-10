@@ -22,6 +22,10 @@ pub trait IpRangeWithPorts {
     fn intersection(&self, other: &Self) -> Option<Self>
     where
         Self: Sized;
+    /// Returns the subtraction of the two ranges, if any.
+    fn subtract(&self, other: &Self) -> Vec<Self>
+    where
+        Self: Sized;
     /// Returns the total number of (IP, port) combinations covered by the IP and port ranges.
     ///
     /// # Warning
@@ -88,6 +92,25 @@ impl IpRangeWithPorts for PrefixWithPorts {
             self.prefix.intersection(&other.prefix)?,
             self.ports.intersection(other.ports)?,
         ))
+    }
+
+    fn subtract(&self, other: &Self) -> Vec<Self> {
+        let mut result = Vec::new();
+        if !self.overlaps(other) {
+            return result;
+        }
+
+        // Keep all ports for self.prefix() that are not excluded
+        for ports in self.ports.subtract(other.ports) {
+            result.push(Self::new(self.prefix(), ports));
+        }
+        // Then for IPs that are not covered by other.prefix, add other.ports
+        for prefix in self.prefix.subtract(&other.prefix) {
+            if let Some(ports) = self.ports().intersection(other.ports) {
+                result.push(Self::new(prefix, ports));
+            }
+        }
+        result
     }
 }
 
@@ -166,6 +189,59 @@ impl IpRangeWithPorts for PrefixWithOptionalPorts {
                 Some(ports),
             )),
             (None, None) => Some(Self::new(self.prefix.intersection(&other.prefix)?, None)),
+        }
+    }
+
+    fn subtract(&self, other: &Self) -> Vec<Self> {
+        fn convert_result_type<P>(
+            vector: Vec<P>,
+            convert_ports: bool,
+        ) -> Vec<PrefixWithOptionalPorts>
+        where
+            P: Into<PrefixWithOptionalPorts>,
+        {
+            vector
+                .into_iter()
+                .map(Into::into)
+                .map(|p| {
+                    if convert_ports
+                        && let Some(ports) = p.ports()
+                        && ports.is_max_range()
+                    {
+                        PrefixWithOptionalPorts::new(p.prefix(), None)
+                    } else {
+                        p
+                    }
+                })
+                .collect()
+        }
+
+        if !self.overlaps(other) {
+            return Vec::new();
+        }
+
+        match (self.ports, other.ports) {
+            (Some(self_ports), Some(other_ports)) => convert_result_type(
+                PrefixWithPorts::new(self.prefix, self_ports)
+                    .subtract(&PrefixWithPorts::new(other.prefix, other_ports)),
+                false,
+            ),
+            (Some(self_ports), None) => convert_result_type(
+                PrefixWithPorts::new(self.prefix, self_ports).subtract(&PrefixWithPorts::new(
+                    other.prefix,
+                    PortRange::new_checked(0, u16::MAX).unwrap_or_else(|_| unreachable!()),
+                )),
+                false,
+            ),
+            (None, Some(other_ports)) => convert_result_type(
+                PrefixWithPorts::new(
+                    self.prefix,
+                    PortRange::new_checked(0, u16::MAX).unwrap_or_else(|_| unreachable!()),
+                )
+                .subtract(&PrefixWithPorts::new(other.prefix, other_ports)),
+                true,
+            ),
+            (None, None) => convert_result_type(self.prefix.subtract(&other.prefix), false),
         }
     }
 }
@@ -254,6 +330,12 @@ impl PortRange {
         }
     }
 
+    /// Checks if the port range covers all ports.
+    #[must_use]
+    pub fn is_max_range(&self) -> bool {
+        self.start == 0 && self.end == u16::MAX
+    }
+
     #[must_use]
     pub fn covers(&self, other: Self) -> bool {
         self.start <= other.start && other.end <= self.end
@@ -276,6 +358,23 @@ impl PortRange {
         let start = self.start.max(other.start);
         let end = self.end.min(other.end);
         Some(Self { start, end })
+    }
+
+    /// Returns the subtraction of two port ranges.
+    #[must_use]
+    pub fn subtract(&self, other: Self) -> Vec<Self> {
+        let mut result = Vec::new();
+        if self.start < other.start {
+            result.push(
+                Self::new_checked(self.start, other.start - 1).unwrap_or_else(|_| unreachable!()),
+            );
+        }
+        if self.end > other.end {
+            result.push(
+                Self::new_checked(other.end + 1, self.end).unwrap_or_else(|_| unreachable!()),
+            );
+        }
+        result
     }
 
     /// Returns the start port of the range.
