@@ -213,8 +213,8 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::MismatchedPrefixSizes(
-                PrefixWithPortsSize::from(65536 - 256u32),
-                PrefixWithPortsSize::from(256u16),
+                PrefixWithPortsSize::from((65536 - 256u32) * (u32::from(u16::MAX) + 1)),
+                PrefixWithPortsSize::from(256u32 * (u32::from(u16::MAX) + 1)),
             ))
         );
     }
