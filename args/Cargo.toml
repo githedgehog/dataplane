@@ -8,29 +8,29 @@ version.workspace = true
 [dependencies]
 # internal
 hardware = { workspace = true, features = ["serde"] }
-id = { workspace = true }
-net = { workspace = true }
+id = { workspace = true, features = [] }
+net = { workspace = true, features = [] }
 
 # external
 bytecheck = { workspace = true, features = [] }
 clap = { workspace = true, features = ["derive", "std", "usage"] }
-memmap2 = { workspace = true }
+memmap2 = { workspace = true, features = [] }
 miette = { workspace = true, features = ["derive", "fancy"] }
 nix = { workspace = true, features = ["fs"] }
 rkyv = { workspace = true, features = ["alloc", "bytecheck", "std"] }
 serde = { workspace = true, features = ["derive"] }
-sha2 = { workspace = true }
-thiserror = { workspace = true }
+sha2 = { workspace = true, features = [] }
+thiserror = { workspace = true, features = [] }
 tracing = { workspace = true, features = ["std"] }
 url = { workspace = true, features = ["std"] }
-uuid = { workspace = true }
+uuid = { workspace = true, features = [] }
 
 [dev-dependencies]
 # internal
 hardware = { workspace = true, features = ["serde"] }
 net = { workspace = true, features = ["test_buffer"] }
 # external
-serde_yaml_ng = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
+serde_yaml_ng = { workspace = true, features = [] }
+tokio = { workspace = true, features = [] }
+tracing = { workspace = true, features = [] }
 tracing-subscriber = { workspace = true, features = ["ansi"] }
