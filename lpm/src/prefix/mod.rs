@@ -148,12 +148,29 @@ impl Prefix {
         }
     }
 
+    /// Check whether this prefix collides (overlaps) with another prefix
     #[must_use]
     pub fn collides_with(&self, other: &Prefix) -> bool {
         match (self, other) {
             (Prefix::IPV4(p1), Prefix::IPV4(p2)) => p1.collides_with(p2),
             (Prefix::IPV6(p1), Prefix::IPV6(p2)) => p1.collides_with(p2),
             _ => false,
+        }
+    }
+
+    /// Check whether this prefix intersects with another prefix
+    #[must_use]
+    pub fn intersection(&self, other: &Prefix) -> Option<Prefix> {
+        if self.collides_with(other) {
+            // These are CIDR prefixes, so if they collide, we always have one included in the
+            // other: return the smallest one
+            if self.size() < other.size() {
+                Some(*self)
+            } else {
+                Some(*other)
+            }
+        } else {
+            None
         }
     }
 

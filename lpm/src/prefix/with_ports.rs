@@ -20,6 +20,10 @@ pub trait IpRangeWithPorts {
     fn covers(&self, other: &Self) -> bool;
     /// Returns true if the range overlaps with the given other range.
     fn overlaps(&self, other: &Self) -> bool;
+    /// Returns the intersection of the two ranges, if any.
+    fn intersection(&self, other: &Self) -> Option<Self>
+    where
+        Self: Sized;
     /// Returns the total number of (IP, port) combinations covered by the IP and port ranges.
     fn size(&self) -> PrefixWithPortsSize {
         let ip_len = match self.addr_range_len() {
@@ -73,6 +77,13 @@ impl IpRangeWithPorts for PrefixWithPorts {
 
     fn overlaps(&self, other: &Self) -> bool {
         self.prefix.collides_with(&other.prefix) && self.ports.overlaps(other.ports)
+    }
+
+    fn intersection(&self, other: &Self) -> Option<Self> {
+        Some(Self::new(
+            self.prefix.intersection(&other.prefix)?,
+            self.ports.intersection(other.ports)?,
+        ))
     }
 }
 
@@ -137,6 +148,20 @@ impl IpRangeWithPorts for PrefixWithOptionalPorts {
                 self.prefix.collides_with(&other.prefix) && self_ports.overlaps(other_ports)
             }
             _ => self.prefix.collides_with(&other.prefix),
+        }
+    }
+
+    fn intersection(&self, other: &Self) -> Option<Self> {
+        match (self.ports, other.ports) {
+            (Some(self_ports), Some(other_ports)) => Some(Self::new(
+                self.prefix.intersection(&other.prefix)?,
+                Some(self_ports.intersection(other_ports)?),
+            )),
+            (Some(ports), None) | (None, Some(ports)) => Some(Self::new(
+                self.prefix.intersection(&other.prefix)?,
+                Some(ports),
+            )),
+            (None, None) => Some(Self::new(self.prefix.intersection(&other.prefix)?, None)),
         }
     }
 }
@@ -243,6 +268,17 @@ impl PortRange {
         self.start <= other.start && other.start <= self.end
             || self.start <= other.end && other.end <= self.end
             || other.start <= self.start && self.end <= other.end
+    }
+
+    /// Returns the intersection of two port ranges.
+    #[must_use]
+    pub fn intersection(&self, other: Self) -> Option<Self> {
+        if !self.overlaps(other) {
+            return None;
+        }
+        let start = self.start.max(other.start);
+        let end = self.end.min(other.end);
+        Some(Self { start, end })
     }
 
     /// Returns the start port of the range.
