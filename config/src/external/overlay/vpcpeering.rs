@@ -3,9 +3,7 @@
 
 //! Dataplane configuration model: vpc peering
 
-use lpm::prefix::{
-    IpRangeWithPorts, Prefix, PrefixSize, PrefixWithOptionalPorts, PrefixWithPortsSize,
-};
+use lpm::prefix::{IpRangeWithPorts, Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
@@ -310,9 +308,9 @@ impl VpcExpose {
         for prefixes in prefix_sets {
             if prefixes.iter().any(|p| {
                 if let Some(is_ipv4) = is_ipv4_opt {
-                    p.prefix().is_ipv4() != is_ipv4 // FIXME
+                    p.prefix().is_ipv4() != is_ipv4
                 } else {
-                    is_ipv4_opt = Some(p.prefix().is_ipv4()); // FIXME
+                    is_ipv4_opt = Some(p.prefix().is_ipv4());
                     false
                 }
             }) {
@@ -322,12 +320,16 @@ impl VpcExpose {
 
         // 2. Check that items in prefix lists of each kind don't overlap
         for prefixes in prefix_sets {
-            for prefix in prefixes {
+            for prefix_with_ports in prefixes {
                 // Loop over the remaining prefixes in the tree
-                for other_prefix in prefixes.range((Excluded(prefix), Unbounded)) {
-                    let (prefix, other_prefix) = (&prefix.prefix(), &other_prefix.prefix()); // FIXME
-                    if prefix.covers(other_prefix) || other_prefix.covers(prefix) {
-                        return Err(ConfigError::OverlappingPrefixes(*prefix, *other_prefix));
+                for other_prefix in prefixes.range((Excluded(prefix_with_ports), Unbounded)) {
+                    if prefix_with_ports.overlaps(other_prefix)
+                        || other_prefix.overlaps(prefix_with_ports)
+                    {
+                        return Err(ConfigError::OverlappingPrefixes(
+                            *prefix_with_ports,
+                            *other_prefix,
+                        ));
                     }
                 }
             }
@@ -343,47 +345,31 @@ impl VpcExpose {
                 continue;
             }
             for exclude in excludes {
-                let exclude = &exclude.prefix(); // FIXME
-                if !prefixes.iter().any(|p| p.prefix().covers(exclude)) {
+                if !prefixes.iter().any(|p| p.covers(exclude)) {
                     return Err(ConfigError::OutOfRangeExclusionPrefix(*exclude));
                 }
             }
         }
 
         #[allow(clippy::items_after_statements)]
-        fn prefixes_size(prefixes: &BTreeSet<Prefix>) -> PrefixSize {
-            prefixes.iter().map(|p| p.size()).sum()
+        fn prefixes_size(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> PrefixWithPortsSize {
+            prefixes
+                .iter()
+                .map(|p| p.size())
+                .sum::<PrefixWithPortsSize>()
         }
+        let zero_size = PrefixWithPortsSize::from(0u8);
 
         // 4. Ensure we don't exclude all of the allowed prefixes
-        let ips_sizes =
-            prefixes_size(&self.ips.iter().map(|p| p.prefix()).collect::<BTreeSet<_>>());
-        let nots_sizes = prefixes_size(
-            &self
-                .nots
-                .iter()
-                .map(|p| p.prefix())
-                .collect::<BTreeSet<_>>(), // FIXME
-        );
-        if ips_sizes > 0 && ips_sizes <= nots_sizes {
+        let ips_sizes = prefixes_size(&self.ips);
+        let nots_sizes = prefixes_size(&self.nots);
+        if ips_sizes > zero_size && ips_sizes <= nots_sizes {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
-        let as_range_sizes = prefixes_size(
-            &self
-                .as_range_or_empty()
-                .iter()
-                .map(|p| p.prefix())
-                .collect::<BTreeSet<_>>(), // FIXME
-        );
-        let not_as_sizes = prefixes_size(
-            &self
-                .not_as_or_empty()
-                .iter()
-                .map(|p| p.prefix())
-                .collect::<BTreeSet<_>>(), // FIXME
-        );
+        let as_range_sizes = prefixes_size(self.as_range_or_empty());
+        let not_as_sizes = prefixes_size(self.not_as_or_empty());
 
-        if as_range_sizes > 0 && as_range_sizes <= not_as_sizes {
+        if as_range_sizes > zero_size && as_range_sizes <= not_as_sizes {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
 
@@ -393,10 +379,10 @@ impl VpcExpose {
         //    Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
         //    size was smaller than allowed prefixes size already.
         if self.has_stateless_nat()
-            && as_range_sizes > 0
+            && as_range_sizes > zero_size
             && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes
         {
-            return Err(ConfigError::TmpMismatchedPrefixSizes(
+            return Err(ConfigError::MismatchedPrefixSizes(
                 ips_sizes - nots_sizes,
                 as_range_sizes - not_as_sizes,
             ));
@@ -607,7 +593,6 @@ impl VpcPeeringTable {
 }
 
 // Validate that two sets of prefixes, with their exclusion prefixes applied, don't overlap
-#[allow(clippy::unnecessary_wraps)] // temporary
 fn validate_overlapping(
     prefixes_left: &BTreeSet<PrefixWithOptionalPorts>,
     excludes_left: &BTreeSet<PrefixWithOptionalPorts>,
@@ -618,9 +603,8 @@ fn validate_overlapping(
     let mut colliding = Vec::new();
     for prefix_left in prefixes_left {
         for prefix_right in prefixes_right {
-            let (prefix_left, prefix_right) = (prefix_left.prefix(), prefix_right.prefix()); // FIXME
-            if prefix_left.covers(&prefix_right) || prefix_right.covers(&prefix_left) {
-                colliding.push((prefix_left, prefix_right));
+            if prefix_left.overlaps(prefix_right) {
+                colliding.push((*prefix_left, *prefix_right));
             }
         }
     }
@@ -639,97 +623,66 @@ fn validate_overlapping(
     //
     // The idea in the loop below is that for each pair of colliding prefixes:
     //
-    // - We retrieve the size of the intersection of the colliding prefixes. This is easy, because
-    //   they're "prefixes", so if they collide we have necessarily one that is contained within the
-    //   other, and the size of the intersection is the size of the smallest one.
+    // - We retrieve the size of the intersection of the colliding prefixes.
     //
-    // - We retrieve the size of the union of all the exclusion prefixes (from left and right sides)
-    //   covering part of this intersection (which we know is the smallest of the two colliding
-    //   prefixes). The union of the exclusion prefixes is the set of non-overlapping exclusion
-    //   prefixes that cover the intersection of allowed prefixes, such that if exclusion prefixes
-    //   collide, we always keep the largest prefix.
+    // - We retrieve the size of the union of the intersections of all the exclusion prefixes (from
+    //   left and right sides) covering part of this intersection.
     //
     // - If the size of the intersection of colliding allowed prefixes is bigger than the size of
-    //   the union of the exclusion prefixes applying to them, then it means that some addresses are
-    //   effectively allowed in both the left-side and the right-side set of available addresses,
-    //   and this is an error. If the sizes are identical, then all addresses in the intersection of
-    //   the prefixes are excluded on at least one side, so it's all good.
+    //   the union of the intersections of the exclusion prefixes applying to these allowed
+    //   prefixes, then it means that some addresses are effectively allowed in both the left-side
+    //   and the right-side set of available addresses, and this is an error. If the sizes are
+    //   identical, then all addresses in the intersection of the prefixes are excluded on at least
+    //   one side, so it's all good.
     for (prefix_left, prefix_right) in colliding {
-        // If prefixes collide, there's necessarily one prefix that is contained inside of the
-        // other. Find the intersection of the two colliding prefixes, which is the smallest of the
-        // two prefixes.
-        let intersection_prefix = if prefix_left.covers(&prefix_right) {
-            &prefix_right
-        } else {
-            &prefix_left
-        };
+        let intersection_prefix = prefix_left.intersection(&prefix_right).unwrap_or_else(|| {
+            unreachable!(); // These prefixes were paired precisely because they collide
+        });
 
-        // Retrieve the union of all exclusion prefixes covering the intersection of the colliding
-        // prefixes
-        let mut union_excludes = BTreeSet::new();
+        // We need to compute the size of the union of the excluded prefixes. Start by adding the
+        // sizes of all exclusion prefixes, from both sides.
+        let mut union_excludes_size = PrefixWithPortsSize::from(0u8);
 
-        // Consider exclusion prefixes from excludes_left
-        'outer: for exclude_left in excludes_left.iter().filter(|exclude| {
-            exclude.prefix().covers(intersection_prefix)
-                || intersection_prefix.covers(&exclude.prefix()) // FIXME
-        }) {
-            for exclude_right in excludes_right.iter().filter(|exclude| {
-                exclude.prefix().covers(intersection_prefix)
-                    || intersection_prefix.covers(&exclude.prefix()) // FIXME
-            }) {
-                if exclude_left.covers(exclude_right) {
-                    // exclude_left contains exclude_right, and given that exclusion prefixes in
-                    // list excludes_right don't overlap there's no exclusion prefix containing
-                    // exclude_left. We want to keep exclude_left as part of the union.
-                    union_excludes.insert(*exclude_left);
-                    continue 'outer;
-                } else if exclude_right.covers(exclude_left) {
-                    // exclude_left is contained within exclude_right, don't keep it as part of the
-                    // union. Process next exclusion prefix from list excludes_left.
-                    continue 'outer;
-                }
-            }
-            // No collision for this exclude_left, add it to the union
-            union_excludes.insert(*exclude_left);
-        }
-        // Consider exclusion prefixes from excludes_right
-        'outer: for exclude_right in excludes_right.iter().filter(|exclude| {
-            exclude.prefix().covers(intersection_prefix)
-                || intersection_prefix.covers(&exclude.prefix()) // FIXME
-        }) {
-            for exclude_left in excludes_left.iter().filter(|exclude| {
-                exclude.prefix().covers(intersection_prefix)
-                    || intersection_prefix.covers(&exclude.prefix()) // FIXME
-            }) {
-                if exclude_right.covers(exclude_left) {
-                    // exclude_right contains exclude_left, and given that exclusions prefixes in
-                    // list excludes_left don't overlap there's no exclusion prefix containing
-                    // exclude_right. We want to keep exclude_right as part of the union.
-                    union_excludes.insert(*exclude_right);
-                    continue 'outer;
-                } else if exclude_left.covers(exclude_right) {
-                    // exclude_right is contained within exclude_left, don't keep it as part of the
-                    // union. Process next exclusion prefix from list excludes_right.
-                    continue 'outer;
-                }
-            }
-            // No collision for this exclude_right, add it to the union
-            union_excludes.insert(*exclude_right);
-        }
-
-        let _union_size = union_excludes
+        // Now we remove once the size of the intersection of each pair of excluded prefixes, to
+        // avoid double-counting some ranges. We know that all exclusion prefixes on the left side
+        // are disjoint, and all so are exclusion prefixes on the right side, which means that we
+        // cannot have more than two prefixes overlapping. It's enough to look for intersection of
+        // all left-side prefixes with each right-side prefix.
+        for exclude_left in excludes_left
             .iter()
-            .map(|exclude| exclude.size())
-            .sum::<PrefixWithPortsSize>();
+            .filter(|exclude| exclude.overlaps(&intersection_prefix))
+        {
+            let exclude_covering_allowed_left = exclude_left
+                .intersection(&intersection_prefix)
+                .unwrap_or_else(|| {
+                    // We filtered prefixes with overlap with intersection_prefix
+                    unreachable!();
+                });
+            union_excludes_size += exclude_covering_allowed_left.size();
+            for exclude_right in excludes_right
+                .iter()
+                .filter(|exclude| exclude.overlaps(&intersection_prefix))
+            {
+                let exclude_covering_allowed_right = exclude_right
+                    .intersection(&intersection_prefix)
+                    .unwrap_or_else(|| {
+                        // We filtered prefixes with overlap with intersection_prefix
+                        unreachable!();
+                    });
+                union_excludes_size += exclude_covering_allowed_right.size();
+                // Remove size of intersection, to avoid double-counting for a given range
+                union_excludes_size -= exclude_covering_allowed_left
+                    .intersection(&exclude_covering_allowed_right)
+                    .map_or(PrefixWithPortsSize::from(0u8), |p| p.size());
+            }
+        }
 
-        /* // FIXME
-        if union_size < intersection_prefix.size() {
+        if union_excludes_size < intersection_prefix.size() {
             // Some addresses at the intersection of both prefixes are not covered by the union of
             // all exclusion prefixes, in other words, they are available from both prefixes. This
             // is an error.
             return Err(ConfigError::OverlappingPrefixes(prefix_left, prefix_right));
         }
-        */
     }
     Ok(())
 }
