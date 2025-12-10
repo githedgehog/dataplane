@@ -143,9 +143,11 @@ pci-info = { version = "0.3.4", default-features = false, features = [] }
 prefix-trie = { version = "0.8.1", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = [] }
 priority-queue = { version = "2.7.0", default-features = false, features = [] }
+proc-macro2 = { version = "1.0.103", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
 pyroscope = { version = "0.5.8", default-features = false, features = [] }
 pyroscope_pprofrs = { version = "0.2.10", default-features = false, features = [] }
+quote = { version = "1.0.42", default-features = false, features = [] }
 rand = { version = "0.9.2", default-features = false, features = [] }
 rkyv = { version = "0.8.12", default-features = false, features = [] }
 roaring = { version = "0.11.2", default-features = false, features = [] }
@@ -163,6 +165,7 @@ small-map = { version = "0.1.4", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.27.2", default-features = false, features = [] }
 strum_macros = { version = "0.27.2", default-features = false, features = [] }
+syn = { version = "2.0.111", default-features = false, features = [] }
 thiserror = { version = "2.0.17", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
 tokio = { version = "1.48.0", default-features = false, features = [] }
