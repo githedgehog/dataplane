@@ -16,6 +16,7 @@ use args::{CmdArgs, Parser};
 use drivers::kernel::DriverKernel;
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
+use nix::unistd::gethostname;
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
@@ -32,6 +33,8 @@ custom_target!("Pyroscope", LevelFilter::INFO, &[]);
 fn init_name(args: &CmdArgs) {
     if let Some(name) = args.get_name() {
         set_name(name);
+    } else if let Ok(name) = gethostname() {
+        set_name(&name.to_string_lossy());
     }
 }
 fn init_logging() {
