@@ -85,6 +85,7 @@ async-trait = { version = "0.1.89", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
 axum = { version = "0.8.7", default-features = false, features = [] }
 axum-server = { version = "0.8.0", default-features = false, features = [] }
+bincode2 = { version = "2.0.1", default-features = false, features = [] } # TODO: try to remove this
 bindgen = { version = "0.72.1", default-features = false, features = [] }
 bitflags = { version = "2.10.0", default-features = false, features = [] }
 bolero = { version = "0.13.4", default-features = false, features = [] }
@@ -95,6 +96,7 @@ caps = { version = "0.5.6", default-features = false, features = [] }
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 clap = { version = "4.5.53", default-features = true, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
+colored = { version = "3.0.0", default-features = false, features = [] }
 command-fds = { version = "0.3.2", default-features = false, features = [] }
 crossbeam-channel = { version = "0.5.15", default-features = false, features = [] }
 ctrlc = { version = "3.5.1", default-features = false, features = [] }
@@ -119,6 +121,7 @@ left-right = { version = "0.11.6" }
 libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }
 linkme = { version = "0.3.35", default-features = false, features = [] }
 linux-raw-sys = { version = "0.12.0", default-features = false, features = [] }
+log = { version = "^0.4.29", default-features = false, features = [] } # TODO: try to remove this
 loom = { version = "0.7.2", default-features = false, features = [] }
 mac_address = { version = "1.1.8", default-features = false, features = [] }
 memmap2 = { version = "0.9.9", default-features = false, features = [] }
