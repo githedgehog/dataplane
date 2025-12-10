@@ -20,7 +20,7 @@ vpcmap = { workspace = true }
 arrayvec = { workspace = true }
 bolero = { workspace = true, optional = true }
 derive_builder = { workspace = true }
-hashbrown = { workspace = true, features = ["inline-more", "alloc", "default-hasher"] }
+hashbrown = { workspace = true, features = ["default-hasher", "inline-more"] }
 kanal = { workspace = true, features = ["async"] }
 linkme = { workspace = true }
 metrics = { workspace = true }
