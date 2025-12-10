@@ -447,3 +447,434 @@ impl Display for PrefixWithOptionalPorts {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prefix::{Ipv4Prefix, Ipv6Prefix};
+    use std::str::FromStr;
+
+    fn prefix_v4(s: &str) -> Prefix {
+        Prefix::from(Ipv4Prefix::from_str(s).unwrap())
+    }
+
+    fn prefix_v6(s: &str) -> Prefix {
+        Prefix::from(Ipv6Prefix::from_str(s).unwrap())
+    }
+
+    // PrefixWithPorts - intersection
+
+    #[test]
+    fn test_prefix_with_ports_intersection_overlapping() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("192.168.0.0/25");
+        let ports1 = PortRange::new(80, 100).unwrap();
+        let ports2 = PortRange::new(90, 110).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix1, ports1);
+        let pwp2 = PrefixWithPorts::new(prefix2, ports2);
+
+        let intersection = pwp1.intersection(&pwp2).expect("Should have intersection");
+        assert_eq!(intersection.prefix(), prefix2);
+        assert_eq!(intersection.ports(), PortRange::new(90, 100).unwrap());
+    }
+
+    #[test]
+    fn test_prefix_with_ports_intersection_no_prefix_overlap() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("10.0.0.0/24");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix1, ports);
+        let pwp2 = PrefixWithPorts::new(prefix2, ports);
+
+        let intersection = pwp1.intersection(&pwp2);
+        assert!(intersection.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_ports_intersection_no_port_overlap() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports1 = PortRange::new(80, 100).unwrap();
+        let ports2 = PortRange::new(200, 300).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix, ports1);
+        let pwp2 = PrefixWithPorts::new(prefix, ports2);
+
+        let intersection = pwp1.intersection(&pwp2);
+        assert!(intersection.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_ports_intersection_identical() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwp = PrefixWithPorts::new(prefix, ports);
+
+        let intersection = pwp.intersection(&pwp).expect("Should have intersection");
+        assert_eq!(intersection, pwp);
+    }
+
+    #[test]
+    fn test_prefix_with_ports_intersection_ipv6() {
+        let prefix1 = prefix_v6("2001:db8::/32");
+        let prefix2 = prefix_v6("2001:db8::/48");
+        let ports = PortRange::new(443, 8443).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix1, ports);
+        let pwp2 = PrefixWithPorts::new(prefix2, ports);
+
+        let intersection = pwp1.intersection(&pwp2).expect("Should have intersection");
+        assert_eq!(intersection.prefix(), prefix2);
+        assert_eq!(intersection.ports(), ports);
+    }
+
+    // PrefixWithPorts - subtract
+
+    #[test]
+    fn test_prefix_with_ports_subtract_no_overlap() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("10.0.0.0/24");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix1, ports);
+        let pwp2 = PrefixWithPorts::new(prefix2, ports);
+
+        let result = pwp1.subtract(&pwp2);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_prefix_with_ports_subtract_identical() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwp = PrefixWithPorts::new(prefix, ports);
+
+        let result = pwp.subtract(&pwp);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_prefix_with_ports_subtract_port_split() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports1 = PortRange::new(80, 200).unwrap();
+        let ports2 = PortRange::new(100, 150).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix, ports1);
+        let pwp2 = PrefixWithPorts::new(prefix, ports2);
+
+        let result = pwp1.subtract(&pwp2);
+        // Should split into two port ranges: [80-99] and [151-200]
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&PrefixWithPorts::new(
+            prefix,
+            PortRange::new(80, 99).unwrap()
+        )));
+        assert!(result.contains(&PrefixWithPorts::new(
+            prefix,
+            PortRange::new(151, 200).unwrap()
+        )));
+    }
+
+    #[test]
+    fn test_prefix_with_ports_subtract_prefix_split() {
+        let prefix1 = prefix_v4("192.168.0.0/23");
+        let prefix2 = prefix_v4("192.168.0.0/24");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix1, ports);
+        let pwp2 = PrefixWithPorts::new(prefix2, ports);
+
+        let result = pwp1.subtract(&pwp2);
+        // Should have one remaining prefix: 192.168.1.0/24
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].prefix(), prefix_v4("192.168.1.0/24"));
+        assert_eq!(result[0].ports(), ports);
+    }
+
+    #[test]
+    fn test_prefix_with_ports_subtract_both_split() {
+        let prefix1 = prefix_v4("192.168.0.0/23");
+        let prefix2 = prefix_v4("192.168.0.0/24");
+        let ports1 = PortRange::new(80, 200).unwrap();
+        let ports2 = PortRange::new(100, 150).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix1, ports1);
+        let pwp2 = PrefixWithPorts::new(prefix2, ports2);
+
+        let result = pwp1.subtract(&pwp2);
+        // Expected result: 3 PrefixWithPorts
+        // - 192.168.0.0/23 [80-99]
+        // - 192.168.1.0/24 [100-150]
+        // - 192.168.0.0/23 [151-200]
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&PrefixWithPorts::new(
+            prefix1,
+            PortRange::new(80, 99).unwrap()
+        )));
+        assert!(result.contains(&PrefixWithPorts::new(
+            prefix_v4("192.168.1.0/24"),
+            PortRange::new(100, 150).unwrap()
+        )));
+        assert!(result.contains(&PrefixWithPorts::new(
+            prefix1,
+            PortRange::new(151, 200).unwrap()
+        )));
+    }
+
+    #[test]
+    fn test_prefix_with_ports_subtract_partial_port_overlap_lower() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports1 = PortRange::new(80, 150).unwrap();
+        let ports2 = PortRange::new(50, 100).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix, ports1);
+        let pwp2 = PrefixWithPorts::new(prefix, ports2);
+
+        let result = pwp1.subtract(&pwp2);
+        // Should have remaining port range [101-150]
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            PrefixWithPorts::new(prefix, PortRange::new(101, 150).unwrap())
+        );
+    }
+
+    #[test]
+    fn test_prefix_with_ports_subtract_partial_port_overlap_upper() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports1 = PortRange::new(80, 150).unwrap();
+        let ports2 = PortRange::new(120, 200).unwrap();
+
+        let pwp1 = PrefixWithPorts::new(prefix, ports1);
+        let pwp2 = PrefixWithPorts::new(prefix, ports2);
+
+        let result = pwp1.subtract(&pwp2);
+        // Should have remaining port range [80-119]
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            PrefixWithPorts::new(prefix, PortRange::new(80, 119).unwrap())
+        );
+    }
+
+    // PrefixWithOptionalPorts - intersection
+
+    #[test]
+    fn test_prefix_with_optional_ports_intersection_both_some() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("192.168.0.0/25");
+        let ports1 = PortRange::new(80, 100).unwrap();
+        let ports2 = PortRange::new(90, 110).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, Some(ports1));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, Some(ports2));
+
+        let intersection = pwop1
+            .intersection(&pwop2)
+            .expect("Should have intersection");
+        assert_eq!(intersection.prefix(), prefix2);
+        assert_eq!(intersection.ports(), Some(PortRange::new(90, 100).unwrap()));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_intersection_one_none() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("192.168.0.0/25");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, Some(ports));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
+
+        let intersection = pwop1
+            .intersection(&pwop2)
+            .expect("Should have intersection");
+        assert_eq!(intersection.prefix(), prefix2);
+        assert_eq!(intersection.ports(), Some(ports));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_intersection_both_none() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("192.168.0.0/25");
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
+
+        let intersection = pwop1
+            .intersection(&pwop2)
+            .expect("Should have intersection");
+        assert_eq!(intersection.prefix(), prefix2);
+        assert_eq!(intersection.ports(), None);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_intersection_no_prefix_overlap() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("10.0.0.0/24");
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
+
+        let intersection = pwop1.intersection(&pwop2);
+        assert!(intersection.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_intersection_no_port_overlap() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports1 = PortRange::new(80, 100).unwrap();
+        let ports2 = PortRange::new(200, 300).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix, Some(ports1));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix, Some(ports2));
+
+        let intersection = pwop1.intersection(&pwop2);
+        assert!(intersection.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_intersection_symmetry() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("192.168.0.0/25");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, Some(ports));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
+
+        let intersection1 = pwop1
+            .intersection(&pwop2)
+            .expect("Should have intersection");
+        let intersection2 = pwop2
+            .intersection(&pwop1)
+            .expect("Should have intersection");
+
+        assert_eq!(intersection1, intersection2);
+    }
+
+    // PrefixWithOptionalPorts - subtract
+
+    #[test]
+    fn test_prefix_with_optional_ports_subtract_no_overlap() {
+        let prefix1 = prefix_v4("192.168.0.0/24");
+        let prefix2 = prefix_v4("10.0.0.0/24");
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
+
+        let result = pwop1.subtract(&pwop2);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_subtract_identical_both_none() {
+        let prefix = prefix_v4("192.168.0.0/24");
+
+        let pwop = PrefixWithOptionalPorts::new(prefix, None);
+
+        let result = pwop.subtract(&pwop);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_subtract_both_some() {
+        let prefix = prefix_v4("192.168.0.0/24");
+        let ports1 = PortRange::new(80, 200).unwrap();
+        let ports2 = PortRange::new(100, 150).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix, Some(ports1));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix, Some(ports2));
+
+        let result = pwop1.subtract(&pwop2);
+        // Should split into two port ranges
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&PrefixWithOptionalPorts::new(
+            prefix,
+            Some(PortRange::new(80, 99).unwrap())
+        )));
+        assert!(result.contains(&PrefixWithOptionalPorts::new(
+            prefix,
+            Some(PortRange::new(151, 200).unwrap())
+        )));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_subtract_self_some_other_none() {
+        let prefix1 = prefix_v4("192.168.0.0/23");
+        let prefix2 = prefix_v4("192.168.0.0/24");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, Some(ports));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
+
+        let result = pwop1.subtract(&pwop2);
+        // Should subtract all ports in the overlapping prefix
+        // Remaining: 192.168.1.0/24 with ports 80-100
+        assert_eq!(result.len(), 1);
+        assert!(result.contains(&PrefixWithOptionalPorts::new(
+            prefix_v4("192.168.1.0/24"),
+            Some(PortRange::new(80, 100).unwrap())
+        )));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_subtract_self_none_other_some() {
+        let prefix1 = prefix_v4("192.168.0.0/23");
+        let prefix2 = prefix_v4("192.168.0.0/24");
+        let ports = PortRange::new(80, 100).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, Some(ports));
+
+        let result = pwop1.subtract(&pwop2);
+        // Should remove the specified port range from the overlapping prefix
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&PrefixWithOptionalPorts::new(
+            prefix_v4("192.168.0.0/23"),
+            Some(PortRange::new(0, 79).unwrap())
+        )));
+        assert!(result.contains(&PrefixWithOptionalPorts::new(
+            prefix_v4("192.168.0.0/23"),
+            Some(PortRange::new(101, u16::MAX).unwrap())
+        )));
+        assert!(result.contains(&PrefixWithOptionalPorts::new(
+            prefix_v4("192.168.1.0/24"),
+            Some(PortRange::new(80, 100).unwrap())
+        )));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_subtract_prefix_split() {
+        let prefix1 = prefix_v4("192.168.0.0/23");
+        let prefix2 = prefix_v4("192.168.0.0/24");
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, None);
+
+        let result = pwop1.subtract(&pwop2);
+        // Should have one remaining prefix
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].prefix(), prefix_v4("192.168.1.0/24"));
+        assert_eq!(result[0].ports(), None);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_subtract_ipv6() {
+        let prefix1 = prefix_v6("2001:db8::/32");
+        let prefix2 = prefix_v6("2001:db8::/33");
+        let ports = PortRange::new(443, 8443).unwrap();
+
+        let pwop1 = PrefixWithOptionalPorts::new(prefix1, Some(ports));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix2, Some(ports));
+
+        let result = pwop1.subtract(&pwop2);
+        // Should have remaining prefixes after subtraction
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            PrefixWithOptionalPorts::new(prefix_v6("2001:db8:8000::/33"), Some(ports))
+        );
+    }
+}
