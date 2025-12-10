@@ -141,7 +141,7 @@ fn main() {
             vpc_stats_store: setup.vpc_stats_store,
         },
     })
-    .expect("Failed to start gRPC server");
+    .expect("Failed to start management");
 
     /* start driver with the provided pipeline builder */
     let e = match args.driver_name() {

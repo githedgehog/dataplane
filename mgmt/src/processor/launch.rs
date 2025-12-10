@@ -1,31 +1,58 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::processor::k8s_client::K8sClientError;
+use crate::processor::k8s_client::k8s_start_client;
 use crate::processor::proc::ConfigChannelRequest;
 use crate::processor::proc::ConfigProcessor;
-use args::GrpcAddress;
+
 use std::fmt::Display;
-use std::io::Error;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
 use tokio::io;
 use tokio::net::UnixListener;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::Stream;
+use tonic::transport::Server;
+
+use args::GrpcAddress;
+use tracing::{debug, error, info, warn};
 
 use crate::grpc::server::create_config_service;
 use crate::processor::proc::ConfigProcessorParams;
-use tonic::transport::Server;
-use tracing::{debug, error, info, warn};
+
+#[derive(Debug, thiserror::Error)]
+pub enum LaunchError {
+    #[error("GRPC server error: {0}")]
+    GrpcServerError(tonic::transport::Error),
+    #[error("IO error: {0}")]
+    IoError(std::io::Error),
+    #[error("Error in K8s client task: {0}")]
+    K8sClientError(K8sClientError),
+    #[error("Error starting/waiting for K8s client task: {0}")]
+    K8sClientJoinError(tokio::task::JoinError),
+    #[error("K8s client exited prematurely")]
+    PrematureK8sClientExit,
+    #[error("Grpc server exited prematurely")]
+    PrematureGrpcExit,
+    #[error("Config processor exited prematurely")]
+    PrematureProcessorExit,
+
+    #[error("Error in Config Processor task: {0}")]
+    ProcessorError(std::io::Error),
+    #[error("Error starting/waiting for Config Processor task: {0}")]
+    ProcessorJoinError(tokio::task::JoinError),
+}
 
 /// Start the gRPC server on TCP
 async fn start_grpc_server_tcp(
     addr: SocketAddr,
     channel_tx: Sender<ConfigChannelRequest>,
-) -> Result<(), Error> {
+) -> Result<(), LaunchError> {
     info!("Starting gRPC server on TCP address: {addr}");
     let config_service = create_config_service(channel_tx);
 
@@ -35,7 +62,7 @@ async fn start_grpc_server_tcp(
         .await
         .map_err(|e| {
             error!("Failed to start gRPC server");
-            Error::other(e.to_string())
+            LaunchError::GrpcServerError(e)
         })
 }
 
@@ -69,7 +96,7 @@ impl Stream for UnixAcceptor {
 async fn start_grpc_server_unix(
     socket_path: &Path,
     channel_tx: Sender<ConfigChannelRequest>,
-) -> Result<(), Error> {
+) -> Result<(), LaunchError> {
     info!(
         "Starting gRPC server on UNIX socket: {}",
         socket_path.display()
@@ -89,7 +116,7 @@ async fn start_grpc_server_unix(
         if !parent.exists() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 error!("Failed to create parent directory: {e}");
-                return Err(e);
+                return Err(LaunchError::IoError(e));
             }
         }
     }
@@ -102,7 +129,7 @@ async fn start_grpc_server_unix(
         }
         Err(e) => {
             error!("Failed to bind UNIX socket: {e}");
-            return Err(e);
+            return Err(LaunchError::IoError(e));
         }
     };
 
@@ -125,7 +152,7 @@ async fn start_grpc_server_unix(
         .await
         .map_err(|e| {
             error!("Failed to start gRPC server");
-            Error::other(e.to_string())
+            LaunchError::GrpcServerError(e)
         })?;
 
     // Clean up the socket file after server shutdown
@@ -155,19 +182,14 @@ impl Display for ServerAddress {
 }
 
 pub struct MgmtParams {
-    pub grpc_addr: GrpcAddress,
+    pub grpc_addr: Option<GrpcAddress>,
     pub processor_params: ConfigProcessorParams,
 }
 
 /// Start the mgmt service with either type of socket
-pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Error> {
-    /* build server address from provided grpc address */
-    let server_address = match params.grpc_addr {
-        GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
-        GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.into()),
-    };
-    debug!("Will start gRPC listening on {server_address}");
-
+pub fn start_mgmt(
+    params: MgmtParams,
+) -> Result<std::thread::JoinHandle<Result<(), LaunchError>>, std::io::Error> {
     std::thread::Builder::new()
         .name("mgmt".to_string())
         .spawn(move || {
@@ -180,19 +202,60 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Err
                 .build()
                 .expect("Tokio runtime creation failed");
 
-            /* block thread to run gRPC and configuration processor */
-            rt.block_on(async {
-                let (processor, tx) = ConfigProcessor::new(params.processor_params);
-                tokio::spawn(async { processor.run().await });
-
-                // Start the appropriate server based on address type
-                let result = match server_address {
-                    ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
-                    ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
+            if let Some(grpc_addr) = params.grpc_addr {
+                /* build server address from provided grpc address */
+                let server_address = match grpc_addr {
+                    GrpcAddress::Tcp(addr) => ServerAddress::Tcp(addr),
+                    GrpcAddress::UnixSocket(path) => ServerAddress::Unix(path.into()),
                 };
-                if let Err(e) = result {
-                    error!("Failed to start gRPC server: {e}");
-                }
-            });
+                debug!("Will start gRPC listening on {server_address}");
+
+                /* block thread to run gRPC and configuration processor */
+                rt.block_on(async {
+                    let (processor, tx) = ConfigProcessor::new(params.processor_params);
+                    tokio::spawn(async { processor.run().await });
+
+                    // Start the appropriate server based on address type
+                    let result = match server_address {
+                        ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
+                        ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
+                    };
+                    if let Err(e) = result {
+                        error!("Failed to start gRPC server: {e}");
+                        Err(e)
+                    } else {
+                        error!("GRPC server exited prematurely");
+                        Err(LaunchError::PrematureGrpcExit)
+                    }
+                })
+            } else {
+                debug!("Will start watching k8s for configuration changes");
+                rt.block_on(async {
+                    let (processor, tx) = ConfigProcessor::new(params.processor_params);
+                    let processor_handle = tokio::spawn(async { processor.run().await });
+                    let k8s_handle = tokio::spawn(async move { k8s_start_client(tx).await });
+                    tokio::select! {
+                        result = processor_handle => {
+                            match result {
+                                Ok(_) => {
+                                    error!("Configuration processor task exited unexpectedly");
+                                    Err(LaunchError::PrematureProcessorExit)?
+                                }
+                                Err(e) => { Err::<(), LaunchError>(LaunchError::ProcessorJoinError(e)) }
+                            }
+                        }
+                        result = k8s_handle => {
+                            match result {
+                                Ok(result) => { result.inspect_err(|e| error!("K8s client task failed: {e}")).map_err(LaunchError::K8sClientError)?;
+                                    error!("Kubernetes client task exited unexpectedly");
+                                    Err(LaunchError::PrematureK8sClientExit)?
+                                }
+                                Err(e) => { Err(LaunchError::K8sClientJoinError(e))? }
+                            }
+                        }
+                    }?;
+                    Ok(())
+                })
+            }
         })
 }
