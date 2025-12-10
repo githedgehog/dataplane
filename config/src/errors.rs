@@ -11,7 +11,7 @@ use crate::external::GenId;
 use crate::external::overlay::vpc::VpcId;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
-use lpm::prefix::{Prefix, PrefixSize};
+use lpm::prefix::{Prefix, PrefixSize, PrefixWithPortsSize};
 use net::eth::mac::Mac;
 use thiserror::Error;
 
@@ -68,7 +68,9 @@ pub enum ConfigError {
     InconsistentIpVersion(Box<VpcExpose>),
     // NAT-specific
     #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
-    MismatchedPrefixSizes(PrefixSize, PrefixSize),
+    MismatchedPrefixSizes(PrefixWithPortsSize, PrefixWithPortsSize),
+    #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
+    TmpMismatchedPrefixSizes(PrefixSize, PrefixSize), // To be removed
 
     // Interface addresses
     #[error("Invalid interface address format: {0}")]

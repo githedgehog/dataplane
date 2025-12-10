@@ -9,7 +9,7 @@ use std::convert::TryFrom;
 use crate::external::overlay::vpcpeering::{
     VpcExpose, VpcExposeNatConfig, VpcExposeStatefulNat, VpcExposeStatelessNat,
 };
-use lpm::prefix::{Prefix, PrefixString};
+use lpm::prefix::{Prefix, PrefixString, PrefixWithOptionalPorts};
 
 impl TryFrom<&gateway_config::Expose> for VpcExpose {
     type Error = String;
@@ -25,12 +25,12 @@ impl TryFrom<&gateway_config::Expose> for VpcExpose {
                     gateway_config::peering_i_ps::Rule::Cidr(cidr) => {
                         let prefix = Prefix::try_from(PrefixString(cidr))
                             .map_err(|e| format!("Invalid CIDR format: {cidr}: {e}"))?;
-                        vpc_expose = vpc_expose.ip(prefix);
+                        vpc_expose = vpc_expose.ip(PrefixWithOptionalPorts::new(prefix, None)); // FIXME
                     }
                     gateway_config::peering_i_ps::Rule::Not(not) => {
                         let prefix = Prefix::try_from(PrefixString(not))
                             .map_err(|e| format!("Invalid CIDR format: {not}: {e}"))?;
-                        vpc_expose = vpc_expose.not(prefix);
+                        vpc_expose = vpc_expose.not(PrefixWithOptionalPorts::new(prefix, None)); // FIXME
                     }
                 }
             } else {
@@ -45,12 +45,13 @@ impl TryFrom<&gateway_config::Expose> for VpcExpose {
                     gateway_config::peering_as::Rule::Cidr(cidr) => {
                         let prefix = Prefix::try_from(PrefixString(cidr))
                             .map_err(|e| format!("Invalid CIDR format: {cidr}: {e}"))?;
-                        vpc_expose = vpc_expose.as_range(prefix);
+                        vpc_expose =
+                            vpc_expose.as_range(PrefixWithOptionalPorts::new(prefix, None)); // FIXME
                     }
                     gateway_config::peering_as::Rule::Not(ip_exclude) => {
                         let prefix = Prefix::try_from(PrefixString(ip_exclude))
                             .map_err(|e| format!("Invalid CIDR format: {ip_exclude}: {e}"))?;
-                        vpc_expose = vpc_expose.not_as(prefix);
+                        vpc_expose = vpc_expose.not_as(PrefixWithOptionalPorts::new(prefix, None)); // FIXME
                     }
                 }
             } else {

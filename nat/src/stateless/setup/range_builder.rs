@@ -201,6 +201,7 @@ impl Iterator for RangeBuilder<'_> {
 mod tests {
     use super::super::generate_nat_values;
     use super::*;
+    use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts, PrefixWithPortsSize};
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
@@ -227,12 +228,12 @@ mod tests {
 
         let size_left = prefixes_to_update
             .iter()
-            .map(|p: &Prefix| p.size())
-            .sum::<PrefixSize>();
+            .map(PrefixWithOptionalPorts::size)
+            .sum::<PrefixWithPortsSize>();
         let size_right = prefixes_to_point_to
             .iter()
-            .map(|p: &Prefix| p.size())
-            .sum::<PrefixSize>();
+            .map(PrefixWithOptionalPorts::size)
+            .sum::<PrefixWithPortsSize>();
 
         // Sanity check for the test
         assert_eq!(size_left, size_right);
@@ -329,12 +330,12 @@ mod tests {
 
         let size_left = prefixes_to_update
             .iter()
-            .map(|p: &Prefix| p.size())
-            .sum::<PrefixSize>();
+            .map(PrefixWithOptionalPorts::size)
+            .sum::<PrefixWithPortsSize>();
         let size_right = prefixes_to_point_to
             .iter()
-            .map(|p: &Prefix| p.size())
-            .sum::<PrefixSize>();
+            .map(PrefixWithOptionalPorts::size)
+            .sum::<PrefixWithPortsSize>();
 
         // Sanity check for the test
         assert_eq!(size_left, size_right);
@@ -428,7 +429,7 @@ mod bolero_tests {
     use super::super::generate_nat_values;
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use lpm::prefix::{Prefix, PrefixSize};
+    use lpm::prefix::{Prefix, PrefixSize, PrefixWithOptionalPorts};
     use std::cmp::max;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::ops::Bound;
@@ -773,8 +774,17 @@ mod bolero_tests {
                 assert_eq!(orig_ranges_size, target_ranges_size);
 
                 // Generate NAT ranges
-                let nat_ranges = generate_nat_values(prefixes_to_update, prefixes_to_point_to)
-                    .collect::<Vec<_>>();
+                let nat_ranges = generate_nat_values(
+                    &prefixes_to_update
+                        .iter()
+                        .map(|p| PrefixWithOptionalPorts::from(*p))
+                        .collect::<BTreeSet<PrefixWithOptionalPorts>>(), // FIXME
+                    &prefixes_to_point_to
+                        .iter()
+                        .map(|p| PrefixWithOptionalPorts::from(*p))
+                        .collect::<BTreeSet<PrefixWithOptionalPorts>>(), // FIXME
+                )
+                .collect::<Vec<_>>();
 
                 // Make sure that each IP picked within the original prefixes is in exactly one of
                 // the generated IP range

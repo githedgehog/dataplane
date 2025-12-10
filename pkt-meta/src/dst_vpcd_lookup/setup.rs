@@ -88,7 +88,7 @@ fn process_peering(
 
     new_peering.remote.exposes.iter().for_each(|expose| {
         for prefix in expose.public_ips() {
-            process_prefix(table, remote_vpcd, prefix);
+            process_prefix(table, remote_vpcd, &prefix.prefix()); // FIXME
         }
     });
     Ok(())

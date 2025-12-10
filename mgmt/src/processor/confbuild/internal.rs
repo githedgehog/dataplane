@@ -45,23 +45,32 @@ fn vpc_import_prefix_list_for_peer(
     );
     for expose in &rmanifest.exposes {
         // allow native prefixes, natted or not
-        let native_prefixes = expose.ips.iter().filter(|p| p.is_ipv4()).map(|prefix| {
-            PrefixListEntry::new(
-                PrefixListAction::Permit,
-                PrefixListPrefix::Prefix(*prefix),
-                Some(PrefixListMatchLen::Ge(prefix.length())),
-            )
-        });
+        let native_prefixes =
+            expose
+                .ips
+                .iter()
+                .filter(|p| p.prefix().is_ipv4())
+                .map(|prefix_with_ports| {
+                    PrefixListEntry::new(
+                        PrefixListAction::Permit,
+                        PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
+                        Some(PrefixListMatchLen::Ge(prefix_with_ports.prefix().length())),
+                    )
+                });
         plist.add_entries(native_prefixes)?;
 
         // disallow prefix exceptions, whether there's nat or not
-        let nots = expose.nots.iter().filter(|p| p.is_ipv4()).map(|prefix| {
-            PrefixListEntry::new(
-                PrefixListAction::Deny,
-                PrefixListPrefix::Prefix(*prefix),
-                None,
-            )
-        });
+        let nots = expose
+            .nots
+            .iter()
+            .filter(|p| p.prefix().is_ipv4())
+            .map(|prefix_with_ports| {
+                PrefixListEntry::new(
+                    PrefixListAction::Deny,
+                    PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
+                    None,
+                )
+            });
         plist.add_entries(nots)?;
     }
     Ok(plist)
@@ -71,7 +80,11 @@ fn vpc_import_prefix_list_for_peer(
 fn build_vpc_drop_routes(rmanifest: &VpcManifest) -> Vec<StaticRoute> {
     let mut sroute_vec: Vec<StaticRoute> = vec![];
     for expose in &rmanifest.exposes {
-        let mut statics: Vec<StaticRoute> = expose.nots.iter().map(build_drop_route).collect();
+        let mut statics: Vec<StaticRoute> = expose
+            .nots
+            .iter()
+            .map(|prefix_with_ports| build_drop_route(&prefix_with_ports.prefix()))
+            .collect();
         sroute_vec.append(&mut statics);
     }
     sroute_vec
@@ -148,16 +161,20 @@ impl VpcRoutingConfigIpv4 {
         self.import_plists.push(plist);
 
         /* advertise */
-        let nets = rmanifest.exposes.iter().flat_map(|e| e.public_ips().iter());
+        let nets = rmanifest.exposes.iter().flat_map(|e| {
+            e.public_ips()
+                .iter()
+                .map(|prefix_with_ports| prefix_with_ports.prefix())
+        });
         self.adv_nets.extend(nets);
 
         /* build adv prefix list */
         for expose in rmanifest.exposes.iter() {
             let prefixes = expose.public_ips().iter();
-            let plists = prefixes.map(|prefix| {
+            let plists = prefixes.map(|prefix_with_ports| {
                 PrefixListEntry::new(
                     PrefixListAction::Permit,
-                    PrefixListPrefix::Prefix(*prefix),
+                    PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
                     None,
                 )
             });

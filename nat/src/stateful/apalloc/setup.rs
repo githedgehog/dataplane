@@ -11,7 +11,7 @@ use config::ConfigError;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::utils::collapse_prefixes_peering;
-use lpm::prefix::{IpPrefix, Prefix};
+use lpm::prefix::{IpPrefix, Prefix, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
@@ -159,8 +159,8 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G
 where
     F: FnOnce(&'a VpcManifest) -> Iter,
     Iter: Iterator<Item = &'a VpcExpose>,
-    G: Fn(&'a VpcExpose) -> &'a BTreeSet<Prefix>,
-    H: Fn(&'a VpcExpose) -> &'a BTreeSet<Prefix>,
+    G: Fn(&'a VpcExpose) -> &'a BTreeSet<PrefixWithOptionalPorts>,
+    H: Fn(&'a VpcExpose) -> &'a BTreeSet<PrefixWithOptionalPorts>,
 {
     exposes_filter(manifest).try_for_each(|expose| {
         // We should always have an idle timeout if we process this expose for stateful NAT.
@@ -186,7 +186,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
-    prefixes: &BTreeSet<Prefix>,
+    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
     dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
@@ -234,7 +234,7 @@ fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 }
 
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
-    prefixes: &BTreeSet<Prefix>,
+    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
     idle_timeout: Duration,
 ) -> Result<IpAllocator<J>, AllocatorError> {
     let pool = create_natpool(prefixes, idle_timeout)?;
@@ -243,17 +243,23 @@ fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
 }
 
 fn create_natpool<J: NatIpWithBitmap>(
-    prefixes: &BTreeSet<Prefix>,
+    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
     idle_timeout: Duration,
 ) -> Result<NatPool<J>, AllocatorError> {
     // Build mappings for IPv6 <-> u32 bitmap translation
-    let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(prefixes)?;
+    let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(
+        &prefixes
+            .iter()
+            .map(PrefixWithOptionalPorts::prefix)
+            .collect::<BTreeSet<Prefix>>(),
+    )?;
 
     // Mark all addresses as available (free) in bitmap
     let mut bitmap = PoolBitmap::new();
     prefixes
         .iter()
-        .try_for_each(|prefix| bitmap.add_prefix(prefix, &reverse_bitmap_mapping))?;
+        // FIXME: Add port range, too
+        .try_for_each(|prefix| bitmap.add_prefix(&prefix.prefix(), &reverse_bitmap_mapping))?;
 
     Ok(NatPool::new(
         bitmap,
@@ -264,7 +270,7 @@ fn create_natpool<J: NatIpWithBitmap>(
 }
 
 fn pool_table_tcp_key_for_expose<I: NatIp>(
-    prefix: &Prefix,
+    prefix: &PrefixWithOptionalPorts,
     dst_vpc_id: VpcDiscriminant,
 ) -> Result<PoolTableKey<I>, AllocatorError> {
     let (addr, addr_range_end) = prefix_bounds(prefix)?;
@@ -294,7 +300,7 @@ where
 
 fn add_exempt_entries<I: NatIpWithBitmap>(
     table: &mut ExemptTable<I>,
-    prefixes: &BTreeSet<Prefix>,
+    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
     src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
 ) -> Result<(), AllocatorError> {
@@ -305,7 +311,7 @@ fn add_exempt_entries<I: NatIpWithBitmap>(
 }
 
 fn exempt_table_key_for_expose<I: NatIp>(
-    prefix: &Prefix,
+    prefix: &PrefixWithOptionalPorts,
     src_vpc_id: VpcDiscriminant,
     dst_vpc_id: VpcDiscriminant,
 ) -> Result<ExemptTableKey<I>, AllocatorError> {
@@ -318,10 +324,10 @@ fn exempt_table_key_for_expose<I: NatIp>(
     ))
 }
 
-fn prefix_bounds<I: NatIp>(prefix: &Prefix) -> Result<(I, I), AllocatorError> {
-    let addr = I::try_from_addr(prefix.as_address())
+fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> Result<(I, I), AllocatorError> {
+    let addr = I::try_from_addr(prefix.prefix().as_address())
         .map_err(|()| AllocatorError::InternalIssue("Failed to build IP address".to_string()))?;
-    let addr_range_end = match prefix {
+    let addr_range_end = match prefix.prefix() {
         Prefix::IPV4(p) => I::try_from_ipv4_addr(p.last_address()).map_err(|()| {
             AllocatorError::InternalIssue("Failed to build IPv4 address from prefix".to_string())
         })?,
@@ -329,6 +335,7 @@ fn prefix_bounds<I: NatIp>(prefix: &Prefix) -> Result<(I, I), AllocatorError> {
             AllocatorError::InternalIssue("Failed to build IPv6 address from prefix".to_string())
         })?,
     };
+    // FIXME: Account for port ranges
     Ok((addr, addr_range_end))
 }
 
