@@ -105,12 +105,11 @@ impl<V: Clone> IpPrefixTrie<V> {
         self.ipv4.is_empty() && self.ipv6.is_empty()
     }
 
-    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &V)> {
-        self.ipv4.iter()
-    }
-
-    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &V)> {
-        self.ipv6.iter()
+    pub fn iter_for_prefix(&self, prefix: &Prefix) -> Box<dyn Iterator<Item = (Prefix, &V)> + '_> {
+        match prefix {
+            Prefix::IPV4(_) => Box::new(self.ipv4.iter().map(|(k, v)| (Prefix::IPV4(*k), v))),
+            Prefix::IPV6(_) => Box::new(self.ipv6.iter().map(|(k, v)| (Prefix::IPV6(*k), v))),
+        }
     }
 }
 
