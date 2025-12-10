@@ -266,6 +266,208 @@ mod tests {
         assert_eq!(collapsed_peering.local.exposes[0], expected_expose);
     }
 
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn test_collapse_prefixes_with_ports() {
+        use lpm::prefix::PortRange;
+
+        fn btree_from(prefixes: Vec<&str>) -> BTreeSet<PrefixWithOptionalPorts> {
+            prefixes.into_iter().map(Into::into).collect()
+        }
+
+        fn btree_from_ports(
+            prefixes_with_ports: Vec<(&str, Option<(u16, u16)>)>,
+        ) -> BTreeSet<PrefixWithOptionalPorts> {
+            prefixes_with_ports
+                .into_iter()
+                .map(|(prefix_str, port_opt)| {
+                    let prefix = Prefix::from(prefix_str);
+                    let ports = port_opt.map(|(start, end)| {
+                        PortRange::new(start, end).expect("Invalid port range")
+                    });
+                    PrefixWithOptionalPorts::new(prefix, ports)
+                })
+                .collect()
+        }
+
+        fn no_overlap(prefix_list: &BTreeSet<PrefixWithOptionalPorts>) -> bool {
+            prefix_list.iter().all(|prefix| {
+                prefix_list
+                    .iter()
+                    .all(|other| prefix == other || !prefix.overlaps(other))
+            })
+        }
+
+        // Empty sets
+        let prefixes = BTreeSet::new();
+        let excludes = BTreeSet::new();
+        let expected = prefixes.clone();
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Empty prefixes, non-empty excludes with ports
+        let prefixes = BTreeSet::new();
+        let excludes = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((80, 443))),
+            ("2.0.0.0/24", Some((22, 22))),
+        ]);
+        let expected = prefixes.clone();
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Excludes outside prefix with ports
+        let prefixes = btree_from_ports(vec![("10.0.0.0/16", Some((80, 100)))]);
+        let excludes = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((80, 100))),
+            ("2.0.0.0/24", Some((22, 22))),
+        ]);
+        let expected = prefixes.clone();
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Non-empty prefixes with ports, empty excludes
+        let prefixes = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((80, 443))),
+            ("2.0.0.0/16", Some((8000, 9000))),
+        ]);
+        let excludes = BTreeSet::new();
+        let expected = prefixes.clone();
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Differing IP versions with ports
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((80, 443)))]);
+        let excludes = btree_from_ports(vec![("1::/112", Some((80, 443)))]);
+        let expected = prefixes.clone();
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Port range collapsing - non-overlapping port ranges
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 5000)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/16", Some((6000, 7000)))]);
+        let expected = prefixes.clone();
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Port range collapsing - exclude covers entire port range
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 5000)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 5000)))]);
+        let expected = btree_from_ports(vec![]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Port range collapsing - exclude covers part of port range
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 5000)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 4500)))]);
+        let expected = btree_from_ports(vec![("1.0.0.0/16", Some((4501, 5000)))]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Port range collapsing - exclude in middle of port range
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 5000)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/16", Some((4200, 4800)))]);
+        let expected = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((4000, 4199))),
+            ("1.0.0.0/16", Some((4801, 5000))),
+        ]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Prefix and port range collapsing combined
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 5000)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/17", Some((4000, 4500)))]);
+        let expected = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((4501, 5000))),
+            ("1.0.128.0/17", Some((4000, 4500))),
+        ]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Prefix exclusion with port range - exclude smaller prefix
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((4000, 5000)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/17", Some((4000, 5000)))]);
+        let expected = btree_from_ports(vec![("1.0.128.0/17", Some((4000, 5000)))]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Multiple excludes with different port ranges
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((1000, 2000)))]);
+        let excludes = btree_from_ports(vec![
+            ("1.0.0.0/17", Some((1000, 1500))),
+            ("1.0.0.0/16", Some((1800, 1900))),
+        ]);
+        let expected = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((1501, 1799))),
+            ("1.0.0.0/16", Some((1901, 2000))),
+            ("1.0.128.0/17", Some((1000, 1500))),
+        ]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Prefix without ports, exclude with ports
+        let prefixes = btree_from(vec!["1.0.0.0/16"]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/17", Some((4000, 5000)))]);
+        let expected = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((0, 3999))),
+            ("1.0.0.0/16", Some((5001, 65535))),
+            ("1.0.128.0/17", Some((4000, 5000))),
+        ]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Prefix with ports, exclude without ports
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((80, 443)))]);
+        let excludes = btree_from(vec!["1.0.0.0/17"]);
+        let expected = btree_from_ports(vec![("1.0.128.0/17", Some((80, 443)))]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Edge case: single port
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((80, 80)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/16", Some((80, 80)))]);
+        let expected = btree_from_ports(vec![]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Edge case: full port range
+        let prefixes = btree_from_ports(vec![("1.0.0.0/16", Some((0, 65535)))]);
+        let excludes = btree_from_ports(vec![("1.0.0.0/17", Some((0, 32767)))]);
+        let expected = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((32768, 65535))),
+            ("1.0.128.0/17", Some((0, 32767))),
+        ]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // IPv6 with ports
+        let prefixes = btree_from_ports(vec![("2001:db8::/32", Some((4000, 5000)))]);
+        let excludes = btree_from_ports(vec![("2001:db8::/33", Some((4000, 4500)))]);
+        let expected = btree_from_ports(vec![
+            ("2001:db8::/32", Some((4501, 5000))),
+            ("2001:db8:8000::/33", Some((4000, 4500))),
+        ]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+
+        // Multiple prefixes with ports, multiple excludes with ports
+        let prefixes = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((4000, 5000))),
+            ("2.0.0.0/24", Some((6000, 9000))),
+        ]);
+        let excludes = btree_from_ports(vec![
+            ("1.0.0.0/17", Some((4500, 5000))),
+            ("2.0.0.0/25", Some((7000, 8000))),
+        ]);
+        let expected = btree_from_ports(vec![
+            ("1.0.0.0/16", Some((4000, 4499))),
+            ("1.0.128.0/17", Some((4500, 5000))),
+            ("2.0.0.0/24", Some((6000, 6999))),
+            ("2.0.0.0/24", Some((8001, 9000))),
+            ("2.0.0.128/25", Some((7000, 8000))),
+        ]);
+        assert!(no_overlap(&expected));
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
+    }
+
     use bolero::{Driver, ValueGenerator};
     use std::ops::Bound;
     struct RandomPrefixSetGenerator {
