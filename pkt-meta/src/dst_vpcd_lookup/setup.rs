@@ -6,20 +6,19 @@ use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, VpcTable};
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
-use lpm::prefix::Prefix;
-use lpm::prefix::ip::IpPrefixColliding;
+use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts};
 use net::packet::VpcDiscriminant;
 use tracing::debug;
 
 fn insert_prefix_or_update_duplicates(
     table: &mut VpcDiscriminantTable,
     dst_vpcd: VpcDiscriminant,
-    prefix: &Prefix,
-    colliding_prefixes: Vec<Prefix>,
+    prefix: &PrefixWithOptionalPorts,
+    colliding_prefixes: Vec<PrefixWithOptionalPorts>,
 ) {
     if colliding_prefixes.is_empty() {
         // No collision, insert new entry
-        table.dst_vpcds.insert(*prefix, Some(dst_vpcd));
+        table.insert(*prefix, Some(dst_vpcd));
     } else {
         // For a given source VPC discriminant, for a given, we have overlapping destination
         // prefixes with different destination VPC discriminants, meaning we cannot uniquely
@@ -30,41 +29,31 @@ fn insert_prefix_or_update_duplicates(
         //
         // This value may be changed later, based on stateful NAT allocations.
         for p in colliding_prefixes {
-            table.dst_vpcds.insert(p, None);
+            table.insert(p, None);
         }
         debug!(
             "Destination VPC discriminant table: duplicate prefix {} for destination discriminant {}",
             prefix, dst_vpcd
         );
-        table.dst_vpcds.insert(*prefix, None);
+        table.insert(*prefix, None);
     }
 }
 
-fn process_prefix(table: &mut VpcDiscriminantTable, dst_vpcd: VpcDiscriminant, prefix: &Prefix) {
+fn process_prefix(
+    table: &mut VpcDiscriminantTable,
+    dst_vpcd: VpcDiscriminant,
+    prefix: &PrefixWithOptionalPorts,
+) {
     // FIXME: Complexity isn't ideal here (O(n^2)), because we compare each prefix with all other
     // prefixes in the trie. We also process colliding prefixes multiple times (if A and B collide,
     // we update them as duplicates when processing both A and B). We might need to look for
     // optimization if working with large numbers of prefixes.
-    match prefix {
-        Prefix::IPV4(prefix_v4) => {
-            let colliding_prefixes = table
-                .dst_vpcds
-                .iter_v4()
-                .filter(|(k, v)| k.collides_with(prefix_v4) && v.is_none_or(|v| v != dst_vpcd))
-                .map(|(k, _)| Prefix::IPV4(*k))
-                .collect::<Vec<_>>();
-            insert_prefix_or_update_duplicates(table, dst_vpcd, prefix, colliding_prefixes);
-        }
-        Prefix::IPV6(prefix_v6) => {
-            let colliding_prefixes = table
-                .dst_vpcds
-                .iter_v6()
-                .filter(|(k, v)| k.collides_with(prefix_v6) && v.is_none_or(|v| v != dst_vpcd))
-                .map(|(k, _)| Prefix::IPV6(*k))
-                .collect::<Vec<_>>();
-            insert_prefix_or_update_duplicates(table, dst_vpcd, prefix, colliding_prefixes);
-        }
-    }
+    let colliding_prefixes = table
+        .iter_for_prefix(&prefix.prefix())
+        .filter(|(k, v)| k.overlaps(prefix) && v.is_none_or(|v| v != dst_vpcd))
+        .map(|(k, _)| k)
+        .collect::<Vec<_>>();
+    insert_prefix_or_update_duplicates(table, dst_vpcd, prefix, colliding_prefixes);
 }
 
 fn process_peering(
@@ -88,7 +77,7 @@ fn process_peering(
 
     new_peering.remote.exposes.iter().for_each(|expose| {
         for prefix in expose.public_ips() {
-            process_prefix(table, remote_vpcd, &prefix.prefix()); // FIXME
+            process_prefix(table, remote_vpcd, prefix);
         }
     });
     Ok(())
@@ -130,13 +119,12 @@ mod tests {
         vpcd_tables: &'_ VpcDiscriminantTables,
         vpcd: VpcDiscriminant,
         ip: IpAddr,
-    ) -> Option<(Prefix, &'_ Option<VpcDiscriminant>)> {
+    ) -> Option<(PrefixWithOptionalPorts, &'_ Option<VpcDiscriminant>)> {
         vpcd_tables
             .tables_by_discriminant
             .get(&vpcd)
             .unwrap()
-            .dst_vpcds
-            .lookup(ip)
+            .lookup(ip, None)
     }
 
     fn addr(addr: &str) -> IpAddr {
@@ -285,7 +273,7 @@ mod tests {
         // table for vni 1 (uses second expose block, ensures we look at them all)
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd1, addr("5.5.5.1")),
-            Some((Prefix::from("5.5.0.0/17"), &Some(vpcd2)))
+            Some((Prefix::from("5.5.0.0/17").into(), &Some(vpcd2)))
         );
 
         assert_eq!(dst_vpcd_lookup(&vpcd_tables, vpcd1, addr("5.6.0.1")), None);
@@ -293,14 +281,14 @@ mod tests {
         // Make sure dst VNI lookup for non-NAT stuff works
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd1, addr("8.0.1.1")),
-            Some((Prefix::from("8.0.1.0/24"), &Some(vpcd2)))
+            Some((Prefix::from("8.0.1.0/24").into(), &Some(vpcd2)))
         );
 
         //////////////////////
         // table for vni 2 (uses first expose block, ensures we look at them all)
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("2.2.0.1")),
-            Some((Prefix::from("2.2.0.0/24"), &Some(vpcd1)))
+            Some((Prefix::from("2.2.0.0/24").into(), &Some(vpcd1)))
         );
 
         assert_eq!(dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("2.2.2.1")), None);
@@ -400,38 +388,38 @@ mod tests {
         // Check lookup with vpc-1 or vpc-3 as source
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd1, addr("2.0.0.2")),
-            Some((Prefix::from("2.0.0.0/24"), &Some(vpcd2)))
+            Some((Prefix::from("2.0.0.0/24").into(), &Some(vpcd2)))
         );
 
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd3, addr("3.0.0.2")),
-            Some((Prefix::from("3.0.0.0/24"), &Some(vpcd2)))
+            Some((Prefix::from("3.0.0.0/24").into(), &Some(vpcd2)))
         );
 
         // Check overlap: same prefixes
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("20.0.0.2")),
-            Some((Prefix::from("20.0.0.0/24"), &None)) // No destination VPC discriminant
+            Some((Prefix::from("20.0.0.0/24").into(), &None)) // No destination VPC discriminant
         );
 
         // Check overlap: different but overlapping prefixes
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("21.0.0.2")),
-            Some((Prefix::from("21.0.0.0/24"), &None)) // No destination VPC discriminant
+            Some((Prefix::from("21.0.0.0/24").into(), &None)) // No destination VPC discriminant
         );
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("21.0.255.2")),
-            Some((Prefix::from("21.0.0.0/16"), &None)) // No destination VPC discriminant
+            Some((Prefix::from("21.0.0.0/16").into(), &None)) // No destination VPC discriminant
         );
 
         // Check overlap: overlapping VpcExpose, but prefixes with no overlap
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("22.0.0.2")),
-            Some((Prefix::from("22.0.0.0/24"), &Some(vpcd1)))
+            Some((Prefix::from("22.0.0.0/24").into(), &Some(vpcd1)))
         );
         assert_eq!(
             dst_vpcd_lookup(&vpcd_tables, vpcd2, addr("25.0.0.2")),
-            Some((Prefix::from("25.0.0.0/24"), &Some(vpcd3)))
+            Some((Prefix::from("25.0.0.0/24").into(), &Some(vpcd3)))
         );
     }
 }
