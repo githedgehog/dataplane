@@ -3,10 +3,8 @@
 
 use crate::external::overlay::vpc::Peering;
 use crate::utils::ConfigUtilError;
-use lpm::prefix::Prefix;
+use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts};
 use std::collections::BTreeSet;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use tracing::error;
 
 // Collapse prefixes and exclusion prefixes in a Peering object: for each expose object, "apply"
 // exclusion prefixes to split allowed prefixes into smaller chunks, and remove exclusion prefixes
@@ -14,6 +12,11 @@ use tracing::error;
 //
 // For example, for a given expose with "ips" as 1.0.0.0/16 and "nots" as 1.0.0.0/18, the resulting
 // expose will contain 1.0.128.0/17 and 1.0.64.0/18 as "ips" prefixes, and an empty "nots" list.
+//
+// Another example would be "ips" as 1.0.0.0/16, with associated port range 4000-5000, and "nots" as
+// 1.0.0.0/17, with associated port range 4000-4500. The resulting expose will contain (1.0.0.0/16,
+// 0-3999), (1.0.0.0/16, 4501-5000), and (1.0.128.0/17, 4000-4500) as "ips" prefixes, and again, an
+// empty "nots" list.
 pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, ConfigUtilError> {
     let mut clone = peering.clone();
     for expose in &mut clone
@@ -22,21 +25,16 @@ pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, ConfigUti
         .iter_mut()
         .chain(&mut clone.remote.exposes.iter_mut())
     {
-        let ips = collapse_prefix_lists(
-            &expose.ips.iter().map(|p| p.prefix()).collect(), // FIXME
-            &expose.nots.iter().map(|p| p.prefix()).collect(), // FIXME
-        )?;
-        expose.ips = ips.into_iter().map(|p| p.into()).collect(); // FIXME
+        let ips = collapse_prefix_lists(&expose.ips, &expose.nots);
+        expose.ips = ips;
         expose.nots = BTreeSet::new();
 
-        if let Some(nat) = expose.nat.as_mut() {
-            let as_range = collapse_prefix_lists(
-                &nat.as_range.iter().map(|p| p.prefix()).collect(), // FIXME
-                &nat.not_as.iter().map(|p| p.prefix()).collect(),   // FIXME
-            )?;
-            nat.as_range = as_range.into_iter().map(|p| p.into()).collect(); // FIXME
-            nat.not_as = BTreeSet::new();
-        }
+        let Some(nat) = expose.nat.as_mut() else {
+            continue;
+        };
+        let as_range = collapse_prefix_lists(&nat.as_range, &nat.not_as);
+        nat.as_range = as_range;
+        nat.not_as = BTreeSet::new();
     }
     Ok(clone)
 }
@@ -45,118 +43,27 @@ pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, ConfigUti
 // prefixes to the allowed prefixes and split them into smaller allowed segments, to express the
 // same IP ranges without any exclusion prefixes.
 fn collapse_prefix_lists(
-    prefixes: &BTreeSet<Prefix>,
-    excludes: &BTreeSet<Prefix>,
-) -> Result<BTreeSet<Prefix>, ConfigUtilError> {
+    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
+    excludes: &BTreeSet<PrefixWithOptionalPorts>,
+) -> BTreeSet<PrefixWithOptionalPorts> {
     let mut result = prefixes.clone();
-    // Sort the exclusion prefixes by length in ascending order (meaning a /16 is _smaller_ than a
-    // /24, and comes first). If there are some exclusion prefixes with overlap, this ensures that
-    // we take out the biggest chunk from the allowed prefix first (and don't need to process the
-    // smaller exclusion prefix at all).
-    let mut excludes_sorted = excludes.iter().collect::<Vec<_>>();
-    excludes_sorted.sort_by_key(|p| p.length());
-
     // Iterate over all exclusion prefixes
-    for exclude in &excludes_sorted {
-        let result_clone = result.clone();
-        for prefix in &result_clone {
-            // Only bother with prefixes of the same IP version. We should reject distinct versions
-            // at validation time for the expose anyway.
-            if prefix.is_ipv4() != exclude.is_ipv4() {
-                continue;
-            }
-            // If exclusion prefix is bigger or equal to the allowed prefix, remove the allowed
-            // prefix. Given that we remove it, there's no need to compare it with the remaining
-            // exclusion prefixes.
-            if exclude.covers(prefix) {
-                result.remove(prefix);
-                continue;
-            }
-
-            // If allowed prefix covers the exclusion prefix, then it means the exclusion prefix
-            // excludes a portion of this allowed prefix. We need to remove the allowed prefix, and
-            // add instead the smaller fragments resulting from the application of the exclusion
-            // prefix.
-            if prefix.covers(exclude) {
-                let mut apply_exclude_result = apply_exclude(prefix, exclude)?;
-                result.remove(prefix);
-                result.append(&mut apply_exclude_result);
+    for exclude in excludes {
+        for prefix in result.clone() {
+            // If the allowed prefix overlaps with the exclusion prefix, then it means the exclusion
+            // prefix excludes a portion of this allowed prefix. We need to remove the allowed
+            // prefix, and add instead the smaller fragments resulting from the application of the
+            // exclusion prefix.
+            if prefix.overlaps(exclude) {
+                result.remove(&prefix);
+                for p in prefix.subtract(exclude) {
+                    result.insert(p);
+                }
             }
         }
     }
 
-    Ok(result)
-}
-
-// Split a given allowed prefix into smaller allowed prefixes, taking into account exclusion
-// prefixes, to express the same range of allowed IP addresses without the need for exclusion
-// prefixes.
-fn apply_exclude(prefix: &Prefix, exclude: &Prefix) -> Result<BTreeSet<Prefix>, ConfigUtilError> {
-    let mut result = BTreeSet::new();
-    let mut prefix_covering_exclude = *prefix;
-    let len_diff = exclude.length() - prefix.length();
-
-    for _ in 0..len_diff {
-        let (subprefix_low, subprefix_high) = prefix_split(&prefix_covering_exclude)?;
-
-        if subprefix_low.covers(exclude) {
-            result.insert(subprefix_high);
-            prefix_covering_exclude = subprefix_low;
-        } else {
-            result.insert(subprefix_low);
-            prefix_covering_exclude = subprefix_high;
-        }
-    }
-
-    Ok(result)
-}
-
-// Split a prefix into two smaller prefixes of equal size, by adding one bit to the prefix length.
-//
-// # Errors
-//
-// Returns an error if the prefix is a /32 (for IPv4) or /128 (for IPv6)
-fn prefix_split(prefix: &Prefix) -> Result<(Prefix, Prefix), ConfigUtilError> {
-    let prefix_len = prefix.length();
-    let prefix_address = prefix.as_address();
-
-    // Compute the address of the second prefix.
-    //
-    //     1.0.0.0/16 splits as 1.0.0.0/17 and 1.0.128.0/17
-    //     1.0.0.0/24 splits as 1.0.0.0/25 and 1.0.0.128/25
-    //     1.0.0.0/31 splits as 1.0.0.0/32 and 1.0.0.1/32
-    //
-    // So we do (for IPv4): base_address + (1 << (32 - prefix_len - 1))
-    let split_address = match prefix_address {
-        IpAddr::V4(addr) => {
-            if prefix_len == Prefix::MAX_LEN_IPV4 {
-                error!("Cannot split IPv4 prefix of length {prefix_len}");
-                return Err(ConfigUtilError::SplitPrefixError(*prefix));
-            }
-            let new_addr = addr | Ipv4Addr::from_bits(1 << (32 - prefix_len - 1));
-            IpAddr::V4(new_addr)
-        }
-        IpAddr::V6(addr) => {
-            if prefix_len == Prefix::MAX_LEN_IPV6 {
-                error!("Cannot split IPv6 prefix of length {prefix_len}");
-                return Err(ConfigUtilError::SplitPrefixError(*prefix));
-            }
-            let new_addr = addr | Ipv6Addr::from_bits(1 << (128 - prefix_len - 1));
-            IpAddr::V6(new_addr)
-        }
-    };
-
-    let Ok(subprefix_low) = Prefix::try_from((prefix_address, prefix_len + 1)) else {
-        // We should never reach this, we returned early if dealing with a /32
-        error!("Bug in apply_exclude logics (/32)");
-        return Err(ConfigUtilError::SplitPrefixError(*prefix));
-    };
-    let Ok(subprefix_high) = Prefix::try_from((split_address, prefix_len + 1)) else {
-        error!("Bug in apply_exclude logics (/128)");
-        return Err(ConfigUtilError::SplitPrefixError(*prefix));
-    };
-
-    Ok((subprefix_low, subprefix_high))
+    result
 }
 
 #[cfg(test)]
@@ -164,37 +71,14 @@ mod tests {
     use super::*;
     use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
+    use lpm::prefix::Prefix;
     use lpm::trie::IpPrefixTrie;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
-    fn test_prefix_split() {
-        assert_eq!(
-            prefix_split(&"1.0.0.0/16".into()).expect("Failed to split prefix"),
-            ("1.0.0.0/17".into(), "1.0.128.0/17".into())
-        );
-        assert_eq!(
-            prefix_split(&"1.0.0.0/17".into()).expect("Failed to split prefix"),
-            ("1.0.0.0/18".into(), "1.0.64.0/18".into())
-        );
-        assert_eq!(
-            prefix_split(&"1.0.128.0/17".into()).expect("Failed to split prefix"),
-            ("1.0.128.0/18".into(), "1.0.192.0/18".into())
-        );
-        assert_eq!(
-            prefix_split(&"1.0.0.0/24".into()).expect("Failed to split prefix"),
-            ("1.0.0.0/25".into(), "1.0.0.128/25".into())
-        );
-        assert_eq!(
-            prefix_split(&"1.0.0.0/31".into()).expect("Failed to split prefix"),
-            ("1.0.0.0/32".into(), "1.0.0.1/32".into())
-        );
-    }
-
-    #[test]
     #[allow(clippy::too_many_lines)]
     fn test_collapse_prefix_lists() {
-        fn btree_from(prefixes: Vec<&str>) -> BTreeSet<Prefix> {
+        fn btree_from(prefixes: Vec<&str>) -> BTreeSet<PrefixWithOptionalPorts> {
             prefixes.into_iter().map(Into::into).collect()
         }
 
@@ -202,81 +86,54 @@ mod tests {
         let prefixes = BTreeSet::new();
         let excludes = BTreeSet::new();
         let expected = prefixes.clone();
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Empty prefixes, non-empty excludes
         let prefixes = BTreeSet::new();
         let excludes = btree_from(vec!["1.0.0.0/16", "2.0.0.0/24"]);
         let expected = prefixes.clone();
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Excludes outside prefix
         let prefixes = btree_from(vec!["10.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.0.0/16", "2.0.0.0/24"]);
         let expected = prefixes.clone();
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Non-empty prefixes, empty excludes
         let prefixes = btree_from(vec!["1.0.0.0/16", "2.0.0.0/16"]);
         let excludes = BTreeSet::new();
         let expected = prefixes.clone();
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Differing IP versions
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
         let excludes = btree_from(vec!["1::/112"]);
         let expected = prefixes.clone();
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Longer exclude that does not cover the prefixes
         let prefixes = btree_from(vec!["128.0.0.0/2"]);
         let excludes = btree_from(vec!["0.0.0.0/1"]);
         let expected = prefixes.clone();
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Actual collapsing
 
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.0.0/16"]);
         let expected = btree_from(vec![]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.0.0/17"]);
         let expected = btree_from(vec!["1.0.128.0/17"]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.128.0/17"]);
         let expected = btree_from(vec!["1.0.0.0/17"]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.1.0/24"]);
@@ -290,19 +147,13 @@ mod tests {
             "1.0.2.0/23",
             "1.0.0.0/24",
         ]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Edge cases on sizes
         let prefixes = btree_from(vec!["1.1.1.1/32"]);
         let excludes = btree_from(vec!["1.1.1.1/32"]);
         let expected = btree_from(vec![]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         let prefixes = btree_from(vec!["0.0.0.0/0"]);
         let excludes = btree_from(vec!["0.0.0.0/32"]);
@@ -340,18 +191,12 @@ mod tests {
             "0.0.0.2/31",
             "0.0.0.1/32",
         ]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         let prefixes = btree_from(vec!["1.1.1.1/32"]);
         let excludes = btree_from(vec!["0.0.0.0/0"]);
         let expected = btree_from(vec![]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Multiple prefixes
         let prefixes = btree_from(vec!["1.0.0.0/16", "2.0.17.0/24"]);
@@ -368,10 +213,7 @@ mod tests {
             "2.0.17.128/25",
             "2.0.17.0/26",
         ]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Multiple excludes on one prefix
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
@@ -385,19 +227,13 @@ mod tests {
             "1.0.2.0/24",
             "1.0.0.0/24",
         ]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Overlapping excludes
         let prefixes = btree_from(vec!["1.0.0.0/16"]);
         let excludes = btree_from(vec!["1.0.0.0/17", "1.0.0.0/24"]);
         let expected = btree_from(vec!["1.0.128.0/17"]);
-        assert_eq!(
-            collapse_prefix_lists(&prefixes, &excludes).unwrap(),
-            expected
-        );
+        assert_eq!(collapse_prefix_lists(&prefixes, &excludes), expected);
 
         // Full peering
         let expose = VpcExpose::empty()
@@ -438,7 +274,7 @@ mod tests {
     }
 
     impl ValueGenerator for RandomPrefixSetGenerator {
-        type Output = BTreeSet<Prefix>;
+        type Output = BTreeSet<PrefixWithOptionalPorts>;
 
         fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
             let mut prefixes = BTreeSet::new();
@@ -454,7 +290,11 @@ mod tests {
                     let bits: u128 = d.produce()?;
                     IpAddr::from(Ipv6Addr::from_bits(bits))
                 };
-                let prefix = Prefix::from(IpNet::new_assert(addr, prefix_len));
+                // TODO: Also add port ranges
+                let prefix = PrefixWithOptionalPorts::new(
+                    Prefix::from(IpNet::new_assert(addr, prefix_len)),
+                    None,
+                );
                 prefixes.insert(prefix);
             }
             Some(prefixes)
@@ -469,8 +309,8 @@ mod tests {
 
     #[derive(Debug)]
     struct PrefixExcludeAddrs {
-        prefixes: BTreeSet<Prefix>,
-        excludes: BTreeSet<Prefix>,
+        prefixes: BTreeSet<PrefixWithOptionalPorts>,
+        excludes: BTreeSet<PrefixWithOptionalPorts>,
         addrs: Vec<IpAddr>,
     }
 
@@ -534,14 +374,14 @@ mod tests {
                 let mut excludes_trie = IpPrefixTrie::<()>::new();
                 let mut collapsed_prefixes_trie = IpPrefixTrie::<()>::new();
                 for prefix in prefixes {
-                    prefixes_trie.insert(*prefix, ());
+                    prefixes_trie.insert(prefix.prefix(), ());
                 }
                 for exclude in excludes {
-                    excludes_trie.insert(*exclude, ());
+                    excludes_trie.insert(exclude.prefix(), ());
                 }
-                let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes).unwrap();
+                let collapsed_prefixes = collapse_prefix_lists(prefixes, excludes);
                 for prefix in collapsed_prefixes.clone() {
-                    collapsed_prefixes_trie.insert(prefix, ());
+                    collapsed_prefixes_trie.insert(prefix.prefix(), ());
                 }
                 for addr in addrs {
                     let oracle_result = prefix_oracle(addr, &prefixes_trie, &excludes_trie);
