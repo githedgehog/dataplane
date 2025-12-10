@@ -154,15 +154,15 @@ cargo *args:
     for arg in "${args[@]}"; do
       case "$arg" in
         --debug|--profile=debug|--cargo-profile=debug)
-          declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+          declare -x RUSTFLAGS="${RUSTFLAGS_DEBUG}"
           declare -rx LIBC_ENV_PROFILE="debug"
           ;;
         --release|--profile=release|--cargo-profile=release)
-          declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
+          declare -x RUSTFLAGS="${RUSTFLAGS_RELEASE}"
           extra_args+=("$arg")
           ;;
         --profile=fuzz|--cargo-profile=fuzz)
-          declare -rx RUSTFLAGS="${RUSTFLAGS_FUZZ}"
+          declare -x RUSTFLAGS="${RUSTFLAGS_FUZZ}"
           export RUSTC_BOOTSTRAP=1
           extra_args+=("$arg")
           ;;
@@ -172,10 +172,11 @@ cargo *args:
       esac
     done
     if [ -z "${RUSTFLAGS:-}" ]; then
-      declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+      #declare -x RUSTFLAGS="${RUSTFLAGS_DEBUG}"
+      unset RUSTFLAGS
     fi
 
-    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} ${RUSTFLAGS} --html-in-header $(pwd)/scripts/doc/custom-header.html"
+    #export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} ${RUSTFLAGS} --html-in-header $(pwd)/scripts/doc/custom-header.html"
     ./compile-env/bin/cargo "${extra_args[@]}"
 
 # Run the (very minimal) compile environment
