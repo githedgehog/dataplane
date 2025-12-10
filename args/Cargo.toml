@@ -34,6 +34,3 @@ serde_yaml_ng = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["ansi"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(none)"] }
