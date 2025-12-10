@@ -38,6 +38,3 @@ bolero = { workspace = true, default-features = false, features = ["alloc"] }
 etherparse = { workspace = true }
 shuttle = { workspace = true, features = [] }
 tracing-test = { workspace = true, features = [] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(none)'] }
