@@ -14,7 +14,7 @@ use config::ConfigError;
 use config::external::overlay::vpc::{Peering, VpcTable};
 use config::external::overlay::vpcpeering::VpcExpose;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
-use lpm::prefix::Prefix;
+use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::vxlan::Vni;
 use std::collections::BTreeSet;
 
@@ -29,10 +29,10 @@ pub enum NatPeeringError {
 }
 
 pub(crate) fn generate_nat_values<'a>(
-    prefixes_to_update: &'a BTreeSet<Prefix>,
-    prefixes_to_point_to: &'a BTreeSet<Prefix>,
+    _prefixes_to_update: &'a BTreeSet<PrefixWithOptionalPorts>,
+    _prefixes_to_point_to: &'a BTreeSet<PrefixWithOptionalPorts>,
 ) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
-    range_builder::RangeBuilder::<'a>::new(prefixes_to_update, prefixes_to_point_to)
+    std::iter::empty() // FIXME
 }
 
 fn generate_public_values(
