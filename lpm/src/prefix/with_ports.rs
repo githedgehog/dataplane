@@ -405,6 +405,22 @@ impl PortRange {
         }
         Some(self.start + offset)
     }
+
+    /// Merges the given range into this range if possible.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(())` if the ranges were merged, `None` otherwise.
+    pub fn merge(&mut self, next: PortRange) -> Option<()> {
+        if self.start > next.start || self.end >= next.start {
+            return None;
+        }
+        if self.end + 1 == next.start {
+            self.end = next.end;
+            return Some(());
+        }
+        None
+    }
 }
 
 // Used for DisjointRangesBTreeMap

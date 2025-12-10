@@ -132,6 +132,17 @@ where
             .get_lpm(&IpPrefixW(addr.into()))
             .map(|(p, v)| (&p.0, v))
     }
+
+    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (&P, &V)>
+    where
+        A: Into<Self::Prefix>,
+    {
+        self.0
+            .cover(&IpPrefixW(addr.into()))
+            .collect::<Vec<_>>() // FIXME: Can we avoid the .collect() here?
+            .into_iter()
+            .map(|(p, v)| (&p.0, v))
+    }
 }
 
 pub type PrefixMapTrieWithDefault<P, V> = TrieMapWithDefault<PrefixMapTrie<P, V>>;

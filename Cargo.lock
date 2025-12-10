@@ -1499,6 +1499,7 @@ version = "0.6.0"
 dependencies = [
  "ahash",
  "arc-swap",
+ "bnum",
  "bolero",
  "dataplane-concurrency",
  "dataplane-config",

@@ -103,11 +103,11 @@ impl StatelessNat {
         // Note how we swap addresses to find NAT ranges: we're sending the inner packet back
         // without swapping source and destination in the header, so we need to swap the ranges we
         // get from the tables lookup.
-        let src_addr = table.find_dst_mapping(&net.src_addr());
-        let dst_addr = table.find_src_mapping(&net.dst_addr(), dst_vni);
+        let src_mapping = table.find_dst_mapping(&net.src_addr(), None); // FIXME
+        let dst_mapping = table.find_src_mapping(&net.dst_addr(), None, dst_vni); // FIXME
         Some(NatTranslationData {
-            src_addr,
-            dst_addr,
+            src_addr: src_mapping.map(|(addr, _)| addr),
+            dst_addr: dst_mapping.map(|(addr, _)| addr),
             ..Default::default()
         })
     }
@@ -158,16 +158,16 @@ impl StatelessNat {
         let mut modified = false;
 
         // Run NAT
-        if let Some(new_src) = table.find_src_mapping(&net.src_addr(), dst_vni)
-            && new_src != net.src_addr()
+        if let Some((new_src_addr, _new_src_port)) = table.find_src_mapping(&net.src_addr(), None, dst_vni) // FIXME
+            && new_src_addr != net.src_addr()
         {
-            self.translate_src(net, new_src)?;
+            self.translate_src(net, new_src_addr)?;
             modified = true;
         }
-        if let Some(new_dst) = table.find_dst_mapping(&net.dst_addr())
-            && new_dst != net.dst_addr()
+        if let Some((new_dst_addr, _new_dst_port)) = table.find_dst_mapping(&net.dst_addr(), None) // FIXME
+            && new_dst_addr != net.dst_addr()
         {
-            self.translate_dst(net, new_dst)?;
+            self.translate_dst(net, new_dst_addr)?;
             modified = true;
         }
 
