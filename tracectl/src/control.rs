@@ -5,12 +5,12 @@
 
 use ordermap::OrderMap;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::{collections::HashSet, sync::MutexGuard};
 use thiserror::Error;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, prelude::*, reload};
+use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, fmt, prelude::*, reload};
 
 use crate::display::TargetCfgDbByTag;
 use crate::targets::{TRACING_TAG_ALL, TRACING_TARGETS};
@@ -282,18 +282,60 @@ pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
     reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
 }
+
+/// Our custom formatter that prepends the name of the gateway on each log.
+/// It wraps a default formatter so that coloring is preserved.
+/// Otherwise, we'd need to color ourselves.
+struct CustomFormatter {
+    default_fmt: fmt::format::Format,
+    name: String,
+}
+impl CustomFormatter {
+    pub fn new(name: &str) -> Self {
+        let default_fmt = fmt::format()
+            .with_line_number(true)
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_thread_names(true)
+            .with_level(true)
+            .with_ansi(true);
+
+        Self {
+            default_fmt,
+            name: name.to_owned(),
+        }
+    }
+}
+
+impl<S, N> fmt::FormatEvent<S, N> for CustomFormatter
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'writer> fmt::FormatFields<'writer> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &fmt::FmtContext<'_, S, N>,
+        mut writer: fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        // gateway name
+        write!(writer, "{} ", self.name)?;
+
+        // log, formatted by default formatter
+        self.default_fmt.format_event(ctx, writer, event)
+    }
+}
+
 impl TracingControl {
     fn new() -> Self {
         let db = TargetCfgDb::new();
         let (filter, reload_filter) = reload::Layer::new(db.env_filter());
 
+        // get gateway name
+        let gwname = get_name().unwrap_or("noname");
+
         // formatting layer
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_line_number(true)
-            .with_target(true)
-            .with_thread_ids(false)
-            .with_thread_names(true)
-            .with_level(true);
+        let fmt_layer = tracing_subscriber::fmt::layer().event_format(CustomFormatter::new(gwname));
 
         // we should not be initializing the subscriber here, but that's fine atm
         if let Err(e) = tracing_subscriber::registry()
@@ -344,6 +386,21 @@ static TRACING_CTL: LazyLock<TracingControl> = LazyLock::new(TracingControl::new
 pub fn get_trace_ctl() -> &'static TracingControl {
     #[allow(clippy::explicit_auto_deref)] // needed by mechanics of lazy lock
     &*TRACING_CTL
+}
+
+/// Name given to this entity (gateway)
+static GWNAME: OnceLock<String> = OnceLock::new();
+
+/// Set the name of this entity (gateway)
+/// This should be called once and don't fail.
+pub fn set_name(name: &str) {
+    GWNAME
+        .set(name.to_owned())
+        .unwrap_or_else(|_| unreachable!());
+}
+/// Returns the name of this entity (gateway) if set
+pub fn get_name() -> Option<&'static str> {
+    GWNAME.get().map(String::as_str)
 }
 
 // public methods for TracingControl
