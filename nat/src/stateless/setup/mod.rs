@@ -29,10 +29,10 @@ pub enum NatPeeringError {
 }
 
 pub(crate) fn generate_nat_values<'a>(
-    _prefixes_to_update: &'a BTreeSet<PrefixWithOptionalPorts>,
-    _prefixes_to_point_to: &'a BTreeSet<PrefixWithOptionalPorts>,
-) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
-    std::iter::empty() // FIXME
+    prefixes_to_update: &'a BTreeSet<PrefixWithOptionalPorts>,
+    prefixes_to_point_to: &'a BTreeSet<PrefixWithOptionalPorts>,
+) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> + 'a {
+    range_builder::RangeBuilder::<'a>::new(prefixes_to_update, prefixes_to_point_to)
 }
 
 fn generate_public_values(
