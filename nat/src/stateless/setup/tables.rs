@@ -137,7 +137,7 @@ impl NatRuleTable {
 /// in the prefix, so that we can establish a one-to-one mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatTableValue {
-    ranges: Vec<TrieRange>,
+    ranges: Vec<IpRange>,
 }
 
 impl NatTableValue {
@@ -152,7 +152,7 @@ impl NatTableValue {
     /// Note: When possible, the new range is merged with the latest range in the list; so there is
     /// no guarantee, when calling this method, that the new range is added as a separate range, and
     /// that `self.ranges.len()` will be incremented.
-    pub fn add_range(&mut self, range: TrieRange) {
+    pub fn add_range(&mut self, range: IpRange) {
         if self.ranges.is_empty() {
             self.push(range);
             return;
@@ -167,17 +167,17 @@ impl NatTableValue {
 
     #[cfg(test)]
     #[must_use]
-    pub fn ranges(&self) -> &Vec<TrieRange> {
+    pub fn ranges(&self) -> &Vec<IpRange> {
         &self.ranges
     }
 
-    fn push(&mut self, range: TrieRange) {
+    fn push(&mut self, range: IpRange) {
         self.ranges.push(range);
     }
 
     /// Returns the total number of IP addresses covered by the ranges in this value.
     pub fn ip_len(&self) -> PrefixSize {
-        let sum = self.ranges.iter().map(TrieRange::ip_len).sum();
+        let sum = self.ranges.iter().map(IpRange::len).sum();
         debug_assert!(sum < PrefixSize::Overflow);
         sum
     }
@@ -195,11 +195,11 @@ impl NatTableValue {
 
         let mut offset = PrefixSize::U128(entry_offset);
         for range in &self.ranges {
-            if offset < range.ip_len() {
+            if offset < range.len() {
                 // We never grow offset, it cannot overflow a u128
                 return range.get_entry(offset.try_into().unwrap_or_else(|_| unreachable!()));
             }
-            offset -= range.ip_len();
+            offset -= range.len();
         }
         None
     }
@@ -207,12 +207,12 @@ impl NatTableValue {
 
 // Represents an IP address range, with a start and an end address.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrieRange {
+pub struct IpRange {
     start: IpAddr,
     end: IpAddr,
 }
 
-impl TrieRange {
+impl IpRange {
     #[must_use]
     pub fn new(start: IpAddr, end: IpAddr) -> Self {
         debug_assert!(start <= end, "start: {start}, end: {end}");
@@ -230,7 +230,7 @@ impl TrieRange {
     }
 
     // Returns the number of IP addresses covered by the range.
-    fn ip_len(&self) -> PrefixSize {
+    fn len(&self) -> PrefixSize {
         match (self.start, self.end) {
             (IpAddr::V4(start), IpAddr::V4(end)) => {
                 PrefixSize::U128(u128::from(end.to_bits().saturating_sub(start.to_bits())) + 1)
@@ -249,7 +249,7 @@ impl TrieRange {
 
     fn get_entry(&self, offset: u128) -> Option<IpAddr> {
         // This check also ensures that offset <= u32::MAX in the case of IPv4
-        if offset >= self.ip_len() {
+        if offset >= self.len() {
             return None;
         }
 
@@ -273,7 +273,7 @@ impl TrieRange {
     // # Returns
     //
     // Returns `Some(())` if the ranges were merged, or `None` otherwise.
-    fn merge(&mut self, next: &TrieRange) -> Option<()> {
+    fn merge(&mut self, next: &IpRange) -> Option<()> {
         // Always merge on the "right side". This is because we call this method when processing
         // ranges obtained from prefixes in a BTreeSet, so they are ordered, and we process the
         // smaller ones first; if we try to merge a new one into an existing one, it's a "bigger"
