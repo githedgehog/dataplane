@@ -19,9 +19,9 @@ bincode2 = { workspace = true, features = [] }
 clap = { workspace = true, features = ["derive", "std", "usage"] }
 colored = { workspace = true, features = [] }
 log = { workspace = true, features = ["serde"] }
-rustyline = { workspace = true , features = ["with-fuzzy", "custom-bindings"] }
-serde = {workspace = true, features = ["derive", "serde_derive"]}
-strum = { workspace = true }
+rustyline = { workspace = true, features = ["custom-bindings", "with-fuzzy"] }
+serde = { workspace = true, features = ["derive", "serde_derive"] }
+strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
 [build-dependencies]
