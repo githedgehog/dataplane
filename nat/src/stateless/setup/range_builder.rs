@@ -429,7 +429,7 @@ mod bolero_tests {
     use super::super::generate_nat_values;
     use super::*;
     use bolero::{Driver, ValueGenerator};
-    use lpm::prefix::{Prefix, PrefixSize, PrefixWithOptionalPorts};
+    use lpm::prefix::{IpRangeWithPorts, Prefix, PrefixSize, PrefixWithOptionalPorts};
     use std::cmp::max;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::ops::Bound;
@@ -684,7 +684,7 @@ mod bolero_tests {
             lengths: Vec<u8>,
             is_ipv4: bool,
             d: &mut D,
-        ) -> BTreeSet<Prefix> {
+        ) -> BTreeSet<PrefixWithOptionalPorts> {
             let mut list = BTreeSet::new();
             let mut ip_space = IpSpace::new(is_ipv4);
             for length in lengths {
@@ -692,14 +692,20 @@ mod bolero_tests {
                     continue;
                 };
                 let prefix = Prefix::try_from((ip, length)).unwrap();
-                list.insert(prefix);
+                // FIXME: Add support for port ranges
+                list.insert(prefix.into());
             }
             list
         }
 
-        fn build_ip_list<D: Driver>(prefixes: &'_ BTreeSet<Prefix>, d: &mut D) -> Vec<IpAddr> {
+        fn build_ip_list<D: Driver>(
+            prefixes: &'_ BTreeSet<PrefixWithOptionalPorts>,
+            d: &mut D,
+        ) -> Vec<IpAddr> {
             let mut list = Vec::new();
             for prefix in prefixes {
+                // FIXME: Add support for port ranges
+                let prefix = prefix.prefix();
                 for _ in 0..20 {
                     // Get prefix address
                     let mut addr = prefix.as_address();
@@ -728,7 +734,11 @@ mod bolero_tests {
     }
 
     impl ValueGenerator for PrefixListsGenerator {
-        type Output = (BTreeSet<Prefix>, BTreeSet<Prefix>, Vec<IpAddr>);
+        type Output = (
+            BTreeSet<PrefixWithOptionalPorts>,
+            BTreeSet<PrefixWithOptionalPorts>,
+            Vec<IpAddr>,
+        );
 
         fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
             // Generate random prefix lengths.
@@ -738,7 +748,10 @@ mod bolero_tests {
             // Use generated lengths to randomly build the original prefix list. These prefixes do not overlap.
             let orig = PrefixListsGenerator::build_list_from_lengths(lengths.clone(), is_ipv4, d);
             // Keep the lengths that we effectively used to generate the prefixes.
-            let mut effective_lengths = orig.iter().map(Prefix::length).collect::<Vec<_>>();
+            let mut effective_lengths = orig
+                .iter()
+                .map(|prefix| prefix.prefix().length())
+                .collect::<Vec<_>>();
 
             // Generate another series of lenghts, such that the sum of the sizes of the prefixes is
             // the same as the sum for the original list. We will use all lengths from this new list.
@@ -764,27 +777,26 @@ mod bolero_tests {
                 // We get two lists of prefixes with the same total size
 
                 // Compute the total size of the original prefixes
-                let orig_ranges_size = prefixes_to_update
-                    .iter()
-                    .fold(PrefixSize::U128(0), |res, prefix| res + prefix.size());
-                let target_ranges_size = prefixes_to_point_to
-                    .iter()
-                    .fold(PrefixSize::U128(0), |res, prefix| res + prefix.size());
+                let orig_ranges_size =
+                    prefixes_to_update
+                        .iter()
+                        .fold(PrefixSize::U128(0), |res, prefix| {
+                            // FIXME: Account for port ranges
+                            res + prefix.addr_range_len()
+                        });
+                let target_ranges_size =
+                    prefixes_to_point_to
+                        .iter()
+                        .fold(PrefixSize::U128(0), |res, prefix| {
+                            // FIXME: Account for port ranges
+                            res + prefix.addr_range_len()
+                        });
                 // Generation safety check: make sure total sizes are equal
                 assert_eq!(orig_ranges_size, target_ranges_size);
 
                 // Generate NAT ranges
-                let nat_ranges = generate_nat_values(
-                    &prefixes_to_update
-                        .iter()
-                        .map(|p| PrefixWithOptionalPorts::from(*p))
-                        .collect::<BTreeSet<PrefixWithOptionalPorts>>(), // FIXME
-                    &prefixes_to_point_to
-                        .iter()
-                        .map(|p| PrefixWithOptionalPorts::from(*p))
-                        .collect::<BTreeSet<PrefixWithOptionalPorts>>(), // FIXME
-                )
-                .collect::<Vec<_>>();
+                let nat_ranges = generate_nat_values(prefixes_to_update, prefixes_to_point_to)
+                    .collect::<Vec<_>>();
 
                 // Make sure that each IP picked within the original prefixes is in exactly one of
                 // the generated IP range
