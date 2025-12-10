@@ -29,7 +29,7 @@ rand = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive"] }
 small-map = { workspace = true, features = [] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time", "macros"] }
+tokio = { workspace = true, features = ["macros", "time", "sync"] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 
