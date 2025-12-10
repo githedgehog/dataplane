@@ -20,7 +20,7 @@ use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
 use routing::RouterParamsBuilder;
-use tracectl::{custom_target, get_trace_ctl, trace_target};
+use tracectl::{custom_target, get_trace_ctl, set_name, trace_target};
 
 use tracing::{error, info, level_filters::LevelFilter};
 
@@ -29,6 +29,11 @@ custom_target!("tonic", LevelFilter::ERROR, &[]);
 custom_target!("h2", LevelFilter::ERROR, &[]);
 custom_target!("Pyroscope", LevelFilter::INFO, &[]);
 
+fn init_name(args: &CmdArgs) {
+    if let Some(name) = args.get_name() {
+        set_name(name);
+    }
+}
 fn init_logging() {
     let tctl = get_trace_ctl();
     tctl.set_default_level(LevelFilter::DEBUG)
@@ -66,8 +71,9 @@ fn process_tracing_cmds(args: &CmdArgs) {
 }
 
 fn main() {
-    init_logging();
     let args = CmdArgs::parse();
+    init_name(&args);
+    init_logging();
     let agent_running = args.pyroscope_url().and_then(|url| {
         match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
             .backend(pprof_backend(
