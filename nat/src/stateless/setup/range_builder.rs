@@ -420,11 +420,223 @@ mod tests {
     use super::super::generate_nat_values;
     use super::*;
     use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts, PrefixWithPortsSize};
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;
 
     fn addr_v4(addr: &str) -> IpAddr {
         Ipv4Addr::from_str(addr).unwrap().into()
+    }
+
+    fn addr_v6(addr: &str) -> IpAddr {
+        Ipv6Addr::from_str(addr).unwrap().into()
+    }
+
+    #[test]
+    fn test_add_offset_to_address() {
+        assert_eq!(
+            add_offset_to_address(&addr_v4("1.0.0.0"), PrefixSize::U128(1)).unwrap(),
+            addr_v4("1.0.0.1")
+        );
+        assert_eq!(
+            add_offset_to_address(&addr_v4("1.0.0.0"), PrefixSize::U128(2u128.pow(8))).unwrap(),
+            addr_v4("1.0.1.0")
+        );
+        assert_eq!(
+            add_offset_to_address(&addr_v4("1.0.0.0"), PrefixSize::U128(2u128.pow(24))).unwrap(),
+            addr_v4("2.0.0.0")
+        );
+        assert_eq!(
+            add_offset_to_address(
+                &addr_v4("1.0.0.0"),
+                PrefixSize::U128(u128::from(u32::MAX) - 2u128.pow(24))
+            )
+            .unwrap(),
+            addr_v4("255.255.255.255")
+        );
+        assert!(
+            add_offset_to_address(
+                &addr_v4("1.0.0.0"),
+                PrefixSize::U128(u128::from(u32::MAX) - 2u128.pow(24) + 1)
+            )
+            .is_err()
+        );
+        assert!(add_offset_to_address(&addr_v4("1.0.0.0"), PrefixSize::Ipv6MaxAddrs).is_err());
+        assert_eq!(
+            add_offset_to_address(&addr_v6("::"), PrefixSize::U128(u128::MAX)).unwrap(),
+            addr_v6("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+        );
+        assert!(add_offset_to_address(&addr_v6("::"), PrefixSize::Ipv6MaxAddrs).is_err());
+    }
+
+    #[test]
+    fn test_add_offset_to_address_with_ports() {
+        assert_eq!(
+            add_offset_to_address_and_port(
+                &addr_v4("1.0.0.0"),
+                4200,
+                PortRange::new(4000, 4999).unwrap(),
+                PrefixWithPortsSize::from(15_428u16)
+            )
+            .unwrap(),
+            (addr_v4("1.0.0.15"), 4628)
+        );
+        assert_eq!(
+            add_offset_to_address_and_port(
+                &addr_v6("::"),
+                0,
+                PortRange::new(0, u16::MAX).unwrap(),
+                max_theoretical_size() - PrefixWithPortsSize::from(1u16)
+            )
+            .unwrap(),
+            (addr_v6("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), u16::MAX)
+        );
+    }
+
+    #[test]
+    fn test_ip_addr_diff() {
+        assert_eq!(
+            ip_addr_diff(&addr_v4("1.0.0.0"), &addr_v4("0.0.0.0")),
+            2u128.pow(24)
+        );
+    }
+
+    #[test]
+    fn test_decrement_ip_addr() {
+        assert_eq!(decrement_ip_addr(&addr_v4("1.0.0.1")), addr_v4("1.0.0.0"));
+        assert_eq!(
+            decrement_ip_addr(&addr_v4("1.0.0.0")),
+            addr_v4("0.255.255.255")
+        );
+        assert_eq!(decrement_ip_addr(&addr_v4("0.0.0.0")), addr_v4("0.0.0.0"));
+
+        assert_eq!(
+            decrement_ip_addr(&addr_v6("abcd::1234")),
+            addr_v6("abcd::1233")
+        );
+        assert_eq!(decrement_ip_addr(&addr_v6("::")), addr_v6("::"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn test_create_new_ranges() {
+        // Same IP address
+        assert_eq!(
+            create_new_ranges(
+                (addr_v4("1.0.0.1"), 100),
+                (addr_v4("1.0.0.1"), 10100),
+                PortRange::new(10, 12_000).unwrap(),
+            ),
+            vec![IpPortRange::new(
+                IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                PortRange::new(100, 10100).unwrap(),
+            )]
+        );
+
+        // Consecutive IP addresses, aligned port range bounds
+        assert_eq!(
+            create_new_ranges(
+                (addr_v4("1.0.0.1"), 4000),
+                (addr_v4("1.0.0.2"), 4999),
+                PortRange::new(4000, 4999).unwrap(),
+            ),
+            vec![IpPortRange::new(
+                IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.2")),
+                PortRange::new(4000, 4999).unwrap(),
+            )]
+        );
+
+        // Consecutive IP addresses, unaligned port range bounds
+        assert_eq!(
+            create_new_ranges(
+                (addr_v4("1.0.0.1"), 4200),
+                (addr_v4("1.0.0.2"), 4800),
+                PortRange::new(4000, 4999).unwrap(),
+            ),
+            vec![
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                    PortRange::new(4200, 4999).unwrap(),
+                ),
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.2")),
+                    PortRange::new(4000, 4800).unwrap(),
+                )
+            ]
+        );
+
+        // Covering more than 2 IPs, with aligned port range bounds
+        assert_eq!(
+            create_new_ranges(
+                (addr_v4("1.0.0.1"), 4000),
+                (addr_v4("1.0.0.10"), 4999),
+                PortRange::new(4000, 4999).unwrap(),
+            ),
+            vec![IpPortRange::new(
+                IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.10")),
+                PortRange::new(4000, 4999).unwrap(),
+            ),]
+        );
+
+        // Covering more than 2 IPs, unaligned port range start
+        assert_eq!(
+            create_new_ranges(
+                (addr_v4("1.0.0.1"), 4200),
+                (addr_v4("1.0.0.10"), 4999),
+                PortRange::new(4000, 4999).unwrap(),
+            ),
+            vec![
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                    PortRange::new(4200, 4999).unwrap(),
+                ),
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.10")),
+                    PortRange::new(4000, 4999).unwrap(),
+                ),
+            ]
+        );
+
+        // Covering more than 2 IPs, unaligned port range end
+        assert_eq!(
+            create_new_ranges(
+                (addr_v4("1.0.0.1"), 4000),
+                (addr_v4("1.0.0.10"), 4800),
+                PortRange::new(4000, 4999).unwrap(),
+            ),
+            vec![
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.9")),
+                    PortRange::new(4000, 4999).unwrap(),
+                ),
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.10"), addr_v4("1.0.0.10")),
+                    PortRange::new(4000, 4800).unwrap(),
+                ),
+            ]
+        );
+
+        // Covering more than 2 IPs, unaligned port range bounds
+        assert_eq!(
+            create_new_ranges(
+                (addr_v4("1.0.0.1"), 4200),
+                (addr_v4("1.0.0.10"), 4800),
+                PortRange::new(4000, 4999).unwrap(),
+            ),
+            vec![
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                    PortRange::new(4200, 4999).unwrap(),
+                ),
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.9")),
+                    PortRange::new(4000, 4999).unwrap(),
+                ),
+                IpPortRange::new(
+                    IpRange::new(addr_v4("1.0.0.10"), addr_v4("1.0.0.10")),
+                    PortRange::new(4000, 4800).unwrap(),
+                ),
+            ]
+        );
     }
 
     #[test]
