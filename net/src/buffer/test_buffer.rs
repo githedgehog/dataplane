@@ -3,6 +3,8 @@
 
 //! Toy implementation of [`PacketBuffer`] which is useful for testing.
 
+#![cfg(any(doc, test, feature = "test_buffer"))]
+
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
 
