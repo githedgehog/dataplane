@@ -12,7 +12,7 @@ testing = []
 bolero = ["dep:bolero", "net/bolero"]
 
 [dependencies]
-ahash = { workspace = true }
+ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, optional = true }
 lpm = { workspace = true }
 concurrency = { workspace = true }
