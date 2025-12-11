@@ -180,6 +180,7 @@ fn main() {
     std::process::exit(exit_code);
 }
 
+#[cfg(false)] // disabled until dpdk-sys refactor is complete
 #[cfg(test)]
 mod test {
     use n_vm::in_vm;
