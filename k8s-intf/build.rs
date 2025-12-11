@@ -1,14 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-fn get_agent_crd_url() -> String {
-    println!("cargo:rerun-if-changed=scripts/k8s-crd.env");
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"))
+        .ancestors()
+        .nth(1)
+        .expect("Workspace root not found")
+        .to_path_buf()
+}
 
-    let env_file = dotenvy::from_filename_iter("scripts/k8s-crd.env")
-        .expect("Failed to read scripts/k8s-crd.env");
+fn get_agent_crd_url() -> String {
+    let env_file_path = workspace_root().join("scripts").join("k8s-crd.env");
+    println!("cargo:rerun-if-changed={}", env_file_path.display());
+
+    let env_file =
+        dotenvy::from_path_iter(env_file_path).expect("Failed to read scripts/k8s-crd.env");
 
     env_file
         .filter_map(Result::ok)
