@@ -30,16 +30,6 @@ pub fn get_target_name() -> String {
 }
 
 #[must_use]
-pub fn get_project_root() -> String {
-    env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")
-}
-
-#[must_use]
-pub fn get_compile_env() -> String {
-    env::var("COMPILE_ENV").expect("COMPILE_ENV not set")
-}
-
-#[must_use]
 pub fn get_sysroot() -> String {
     let compile_env = env::var("COMPILE_ENV").expect("COMPILE_ENV not set");
     let sysroot_env = format!("{compile_env}/sysroot");
@@ -52,4 +42,10 @@ pub fn get_sysroot() -> String {
     } else {
         panic!("sysroot not found at {expected_sysroot}")
     }
+}
+
+pub fn use_sysroot() {
+    let sysroot = get_sysroot();
+    println!("cargo:rustc-link-search=all={sysroot}/lib");
+    println!("cargo:rustc-link-arg=--sysroot={sysroot}");
 }

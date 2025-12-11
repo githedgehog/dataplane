@@ -26,6 +26,5 @@ n-vm = { workspace = true }
 
 [build-dependencies]
 # internal
-dpdk-sysroot-helper = { workspace = true }
 
 # external
