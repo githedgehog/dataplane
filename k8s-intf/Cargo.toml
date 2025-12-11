@@ -26,6 +26,7 @@ serde_json = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true }
 hardware = { workspace = true, features = ["bolero"] }
+lpm = { workspace = true, features = [] }
 net = { workspace = true, features = ["bolero", "test_buffer"] }
 
 [build-dependencies]
