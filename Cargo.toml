@@ -46,35 +46,35 @@ repository = "https://github.com/githedgehog/dataplane/"
 # Internal
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
-concurrency = { path = "./concurrency", package = "dataplane-concurrency" }
-concurrency-macros = { path = "./concurrency-macros", package = "dataplane-concurrency-macros" }
-config = { path = "./config", package = "dataplane-config" }
-dpdk = { path = "./dpdk", package = "dataplane-dpdk" }
-dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys" }
-dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper" }
-dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8fc33db10e1d00785f2a2b90cbadcad7900f200" }
-errno = { path = "./errno", package = "dataplane-errno" }
-flow-info = { path = "./flow-info", package = "dataplane-flow-info" }
-gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.17.0" }
-hardware = { path = "./hardware", package = "dataplane-hardware" }
-id = { path = "./id", package = "dataplane-id" }
-init = { path = "./init", package = "dataplane-init" }
-interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager" }
-k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf" }
-left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache" }
-lpm = { path = "./lpm", package = "dataplane-lpm" }
-mgmt = { path = "./mgmt", package = "dataplane-mgmt" }
-nat = { path = "./nat", package = "dataplane-nat" }
-net = { path = "./net", package = "dataplane-net" }
-pipeline = { path = "./pipeline", package = "dataplane-pipeline" }
-pkt-meta = { path = "./pkt-meta", package = "dataplane-pkt-meta" }
-rekon = { path = "./rekon", package = "dataplane-rekon" }
-routing = { path = "./routing", package = "dataplane-routing" }
-stats = { path = "./stats", package = "dataplane-stats" }
-sysfs = { path = "./sysfs", package = "dataplane-sysfs" }
-test-utils = { path = "./test-utils", package = "dataplane-test-utils" }
-tracectl = { path = "./tracectl", package = "dataplane-tracectl" }
-vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap" }
+concurrency = { path = "./concurrency", package = "dataplane-concurrency", features = [] }
+concurrency-macros = { path = "./concurrency-macros", package = "dataplane-concurrency-macros", features = [] }
+config = { path = "./config", package = "dataplane-config", features = [] }
+dpdk = { path = "./dpdk", package = "dataplane-dpdk", features = [] }
+dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys", features = [] }
+dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper", features = [] }
+dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8fc33db10e1d00785f2a2b90cbadcad7900f200", features = [] }
+errno = { path = "./errno", package = "dataplane-errno", features = [] }
+flow-info = { path = "./flow-info", package = "dataplane-flow-info", features = [] }
+gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.17.0", features = [] }
+hardware = { path = "./hardware", package = "dataplane-hardware", features = [] }
+id = { path = "./id", package = "dataplane-id", features = [] }
+init = { path = "./init", package = "dataplane-init", features = [] }
+interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager", features = [] }
+k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", features = [] }
+left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache", features = [] }
+lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
+mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
+nat = { path = "./nat", package = "dataplane-nat", features = [] }
+net = { path = "./net", package = "dataplane-net", features = [] }
+pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
+pkt-meta = { path = "./pkt-meta", package = "dataplane-pkt-meta", features = [] }
+rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
+routing = { path = "./routing", package = "dataplane-routing", features = [] }
+stats = { path = "./stats", package = "dataplane-stats", features = [] }
+sysfs = { path = "./sysfs", package = "dataplane-sysfs", features = [] }
+test-utils = { path = "./test-utils", package = "dataplane-test-utils", features = [] }
+tracectl = { path = "./tracectl", package = "dataplane-tracectl", features = [] }
+vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
@@ -107,17 +107,17 @@ downcast-rs = { version = "2.0.2", default-features = false, features = [] }
 doxygen-bindgen = { version = "0.1.3", default-features = false, features = [] }
 dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.19.0", default-features = false, features = [] }
-fixin = { git = "https://github.com/githedgehog/fixin", branch = "main" }
+fixin = { git = "https://github.com/githedgehog/fixin", branch = "main", features = [] }
 futures = { version = "0.3.31", default-features = false, features = [] }
 hashbrown = { version = "0.16.1", default-features = false, features = [] }
 hwlocality = { version = "1.0.0-alpha.11", default-features = false, features = [] }
 hyper = { version = "1.8.1", default-features = false, features = [] }
-hyper-util = { version = "0.1.19", features = [] }
+hyper-util = { version = "0.1.19", default-features = false, features = [] }
 ipnet = { version = "2.11.0", default-features = false, features = [] }
 k8s-openapi = { version = "0.26.0", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
 kube = { version = "2.0.1", default-features = false, features = [] }
-left-right = { version = "0.11.6" }
+left-right = { version = "0.11.6", default-features = false, features = [] }
 libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }
 linkme = { version = "0.3.35", default-features = false, features = [] }
 linux-raw-sys = { version = "0.12.0", default-features = false, features = [] }
@@ -172,7 +172,7 @@ tokio = { version = "1.48.0", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
 tonic = { version = "0.14.2", default-features = false, features = [] }
 tracing = { version = "0.1.43", default-features = false, features = [] }
-tracing-error = { version = "0.2.1", features = [] }
+tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.22", default-features = false, features = [] }
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
 ureq = { version = "3.1.4", default-features = false, features = [] }
