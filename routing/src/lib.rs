@@ -12,6 +12,7 @@
 )]
 
 mod atable;
+mod bmp;
 mod cli;
 mod config;
 mod errors;
@@ -27,6 +28,7 @@ mod routingdb;
 
 // re-exports
 pub use atable::atablerw::AtableReader;
+pub use bmp::server::{BmpServer, BmpServerConfig};
 pub use config::RouterConfig;
 pub use errors::RouterError;
 pub use evpn::Vtep;
@@ -43,7 +45,7 @@ pub use rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 pub use rib::vrf::{RouterVrfConfig, VrfId};
 
 pub use router::ctl::RouterCtlSender;
-pub use router::{Router, RouterParams, RouterParamsBuilder};
+pub use router::{BmpServerParams, Router, RouterParams, RouterParamsBuilder};
 
 pub use cli::pretty_utils::Heading;
 

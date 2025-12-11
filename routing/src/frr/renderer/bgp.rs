@@ -12,6 +12,7 @@ use config::internal::routing::bgp::Redistribute;
 use config::internal::routing::bgp::VrfImports;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfIpv6Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpNeighCapabilities, Protocol};
+use config::internal::routing::bgp::{BmpOptions, BmpSource};
 
 /* impl Display */
 impl Rendered for BgpNeighType {
@@ -51,6 +52,54 @@ impl Rendered for Protocol {
             Protocol::ISIS => "isis".to_string(),
             Protocol::OSPF => "ospf".to_string(),
         }
+    }
+}
+
+impl Render for BmpOptions {
+    type Context = ();
+    type Output = ConfigBuilder;
+    fn render(&self, _: &Self::Context) -> Self::Output {
+        let mut cfg = ConfigBuilder::new();
+        cfg += MARKER;
+        cfg += format!("bmp targets {}", self.target_name);
+
+        // connect line (FRR: `bmp connect HOST port <PORT> [min-retry ... max-retry ...] [source-interface IFNAME]`)
+        let mut connect = format!(" bmp connect {} port {}", self.connect_host, self.port);
+        if let (Some(minr), Some(maxr)) = (self.min_retry_ms, self.max_retry_ms) {
+            connect.push_str(&format!(" min-retry {minr} max-retry {maxr}"));
+        }
+        if let Some(src) = &self.source {
+            if let BmpSource::Interface(ifn) = src {
+                connect.push_str(&format!(" source-interface {}", ifn));
+            }
+        }
+        cfg += connect;
+
+        // monitors
+        if self.monitor_ipv4_pre {
+            cfg += " bmp monitor ipv4 unicast pre-policy";
+        }
+        if self.monitor_ipv4_post {
+            cfg += " bmp monitor ipv4 unicast post-policy";
+        }
+        if self.monitor_ipv6_pre {
+            cfg += " bmp monitor ipv6 unicast pre-policy";
+        }
+        if self.monitor_ipv6_post {
+            cfg += " bmp monitor ipv6 unicast post-policy";
+        }
+
+        // stats (FRR: `bmp stats interval <ms>`)
+        cfg += format!(" bmp stats interval {}", self.stats_interval_ms);
+
+        // import-vrf-view lines (rendered only under default VRF)
+        for vrf in &self.import_vrf_views {
+            cfg += format!(" bmp import-vrf-view {}", vrf);
+        }
+
+        cfg += "exit";
+        cfg += MARKER;
+        cfg
     }
 }
 
@@ -384,6 +433,7 @@ impl Render for AfL2vpnEvpn {
         if self.default_originate_ipv6 {
             cfg += " default-originate ipv6";
         }
+
         cfg += "exit-address-family";
         cfg += MARKER;
         cfg
@@ -470,7 +520,7 @@ impl Render for BgpConfig {
             .as_ref()
             .map(|evpn| config += evpn.render(self));
 
-        /* Address family ipv4 unicast */
+        /* Address family ipv6 unicast */
         self.af_ipv6unicast
             .as_ref()
             .map(|evpn| config += evpn.render(self));
@@ -479,6 +529,13 @@ impl Render for BgpConfig {
         self.af_l2vpnevpn
             .as_ref()
             .map(|evpn| config += evpn.render(self));
+
+        /* BMP options: only emit under the default VRF (global BGP context) */
+        if self.vrf.is_none() {
+            if let Some(bmp) = &self.bmp {
+                config += bmp.render(&());
+            }
+        }
 
         config += "exit";
         config += MARKER;
@@ -622,16 +679,16 @@ pub mod tests {
         /* set the IPv4 unicast config */
         bgp.set_af_ipv4unicast(af_ipv4);
 
-        /* AF ipv4 unicast */
+        /* AF ipv6 unicast */
         let mut af_ipv6 = AfIpv6Ucast::new();
 
-        /* configure ipv4 vrf imports */
+        /* configure ipv6 vrf imports */
         let mut imports = VrfImports::new().set_routemap("Import-into-vrf-1-ipv6");
         imports.add_vrf("VPC-2");
         imports.add_vrf("VPC-3");
         imports.add_vrf("VPC-4");
 
-        /* set the imports for Ipv6 */
+        /* set the imports for IPv6 */
         af_ipv6.set_vrf_imports(imports);
 
         /* add some network */

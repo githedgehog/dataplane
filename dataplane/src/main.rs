@@ -19,10 +19,14 @@ use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
-use routing::RouterParamsBuilder;
+use routing::{BmpServerParams, RouterParamsBuilder};
 use tracectl::{custom_target, get_trace_ctl, trace_target};
 
 use tracing::{error, info, level_filters::LevelFilter};
+
+use concurrency::sync::{Arc, RwLock};
+use config::internal::routing::bgp::BmpOptions;
+use config::internal::status::DataplaneStatus;
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 custom_target!("tonic", LevelFilter::ERROR, &[]);
@@ -68,6 +72,40 @@ fn process_tracing_cmds(args: &CmdArgs) {
 fn main() {
     init_logging();
     let args = CmdArgs::parse();
+
+    let (bmp_server_params, bmp_client_opts) = if args.bmp_enabled() {
+        let bind = args.bmp_address();
+        let interval_ms = args.bmp_interval_ms();
+
+        info!(
+            "BMP: enabled, listening on {bind}, interval={}ms",
+            interval_ms
+        );
+
+        // BMP server (for routing crate)
+        let server = BmpServerParams {
+            bind_addr: bind,
+            stats_interval_ms: interval_ms,
+            min_retry_ms: None,
+            max_retry_ms: None,
+        };
+
+        // BMP options for FRR (for internal config)
+        let host = bind.ip().to_string();
+        let port = bind.port();
+        let client = BmpOptions::new("bmp1", host, port)
+            .set_retry_ms(interval_ms, interval_ms.saturating_mul(4))
+            .set_stats_interval_ms(interval_ms)
+            .monitor_ipv4(true, true);
+
+        (Some(server), Some(client))
+    } else {
+        info!("BMP: disabled");
+        (None, None)
+    };
+
+    let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
+
     let agent_running = args.pyroscope_url().and_then(|url| {
         match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
             .backend(pprof_backend(
@@ -90,6 +128,7 @@ fn main() {
             }
         }
     });
+
     process_tracing_cmds(&args);
     info!("Starting gateway process...");
 
@@ -111,18 +150,25 @@ fn main() {
     };
 
     /* router parameters */
-    let Ok(config) = RouterParamsBuilder::default()
+    let mut binding = RouterParamsBuilder::default();
+    let mut rp_builder = binding
         .cli_sock_path(args.cli_sock_path())
         .cpi_sock_path(args.cpi_sock_path())
         .frr_agent_path(args.frr_agent_path())
-        .build()
-    else {
+        .dp_status(dp_status.clone());
+
+    // Only set BMP when it's enabled (strip_option setter expects the inner type)
+    if let Some(server) = bmp_server_params {
+        rp_builder = rp_builder.bmp(server);
+    }
+
+    let Ok(router_params) = rp_builder.build() else {
         error!("Bad router configuration");
         panic!("Bad router configuration");
     };
 
-    // start the router; returns control-plane handles and a pipeline factory (Arc<... Fn() -> DynPipeline<_> >)
-    let setup = start_router(config).expect("failed to start router");
+    // start the router; returns control-plane handles and a pipeline factory
+    let setup = start_router(router_params).expect("failed to start router");
 
     MetricsServer::new(args.metrics_address(), setup.stats);
 
@@ -139,6 +185,8 @@ fn main() {
             natallocatorw: setup.natallocatorw,
             vpcdtablesw: setup.vpcdtablesw,
             vpc_stats_store: setup.vpc_stats_store,
+            dp_status_r: dp_status.clone(),
+            bmp_options: bmp_client_opts,
         },
     })
     .expect("Failed to start gRPC server");

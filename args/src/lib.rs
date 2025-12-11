@@ -540,6 +540,25 @@ pub struct ConfigServerSection {
     pub address: GrpcAddress,
 }
 
+/// BMP server configuration (optional; disabled when absent)
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
+pub struct BmpConfigSection {
+    /// Bind address for the BMP server (IP:PORT)
+    pub address: SocketAddr,
+    /// Periodic housekeeping/flush interval in milliseconds
+    pub interval_ms: u64,
+}
+
 /// Complete dataplane launch configuration.
 ///
 /// This structure contains all configuration parameters needed to initialize and run
@@ -556,7 +575,7 @@ pub struct ConfigServerSection {
 /// 3. **Transfer**: Passed via sealed memfd to the worker process
 /// 4. **Worker Process**: Calls [`LaunchConfiguration::inherit()`] to access the config
 ///
-// TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
+/// TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
 #[derive(
     Debug,
     PartialEq,
@@ -581,6 +600,8 @@ pub struct LaunchConfiguration {
     pub tracing: TracingConfigSection,
     /// Metrics collection configuration
     pub metrics: MetricsConfigSection,
+    /// Optional BMP server configuration (None => BMP disabled)
+    pub bmp: Option<BmpConfigSection>,
     /// Profiling configuration
     pub profiling: ProfilingConfigSection,
 }
@@ -1128,6 +1149,14 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
             },
+            bmp: if value.bmp_enabled() {
+                Some(BmpConfigSection {
+                    address: value.bmp_address(),
+                    interval_ms: value.bmp_interval_ms(),
+                })
+            } else {
+                None
+            },
             profiling: ProfilingConfigSection {
                 pyroscope_url: value.pyroscope_url().map(std::string::ToString::to_string),
                 frequency: ProfilingConfigSection::DEFAULT_FREQUENCY,
@@ -1248,6 +1277,26 @@ Passing all=level allows setting the log-level of all targets to level.
 E.g. default=error,all=info,nat=debug will set the default target to error, and all the registered targets to info, but enable debug for nat"
     )]
     tracing: Option<String>,
+
+    /// Enable BMP server, addres and interval
+    #[arg(long, default_value_t = false, help = "Enable BMP server")]
+    bmp_enable: bool,
+
+    #[arg(
+        long,
+        value_name = "IP:PORT",
+        default_value_t = SocketAddr::from(([0, 0, 0, 0], 5000)),
+        help = "Bind address for the BMP server"
+    )]
+    bmp_address: SocketAddr,
+
+    #[arg(
+        long,
+        value_name = "MILLISECONDS",
+        default_value_t = 10_000,
+        help = "BMP periodic interval for housekeeping/flush (ms)"
+    )]
+    bmp_interval_ms: u64,
 }
 
 impl CmdArgs {
@@ -1424,6 +1473,20 @@ impl CmdArgs {
     #[must_use]
     pub fn pyroscope_url(&self) -> Option<&url::Url> {
         self.pyroscope_url.as_ref()
+    }
+
+    // ===== BMP getters =====
+    #[must_use]
+    pub fn bmp_enabled(&self) -> bool {
+        self.bmp_enable
+    }
+    #[must_use]
+    pub fn bmp_address(&self) -> SocketAddr {
+        self.bmp_address
+    }
+    #[must_use]
+    pub fn bmp_interval_ms(&self) -> u64 {
+        self.bmp_interval_ms
     }
 }
 
