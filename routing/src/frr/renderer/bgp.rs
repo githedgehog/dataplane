@@ -326,6 +326,7 @@ impl Render for AfIpv4Ucast {
         cfg += MARKER;
         cfg += "address-family ipv4 unicast";
 
+        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv4_unicast)
@@ -361,6 +362,7 @@ impl Render for AfIpv6Ucast {
         cfg += MARKER;
         cfg += "address-family ipv6 unicast";
 
+        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.ipv6_unicast)
@@ -396,6 +398,7 @@ impl Render for AfL2vpnEvpn {
         cfg += MARKER;
         cfg += "address-family l2vpn evpn";
 
+        /* activate neighbors in AF */
         bgp.neighbors
             .iter()
             .filter(|neigh| neigh.l2vpn_evpn)
@@ -506,7 +509,7 @@ impl Render for BgpConfig {
             config += format!(" bgp router-id {router_id}");
         }
 
-        /* BGP options */
+        /* BGP options: todo */
         config += self.options.render(&());
 
         /* BGP neighbors */

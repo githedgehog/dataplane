@@ -17,9 +17,9 @@ use std::net::Ipv4Addr;
 
 use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
 
-use config::internal::routing::bgp::BmpOptions;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
+use config::internal::routing::bmp::BmpOptions;
 use config::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
@@ -181,12 +181,8 @@ impl VpcRoutingConfigIpv4 {
     }
 }
 
-/// Build BGP config for a VPC VRF (no BMP attached here!)
-fn vpc_vrf_bgp_config(
-    vpc: &Vpc,
-    asn: u32,
-    router_id: Option<Ipv4Addr>,
-) -> BgpConfig {
+/// Build BGP config for a VPC VRF (bmp is applied elsewhere)
+fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpConfig {
     let mut bgp = BgpConfig::new(asn).set_vrf_name(vpc.vrf_name());
     if let Some(router_id) = router_id {
         bgp.set_router_id(router_id);
@@ -233,7 +229,7 @@ fn build_vpc_internal_config(
     /* build VRF config */
     let mut vrf_cfg = vpc_vrf_config(vpc)?;
 
-    /* build bgp config (no BMP here) */
+    /* build bgp config */
     let mut bgp = vpc_vrf_bgp_config(vpc, asn, router_id);
 
     if vpc.num_peerings() > 0 {
@@ -269,7 +265,7 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
-/// Public entry — build without BMP
+/// without BMP
 pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
     build_internal_config_with_bmp(config, None)
 }
@@ -307,12 +303,7 @@ pub fn build_internal_config_with_bmp(
         let asn = bgp.asn;
         let router_id = bgp.router_id;
         if !external.overlay.vpc_table.is_empty() {
-            build_internal_overlay_config(
-                &external.overlay,
-                asn,
-                router_id,
-                &mut internal,
-            )?;
+            build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
         } else {
             debug!("The configuration does not specify any VPCs...");
         }

@@ -593,7 +593,7 @@ pub struct BmpConfigSection {
 /// 3. **Transfer**: Passed via sealed memfd to the worker process
 /// 4. **Worker Process**: Calls [`LaunchConfiguration::inherit()`] to access the config
 ///
-/// // TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
+/// TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
 #[derive(
     Debug,
     PartialEq,
@@ -1309,7 +1309,6 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
     #[arg(long, default_value_t = false, help = "Enable BMP server")]
     bmp_enable: bool,
 
-    /// BMP bind address
     #[arg(
         long,
         value_name = "IP:PORT",
@@ -1318,7 +1317,6 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
     )]
     bmp_address: SocketAddr,
 
-    /// BMP periodic interval for housekeeping/flush (ms)
     #[arg(
         long,
         value_name = "MILLISECONDS",
@@ -1510,13 +1508,11 @@ impl CmdArgs {
         self.pyroscope_url.as_ref()
     }
 
-<<<<<<< HEAD
     /// Get the name to configure this gateway with.
     #[must_use]
     pub fn get_name(&self) -> Option<&String> {
         self.name.as_ref()
-=======
-    // ===== BMP getters =====
+    }
     #[must_use]
     pub fn bmp_enabled(&self) -> bool {
         self.bmp_enable
@@ -1528,7 +1524,6 @@ impl CmdArgs {
     #[must_use]
     pub fn bmp_interval_ms(&self) -> u64 {
         self.bmp_interval_ms
->>>>>>> 7dac51ae (feat(status): Populate routing and mgmt with BMP params)
     }
 }
 
