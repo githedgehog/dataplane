@@ -14,6 +14,7 @@ bolero = ["dep:bolero", "vpcmap/bolero", "net/bolero"]
 concurrency = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
+tracectl = { workspace = true }
 vpcmap = { workspace = true }
 
 # external
@@ -30,7 +31,6 @@ serde = { workspace = true, features = ["derive"] }
 small-map = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "time", "sync"] }
-tracectl = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
