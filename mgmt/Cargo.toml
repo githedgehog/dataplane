@@ -12,8 +12,8 @@ required-features = ["bolero"]
 
 [features]
 default = []
-fake-pci-as-netdevsim = ["interface-manager/netdevsim", "net/netdevsim"]
-bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero"]
+fake-pci-as-netdevsim = ["interface-manager/netdevsim", "net/netdevsim", "net/serde"]
+bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero", "net/serde"]
 
 [dependencies]
 # internal
