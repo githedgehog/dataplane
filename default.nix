@@ -80,7 +80,7 @@ let
   };
   crane-base = import sources.crane { pkgs = dataplane-pkgs; };
   crane = crane-base.craneLib.overrideToolchain dataplane-pkgs.rust-toolchain;
-  dev-tools = dataplane-pkgs.symlinkJoin {
+  devroot = dataplane-pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
     paths = [
       clangd-config
@@ -101,7 +101,9 @@ let
       direnv
       gateway-crd
       just
+      kopium
       npins
+      rust-toolchain
     ]);
   };
   dataplane-src = crane.cleanCargoSource ./.;
@@ -275,18 +277,18 @@ let
 in
 {
   inherit
+    cargoArtifacts
+    commonArgs
+    crane
     dataplane-dev-pkgs
     dataplane-pkgs
-    dev-tools
+    devroot
+    package
+    package-list
+    packages
     profile
     sources
     sysroot
-    crane
-    commonArgs
-    cargoArtifacts
-    package
-    packages
-    package-list
     ;
 
   inherit (package)
