@@ -68,7 +68,7 @@ pub struct BgpNeighCapabilities {
     pub ext_nhop: bool,
     pub fqdn: bool,
     pub software_ver: bool,
-    // TODO: ORF
+    // ORF
 }
 
 #[derive(Clone, Debug)]
@@ -350,6 +350,7 @@ impl AfIpv4Ucast {
     pub fn set_vrf_imports(&mut self, imports: VrfImports) {
         self.imports = Some(imports);
     }
+    // redistribution is configured by adding one or more redistribute objects
     pub fn redistribute(&mut self, redistribute: Redistribute) {
         self.redistribute.push(redistribute);
     }

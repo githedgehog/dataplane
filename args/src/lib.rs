@@ -575,7 +575,7 @@ pub struct BmpConfigSection {
 /// 3. **Transfer**: Passed via sealed memfd to the worker process
 /// 4. **Worker Process**: Calls [`LaunchConfiguration::inherit()`] to access the config
 ///
-/// // TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
+/// TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
 #[derive(
     Debug,
     PartialEq,
@@ -1278,12 +1278,10 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
     )]
     tracing: Option<String>,
 
-    // ===== BMP ARGS =====
-    /// Enable BMP server
+    /// Enable BMP server, addres and interval
     #[arg(long, default_value_t = false, help = "Enable BMP server")]
     bmp_enable: bool,
 
-    /// BMP bind address
     #[arg(
         long,
         value_name = "IP:PORT",
@@ -1292,7 +1290,6 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
     )]
     bmp_address: SocketAddr,
 
-    /// BMP periodic interval for housekeeping/flush (ms)
     #[arg(
         long,
         value_name = "MILLISECONDS",

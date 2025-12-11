@@ -1,26 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Minimal & safe renderer for NetGauze BMP messages into DataplaneStatus.
-//! Keeps API usage conservative and aligned with the code you pasted.
+//! BMP message handlers to update internal DataplaneStatus model.
 
 use netgauze_bgp_pkt::BgpMessage;
-use netgauze_bmp_pkt::{BmpMessage, BmpPeerType};
 use netgauze_bmp_pkt::v3::{
     BmpMessageValue, PeerDownNotificationMessage, PeerUpNotificationMessage,
     RouteMonitoringMessage, StatisticsReportMessage,
 };
+use netgauze_bmp_pkt::{BmpMessage, BmpPeerType};
 
 use config::internal::status::{
     BgpMessageCounters, BgpMessages, BgpNeighborPrefixes, BgpNeighborSessionState,
     BgpNeighborStatus, BgpStatus, BgpVrfStatus, DataplaneStatus,
 };
 
-// -----------------------------------------------------------------------------
-// Public entry points
-// -----------------------------------------------------------------------------
-
-/// Backward-compat shim for older callers (typo in earlier drafts).
 #[inline]
 pub fn hande_bmp_message(status: &mut DataplaneStatus, msg: &BmpMessage) {
     handle_bmp_message(status, msg)
@@ -41,11 +35,6 @@ pub fn handle_bmp_message(status: &mut DataplaneStatus, msg: &BmpMessage) {
         BmpMessage::V4(_) => {}
     }
 }
-
-// -----------------------------------------------------------------------------
-// Helpers: mapping / extraction
-// -----------------------------------------------------------------------------
-
 fn key_from_peer_header(peer: &netgauze_bmp_pkt::PeerHeader) -> String {
     // Build a stable-ish key: "<bgp_id>-<peer_as>-<ip|-none>-<rd?>"
     let id = peer.bgp_id();
@@ -84,10 +73,7 @@ fn ensure_vrf<'a>(bgp: &'a mut BgpStatus, vrf: &str) -> &'a mut BgpVrfStatus {
     bgp.vrfs.entry(vrf.to_string()).or_default()
 }
 
-fn ensure_neighbor<'a>(
-    vrf: &'a mut BgpVrfStatus,
-    neigh_key: &str,
-) -> &'a mut BgpNeighborStatus {
+fn ensure_neighbor<'a>(vrf: &'a mut BgpVrfStatus, neigh_key: &str) -> &'a mut BgpNeighborStatus {
     vrf.neighbors
         .entry(neigh_key.to_string())
         .or_insert_with(|| BgpNeighborStatus {
@@ -109,10 +95,6 @@ fn post_policy_from_peer_type(pt: BmpPeerType) -> bool {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Handlers
-// -----------------------------------------------------------------------------
-
 fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
     let peer = pu.peer_header();
     let vrf = get_vrf_from_peer_header(peer);
@@ -127,13 +109,10 @@ fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
     neigh.remote_router_id = peer.bgp_id().to_string();
     neigh.peer_port = pu.remote_port().unwrap_or_default() as u32;
     set_neighbor_session_state(neigh, BgpNeighborSessionState::Established);
-
-    // Optional: try to infer local_as from the OPEN we sent (kept simple)
     if let BgpMessage::Open(open) = pu.sent_message() {
         neigh.local_as = open.my_as() as u32;
     }
 
-    // Initialize empty message counters on establishment
     if neigh.messages.is_none() {
         neigh.messages = Some(BgpMessages {
             received: Some(BgpMessageCounters::new()),
@@ -187,9 +166,7 @@ fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage
 
     // We don't parse NLRI depth here; increment by 1 as a placeholder per RM message
     if post {
-        pref.received_pre_policy = pref
-            .received_pre_policy
-            .saturating_add(0); // post-policy => don't bump pre
+        pref.received_pre_policy = pref.received_pre_policy.saturating_add(0); // post-policy => don't bump pre
         pref.received = pref.received.saturating_add(1);
     } else {
         pref.received_pre_policy = pref.received_pre_policy.saturating_add(1);
@@ -212,6 +189,5 @@ fn on_statistics(status: &mut DataplaneStatus, sr: &StatisticsReportMessage) {
         sent: Some(BgpMessageCounters::new()),
     });
 
-    // You can walk `sr.counters()` and map specific statistics to your model later.
-    // For now, we keep StatisticsReport as a no-op for counters.
+    //TODO: smatov: add more later
 }

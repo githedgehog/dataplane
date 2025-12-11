@@ -280,7 +280,6 @@ impl ConfigProcessor {
 
     /// RPC handler: get dataplane status
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
-        // std::sync::RwLock::read() -> Result<Guard, PoisonError>. Unwrap then clone.
         let mut status: DataplaneStatus = {
             let guard = self
                 .proc_params
@@ -674,10 +673,6 @@ async fn apply_gw_config(
     /* update stats mappings and seed names to the stats store */
     let pairs = update_stats_vpc_mappings(config, vpcmapw);
     drop(pairs); // pairs used by caller
-
-    // NOTE: If we need to inject/override BMP per-VRF here, prefer adding a helper once
-    // InternalConfig exposes a mutable VRF accessor. For now, BMP config is built in
-    // the internal build stage and applied by the routing layer.
 
     /* apply config in router */
     apply_router_config(&kernel_vrfs, config, router_ctl).await?;
