@@ -42,5 +42,6 @@ netdev = { workspace = true }
 bolero = { workspace = true, default-features = false }
 concurrency = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
+net = { workspace = true, features = ["test_buffer"] }
 rand = { workspace = true, default-features = false, features = ["thread_rng"] }
 tracing-test = { workspace = true, features = [] }

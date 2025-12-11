@@ -6,7 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-bolero = ["dep:bolero", "dep:hardware", "dep:net", "dep:lpm"]
+bolero = ["dep:bolero", "dep:hardware", "dep:net", "dep:lpm", "net/test_buffer"]
 
 [dependencies]
 # internal
@@ -26,7 +26,7 @@ serde_json = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true }
 hardware = { workspace = true, features = ["bolero"] }
-net = { workspace = true, features = ["bolero"] }
+net = { workspace = true, features = ["bolero", "test_buffer"] }
 
 [build-dependencies]
 dotenvy = { workspace = true, features = [] }

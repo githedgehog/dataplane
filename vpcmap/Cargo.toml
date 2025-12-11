@@ -7,7 +7,7 @@ version.workspace = true
 
 [features]
 default = []
-bolero = ["dep:bolero", "net/bolero"]
+bolero = ["dep:bolero", "net/bolero", "net/test_buffer"]
 
 
 [dependencies]
@@ -20,4 +20,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true }
-net = { workspace = true, features = ["bolero"] }
+net = { workspace = true, features = ["bolero", "test_buffer"] }
