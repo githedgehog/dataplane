@@ -20,7 +20,7 @@ lpm = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 pkt-meta = { workspace = true }
-rand = { workspace = true }
+rand = { workspace = true, features = ["thread_rng"] }
 roaring = { workspace = true }
 shuttle = { workspace = true, optional = true }
 thiserror = { workspace = true }
