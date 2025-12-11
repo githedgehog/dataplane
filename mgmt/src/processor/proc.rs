@@ -46,7 +46,7 @@ use vpcmap::VpcDiscriminant;
 use vpcmap::map::{VpcMap, VpcMapWriter};
 
 // bring in BmpOptions to pass through to internal config builder
-use config::internal::routing::bgp::BmpOptions;
+use config::internal::routing::bmp::BmpOptions;
 
 /// Populate FRR status into the dataplane status structure
 pub async fn populate_status_with_frr(
@@ -207,7 +207,6 @@ impl ConfigProcessor {
 
     /// RPC handler: get dataplane status
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
-        // std::sync::RwLock::read() -> Result<Guard, PoisonError>. Unwrap then clone.
         let mut status: DataplaneStatus = {
             let guard = self
                 .proc_params

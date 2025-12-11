@@ -103,8 +103,6 @@ async fn handle_peer<H: BmpHandler>(
     if cfg.tcp_nodelay {
         let _ = sock.set_nodelay(true);
     }
-    // NOTE: cfg.tcp_recv_buf kept for future tuning; Tokio has no stable API to set recv buf.
-
     // Frame the stream as BMP
     let codec = BmpCodec::default();
     let mut reader = FramedRead::new(sock, codec);
@@ -112,7 +110,7 @@ async fn handle_peer<H: BmpHandler>(
     while let Some(frame) = reader.next().await {
         match frame {
             Ok(msg) => {
-                // netgauze_bmp_pkt::BmpMessage for both v3 and v4
+                // netgauze_bmp_pkt::BmpMessage for both v3 and v4. TODO: smatov: v4 handling
                 handler.on_message(peer, msg).await;
             }
             Err(e) => {
