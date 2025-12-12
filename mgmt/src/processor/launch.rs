@@ -183,6 +183,7 @@ impl Display for ServerAddress {
 
 pub struct MgmtParams {
     pub grpc_addr: Option<GrpcAddress>,
+    pub hostname: String,
     pub processor_params: ConfigProcessorParams,
 }
 
@@ -233,7 +234,7 @@ pub fn start_mgmt(
                 rt.block_on(async {
                     let (processor, tx) = ConfigProcessor::new(params.processor_params);
                     let processor_handle = tokio::spawn(async { processor.run().await });
-                    let k8s_handle = tokio::spawn(async move { k8s_start_client(tx).await });
+                    let k8s_handle = tokio::spawn(async move { k8s_start_client(params.hostname.as_str(), tx).await });
                     tokio::select! {
                         result = processor_handle => {
                             match result {
