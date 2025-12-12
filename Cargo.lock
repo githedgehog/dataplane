@@ -1416,6 +1416,7 @@ dependencies = [
  "dataplane-config",
  "dataplane-id",
  "dataplane-interface-manager",
+ "dataplane-k8s-intf",
  "dataplane-lpm",
  "dataplane-nat",
  "dataplane-net",
