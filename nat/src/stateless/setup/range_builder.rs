@@ -2,7 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
-use super::tables::{IpPortRange, IpRange, NatTableValue, PortAddrTranslationValue};
+use super::tables::{
+    IpPort, IpPortRange, IpPortRangeBounds, IpRange, NatTableValue, PortAddrTranslationValue,
+};
 use bnum::cast::CastFrom;
 use lpm::prefix::{
     IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithOptionalPorts, PrefixWithPorts,
@@ -192,6 +194,10 @@ impl Iterator for RangeBuilder<'_> {
         );
 
         let orig_prefix_size = orig_prefix.size();
+        let mut orig_prefix_cursor = (
+            orig_prefix.prefix().as_address(),
+            orig_prefix.ports().map_or(0, |ports| ports.start()),
+        );
         let mut orig_offset_cursor = PrefixWithPortsSize::from(0u8);
         let mut processed_ranges_size = PrefixWithPortsSize::from(0u8);
 
@@ -232,15 +238,33 @@ impl Iterator for RangeBuilder<'_> {
                 return Some(Err(NatPeeringError::MalformedPeering));
             };
             let ranges = create_new_ranges(addr_port_cursor, range_end, target_prefix.ports());
-            value.add_ranges(ranges);
+            if let Err(e) = add_new_ranges(
+                &mut value,
+                &orig_prefix_cursor,
+                &orig_offset_cursor,
+                orig_prefix.ports().unwrap_or(PortRange::new_max_range()),
+                &ranges,
+            ) {
+                return Some(Err(e));
+            }
 
             // Update state for next loop iteration (if original prefix is not fully covered), or
             // next iterator call
 
             processed_ranges_size += range_size;
-            // Do not update orig_offset_cursor if we're done processing the current prefix
-            // (we'd risk an overflow if we reached the end of the IP space)
+            // Do not update orig_prefix_cursor and orig_offset_cursor if we're done processing the
+            // current prefix (we'd risk an overflow if we reached the end of the IP space)
             if processed_ranges_size < orig_prefix_size {
+                let new_cursor = match add_offset_to_address_and_port(
+                    &orig_prefix_cursor.0,
+                    orig_prefix_cursor.1,
+                    orig_prefix.ports().unwrap_or(PortRange::new_max_range()),
+                    range_size,
+                ) {
+                    Ok(cursor) => cursor,
+                    Err(e) => return Some(Err(e)),
+                };
+                orig_prefix_cursor = new_cursor;
                 orig_offset_cursor += range_size;
             }
 
@@ -398,6 +422,47 @@ fn create_new_ranges(
     }
 
     ranges
+}
+
+// Add new ranges to a PortAddrTranslationValue. The struct contains a BTreeMap associating portions
+// of the PrefixWithOptionalPorts that we're processing to target IP and port ranges. We need to
+// compute these prefix portions to use them as keys when inserting the target ranges into the map.
+fn add_new_ranges(
+    value: &mut PortAddrTranslationValue,
+    orig_prefix_cursor: &(IpAddr, u16),
+    orig_offset_cursor: &PrefixWithPortsSize,
+    orig_port_range: PortRange,
+    ranges: &[IpPortRange],
+) -> Result<(), NatPeeringError> {
+    let mut cursor = *orig_prefix_cursor;
+    let mut offset = *orig_offset_cursor;
+
+    for (i, range) in ranges.iter().enumerate() {
+        // Compute a "prefix portion", a range of addresses within a prefix, with the same size as
+        // the range we want to insert
+        let end_prefix_portion = add_offset_to_address_and_port(
+            &cursor.0,
+            cursor.1,
+            orig_port_range,
+            range.size().saturating_sub(PrefixWithPortsSize::from(1u8)),
+        )?;
+        let prefix_portion = IpPortRangeBounds::new(
+            IpPort::new(cursor.0, cursor.1),
+            IpPort::new(end_prefix_portion.0, end_prefix_portion.1),
+        );
+
+        value.insert_and_merge(prefix_portion, (*range, offset));
+
+        offset += range.size();
+        if i == ranges.len() - 1 {
+            // Skip updating the cursor on the last iteration, it's useless and we'd risk
+            // overflowing the IP space.
+        } else {
+            cursor =
+                add_offset_to_address_and_port(&cursor.0, cursor.1, orig_port_range, range.size())?;
+        }
+    }
+    Ok(())
 }
 
 fn ip_addr_diff(addr1: &IpAddr, addr2: &IpAddr) -> u128 {
