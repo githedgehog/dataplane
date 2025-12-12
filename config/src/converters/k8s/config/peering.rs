@@ -3,7 +3,8 @@
 
 use k8s_intf::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeering};
 
-use crate::converters::k8s::{FromK8sConversionError, SubnetMap, VpcSubnetMap};
+use crate::converters::k8s::FromK8sConversionError;
+use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
 use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering};
 
 impl TryFrom<(&SubnetMap, &str, &GatewayAgentPeeringsPeering)> for VpcManifest {
@@ -68,7 +69,7 @@ mod test {
     };
     use lpm::prefix::Prefix;
 
-    use crate::converters::k8s::{SubnetMap, VpcSubnetMap};
+    use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
 
     #[test]
     fn test_vpc_manifest_conversion() {
