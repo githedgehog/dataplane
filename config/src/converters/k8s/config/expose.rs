@@ -9,7 +9,8 @@ use k8s_intf::gateway_agent_crd::{
 };
 use lpm::prefix::{Prefix, PrefixString};
 
-use crate::converters::k8s::{FromK8sConversionError, SubnetMap};
+use crate::converters::k8s::FromK8sConversionError;
+use crate::converters::k8s::config::SubnetMap;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
 fn process_ip_block(
