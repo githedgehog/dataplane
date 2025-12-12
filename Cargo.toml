@@ -110,6 +110,7 @@ etherparse = { version = "0.19.0", default-features = false, features = [] }
 fixin = { git = "https://github.com/githedgehog/fixin", branch = "main", features = [] }
 futures = { version = "0.3.31", default-features = false, features = [] }
 hashbrown = { version = "0.16.1", default-features = false, features = [] }
+hostname = { version = "0.4.2", default-features = false, features = [] }
 hwlocality = { version = "1.0.0-alpha.11", default-features = false, features = [] }
 hyper = { version = "1.8.1", default-features = false, features = [] }
 hyper-util = { version = "0.1.19", default-features = false, features = [] }
@@ -153,6 +154,7 @@ rapidhash = { version = "4.1.1", default-features = false, features = [] }
 rkyv = { version = "0.8.12", default-features = false, features = [] }
 roaring = { version = "0.11.2", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
+rustls = { version = "0.23.35", default-features = false, features = [] }
 rustyline = { version = "17.0.2", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = [] }
