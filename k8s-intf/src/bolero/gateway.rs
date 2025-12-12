@@ -40,7 +40,11 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
             interfaces: Some(interfaces).filter(|i| !i.is_empty()),
             neighbors: Some(neighbors).filter(|n| !n.is_empty()),
             profiling: None, // FIXME(manishv) Add a proper implementation
-            protocol_ip: Some(d.produce::<UnicastIpv4Addr>()?.to_string()),
+            protocol_ip: Some(format!(
+                "{}/{}",
+                d.produce::<UnicastIpv4Addr>()?,
+                d.gen_u8(Bound::Included(&0), Bound::Included(&32))?
+            )),
             vtep_ip: Some(format!(
                 "{}/{}",
                 d.produce::<UnicastIpv4Addr>()?,
