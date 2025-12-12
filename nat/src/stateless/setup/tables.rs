@@ -3,13 +3,14 @@
 
 use ahash::RandomState;
 use bnum::cast::CastFrom;
+use lpm::prefix::range_map::{DisjointRangesBTreeMap, UpperBoundFrom};
 use lpm::prefix::{IpPrefix, IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize};
 use lpm::trie::IpPrefixTrie;
 use net::vxlan::Vni;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::ops::RangeBounds;
+use std::ops::{Bound, RangeBounds};
 use tracing::debug;
 
 /// Error type for [`NatTables`] operations.
@@ -106,7 +107,7 @@ impl PerVniTable {
                 debug!(
                     "Mapping {addr} from prefix {prefix} to ranges {ranges:?}: found offset {offset}"
                 );
-                ranges.get_entry(offset).map(|addr| (addr, None))
+                ranges.get_entry(addr, offset).map(|addr| (addr, None))
             }
             NatTableValue::Pat(ranges) => {
                 let port = port_opt?; // We expect a port for PAT; no mapping if we have none
@@ -124,7 +125,7 @@ impl PerVniTable {
                     "Mapping {addr}:{port:?} from prefix {prefix} to ranges {ranges:?}: found offset {offset}"
                 );
                 ranges
-                    .get_entry(offset)
+                    .get_entry(addr, port, offset)
                     .map(|(new_addr, new_port)| (new_addr, Some(new_port)))
             }
         }
@@ -228,47 +229,35 @@ pub enum NatTableValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddrTranslationValue {
-    ranges: Vec<IpRange>,
+    ranges_tree: DisjointRangesBTreeMap<IpRange, (IpRange, u128)>,
 }
 
 impl AddrTranslationValue {
     #[must_use]
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self { ranges: Vec::new() }
-    }
-
-    /// Adds a new range to the structure.
-    ///
-    /// Note: When possible, the new range is merged with the latest range in the list; so there is
-    /// no guarantee, when calling this method, that the new range is added as a separate range, and
-    /// that `self.ranges.len()` will be incremented.
-    pub fn add_range(&mut self, range: IpRange) {
-        if self.ranges.is_empty() {
-            self.push(range);
-            return;
+        Self {
+            ranges_tree: DisjointRangesBTreeMap::new(),
         }
-
-        let last_range = self.ranges.last_mut().unwrap_or_else(|| {
-            // We checked ranges vector is not empty
-            unreachable!()
-        });
-        last_range.merge(&range).unwrap_or_else(|| self.push(range));
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn ranges(&self) -> &Vec<IpRange> {
-        &self.ranges
-    }
-
-    fn push(&mut self, range: IpRange) {
-        self.ranges.push(range);
+    pub fn ranges(&self) -> Vec<IpRange> {
+        self.ranges_tree
+            .iter()
+            .map(|(_, (range, _))| *range)
+            .collect()
     }
 
     /// Returns the total number of IP addresses covered by the ranges in this value.
+    #[must_use]
     pub fn ip_len(&self) -> PrefixSize {
-        let sum = self.ranges.iter().map(IpRange::len).sum();
+        let sum = self
+            .ranges_tree
+            .iter()
+            .map(|(_, (range, _))| range.len())
+            .sum();
         debug_assert!(sum < PrefixSize::Overflow);
         sum
     }
@@ -279,27 +268,57 @@ impl AddrTranslationValue {
     ///
     /// Returns `Some(addr)` if the offset is valid within the total number of elements covered by
     /// the ranges, or `None` otherwise.
-    fn get_entry(&self, entry_offset: u128) -> Option<IpAddr> {
+    fn get_entry(&self, addr: &IpAddr, entry_offset: u128) -> Option<IpAddr> {
         if entry_offset >= self.ip_len() {
             return None;
         }
 
-        let mut offset = PrefixSize::U128(entry_offset);
-        for range in &self.ranges {
-            if offset < range.len() {
-                // We never grow offset, it cannot overflow a u128
-                return range.get_entry(offset.try_into().unwrap_or_else(|_| unreachable!()));
-            }
-            offset -= range.len();
-        }
-        None
+        self.ranges_tree
+            .lookup(addr)
+            .and_then(|(_, (range, range_offset))| range.get_entry(entry_offset - range_offset))
     }
 }
 
+/// Store IP prefix/ranges and port ranges in such a way that we can efficiently proceed to a 1:1
+/// mapping between an original and a target couple {IP address, port}.
+///
+/// The structure contains:
+///
+/// - a port range to associate to an IP prefix, to check that this IP prefix returned from a parent
+///   LPM lookup has the right port range for the processed packet.
+/// - a `BTreeMap` that associates, to portions of the IP/port ranges, the corresponding target
+///   IP/port ranges.
+///
+/// For example:
+///
+/// - 1.0.0.0/24, ports 4001-5000
+/// - mapping to 2.0.0.0/25, ports 6001-7000, and 3.0.0.0/26, ports 8001-10000
+///
+/// The overall LPM entry is constructed like this:
+///
+/// - key: 1.0.0.0/24 (key for LPM lookup, of which `PortAddrTranslationValue` is the value)
+/// - value (this is what is built in this function):
+///     - associated port range: 4001-5000
+///     - `BTreeMap` of associated port ranges to corresponding IP and port ranges
+///         - entry 1
+///             - key: ips 1.0.0.0:4001 to 1.0.0.127:5000
+///             - associated IP range: 2.0.0.0/25
+///             - associated port range: 6001-7000
+///         - entry 2
+///             - key: 1.0.0.128:4001 to 1.0.0.255:5000
+///             - associated IP range: 3.0.0.0/26
+///             - associated port range: 8001-10000
+///
+/// When translating IP 10.0.0.142, port 4003, we first look for the unique corresponding matching
+/// prefix with a matching port range (combinations of IP and port ranges are not overlapping), and
+/// we find the entry above. We refine the search by looking up in the `BTreeMap`, and find entry 2.
+/// From there, we take the offset of (10.0.0.142, 4003) within the ranges (1.0.0.128:4001 to
+/// 1.0.0.255:5000): 14 * 1000 + 3 = 14003, and we map it to the corresponding IP and port in the
+/// target range (3.0.0.0/26, 8001-10000), which gives us IP 3.0.0.7, port 3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortAddrTranslationValue {
     prefix_port_ranges: BTreeSet<PortRange>,
-    ranges: Vec<IpPortRange>,
+    ranges_tree: DisjointRangesBTreeMap<IpPortRangeBounds, (IpPortRange, PrefixWithPortsSize)>,
 }
 
 impl PortAddrTranslationValue {
@@ -308,55 +327,107 @@ impl PortAddrTranslationValue {
     pub fn new(prefix_port_ranges: BTreeSet<PortRange>) -> Self {
         Self {
             prefix_port_ranges,
-            ranges: Vec::new(),
+            ranges_tree: DisjointRangesBTreeMap::new(),
         }
     }
 
-    /// Adds a new range to the structure.
-    ///
-    /// Note: When possible, the new range is merged with the latest range in the list; so there is
-    /// no guarantee, when calling this method, that the new range is added as a separate range, and
-    /// that `self.ranges.len()` will be incremented.
-    pub fn add_ranges(&mut self, new_ranges: Vec<IpPortRange>) {
-        for range in new_ranges {
-            if self.is_empty() {
-                self.push(range);
-                return;
+    pub fn insert_and_merge(
+        &mut self,
+        key: IpPortRangeBounds,
+        value: (IpPortRange, PrefixWithPortsSize),
+    ) {
+        self.insert(key, value);
+
+        if let Some((previous_key, previous_value)) = self
+            .ranges_tree
+            .range((Bound::Unbounded, Bound::Excluded(&key)))
+            .last()
+        {
+            // Copy entry
+            let (key_copy, previous_key_copy) = (key, *previous_key);
+            let (_, mut merge_value) = (*previous_key, *previous_value);
+            // Try merging keys and values
+            if let Some(merge_key) = Self::merge_ip_port_range_bounds(
+                *previous_key,
+                key,
+                *self
+                    .prefix_port_ranges
+                    .iter()
+                    .find(|pr| pr.contains(&key.start.port))
+                    .unwrap_or_else(|| unreachable!()),
+            ) && merge_value.0.merge(&value.0).is_some()
+            {
+                // Merge was successful, insert new value
+                self.ranges_tree.insert(merge_key, merge_value);
+                // Remove the two original entries that were merged
+                self.ranges_tree.remove(&key_copy);
+                self.ranges_tree.remove(&previous_key_copy);
             }
-
-            let last_range = self.ranges.last_mut().unwrap_or_else(|| {
-                // We checked ranges vector is not empty
-                unreachable!()
-            });
-            last_range.merge(&range).unwrap_or_else(|| self.push(range));
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.ranges.is_empty()
+    fn merge_ip_port_range_bounds(
+        left: IpPortRangeBounds,
+        right: IpPortRangeBounds,
+        ports: PortRange,
+    ) -> Option<IpPortRangeBounds> {
+        // Same IP, contiguous ports
+        if left.end.ip == right.start.ip && left.end.port.saturating_add(1) == right.start.port {
+            return Some(IpPortRangeBounds::new(left.start, right.end));
+        }
+
+        // Contiguous IPs, ports wrapping around port range
+        match (left.end.ip, right.start.ip) {
+            (IpAddr::V4(left_end_ip), IpAddr::V4(right_start_ip)) => {
+                if left_end_ip.to_bits().saturating_add(1) != right_start_ip.to_bits()
+                    || left.end.port != ports.end()
+                    || right.start.port != ports.start()
+                {
+                    return None;
+                }
+            }
+            (IpAddr::V6(left_end_ip), IpAddr::V6(right_start_ip)) => {
+                if left_end_ip.to_bits().saturating_add(1) != right_start_ip.to_bits()
+                    || left.end.port != ports.end()
+                    || right.start.port != ports.start()
+                {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+        Some(IpPortRangeBounds::new(left.start, right.end))
     }
 
-    fn push(&mut self, range: IpPortRange) {
-        self.ranges.push(range);
+    fn insert(
+        &mut self,
+        key: IpPortRangeBounds,
+        value: (IpPortRange, PrefixWithPortsSize),
+    ) -> Option<(IpPortRange, PrefixWithPortsSize)> {
+        self.ranges_tree.insert(key, value)
     }
 
     fn size(&self) -> PrefixWithPortsSize {
-        self.ranges.iter().map(IpPortRange::size).sum()
+        self.ranges_tree
+            .iter()
+            .map(|(_, (range, _))| range.size())
+            .sum()
     }
 
-    fn get_entry(&self, entry_offset: PrefixWithPortsSize) -> Option<(IpAddr, u16)> {
+    fn get_entry(
+        &self,
+        addr: &IpAddr,
+        port: u16,
+        entry_offset: PrefixWithPortsSize,
+    ) -> Option<(IpAddr, u16)> {
         if entry_offset >= self.size() {
             return None;
         }
 
-        let mut offset = entry_offset;
-        for range in &self.ranges {
-            if offset < range.size() {
-                return range.get_entry(offset);
-            }
-            offset -= range.size();
-        }
-        None
+        let bounds = IpPort::new(*addr, port);
+        self.ranges_tree
+            .lookup(&bounds)
+            .and_then(|(_, (range, range_offset))| range.get_entry(entry_offset - range_offset))
     }
 }
 
@@ -364,10 +435,28 @@ impl From<AddrTranslationValue> for PortAddrTranslationValue {
     fn from(value: AddrTranslationValue) -> Self {
         Self {
             prefix_port_ranges: BTreeSet::from([PortRange::new_max_range()]),
-            ranges: value
-                .ranges
+            ranges_tree: value
+                .ranges_tree
                 .iter()
-                .map(|range| IpPortRange::new(range.clone(), PortRange::new_max_range()))
+                .map(|(bounds, (range, offset))| {
+                    (
+                        // Complete port ranges with full available range (0-65535)
+                        IpPortRangeBounds::new(
+                            IpPort::new(bounds.start, 0),
+                            IpPort::new(bounds.end, u16::MAX),
+                        ),
+                        (
+                            // Complete target port ranges with full range, too
+                            IpPortRange::new(*range, PortRange::new_max_range()),
+                            // The offset from AddrTranslationValue was for counting IP, here we
+                            // count IP multiplied by the number of ports covered by the associated
+                            // port range. We use the full space of ports everywhere, so just
+                            // multiply accordingly to obtain the new offset.
+                            PrefixWithPortsSize::from(*offset)
+                                * PrefixWithPortsSize::from(PortRange::new_max_range().len()),
+                        ),
+                    )
+                })
                 .collect(),
         }
     }
@@ -387,24 +476,37 @@ impl TryFrom<PortAddrTranslationValue> for AddrTranslationValue {
         {
             return Err(NatTablesError::NeedsPortRange);
         }
-        if value
-            .ranges
-            .iter()
-            .any(|range| !range.port_range.is_max_range())
-        {
+
+        let size_max_port_range = PortRange::MAX_LENGTH as u64;
+        if value.ranges_tree.iter().any(|(bounds, (range, offset))| {
+            bounds.start.port != 0
+                || bounds.end.port != u16::MAX
+                || !range.port_range.is_max_range()
+                || *offset % (size_max_port_range) != 0
+        }) {
             return Err(NatTablesError::NeedsPortRange);
         }
+
         Ok(Self {
-            ranges: value
-                .ranges
+            ranges_tree: value
+                .ranges_tree
                 .iter()
-                .map(|range| range.ip_range.clone())
+                .map(|(bounds, (range, offset))| {
+                    let addr_offset_big = *offset / size_max_port_range;
+                    debug_assert!(addr_offset_big <= u128::MAX.into());
+                    let addr_offset = u128::cast_from(addr_offset_big);
+                    (
+                        // Keep only IPs, discard port ranges
+                        IpRange::new(bounds.start.ip, bounds.end.ip),
+                        (range.ip_range, addr_offset),
+                    )
+                })
                 .collect(),
         })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IpPortRange {
     ip_range: IpRange,
     port_range: PortRange,
@@ -417,6 +519,11 @@ impl IpPortRange {
             ip_range,
             port_range,
         }
+    }
+
+    #[must_use]
+    pub fn port_range(&self) -> PortRange {
+        self.port_range
     }
 
     fn get_entry(&self, offset: PrefixWithPortsSize) -> Option<(IpAddr, u16)> {
@@ -502,7 +609,7 @@ impl IpRangeWithPorts for IpPortRange {
 }
 
 // Represents an IP address range, with a start and an end address.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IpRange {
     start: IpAddr,
     end: IpAddr,
@@ -595,5 +702,73 @@ impl IpRange {
             _ => return None,
         }
         None
+    }
+}
+
+// Used for DisjointRangesBTreeMap
+impl UpperBoundFrom<IpAddr> for IpRange {
+    fn upper_bound_from(addr: IpAddr) -> Self {
+        let end_addr = match addr {
+            IpAddr::V4(_) => IpAddr::V4(u32::MAX.into()),
+            IpAddr::V6(_) => IpAddr::V6(u128::MAX.into()),
+        };
+        Self::new(addr, end_addr)
+    }
+}
+
+// Used for DisjointRangesBTreeMap
+impl RangeBounds<IpAddr> for IpRange {
+    fn start_bound(&self) -> Bound<&IpAddr> {
+        Bound::Included(&self.start)
+    }
+    fn end_bound(&self) -> Bound<&IpAddr> {
+        Bound::Included(&self.end)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IpPort {
+    ip: IpAddr,
+    port: u16,
+}
+
+impl IpPort {
+    #[must_use]
+    pub fn new(ip: IpAddr, port: u16) -> Self {
+        Self { ip, port }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IpPortRangeBounds {
+    pub start: IpPort,
+    pub end: IpPort,
+}
+
+impl IpPortRangeBounds {
+    #[must_use]
+    pub fn new(start: IpPort, end: IpPort) -> Self {
+        Self { start, end }
+    }
+}
+
+// Used for DisjointRangesBTreeMap
+impl UpperBoundFrom<IpPort> for IpPortRangeBounds {
+    fn upper_bound_from(value: IpPort) -> Self {
+        let end_addr = match value.ip {
+            IpAddr::V4(_) => IpAddr::V4(u32::MAX.into()),
+            IpAddr::V6(_) => IpAddr::V6(u128::MAX.into()),
+        };
+        Self::new(value, IpPort::new(end_addr, u16::MAX))
+    }
+}
+
+// Used for DisjointRangesBTreeMap
+impl RangeBounds<IpPort> for IpPortRangeBounds {
+    fn start_bound(&self) -> Bound<&IpPort> {
+        Bound::Included(&self.start)
+    }
+    fn end_bound(&self) -> Bound<&IpPort> {
+        Bound::Included(&self.end)
     }
 }
