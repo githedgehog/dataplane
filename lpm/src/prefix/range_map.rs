@@ -69,10 +69,32 @@ where
     pub fn iter(&self) -> impl Iterator<Item = (&R, &V)> {
         self.0.iter()
     }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&R, &mut V)> {
+        self.0.iter_mut()
+    }
+
+    pub fn range(&self, range: impl RangeBounds<R>) -> impl Iterator<Item = (&R, &V)> {
+        self.0.range(range)
+    }
+
+    pub fn range_mut(&mut self, range: impl RangeBounds<R>) -> impl Iterator<Item = (&R, &mut V)> {
+        self.0.range_mut(range)
+    }
 }
 
 impl<R, V> Default for DisjointRangesBTreeMap<R, V> {
     fn default() -> Self {
         Self(BTreeMap::default())
+    }
+}
+
+// Permits to .collect() as a DisjointRangesBTreeMap
+impl<R, V> FromIterator<(R, V)> for DisjointRangesBTreeMap<R, V>
+where
+    R: Ord,
+{
+    fn from_iter<T: IntoIterator<Item = (R, V)>>(iter: T) -> Self {
+        Self(BTreeMap::from_iter(iter))
     }
 }
