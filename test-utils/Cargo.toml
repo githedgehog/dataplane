@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 caps = { workspace = true, default-features = false, features = [] }
+gwname = { workspace = true }
 nix = { workspace = true, default-features = false, features = ["sched", "fs"] }
 rtnetlink = { workspace = true, default-features = false, features = ["tokio_socket"] }
 tokio = { workspace = true, default-features = false, features = ["rt", "net", "time"] }
