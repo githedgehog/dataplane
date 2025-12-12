@@ -1660,6 +1660,7 @@ name = "dataplane-test-utils"
 version = "0.6.0"
 dependencies = [
  "caps",
+ "dataplane-gwname",
  "nix 0.30.1",
  "rtnetlink",
  "tokio",
