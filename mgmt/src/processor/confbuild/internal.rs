@@ -24,7 +24,9 @@ use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use config::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
-use config::internal::routing::routemap::{MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch};
+use config::internal::routing::routemap::{
+    Community, MatchingPolicy, RouteMap, RouteMapEntry, RouteMapMatch, RouteMapSetAction,
+};
 use config::internal::routing::statics::StaticRoute;
 use config::internal::routing::vrf::VrfConfig;
 use config::{ExternalConfig, GwConfig, InternalConfig};
@@ -194,11 +196,23 @@ impl VpcRoutingConfigIpv4 {
         }
         self.adv_plist.push(adv_plist);
 
-        /* create adv route-map entry and add it */
-        let adv_rmape = RouteMapEntry::new(MatchingPolicy::Permit).add_match(
-            RouteMapMatch::Ipv4AddressPrefixList(vpc.adv_plist(&rmanifest.name)),
-        );
+        /* collect communities for this peering */
+        let communities: Vec<_> = peer
+            .adv_communities
+            .iter()
+            .map(|c| Community::String(c.clone()))
+            .collect();
 
+        /* create adv route-map entry matching prefixes and adding communities if needed */
+        let mut adv_rmape = RouteMapEntry::new(MatchingPolicy::Permit);
+        adv_rmape = adv_rmape.add_match(RouteMapMatch::Ipv4AddressPrefixList(
+            vpc.adv_plist(&rmanifest.name),
+        ));
+        if !communities.is_empty() {
+            adv_rmape = adv_rmape.add_action(RouteMapSetAction::Community(communities, true));
+        }
+
+        /* add entry */
         self.adv_rmap.add_entry(None, adv_rmape)?;
         Ok(())
     }
