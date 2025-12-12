@@ -1408,7 +1408,6 @@ dependencies = [
 name = "dataplane-net"
 version = "0.4.0"
 dependencies = [
- "ahash",
  "arrayvec",
  "bitflags 2.10.0",
  "bolero",
@@ -1423,6 +1422,7 @@ dependencies = [
  "linux-raw-sys 0.12.0",
  "multi_index_map",
  "ordermap",
+ "rapidhash",
  "rkyv",
  "serde",
  "thiserror 2.0.17",
@@ -3955,6 +3955,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
 dependencies = [
  "rand_core 0.9.3",
+]
+
+[[package]]
+name = "rapidhash"
+version = "4.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8e65c75143ce5d47c55b510297eeb1182f3c739b6043c537670e9fc18612dae"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
