@@ -48,10 +48,10 @@ run-extra-args = []
 # failed and retried tests.
 #
 # Can be overridden through the `--status-level` flag.
-status-level = "all"
+status-level = "pass"
 
 # Similar to status-level, show these test statuses at the end of the run.
-final-status-level = "skip"
+final-status-level = "all"
 
 # "failure-output" defines when standard output and standard error for failing tests are produced.
 # Accepted values are
@@ -64,7 +64,7 @@ final-status-level = "skip"
 # For large test suites and CI it is generally useful to use "immediate-final".
 #
 # Can be overridden through the `--failure-output` option.
-failure-output = "immediate-final"
+failure-output = "immediate"
 
 # "success-output" controls production of standard output and standard error on success. This should
 # generally be set to "never".
