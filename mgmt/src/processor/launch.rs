@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::processor::k8s_client::K8sClientError;
-use crate::processor::k8s_client::k8s_start_client;
+use crate::processor::k8s_client::{K8sClient, K8sClientError};
 use crate::processor::proc::ConfigChannelRequest;
 use crate::processor::proc::ConfigProcessor;
 
@@ -19,7 +18,10 @@ use tokio::sync::mpsc::Sender;
 use tokio_stream::Stream;
 use tonic::transport::Server;
 
+use futures::future::OptionFuture;
+
 use args::GrpcAddress;
+use concurrency::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::grpc::server::create_config_service;
@@ -187,6 +189,8 @@ pub struct MgmtParams {
     pub processor_params: ConfigProcessorParams,
 }
 
+const STATUS_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Start the mgmt service with either type of socket
 pub fn start_mgmt(
     params: MgmtParams,
@@ -232,29 +236,56 @@ pub fn start_mgmt(
             } else {
                 debug!("Will start watching k8s for configuration changes");
                 rt.block_on(async {
+                    let k8s_client = Arc::new(K8sClient::new(params.hostname.as_str()));
                     let (processor, tx) = ConfigProcessor::new(params.processor_params);
-                    let processor_handle = tokio::spawn(async { processor.run().await });
-                    let k8s_handle = tokio::spawn(async move { k8s_start_client(params.hostname.as_str(), tx).await });
-                    tokio::select! {
-                        result = processor_handle => {
-                            match result {
-                                Ok(_) => {
-                                    error!("Configuration processor task exited unexpectedly");
-                                    Err(LaunchError::PrematureProcessorExit)?
+                    let tx1 = tx.clone();
+                    let k8s_client1 = k8s_client.clone();
+
+                    k8s_client.init().await.map_err(|e| {
+                        error!("Failed to initialize k8s state: {}", e);
+                        LaunchError::K8sClientError(e)
+                    })?;
+                    let mut processor_handle = Some(tokio::spawn(async { processor.run().await }));
+                    let mut k8s_config_handle = Some(tokio::spawn(async move { k8s_client.k8s_start_config_watch(tx).await }));
+                    let mut k8s_status_handle = Some(tokio::spawn(async move {
+                        k8s_client1.k8s_start_status_update(tx1, &STATUS_UPDATE_INTERVAL).await
+                    }));
+                    loop {
+                        tokio::select! {
+                            Some(result) = OptionFuture::from(processor_handle.as_mut()) => {
+                                match result {
+                                    Ok(_) => {
+                                        error!("Configuration processor task exited unexpectedly");
+                                        Err(LaunchError::PrematureProcessorExit)?
+                                    }
+                                    Err(e) => { Err::<(), LaunchError>(LaunchError::ProcessorJoinError(e)) }
                                 }
-                                Err(e) => { Err::<(), LaunchError>(LaunchError::ProcessorJoinError(e)) }
                             }
-                        }
-                        result = k8s_handle => {
-                            match result {
-                                Ok(result) => { result.inspect_err(|e| error!("K8s client task failed: {e}")).map_err(LaunchError::K8sClientError)?;
-                                    error!("Kubernetes client task exited unexpectedly");
-                                    Err(LaunchError::PrematureK8sClientExit)?
+                            Some(result) = OptionFuture::from(k8s_config_handle.as_mut()) => {
+                                match result {
+                                    Ok(result) => { result.inspect_err(|e| error!("K8s config watch task failed: {e}")).map_err(LaunchError::K8sClientError)?;
+                                        error!("Kubernetes config watch task exited unexpectedly");
+                                        Err(LaunchError::PrematureK8sClientExit)?
+                                    }
+                                    Err(e) => { Err(LaunchError::K8sClientJoinError(e))? }
                                 }
-                                Err(e) => { Err(LaunchError::K8sClientJoinError(e))? }
                             }
+                            Some(result) = OptionFuture::from(k8s_status_handle.as_mut()) => {
+                                k8s_status_handle = None;
+                                match result {
+                                    Ok(result) => { result.inspect_err(|e| error!("K8s status update task failed: {e}")).map_err(LaunchError::K8sClientError)?;
+                                        error!("Kubernetes status update task exited unexpectedly");
+                                        Err(LaunchError::PrematureK8sClientExit)?
+                                    }
+                                    Err(e) => { Err(LaunchError::K8sClientJoinError(e))? }
+                                }
+                            }
+                        }?;
+
+                        if processor_handle.is_none() && k8s_config_handle.is_none() && k8s_status_handle.is_none() {
+                            break;
                         }
-                    }?;
+                    }
                     Ok(())
                 })
             }
