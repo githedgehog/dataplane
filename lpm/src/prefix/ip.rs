@@ -42,7 +42,7 @@ impl Representable for Ipv6Addr {
 
 #[allow(clippy::len_without_is_empty)]
 pub trait IpPrefix: Debug + Clone + From<Self::Addr> + PartialEq {
-    type Repr: Debug + Unsigned + PrimInt + Zero + CheckedShr;
+    type Repr: Debug + Unsigned + PrimInt + Zero + CheckedShr + TryFrom<u128>;
     type Addr: Display + Debug + Clone + Eq + Representable<Repr = Self::Repr>;
     const MAX_LEN: u8;
 
@@ -64,6 +64,34 @@ pub trait IpPrefix: Debug + Clone + From<Self::Addr> + PartialEq {
     fn len(&self) -> u8;
 
     fn size(&self) -> PrefixSize;
+
+    /// Split a CIDR prefix into two smaller prefixes of equal size, by adding one bit to the prefix
+    /// length.
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` if the prefix covers a single host, in which case it doesn't make sense to
+    /// split.
+    ///
+    /// # Example
+    ///
+    /// - 1.0.0.0/16 splits as 1.0.0.0/17 and 1.0.128.0/17
+    /// - 1.0.0.0/24 splits as 1.0.0.0/25 and 1.0.0.128/25
+    /// - 1.0.0.0/31 splits as 1.0.0.0/32 and 1.0.0.1/32
+    fn split(&self) -> Option<(Self, Self)> {
+        if self.len() == Self::MAX_LEN {
+            return None;
+        }
+        let split_address = Self::Addr::from_bits(
+            self.network().to_bits()
+                | Self::Repr::try_from(1 << (Self::MAX_LEN - self.len() - 1))
+                    .unwrap_or_else(|_| unreachable!()),
+        );
+        Some((
+            Self::new(self.network(), self.len() + 1).unwrap_or_else(|_| unreachable!()),
+            Self::new(split_address, self.len() + 1).unwrap_or_else(|_| unreachable!()),
+        ))
+    }
 }
 
 pub trait IpPrefixCovering<Other> {

@@ -11,7 +11,7 @@ use crate::external::GenId;
 use crate::external::overlay::vpc::VpcId;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
-use lpm::prefix::{Prefix, PrefixSize};
+use lpm::prefix::{PrefixWithOptionalPorts, PrefixWithPortsSize};
 use net::eth::mac::Mac;
 use thiserror::Error;
 
@@ -61,14 +61,14 @@ pub enum ConfigError {
     #[error("All prefixes are excluded in VpcExpose: {0}")]
     ExcludedAllPrefixes(Box<VpcExpose>),
     #[error("Exclusion prefix {0} not contained within existing allowed prefix")]
-    OutOfRangeExclusionPrefix(Prefix),
+    OutOfRangeExclusionPrefix(PrefixWithOptionalPorts),
     #[error("VPC prefixes overlap: {0} and {1}")]
-    OverlappingPrefixes(Prefix, Prefix),
+    OverlappingPrefixes(PrefixWithOptionalPorts, PrefixWithOptionalPorts),
     #[error("Inconsistent IP version in VpcExpose: {0}")]
     InconsistentIpVersion(Box<VpcExpose>),
     // NAT-specific
     #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
-    MismatchedPrefixSizes(PrefixSize, PrefixSize),
+    MismatchedPrefixSizes(PrefixWithPortsSize, PrefixWithPortsSize),
 
     // Interface addresses
     #[error("Invalid interface address format: {0}")]

@@ -53,6 +53,10 @@ pub trait TrieMap {
     where
         A: Into<Self::Prefix>;
 
+    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>
+    where
+        A: Into<Self::Prefix>;
+
     fn remove<B>(&mut self, prefix: B) -> Option<Self::Value>
     where
         B: Borrow<Self::Prefix>;
@@ -97,6 +101,24 @@ impl<V: Clone> IpPrefixTrie<V> {
         }
     }
 
+    pub fn matching_entries<Q>(&self, addr: Q) -> Box<dyn Iterator<Item = (Prefix, &V)> + '_>
+    where
+        Q: Into<IpAddr>,
+    {
+        match addr.into() {
+            IpAddr::V4(ip) => Box::new(
+                self.ipv4
+                    .matching_entries(ip)
+                    .map(|(k, v)| (Prefix::IPV4(*k), v)),
+            ),
+            IpAddr::V6(ip) => Box::new(
+                self.ipv6
+                    .matching_entries(ip)
+                    .map(|(k, v)| (Prefix::IPV6(*k), v)),
+            ),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.ipv4.len() + self.ipv6.len()
     }
@@ -105,12 +127,11 @@ impl<V: Clone> IpPrefixTrie<V> {
         self.ipv4.is_empty() && self.ipv6.is_empty()
     }
 
-    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &V)> {
-        self.ipv4.iter()
-    }
-
-    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &V)> {
-        self.ipv6.iter()
+    pub fn iter_for_prefix(&self, prefix: &Prefix) -> Box<dyn Iterator<Item = (Prefix, &V)> + '_> {
+        match prefix {
+            Prefix::IPV4(_) => Box::new(self.ipv4.iter().map(|(k, v)| (Prefix::IPV4(*k), v))),
+            Prefix::IPV6(_) => Box::new(self.ipv6.iter().map(|(k, v)| (Prefix::IPV6(*k), v))),
+        }
     }
 }
 
