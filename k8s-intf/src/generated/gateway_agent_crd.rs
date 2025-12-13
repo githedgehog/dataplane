@@ -247,16 +247,16 @@ pub struct GatewayAgentStatusStateFrr {
 pub struct GatewayAgentStatusStatePeerings {
     /// Bytes is the number of bytes sent on the peering
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub b: Option<i64>,
+    pub b: Option<u64>,
     /// BytesPerSecond is the number of bytes sent per second on the peering
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bps: Option<f64>,
     /// Drops is the number of packets dropped on the peering
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub d: Option<i64>,
+    pub d: Option<u64>,
     /// Packets is the number of packets sent on the peering
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p: Option<i64>,
+    pub p: Option<u64>,
     /// PktsPerSecond is the number of packets sent per second on the peering
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pps: Option<f64>,
@@ -267,12 +267,12 @@ pub struct GatewayAgentStatusStatePeerings {
 pub struct GatewayAgentStatusStateVpcs {
     /// Bytes is the number of bytes sent on the vpc
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub b: Option<i64>,
+    pub b: Option<u64>,
     /// Drops is the number of packets dropped on the vpc
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub d: Option<i64>,
+    pub d: Option<u64>,
     /// Packets is the number of packets sent on the vpc
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p: Option<i64>,
+    pub p: Option<u64>,
 }
 
