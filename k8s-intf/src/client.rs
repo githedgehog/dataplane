@@ -2,13 +2,14 @@
 // Copyright Open Network Fabric Authors
 
 use futures::{StreamExt, TryStreamExt};
+use kube::api::PostParams;
 use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
 
 use tracectl::trace_target;
 use tracing::{error, info};
 
-use crate::gateway_agent_crd::GatewayAgent;
+use crate::gateway_agent_crd::{GatewayAgent, GatewayAgentStatus};
 
 trace_target!("k8s-client", LevelFilter::INFO, &["management"]);
 
@@ -18,6 +19,16 @@ pub enum WatchError {
     ClientError(#[from] kube::Error),
     #[error("Watcher error: {0}")]
     WatcherError(#[from] kube::runtime::watcher::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReplaceStatusError {
+    #[error("Client error: {0}")]
+    ClientError(#[from] kube::Error),
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] serde_json::Error),
+    #[error("Max conflict retries exceeded")]
+    MaxConflictRetriesExceeded,
 }
 
 /// Watch `GatewayAgent` CRD and call callback for all changes
@@ -62,4 +73,44 @@ pub async fn watch_gateway_agent_crd(
             }
         }
     }
+}
+
+const NUM_CONFLICT_RETRIES: usize = 3;
+
+/// Patch `GatewayAgent` object with current status
+///
+/// # Errors
+/// Returns an error if the patch request fails.
+pub async fn replace_gateway_status(
+    gateway_object_name: &str,
+    status: &GatewayAgentStatus,
+) -> Result<(), ReplaceStatusError> {
+    let client = Client::try_default().await?;
+    let api: Api<GatewayAgent> = Api::namespaced(client.clone(), "fab");
+
+    for attempt_num in 0..NUM_CONFLICT_RETRIES {
+        let mut status_obj = api.get_status(gateway_object_name).await?;
+        status_obj.status = Some(status.clone());
+        let status_json = serde_json::to_vec(&status_obj)?;
+
+        match api
+            .replace_status(gateway_object_name, &PostParams::default(), status_json)
+            .await
+        {
+            Ok(_) => break,
+            Err(kube::Error::Api(api_error)) => {
+                if api_error.code == 409 {
+                    if attempt_num < NUM_CONFLICT_RETRIES - 1 {
+                        continue; // Try again, resource version conflict
+                    }
+                    return Err(ReplaceStatusError::MaxConflictRetriesExceeded);
+                }
+                return Err(kube::Error::Api(api_error).into());
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+    }
+    Ok(())
 }

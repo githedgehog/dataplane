@@ -34,10 +34,10 @@ mod test {
                     .expect("Failed to convert frr status");
 
                 assert_eq!(status.bytes, k8s_vpc_status.b.expect("K8s vpcs b not set"),);
-                assert_eq!(status.drops, k8s_vpc_status.d.expect("K8s vpcs b not set"),);
+                assert_eq!(status.drops, k8s_vpc_status.d.expect("K8s vpcs d not set"),);
                 assert_eq!(
                     status.packets,
-                    k8s_vpc_status.p.expect("K8s vpcs b not set"),
+                    k8s_vpc_status.p.expect("K8s vpcs p not set"),
                 );
             });
     }
