@@ -15,6 +15,7 @@ tracectl = { workspace = true }
 k8s-intf = { workspace = true }
 
 # external
+chrono = { workspace = true }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 ipnet = { workspace = true }
 linkme = { workspace = true }
