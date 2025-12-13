@@ -351,6 +351,14 @@ jobs:
             target=x86_64-unknown-linux-gnu \
             ${{matrix.profile.sterile}} cargo doc --no-deps
 
+      - name: "run doctests"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            ${{matrix.profile.sterile}} cargo test --doc
+
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: "mxschmitt/action-tmate@v3"
