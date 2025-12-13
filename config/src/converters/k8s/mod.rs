@@ -4,6 +4,7 @@
 //! Converter for gateway-schema k8s objects to internal config and status
 
 pub mod config;
+pub mod status;
 
 use thiserror::Error;
 
