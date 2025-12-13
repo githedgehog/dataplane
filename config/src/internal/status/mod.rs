@@ -7,7 +7,11 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
+use bolero::TypeGenerator;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(TypeGenerator))]
 pub enum InterfaceOperStatusType {
     #[default]
     Unknown,
@@ -17,6 +21,7 @@ pub enum InterfaceOperStatusType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(TypeGenerator))]
 pub enum InterfaceAdminStatusType {
     #[default]
     Unknown,
@@ -25,6 +30,7 @@ pub enum InterfaceAdminStatusType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(TypeGenerator))]
 pub enum ZebraStatusType {
     #[default]
     NotConnected,
@@ -32,6 +38,7 @@ pub enum ZebraStatusType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(TypeGenerator))]
 pub enum FrrAgentStatusType {
     #[default]
     NotConnected,
@@ -39,6 +46,7 @@ pub enum FrrAgentStatusType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(TypeGenerator))]
 pub enum DataplaneStatusType {
     #[default]
     Unknown,
@@ -48,6 +56,7 @@ pub enum DataplaneStatusType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(TypeGenerator))]
 pub enum BgpNeighborSessionState {
     #[default]
     Unset,
@@ -86,6 +95,7 @@ impl InterfaceStatus {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(test, derive(TypeGenerator))]
 pub struct InterfaceCounters {
     pub tx_bits: u64,
     pub tx_bps: f64,
@@ -370,5 +380,153 @@ impl DataplaneStatus {
     }
     pub fn set_bgp(&mut self, b: BgpStatus) {
         self.bgp = Some(b);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod contract {
+    use super::*;
+
+    use std::ops::Bound;
+
+    use bolero::{Driver, TypeGenerator};
+
+    #[derive(Debug)]
+    pub struct LegalValue<T>(T);
+
+    impl<T> AsRef<T> for LegalValue<T> {
+        fn as_ref(&self) -> &T {
+            &self.0
+        }
+    }
+
+    impl<T> LegalValue<T> {
+        pub fn new(value: T) -> Self {
+            LegalValue(value)
+        }
+
+        pub fn take(self) -> T {
+            self.0
+        }
+    }
+
+    impl TypeGenerator for LegalValue<FrrStatus> {
+        fn generate<D: Driver>(d: &mut D) -> Option<LegalValue<FrrStatus>> {
+            let applied_config_gen = d.gen_u32(Bound::Included(&0), Bound::Unbounded)?;
+            let total_configs =
+                d.gen_u32(Bound::Included(&applied_config_gen), Bound::Unbounded)?;
+            let applied_configs = d.gen_u32(
+                Bound::Included(&applied_config_gen),
+                Bound::Included(&total_configs),
+            )?;
+            let failed_configs = total_configs - applied_configs;
+
+            Some(LegalValue(FrrStatus {
+                zebra_status: d.produce::<ZebraStatusType>()?,
+                frr_agent_status: d.produce::<FrrAgentStatusType>()?,
+                applied_config_gen: i64::from(applied_config_gen),
+                restarts: d.gen_u32(Bound::Included(&0), Bound::Unbounded)?,
+                applied_configs,
+                failed_configs,
+            }))
+        }
+    }
+
+    impl TypeGenerator for LegalValue<VpcCounters> {
+        fn generate<D: Driver>(d: &mut D) -> Option<LegalValue<VpcCounters>> {
+            let bytes = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+            let drops = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+            let packets = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+
+            Some(LegalValue(VpcCounters {
+                name: format!("vpc-{}", d.gen_u32(Bound::Included(&0), Bound::Unbounded)?),
+                bytes,
+                drops,
+                packets,
+            }))
+        }
+    }
+
+    impl TypeGenerator for LegalValue<VpcPeeringCounters> {
+        fn generate<D: Driver>(d: &mut D) -> Option<LegalValue<VpcPeeringCounters>> {
+            let bytes = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+            let drops = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+            let packets = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+            let pps = d.gen_f64(Bound::Included(&0.0), Bound::Unbounded)?;
+            let bps = d.gen_f64(Bound::Included(&0.0), Bound::Unbounded)?;
+
+            let src_vpc = format!("vpc-{}", d.gen_u32(Bound::Included(&0), Bound::Unbounded)?);
+            let dst_vpc = format!("vpc-{}", d.gen_u32(Bound::Included(&0), Bound::Unbounded)?);
+
+            Some(LegalValue(VpcPeeringCounters {
+                name: format!("{src_vpc}--{dst_vpc}"),
+                src_vpc,
+                dst_vpc,
+                bytes,
+                drops,
+                packets,
+                pps,
+                bps,
+            }))
+        }
+    }
+
+    impl TypeGenerator for LegalValue<DataplaneStatus> {
+        fn generate<D: Driver>(d: &mut D) -> Option<LegalValue<DataplaneStatus>> {
+            let num_vpcs = d.gen_usize(Bound::Included(&0), Bound::Included(&10))?;
+            let vpc_names = (0..=num_vpcs)
+                .map(|i| format!("vpc-{i}"))
+                .collect::<Vec<_>>();
+
+            let mut vpc_counters = HashMap::new();
+            for vpc_name in &vpc_names {
+                let bytes = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+                let drops = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+                let packets = d.gen_u64(Bound::Included(&0), Bound::Unbounded)?;
+
+                vpc_counters.insert(
+                    vpc_name.clone(),
+                    VpcCounters {
+                        name: vpc_name.clone(),
+                        ..d.produce::<LegalValue<VpcCounters>>()?.take()
+                    },
+                );
+            }
+
+            let num_vpc_peerings = d.gen_usize(
+                Bound::Included(&0),
+                Bound::Included(&std::cmp::min(num_vpcs * num_vpcs, 10)),
+            )?;
+            let mut vpc_peering_counters = HashMap::new();
+
+            for i in 0..num_vpc_peerings {
+                let src_vpc = &vpc_names
+                    [d.gen_usize(Bound::Included(&0), Bound::Excluded(&vpc_names.len()))?];
+                let dst_vpc = &vpc_names
+                    [d.gen_usize(Bound::Included(&0), Bound::Excluded(&vpc_names.len()))?];
+                let name = format!("{src_vpc}--{dst_vpc}");
+
+                vpc_peering_counters.insert(
+                    name.clone(),
+                    VpcPeeringCounters {
+                        name,
+                        src_vpc: src_vpc.clone(),
+                        dst_vpc: dst_vpc.clone(),
+                        ..d.produce::<LegalValue<VpcPeeringCounters>>()?.take()
+                    },
+                );
+            }
+
+            Some(LegalValue(DataplaneStatus {
+                bgp: None,              // FIXME implement when tests need this field
+                dataplane_status: None, // FIXME implement when tests need this field
+                frr_status: Some(d.produce::<LegalValue<FrrStatus>>()?.take()),
+                vpc_counters,
+                vpc_peering_counters,
+                interface_runtime: HashMap::new(), // FIXME implement when tests need this field
+                interface_statuses: Vec::new(),    // FIXME implement when tests need this field
+                vpcs: HashMap::new(),              // FIXME implement when tests need this field
+            }))
+        }
     }
 }

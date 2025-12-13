@@ -1212,6 +1212,7 @@ version = "0.4.0"
 dependencies = [
  "bolero",
  "caps",
+ "chrono",
  "dataplane-hardware",
  "dataplane-k8s-intf",
  "dataplane-lpm",
