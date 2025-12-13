@@ -570,7 +570,7 @@ pub struct ConfigServerSection {
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct LaunchConfiguration {
     /// Dynamic configuration server settings
-    pub config_server: ConfigServerSection,
+    pub config_server: Option<ConfigServerSection>,
     /// Packet processing driver configuration
     pub driver: DriverConfigSection,
     /// CLI server configuration
@@ -1065,11 +1065,12 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
         Ok(LaunchConfiguration {
-            config_server: ConfigServerSection {
-                address: value
-                    .grpc_address()
-                    .map_err(InvalidCmdArguments::InvalidGrpcAddress)?,
-            },
+            config_server: value
+                .grpc_address()
+                .map_err(InvalidCmdArguments::InvalidGrpcAddress)?
+                .map(|grpc_address| ConfigServerSection {
+                    address: grpc_address,
+                }),
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
@@ -1172,14 +1173,14 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
     #[arg(
         long,
         value_name = "ADDRESS",
-        default_value = "[::1]:50051",
-        help = "IP Address and port or UNIX socket path to listen for management connections"
+        help = "IP Address and port or UNIX socket path to listen for GRPC management connections.
+If this parameter and --grpc_unix_socket are both absent, the dataplane will directly fetch configuration from K8s"
     )]
-    grpc_address: String,
+    grpc_address: Option<String>,
 
     /// Treat grpc-address as a UNIX socket path
     #[arg(long, help = "Use a unix socket to listen for management connections")]
-    grpc_unix_socket: bool,
+    grpc_unix_socket: Option<bool>,
 
     #[arg(
         long,
@@ -1364,27 +1365,33 @@ impl CmdArgs {
     /// Returns an error if:
     /// - Unix socket path is not absolute when `--grpc-unix-socket` is set
     /// - TCP address cannot be parsed as a valid `IP:PORT` combination
-    pub fn grpc_address(&self) -> Result<GrpcAddress, String> {
+    pub fn grpc_address(&self) -> Result<Option<GrpcAddress>, String> {
+        if self.grpc_address.is_none() && self.grpc_unix_socket.is_none() {
+            return Ok(None);
+        }
+
+        let grpc_address = if let Some(addr) = self.grpc_address.as_ref() {
+            addr
+        } else {
+            "0.0.0.0:50051"
+        };
+
         // If UNIX socket flag is set, treat the address as a UNIX socket path
-        if self.grpc_unix_socket {
+        if self.grpc_unix_socket.unwrap_or(false) {
             // Validate that the address is a valid UNIX socket path
-            let grpc_path = PathBuf::from(&self.grpc_address);
+            let grpc_path = PathBuf::from(grpc_address);
             if !grpc_path.is_absolute() {
                 return Err(format!(
-                    "Invalid configuration: --grpc-unix-socket flag is set, but --grpc-address '{}' is not a valid absolute UNIX socket path",
-                    self.grpc_address
+                    "Invalid configuration: --grpc-unix-socket flag is set, but --grpc-address '{grpc_address}' is not a valid absolute UNIX socket path",
                 ));
             }
-            return Ok(GrpcAddress::UnixSocket(self.grpc_address.clone()));
+            return Ok(Some(GrpcAddress::UnixSocket(grpc_address.to_string())));
         }
 
         // Otherwise, parse as a TCP socket address
-        match self.grpc_address.parse::<SocketAddr>() {
-            Ok(addr) => Ok(GrpcAddress::Tcp(addr)),
-            Err(e) => Err(format!(
-                "Invalid gRPC TCP address '{}': {e}",
-                self.grpc_address
-            )),
+        match grpc_address.parse::<SocketAddr>() {
+            Ok(addr) => Ok(Some(GrpcAddress::Tcp(addr))),
+            Err(e) => Err(format!("Invalid gRPC TCP address '{grpc_address}': {e}",)),
         }
     }
 

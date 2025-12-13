@@ -65,6 +65,7 @@ fn process_tracing_cmds(args: &CmdArgs) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     init_logging();
     let args = CmdArgs::parse();
@@ -130,8 +131,15 @@ fn main() {
     let pipeline_factory = setup.pipeline;
 
     /* start management */
+    let hostname = nix::unistd::gethostname()
+        .expect("Failed to get hostname")
+        .to_str()
+        .expect("hostname is not valid unicode")
+        .to_string();
+
     start_mgmt(MgmtParams {
         grpc_addr,
+        hostname,
         processor_params: ConfigProcessorParams {
             router_ctl: setup.router.get_ctl_tx(),
             vpcmapw: setup.vpcmapw,
@@ -141,7 +149,7 @@ fn main() {
             vpc_stats_store: setup.vpc_stats_store,
         },
     })
-    .expect("Failed to start gRPC server");
+    .expect("Failed to start management");
 
     /* start driver with the provided pipeline builder */
     let e = match args.driver_name() {

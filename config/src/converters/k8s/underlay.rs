@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
+use ipnet::Ipv4Net;
 use k8s_intf::gateway_agent_crd::GatewayAgentGateway;
 use lpm::prefix::{Prefix, PrefixString};
 use net::eth::mac::SourceMac;
@@ -97,9 +98,14 @@ fn add_bgp_config(
             "Gateway protocol IP not specified".to_string(),
         ))?;
 
-    let router_id = protocol_ip.parse::<Ipv4Addr>().map_err(|e| {
-        FromK8sConversionError::ParseError(format!("Invalid protocol IP {protocol_ip}: {e}"))
-    })?;
+    let router_id = protocol_ip
+        .parse::<Ipv4Net>()
+        .map_err(|e| {
+            FromK8sConversionError::ParseError(format!(
+                "Invalid IPv4 protocol IP {protocol_ip}: {e}"
+            ))
+        })?
+        .addr();
 
     let vtep_ip_raw = gateway
         .vtep_ip
@@ -190,7 +196,10 @@ mod test {
                 // Check BGP configuration
                 assert_eq!(gateway.asn, Some(bgp_config.asn));
                 assert_eq!(
-                    gateway.protocol_ip,
+                    gateway
+                        .protocol_ip
+                        .as_ref()
+                        .map(|v| v.split('/').next().unwrap().to_string()),
                     bgp_config.router_id.map(|v| v.to_string())
                 );
                 let Some(af_ipv4unicast) = bgp_config.af_ipv4unicast else {

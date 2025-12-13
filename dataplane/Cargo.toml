@@ -26,7 +26,7 @@ mgmt = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
-nix = { workspace = true, features = ["socket"] }
+nix = { workspace = true, features = ["socket", "hostname"] }
 netdev = { workspace = true }
 once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }

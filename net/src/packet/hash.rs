@@ -6,7 +6,7 @@
 use crate::headers::{Net, Transport, TryHeaders, TryIp, TryTransport};
 use crate::packet::Packet;
 use crate::{buffer::PacketBufferMut, headers::TryEth};
-use ahash::AHasher;
+use rapidhash::fast::RapidHasher;
 use std::hash::{Hash, Hasher};
 
 impl<Buf: PacketBufferMut> Packet<Buf> {
@@ -63,7 +63,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     #[allow(unused)]
     /// Uses the ip hash `Packet` method to provide a value in the range [first, last].
     pub fn packet_hash_ecmp(&self, first: u8, last: u8) -> u64 {
-        let mut hasher = AHasher::default();
+        let mut hasher = RapidHasher::default();
         self.hash_ip(&mut hasher);
         hasher.finish() % u64::from(last - first + 1) + u64::from(first)
     }
@@ -73,7 +73,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// as UDP source port for vxlan-encapsulated packets, as recommended by RFC7348.
     #[allow(clippy::cast_possible_truncation)]
     pub fn packet_hash_vxlan(&self) -> u16 {
-        let mut hasher = AHasher::default();
+        let mut hasher = RapidHasher::default();
         self.hash_l2_frame(&mut hasher);
         (hasher.finish() % (65535u64 - 49152 + 1) + 49152u64) as u16
     }
@@ -81,23 +81,11 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
 #[cfg(test)]
 mod tests {
-    use crate::buffer::{PacketBufferMut, TestBuffer};
+    use crate::buffer::TestBuffer;
     use crate::packet::Packet;
     use crate::packet::test_utils::*;
-    use ahash::AHasher;
-    use ordermap::OrderMap;
     use std::collections::BTreeMap;
-    use std::fs;
-    use std::fs::File;
-    use std::hash::Hasher;
-    use std::io::Write;
 
-    // compute ip hash using ahash hasher
-    fn hash_ip_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> u64 {
-        let mut hasher = AHasher::default();
-        packet.hash_ip(&mut hasher);
-        hasher.finish()
-    }
     // Builds a vector of packets.
     // Note: If this function is changed, the fingerprint file may
     // need to be updated.
@@ -114,42 +102,6 @@ mod tests {
             ));
         }
         packets
-    }
-    // create fingerprint file
-    fn create_ahash_fingerprint() {
-        let packets = build_test_packets(500);
-        let mut vals: OrderMap<u16, u64> = OrderMap::new();
-        for (n, packet) in packets.iter().enumerate() {
-            let hash_value = hash_ip_packet(packet);
-            vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
-        }
-        let mut file = File::create("artifacts/ahash_fingerprint.txt")
-            .expect("Failed to open ahash fingerprint file");
-        file.write_all(format!("{vals:#?}").as_bytes())
-            .expect("Failed to write fingerprint");
-    }
-
-    // hashes the test packets storing the results in an ordermap and then compares
-    // the whole ordermap with a reference stored in artifacts/ahash_fingerprint.txt.
-    // This test should fail if ahash changes to produce distinct output.
-    // If that happens, set update_fingerprint to true and commit the fingerprint
-    // file.
-    #[test]
-    fn test_ahash_detect_change() {
-        let update_fingerprint = false;
-        if update_fingerprint {
-            create_ahash_fingerprint();
-        }
-        let packets = build_test_packets(500);
-        let mut vals: OrderMap<u16, u64> = OrderMap::new();
-        for (n, packet) in packets.iter().enumerate() {
-            let hash_value = hash_ip_packet(packet);
-            vals.insert(u16::try_from(n).expect("Conversion failed"), hash_value);
-        }
-        let fingerprint = format!("{vals:#?}");
-        let reference = fs::read_to_string("artifacts/ahash_fingerprint.txt")
-            .expect("Missing fingerprint file");
-        assert_eq!(fingerprint, reference);
     }
 
     #[test]
