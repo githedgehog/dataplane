@@ -2,13 +2,15 @@
 // Copyright Open Network Fabric Authors
 
 use futures::{StreamExt, TryStreamExt};
+use kube::api::{Patch, PatchParams};
 use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
+use serde_json::json;
 
 use tracectl::trace_target;
 use tracing::{error, info};
 
-use crate::gateway_agent_crd::GatewayAgent;
+use crate::gateway_agent_crd::{GatewayAgent, GatewayAgentStatus};
 
 trace_target!("k8s-client", LevelFilter::INFO, &["management"]);
 
@@ -18,6 +20,12 @@ pub enum WatchError {
     ClientError(#[from] kube::Error),
     #[error("Watcher error: {0}")]
     WatcherError(#[from] kube::runtime::watcher::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PatchError {
+    #[error("Client error: {0}")]
+    ClientError(#[from] kube::Error),
 }
 
 /// Watch `GatewayAgent` CRD and call callback for all changes
@@ -63,3 +71,29 @@ pub async fn watch_gateway_agent_crd(
         }
     }
 }
+
+/// Patch `GatewayAgent` object with current status
+///
+/// # Errors
+/// Returns an error if the patch request fails.
+pub async fn patch_gateway_status(
+    gateway_object_name: &str,
+    status: &GatewayAgentStatus,
+) -> Result<(), PatchError> {
+    let client = Client::try_default().await?;
+    let api: Api<GatewayAgent> = Api::namespaced(client.clone(), "fab");
+
+    let patch_json = json!({
+        "status": status,
+    });
+
+    api.patch_status(
+        gateway_object_name,
+        &PatchParams::default(),
+        &Patch::Merge(&patch_json),
+    )
+    .await?;
+
+    Ok(())
+}
+// Process status update

@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use k8s_intf::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentSpec, GatewayAgentVpcs};
 use lpm::prefix::Prefix;
 
-use crate::converters::k8s::{FromK8sConversionError, SubnetMap, VpcSubnetMap};
+use crate::converters::k8s::FromK8sConversionError;
+use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
 use crate::external::overlay::Overlay;
 use crate::external::overlay::vpc::{Vpc, VpcTable};
 use crate::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};

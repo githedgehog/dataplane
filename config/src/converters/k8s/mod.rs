@@ -1,26 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Converter for gateway-schema k8s objects to internal config
+//! Converter for gateway-schema k8s objects to internal config and status
 
-#![deny(clippy::all, clippy::pedantic)]
-
-pub mod bgp;
-pub mod device;
-pub mod expose;
-pub mod gateway_config;
-pub mod interface;
-pub mod overlay;
-pub mod peering;
-pub mod tracecfg;
-pub mod underlay;
-pub mod vpc;
-
-use std::collections::BTreeMap;
+pub mod config;
+pub mod status;
 
 use thiserror::Error;
-
-use lpm::prefix::Prefix;
 
 #[derive(Debug, Error)]
 pub enum FromK8sConversionError {
@@ -45,6 +31,3 @@ pub enum ToK8sConversionError {
     #[error("Source configuration cannot be converted: {0}")]
     Unsupported(String),
 }
-
-pub type SubnetMap = BTreeMap<String, Prefix>;
-pub type VpcSubnetMap = BTreeMap<String, SubnetMap>;
