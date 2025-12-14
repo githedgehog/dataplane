@@ -22,7 +22,7 @@ futures = { workspace = true }
 kube = { workspace = true, features = ["client", "derive", "runtime", "rustls-tls"] }
 k8s-openapi = { workspace = true, features = ["latest", "schemars", "std"] }
 linkme = { workspace = true }
-rustls = { workspace = true, features = ["ring"] }
+rustls = { workspace = true, features = ["aws-lc-rs"] }
 schemars = { workspace = true, features = ["derive", "std"] }
 serde = { workspace = true }
 serde-duration-ext = { workspace = true }
