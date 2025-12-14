@@ -67,6 +67,7 @@ allow = [
   "NCSA",
   "Nokia",
   "OFL-1.1",
+  "OpenSSL",
   "OSL-1.0",
   "OSL-2.0",
   "OSL-2.1",
