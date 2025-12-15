@@ -22,5 +22,6 @@ let
   stdenv-llvm-with-flags = adapt.addAttrsToDerivation (orig: {
     env = helpers.addToEnv env (orig.env or { });
   }) stdenv-llvm;
+  dataplane-dep = pkg: pkg.override { stdenv = stdenv-llvm-with-flags; };
 in
 { }
