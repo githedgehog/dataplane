@@ -1,9 +1,9 @@
 {
   sources,
+  env ? { },
 }:
 {
   dataplane = import ./dataplane.nix {
-    inherit sources;
-    env = { };
+    inherit sources env;
   };
 }
