@@ -51,6 +51,11 @@ let
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
   secure.NIX_CFLAGS_LINK = secure.NIX_CFLAGS_COMPILE;
+  combine-profiles =
+    features:
+    builtins.foldl' (
+      acc: elem: builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) elem
+    ) { } features;
 in
 {
 
