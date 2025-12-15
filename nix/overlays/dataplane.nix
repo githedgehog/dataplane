@@ -105,4 +105,30 @@ in
   # The simple fact that this appears in our toolchain justifies sanitizers like safe-stack and cfi and/or flags like
   # -fcf-protection=full.
   libnl = dataplane-dep prev.libnl;
+
+  # This is needed by DPDK in order to determine which pinned core runs on which numa node and which NIC is most
+  # efficiently connected to which NUMA node.  You can disable the need for this library entirely by editing dpdk's
+  # build to specify `-Dmax_numa_nodes=1`.
+  #
+  # While we don't currently hide NUMA mechanics from DPDK, there is something to be said for eliminating this library
+  # from our toolchain as a fair level of permissions and a lot of different low level trickery is required to make it
+  # function.  In "the glorious future" we should bump all of this logic up to the dataplane's init process, compute
+  # what we need to, pre-mmap _all_ of our heap memory, configure our cgroups and CPU affinities, and then pin our cores
+  # and use memory pools local to the numa node of the pinned core.  That would be a fair amount of work, but it would
+  # liminate a fairly large dependency and likely increase the performance and security of the dataplane.
+  #
+  # For now, we leave this on so DPDK can do some of that for us.  That said, this logic is quite cold and would ideally
+  # be size optimized and punted far from all hot paths.  BOLT should be helpful here.
+  numactl = (dataplane-dep prev.numactl).overrideAttrs (orig: {
+    outputs = (prev.lib.lists.remove "man" orig.outputs) ++ [ "static" ];
+    # we need to enable shared (in addition to static) to build dpdk.
+    # See the note on libmd for reasoning.
+    configureFlags = (orig.configureFlags or [ ]) ++ [
+      "--enable-shared" # dpdk does not like to build its .so files if we don't build numa.so as well
+    ];
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p "$static/lib";
+      mv $out/lib/*.a $static/lib;
+    '';
+  });
 }
