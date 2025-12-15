@@ -25,6 +25,7 @@ let
   optimize.NIX_CFLAGS_COMPILE = [
     "-O3"
     "-flto=full"
+    "-ffat-lto-objects"
     "-fsplit-lto-unit" # important for compatibility with rust's LTO
   ];
   optimize.NIX_CXXFLAGS_COMPILE = optimize.NIX_CFLAGS_COMPILE ++ [
