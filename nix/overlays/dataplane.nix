@@ -131,4 +131,36 @@ in
       mv $out/lib/*.a $static/lib;
     '';
   });
+
+  # This is one of the two most important to optimize components of the whole build (along with dpdk itself).
+  #
+  # RDMA-core is the low level building block for many of the PMDs within DPDK including the mlx5 PMD.  It is a
+  # performance and security critical library which we will likely never be able to remove from our dependencies.
+  #
+  # Some of this library is almost always called in a very tight loop, especially as used by DPDK PMDs.  It is happy to
+  # link dynamically or statically, and we should make a strong effort to make sure that we always pick static linking
+  # to enable inlining (wherever the compiler decides it makes sense).  You very likely want to enable lto here in any
+  # release build.
+  rdma-core = (dataplane-dep prev.rdma-core).overrideAttrs (orig: {
+    outputs = [
+      "dev"
+      "out"
+      "static"
+    ];
+    cmakeFlags = orig.cmakeFlags ++ [
+      "-DENABLE_STATIC=1"
+      # we don't need pyverbs, and turning it off reduces build time / complexity.
+      "-DNO_PYVERBS=1"
+      # no need for docs in container images.
+      "-DNO_MAN_PAGES=1"
+      # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
+      # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
+      # build's internal complexity and makes lto easier.
+      "-DNO_COMPAT_SYMS=1"
+    ];
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p $static/lib;
+      mv $out/lib/*.a $static/lib/
+    '';
+  });
 }
