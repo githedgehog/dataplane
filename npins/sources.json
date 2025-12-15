@@ -1,5 +1,18 @@
 {
   "pins": {
+    "dpdk": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "DPDK",
+        "repo": "dpdk"
+      },
+      "branch": "25.11",
+      "submodules": false,
+      "revision": "ed957165eadbe60a47d5ec223578cdd1c13d0bd9",
+      "url": "https://github.com/DPDK/dpdk/archive/ed957165eadbe60a47d5ec223578cdd1c13d0bd9.tar.gz",
+      "hash": "09h7wnmq4c9xm1nsyv5mz1yf91c1l6vy9sdcamb09qjjx4wgs0q9"
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
