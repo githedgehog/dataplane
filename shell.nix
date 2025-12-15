@@ -12,6 +12,7 @@
       just
       nil
       nixd
+      npins
       wget
     ]);
 }).env
