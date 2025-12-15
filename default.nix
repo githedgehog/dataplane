@@ -6,5 +6,5 @@ in
 
 }:
 {
-  inherit sources;
+  inherit sources pkgs;
 }
