@@ -143,6 +143,8 @@ in
   # to enable inlining (wherever the compiler decides it makes sense).  You very likely want to enable lto here in any
   # release build.
   rdma-core = (dataplane-dep prev.rdma-core).overrideAttrs (orig: {
+    version = sources.rdma-core.branch;
+    src = sources.rdma-core.outPath;
     outputs = [
       "dev"
       "out"
