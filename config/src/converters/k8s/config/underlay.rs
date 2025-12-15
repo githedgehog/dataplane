@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::converters::strings::parse_address_v4;
 use std::net::IpAddr;
 
-use ipnet::Ipv4Net;
 use k8s_intf::gateway_agent_crd::GatewayAgentGateway;
 use lpm::prefix::{Prefix, PrefixString};
 use net::eth::mac::SourceMac;
@@ -98,14 +98,9 @@ fn add_bgp_config(
             "Gateway protocol IP not specified".to_string(),
         ))?;
 
-    let router_id = protocol_ip
-        .parse::<Ipv4Net>()
-        .map_err(|e| {
-            FromK8sConversionError::ParseError(format!(
-                "Invalid IPv4 protocol IP {protocol_ip}: {e}"
-            ))
-        })?
-        .addr();
+    let router_id = parse_address_v4(protocol_ip).map_err(|e| {
+        FromK8sConversionError::ParseError(format!("Invalid IPv4 protocol IP {protocol_ip}: {e}"))
+    })?;
 
     let vtep_ip_raw = gateway
         .vtep_ip
@@ -113,6 +108,7 @@ fn add_bgp_config(
         .ok_or(FromK8sConversionError::MissingData(
             "Gateway VTEP IP not specified".to_string(),
         ))?;
+
     let vtep_prefix = Prefix::try_from(PrefixString(vtep_ip_raw)).map_err(|e| {
         FromK8sConversionError::ParseError(format!("Invalid VTEP IP {vtep_ip_raw}: {e}"))
     })?;
