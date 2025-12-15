@@ -53,4 +53,24 @@ in
   systemd = null;
   udev = null;
   udevCheckHook = null;
+
+  # libmd is used by libbsd (et al) which is an optional dependency of dpdk.
+  #
+  # We _might_ actually care about perf here, so we lto this package.
+  # At minimum, the provided functions are generally quite small and likely to benefit from inlining, so static linking
+  # is a solid plan.
+  libmd = (dataplane-dep prev.libmd).overrideAttrs (orig: {
+    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+    # we need to enable shared libs (in addition to static) to make dpdk's build happy. Basically, DPDK's build has no
+    # means of disabling shared libraries, and it doesn't really make any sense to static link this into each .so
+    # file.  Ideally we would just _not_ build those .so files, but that would require doing brain surgery on dpdk's
+    # meson build, and maintaining such a change set is not worth it to avoid building some .so files.
+    configureFlags = (orig.configureFlags or [ ]) ++ [
+      "--enable-shared"
+    ];
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p "$static/lib";
+      mv $out/lib/*.a $static/lib;
+    '';
+  });
 }
