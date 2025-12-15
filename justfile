@@ -198,13 +198,15 @@ compile-env *args:
     mkdir -p "$(pwd)/sterile"
     declare CARGO_TARGET_DIR
     CARGO_TARGET_DIR="$(pwd)/target"
-    mkdir -p "${CARGO_TARGET_DIR}"
+    TMPDIR="${CARGO_TARGET_DIR}/tmp" # needed for doctests, as /tmp is "noexec"
+    mkdir -p "${CARGO_TARGET_DIR}/tmp"
     sudo -E docker run \
       --rm \
       --interactive \
       --network="{{ _network }}" \
       --env DOCKER_HOST="${DOCKER_HOST}" \
       --env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
+      --env TMPDIR="${TMPDIR}" \
       --env DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}" \
       --env TEST_TYPE="{{ _test_type }}" \
       --env VERSION="{{ version }}" \
