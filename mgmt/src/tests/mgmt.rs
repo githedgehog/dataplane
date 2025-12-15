@@ -394,6 +394,7 @@ pub mod test {
     }
 
     #[tokio::test]
+    #[wrap(with_gw_name())]
     #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_sample_config() {
         get_trace_ctl()

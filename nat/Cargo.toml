@@ -30,6 +30,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # internal
+fixin = { workspace = true }
+test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
 tracectl = { workspace = true }

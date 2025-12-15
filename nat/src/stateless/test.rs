@@ -27,6 +27,7 @@ mod tests {
     use crate::stateless::setup::tables::{NatTables, PerVniTable};
 
     use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
+    use fixin::wrap;
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
     use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
@@ -42,6 +43,7 @@ mod tests {
     use pipeline::NetworkFunction;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
+    use test_utils::with_gw_name;
     use tracing_test::traced_test;
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
@@ -590,6 +592,7 @@ mod tests {
 
     #[test]
     #[traced_test]
+    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_full_config() {
         let mut config = build_sample_config();
@@ -815,6 +818,7 @@ mod tests {
     }
 
     #[test]
+    #[wrap(with_gw_name())]
     #[traced_test]
     fn test_config_with_port_ranges_basic() {
         let expose1 = VpcExpose::empty()
@@ -880,6 +884,7 @@ mod tests {
 
     #[test]
     #[traced_test]
+    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_config_with_port_ranges_complex() {
         let expose1 = VpcExpose::empty()
