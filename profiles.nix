@@ -37,6 +37,13 @@ let
     "-Wl,--gc-sections"
     "-Wl,--as-needed"
   ];
+  secure.NIX_CFLAGS_COMPILE = [
+    "-fstack-protector-strong"
+    "-fstack-clash-protection"
+  ];
+  secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
+  # handing the CFLAGS back to clang/lld is basically required for -fsanitize
+  secure.NIX_CFLAGS_LINK = secure.NIX_CFLAGS_COMPILE;
 in
 {
 
