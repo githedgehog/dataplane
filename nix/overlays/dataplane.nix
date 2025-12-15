@@ -34,4 +34,12 @@ in
   # Alternatively, you could skip that and just ship the default build of ethtool.
   ethtool = null;
   iproute2 = null;
+
+  # These are only used in docs and can make our build explode in size if we let any of this rebuild in this overlay.
+  # It is much easier to just not build docs in this overlay.  We don't care if the build depends on pandoc per se, but
+  # you will regret the need to rebuild ghc :shrug:
+  gd = null;
+  graphviz = null;
+  mscgen = null;
+  pandoc = null;
 }
