@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use crate::converters::strings::parse_address;
 use crate::external::gwgroup::{GwGroup, GwGroupMember};
 use gateway_config::config as gateway_config;
-use std::net::IpAddr;
-use std::str::FromStr;
 
 impl TryFrom<&gateway_config::GatewayGroupMember> for GwGroupMember {
     type Error = String;
 
     fn try_from(value: &gateway_config::GatewayGroupMember) -> Result<Self, Self::Error> {
-        let ipaddress = IpAddr::from_str(&value.ipaddress)
-            .map_err(|e| format!("Bad ip address '{}': {e}", &value.ipaddress))?;
-        Ok(GwGroupMember::new(&value.name, value.priority, ipaddress))
+        let address = parse_address(&value.ipaddress)
+            .map_err(|e| format!("Bad ip address '{}': {e}", value.ipaddress))?;
+        Ok(GwGroupMember::new(&value.name, value.priority, address))
     }
 }
 impl TryFrom<&GwGroupMember> for gateway_config::GatewayGroupMember {
