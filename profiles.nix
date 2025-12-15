@@ -58,5 +58,8 @@ let
     ) { } features;
 in
 {
-
+  debug = combine-profiles [
+    common
+    debug
+  ];
 }
