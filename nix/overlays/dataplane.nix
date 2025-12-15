@@ -1,4 +1,6 @@
-{ }:
+{
+  env ? { },
+}:
 final: prev:
 let
   helpers.addToEnv =
@@ -17,5 +19,8 @@ let
       lld
     ];
   }) (adapt.makeStaticLibraries final.buildPackages.llvmPackages.stdenv);
+  stdenv-llvm-with-flags = adapt.addAttrsToDerivation (orig: {
+    env = helpers.addToEnv env (orig.env or { });
+  }) stdenv-llvm;
 in
 { }
