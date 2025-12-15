@@ -40,6 +40,13 @@ let
   secure.NIX_CFLAGS_COMPILE = [
     "-fstack-protector-strong"
     "-fstack-clash-protection"
+    # "-fcf-protection=full" # requires extra testing before we enable
+    # "-fsanitize=safe-stack" # requires extra testing before we enable (not compatible with musl)
+    # "-fsanitize=cfi" # requires extra testing before we enable
+    # enable if you turn on cfi to properly link with rust
+    # "-fsanitize-cfi-icall-experimental-normalize-integers"
+    # consider enabling if you turn on cfi (not compatible with cross DSO cfi)
+    # "-fsanitize-cfi-icall-generalize-pointers"
   ];
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
