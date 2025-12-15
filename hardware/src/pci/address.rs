@@ -34,10 +34,7 @@
 //!
 //! // Parse a PCI address
 //! let addr = PciAddress::try_from("0000:03:00.0").unwrap();
-//! println!("Domain: {:04x}", addr.domain);
-//! println!("Bus: {:02x}", addr.bus);
-//! println!("Device: {:02x}", addr.device);
-//! println!("Function: {:01x}", addr.function);
+//! println!("PCI address: {addr}");
 //!
 //! // Convert to EBDF string
 //! let ebdf = addr.as_ebdf();
