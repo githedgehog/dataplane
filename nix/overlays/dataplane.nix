@@ -42,4 +42,15 @@ in
   graphviz = null;
   mscgen = null;
   pandoc = null;
+
+  # We should avoid accepting anything in our dpdk + friends pkgs which depends on udev / systemd; our deploy won't
+  # support any such mechanisms.
+  #
+  # Usually this type of dependency takes the form of udev rules / systemd service files being generated (which is no
+  # problem).  That said, builds which hard and fast depend on systemd or udev are very suspicious in this context, so
+  # exceptions to this removal should be granted with care and some level of prejudice.  At minimum, such exceptions
+  # tend to make it hard to cross compile which is an important test case for our sysroot.
+  systemd = null;
+  udev = null;
+  udevCheckHook = null;
 }
