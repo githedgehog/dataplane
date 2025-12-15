@@ -24,4 +24,14 @@ let
   }) stdenv-llvm;
   dataplane-dep = pkg: pkg.override { stdenv = stdenv-llvm-with-flags; };
 in
-{ }
+{
+  # Don't bother adapting ethtool or iproute2's build to our custom flags / env.  Failure to null this can trigger
+  # _massive_ builds because ethtool depends on libnl (et al), and we _do_ overlay libnl.  Thus, the ethtool / iproute2
+  # get rebuilt and you end up rebuilding the whole world.
+  #
+  # To be clear, we can still use ethtool / iproute2 if we want, we just don't need to optimize / lto it.
+  # If you want to include ethtool / iproute2, I recommend just cutting another small overlay and static linking them.
+  # Alternatively, you could skip that and just ship the default build of ethtool.
+  ethtool = null;
+  iproute2 = null;
+}
