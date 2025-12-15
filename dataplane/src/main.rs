@@ -156,15 +156,9 @@ fn main() {
     let pipeline_factory = setup.pipeline;
 
     /* start management */
-    let hostname = nix::unistd::gethostname()
-        .expect("Failed to get hostname")
-        .to_str()
-        .expect("hostname is not valid unicode")
-        .to_string();
-
     start_mgmt(MgmtParams {
         grpc_addr,
-        hostname,
+        hostname: get_gw_name().unwrap_or_else(|| unreachable!()).to_owned(),
         processor_params: ConfigProcessorParams {
             router_ctl: setup.router.get_ctl_tx(),
             vpcmapw: setup.vpcmapw,
