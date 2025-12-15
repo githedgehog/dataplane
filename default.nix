@@ -1,6 +1,13 @@
 let
   sources = import ./npins;
-  pkgs = import sources.nixpkgs { };
+  overlays = import ./nix/overlays {
+    inherit sources;
+  };
+  pkgs = import sources.nixpkgs {
+    overlays = [
+      overlays.dataplane
+    ];
+  };
 in
 {
 
