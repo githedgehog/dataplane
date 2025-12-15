@@ -2,8 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use crate::converters::k8s::FromK8sConversionError;
+use crate::converters::strings::parse_address;
 use k8s_intf::gateway_agent_crd::{GatewayAgentGroupsMembers, GatewayAgentSpec};
-use std::net::IpAddr;
 
 use crate::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
 
@@ -22,13 +22,11 @@ impl TryFrom<&GatewayAgentGroupsMembers> for GwGroupMember {
             .try_into()
             .map_err(|e| Self::Error::ParseError(format!("Bad priority value: {e}")))?;
 
-        let ipaddress = value.vtep_ip.as_ref().ok_or_else(|| {
+        let address = value.vtep_ip.as_ref().ok_or_else(|| {
             Self::Error::MissingData("Gateway group member ip address".to_string())
         })?;
-
-        let ipaddress = ipaddress
-            .parse::<IpAddr>()
-            .map_err(|e| Self::Error::ParseError(format!("Invalid ip address {ipaddress}: {e}")))?;
+        let ipaddress = parse_address(address)
+            .map_err(|e| Self::Error::ParseError(format!("Invalid ip address {address}: {e}")))?;
 
         Ok(Self {
             name: name.clone(),
