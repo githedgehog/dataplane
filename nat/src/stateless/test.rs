@@ -26,6 +26,7 @@ mod tests {
     use crate::stateless::setup::build_nat_configuration;
     use crate::stateless::setup::tables::{NatTables, PerVniTable};
 
+    use fixin::wrap;
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
     use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
@@ -38,6 +39,7 @@ mod tests {
     use pipeline::NetworkFunction;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
+    use test_utils::with_gw_name;
     use tracing_test::traced_test;
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
@@ -544,6 +546,7 @@ mod tests {
 
     #[test]
     #[traced_test]
+    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_full_config() {
         let mut config = build_sample_config();
