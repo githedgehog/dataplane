@@ -91,4 +91,18 @@ in
       mv $out/lib/*.a $static/lib;
     '';
   });
+
+  # This is (for better or worse) used by dpdk to parse / manipulate netlink messages.
+  #
+  # We don't care about performance here, so this may be a good candidate for size reduction compiler flags like -Os.
+  #
+  # That said, we don't currently have infrastructure to pass flags at a per package level and building that is more
+  # trouble than a minor reduction in binary size / instruction cache pressure is likely worth. Also, lto doesn't
+  # currently love size optimizations.  The better option is likely to use PGO + BOLT to put these functions far away
+  # from the hot path in the final ELF file's layout and just ignore that this stuff is compiled with -O3 and friends.
+  #
+  # More, this is a very low level library designed to send messages between a privileged process and the kernel.
+  # The simple fact that this appears in our toolchain justifies sanitizers like safe-stack and cfi and/or flags like
+  # -fcf-protection=full.
+  libnl = dataplane-dep prev.libnl;
 }
