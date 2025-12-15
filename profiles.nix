@@ -62,4 +62,9 @@ in
     common
     debug
   ];
+  release = combine-profiles [
+    common
+    optimize
+    secure
+  ];
 }
