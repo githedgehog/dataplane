@@ -1,11 +1,22 @@
 let
   sources = import ./npins;
-  overlays = import ./nix/overlays {
+  profiles = import ./profiles.nix;
+  overlays.debug = import ./nix/overlays {
     inherit sources;
+    env = profiles.debug;
   };
-  pkgs = import sources.nixpkgs {
+  overlays.release = import ./nix/overlays {
+    inherit sources;
+    env = profiles.release;
+  };
+  pkgs.debug = import sources.nixpkgs {
     overlays = [
-      overlays.dataplane
+      overlays.debug.dataplane
+    ];
+  };
+  pkgs.release = import sources.nixpkgs {
+    overlays = [
+      overlays.release.dataplane
     ];
   };
 in
