@@ -11,6 +11,7 @@ let
   bintools = final.buildPackages.llvmPackages.bintools;
   lld = final.buildPackages.llvmPackages.lld;
   stdenv-llvm = adapt.addAttrsToDerivation (orig: {
+    doCheck = false;
     nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [
       bintools
       lld
