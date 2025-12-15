@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::processor::proc::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
 use config::converters::grpc::{
@@ -172,7 +172,11 @@ impl ConfigManager for BasicConfigManager {
         debug!("Received request to apply new config");
 
         // Convert config from gRPC to native external model
-        let external_config = convert_gateway_config_from_grpc_with_defaults(&grpc_config)?;
+        let external_config = convert_gateway_config_from_grpc_with_defaults(&grpc_config)
+            .map_err(|e| {
+                error!("Failed to process apply config: {e}");
+                e
+            })?;
 
         // Create a new GwConfig with this ExternalConfig
         let gw_config = Box::new(GwConfig::new(external_config));
