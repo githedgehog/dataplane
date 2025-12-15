@@ -8,6 +8,13 @@ let
       with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) add)
     );
   adapt = final.stdenvAdapters;
-  stdenv-llvm = adapt.makeStaticLibraries final.buildPackages.llvmPackages.stdenv;
+  bintools = final.buildPackages.llvmPackages.bintools;
+  lld = final.buildPackages.llvmPackages.lld;
+  stdenv-llvm = adapt.addAttrsToDerivation (orig: {
+    nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [
+      bintools
+      lld
+    ];
+  }) (adapt.makeStaticLibraries final.buildPackages.llvmPackages.stdenv);
 in
 { }
