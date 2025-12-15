@@ -166,4 +166,14 @@ in
       mv $out/lib/*.a $static/lib/
     '';
   });
+
+  # Compiling DPDK is the primary objective of this overlay.
+  #
+  # We care _a lot_ about how this is compiled and should always use flags which are either optimized for performance
+  # or debugging.  After all, if you aren't doing something performance critical then I don't know why you want DPDK at
+  # all :)
+  #
+  # Also, while this library has a respectable security track record, this is also a super strong candidate for
+  # cfi, safe-stack, and cf-protection.
+  dpdk = dataplane-dep (final.callPackage ../pkgs/dpdk { src = sources.dpdk; });
 }
