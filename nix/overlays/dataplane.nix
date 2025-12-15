@@ -73,4 +73,22 @@ in
       mv $out/lib/*.a $static/lib;
     '';
   });
+
+  # This is a (technically optional) dependency of DPDK used for secure string manipulation and some hashes we value;
+  # static link + lto for sure.
+  #
+  # This is also a reasonably important target for `-fsanitize=cfi` and or `-fsanitize=safe-stack` as libbsd provides
+  # more secure versions of classic C string manipulation utilities, and I'm all about that defense-in-depth.
+  libbsd = (dataplane-dep prev.libbsd).overrideAttrs (orig: {
+    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+    # we need to enable shared (in addition to static) to build dpdk.
+    # See the note on libmd for reasoning.
+    configureFlags = orig.configureFlags ++ [
+      "--enable-shared"
+    ];
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p "$static/lib";
+      mv $out/lib/*.a $static/lib;
+    '';
+  });
 }
