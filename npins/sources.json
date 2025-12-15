@@ -5,6 +5,19 @@
       "name": "nixpkgs-unstable",
       "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre911335.23735a82a828/nixexprs.tar.xz",
       "hash": "03cv7yy3ldb3i50in6qkm98y68nlid874l52wayzgx0z7pbpq1rk"
+    },
+    "rdma-core": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "rdma-core"
+      },
+      "branch": "fix-lto-60.0",
+      "submodules": false,
+      "revision": "9ae1b26593e2cb53239e1124f88ce1698d53857e",
+      "url": "https://github.com/githedgehog/rdma-core/archive/9ae1b26593e2cb53239e1124f88ce1698d53857e.tar.gz",
+      "hash": "1djdsfga9if02pl8ynnyyf640xdd37fha6zp3xlylciy8apzn1r4"
     }
   },
   "version": 5
