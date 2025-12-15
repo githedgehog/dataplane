@@ -22,6 +22,21 @@ let
   ];
   debug.NIX_CXXFLAGS_COMPILE = debug.NIX_CFLAGS_COMPILE;
   debug.NIX_CFLAGS_LINK = [ ];
+  optimize.NIX_CFLAGS_COMPILE = [
+    "-O3"
+    "-flto=full"
+    "-fsplit-lto-unit" # important for compatibility with rust's LTO
+  ];
+  optimize.NIX_CXXFLAGS_COMPILE = optimize.NIX_CFLAGS_COMPILE ++ [
+    "-fwhole-program-vtables"
+  ];
+  optimize.NIX_CFLAGS_LINK = [
+    "-flto=full"
+    "-Wl,--lto-whole-program-visibility"
+    # just to keep the artifacts small, we don't currently use any linked artifact anyway
+    "-Wl,--gc-sections"
+    "-Wl,--as-needed"
+  ];
 in
 {
 
