@@ -80,11 +80,16 @@ impl ExternalConfig {
         debug!("Gateway {gwname} is at position {pos} of {}", group.name());
 
         // Get the community corresponding to the position/ordering of this gateway in the group.
-        // If no community exist for that position, fail. This may happen with large groups.
+        // If no community exist for that position, we should fail, although we don't now since
+        // the community table may not be populated.
         // To guarantee that we can always tag with a community in the set of |C| communities,
         // the size of a group |G| must be no larger than |C|.
-        let community = comtable.get_community(pos)?;
-        Ok(Some(community.clone()))
+        if let Ok(community) = comtable.get_community(pos) {
+            Ok(Some(community.clone()))
+        } else {
+            warn!("No community found for preference {pos}");
+            Ok(None)
+        }
     }
 
     fn validate_peering_gw_groups(&mut self) -> ConfigResult {
