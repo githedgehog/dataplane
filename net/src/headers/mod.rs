@@ -28,7 +28,7 @@ use core::fmt::Debug;
 use derive_builder::Builder;
 use std::net::IpAddr;
 use std::num::NonZero;
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
