@@ -10,7 +10,9 @@ use lpm::prefix::Prefix;
 
 use crate::bolero::peering::LegalValuePeeringsGenerator;
 use crate::bolero::{LegalValue, SubnetMap, VpcSubnetMap};
-use crate::gateway_agent_crd::{GatewayAgentGateway, GatewayAgentSpec, GatewayAgentVpcs};
+use crate::gateway_agent_crd::{
+    GatewayAgentGateway, GatewayAgentGroups, GatewayAgentSpec, GatewayAgentVpcs,
+};
 
 fn extract_subnets(vpcs: &BTreeMap<String, GatewayAgentVpcs>) -> VpcSubnetMap {
     let mut vpc_subnets = VpcSubnetMap::new();
@@ -60,10 +62,23 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
             }
         }
 
+        let num_groups = d.gen_usize(Bound::Included(&0), Bound::Included(&6))?;
+        let mut groups = BTreeMap::new();
+        for i in 0..=num_groups {
+            groups.insert(format!("gwgroup-{i}"), d.produce::<GatewayAgentGroups>()?);
+        }
+
+        let num_communities = d.gen_usize(Bound::Included(&0), Bound::Included(&9))?;
+        let mut communities = BTreeMap::new();
+        for i in 0..=num_communities {
+            let community = format!("65000:{}", 100 + i);
+            communities.insert(i.to_string(), community);
+        }
+
         Some(LegalValue(GatewayAgentSpec {
             agent_version: None,
-            communities: None, // FIXME(mvachhar) Add a proper implementation when used
-            groups: None,      // FIXME(mvachhar) Add a proper implementation when used
+            groups: Some(groups),
+            communities: Some(communities),
             gateway: Some(d.produce::<LegalValue<GatewayAgentGateway>>()?.take()),
             vpcs: Some(vpcs).filter(|v| !v.is_empty()),
             peerings: Some(peerings).filter(|p| !p.is_empty()),
