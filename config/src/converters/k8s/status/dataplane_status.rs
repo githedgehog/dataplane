@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use k8s_intf::gateway_agent_crd::{
-    GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateFrr,
-    GatewayAgentStatusStatePeerings, GatewayAgentStatusStateVpcs,
+    GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateDataplane,
+    GatewayAgentStatusStateFrr, GatewayAgentStatusStatePeerings, GatewayAgentStatusStateVpcs,
 };
 
 use crate::converters::k8s::ToK8sConversionError;
@@ -17,6 +17,7 @@ pub struct DataplaneStatusForK8sConversion<'a> {
     pub last_applied_gen: Option<i64>,
     pub last_applied_time: Option<&'a DateTime<Utc>>,
     pub last_collected_time: Option<&'a DateTime<Utc>>,
+    pub last_heartbeat: Option<&'a DateTime<Utc>>,
     pub status: Option<&'a DataplaneStatus>,
 }
 
@@ -74,7 +75,13 @@ impl TryFrom<&DataplaneStatusForK8sConversion<'_>> for GatewayAgentStatus {
             last_applied_time: status
                 .last_applied_time
                 .map(|lat| lat.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
+            last_heartbeat: status
+                .last_heartbeat
+                .map(|lat| lat.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
             state: status.status.map(|_| GatewayAgentStatusState {
+                dataplane: Some(GatewayAgentStatusStateDataplane {
+                    version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
+                }),
                 frr: frr_status,
                 last_collected_time: status
                     .last_collected_time
@@ -103,10 +110,11 @@ mod tests {
 
     #[derive(Debug)]
     struct DataplaneStatusForK8sConversionOwned {
-        status: Option<DataplaneStatus>,
-        last_collected_time: Option<DateTime<Utc>>,
         last_applied_gen: Option<i64>,
         last_applied_time: Option<DateTime<Utc>>,
+        last_collected_time: Option<DateTime<Utc>>,
+        last_heartbeat: Option<DateTime<Utc>>,
+        status: Option<DataplaneStatus>,
     }
 
     impl TypeGenerator for LegalValue<DataplaneStatusForK8sConversionOwned> {
@@ -119,9 +127,12 @@ mod tests {
                 .map(|v| v.take());
             let last_collected_time_raw = time_gen.generate(d)?;
             let last_collected_time = status.as_ref().map(|_| last_collected_time_raw);
+            let last_heartbeat_raw = time_gen.generate(d)?;
+            let last_heartbeat = status.as_ref().map(|_| last_heartbeat_raw);
             Some(LegalValue::new(DataplaneStatusForK8sConversionOwned {
                 status,
                 last_collected_time,
+                last_heartbeat,
                 last_applied_gen,
                 last_applied_time: last_applied_gen.map(|_| last_applied_time),
             }))
@@ -137,6 +148,7 @@ mod tests {
                 let conv_status = DataplaneStatusForK8sConversion {
                     status: status_owned.status.as_ref(),
                     last_collected_time: status_owned.last_collected_time.as_ref(),
+                    last_heartbeat: status_owned.last_heartbeat.as_ref(),
                     last_applied_gen: status_owned.last_applied_gen,
                     last_applied_time: status_owned.last_applied_time.as_ref(),
                 };

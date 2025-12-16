@@ -92,6 +92,7 @@ impl ValueGenerator for LegalValuePeeringsGenerator<'_> {
             .collect::<Option<BTreeMap<_, _>>>()?;
 
         Some(GatewayAgentPeerings {
+            gateway_group: None, // FIXME(mvachhar) Add a proper implementation when used
             peering: Some(peering),
         })
     }

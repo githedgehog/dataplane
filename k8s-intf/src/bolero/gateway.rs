@@ -36,10 +36,11 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
 
         Some(LegalValue(GatewayAgentGateway {
             asn: Some(d.gen_u32(Bound::Included(&1), Bound::Unbounded)?),
+            groups: None, // FIXME(mvachhar) Add a proper implementation when used
             logs: Some(d.produce::<LegalValue<GatewayAgentGatewayLogs>>()?.take()),
             interfaces: Some(interfaces).filter(|i| !i.is_empty()),
             neighbors: Some(neighbors).filter(|n| !n.is_empty()),
-            profiling: None, // FIXME(manishv) Add a proper implementation
+            profiling: None, // FIXME(mvachhar) Add a proper implementation
             protocol_ip: Some(format!(
                 "{}/{}",
                 d.produce::<UnicastIpv4Addr>()?,
@@ -61,6 +62,7 @@ impl Normalize for GatewayAgentGateway {
     fn normalize(&self) -> Self {
         GatewayAgentGateway {
             asn: self.asn,
+            groups: None, // FIXME(mvachhar) Add a proper implementation when used
             logs: self.logs.clone(),
             interfaces: self
                 .interfaces

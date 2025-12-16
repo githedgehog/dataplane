@@ -24,9 +24,13 @@ pub struct GatewayAgentSpec {
     /// AgentVersion is the desired version of the gateway agent to trigger generation changes on controller upgrades
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentVersion")]
     pub agent_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub communities: Option<BTreeMap<String, String>>,
     /// GatewaySpec defines the desired state of Gateway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<GatewayAgentGateway>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<BTreeMap<String, GatewayAgentGroups>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peerings: Option<BTreeMap<String, GatewayAgentPeerings>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +43,9 @@ pub struct GatewayAgentGateway {
     /// ASN is the ASN of the gateway
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asn: Option<u32>,
+    /// Groups is a list of group memberships for the gateway
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<GatewayAgentGatewayGroups>>,
     /// Interfaces is a map of interface names to their configurations
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<BTreeMap<String, GatewayAgentGatewayInterfaces>>,
@@ -66,6 +73,16 @@ pub struct GatewayAgentGateway {
     /// Workers defines the number of worker threads to use for dataplane
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workers: Option<u8>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct GatewayAgentGatewayGroups {
+    /// Name is the name of the group to which the gateway belongs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Priority is the priority of the gateway within the group
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
 }
 
 /// Interfaces is a map of interface names to their configurations
@@ -116,7 +133,26 @@ pub struct GatewayAgentGatewayProfiling {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct GatewayAgentGroups {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<GatewayAgentGroupsMembers>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct GatewayAgentGroupsMembers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "vtepIP")]
+    pub vtep_ip: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentPeerings {
+    /// GatewayGroup is the name of the gateway group that should process the peering
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "gatewayGroup")]
+    pub gateway_group: Option<String>,
     /// Peerings is a map of peering entries for each VPC participating in the peering (keyed by VPC name)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peering: Option<BTreeMap<String, GatewayAgentPeeringsPeering>>,
@@ -212,6 +248,9 @@ pub struct GatewayAgentStatus {
     /// Time of the last successful configuration application
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "lastAppliedTime")]
     pub last_applied_time: Option<String>,
+    /// Time of the last heartbeat from the agent
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "lastHeartbeat")]
+    pub last_heartbeat: Option<String>,
     /// State represents collected data from the dataplane API that includes FRR as well
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<GatewayAgentStatusState>,
@@ -220,6 +259,9 @@ pub struct GatewayAgentStatus {
 /// State represents collected data from the dataplane API that includes FRR as well
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentStatusState {
+    /// Dataplane is the status of the dataplane
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataplane: Option<GatewayAgentStatusStateDataplane>,
     /// FRR is the status of the FRR daemon
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frr: Option<GatewayAgentStatusStateFrr>,
@@ -232,6 +274,13 @@ pub struct GatewayAgentStatusState {
     /// VPCs is the status of the VPCs where key is the vpc (vpcinfo) name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpcs: Option<BTreeMap<String, GatewayAgentStatusStateVpcs>>,
+}
+
+/// Dataplane is the status of the dataplane
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct GatewayAgentStatusStateDataplane {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// FRR is the status of the FRR daemon

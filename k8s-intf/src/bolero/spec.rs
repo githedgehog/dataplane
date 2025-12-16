@@ -62,6 +62,8 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
 
         Some(LegalValue(GatewayAgentSpec {
             agent_version: None,
+            communities: None, // FIXME(mvachhar) Add a proper implementation when used
+            groups: None,      // FIXME(mvachhar) Add a proper implementation when used
             gateway: Some(d.produce::<LegalValue<GatewayAgentGateway>>()?.take()),
             vpcs: Some(vpcs).filter(|v| !v.is_empty()),
             peerings: Some(peerings).filter(|p| !p.is_empty()),
