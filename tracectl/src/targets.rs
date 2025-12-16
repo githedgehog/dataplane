@@ -70,6 +70,7 @@ macro_rules! trace_target {
 macro_rules! custom_target {
     ($target:expr, $level:expr, $tags:expr) => {
         const _: () = {
+            #[allow(unused)]
             use $crate::trace_target_deps;
             trace_target_deps!();
 
