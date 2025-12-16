@@ -77,7 +77,7 @@ impl TryFrom<&DataplaneStatusForK8sConversion<'_>> for GatewayAgentStatus {
                 .map(|lat| lat.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
             last_heartbeat: status
                 .last_heartbeat
-                .map(|lat| lat.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
+                .map(|lhb| lhb.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
             state: status.status.map(|_| GatewayAgentStatusState {
                 dataplane: Some(GatewayAgentStatusStateDataplane {
                     version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
