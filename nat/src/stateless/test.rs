@@ -24,14 +24,18 @@ mod tests {
     use crate::stateless::setup::build_nat_configuration;
     use crate::stateless::setup::tables::{NatTables, PerVniTable};
 
+    use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
     use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
     use net::ip::NextHeader;
     use net::packet::test_utils::{
         build_test_icmp4_destination_unreachable_packet, build_test_ipv4_packet,
+        build_test_ipv4_packet_with_transport,
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
+    use net::tcp::TcpPort;
+    use net::udp::UdpPort;
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
     use std::net::Ipv4Addr;
@@ -63,6 +67,22 @@ mod tests {
             .destination()
     }
 
+    fn get_src_port<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> u16 {
+        packet
+            .tcp_source_port()
+            .map(TcpPort::as_u16)
+            .or_else(|| packet.udp_source_port().map(UdpPort::as_u16))
+            .expect("Failed to get source port")
+    }
+
+    fn get_dst_port<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> u16 {
+        packet
+            .tcp_destination_port()
+            .map(TcpPort::as_u16)
+            .or_else(|| packet.udp_destination_port().map(UdpPort::as_u16))
+            .expect("Failed to get destination port")
+    }
+
     fn set_addresses_v4<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
         src_addr: Ipv4Addr,
@@ -76,6 +96,28 @@ mod tests {
         hdr.set_destination(dst_addr);
         packet
     }
+
+    fn set_ports<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, src_port: u16, dst_port: u16) {
+        if packet.is_tcp() {
+            packet
+                .set_tcp_source_port(TcpPort::new_checked(src_port).unwrap())
+                .unwrap();
+            packet
+                .set_tcp_destination_port(TcpPort::new_checked(dst_port).unwrap())
+                .unwrap();
+        } else if packet.is_udp() {
+            packet
+                .set_udp_source_port(UdpPort::new_checked(src_port).unwrap())
+                .unwrap();
+            packet
+                .set_udp_destination_port(UdpPort::new_checked(dst_port).unwrap())
+                .unwrap();
+        } else {
+            panic!("Packet is not TCP or UDP");
+        }
+    }
+
+    // Address translation
 
     fn build_context() -> NatTables {
         // Build VpcExpose objects
@@ -476,9 +518,13 @@ mod tests {
 
         let overlay = Overlay::new(vpc_table, peering_table);
 
-        // Now comes some default configuration to build a valid GwConfig, not really relevant to
-        // our tests
+        build_gwconfig_from_overlay(overlay)
+    }
 
+    // Use the provided overlay with some default configuration to build a valid GwConfig. This
+    // configuration is not really relevant to our tests, we just want a valid GwConfig object to
+    // work with.
+    fn build_gwconfig_from_overlay(overlay: Overlay) -> GwConfig {
         let device_config = DeviceConfig::new(DeviceSettings::new("sample"));
 
         let vtep = InterfaceConfig::new(
@@ -688,6 +734,368 @@ mod tests {
             check_packet(&mut nat, vni(400), vni(300), target_dst, target_src);
         assert_eq!(output_src, orig_dst);
         assert_eq!(output_dst, orig_src);
+        assert_eq!(done_reason, None);
+    }
+
+    // Address + port translation
+
+    fn build_gwconfig_from_exposes(
+        exposes_left: Vec<VpcExpose>,
+        exposes_right: Vec<VpcExpose>,
+    ) -> GwConfig {
+        fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
+            manifest.add_expose(expose).expect("Failed to add expose");
+        }
+
+        let mut vpc_table = VpcTable::new();
+        let _ = vpc_table.add(Vpc::new("VPC-1", "VPC01", 100).unwrap());
+        let _ = vpc_table.add(Vpc::new("VPC-2", "VPC02", 200).unwrap());
+
+        let mut manifest12 = VpcManifest::new("VPC-1");
+        for expose in exposes_left {
+            add_expose(&mut manifest12, expose);
+        }
+        let mut manifest21 = VpcManifest::new("VPC-2");
+        for expose in exposes_right {
+            add_expose(&mut manifest21, expose);
+        }
+
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering12).expect("Failed to add peering");
+
+        let overlay = Overlay::new(vpc_table, peering_table);
+
+        let mut gw_config = build_gwconfig_from_overlay(overlay);
+        let validation = gw_config.validate();
+        assert!(
+            validation.is_ok(),
+            "GwConfig validation failed: {validation:?}"
+        );
+
+        gw_config
+    }
+
+    fn check_packet_with_ports(
+        nat: &mut StatelessNat,
+        src_vni: Vni,
+        dst_vni: Vni,
+        orig_src_ip: Ipv4Addr,
+        orig_src_port: u16,
+        orig_dst_ip: Ipv4Addr,
+        orig_dst_port: u16,
+    ) -> (Ipv4Addr, u16, Ipv4Addr, u16, Option<DoneReason>) {
+        let mut packet =
+            build_test_ipv4_packet_with_transport(u8::MAX, Some(NextHeader::TCP)).unwrap();
+        packet.get_meta_mut().set_nat(true);
+        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+        set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
+        set_ports(&mut packet, orig_src_port, orig_dst_port);
+
+        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+        let pkt_out = &packets_out[0];
+
+        (
+            get_src_ip_v4(pkt_out),
+            get_src_port(pkt_out),
+            get_dst_ip_v4(pkt_out),
+            get_dst_port(pkt_out),
+            pkt_out.get_done(),
+        )
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_config_with_port_ranges_basic() {
+        let expose1 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "1.1.0.0/16".into(),
+                Some(PortRange::new(4001, 5000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.0.0/16".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        let expose2 =
+            VpcExpose::empty()
+                .make_stateless_nat()
+                .unwrap()
+                .ip(PrefixWithOptionalPorts::new(
+                    "10.2.0.0/16".into(),
+                    Some(PortRange::new(1, 5).unwrap()),
+                ));
+
+        let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
+        let nat_tables = build_nat_configuration(&gw_config.external.overlay.vpc_table).unwrap();
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+        tablesw.update_nat_tables(nat_tables);
+
+        let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
+            (addr_v4("1.1.2.3"), 4024, addr_v4("10.2.2.18"), 1);
+        let (target_src_addr, target_src_port) = (addr_v4("10.1.2.3"), 8024);
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_src_addr,
+                orig_src_port,
+                orig_dst_addr,
+                orig_dst_port,
+            );
+        assert_eq!(output_src_addr, target_src_addr);
+        assert_eq!(output_src_port, target_src_port);
+        assert_eq!(output_dst_addr, orig_dst_addr);
+        assert_eq!(output_dst_port, orig_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(200),
+                vni(100),
+                output_dst_addr,
+                output_dst_port,
+                output_src_addr,
+                output_src_port,
+            );
+        assert_eq!(output_src_addr, orig_dst_addr);
+        assert_eq!(output_src_port, orig_dst_port);
+        assert_eq!(output_dst_addr, orig_src_addr);
+        assert_eq!(output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+    }
+
+    #[test]
+    #[traced_test]
+    #[allow(clippy::too_many_lines)]
+    fn test_config_with_port_ranges_complex() {
+        let expose1 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "1.1.1.0/24".into(),
+                Some(PortRange::new(4001, 5000).unwrap()), // 256 IPs, 1000 ports
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "1.1.1.64/26".into(),
+                Some(PortRange::new(4001, 5000).unwrap()), // 64 IPs, 1000 ports (exclusion)
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "1.1.1.128/25".into(),
+                Some(PortRange::new(4501, 5000).unwrap()), // 128 IPs, 500 ports (exclusion)
+            ))
+            .ip(PrefixWithOptionalPorts::new(
+                "1.1.2.0/25".into(),
+                Some(PortRange::new(4001, 5000).unwrap()), // 128 IPs, 1000 ports
+            ))
+            .ip(PrefixWithOptionalPorts::new(
+                "1.1.3.0/25".into(),
+                Some(PortRange::new(5001, 5500).unwrap()), // 128 IPs, 500 ports
+            ))
+            // Total: (256 * 1000 + 128 * 1000 + 128 * 500) - (64 * 1000 + 128 * 500)
+            //     = 320,000 ip/port combinations
+            //
+            // End of exposed prefixes, beginning of translated prefixes
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.0.0/30".into(),
+                Some(PortRange::new(2001, 2300).unwrap()), // 4 IPs, 300 ports
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.0.128/25".into(),
+                Some(PortRange::new(2001, 3000).unwrap()), // 128 IPs, 1000 ports
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.1.0/25".into(),
+                Some(PortRange::new(2501, 3000).unwrap()), // 128 IPs, 500 ports
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.1.128/25".into(),
+                Some(PortRange::new(3001, 4000).unwrap()), // 128 IPs, 1000 ports
+            ))
+            .not_as(PrefixWithOptionalPorts::new(
+                "10.1.1.128/25".into(),
+                Some(PortRange::new(3456, 3755).unwrap()), // 128 IPs, 300 ports (exclusion)
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.2.3/32".into(),
+                Some(PortRange::new(1, 37200).unwrap()), // 1 IP, 37200 ports
+            ));
+        // Total: (4 * 300 + 128 * 1000 + 128 * 500 + 128 * 1000 + 1 * 37200) - (128 * 300)
+        //     = 320,000 ip/port combinations
+
+        let expose2 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "2.1.0.1/32".into(),
+                Some(PortRange::new(0, 65535).unwrap()), // 1 IP, 65536 ports
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.2.0.0/30".into(),
+                Some(PortRange::new(1, 16384).unwrap()), // 4 IPs, 16384 ports
+            ));
+
+        // First address/port (assuming ordered ranges)
+
+        let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
+        let nat_tables = build_nat_configuration(&gw_config.external.overlay.vpc_table).unwrap();
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+        tablesw.update_nat_tables(nat_tables);
+
+        let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
+            (addr_v4("1.1.1.0"), 4001, addr_v4("10.2.0.0"), 2);
+        // (actually second port for destination NAT because 0 is problematic)
+        let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
+            (addr_v4("10.1.0.0"), 2001, addr_v4("2.1.0.1"), 1);
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_src_addr,
+                orig_src_port,
+                orig_dst_addr,
+                orig_dst_port,
+            );
+        assert_eq!(output_src_addr, target_src_addr);
+        assert_eq!(output_src_port, target_src_port);
+        assert_eq!(output_dst_addr, target_dst_addr);
+        assert_eq!(output_dst_port, target_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(200),
+                vni(100),
+                output_dst_addr,
+                output_dst_port,
+                output_src_addr,
+                output_src_port,
+            );
+        assert_eq!(output_src_addr, orig_dst_addr);
+        assert_eq!(output_src_port, orig_dst_port);
+        assert_eq!(output_dst_addr, orig_src_addr);
+        assert_eq!(output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+
+        // Last address/port (assuming ordered ranges)
+
+        let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
+            (addr_v4("1.1.3.127"), 5500, addr_v4("10.2.0.3"), 16384);
+        let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
+            (addr_v4("10.1.2.3"), 37200, addr_v4("2.1.0.1"), 65535);
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_src_addr,
+                orig_src_port,
+                orig_dst_addr,
+                orig_dst_port,
+            );
+        assert_eq!(output_src_addr, target_src_addr);
+        assert_eq!(output_src_port, target_src_port);
+        assert_eq!(output_dst_addr, target_dst_addr);
+        assert_eq!(output_dst_port, target_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(200),
+                vni(100),
+                output_dst_addr,
+                output_dst_port,
+                output_src_addr,
+                output_src_port,
+            );
+        assert_eq!(output_src_addr, orig_dst_addr);
+        assert_eq!(output_src_port, orig_dst_port);
+        assert_eq!(output_dst_addr, orig_src_addr);
+        assert_eq!(output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+
+        // Something in the middle
+
+        let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
+            (addr_v4("1.1.1.255"), 4500, addr_v4("10.2.0.1"), 16384);
+        let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
+            (addr_v4("10.1.0.254"), 2800, addr_v4("2.1.0.1"), 32767);
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_src_addr,
+                orig_src_port,
+                orig_dst_addr,
+                orig_dst_port,
+            );
+        assert_eq!(output_src_addr, target_src_addr);
+        assert_eq!(output_src_port, target_src_port);
+        assert_eq!(output_dst_addr, target_dst_addr);
+        assert_eq!(output_dst_port, target_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(200),
+                vni(100),
+                output_dst_addr,
+                output_dst_port,
+                output_src_addr,
+                output_src_port,
+            );
+        assert_eq!(output_src_addr, orig_dst_addr);
+        assert_eq!(output_src_port, orig_dst_port);
+        assert_eq!(output_dst_addr, orig_src_addr);
+        assert_eq!(output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+
+        // Same, moving one port forward in the list
+
+        let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
+            (addr_v4("1.1.2.0"), 4001, addr_v4("10.2.0.2"), 1);
+        let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
+            (addr_v4("10.1.0.254"), 2801, addr_v4("2.1.0.1"), 32768);
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_src_addr,
+                orig_src_port,
+                orig_dst_addr,
+                orig_dst_port,
+            );
+        assert_eq!(output_src_addr, target_src_addr);
+        assert_eq!(output_src_port, target_src_port);
+        assert_eq!(output_dst_addr, target_dst_addr);
+        assert_eq!(output_dst_port, target_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(200),
+                vni(100),
+                output_dst_addr,
+                output_dst_port,
+                output_src_addr,
+                output_src_port,
+            );
+        assert_eq!(output_src_addr, orig_dst_addr);
+        assert_eq!(output_src_port, orig_dst_port);
+        assert_eq!(output_dst_addr, orig_src_addr);
+        assert_eq!(output_dst_port, orig_src_port);
         assert_eq!(done_reason, None);
     }
 }
