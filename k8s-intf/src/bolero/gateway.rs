@@ -13,8 +13,8 @@ use crate::bolero::LegalValue;
 use crate::bolero::Normalize;
 
 use crate::gateway_agent_crd::{
-    GatewayAgentGateway, GatewayAgentGatewayInterfaces, GatewayAgentGatewayLogs,
-    GatewayAgentGatewayNeighbors,
+    GatewayAgentGateway, GatewayAgentGatewayGroups, GatewayAgentGatewayInterfaces,
+    GatewayAgentGatewayLogs, GatewayAgentGatewayNeighbors,
 };
 
 impl TypeGenerator for LegalValue<GatewayAgentGateway> {
@@ -34,9 +34,15 @@ impl TypeGenerator for LegalValue<GatewayAgentGateway> {
             neighbors.push(d.produce::<LegalValue<GatewayAgentGatewayNeighbors>>()?.0);
         }
 
+        let n_groups = d.gen_usize(Bound::Included(&1), Bound::Included(&4))?;
+        let mut groups = Vec::new();
+        for _ in 0..n_groups {
+            groups.push(d.produce::<LegalValue<GatewayAgentGatewayGroups>>()?.0);
+        }
+
         Some(LegalValue(GatewayAgentGateway {
             asn: Some(d.gen_u32(Bound::Included(&1), Bound::Unbounded)?),
-            groups: None, // FIXME(mvachhar) Add a proper implementation when used
+            groups: Some(groups),
             logs: Some(d.produce::<LegalValue<GatewayAgentGatewayLogs>>()?.take()),
             interfaces: Some(interfaces).filter(|i| !i.is_empty()),
             neighbors: Some(neighbors).filter(|n| !n.is_empty()),

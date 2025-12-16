@@ -5,6 +5,7 @@ pub mod bgp;
 pub mod crd;
 pub mod expose;
 pub mod gateway;
+pub mod gwgroups;
 pub mod interface;
 pub mod logs;
 pub mod peering;
