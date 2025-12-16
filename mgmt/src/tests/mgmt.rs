@@ -403,11 +403,15 @@ pub mod test {
         /* build a gw config from a sample external config */
         let config = GwConfig::new(external);
 
+        let dp_status_r: Arc<RwLock<DataplaneStatus>> =
+            Arc::new(RwLock::new(DataplaneStatus::new()));
+
         /* build router config */
         let router_params = RouterParamsBuilder::default()
             .cpi_sock_path("/tmp/cpi.sock")
             .cli_sock_path("/tmp/cli.sock")
             .frr_agent_path("/tmp/frr-agent.sock")
+            .dp_status(dp_status_r.clone())
             .build()
             .expect("Should succeed due to defaults");
 
@@ -436,9 +440,6 @@ pub mod test {
 
         /* VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();
-
-        let dp_status_r: Arc<RwLock<DataplaneStatus>> =
-            Arc::new(RwLock::new(DataplaneStatus::new()));
 
         /* build configuration of mgmt config processor */
         let processor_config = ConfigProcessorParams {
