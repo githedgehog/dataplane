@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZero;
-use tracing::error;
 
 pub mod address;
 mod bridge;

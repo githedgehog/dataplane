@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::headers::{Headers, TryIp, TryTransportMut, TryVxlan};
-use tracing::{error, warn};
+use tracing::warn;
 
 /// Configuration for [`VxlanEncap`] operation
 ///
