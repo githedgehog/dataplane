@@ -402,6 +402,7 @@ jobs:
       prebuild: "just bump dataplane x86_64-unknown-linux-gnu.release.${{ github.sha }}"
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
+      gateway_agentless: true
       includeonie: ${{ matrix.includeonie }}
       buildmode: ${{ matrix.buildmode }}
       vpcmode: ${{ matrix.vpcmode }}
