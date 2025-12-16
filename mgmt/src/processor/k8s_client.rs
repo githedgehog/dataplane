@@ -12,7 +12,9 @@ use config::{ExternalConfig, GwConfig, internal::status::DataplaneStatus};
 use k8s_intf::client::{
     ReplaceStatusError, WatchError, replace_gateway_status, watch_gateway_agent_crd,
 };
-use k8s_intf::gateway_agent_crd::GatewayAgentStatus;
+use k8s_intf::gateway_agent_crd::{
+    GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateDataplane,
+};
 use tracing::{debug, error};
 
 use crate::processor::proc::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
@@ -99,6 +101,7 @@ async fn update_gateway_status(hostname: &str, tx: &Sender<ConfigChannelRequest>
         last_applied_gen: Some(last_applied_gen),
         last_applied_time: Some(&last_applied_time),
         last_collected_time: Some(&chrono::Utc::now()),
+        last_heartbeat: Some(&chrono::Utc::now()),
         status: Some(&status),
     }) {
         Ok(status) => status,
@@ -147,7 +150,18 @@ impl K8sClient {
                         .unwrap()
                         .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
                 ),
-                state: None,
+                last_heartbeat: Some(
+                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                ),
+                state: Some(GatewayAgentStatusState {
+                    dataplane: Some(GatewayAgentStatusStateDataplane {
+                        version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
+                    }),
+                    frr: None,
+                    last_collected_time: None,
+                    peerings: None,
+                    vpcs: None,
+                }),
             },
         )
         .await?;
