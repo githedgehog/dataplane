@@ -82,7 +82,7 @@ pub struct GatewayAgentGatewayGroups {
     pub name: Option<String>,
     /// Priority is the priority of the gateway within the group
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
+    pub priority: Option<u32>,
 }
 
 /// Interfaces is a map of interface names to their configurations
@@ -143,7 +143,7 @@ pub struct GatewayAgentGroupsMembers {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
+    pub priority: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "vtepIP")]
     pub vtep_ip: Option<String>,
 }
