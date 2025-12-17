@@ -11,6 +11,7 @@ members = [
     "dpdk-sys",
     "dpdk-sysroot-helper",
     "errno",
+    "flow-filter",
     "flow-info",
     "gwname",
     "hardware",
@@ -55,6 +56,7 @@ dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys", features = [] 
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper", features = [] }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8fc33db10e1d00785f2a2b90cbadcad7900f200", features = [] }
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
+flow-filter = { path = "./flow-filter", package = "dataplane-flow-filter", features = [] }
 flow-info = { path = "./flow-info", package = "dataplane-flow-info", features = [] }
 gateway_config = { git = "https://github.com/githedgehog/gateway-proto", tag = "v0.17.0", features = [] }
 gwname = { path = "./gwname", package = "dataplane-gwname", features = [] }

@@ -5,6 +5,7 @@
 #[allow(dead_code)]
 pub mod test {
     use caps::Capability::CAP_NET_ADMIN;
+    use flow_filter::FlowFilterTableWriter;
     use lpm::prefix::Prefix;
     use nat::stateful::NatAllocatorWriter;
     use nat::stateless::NatTablesWriter;
@@ -386,16 +387,19 @@ pub mod test {
         /* vpcmappings for vpc name resolution for vpc stats */
         let vpcmapw = VpcMapWriter::<VpcMapName>::new();
 
-        /* crate NatTables for stateless nat */
+        /* create NatTables for stateless nat */
         let nattablesw = NatTablesWriter::new();
 
-        /* crate NatAllocator for stateful nat */
+        /* create NatAllocator for stateful nat */
         let natallocatorw = NatAllocatorWriter::new();
 
-        /* crate VniTables for dst_vni_lookup */
+        /* create VniTables for dst_vni_lookup */
         let vpcdtablesw = VpcDiscTablesWriter::new();
 
-        /* NEW: VPC stats store (Arc) */
+        /* create FlowFilterTable for flow filtering */
+        let flowfilterw = FlowFilterTableWriter::new();
+
+        /* create VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();
 
         /* build configuration of mgmt config processor */
@@ -405,6 +409,7 @@ pub mod test {
             nattablesw,
             natallocatorw,
             vpcdtablesw,
+            flowfilterw,
             vpc_stats_store,
         };
 
