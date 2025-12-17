@@ -12,7 +12,7 @@ use concurrency::sync::{Arc, RwLock};
 use config::internal::status::DataplaneStatus;
 use netgauze_bmp_pkt::BmpMessage;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, debug};
 
 /// Background BMP server runner that updates shared dataplane status.
 pub struct StatusHandler {
@@ -28,11 +28,14 @@ impl StatusHandler {
 #[async_trait::async_trait]
 impl handler::BmpHandler for StatusHandler {
     async fn on_message(&self, _peer: std::net::SocketAddr, msg: BmpMessage) {
-        let mut guard = self
-            .dp_status
-            .write()
-            .expect("dataplane status lock poisoned");
-        bmp_render::handle_bmp_message(&mut *guard, &msg);
+        {
+            let mut guard = self
+                .dp_status
+                .write()
+                .expect("dataplane status lock poisoned");
+            bmp_render::handle_bmp_message(&mut *guard, &msg);
+        }
+        debug!("BMP: released dataplane status write guard after handling message");
     }
 }
 
