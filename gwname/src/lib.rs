@@ -20,7 +20,7 @@ pub fn set_gw_name(name: &str) -> Result<(), String> {
     match GATEWAY_NAME.set(name.to_owned()) {
         Ok(()) => Ok(()),
         Err(s) => {
-            if s.as_str() == name {
+            if name == get_gw_name().unwrap_or_else(|| unreachable!()) {
                 Ok(())
             } else {
                 Err(s)
