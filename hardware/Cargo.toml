@@ -49,6 +49,3 @@ serde = { workspace = true, features = ["std"] }
 serde_yaml_ng = { workspace = true, features = [] }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[build-dependencies]
-dpdk-sysroot-helper = { workspace = true }

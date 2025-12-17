@@ -10,6 +10,10 @@ autobins = false
 name = "cli"
 path = "bin/main.rs"
 
+[features]
+default = []
+sysroot = ["dep:dpdk-sysroot-helper"]
+
 [dependencies]
 bincode2 = { workspace = true, features = [] }
 clap = { workspace = true, features = ["derive", "std", "usage"] }
@@ -22,6 +26,6 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 # internal
-dpdk-sysroot-helper = { workspace = true }
+dpdk-sysroot-helper = { workspace = true, optional = true }
 
 # external
