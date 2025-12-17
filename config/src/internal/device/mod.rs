@@ -3,11 +3,9 @@
 
 //! Dataplane configuration model: device
 
-pub mod ports;
 pub mod settings;
 pub mod tracecfg;
 
-use ports::PortConfig;
 use settings::DeviceSettings;
 use tracecfg::TracingConfig;
 use tracing::{debug, error};
@@ -17,7 +15,6 @@ use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug)]
 pub struct DeviceConfig {
     pub settings: DeviceSettings,
-    pub ports: Vec<PortConfig>,
     pub tracing: Option<TracingConfig>,
 }
 impl DeviceConfig {
@@ -25,7 +22,6 @@ impl DeviceConfig {
     pub fn new(settings: DeviceSettings) -> Self {
         Self {
             settings,
-            ports: vec![],
             tracing: None,
         }
     }
