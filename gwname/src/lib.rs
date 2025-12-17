@@ -34,3 +34,24 @@ pub fn set_gw_name(name: &str) -> Result<(), String> {
 pub fn get_gw_name() -> Option<&'static str> {
     GATEWAY_NAME.get().map(String::as_str)
 }
+
+#[cfg(test)]
+mod test {
+    use crate::{get_gw_name, set_gw_name};
+
+    #[test]
+    fn test_set_name_idempotence() {
+        set_gw_name("gw1").unwrap();
+        set_gw_name("gw1").unwrap();
+        set_gw_name("gw1").unwrap();
+        assert_eq!(get_gw_name().unwrap(), "gw1");
+    }
+
+    #[test]
+    fn test_set_name_just_once() {
+        set_gw_name("gw1").unwrap();
+        set_gw_name("gw1").unwrap();
+        assert!(set_gw_name("gw2").is_err_and(|e| e == "gw2")); // refused to change
+        assert_eq!(get_gw_name().unwrap(), "gw1"); // did not change
+    }
+}
