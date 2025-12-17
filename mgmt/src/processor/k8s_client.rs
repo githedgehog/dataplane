@@ -231,12 +231,8 @@ impl K8sClient {
         tx: Sender<ConfigChannelRequest>,
         status_update_interval: &std::time::Duration,
     ) -> Result<(), K8sClientError> {
-        // Clone this here so that the closure does not try to borrow self
-        // and cause K8sClient to not be Send for 'static but only a specific
-        // lifetime
-        let hostname = self.hostname.clone();
         loop {
-            update_gateway_status(&hostname, &tx).await;
+            update_gateway_status(&self.hostname, &tx).await;
             tokio::time::sleep(*status_update_interval).await;
         }
     }
