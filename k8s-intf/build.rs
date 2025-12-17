@@ -68,6 +68,7 @@ fn fixup_types(raw: String) -> String {
         .replace("b: Option<i64>", "b: Option<u64>")
         .replace("d: Option<i64>", "d: Option<u64>")
         .replace("p: Option<i64>", "p: Option<u64>")
+        .replace("priority: Option<i32>", "priority: Option<u32>")
 }
 
 fn generate_rust_for_crd(crd_content: &str) -> String {
