@@ -153,6 +153,7 @@ fn main() {
             nattablesw: setup.nattablesw,
             natallocatorw: setup.natallocatorw,
             vpcdtablesw: setup.vpcdtablesw,
+            flowfilterw: setup.flowfiltertablesw,
             vpc_stats_store: setup.vpc_stats_store,
         },
     })

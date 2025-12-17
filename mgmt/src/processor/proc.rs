@@ -19,6 +19,7 @@ use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConf
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
+use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
@@ -83,6 +84,9 @@ pub struct ConfigProcessorParams {
 
     // writer for VPC routing table
     pub vpcdtablesw: VpcDiscTablesWriter,
+
+    // writer for flow filter table
+    pub flowfilterw: FlowFilterTableWriter,
 
     // store for vpc stats
     pub vpc_stats_store: Arc<VpcStatsStore>,
@@ -492,6 +496,15 @@ fn apply_dst_vpcd_lookup_config(
     Ok(())
 }
 
+fn apply_flow_filtering_config(
+    overlay: &Overlay,
+    flowfilterw: &mut FlowFilterTableWriter,
+) -> ConfigResult {
+    let flow_filter_table = FlowFilterTable::build_from_overlay(overlay)?;
+    flowfilterw.update_flow_filter_table(flow_filter_table);
+    Ok(())
+}
+
 fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
     // Apply tracing config if provided. Otherwise, apply an empty/default config.
     let default = TracingConfig::default();
@@ -523,6 +536,7 @@ impl ConfigProcessor {
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let vpcdtablesw = &mut self.proc_params.vpcdtablesw;
+        let flowfilterw = &mut self.proc_params.flowfilterw;
 
         /* build internal config if it hasn't been built */
         if config.internal.is_none() {
@@ -561,6 +575,9 @@ impl ConfigProcessor {
 
         /* apply dst_vpcd_lookup config */
         apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
+
+        /* apply flow filtering config */
+        apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;
 
         /* update stats mappings and seed names to the stats store */
         let _ = update_stats_vpc_mappings(config, vpcmapw);

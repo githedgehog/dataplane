@@ -51,6 +51,10 @@ where
         self.0.get(range)
     }
 
+    pub fn get_mut(&mut self, range: &R) -> Option<&mut V> {
+        self.0.get_mut(range)
+    }
+
     pub fn lookup<K>(&self, key: &K) -> Option<(&R, &V)>
     where
         R: UpperBoundFrom<K> + RangeBounds<K>,
@@ -80,6 +84,10 @@ where
 
     pub fn range_mut(&mut self, range: impl RangeBounds<R>) -> impl Iterator<Item = (&R, &mut V)> {
         self.0.range_mut(range)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &R> {
+        self.0.keys()
     }
 }
 

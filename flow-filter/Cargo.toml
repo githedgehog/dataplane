@@ -1,0 +1,19 @@
+[package]
+name = "dataplane-flow-filter"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+config = { workspace = true }
+left-right = { workspace = true }
+linkme = { workspace = true }
+lpm = { workspace = true }
+net = { workspace = true }
+pipeline = { workspace = true }
+tracectl = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-test = { workspace = true, features = [] }
