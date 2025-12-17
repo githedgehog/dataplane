@@ -114,79 +114,122 @@ impl IpRangeWithPorts for PrefixWithPorts {
 
 /// A structure containing a prefix and an optional port range.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PrefixWithOptionalPorts {
-    prefix: Prefix,
-    ports: Option<PortRange>,
+pub enum PrefixWithOptionalPorts {
+    Prefix(Prefix),
+    PrefixPorts(PrefixWithPorts),
 }
 
 impl PrefixWithOptionalPorts {
     /// Creates a new `PrefixWithOptionalPorts` from a prefix and an optional port range.
     #[must_use]
     pub fn new(prefix: Prefix, ports: Option<PortRange>) -> Self {
-        Self { prefix, ports }
+        match ports {
+            Some(ports) => {
+                PrefixWithOptionalPorts::PrefixPorts(PrefixWithPorts::new(prefix, ports))
+            }
+            None => PrefixWithOptionalPorts::Prefix(prefix),
+        }
     }
 
     /// Returns the prefix.
     #[must_use]
     pub fn prefix(&self) -> Prefix {
-        self.prefix
+        match self {
+            PrefixWithOptionalPorts::Prefix(prefix) => *prefix,
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => prefix_with_ports.prefix(),
+        }
     }
 
     /// Returns the optional port range.
     #[must_use]
     pub fn ports(&self) -> Option<PortRange> {
-        self.ports
+        match self {
+            PrefixWithOptionalPorts::Prefix(_) => None,
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
+                Some(prefix_with_ports.ports())
+            }
+        }
     }
 }
 
 impl IpRangeWithPorts for PrefixWithOptionalPorts {
     fn addr_range_len(&self) -> PrefixSize {
-        self.prefix.size()
+        match self {
+            PrefixWithOptionalPorts::Prefix(prefix) => prefix.size(),
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
+                prefix_with_ports.prefix().size()
+            }
+        }
     }
 
     fn port_range_len(&self) -> usize {
-        self.ports
-            .as_ref()
-            .map_or(PortRange::MAX_LENGTH, PortRange::len)
+        match self {
+            PrefixWithOptionalPorts::Prefix(_) => PortRange::MAX_LENGTH,
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
+                prefix_with_ports.ports().len()
+            }
+        }
     }
 
     fn covers(&self, other: &Self) -> bool {
-        match (self.ports, other.ports) {
-            (Some(self_ports), Some(other_ports)) => {
-                self.prefix.covers(&other.prefix) && self_ports.covers(other_ports)
-            }
-            (Some(self_ports), None) if self_ports.len() == PortRange::MAX_LENGTH => {
+        match (self, other) {
+            (
+                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
+                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
+            ) => self_prefix_with_ports.covers(other_prefix_with_ports),
+            (
+                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
+                PrefixWithOptionalPorts::Prefix(other_prefix),
+            ) if self_prefix_with_ports.port_range_len() == PortRange::MAX_LENGTH => {
                 // All ports contained in both instances, so we only check prefixes
-                self.prefix.covers(&other.prefix)
+                self_prefix_with_ports.prefix().covers(other_prefix)
             }
-            (Some(_), None) => false, // Other ranges has ports not covered
+            (PrefixWithOptionalPorts::PrefixPorts(_), PrefixWithOptionalPorts::Prefix(_)) => {
+                // "other" cover all ports, "self" doesn't: "other" has ports not covered
+                false
+            }
             _ => {
                 // We necessarily cover all prefixes from the other instance, only check prefixes
-                self.prefix.covers(&other.prefix)
+                self.prefix().covers(&other.prefix())
             }
         }
     }
 
     fn overlaps(&self, other: &Self) -> bool {
-        match (self.ports, other.ports) {
-            (Some(self_ports), Some(other_ports)) => {
-                self.prefix.collides_with(&other.prefix) && self_ports.overlaps(other_ports)
-            }
-            _ => self.prefix.collides_with(&other.prefix),
+        match (self, other) {
+            (
+                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
+                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
+            ) => self_prefix_with_ports.overlaps(other_prefix_with_ports),
+            _ => self.prefix().collides_with(&other.prefix()),
         }
     }
 
     fn intersection(&self, other: &Self) -> Option<Self> {
-        match (self.ports, other.ports) {
-            (Some(self_ports), Some(other_ports)) => Some(Self::new(
-                self.prefix.intersection(&other.prefix)?,
-                Some(self_ports.intersection(other_ports)?),
+        match (self, other) {
+            (
+                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
+                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
+            ) => Some(PrefixWithOptionalPorts::PrefixPorts(
+                self_prefix_with_ports.intersection(other_prefix_with_ports)?,
             )),
-            (Some(ports), None) | (None, Some(ports)) => Some(Self::new(
-                self.prefix.intersection(&other.prefix)?,
-                Some(ports),
+            (
+                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
+                PrefixWithOptionalPorts::Prefix(prefix),
+            )
+            | (
+                PrefixWithOptionalPorts::Prefix(prefix),
+                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
+            ) => Some(Self::new(
+                prefix_with_ports.prefix().intersection(prefix)?,
+                Some(prefix_with_ports.ports()),
             )),
-            (None, None) => Some(Self::new(self.prefix.intersection(&other.prefix)?, None)),
+            (
+                PrefixWithOptionalPorts::Prefix(self_prefix),
+                PrefixWithOptionalPorts::Prefix(other_prefix),
+            ) => Some(PrefixWithOptionalPorts::Prefix(
+                self_prefix.intersection(other_prefix)?,
+            )),
         }
     }
 
@@ -206,7 +249,7 @@ impl IpRangeWithPorts for PrefixWithOptionalPorts {
                         && let Some(ports) = p.ports()
                         && ports.is_max_range()
                     {
-                        PrefixWithOptionalPorts::new(p.prefix(), None)
+                        PrefixWithOptionalPorts::Prefix(p.prefix())
                     } else {
                         p
                     }
@@ -218,28 +261,32 @@ impl IpRangeWithPorts for PrefixWithOptionalPorts {
             return Vec::new();
         }
 
-        match (self.ports, other.ports) {
-            (Some(self_ports), Some(other_ports)) => convert_result_type(
-                PrefixWithPorts::new(self.prefix, self_ports)
-                    .subtract(&PrefixWithPorts::new(other.prefix, other_ports)),
+        match (self, other) {
+            (
+                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
+                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
+            ) => convert_result_type(
+                self_prefix_with_ports.subtract(other_prefix_with_ports),
                 false,
             ),
-            (Some(self_ports), None) => convert_result_type(
-                PrefixWithPorts::new(self.prefix, self_ports).subtract(&PrefixWithPorts::new(
-                    other.prefix,
-                    PortRange::new(0, u16::MAX).unwrap_or_else(|_| unreachable!()),
-                )),
+            (
+                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
+                PrefixWithOptionalPorts::Prefix(other_prefix),
+            ) => convert_result_type(
+                self_prefix_with_ports.subtract(&(*other_prefix).into()),
                 false,
             ),
-            (None, Some(other_ports)) => convert_result_type(
-                PrefixWithPorts::new(
-                    self.prefix,
-                    PortRange::new(0, u16::MAX).unwrap_or_else(|_| unreachable!()),
-                )
-                .subtract(&PrefixWithPorts::new(other.prefix, other_ports)),
+            (
+                PrefixWithOptionalPorts::Prefix(self_prefix),
+                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
+            ) => convert_result_type(
+                PrefixWithPorts::from(*self_prefix).subtract(other_prefix_with_ports),
                 true,
             ),
-            (None, None) => convert_result_type(self.prefix.subtract(&other.prefix), false),
+            (
+                PrefixWithOptionalPorts::Prefix(self_prefix),
+                PrefixWithOptionalPorts::Prefix(other_prefix),
+            ) => convert_result_type(self_prefix.subtract(other_prefix), false),
         }
     }
 }
@@ -257,25 +304,27 @@ pub enum PortRangeError {
 
 impl From<PrefixWithPorts> for PrefixWithOptionalPorts {
     fn from(value: PrefixWithPorts) -> Self {
-        PrefixWithOptionalPorts {
-            prefix: value.prefix,
-            ports: Some(value.ports),
-        }
+        PrefixWithOptionalPorts::PrefixPorts(value)
     }
 }
 
 impl From<PrefixWithOptionalPorts> for PrefixWithPorts {
     fn from(p: PrefixWithOptionalPorts) -> Self {
-        match p.ports {
-            Some(ports) => PrefixWithPorts {
-                prefix: p.prefix,
-                ports,
-            },
-            None => PrefixWithPorts {
-                prefix: p.prefix,
-                ports: PortRange::new_max_range(),
-            },
+        match p {
+            PrefixWithOptionalPorts::Prefix(prefix) => {
+                PrefixWithPorts::new(prefix, PortRange::new_max_range())
+            }
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => prefix_with_ports,
         }
+    }
+}
+
+impl<T> From<T> for PrefixWithPorts
+where
+    T: Into<Prefix>,
+{
+    fn from(value: T) -> Self {
+        PrefixWithPorts::new(value.into(), PortRange::new_max_range())
     }
 }
 
@@ -284,10 +333,7 @@ where
     T: Into<Prefix>,
 {
     fn from(value: T) -> Self {
-        PrefixWithOptionalPorts {
-            prefix: value.into(),
-            ports: None,
-        }
+        PrefixWithOptionalPorts::Prefix(value.into())
     }
 }
 
@@ -295,9 +341,9 @@ impl TryFrom<PrefixWithOptionalPorts> for Prefix {
     type Error = PortRangeError;
 
     fn try_from(p: PrefixWithOptionalPorts) -> Result<Self, Self::Error> {
-        match p.ports {
-            Some(_) => Err(PortRangeError::SomePortRange),
-            None => Ok(p.prefix),
+        match p {
+            PrefixWithOptionalPorts::Prefix(prefix) => Ok(prefix),
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => Ok(prefix_with_ports.prefix),
         }
     }
 }
@@ -457,9 +503,16 @@ impl Display for PrefixWithPorts {
 
 impl Display for PrefixWithOptionalPorts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.ports() {
-            Some(ports) => write!(f, "({} <{}>)", self.prefix, ports),
-            None => write!(f, "({} </>)", self.prefix),
+        match self {
+            PrefixWithOptionalPorts::Prefix(prefix) => write!(f, "({prefix} </>)"),
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
+                write!(
+                    f,
+                    "({} <{}>)",
+                    prefix_with_ports.prefix(),
+                    prefix_with_ports.ports()
+                )
+            }
         }
     }
 }
