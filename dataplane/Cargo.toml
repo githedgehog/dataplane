@@ -15,6 +15,7 @@ concurrency = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
+flow-filter = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

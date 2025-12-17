@@ -1146,6 +1146,7 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-dpdk-sysroot-helper",
+ "dataplane-flow-filter",
  "dataplane-id",
  "dataplane-mgmt",
  "dataplane-nat",
@@ -1292,6 +1293,21 @@ name = "dataplane-errno"
 version = "0.8.0"
 dependencies = [
  "thiserror 2.0.17",
+]
+
+[[package]]
+name = "dataplane-flow-filter"
+version = "0.8.0"
+dependencies = [
+ "dataplane-config",
+ "dataplane-lpm",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "left-right",
+ "linkme",
+ "tracing",
+ "tracing-test",
 ]
 
 [[package]]
@@ -1459,6 +1475,7 @@ dependencies = [
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-flow-filter",
  "dataplane-id",
  "dataplane-interface-manager",
  "dataplane-k8s-intf",

@@ -12,6 +12,7 @@ use super::packet_processor::ipforward::IpForwarder;
 
 use concurrency::sync::Arc;
 
+use flow_filter::{FlowFilter, FlowFilterTableWriter};
 use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
 
@@ -39,6 +40,7 @@ where
     pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
     pub vpcdtablesw: VpcDiscTablesWriter,
+    pub flowfiltertablesw: FlowFilterTableWriter,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
 }
@@ -50,6 +52,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
     let vpcdtablesw = VpcDiscTablesWriter::new();
+    let flowfiltertablesw = FlowFilterTableWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
 
@@ -66,6 +69,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
     let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
+    let flowfiltertablesr_factory = flowfiltertablesw.get_reader_factory();
     let atabler_factory = router.get_atabler_factory();
     let nattabler_factory = nattablesw.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
@@ -85,6 +89,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         );
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", writer.clone());
+        let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
         let flow_lookup_nf = LookupNF::new("flow-lookup", flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
 
@@ -94,6 +99,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
             .add_stage(dst_vpcd_lookup)
+            .add_stage(flow_filter)
             .add_stage(flow_lookup_nf)
             .add_stage(stateless_nat)
             .add_stage(stateful_nat)
@@ -111,6 +117,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         nattablesw,
         natallocatorw,
         vpcdtablesw,
+        flowfiltertablesw,
         stats,
         vpc_stats_store,
     })

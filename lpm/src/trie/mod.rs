@@ -104,6 +104,16 @@ impl<V: Clone> IpPrefixTrie<V> {
         }
     }
 
+    pub fn get_mut<Q>(&mut self, prefix: Q) -> Option<&mut V>
+    where
+        Q: Into<Prefix>,
+    {
+        match prefix.into() {
+            Prefix::IPV4(prefix) => self.ipv4.get_mut(prefix),
+            Prefix::IPV6(prefix) => self.ipv6.get_mut(prefix),
+        }
+    }
+
     pub fn matching_entries<Q>(&self, addr: Q) -> Box<dyn Iterator<Item = (Prefix, &V)> + '_>
     where
         Q: Into<IpAddr>,

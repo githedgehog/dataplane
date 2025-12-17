@@ -20,6 +20,7 @@ bolero = ["dep:bolero", "interface-manager/bolero", "id/bolero", "net/bolero", "
 args = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
+flow-filter = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
 k8s-intf = { workspace = true }
