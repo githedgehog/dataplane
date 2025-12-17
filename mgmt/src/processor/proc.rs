@@ -555,10 +555,11 @@ impl ConfigProcessor {
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let vpcdtablesw = &mut self.proc_params.vpcdtablesw;
+        let bmp_options = self.proc_params.bmp_options.clone();
 
         /* build internal config if it hasn't been built */
         if config.internal.is_none() {
-            let internal = build_internal_config(config)?;
+            let internal = build_internal_config_with_bmp(config, bmp_options)?;
             config.set_internal_config(internal);
         }
         let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
