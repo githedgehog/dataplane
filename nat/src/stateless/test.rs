@@ -16,7 +16,6 @@ mod tests {
     };
     use config::external::underlay::Underlay;
     use config::internal::device::DeviceConfig;
-    use config::internal::device::settings::DeviceSettings;
     use config::internal::interfaces::interface::InterfaceConfig;
     use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
     use config::internal::routing::bgp::BgpConfig;
@@ -487,8 +486,6 @@ mod tests {
         // Now comes some default configuration to build a valid GwConfig, not really relevant to
         // our tests
 
-        let device_config = DeviceConfig::new(DeviceSettings::new("sample"));
-
         let vtep = InterfaceConfig::new(
             "vtep",
             InterfaceType::Vtep(IfVtepConfig {
@@ -510,7 +507,7 @@ mod tests {
 
         let mut external_builder = ExternalConfigBuilder::default();
         external_builder.genid(1);
-        external_builder.device(device_config);
+        external_builder.device(DeviceConfig::new());
         external_builder.underlay(underlay);
         external_builder.overlay(overlay);
         external_builder.gwgroups(GwGroupTable::new());
