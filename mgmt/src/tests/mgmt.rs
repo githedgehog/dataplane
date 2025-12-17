@@ -35,9 +35,6 @@ pub mod test {
     use config::external::underlay::Underlay;
 
     use config::internal::device::DeviceConfig;
-    use config::internal::device::settings::DeviceSettings;
-    use config::internal::device::settings::KernelPacketConfig;
-    use config::internal::device::settings::PacketDriver;
     use config::internal::interfaces::interface::{
         IfEthConfig, IfVtepConfig, InterfaceConfig, InterfaceType,
     };
@@ -154,12 +151,7 @@ pub mod test {
 
     /* DEVICE configuration */
     fn sample_device_config() -> DeviceConfig {
-        /* device settings */
-        let settings = DeviceSettings::new("GW1")
-            .set_packet_driver(PacketDriver::Kernel(KernelPacketConfig {}));
-
-        /* device config */
-        DeviceConfig::new(settings)
+        DeviceConfig::new()
     }
 
     /* UNDERLAY, default VRF BGP AF configs */

@@ -16,7 +16,6 @@ mod tests {
     };
     use config::external::underlay::Underlay;
     use config::internal::device::DeviceConfig;
-    use config::internal::device::settings::DeviceSettings;
     use config::internal::interfaces::interface::InterfaceConfig;
     use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
     use config::internal::routing::bgp::BgpConfig;
@@ -26,8 +25,8 @@ mod tests {
     use crate::stateless::setup::build_nat_configuration;
     use crate::stateless::setup::tables::{NatTables, PerVniTable};
 
-    use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
     use fixin::wrap;
+    use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
     use net::headers::{TryHeaders, TryHeadersMut, TryInnerIpv4, TryIpv4, TryIpv4Mut};
@@ -533,7 +532,7 @@ mod tests {
     // configuration is not really relevant to our tests, we just want a valid GwConfig object to
     // work with.
     fn build_gwconfig_from_overlay(overlay: Overlay) -> GwConfig {
-        let device_config = DeviceConfig::new(DeviceSettings::new("sample"));
+        let device_config = DeviceConfig::new();
 
         let vtep = InterfaceConfig::new(
             "vtep",
@@ -771,7 +770,7 @@ mod tests {
             add_expose(&mut manifest21, expose);
         }
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21);
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
