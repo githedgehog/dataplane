@@ -17,7 +17,6 @@ mod tests {
     use config::external::underlay::Underlay;
     use config::internal::device::DeviceConfig;
 
-    use config::internal::device::settings::DeviceSettings;
     use config::internal::interfaces::interface::{IfVtepConfig, InterfaceConfig, InterfaceType};
     use config::internal::routing::bgp::BgpConfig;
     use config::internal::routing::vrf::VrfConfig;
@@ -65,7 +64,7 @@ mod tests {
     // Use a default configuration to build a valid GwConfig, the details are not really relevant to
     // our tests
     fn build_sample_config(overlay: Overlay) -> GwConfig {
-        let device_config = DeviceConfig::new(DeviceSettings::new("sample"));
+        let device_config = DeviceConfig::new();
 
         let vtep = InterfaceConfig::new(
             "vtep",

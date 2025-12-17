@@ -135,10 +135,6 @@ mod test {
     fn create_test_gateway_config() -> GatewayConfig {
         // Create device
         let device = gateway_config::Device {
-            driver: 0, // Kernel
-            hostname: "test-gateway".to_string(),
-            ports: Vec::new(),
-            eal: None,
             tracing: Some(create_tracing_config()),
         };
 
@@ -390,10 +386,6 @@ mod test {
 
         // Create test data with specific components
         let device = gateway_config::Device {
-            driver: 0, // Kernel
-            hostname: "test-device".to_string(),
-            ports: Vec::new(),
-            eal: None,
             tracing: Some(tracing.clone()),
         };
 
@@ -417,14 +409,11 @@ mod test {
             "TryFrom for DeviceConfig failed"
         );
         let device_config = device_config_result.unwrap();
-        assert_eq!(device_config.settings.hostname, "test-device");
 
         // Back to gRPC
         let device_back_result = gateway_config::Device::try_from(&device_config);
         assert!(device_back_result.is_ok(), "TryFrom back to Device failed");
         let device_back = device_back_result.unwrap();
-        assert_eq!(device_back.hostname, device.hostname);
-        assert_eq!(device_back.driver, device.driver);
         assert_eq!(device_back.tracing.as_ref().unwrap(), &tracing);
 
         // InterfaceConfig TryFrom

@@ -24,6 +24,7 @@ use crate::internal::routing::frr::Frr;
 use crate::internal::routing::prefixlist::{PrefixList, PrefixListTable};
 use crate::internal::routing::routemap::{RouteMap, RouteMapTable};
 use crate::internal::routing::vrf::{VrfConfig, VrfConfigTable};
+use gwname::get_gw_name;
 
 #[derive(Clone, Debug)]
 /* Main internal GW configuration */
@@ -39,11 +40,9 @@ pub struct InternalConfig {
 impl InternalConfig {
     #[must_use]
     pub fn new(dev_cfg: DeviceConfig) -> Self {
+        let hostname = get_gw_name().unwrap_or_else(|| unreachable!());
         // Frr profile is not configurable for the time being
-        let frr = Frr::new(
-            routing::frr::FrrProfile::Datacenter,
-            &dev_cfg.settings.hostname,
-        );
+        let frr = Frr::new(routing::frr::FrrProfile::Datacenter, hostname);
         Self {
             dev_cfg,
             frr,

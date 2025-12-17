@@ -3,27 +3,21 @@
 
 //! Dataplane configuration model: device
 
-pub mod settings;
 pub mod tracecfg;
 
-use settings::DeviceSettings;
 use tracecfg::TracingConfig;
 use tracing::{debug, error};
 
 use crate::{ConfigError, ConfigResult};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct DeviceConfig {
-    pub settings: DeviceSettings,
     pub tracing: Option<TracingConfig>,
 }
 impl DeviceConfig {
     #[must_use]
-    pub fn new(settings: DeviceSettings) -> Self {
-        Self {
-            settings,
-            tracing: None,
-        }
+    pub fn new() -> Self {
+        Self { tracing: None }
     }
     pub fn set_tracing(&mut self, tracing: TracingConfig) {
         self.tracing = Some(tracing);

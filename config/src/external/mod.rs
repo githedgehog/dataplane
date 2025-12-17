@@ -9,7 +9,6 @@ pub mod overlay;
 pub mod underlay;
 
 use crate::internal::device::DeviceConfig;
-use crate::internal::device::settings::DeviceSettings;
 use crate::{ConfigError, ConfigResult};
 use communities::PriorityCommunityTable;
 use derive_builder::Builder;
@@ -40,7 +39,7 @@ impl ExternalConfig {
     pub fn new() -> Self {
         Self {
             genid: Self::BLANK_GENID,
-            device: DeviceConfig::new(DeviceSettings::new("Unset")),
+            device: DeviceConfig::new(),
             underlay: Underlay::default(),
             overlay: Overlay::default(),
             gwgroups: GwGroupTable::new(),

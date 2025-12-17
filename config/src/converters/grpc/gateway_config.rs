@@ -8,7 +8,7 @@ use crate::external::communities::PriorityCommunityTable;
 use crate::external::gwgroup::{GwGroup, GwGroupTable};
 use crate::external::overlay::Overlay;
 use crate::external::underlay::Underlay;
-use crate::internal::device::{DeviceConfig, settings::DeviceSettings};
+use crate::internal::device::DeviceConfig;
 use crate::{ExternalConfig, GwConfig};
 use gateway_config::config::GatewayGroup;
 
@@ -29,7 +29,7 @@ pub fn convert_gateway_config_from_grpc_with_defaults(
         DeviceConfig::try_from(device)?
     } else {
         warn!("Missing device configuration!");
-        DeviceConfig::new(DeviceSettings::new("Unset"))
+        DeviceConfig::new()
     };
 
     // convert underlay or provide a default (empty)
