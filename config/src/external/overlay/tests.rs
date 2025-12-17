@@ -17,7 +17,7 @@ pub mod test {
     use crate::external::overlay::vpcpeering::VpcManifest;
     use crate::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
-    use lpm::prefix::{Prefix, PrefixWithPortsSize};
+    use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
 
     /* Build sample manifests for a peering */
     fn build_manifest_vpc1() -> VpcManifest {
@@ -559,5 +559,245 @@ pub mod test {
         if let Some(vpc) = vpc_table.get_vpc("VPC-1") {
             println!("{}", VpcDetailed(vpc));
         }
+    }
+
+    #[test]
+    fn test_expose_with_port_ranges_validate() {
+        let expose = VpcExpose::empty();
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+            "10.0.0.0/16".into(),
+            Some(PortRange::new(1, 65535).unwrap()),
+        ));
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/16".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/24".into(),
+                Some(PortRange::new(5001, 5100).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/16".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ))
+            .not_as(PrefixWithOptionalPorts::new(
+                "2.0.0.0/25".into(),
+                Some(PortRange::new(8001, 8200).unwrap()),
+            ));
+        assert_eq!(expose.validate(), Ok(()));
+
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "1::/64".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2::/64".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        assert_eq!(expose.validate(), Ok(()));
+
+        // Overlapping prefix, but distinct port ranges
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/17".into(),
+                Some(PortRange::new(8001, 9500).unwrap()),
+            ));
+        assert_eq!(expose.validate(), Ok(()));
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .ip(PrefixWithOptionalPorts::new(
+                "1::/64".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/16".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2::/64".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
+        );
+
+        // Incorrect: mixed IP versions
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "1::/112".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
+        );
+
+        // Incorrect: prefix overlapping
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/17".into(),
+                Some(PortRange::new(5001, 5500).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/16".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "3.0.0.0/17".into(),
+                Some(PortRange::new(8001, 8500).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OverlappingPrefixes(
+                PrefixWithOptionalPorts::new(
+                    "10.0.0.0/16".into(),
+                    Some(PortRange::new(5001, 6000).unwrap())
+                ),
+                PrefixWithOptionalPorts::new(
+                    "10.0.0.0/17".into(),
+                    Some(PortRange::new(5001, 5500).unwrap())
+                ),
+            ))
+        );
+
+        // Incorrect: out-of-range exclusion prefix (IPs)
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/15".into(),
+                Some(PortRange::new(5001, 5500).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OutOfRangeExclusionPrefix(
+                PrefixWithOptionalPorts::new(
+                    "10.0.0.0/15".into(),
+                    Some(PortRange::new(5001, 5500).unwrap()),
+                )
+            ))
+        );
+
+        // Incorrect: out-of-range exclusion prefix (port range)
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/24".into(),
+                Some(PortRange::new(7001, 8000).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OutOfRangeExclusionPrefix(
+                PrefixWithOptionalPorts::new(
+                    "10.0.0.0/24".into(),
+                    Some(PortRange::new(7001, 8000).unwrap()),
+                )
+            ))
+        );
+
+        // Incorrect: out-of-range exclusion prefix (port range, albeit with overlap)
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/24".into(),
+                Some(PortRange::new(5001, 8000).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::OutOfRangeExclusionPrefix(
+                PrefixWithOptionalPorts::new(
+                    "10.0.0.0/24".into(),
+                    Some(PortRange::new(5001, 8000).unwrap()),
+                )
+            ))
+        );
+
+        // Incorrect: all prefixes excluded
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/17".into(),
+                Some(PortRange::new(5001, 5500).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/17".into(),
+                Some(PortRange::new(5501, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.128.0/17".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone())))
+        );
+
+        // Incorrect: mismatched prefix lists sizes
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.1.0/24".into(),
+                Some(PortRange::new(5001, 5500).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/24".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::MismatchedPrefixSizes(
+                PrefixWithPortsSize::from(65536u32 * 1000 - 256u32 * 500),
+                PrefixWithPortsSize::from(256u32 * 1000),
+            ))
+        );
     }
 }
