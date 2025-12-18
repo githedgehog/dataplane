@@ -232,9 +232,8 @@ pub fn start_mgmt(
             } else {
                 debug!("Will start watching k8s for configuration changes");
                 rt.block_on(async {
-                    let k8s_client = Arc::new(K8sClient::new(params.hostname.as_str()));
                     let (processor, client) = ConfigProcessor::new(params.processor_params);
-                    let client1 = client.clone();
+                    let k8s_client = Arc::new(K8sClient::new(params.hostname.as_str(), client));
                     let k8s_client1 = k8s_client.clone();
 
                     k8s_client.init().await.map_err(|e| {
@@ -242,9 +241,9 @@ pub fn start_mgmt(
                         LaunchError::K8sClientError(e)
                     })?;
                     let mut processor_handle = Some(tokio::spawn(async { processor.run().await }));
-                    let mut k8s_config_handle = Some(tokio::spawn(async move { k8s_client.k8s_start_config_watch(client).await }));
+                    let mut k8s_config_handle = Some(tokio::spawn(async move { K8sClient::k8s_start_config_watch(k8s_client).await }));
                     let mut k8s_status_handle = Some(tokio::spawn(async move {
-                        k8s_client1.k8s_start_status_update(client1, &STATUS_UPDATE_INTERVAL).await
+                        k8s_client1.k8s_start_status_update(&STATUS_UPDATE_INTERVAL).await
                     }));
                     loop {
                         tokio::select! {
