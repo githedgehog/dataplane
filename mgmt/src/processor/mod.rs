@@ -9,4 +9,5 @@ mod display;
 pub(crate) mod gwconfigdb;
 pub(crate) mod k8s_client;
 pub(crate) mod launch;
+pub(crate) mod mgmt_client;
 pub(crate) mod proc;
