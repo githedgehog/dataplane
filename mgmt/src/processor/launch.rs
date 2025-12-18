@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::processor::k8s_client::{K8sClient, K8sClientError};
-use crate::processor::proc::ConfigChannelRequest;
+use crate::processor::mgmt_client::ConfigChannelRequest;
 use crate::processor::proc::ConfigProcessor;
 
 use std::fmt::Display;

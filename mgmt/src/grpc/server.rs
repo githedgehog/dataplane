@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error};
 
-use crate::processor::proc::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
+use crate::processor::mgmt_client::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
 use config::converters::grpc::{
     convert_dataplane_status_to_grpc, convert_gateway_config_from_grpc_with_defaults,
 };
