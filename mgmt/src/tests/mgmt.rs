@@ -444,8 +444,8 @@ pub mod test {
             vpc_stats_store,
         };
 
-        /* start config processor to test the processing of a config. The processor embeds the config database
-        and has the frrmi. In this test, we don't use any channel to communicate the config. */
+        /* start config processor to test the processing of a config. The processor embeds the
+        config database . In this test, we don't use any channel to communicate the config. */
         let (mut processor, _) = ConfigProcessor::new(processor_config);
 
         /* let the processor process the config */

@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 use crate::processor::k8s_client::{K8sClient, K8sClientError};
-use crate::processor::mgmt_client::ConfigChannelRequest;
 use crate::processor::proc::ConfigProcessor;
 
 use std::fmt::Display;
@@ -14,7 +13,6 @@ use std::task::{Context, Poll};
 
 use tokio::io;
 use tokio::net::UnixListener;
-use tokio::sync::mpsc::Sender;
 use tokio_stream::Stream;
 use tonic::transport::Server;
 
@@ -25,6 +23,7 @@ use concurrency::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::grpc::server::create_config_service;
+use crate::processor::mgmt_client::ConfigClient;
 use crate::processor::proc::ConfigProcessorParams;
 
 #[derive(Debug, thiserror::Error)]
@@ -51,12 +50,9 @@ pub enum LaunchError {
 }
 
 /// Start the gRPC server on TCP
-async fn start_grpc_server_tcp(
-    addr: SocketAddr,
-    channel_tx: Sender<ConfigChannelRequest>,
-) -> Result<(), LaunchError> {
+async fn start_grpc_server_tcp(addr: SocketAddr, client: ConfigClient) -> Result<(), LaunchError> {
     info!("Starting gRPC server on TCP address: {addr}");
-    let config_service = create_config_service(channel_tx);
+    let config_service = create_config_service(client);
 
     Server::builder()
         .add_service(config_service)
@@ -97,7 +93,7 @@ impl Stream for UnixAcceptor {
 /// Start the gRPC server on UNIX socket
 async fn start_grpc_server_unix(
     socket_path: &Path,
-    channel_tx: Sender<ConfigChannelRequest>,
+    client: ConfigClient,
 ) -> Result<(), LaunchError> {
     info!(
         "Starting gRPC server on UNIX socket: {}",
@@ -145,7 +141,7 @@ async fn start_grpc_server_unix(
     let acceptor = UnixAcceptor { listener };
 
     // Create the gRPC service
-    let config_service = create_config_service(channel_tx);
+    let config_service = create_config_service(client);
 
     // Start the server with UNIX domain socket
     Server::builder()
@@ -217,13 +213,13 @@ pub fn start_mgmt(
 
                 /* block thread to run gRPC and configuration processor */
                 rt.block_on(async {
-                    let (processor, tx) = ConfigProcessor::new(params.processor_params);
+                    let (processor, client) = ConfigProcessor::new(params.processor_params);
                     tokio::spawn(async { processor.run().await });
 
                     // Start the appropriate server based on address type
                     let result = match server_address {
-                        ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, tx).await,
-                        ServerAddress::Unix(path) => start_grpc_server_unix(&path, tx).await,
+                        ServerAddress::Tcp(sock_addr) => start_grpc_server_tcp(sock_addr, client).await,
+                        ServerAddress::Unix(path) => start_grpc_server_unix(&path, client).await,
                     };
                     if let Err(e) = result {
                         error!("Failed to start gRPC server: {e}");
@@ -237,8 +233,8 @@ pub fn start_mgmt(
                 debug!("Will start watching k8s for configuration changes");
                 rt.block_on(async {
                     let k8s_client = Arc::new(K8sClient::new(params.hostname.as_str()));
-                    let (processor, tx) = ConfigProcessor::new(params.processor_params);
-                    let tx1 = tx.clone();
+                    let (processor, client) = ConfigProcessor::new(params.processor_params);
+                    let client1 = client.clone();
                     let k8s_client1 = k8s_client.clone();
 
                     k8s_client.init().await.map_err(|e| {
@@ -246,9 +242,9 @@ pub fn start_mgmt(
                         LaunchError::K8sClientError(e)
                     })?;
                     let mut processor_handle = Some(tokio::spawn(async { processor.run().await }));
-                    let mut k8s_config_handle = Some(tokio::spawn(async move { k8s_client.k8s_start_config_watch(tx).await }));
+                    let mut k8s_config_handle = Some(tokio::spawn(async move { k8s_client.k8s_start_config_watch(client).await }));
                     let mut k8s_status_handle = Some(tokio::spawn(async move {
-                        k8s_client1.k8s_start_status_update(tx1, &STATUS_UPDATE_INTERVAL).await
+                        k8s_client1.k8s_start_status_update(client1, &STATUS_UPDATE_INTERVAL).await
                     }));
                     loop {
                         tokio::select! {

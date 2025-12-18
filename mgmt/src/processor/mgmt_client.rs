@@ -3,8 +3,6 @@
 
 //! Interface to management processor
 
-#![allow(unused)] // TEMPORARY
-
 use config::ConfigError;
 use config::ConfigResult;
 use config::GenId;

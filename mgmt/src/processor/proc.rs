@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 
 use tokio::spawn;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::Sender;
 
 use config::external::overlay::vpc::VpcTable;
 use config::internal::status::{
@@ -28,7 +27,9 @@ use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
-use crate::processor::mgmt_client::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
+use crate::processor::mgmt_client::{
+    ConfigChannelRequest, ConfigClient, ConfigRequest, ConfigResponse,
+};
 
 use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
@@ -91,10 +92,10 @@ impl ConfigProcessor {
     const CHANNEL_SIZE: usize = 1; // This should not be changed
 
     /////////////////////////////////////////////////////////////////////////////////
-    /// Create a [`ConfigProcessor`]
+    /// Create a [`ConfigProcessor`] and return a [`ConfigClient`] to interact with it
     /////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn new(proc_params: ConfigProcessorParams) -> (Self, Sender<ConfigChannelRequest>) {
+    pub(crate) fn new(proc_params: ConfigProcessorParams) -> (Self, ConfigClient) {
         debug!("Creating config processor...");
         let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
 
@@ -112,7 +113,7 @@ impl ConfigProcessor {
             vpc_mgr,
             proc_params,
         };
-        (processor, tx)
+        (processor, ConfigClient::new(tx))
     }
 
     /// Main entry point for new configurations
