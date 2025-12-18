@@ -38,49 +38,6 @@ fn to_datetime(opt_time: Option<&SystemTime>) -> chrono::DateTime<Utc> {
     }
 }
 
-async fn update_gateway_status(hostname: &str, client: &ConfigClient) -> () {
-    let status = client.get_status().await;
-    let status = match status {
-        Ok(status) => status,
-        Err(err) => {
-            error!(
-                "Failed to fetch dataplane status, skipping status update: {}",
-                err
-            );
-            return;
-        }
-    };
-
-    let (last_applied_gen, last_applied_time) = match client.get_current_config().await {
-        Ok(config) => (config.genid(), to_datetime(config.meta.apply_t.as_ref())),
-        Err(e) => {
-            error!("Failed to get current config, skipping status update: {e}");
-            return;
-        }
-    };
-
-    let k8s_status = match GatewayAgentStatus::try_from(&DataplaneStatusForK8sConversion {
-        last_applied_gen: Some(last_applied_gen),
-        last_applied_time: Some(&last_applied_time),
-        last_collected_time: Some(&chrono::Utc::now()),
-        last_heartbeat: Some(&chrono::Utc::now()),
-        status: Some(&status),
-    }) {
-        Ok(status) => status,
-        Err(err) => {
-            error!("Failed to convert status to GatewayAgentStatus: {err}");
-            return;
-        }
-    };
-
-    match replace_gateway_status(hostname, &k8s_status).await {
-        Ok(()) => (),
-        Err(err) => {
-            error!("Failed to update gateway status: {err}");
-        }
-    }
-}
-
 pub struct K8sClient {
     hostname: String,
     client: ConfigClient,
@@ -124,6 +81,49 @@ impl K8sClient {
         Ok(())
     }
 
+    async fn update_gateway_status(&self) -> () {
+        let status = self.client.get_status().await;
+        let status = match status {
+            Ok(status) => status,
+            Err(err) => {
+                error!(
+                    "Failed to fetch dataplane status, skipping status update: {}",
+                    err
+                );
+                return;
+            }
+        };
+
+        let (last_applied_gen, last_applied_time) = match self.client.get_current_config().await {
+            Ok(config) => (config.genid(), to_datetime(config.meta.apply_t.as_ref())),
+            Err(e) => {
+                error!("Failed to get current config, skipping status update: {e}");
+                return;
+            }
+        };
+
+        let k8s_status = match GatewayAgentStatus::try_from(&DataplaneStatusForK8sConversion {
+            last_applied_gen: Some(last_applied_gen),
+            last_applied_time: Some(&last_applied_time),
+            last_collected_time: Some(&chrono::Utc::now()),
+            last_heartbeat: Some(&chrono::Utc::now()),
+            status: Some(&status),
+        }) {
+            Ok(status) => status,
+            Err(err) => {
+                error!("Failed to convert status to GatewayAgentStatus: {err}");
+                return;
+            }
+        };
+
+        match replace_gateway_status(&self.hostname, &k8s_status).await {
+            Ok(()) => (),
+            Err(err) => {
+                error!("Failed to update gateway status: {err}");
+            }
+        }
+    }
+
     pub async fn k8s_start_config_watch(k8s_client: Arc<Self>) -> Result<(), K8sClientError> {
         watch_gateway_agent_crd(&k8s_client.hostname.clone(), async move |ga| {
             let external_config = ExternalConfig::try_from(ga);
@@ -150,7 +150,7 @@ impl K8sClient {
                     match k8s_client.client.apply_config(gwconfig).await {
                         Ok(()) => {
                             info!("Config for generation {genid} was successfully applied. Updating status...");
-                            update_gateway_status(&k8s_client.hostname, &k8s_client.client).await;
+                            k8s_client.update_gateway_status().await;
                         },
                         Err(e) => error!("Failed to apply the config for generation {genid}: {e}"),
                     }
@@ -166,7 +166,7 @@ impl K8sClient {
         status_update_interval: &std::time::Duration,
     ) -> Result<(), K8sClientError> {
         loop {
-            update_gateway_status(&self.hostname, &self.client).await;
+            self.update_gateway_status().await;
             tokio::time::sleep(*status_update_interval).await;
         }
     }
