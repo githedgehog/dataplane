@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use chrono::{TimeZone, Utc};
@@ -82,12 +83,14 @@ async fn update_gateway_status(hostname: &str, client: &ConfigClient) -> () {
 
 pub struct K8sClient {
     hostname: String,
+    client: ConfigClient,
 }
 
 impl K8sClient {
-    pub fn new(hostname: &str) -> Self {
+    pub fn new(hostname: &str, client: ConfigClient) -> Self {
         Self {
             hostname: hostname.to_string(),
+            client,
         }
     }
 
@@ -121,18 +124,14 @@ impl K8sClient {
         Ok(())
     }
 
-    pub async fn k8s_start_config_watch(&self, client: ConfigClient) -> Result<(), K8sClientError> {
-        // Clone this here so that the closure does not try to borrow self
-        // and cause K8sClient to not be Send for 'static but only a specific
-        // lifetime
-        let hostname = self.hostname.clone();
-        watch_gateway_agent_crd(&hostname.clone(), async move |ga| {
+    pub async fn k8s_start_config_watch(k8s_client: Arc<Self>) -> Result<(), K8sClientError> {
+        watch_gateway_agent_crd(&k8s_client.hostname.clone(), async move |ga| {
             let external_config = ExternalConfig::try_from(ga);
             match external_config {
                 Err(e) => error!("Failed to convert K8sGatewayAgent to ExternalConfig: {e}"),
                 Ok(external_config) => {
                     let genid = external_config.genid;
-                    let applied_genid = match client.get_generation().await {
+                    let applied_genid = match k8s_client.client.get_generation().await {
                         Ok(genid) => genid,
                         Err(ConfigProcessorError::NoConfigApplied) => 0,
                         Err(e) => {
@@ -148,10 +147,10 @@ impl K8sClient {
                     let gwconfig = GwConfig::new(external_config);
 
                     // request the config processor to apply the config and update status on success
-                    match client.apply_config(gwconfig).await {
+                    match k8s_client.client.apply_config(gwconfig).await {
                         Ok(()) => {
                             info!("Config for generation {genid} was successfully applied. Updating status...");
-                            update_gateway_status(&hostname, &client).await;
+                            update_gateway_status(&k8s_client.hostname, &k8s_client.client).await;
                         },
                         Err(e) => error!("Failed to apply the config for generation {genid}: {e}"),
                     }
@@ -164,11 +163,10 @@ impl K8sClient {
 
     pub async fn k8s_start_status_update(
         &self,
-        client: ConfigClient,
         status_update_interval: &std::time::Duration,
     ) -> Result<(), K8sClientError> {
         loop {
-            update_gateway_status(&self.hostname, &client).await;
+            update_gateway_status(&self.hostname, &self.client).await;
             tokio::time::sleep(*status_update_interval).await;
         }
     }
