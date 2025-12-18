@@ -32,7 +32,8 @@ fn extract_subnets(vpcs: &BTreeMap<String, GatewayAgentVpcs>) -> VpcSubnetMap {
 ///
 /// This does not cover all legal `GatewayAgentSpecs`,
 /// it is limited by the underlying generators and it generates
-/// vpcs and peerings with a fixed name pattern.
+/// vpcs and peerings with a fixed name pattern and not all
+/// vni combinations are generated.
 impl TypeGenerator for LegalValue<GatewayAgentSpec> {
     fn generate<D: Driver>(d: &mut D) -> Option<Self> {
         let num_vpcs = d.gen_usize(Bound::Included(&0), Bound::Included(&16))?;
@@ -43,11 +44,13 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
         };
 
         let mut vpcs = BTreeMap::new();
+        let vni_base = d.gen_u32(Bound::Included(&1), Bound::Included(&1000))?;
         for i in 0..num_vpcs {
-            vpcs.insert(
-                format!("vpc{i}"),
-                d.produce::<LegalValue<GatewayAgentVpcs>>()?.take(),
-            );
+            let vni_offset = u32::try_from(i).expect("too many vpcs");
+            let lv_vpc = d.produce::<LegalValue<GatewayAgentVpcs>>()?;
+            let mut vpc = lv_vpc.take();
+            vpc.vni = Some(vni_base + vni_offset);
+            vpcs.insert(format!("vpc{i}"), vpc);
         }
 
         let vpc_subnet_map = extract_subnets(&vpcs);
