@@ -34,9 +34,6 @@ impl DeviceConfig {
     }
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating device configuration..");
-        if self.settings.hostname.is_empty() {
-            return Err(ConfigError::MissingIdentifier("Device hostname"));
-        }
         if let Some(tracing) = &self.tracing {
             // DISABLE validation since the set of available tags
             // is not burnt in the gRPC protobuf schema.
