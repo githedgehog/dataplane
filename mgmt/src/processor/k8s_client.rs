@@ -17,7 +17,7 @@ use k8s_intf::gateway_agent_crd::{
 };
 use tracing::{debug, error};
 
-use crate::processor::proc::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
+use crate::processor::mgmt_client::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
 
 #[derive(Debug, thiserror::Error)]
 pub enum K8sClientError {

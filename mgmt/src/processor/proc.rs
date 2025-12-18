@@ -9,8 +9,6 @@ use std::collections::{HashMap, HashSet};
 use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::oneshot;
-use tokio::sync::oneshot::Receiver;
 
 use config::external::overlay::vpc::VpcTable;
 use config::internal::status::{
@@ -30,6 +28,7 @@ use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 
 use crate::processor::display::GwConfigDatabaseSummary;
 use crate::processor::gwconfigdb::GwConfigDatabase;
+use crate::processor::mgmt_client::{ConfigChannelRequest, ConfigRequest, ConfigResponse};
 
 use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
@@ -44,40 +43,6 @@ use stats::VpcMapName;
 use stats::VpcStatsStore;
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::{VpcMap, VpcMapWriter};
-
-/// A request type to the `ConfigProcessor`
-#[derive(Debug)]
-pub enum ConfigRequest {
-    ApplyConfig(Box<GwConfig>),
-    GetCurrentConfig,
-    GetGeneration,
-    GetDataplaneStatus,
-}
-
-/// A response from the `ConfigProcessor`
-#[derive(Debug)]
-pub enum ConfigResponse {
-    ApplyConfig(ConfigResult),
-    GetCurrentConfig(Box<Option<GwConfig>>),
-    GetGeneration(Option<GenId>),
-    GetDataplaneStatus(Box<DataplaneStatus>),
-}
-type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
-
-/// A type that includes a request to the `ConfigProcessor` and a channel to
-/// issue the response back
-pub struct ConfigChannelRequest {
-    request: ConfigRequest,          /* a request to the mgmt processor */
-    reply_tx: ConfigResponseChannel, /* the one-shot channel to respond */
-}
-impl ConfigChannelRequest {
-    #[must_use]
-    pub fn new(request: ConfigRequest) -> (Self, Receiver<ConfigResponse>) {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let request = Self { request, reply_tx };
-        (request, reply_rx)
-    }
-}
 
 /// Populate FRR status into the dataplane status structure
 pub async fn populate_status_with_frr(
