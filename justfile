@@ -23,14 +23,6 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 @default:
     just --list --justfile {{ justfile() }}
 
-
-version_extra := ""
-version := env("VERSION", "") || `git describe --tags --dirty --always` + version_extra
-
-# Print version that will be used in the build
-version:
-  @echo "Using version: {{version}}"
-
 # Set to FUZZ to run the full fuzzer in the fuzz recipe
 _test_type := "DEFAULT"
 
@@ -41,19 +33,31 @@ sanitizers := "address,leak"
 target := "x86_64-unknown-linux-gnu"
 
 # cargo build profile to use
-profile := "debug"
-[private]
-_container_repo := "ghcr.io/githedgehog/dataplane"
+profile := "release"
+
+version_extra := ""
+version_target := if target == "x86_64-unknown-linux-gnu" { "" } else { "-" + target }
+version_profile := if profile == "release" { "" } else { "-" + profile }
+version := env("VERSION", "") || `git describe --tags --dirty --always` + version_target + version_profile + version_extra
+
+# Print version that will be used in the build
+version:
+  @echo "Using version: {{version}}"
+
+# OCI repo to push images to
+
+oci_repo := "127.0.0.1:30000"
+oci_insecure := ""
+oci_name := "githedgehog/dataplane"
+oci_image_full := oci_repo + "/" + oci_name + ":" + version
 
 # Docker images
-
 # The respository to push images to or pull them from
-registry := "${REGISTRY_URL:-ghcr.io}"
-
+dpdp_sys_registry := "${REGISTRY_URL:-ghcr.io}"
 [private]
 _image_profile := if profile == "debug" { "debug" } else { "release" }
 [private]
-_dpdk_sys_container_repo := registry + "/githedgehog/dpdk-sys"
+_dpdk_sys_container_repo := dpdp_sys_registry + "/githedgehog/dpdk-sys"
 [private]
 _dpdk_sys_container_tag := dpdk_sys_commit
 
@@ -411,7 +415,6 @@ sh *args:
 [script]
 build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane" "--package=dataplane-cli") && version
     {{ _just_debuggable_ }}
-    {{ _define_truncate128 }}
     mkdir -p "artifact/{{ target }}/{{ profile }}"
     cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
     cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/cli" "artifact/{{ target }}/{{ profile }}/dataplane-cli"
@@ -421,7 +424,6 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
     declare build_time_epoch
     build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
     declare -r build_time_epoch
-    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
     sudo -E docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
@@ -429,94 +431,71 @@ build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
       --label "build.time_epoch=${build_time_epoch}" \
-      --tag "${TAG}" \
+      --tag "{{ oci_image_full }}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
       --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
       --build-arg BASE="{{ _dataplane_base_container }}" \
       .
 
-    sudo -E docker tag \
-      "${TAG}" \
-      "{{ _container_repo }}:$(truncate128 "{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
-    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      sudo -E docker tag \
-        "${TAG}" \
-        "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
-    fi
-    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      sudo -E docker tag \
-        "${TAG}" \
-        "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
-    fi
-
 # Build a container for local testing, without cache and extended base
 [script]
 build-container-quick: (compile-env "cargo" "--locked" "build" ("--target=" + target) "--package=dataplane" "--package=dataplane-cli")
     {{ _just_debuggable_ }}
-    {{ _define_truncate128 }}
     mkdir -p "artifact/{{ target }}/{{ profile }}"
     cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
     cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/cli" "artifact/{{ target }}/{{ profile }}/dataplane-cli"
     declare build_date
     build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
     declare -r build_date
-    declare -r TAG="{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
     sudo -E docker build \
       --label "git.commit={{ _commit }}" \
       --label "git.branch={{ _branch }}" \
       --label "git.tree-state={{ _clean }}" \
       --label "build.date=${build_date}" \
       --label "build.timestamp={{ _build_time }}" \
-      --tag "${TAG}" \
+      --tag "{{ oci_image_full }}" \
       --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
       --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
       --build-arg BASE="{{ _debug_env_container }}" \
       .
 
-    sudo -E docker tag "${TAG}" "dataplane:local-testing-latest"
+    sudo -E docker tag "{{ oci_image_full }}" "dataplane:local-testing-latest"
+
+# Temporary tools to get a proper skopeo version
+localbin := "bin"
+localpath := `pwd`
+localbinpath := `pwd`/localbin
+
+_localbin:
+  @mkdir -p {{localbin}}
+
+# go install helper
+_goinstall PACKAGE VERSION BINNAME TARGET FLAGS="": _localbin
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "Installing go package: {{PACKAGE}}@{{VERSION}}..."
+  GOBIN=`pwd`/{{localbin}} go install {{FLAGS}} {{PACKAGE}}@{{VERSION}}
+  mv {{localbin}}/{{BINNAME}} {{TARGET}}
+
+skopeo_version := "v1.21.0"
+skopeo := localbin / "skopeo" + "-" + skopeo_version
+@_skopeo: _localbin
+  [ -f {{skopeo}} ] || just _goinstall "github.com/containers/skopeo/cmd/skopeo" {{skopeo_version}} "skopeo" {{skopeo}} "--tags containers_image_openpgp,exclude_graphdriver_btrfs"
+
+skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
+skopeo_copy_flags := if env("DOCKER_HOST", "") != "" { "--src-daemon-host " + env_var("DOCKER_HOST") } else { "" }
 
 # Build and push containers
 [script]
-push-container: build-container && version
-    {{ _define_truncate128 }}
-    declare build_date
-    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
-    declare -r build_date
-    sudo -E docker push "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
-    sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
-    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
-    fi
-    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      sudo -E docker push "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
-    fi
-
-# Publish release container image
-[script]
-push-release-container:
-    {{ _define_truncate128 }}
-    sudo -E docker pull \
-      "{{ _container_repo }}:$(truncate128 "x86_64-unknown-linux-gnu.release.{{ _commit }}")"
-    sudo -E docker tag \
-      "{{ _container_repo }}:$(truncate128 "x86_64-unknown-linux-gnu.release.{{ _commit }}")" \
-      "{{ _container_repo }}:{{ version }}"
-    sudo -E docker push "{{ _container_repo }}:{{ version }}"
+push: _skopeo build-container && version
+    {{ skopeo }} copy {{skopeo_copy_flags}} {{skopeo_dest_insecure}} --all docker-daemon:{{ oci_image_full }} docker://{{ oci_image_full }}
+    echo "Pushed {{ oci_image_full }}"
 
 # Print names of container images to build or push
 [script]
 print-container-tags:
-    {{ _define_truncate128 }}
-    declare build_date
-    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
-    declare -r build_date
-    echo "{{ _container_repo }}:$(truncate128 "${build_date}.{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
-    echo "{{ _container_repo }}:$(truncate128 "{{ _dirty_prefix }}{{ target }}.{{ profile }}.{{ _commit }}")"
-    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ]; then
-      echo "{{ _container_repo }}:$(truncate128 "{{ _slug }}.{{ profile }}")"
-    fi
-    if [ "{{ target }}" = "x86_64-unknown-linux-gnu" ] && [ "{{ profile }}" = "release" ]; then
-      echo "{{ _container_repo }}:$(truncate128 "{{ _slug }}")"
-    fi
+    echo "{{ oci_image_full }}"
 
 # Run Clippy like you're in CI
 [script]

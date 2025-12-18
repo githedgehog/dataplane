@@ -12,3 +12,4 @@
 /dpdk-sys/.macro_eval.c
 /dpdk-sys/dpdk_wrapper-precompile.h*
 *.pch
+/bin

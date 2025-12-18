@@ -80,11 +80,37 @@ jobs:
               - '!(README.md|LICENSE|.gitattributes|.gitignore|.github/**)'
               - '.github/workflows/dev.yml'
 
+  version:
+    runs-on: lab
+
+    permissions:
+      contents: read
+
+    outputs:
+      version: "${{ steps.version-gen.outputs.version }}"
+      ref: "${{ steps.version-gen.outputs.ref }}"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate temp artifacts version
+        id: version-gen
+        env:
+          commit_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          echo "version=v0-${commit_sha::9}" >> "$GITHUB_OUTPUT"
+          echo "ref=${commit_sha}" >> "$GITHUB_OUTPUT"
+
   check:
     env:
       CACHE_REGISTRY: "run.h.hhdev.io:30000"
       UPSTREAM_REGISTRY: "ghcr.io"
-    needs: [check_changes]
+    needs:
+      - check_changes
+      - version
     if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
     permissions:
       checks: "write"
@@ -128,6 +154,13 @@ jobs:
           username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
           password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
 
+      # it's temporarily needed to install skopeo
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+
       - name: "Checkout"
         uses: "actions/checkout@v6"
         with:
@@ -152,7 +185,7 @@ jobs:
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
-            registry="${{env.CACHE_REGISTRY}}" \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
             refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
@@ -161,7 +194,7 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
-            registry="${{env.CACHE_REGISTRY}}" \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
             ${{matrix.profile.sterile}} cargo deny check
 
       - name: "push container"
@@ -170,9 +203,22 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
-            registry="${{env.UPSTREAM_REGISTRY}}" \
+            dpdp_sys_registry="${{env.UPSTREAM_REGISTRY}}" \
             target=x86_64-unknown-linux-gnu \
-            push-container
+            version=${{ needs.version.outputs.version }}-${{ matrix.profile.name }} \
+            oci_repo="ghcr.io" \
+            push
+
+      - name: "print container image name"
+        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            version=${{ needs.version.outputs.version }}-${{ matrix.profile.name }} \
+            oci_repo="ghcr.io" \
+            print-container-tags
 
       - name: "Check for uncommitted changes"
         run: |
@@ -193,15 +239,6 @@ jobs:
           fi
           echo "No untracked files found"
 
-      - name: "print container image name"
-        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
-        run: |
-          just \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile=${{matrix.profile.name}} \
-            target=x86_64-unknown-linux-gnu \
-            print-container-tags
-
       - id: "test"
         name: "test"
         run: |
@@ -215,7 +252,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
-              registry="${{env.CACHE_REGISTRY}}" \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
               ${{matrix.profile.sterile}} coverage \
                 --status-level=none \
                 --final-status-level=skip \
@@ -226,7 +263,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
-              registry="${{env.CACHE_REGISTRY}}" \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
               ${{matrix.profile.sterile}} cargo nextest run \
                 --cargo-profile=${{matrix.profile.name}} \
                 --status-level=none \
@@ -245,7 +282,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
-              registry="${{env.CACHE_REGISTRY}}" \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
               ${{matrix.profile.sterile}} cargo nextest run \
                 --cargo-profile=${{matrix.profile.name}} \
                 --status-level=none \
@@ -370,6 +407,7 @@ jobs:
     if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
     needs:
       - check
+      - version
 
     name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
 
@@ -399,7 +437,7 @@ jobs:
           && (matrix.hybrid || matrix.upgradefrom != '')
         }}
       fabricatorref: master
-      prebuild: "just bump dataplane x86_64-unknown-linux-gnu.release.${{ github.sha }}"
+      prebuild: "just bump dataplane ${{ needs.version.outputs.version }}-release"
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
       gateway_agentless: true
@@ -474,6 +512,9 @@ jobs:
           exit 1
 
   publish:
+    env:
+      CACHE_REGISTRY: "run.h.hhdev.io:30000"
+      UPSTREAM_REGISTRY: "ghcr.io"
     runs-on: lab
     if: startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push'
     needs:
@@ -502,9 +543,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push release container
+      - name: "login to image cache"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.CACHE_REGISTRY }}"
+          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
+          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+
+      - name: "set up build environment"
         run: |
-          just push-release-container
+          REQUIRED_HUGEPAGES=512
+          HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+          OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
+          docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
+          docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
+          docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
+          just --yes \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            refresh-compile-env
+          just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
+
+      - name: "push container"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=release \
+            dpdp_sys_registry="${{env.UPSTREAM_REGISTRY}}" \
+            target=x86_64-unknown-linux-gnu \
+            oci_repo="ghcr.io" \
+            push
 
       # Bump dataplane in the fabricator repository
 
