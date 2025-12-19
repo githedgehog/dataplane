@@ -129,3 +129,518 @@ fn format_packet_addrs_ports(
         ports.map_or(String::new(), |p| format!(":{}", p.1))
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filter_rw::FlowFilterTableWriter;
+    use crate::tables::OptionalPortRange;
+    use config::external::overlay::Overlay;
+    use config::external::overlay::vpc::{Vpc, VpcTable};
+    use config::external::overlay::vpcpeering::{
+        VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
+    };
+    use lpm::prefix::Prefix;
+    use net::buffer::TestBuffer;
+    use net::headers::{Net, TryHeadersMut, TryIpMut};
+    use net::ipv4::addr::UnicastIpv4Addr;
+    use net::ipv6::addr::UnicastIpv6Addr;
+    use net::packet::test_utils::{build_test_ipv4_packet, build_test_ipv6_packet};
+    use net::packet::{DoneReason, Packet, VpcDiscriminant};
+    use net::vxlan::Vni;
+
+    fn vpcd(vni: u32) -> VpcDiscriminant {
+        VpcDiscriminant::VNI(Vni::new_checked(vni).unwrap())
+    }
+
+    fn set_src_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
+        let net = packet.headers_mut().try_ip_mut().unwrap();
+        match net {
+            Net::Ipv4(ip) => {
+                ip.set_source(UnicastIpv4Addr::try_from(addr).unwrap());
+            }
+            Net::Ipv6(ip) => {
+                ip.set_source(UnicastIpv6Addr::try_from(addr).unwrap());
+            }
+        }
+    }
+
+    fn set_dst_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
+        let net = packet.headers_mut().try_ip_mut().unwrap();
+        match net {
+            Net::Ipv4(ip) => {
+                ip.set_destination(UnicastIpv4Addr::try_from(addr).unwrap().into());
+            }
+            Net::Ipv6(ip) => {
+                ip.set_destination(UnicastIpv6Addr::try_from(addr).unwrap().into());
+            }
+        }
+    }
+
+    fn create_test_packet(
+        src_vpcd: Option<Vni>,
+        src_addr: IpAddr,
+        dst_addr: IpAddr,
+    ) -> Packet<TestBuffer> {
+        let mut packet = match dst_addr {
+            IpAddr::V4(_) => build_test_ipv4_packet(100).unwrap(),
+            IpAddr::V6(_) => build_test_ipv6_packet(100).unwrap(),
+        };
+        set_src_addr(&mut packet, src_addr);
+        set_dst_addr(&mut packet, dst_addr);
+        packet.meta.src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
+        packet
+    }
+
+    #[test]
+    fn test_flow_filter_packet_allowed() {
+        // Setup table
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = vpcd(200);
+
+        table
+            .insert(
+                src_vpcd,
+                VpcdLookupResult::Single(dst_vpcd),
+                Prefix::from("10.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create test packet
+        let packet = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "10.0.0.5".parse().unwrap(),
+            "20.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd));
+    }
+
+    #[test]
+    fn test_flow_filter_packet_filtered() {
+        // Setup table
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = vpcd(200);
+
+        table
+            .insert(
+                src_vpcd,
+                VpcdLookupResult::Single(dst_vpcd),
+                Prefix::from("10.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create test packet with non-matching destination
+        let packet = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "10.0.0.5".parse().unwrap(),
+            "30.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].get_done(), Some(DoneReason::Filtered));
+    }
+
+    #[test]
+    fn test_flow_filter_missing_src_vpcd() {
+        let table = FlowFilterTable::new();
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create test packet without src_vpcd
+        let packet = create_test_packet(
+            None,
+            "10.0.0.5".parse().unwrap(),
+            "20.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].get_done(), Some(DoneReason::Unroutable));
+    }
+
+    #[test]
+    fn test_flow_filter_no_matching_src_prefix() {
+        // Setup table
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = vpcd(200);
+
+        table
+            .insert(
+                src_vpcd,
+                VpcdLookupResult::Single(dst_vpcd),
+                Prefix::from("10.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create test packet with non-matching source address
+        let packet = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "11.0.0.5".parse().unwrap(),
+            "20.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].get_done(), Some(DoneReason::Filtered));
+    }
+
+    #[test]
+    fn test_flow_filter_multiple_matches_no_dst_vpcd() {
+        // Setup table with overlapping destination prefixes from different VPCs
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+
+        // Manually set up a scenario where dst_vpcd lookup returns MultipleMatches
+        // This happens when the same destination can be reached from multiple VPCs
+        table
+            .insert(
+                src_vpcd,
+                VpcdLookupResult::MultipleMatches,
+                Prefix::from("10.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create test packet
+        let packet = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "10.0.0.5".parse().unwrap(),
+            "20.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done());
+        assert!(packets[0].meta.dst_vpcd.is_none());
+    }
+
+    #[test]
+    fn test_flow_filter_table_overlap_cases() {
+        let vni1 = Vni::new_checked(100).unwrap();
+        let vni2 = Vni::new_checked(200).unwrap();
+        let vni3 = Vni::new_checked(300).unwrap();
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
+            .unwrap();
+
+        // - vpc1-to-vpc2:
+        //     VPC01:
+        //       prefixes:
+        //       - 1.0.0.0/24
+        //     VPC02:
+        //       prefixes:
+        //       - 5.0.0.0/24
+        //
+        // - vpc2-to-vpc3:
+        //     VPC02:
+        //       prefixes:
+        //       - 5.0.0.0/24
+        //       - 6.0.0.0/24
+        //     VPC03:
+        //       prefixes:
+        //       - 1.0.0.64/26    // 1.0.0.64 to 1.0.0.127
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("1.0.0.0/24".into())],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())],
+                },
+                None,
+            ))
+            .unwrap();
+
+        peering_table
+            .add(VpcPeering::new(
+                "vpc2-to-vpc3",
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty().ip("5.0.0.0/24".into()),
+                        VpcExpose::empty().ip("6.0.0.0/24".into()),
+                    ],
+                },
+                VpcManifest {
+                    name: "vpc3".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("1.0.0.64/26".into())],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        // Validation is necessary to build overlay.vpc_table's peerings from peering_table
+        overlay.validate().unwrap();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with packets
+
+        // VPC-1 -> VPC-2: No ambiguity
+        let packet = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "1.0.0.5".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni2.into())));
+
+        // VPC-3 -> VPC-2: No ambiguity
+        let packet = create_test_packet(
+            Some(Vni::new_checked(300).unwrap()),
+            "1.0.0.70".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni2.into())));
+
+        // VPC-2 -> VPC-1 using lower non-overlapping destination prefix section
+        let packet = create_test_packet(
+            Some(Vni::new_checked(200).unwrap()),
+            "5.0.0.10".parse().unwrap(),
+            "1.0.0.5".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni1.into())));
+
+        // VPC-2 -> VPC-1 using upper non-overlapping destination prefix section
+        let packet = create_test_packet(
+            Some(Vni::new_checked(200).unwrap()),
+            "5.0.0.10".parse().unwrap(),
+            "1.0.0.205".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni1.into())));
+
+        // VPC-2 -> VPC-3 using non-overlapping source prefix
+        let packet = create_test_packet(
+            Some(Vni::new_checked(200).unwrap()),
+            "6.0.0.11".parse().unwrap(),
+            "1.0.0.70".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni3.into())));
+
+        // VPC-2 -> VPC-??? using overlapping prefix sections: multiple matches
+        let packet = create_test_packet(
+            Some(Vni::new_checked(200).unwrap()),
+            "5.0.0.10".parse().unwrap(),
+            "1.0.0.70".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta.dst_vpcd, None)
+    }
+
+    #[test]
+    fn test_flow_filter_ipv6() {
+        // Setup table
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = vpcd(200);
+
+        table
+            .insert(
+                src_vpcd,
+                VpcdLookupResult::Single(dst_vpcd),
+                Prefix::from("2001:db8::/32"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("2001:db9::/32"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create test packet
+        let packet = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "2001:db8::1".parse().unwrap(),
+            "2001:db9::1".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd));
+    }
+
+    #[test]
+    fn test_flow_filter_batch_processing() {
+        // Setup table
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = vpcd(200);
+
+        table
+            .insert(
+                src_vpcd,
+                VpcdLookupResult::Single(dst_vpcd),
+                Prefix::from("10.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create multiple test packets
+        let packet1 = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "10.0.0.5".parse().unwrap(),
+            "20.0.0.10".parse().unwrap(),
+        );
+        let packet2 = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "10.0.0.6".parse().unwrap(),
+            "30.0.0.10".parse().unwrap(), // Should be filtered
+        );
+        let packet3 = create_test_packet(
+            Some(Vni::new_checked(100).unwrap()),
+            "10.0.0.7".parse().unwrap(),
+            "20.0.0.20".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet1, packet2, packet3].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 3);
+        assert!(!packets[0].is_done());
+        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[1].get_done(), Some(DoneReason::Filtered));
+        assert!(!packets[2].is_done());
+        assert_eq!(packets[2].meta.dst_vpcd, Some(dst_vpcd));
+    }
+
+    #[test]
+    fn test_format_packet_addrs_ports() {
+        let src_addr = "10.0.0.1".parse().unwrap();
+        let dst_addr = "20.0.0.2".parse().unwrap();
+
+        let result = format_packet_addrs_ports(&src_addr, &dst_addr, Some((8080, 443)));
+        assert_eq!(result, "src=10.0.0.1:8080, dst=20.0.0.2:443");
+
+        let result_no_ports = format_packet_addrs_ports(&src_addr, &dst_addr, None);
+        assert_eq!(result_no_ports, "src=10.0.0.1, dst=20.0.0.2");
+    }
+}
