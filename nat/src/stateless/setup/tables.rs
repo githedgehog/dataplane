@@ -5,7 +5,7 @@ use ahash::RandomState;
 use bnum::cast::CastFrom;
 use lpm::prefix::range_map::{DisjointRangesBTreeMap, UpperBoundFrom};
 use lpm::prefix::{IpPrefix, IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize};
-use lpm::trie::IpPrefixTrie;
+use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
 use net::vxlan::Vni;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
@@ -166,22 +166,18 @@ fn addr_offset_in_prefix_with_ports(
 
 /// From a current address prefix, find the target address prefix.
 #[derive(Debug, Default, Clone)]
-pub struct NatRuleTable(IpPrefixTrie<NatTableValue>);
+pub struct NatRuleTable(IpPortPrefixTrie<NatTableValue>);
 
 impl NatRuleTable {
     #[must_use]
     /// Creates a new empty [`NatRuleTable`]
     pub fn new() -> Self {
-        Self(IpPrefixTrie::new())
+        Self(IpPortPrefixTrie::new())
     }
 
     /// Inserts a new entry in the table
-    ///
-    /// # Returns
-    ///
-    /// Returns the previous value associated with the prefix if it existed, or `None` otherwise.
-    pub fn insert(&mut self, prefix: Prefix, value: NatTableValue) -> Option<NatTableValue> {
-        self.0.insert(prefix, value)
+    pub fn insert(&mut self, prefix: Prefix, value: NatTableValue) {
+        self.0.insert(prefix, value);
     }
 
     /// Looks up for the value associated with the given address.
@@ -192,28 +188,7 @@ impl NatRuleTable {
     /// If the address does not match any prefix, it returns `None`.
     #[must_use]
     pub fn lookup(&self, addr: &IpAddr, port_opt: Option<u16>) -> Option<(Prefix, &NatTableValue)> {
-        // If we have a matching NatTableValue::Nat for the address, return it
-        let result = self.0.lookup(*addr);
-        if matches!(result, Some((_prefix, NatTableValue::Nat(_value)))) {
-            return result;
-        }
-
-        // Else, we need to check all matching IP prefixes (not necessarily the longest), and their
-        // port ranges. We expect the trie to contain only one matching IP prefix matching the
-        // address and associated to a port range matching the port, so we return the first we find.
-        let port = port_opt?;
-        let matching_entries = self.0.matching_entries(*addr);
-        for (prefix, value) in matching_entries {
-            if let NatTableValue::Pat(pat_value) = value
-                && pat_value
-                    .prefix_port_ranges
-                    .iter()
-                    .any(|pr| pr.contains(&port))
-            {
-                return Some((prefix, value));
-            }
-        }
-        None
+        self.0.lookup(addr, port_opt)
     }
 }
 
@@ -225,6 +200,30 @@ impl NatRuleTable {
 pub enum NatTableValue {
     Nat(AddrTranslationValue),
     Pat(PortAddrTranslationValue),
+}
+
+impl ValueWithAssociatedRanges for NatTableValue {
+    fn covers_all_ports(&self) -> bool {
+        match self {
+            NatTableValue::Nat(_) => true,
+            NatTableValue::Pat(value) => {
+                value
+                    .prefix_port_ranges
+                    .iter()
+                    .fold(0, |sum, range| sum + range.len())
+                    == PortRange::MAX_LENGTH
+            }
+        }
+    }
+
+    fn covers_port(&self, port: u16) -> bool {
+        match self {
+            NatTableValue::Nat(_) => true,
+            NatTableValue::Pat(value) => {
+                value.prefix_port_ranges.iter().any(|pr| pr.contains(&port))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

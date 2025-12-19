@@ -79,7 +79,7 @@ impl PerVniTable {
                     let (prefix, value) = res?;
                     // It's OK if the prefix already exists in the trie, we may try to insert it
                     // multiple times if we have disjoint port ranges for this prefix.
-                    let _ = peering_table.insert(prefix, value);
+                    peering_table.insert(prefix, value);
                     Ok(())
                 })
             })?;
@@ -94,7 +94,7 @@ impl PerVniTable {
                     let (prefix, value) = res?;
                     // It's OK if the prefix already exists in the trie, we may try to insert it
                     // multiple times if we have disjoint port ranges for this prefix.
-                    let _ = self.dst_nat.insert(prefix, value);
+                    self.dst_nat.insert(prefix, value);
                     Ok(())
                 })
             })?;
