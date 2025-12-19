@@ -239,7 +239,7 @@ stdenv.mkDerivation {
       "-Dauto_features=disabled"
       "-Db_colorout=never"
       "-Db_lto=${lto}"
-      "-Db_lundef=true"
+      "-Db_lundef=false"
       "-Db_pgo=off"
       "-Db_pie=true"
       "-Dbackend=ninja"

@@ -160,6 +160,10 @@ in
       # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
       # build's internal complexity and makes lto easier.
       "-DNO_COMPAT_SYMS=1"
+      # this allows thread sanitizer to build (thread/ub sanitizers do not like -Wl,-z,defs or -Wl,--no-undefined)
+      # Normally I would say that disabling -Wl,--no-undefined is a bad idea, but we throw away all the shared
+      # libs and executables from this build anwyway, so it it should be harmless.
+      "-DSUPPORTS_NO_UNDEFINED=0" # todo: find a way to enable this for only {thread,ub}san builds.
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p $static/lib;
