@@ -1,6 +1,6 @@
 let
   sources = import ./npins;
-  profiles = import ./profiles.nix;
+  profiles = import ./nix/profiles.nix;
   overlays.debug = import ./nix/overlays {
     inherit sources;
     env = profiles.debug;
