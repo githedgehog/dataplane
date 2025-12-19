@@ -16,9 +16,8 @@ impl TryFrom<&GatewayAgentGroupsMembers> for GwGroupMember {
             .as_ref()
             .ok_or_else(|| Self::Error::MissingData("Gateway group member name".to_string()))?;
 
-        let priority: u32 = value
-            .priority
-            .ok_or_else(|| Self::Error::MissingData("Gateway group member priority".to_string()))?;
+        let priority: u32 = value.priority.unwrap_or(0);
+        //.ok_or_else(|| Self::Error::MissingData("Gateway group member priority".to_string()))?;
 
         let address = value.vtep_ip.as_ref().ok_or_else(|| {
             Self::Error::MissingData("Gateway group member ip address".to_string())
