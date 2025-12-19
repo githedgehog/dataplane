@@ -61,6 +61,9 @@ let
     "-mssse3"
   ];
   march.x86_64.NIX_CXXFLAGS_COMPILE = march.x86_64.NIX_CFLAGS_COMPILE;
+  march.aarch64.NIX_CFLAGS_COMPILE = [ ];
+  march.aarch64.NIX_CXXFLAGS_COMPILE = march.aarch64.NIX_CFLAGS_COMPILE;
+  march.aarch64.NIX_CFLAGS_LINK = [ ];
   combine-profiles =
     features:
     builtins.foldl' (
