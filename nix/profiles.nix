@@ -46,7 +46,6 @@ let
     "-fstack-protector-strong"
     "-fstack-clash-protection"
     # "-fcf-protection=full" # requires extra testing before we enable
-    # "-fsanitize=safe-stack" # requires extra testing before we enable (not compatible with musl)
   ];
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
@@ -95,6 +94,13 @@ let
   ];
   sanitize.cfi.NIX_CXXFLAGS_COMPILE = sanitize.cfi.NIX_CFLAGS_COMPILE;
   sanitize.cfi.NIX_CFLAGS_LINK = sanitize.cfi.NIX_CFLAGS_COMPILE;
+  sanitize.safe-stack.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=safe-stack"
+  ];
+  sanitize.safe-stack.NIX_CXXFLAGS_COMPILE = sanitize.safe-stack.NIX_CFLAGS_COMPILE;
+  sanitize.safe-stack.NIX_CFLAGS_LINK = sanitize.safe-stack.NIX_CFLAGS_COMPILE ++ [
+    "-Wl,--allow-shlib-undefined"
+  ];
   combine-profiles =
     features:
     builtins.foldl' (
