@@ -1,4 +1,5 @@
 {
+  overlay ? "dataplane",
   target ? "x86_64-unknown-linux-gnu",
   prof ? "debug",
 }:
@@ -42,7 +43,7 @@ let
   };
   pkgs = import sources.nixpkgs {
     overlays = [
-      overlays.dataplane
+      overlays.${overlay}
     ];
   };
 in
