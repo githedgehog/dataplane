@@ -37,8 +37,7 @@ let
   optimize.NIX_CXXFLAGS_COMPILE = optimize.NIX_CFLAGS_COMPILE ++ [
     "-fwhole-program-vtables"
   ];
-  optimize.NIX_CFLAGS_LINK = [
-    "-flto=full"
+  optimize.NIX_CFLAGS_LINK = optimize.NIX_CXXFLAGS_COMPILE ++ [
     "-Wl,--lto-whole-program-visibility"
     # just to keep the artifacts small, we don't currently use any linked artifact anyway
     "-Wl,--gc-sections"
