@@ -2,6 +2,8 @@
   overlay ? "dataplane",
   target ? "x86_64-unknown-linux-gnu",
   prof ? "debug",
+  instrumentation ? "none",
+  sanitize ? "",
 }:
 let
   arch =
@@ -32,9 +34,12 @@ let
       };
     }
     .${target};
+  # helper method to work around nix's contrived builtin string split function.
+  split-str = split: str: builtins.filter (elm: builtins.isString elm) (builtins.split split str);
+  sanitizers = if sanitize == null || sanitize == "" then [ ] else split-str ",+" sanitize;
   sources = import ./npins;
   profile = import ./nix/profiles.nix {
-    inherit prof;
+    inherit prof sanitizers instrumentation;
     arch = arch.machine;
   };
   overlays = import ./nix/overlays {
@@ -48,6 +53,6 @@ let
   };
 in
 {
-  inherit sources;
+  inherit sources profile;
   pkgs = pkgs.pkgsCross.${arch.nixarch};
 }

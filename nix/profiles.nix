@@ -1,6 +1,8 @@
 {
   arch,
   prof,
+  sanitizers,
+  instrumentation,
 }:
 let
   common.NIX_CFLAGS_COMPILE = [
@@ -128,7 +130,11 @@ let
     ];
   };
 in
-(combine-profiles [
-  profile."${prof}"
-  march."${arch}"
-])
+combine-profiles (
+  [
+    profile."${prof}"
+    march."${arch}"
+    instrument."${instrumentation}"
+  ]
+  ++ (builtins.map (s: sanitize.${s}) sanitizers)
+)
