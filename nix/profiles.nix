@@ -1,3 +1,7 @@
+{
+  arch,
+  prof,
+}:
 let
   common.NIX_CFLAGS_COMPILE = [
     "-glldb"
@@ -81,14 +85,7 @@ let
     ];
   };
 in
-{
-  debug = combine-profiles [
-    common
-    debug
-  ];
-  release = combine-profiles [
-    common
-    optimize
-    secure
-  ];
-}
+(combine-profiles [
+  profile."${prof}"
+  march."${arch}"
+])
