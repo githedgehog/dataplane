@@ -16,4 +16,5 @@ tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+lpm = { workspace = true, features = ["testing"] }
 tracing-test = { workspace = true, features = [] }

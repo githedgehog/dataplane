@@ -409,3 +409,305 @@ impl From<Option<PortRange>> for OptionalPortRange {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lpm::prefix::Prefix;
+    use net::vxlan::Vni;
+
+    fn vpcd(vni: u32) -> VpcDiscriminant {
+        VpcDiscriminant::VNI(Vni::new_checked(vni).unwrap())
+    }
+
+    #[test]
+    fn test_flow_filter_table_new() {
+        let table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let src_addr = "10.0.0.1".parse().unwrap();
+        let dst_addr = "20.0.0.1".parse().unwrap();
+
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        assert!(vpcd_result.is_none());
+    }
+
+    #[test]
+    fn test_flow_filter_table_insert_and_contains_simple() {
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+
+        let src_prefix = Prefix::from("10.0.0.0/24");
+        let dst_prefix = Prefix::from("20.0.0.0/24");
+
+        table
+            .insert(
+                src_vpcd,
+                dst_vpcd.clone(),
+                src_prefix,
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                dst_prefix,
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        // Should allow traffic from src to dst
+        let src_addr = "10.0.0.5".parse().unwrap();
+        let dst_addr = "20.0.0.10".parse().unwrap();
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        assert_eq!(vpcd_result, Some(dst_vpcd));
+
+        // Should not allow traffic from different src
+        let wrong_src_addr = "10.1.0.5".parse().unwrap();
+        let vpcd_result = table.lookup(src_vpcd, &wrong_src_addr, &dst_addr, None);
+        assert!(vpcd_result.is_none());
+
+        // Should not allow traffic to different dst
+        let wrong_dst_addr = "30.0.0.10".parse().unwrap();
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &wrong_dst_addr, None);
+        assert!(vpcd_result.is_none());
+    }
+
+    #[test]
+    fn test_flow_filter_table_with_port_ranges() {
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+
+        let src_prefix = Prefix::from("10.0.0.0/24");
+        let dst_prefix = Prefix::from("20.0.0.0/24");
+        let src_port_range = OptionalPortRange::Some(PortRange::new(1024, 2048).unwrap());
+        let dst_port_range = OptionalPortRange::Some(PortRange::new(80, 80).unwrap());
+
+        table
+            .insert(
+                src_vpcd,
+                dst_vpcd.clone(),
+                src_prefix,
+                src_port_range,
+                dst_prefix,
+                dst_port_range,
+            )
+            .unwrap();
+
+        let src_addr = "10.0.0.5".parse().unwrap();
+        let dst_addr = "20.0.0.10".parse().unwrap();
+
+        // Should allow with matching ports
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((1500, 80)));
+        assert_eq!(vpcd_result, Some(dst_vpcd));
+
+        // Should not allow with non-matching src port
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((500, 80)));
+        assert!(vpcd_result.is_none());
+
+        // Should not allow with non-matching dst port
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((1500, 443)));
+        assert!(vpcd_result.is_none());
+
+        // Should not allow without ports
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        assert!(vpcd_result.is_none());
+    }
+
+    #[test]
+    fn test_flow_filter_table_multiple_entries() {
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd1 = VpcdLookupResult::Single(vpcd(200));
+        let dst_vpcd2 = VpcdLookupResult::Single(vpcd(300));
+
+        // Add two entries for different destination prefixes
+        table
+            .insert(
+                src_vpcd,
+                dst_vpcd1.clone(),
+                Prefix::from("10.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        table
+            .insert(
+                src_vpcd,
+                dst_vpcd2.clone(),
+                Prefix::from("10.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("30.0.0.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let src_addr = "10.0.0.5".parse().unwrap();
+
+        // Should route to dst_vpcd1
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &"20.0.0.10".parse().unwrap(), None);
+        assert_eq!(vpcd_result, Some(dst_vpcd1));
+
+        // Should route to dst_vpcd2
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &"30.0.0.10".parse().unwrap(), None);
+        assert_eq!(vpcd_result, Some(dst_vpcd2));
+    }
+
+    #[test]
+    fn test_vpc_connections_table_lookup() {
+        let mut table = VpcConnectionsTable::new();
+        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+
+        let src_prefix = Prefix::from("10.0.0.0/24");
+        let dst_prefix = Prefix::from("20.0.0.0/24");
+
+        table
+            .insert(
+                dst_vpcd,
+                src_prefix,
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                dst_prefix,
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        // Lookup should succeed
+        let result = table.lookup(&"10.0.0.5".parse().unwrap(), None);
+        assert!(result.is_some());
+        let (prefix, _) = result.unwrap();
+        assert_eq!(prefix, src_prefix);
+
+        // Lookup for non-matching address should fail
+        let result = table.lookup(&"11.0.0.5".parse().unwrap(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_vpc_connections_table_with_ports() {
+        let mut table = VpcConnectionsTable::new();
+        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+
+        let src_prefix = Prefix::from("10.0.0.0/24");
+        let dst_prefix = Prefix::from("20.0.0.0/24");
+        let src_port_range = OptionalPortRange::Some(PortRange::new(8080, 8090).unwrap());
+        let dst_port_range = OptionalPortRange::NoPortRangeMeansAllPorts;
+
+        table
+            .insert(
+                dst_vpcd,
+                src_prefix,
+                src_port_range,
+                dst_prefix,
+                dst_port_range,
+            )
+            .unwrap();
+
+        // Lookup with matching port
+        let result = table.lookup(&"10.0.0.5".parse().unwrap(), Some(8085));
+        assert!(result.is_some());
+
+        // Lookup with non-matching port
+        let result = table.lookup(&"10.0.0.5".parse().unwrap(), Some(9000));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_optional_port_range_from() {
+        let from_some = OptionalPortRange::from(Some(PortRange::new(80, 80).unwrap()));
+        assert!(matches!(from_some, OptionalPortRange::Some(_)));
+
+        let from_none = OptionalPortRange::from(None);
+        assert!(matches!(
+            from_none,
+            OptionalPortRange::NoPortRangeMeansAllPorts
+        ));
+    }
+
+    #[test]
+    fn test_flow_filter_table_ipv6() {
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+
+        let src_prefix = Prefix::from("2001:db8::/32");
+        let dst_prefix = Prefix::from("2001:db9::/32");
+
+        table
+            .insert(
+                src_vpcd,
+                dst_vpcd.clone(),
+                src_prefix,
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                dst_prefix,
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        let src_addr = "2001:db8::1".parse().unwrap();
+        let dst_addr = "2001:db9::1".parse().unwrap();
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        assert_eq!(vpcd_result, Some(dst_vpcd));
+    }
+
+    #[test]
+    fn test_flow_filter_table_longest_prefix_match() {
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+        let dst_vpcd1 = VpcdLookupResult::Single(vpcd(200));
+        let dst_vpcd2 = VpcdLookupResult::Single(vpcd(300));
+
+        // Insert broader prefix
+        table
+            .insert(
+                src_vpcd,
+                dst_vpcd1.clone(),
+                Prefix::from("10.0.0.0/16"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.0.0/16"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        // Insert more specific prefix
+        table
+            .insert(
+                src_vpcd,
+                dst_vpcd2.clone(),
+                Prefix::from("10.0.1.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+                Prefix::from("20.0.1.0/24"),
+                OptionalPortRange::NoPortRangeMeansAllPorts,
+            )
+            .unwrap();
+
+        // Should match the more specific prefix for source
+        let vpcd_result = table.lookup(
+            src_vpcd,
+            &"10.0.1.5".parse().unwrap(),
+            &"20.0.1.10".parse().unwrap(),
+            None,
+        );
+        assert_eq!(vpcd_result, Some(dst_vpcd2));
+
+        // Should match the broader prefix for source
+        let vpcd_result = table.lookup(
+            src_vpcd,
+            &"10.0.2.5".parse().unwrap(),
+            &"20.0.2.10".parse().unwrap(),
+            None,
+        );
+        assert_eq!(vpcd_result, Some(dst_vpcd1));
+    }
+
+    #[test]
+    fn test_flow_filter_table_no_src_vpcd() {
+        let table = FlowFilterTable::new();
+        let src_vpcd = vpcd(999); // Non-existent VPC
+
+        let vpcd_result = table.lookup(
+            src_vpcd,
+            &"10.0.0.1".parse().unwrap(),
+            &"20.0.0.1".parse().unwrap(),
+            None,
+        );
+        assert!(vpcd_result.is_none());
+    }
+}
