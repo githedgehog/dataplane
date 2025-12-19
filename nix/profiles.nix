@@ -69,6 +69,17 @@ let
     builtins.foldl' (
       acc: elem: builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) elem
     ) { } features;
+  profile = {
+    debug = combine-profiles [
+      common
+      debug
+    ];
+    release = combine-profiles [
+      common
+      optimize
+      secure
+    ];
+  };
 in
 {
   debug = combine-profiles [
