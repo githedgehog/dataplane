@@ -75,6 +75,11 @@ let
   sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
     "-static-libasan"
   ];
+  sanitize.leak.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=leak"
+  ];
+  sanitize.leak.NIX_CXXFLAGS_COMPILE = sanitize.leak.NIX_CFLAGS_COMPILE;
+  sanitize.leak.NIX_CFLAGS_LINK = sanitize.leak.NIX_CFLAGS_COMPILE;
   combine-profiles =
     features:
     builtins.foldl' (
