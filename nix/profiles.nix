@@ -122,7 +122,7 @@ let
   combine-profiles =
     features:
     builtins.foldl' (
-      acc: elem: builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) elem
+      acc: elem: acc // (builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) elem)
     ) { } features;
   profile = {
     debug = combine-profiles [
