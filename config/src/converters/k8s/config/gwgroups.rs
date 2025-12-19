@@ -11,23 +11,13 @@ impl TryFrom<&GatewayAgentGroupsMembers> for GwGroupMember {
     type Error = FromK8sConversionError;
 
     fn try_from(value: &GatewayAgentGroupsMembers) -> Result<Self, Self::Error> {
-        let name = value
-            .name
-            .as_ref()
-            .ok_or_else(|| Self::Error::MissingData("Gateway group member name".to_string()))?;
-
-        let priority: u32 = value.priority.unwrap_or(0);
-        //.ok_or_else(|| Self::Error::MissingData("Gateway group member priority".to_string()))?;
-
-        let address = value.vtep_ip.as_ref().ok_or_else(|| {
-            Self::Error::MissingData("Gateway group member ip address".to_string())
-        })?;
+        let address = value.vtep_ip.as_str();
         let ipaddress = parse_address(address)
             .map_err(|e| Self::Error::ParseError(format!("Invalid ip address {address}: {e}")))?;
 
         Ok(Self {
-            name: name.clone(),
-            priority,
+            name: value.name.clone(),
+            priority: value.priority,
             ipaddress,
         })
     }

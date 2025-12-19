@@ -140,12 +140,10 @@ pub struct GatewayAgentGroups {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentGroupsMembers {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "vtepIP")]
-    pub vtep_ip: Option<String>,
+    pub name: String,
+    pub priority: u32,
+    #[serde(rename = "vtepIP")]
+    pub vtep_ip: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
