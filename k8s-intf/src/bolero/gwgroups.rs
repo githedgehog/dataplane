@@ -23,9 +23,9 @@ impl TypeGenerator for LegalValue<GatewayAgentGatewayGroups> {
 impl TypeGenerator for GatewayAgentGroupsMembers {
     fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
         let gmember = GatewayAgentGroupsMembers {
-            name: driver.produce::<String>(),
-            priority: Some(driver.gen_u32(Bound::Included(&0), Bound::Included(&10))?),
-            vtep_ip: Some(driver.produce::<UnicastIpv4Addr>()?.to_string()),
+            name: driver.produce::<String>()?,
+            priority: driver.gen_u32(Bound::Included(&0), Bound::Included(&10))?,
+            vtep_ip: driver.produce::<UnicastIpv4Addr>()?.to_string(),
         };
         Some(gmember)
     }
