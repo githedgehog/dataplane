@@ -5,6 +5,7 @@ use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTransport};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
+use std::net::IpAddr;
 use std::num::NonZero;
 use tracing::{debug, error};
 
@@ -17,6 +18,8 @@ pub use filter_rw::{FlowFilterTableReader, FlowFilterTableReaderFactory, FlowFil
 pub use tables::FlowFilterTable;
 
 use tracectl::trace_target;
+
+use crate::tables::VpcdLookupResult;
 trace_target!("flow-filter", LevelFilter::INFO, &["pipeline"]);
 
 /// A structure to implement the flow filter pipeline stage.
@@ -43,13 +46,13 @@ impl FlowFilter {
         let nfi = &self.name;
 
         let Some(net) = packet.try_ip() else {
-            debug!("{nfi}: Packet has no IP headers: dropping");
+            debug!("{nfi}: No IP headers found, dropping packet");
             packet.done(DoneReason::NotIp);
             return;
         };
 
-        let (Some(src_vpcd), Some(dst_vpcd)) = (packet.meta.src_vpcd, packet.meta.dst_vpcd) else {
-            debug!("{nfi}: Packet missing VPC discriminants: dropping");
+        let Some(src_vpcd) = packet.meta.src_vpcd else {
+            debug!("{nfi}: Missing source VPC discriminant, dropping packet");
             packet.done(DoneReason::Unroutable);
             return;
         };
@@ -61,22 +64,28 @@ impl FlowFilter {
                 .map(NonZero::get)
                 .zip(t.dst_port().map(NonZero::get))
         });
+        let log_str = format_packet_addrs_ports(&src_ip, &dst_ip, ports);
 
-        if !tablesr.contains(src_vpcd, &src_ip, &dst_ip, ports) {
-            debug!(
-                "{nfi}: Flow not allowed, dropping packet: src_vpcd={src_vpcd}, dst_vpcd={dst_vpcd}, src={src_ip}:{}, dst={dst_ip}:{}",
-                ports.map_or(String::new(), |p| format!("{}", p.0)),
-                ports.map_or(String::new(), |p| format!("{}", p.1)),
-            );
+        let (allowed, dst_vpcd_lookup_res) = tablesr.contains(src_vpcd, &src_ip, &dst_ip, ports);
+        if !allowed {
+            debug!("{nfi}: Flow not allowed, dropping packet: {log_str}");
             packet.done(DoneReason::Filtered);
             return;
         }
 
-        debug!(
-            "{nfi}: Flow allowed: src_vpcd={src_vpcd}, src={src_ip}:{}, dst={dst_ip}:{}",
-            ports.map_or(String::new(), |p| format!("{}", p.0)),
-            ports.map_or(String::new(), |p| format!("{}", p.1)),
-        );
+        match dst_vpcd_lookup_res {
+            VpcdLookupResult::Some(dst_vpcd) => {
+                debug!("{nfi}: Set packet dst_vpcd to {dst_vpcd}: {log_str}");
+                packet.meta.dst_vpcd = Some(dst_vpcd);
+            }
+            VpcdLookupResult::MultipleMatches => {}
+            VpcdLookupResult::None => {
+                debug!("{nfi}: No matching VPC found, dropping packet: {log_str}");
+                packet.done(DoneReason::Unroutable);
+            }
+        }
+
+        debug!("{nfi}: Flow allowed: {log_str}");
     }
 }
 
@@ -97,4 +106,16 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
             packet.enforce()
         })
     }
+}
+
+fn format_packet_addrs_ports(
+    src_addr: &IpAddr,
+    dst_addr: &IpAddr,
+    ports: Option<(u16, u16)>,
+) -> String {
+    format!(
+        "src={src_addr}{}, dst={dst_addr}{}",
+        ports.map_or(String::new(), |p| format!(":{}", p.0)),
+        ports.map_or(String::new(), |p| format!(":{}", p.1))
+    )
 }

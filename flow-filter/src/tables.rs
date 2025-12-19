@@ -13,6 +13,13 @@ use std::net::IpAddr;
 #[derive(Debug, Clone)]
 pub struct FlowFilterTable(HashMap<VpcDiscriminant, VpcConnectionsTable>);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VpcdLookupResult {
+    Some(VpcDiscriminant),
+    MultipleMatches,
+    None,
+}
+
 impl FlowFilterTable {
     #[allow(clippy::new_without_default)]
     pub(crate) fn new() -> Self {
@@ -37,10 +44,16 @@ impl FlowFilterTable {
         dst_addr: &IpAddr,
         dst_port: Option<u16>,
         remote_exposes_data: &[RemoteExposeData],
-    ) -> bool {
-        remote_exposes_data
+    ) -> (bool, VpcdLookupResult) {
+        let lookup_result: Vec<_> = remote_exposes_data
             .iter()
-            .any(|remote| remote.prefixes.lookup(dst_addr, dst_port).is_some())
+            .filter(|remote| remote.prefixes.lookup(dst_addr, dst_port).is_some())
+            .collect();
+        match (lookup_result.len(), lookup_result.first()) {
+            (0, _) => (false, VpcdLookupResult::None),
+            (1, Some(remote)) => (true, VpcdLookupResult::Some(remote.vpcd)),
+            _ => (true, VpcdLookupResult::MultipleMatches),
+        }
     }
 
     /// Check whether a flow is in the table, in other words, whether it's allowed.
@@ -50,14 +63,14 @@ impl FlowFilterTable {
         src_addr: &IpAddr,
         dst_addr: &IpAddr,
         ports: Option<(u16, u16)>,
-    ) -> bool {
+    ) -> (bool, VpcdLookupResult) {
         let Some(table) = self.get_table(src_vpcd) else {
-            return false;
+            return (false, VpcdLookupResult::None);
         };
 
         let (src_port, dst_port) = ports.unzip();
         let Some((_, connection_data)) = table.lookup(src_addr, src_port) else {
-            return false;
+            return (false, VpcdLookupResult::None);
         };
 
         match connection_data {
@@ -69,11 +82,11 @@ impl FlowFilterTable {
             ConnectionTableValue::Ranges(ranges) => {
                 let Some(src_port) = src_port else {
                     // If we don't have a source port, we can't hope to find a matching port range
-                    return false;
+                    return (false, VpcdLookupResult::None);
                 };
                 // Look for remote expose data for the port range associated to our source port
                 let Some((_, remote_exposes_data)) = ranges.lookup(&src_port) else {
-                    return false;
+                    return (false, VpcdLookupResult::None);
                 };
                 Self::find_from_remote_exposes_data(dst_addr, dst_port, remote_exposes_data)
             }
@@ -131,11 +144,11 @@ impl VpcConnectionsTable {
     ) {
         let remote_expose = remote_exposes_data
             .iter_mut()
-            .find(|remote| remote._vpcd == dst_vpcd);
+            .find(|remote| remote.vpcd == dst_vpcd);
         match remote_expose {
             Some(expose) => expose.prefixes.insert(dst_prefix, dst_port_range.into()),
             None => remote_exposes_data.push(RemoteExposeData {
-                _vpcd: dst_vpcd,
+                vpcd: dst_vpcd,
                 prefixes: IpPortPrefixTrie::from(dst_prefix, dst_port_range.into()),
             }),
         }
@@ -181,7 +194,7 @@ impl VpcConnectionsTable {
         } else {
             // No entry yet for this src_prefix, create and insert one
             let remote_exposes_data = vec![RemoteExposeData {
-                _vpcd: dst_vpcd,
+                vpcd: dst_vpcd,
                 prefixes: IpPortPrefixTrie::from(dst_prefix, dst_port_range.into()),
             }];
             let value = match src_port_range {
@@ -213,7 +226,7 @@ pub(crate) enum AssociatedRanges {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RemoteExposeData {
-    _vpcd: VpcDiscriminant, // Unused at the moment; useful for replacing dst_vpcd lookup in the future?
+    vpcd: VpcDiscriminant,
     prefixes: IpPortPrefixTrie<AssociatedRanges>,
 }
 
