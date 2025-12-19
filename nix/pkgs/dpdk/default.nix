@@ -257,10 +257,10 @@ stdenv.mkDerivation {
     ];
 
   outputs = [
-    "out"
-    "static"
     "dev"
+    "out"
     "share"
+    "static"
   ];
 
   postInstall = ''
