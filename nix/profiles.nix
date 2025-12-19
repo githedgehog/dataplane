@@ -68,6 +68,13 @@ let
   march.aarch64.NIX_CFLAGS_COMPILE = [ ];
   march.aarch64.NIX_CXXFLAGS_COMPILE = march.aarch64.NIX_CFLAGS_COMPILE;
   march.aarch64.NIX_CFLAGS_LINK = [ ];
+  sanitize.address.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=address,local-bounds"
+  ];
+  sanitize.address.NIX_CXXFLAGS_COMPILE = sanitize.address.NIX_CFLAGS_COMPILE;
+  sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
+    "-static-libasan"
+  ];
   combine-profiles =
     features:
     builtins.foldl' (
