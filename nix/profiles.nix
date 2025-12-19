@@ -101,6 +101,16 @@ let
   sanitize.safe-stack.NIX_CFLAGS_LINK = sanitize.safe-stack.NIX_CFLAGS_COMPILE ++ [
     "-Wl,--allow-shlib-undefined"
   ];
+  instrument.none.NIX_CFLAGS_COMPILE = [ ];
+  instrument.none.NIX_CXXFLAGS_COMPILE = instrument.none.NIX_CFLAGS_COMPILE;
+  instrument.none.NIX_CFLAGS_LINK = instrument.none.NIX_CFLAGS_COMPILE;
+  instrument.produce.NIX_CFLAGS_COMPILE = [
+    "-fprofile-instr-generate"
+    "-fcoverage-mapping"
+    "-fno-omit-frame-pointer"
+  ];
+  instrument.produce.NIX_CXXFLAGS_COMPILE = instrument.produce.NIX_CFLAGS_COMPILE;
+  instrument.produce.NIX_CFLAGS_LINK = instrument.produce.NIX_CFLAGS_COMPILE;
   combine-profiles =
     features:
     builtins.foldl' (
