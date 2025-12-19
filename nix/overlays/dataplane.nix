@@ -176,4 +176,11 @@ in
   # Also, while this library has a respectable security track record, this is also a super strong candidate for
   # cfi, safe-stack, and cf-protection.
   dpdk = dataplane-dep (final.callPackage ../pkgs/dpdk { src = sources.dpdk; });
+
+  # DPDK is largely composed of static-inline functions.
+  # We need to wrap those functions with "_w" variants so that we can actually call them from rust.
+  #
+  # This wrapping process does not really cause any performance issue due to lto; the compiler is going to "unwrap"
+  # these methods anyway.
+  dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
 }
