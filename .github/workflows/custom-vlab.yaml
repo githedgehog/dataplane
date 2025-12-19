@@ -1,0 +1,196 @@
+name: Custom VLAB
+run-name: "${{ inputs.hybrid && 'h' || 'v' }}-${{ inputs.upgradefrom }}${{ inputs.upgradefrom && '-' || '' }}${{ inputs.mesh && 'mesh-' || '' }}gw-${{ inputs.buildmode }}-${{ inputs.vpcmode }}${{ inputs.releasetest && '-rt' || '' }}${{ inputs.releasetest_regex != '' && 'r' || '' }}"
+
+on:
+  workflow_dispatch:
+    # github actions only supports 10 inputs for workflow_dispatch so keeping only most important ones
+    inputs:
+      fabricator_ref:
+        description: "Fabricator ref to use (branch, tag, or commit SHA, e.g. master or a1b2c3d4)"
+        type: string
+        required: false
+        default: "master"
+      mesh:
+        description: "Use spine-leaf with mesh-only connections"
+        type: boolean
+        required: false
+        default: false
+      buildmode:
+        description: "Build mode"
+        type: choice
+        required: false
+        default: "iso"
+        options:
+          - iso
+          - usb
+          - manual
+      vpcmode:
+        description: "VPC mode"
+        type: choice
+        required: false
+        default: "l2vni"
+        options:
+          - l2vni
+          - l3vni
+      hybrid:
+        description: "Enable hybrid mode (use env with physical switches)"
+        type: boolean
+        required: false
+        default: false
+      upgradefrom:
+        description: "Upgrade from version"
+        type: string
+        required: false
+        default: ""
+      releasetest:
+        description: "Run Release tests"
+        type: boolean
+        required: false
+        default: false
+      releasetest_regex:
+        description: "Run only release tests matched by regex"
+        type: string
+        required: false
+        default: ""
+      releasetest_regex_invert:
+        description: "Invert release test regex (only if regex is provided)"
+        type: boolean
+        required: false
+        default: false
+      pause_on_failure:
+        description: "Pause on failure (enables debug)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  version:
+    runs-on: lab
+    outputs:
+      version: "${{ steps.version-gen.outputs.version }}"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate version
+        id: version-gen
+        env:
+          commit_sha: ${{ github.sha }}
+        run: |
+          echo "version=v0-${commit_sha::9}" >> "$GITHUB_OUTPUT"
+
+  build:
+    env:
+      CACHE_REGISTRY: "run.h.hhdev.io:30000"
+      UPSTREAM_REGISTRY: "ghcr.io"
+    needs:
+      - version
+    runs-on: lab
+    timeout-minutes: 45
+
+    steps:
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.UPSTREAM_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to image cache
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.CACHE_REGISTRY }}
+          username: ${{ secrets.LAB_REGISTRY_USERNAME }}
+          password: ${{ secrets.LAB_REGISTRY_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install just
+        run: |
+          echo 'deb [trusted=yes] https://apt.gabe565.com /' | sudo tee /etc/apt/sources.list.d/gabe565.list
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends just
+
+      - name: Set up build environment
+        run: |
+          REQUIRED_HUGEPAGES=512
+          HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+          OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
+          docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
+          docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
+          docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
+          just --yes refresh-compile-env
+          just --yes fake-nix
+
+      - name: Push container
+        env:
+          VERSION: ${{ needs.version.outputs.version }}-release
+        run: |
+          # Try new API first (push with version/oci_repo), fallback to old API (push-container with registry)
+          if just --list 2>/dev/null | grep -q "^    push "; then
+            just profile=release target=x86_64-unknown-linux-gnu version=$VERSION oci_repo="ghcr.io" push
+          else
+            just profile=release target=x86_64-unknown-linux-gnu registry="ghcr.io" push-container
+          fi
+
+  vlab:
+    needs:
+      - version
+      - build
+    name: "${{ inputs.hybrid && 'h' || 'v' }}-${{ inputs.upgradefrom && 'up' || '' }}${{ inputs.upgradefrom }}${{ inputs.upgradefrom && '-' || '' }}${{ inputs.mesh && 'mesh-' || '' }}gw-${{ inputs.buildmode }}-${{ inputs.vpcmode }}${{ inputs.releasetest && '-rt' || '' }}${{ inputs.releasetest_regex != '' && 'r' || '' }}"
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    with:
+      fabricatorref: ${{ inputs.fabricator_ref }}
+      prebuild: "just bump dataplane ${{ needs.version.outputs.version }}-release"
+      fabricmode: "spine-leaf"
+      mesh: ${{ inputs.mesh }}
+      gateway: true
+      gateway_agentless: true
+      includeonie: false
+      buildmode: ${{ inputs.buildmode }}
+      vpcmode: ${{ inputs.vpcmode }}
+      hybrid: ${{ inputs.hybrid }}
+      upgradefrom: ${{ inputs.upgradefrom }}
+      releasetest: ${{ inputs.releasetest }}
+      releasetest_regex: ${{ inputs.releasetest_regex }}
+      releasetest_regex_invert: ${{ inputs.releasetest_regex_invert }}
+      debug: ${{ inputs.pause_on_failure }}
+      pause_on_failure: ${{ inputs.pause_on_failure }}
+
+  publish-test-results:
+    if: ${{ inputs.releasetest && !cancelled() }}
+    runs-on: lab
+    needs:
+      - vlab
+
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: "artifacts/**/release-test.xml"
+          report_individual_runs: true
+          check_run: false
+          job_summary: true
+          comment_mode: off
