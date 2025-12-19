@@ -52,6 +52,15 @@ let
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
   secure.NIX_CFLAGS_LINK = secure.NIX_CFLAGS_COMPILE;
+  march.x86_64.NIX_CFLAGS_COMPILE = [
+    # DPDK functionally requires some -m flags on x86_64.
+    # These features have been available for a long time and can be found on any reasonably recent machine, so just
+    # enable them here for x86_64 builds.
+    "-mrtm"
+    "-mcrc32"
+    "-mssse3"
+  ];
+  march.x86_64.NIX_CXXFLAGS_COMPILE = march.x86_64.NIX_CFLAGS_COMPILE;
   combine-profiles =
     features:
     builtins.foldl' (
