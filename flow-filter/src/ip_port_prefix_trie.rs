@@ -115,3 +115,228 @@ where
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lpm::prefix::{PortRange, Prefix};
+    use std::collections::BTreeSet;
+
+    #[derive(Debug, Clone)]
+    enum TestValue {
+        AnyPort,
+        Ranges(BTreeSet<PortRange>),
+    }
+
+    impl ValueWithAssociatedRanges for TestValue {
+        fn covers_all_ports(&self) -> bool {
+            match self {
+                TestValue::AnyPort => true,
+                TestValue::Ranges(ranges) => {
+                    ranges.iter().fold(0, |sum, range| sum + range.len()) == PortRange::MAX_LENGTH
+                }
+            }
+        }
+
+        fn covers_port(&self, port: u16) -> bool {
+            match self {
+                TestValue::AnyPort => true,
+                TestValue::Ranges(ranges) => ranges.iter().any(|range| range.contains(&port)),
+            }
+        }
+    }
+
+    #[test]
+    fn test_new() {
+        let trie: IpPortPrefixTrie<TestValue> = IpPortPrefixTrie::new();
+        assert!(trie.lookup(&"192.168.1.1".parse().unwrap(), None).is_none());
+    }
+
+    #[test]
+    fn test_from() {
+        let prefix = Prefix::from("192.168.1.0/24");
+        let value = TestValue::AnyPort;
+        let trie = IpPortPrefixTrie::from(prefix, value);
+
+        let result = trie.lookup(&"192.168.1.5".parse().unwrap(), None);
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix);
+    }
+
+    #[test]
+    fn test_insert_and_lookup_any_port() {
+        let mut trie = IpPortPrefixTrie::new();
+        let prefix = Prefix::from("10.0.0.0/16");
+        let value = TestValue::AnyPort;
+
+        trie.insert(prefix, value);
+
+        // Should match with any port
+        let result = trie.lookup(&"10.0.1.5".parse().unwrap(), Some(80));
+        assert!(result.is_some());
+        let (matched_prefix, matched_value) = result.unwrap();
+        assert_eq!(matched_prefix, prefix);
+        assert!(matches!(matched_value, TestValue::AnyPort));
+
+        // Should match without port
+        let result = trie.lookup(&"10.0.1.5".parse().unwrap(), None);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_insert_and_lookup_with_port_ranges() {
+        let mut trie = IpPortPrefixTrie::new();
+        let prefix = Prefix::from("172.16.0.0/12");
+        let ranges = BTreeSet::from([PortRange::new(80, 90).unwrap()]);
+        let value = TestValue::Ranges(ranges);
+
+        trie.insert(prefix, value);
+
+        // Should match port in range
+        let result = trie.lookup(&"172.16.5.10".parse().unwrap(), Some(85));
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix);
+
+        // Should not match port outside range
+        let result = trie.lookup(&"172.16.5.10".parse().unwrap(), Some(100));
+        assert!(result.is_none());
+
+        // Should not match without port
+        let result = trie.lookup(&"172.16.5.10".parse().unwrap(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_lookup_longest_prefix_match_no_ports() {
+        let mut trie = IpPortPrefixTrie::new();
+
+        // Insert prefix with port range
+        let prefix_with_ports = Prefix::from("192.168.0.0/24");
+        let ranges = BTreeSet::from([PortRange::new(80, 90).unwrap()]);
+        trie.insert(prefix_with_ports, TestValue::Ranges(ranges));
+
+        // Insert prefix covering all ports
+        let prefix_alone = Prefix::from("192.168.1.0/24");
+        trie.insert(prefix_alone, TestValue::AnyPort);
+
+        // Match wihout port
+        let result = trie.lookup(&"192.168.1.5".parse().unwrap(), None);
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix_alone);
+
+        // Match with a port
+        let result = trie.lookup(&"192.168.1.5".parse().unwrap(), Some(443));
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix_alone);
+
+        // Fail to match prefix_with_ports without a port
+        let result = trie.lookup(&"192.168.0.5".parse().unwrap(), None);
+        assert!(result.is_none());
+
+        // Match with a port
+        let result = trie.lookup(&"192.168.0.5".parse().unwrap(), Some(80));
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix_with_ports);
+    }
+
+    #[test]
+    fn test_lookup_longest_prefix_match_with_ports() {
+        let mut trie = IpPortPrefixTrie::new();
+
+        // Insert broader prefix
+        let prefix_16 = Prefix::from("192.168.0.0/16");
+        let ranges = BTreeSet::from([PortRange::new(80, 90).unwrap()]);
+        trie.insert(prefix_16, TestValue::Ranges(ranges));
+
+        // Insert more specific prefix
+        let prefix_24 = Prefix::from("192.168.1.0/24");
+        let ranges = BTreeSet::from([PortRange::new(443, 443).unwrap()]);
+        trie.insert(prefix_24, TestValue::Ranges(ranges));
+
+        // Without port, there is not match
+        let result = trie.lookup(&"192.168.1.5".parse().unwrap(), None);
+        assert!(result.is_none());
+
+        // Based on port, we match the more specific prefix
+        let result = trie.lookup(&"192.168.1.5".parse().unwrap(), Some(443));
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix_24);
+
+        // Based on port, we match the broader prefix
+        let result = trie.lookup(&"192.168.1.5".parse().unwrap(), Some(80));
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix_16);
+    }
+
+    #[test]
+    fn test_get_mut() {
+        let mut trie = IpPortPrefixTrie::new();
+        let prefix = Prefix::from("203.0.113.0/24");
+        let ranges = BTreeSet::from([PortRange::new(8080, 8090).unwrap()]);
+        trie.insert(prefix, TestValue::Ranges(ranges));
+
+        // Modify the value
+        if let Some(value) = trie.get_mut(prefix) {
+            *value = TestValue::AnyPort;
+        }
+
+        // Should now match with any port
+        let result = trie.lookup(&"203.0.113.5".parse().unwrap(), Some(9999));
+        assert!(result.is_some());
+        let (_, matched_value) = result.unwrap();
+        assert!(matches!(matched_value, TestValue::AnyPort));
+    }
+
+    #[test]
+    fn test_ipv6_lookup() {
+        let mut trie = IpPortPrefixTrie::new();
+        let prefix = Prefix::from("2001:db8::/32");
+        trie.insert(prefix, TestValue::AnyPort);
+
+        let result = trie.lookup(&"2001:db8::1".parse().unwrap(), None);
+        assert!(result.is_some());
+        let (matched_prefix, _) = result.unwrap();
+        assert_eq!(matched_prefix, prefix);
+
+        let result = trie.lookup(&"2001:db9::1".parse().unwrap(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_covers_all_ports() {
+        let any_port = TestValue::AnyPort;
+        assert!(any_port.covers_all_ports());
+
+        let mut ranges = BTreeSet::new();
+        ranges.insert(PortRange::new(0, 32767).unwrap());
+        ranges.insert(PortRange::new(32768, 65535).unwrap());
+        let full_range = TestValue::Ranges(ranges);
+        assert!(full_range.covers_all_ports());
+
+        let partial_ranges = BTreeSet::from([PortRange::new(80, 443).unwrap()]);
+        let partial_range = TestValue::Ranges(partial_ranges);
+        assert!(!partial_range.covers_all_ports());
+    }
+
+    #[test]
+    fn test_covers_port() {
+        let any_port = TestValue::AnyPort;
+        assert!(any_port.covers_port(80));
+        assert!(any_port.covers_port(65535));
+
+        let mut ranges = BTreeSet::new();
+        ranges.insert(PortRange::new(80, 80).unwrap());
+        ranges.insert(PortRange::new(443, 443).unwrap());
+        let specific_ports = TestValue::Ranges(ranges);
+        assert!(specific_ports.covers_port(80));
+        assert!(specific_ports.covers_port(443));
+        assert!(!specific_ports.covers_port(8080));
+    }
+}
