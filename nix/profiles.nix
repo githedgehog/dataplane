@@ -47,11 +47,6 @@ let
     "-fstack-clash-protection"
     # "-fcf-protection=full" # requires extra testing before we enable
     # "-fsanitize=safe-stack" # requires extra testing before we enable (not compatible with musl)
-    # "-fsanitize=cfi" # requires extra testing before we enable
-    # enable if you turn on cfi to properly link with rust
-    # "-fsanitize-cfi-icall-experimental-normalize-integers"
-    # consider enabling if you turn on cfi (not compatible with cross DSO cfi)
-    # "-fsanitize-cfi-icall-generalize-pointers"
   ];
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
@@ -80,6 +75,26 @@ let
   ];
   sanitize.leak.NIX_CXXFLAGS_COMPILE = sanitize.leak.NIX_CFLAGS_COMPILE;
   sanitize.leak.NIX_CFLAGS_LINK = sanitize.leak.NIX_CFLAGS_COMPILE;
+  # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds
+  sanitize.cfi.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=cfi"
+    # visibility=default is functionally required if you use basically any cfi higher than icall.
+    # In theory we could set -fvisibility=hidden, but in practice that doesn't work because too many dependencies
+    # fail to build with that setting enabled.
+    # NOTE: you also want to enable -Wl,--lto-whole-program-visibility in the linker flags if visibility=default so that
+    # symbols can be refined to hidden visibility at link time.
+    # This "whole-program-visibility" flag is already enabled by the optimize profile, and
+    # given that the optimize profile is required for cfi to even bild, we don't explicitly enable it again here.
+    "-fvisibility=default"
+    # required to properly link with rust
+    "-fsanitize-cfi-icall-experimental-normalize-integers"
+    # required in cases where perfect type strictness is not maintained but you still want to use CFI.
+    # Type fudging is common in C code, especially in cases where function pointers are used with lax const correctness.
+    # Ideally we wouldn't enable this, but we can't really re-write all of the C code in the world.
+    "-fsanitize-cfi-icall-generalize-pointers"
+  ];
+  sanitize.cfi.NIX_CXXFLAGS_COMPILE = sanitize.cfi.NIX_CFLAGS_COMPILE;
+  sanitize.cfi.NIX_CFLAGS_LINK = sanitize.cfi.NIX_CFLAGS_COMPILE;
   combine-profiles =
     features:
     builtins.foldl' (
