@@ -76,6 +76,13 @@ let
   ];
   sanitize.leak.NIX_CXXFLAGS_COMPILE = sanitize.leak.NIX_CFLAGS_COMPILE;
   sanitize.leak.NIX_CFLAGS_LINK = sanitize.leak.NIX_CFLAGS_COMPILE;
+  sanitize.thread.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=thread"
+  ];
+  sanitize.thread.NIX_CXXFLAGS_COMPILE = sanitize.thread.NIX_CFLAGS_COMPILE;
+  sanitize.thread.NIX_CFLAGS_LINK = sanitize.thread.NIX_CFLAGS_COMPILE ++ [
+    "-Wl,--allow-shlib-undefined"
+  ];
   # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds
   sanitize.cfi.NIX_CFLAGS_COMPILE = [
     "-fsanitize=cfi"
