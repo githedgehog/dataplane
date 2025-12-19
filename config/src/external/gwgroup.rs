@@ -4,6 +4,7 @@
 //! Dataplane configuration model: gateway groups
 
 use crate::ConfigError;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::IpAddr;
@@ -11,7 +12,7 @@ use std::net::IpAddr;
 /// A [`GwGroupMember`] represents a gateway within a [`GwGroup`].
 /// Gateways are uniquely identified by their name. Within a group, each
 /// gateway has a priority.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GwGroupMember {
     pub name: String,
     pub priority: u32,
@@ -25,6 +26,29 @@ impl GwGroupMember {
             priority,
             ipaddress: address,
         }
+    }
+}
+
+impl Ord for GwGroupMember {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let ord_prio = self.priority.cmp(&other.priority);
+        let ord_ip = self.ipaddress.cmp(&other.ipaddress);
+        let ord_name = self.name.cmp(&other.name);
+
+        if ord_prio == Ordering::Equal {
+            if ord_ip == Ordering::Equal {
+                ord_name
+            } else {
+                ord_ip
+            }
+        } else {
+            ord_prio
+        }
+    }
+}
+impl PartialOrd for GwGroupMember {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -45,13 +69,11 @@ impl GwGroup {
     #[must_use]
     pub fn sorted(&self) -> GwGroup {
         let mut clone = self.clone();
-        clone
-            .members
-            .sort_by(|m1, m2| m2.priority.cmp(&m1.priority));
+        clone.members.sort_by(|m1, m2| m2.cmp(m1));
         clone
     }
     pub fn sort_members(&mut self) {
-        self.members.sort_by(|m1, m2| m2.priority.cmp(&m1.priority));
+        self.members.sort_by(|m1, m2| m2.cmp(m1));
     }
     pub fn add_member(&mut self, member: GwGroupMember) -> Result<(), ConfigError> {
         if self.get_member_by_name(&member.name).is_some() {
