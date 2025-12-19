@@ -15,6 +15,7 @@ mod setup;
 mod tables;
 
 pub use filter_rw::{FlowFilterTableReader, FlowFilterTableReaderFactory, FlowFilterTableWriter};
+pub use ip_port_prefix_trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
 pub use tables::FlowFilterTable;
 
 use tracectl::trace_target;

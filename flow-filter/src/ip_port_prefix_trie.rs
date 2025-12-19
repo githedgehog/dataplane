@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use std::net::IpAddr;
 use std::ops::RangeBounds;
 
-pub(crate) trait ValueWithAssociatedRanges {
+pub trait ValueWithAssociatedRanges {
     fn covers_all_ports(&self) -> bool;
     fn covers_port(&self, port: u16) -> bool;
 }
@@ -56,7 +56,7 @@ impl ValueWithAssociatedRanges for ConnectionTableValue {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct IpPortPrefixTrie<V>(IpPrefixTrie<V>)
+pub struct IpPortPrefixTrie<V>(IpPrefixTrie<V>)
 where
     V: Debug + Clone + ValueWithAssociatedRanges;
 
@@ -65,26 +65,26 @@ where
     V: Debug + Clone + ValueWithAssociatedRanges,
 {
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(IpPrefixTrie::new())
     }
 
     #[must_use]
-    pub(crate) fn from(prefix: Prefix, value: V) -> Self {
+    pub fn from(prefix: Prefix, value: V) -> Self {
         let mut trie = Self::new();
         trie.0.insert(prefix, value);
         trie
     }
 
-    pub(crate) fn insert(&mut self, prefix: Prefix, value: V) {
+    pub fn insert(&mut self, prefix: Prefix, value: V) {
         self.0.insert(prefix, value);
     }
 
-    pub(crate) fn get_mut(&mut self, prefix: Prefix) -> Option<&mut V> {
+    pub fn get_mut(&mut self, prefix: Prefix) -> Option<&mut V> {
         self.0.get_mut(prefix)
     }
 
-    pub(crate) fn lookup(&self, addr: &IpAddr, port_opt: Option<u16>) -> Option<(Prefix, &V)> {
+    pub fn lookup(&self, addr: &IpAddr, port_opt: Option<u16>) -> Option<(Prefix, &V)> {
         // If the longest matching prefix has no associated port range, we assume it matches any
         // port, so the lookup is successful
         if let Some((prefix, value)) = self.0.lookup(*addr)
@@ -104,5 +104,14 @@ where
             }
         }
         None
+    }
+}
+
+impl<V> Default for IpPortPrefixTrie<V>
+where
+    V: Debug + Clone + ValueWithAssociatedRanges,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }

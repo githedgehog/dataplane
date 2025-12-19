@@ -1520,6 +1520,7 @@ dependencies = [
  "bolero",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-flow-filter",
  "dataplane-flow-info",
  "dataplane-lpm",
  "dataplane-net",
