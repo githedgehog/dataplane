@@ -3,7 +3,8 @@
 {
   sources,
   sanitizers,
-  env,
+  target,
+  profile,
 }:
 final: prev:
 let
@@ -16,9 +17,12 @@ let
   adapt = final.stdenvAdapters;
   bintools = final.buildPackages.llvmPackages.bintools;
   lld = final.buildPackages.llvmPackages.lld;
+  env = helpers.addToEnv target.platform.override.stdenv.env profile;
   stdenv' = adapt.addAttrsToDerivation (orig: {
     doCheck = false;
-    env = helpers.addToEnv env (orig.env or { });
+    env = helpers.addToEnv target.platform.override.stdenv.env (
+      helpers.addToEnv env (orig.env or { })
+    );
     nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [
       bintools
       lld
