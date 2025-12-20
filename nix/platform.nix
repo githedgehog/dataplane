@@ -1,4 +1,7 @@
-recursiveUpdate: rec {
+{
+  lib ? (import <nixpkgs> { }).lib,
+}:
+rec {
   x86-64-v3 = rec {
     arch = "x86_64";
     march = "x86-64-v3";
@@ -21,7 +24,7 @@ recursiveUpdate: rec {
       };
     };
   };
-  x86-64-v4 = recursiveUpdate x86-64-v3 rec {
+  x86-64-v4 = lib.recursiveUpdate x86-64-v3 rec {
     march = "x86-64-v4";
     override.stdenv'.env = rec {
       NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
@@ -29,7 +32,7 @@ recursiveUpdate: rec {
       NIX_CFLAGS_LINK = [ ];
     };
   };
-  zen4 = recursiveUpdate x86-64-v4 rec {
+  zen4 = lib.recursiveUpdate x86-64-v4 rec {
     march = "zen4";
     override.stdenv'.env = rec {
       NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
@@ -37,7 +40,7 @@ recursiveUpdate: rec {
       NIX_CFLAGS_LINK = [ ];
     };
   };
-  zen5 = recursiveUpdate zen4 rec {
+  zen5 = lib.recursiveUpdate zen4 rec {
     march = "zen5";
     override.stdenv'.env = rec {
       NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
@@ -68,8 +71,8 @@ recursiveUpdate: rec {
       };
     };
   };
-  bluefield3 = recursiveUpdate bluefield2 rec {
-    march = "armv8.6-a";
+  bluefield3 = lib.recursiveUpdate bluefield2 rec {
+    march = "armv8.4-a";
     mcpu = "cortex-a78ae";
     override.stdenv'.env = rec {
       NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];

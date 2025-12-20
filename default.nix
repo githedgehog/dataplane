@@ -10,54 +10,26 @@
 }:
 let
   lib = (import sources.nixpkgs { }).lib;
-  platform' = (import ./nix/machine.nix lib.recursiveUpdate).${platform};
-  target = "${platform'.arch}-unknown-linux-${libc}";
-  arch =
-    {
-      "x86_64-unknown-linux-gnu" = {
-        target = "x86_64-unknown-linux-gnu";
-        machine = "x86_64";
-        nixarch = "gnu64";
-        libc = "gnu";
-      };
-      "x86_64-unknown-linux-musl" = {
-        target = "x86_64-unknown-linux-musl";
-        machine = "x86_64";
-        nixarch = "musl64";
-        libc = "musl";
-      };
-      "aarch64-unknown-linux-gnu" = {
-        target = "aarch64-unknown-linux-gnu";
-        machine = "aarch64";
-        nixarch = "aarch64-multiplatform";
-        libc = "glibc";
-      };
-      "aarch64-unknown-linux-musl" = {
-        target = "aarch64-unknown-linux-musl";
-        machine = "aarch64";
-        nixarch = "aarch64-multiplatform-musl";
-        libc = "musl";
-      };
-    }
-    .${target};
   # helper method to work around nix's contrived builtin string split function.
   split-str = split: str: builtins.filter (elm: builtins.isString elm) (builtins.split split str);
-  sanitizers = split-str ",+" sanitize;
+  sanitizers =  if sanitize == "" then [] else split-str ",+" sanitize;
   sources = import ./npins;
+  target = import ./nix/target.nix {
+    inherit lib platform libc;
+  };
   profile = import ./nix/profiles.nix {
     inherit prof sanitizers instrumentation;
-    arch = arch.machine;
+    arch = target.platform.arch;
   };
   overlays = import ./nix/overlays {
-    inherit sources sanitizers;
-    env = profile;
+    inherit sources sanitizers target profile;
   };
   pkgs =
     (import sources.nixpkgs {
       overlays = [
         overlays.${overlay}
       ];
-    }).pkgsCross.${arch.nixarch};
+    }).pkgsCross.${target.info.nixarch};
 in
 pkgs.lib.fix (final: {
   inherit
@@ -65,9 +37,7 @@ pkgs.lib.fix (final: {
     sources
     profile
     target
-    arch
     ;
-  platform = platform';
   sysroot-list = with final.pkgs; [
     libc.static
     libc.out
