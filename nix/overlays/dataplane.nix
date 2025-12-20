@@ -21,13 +21,15 @@ let
       bintools
       lld
     ];
-  }) (adapt.makeStaticLibraries final.buildPackages.llvmPackages.stdenv);
+  }) final.llvmPackages.stdenv;
+  # }) (adapt.makeStaticLibraries final.buildPackages.llvmPackages.stdenv);
   stdenv-llvm-with-flags = adapt.addAttrsToDerivation (orig: {
     env = helpers.addToEnv env (orig.env or { });
   }) stdenv-llvm;
   dataplane-dep = pkg: pkg.override { stdenv = stdenv-llvm-with-flags; };
 in
 {
+  stdenv' = stdenv-llvm-with-flags;
   # Don't bother adapting ethtool or iproute2's build to our custom flags / env.  Failure to null this can trigger
   # _massive_ builds because ethtool depends on libnl (et al), and we _do_ overlay libnl.  Thus, the ethtool / iproute2
   # get rebuilt and you end up rebuilding the whole world.
@@ -69,7 +71,7 @@ in
     # file.  Ideally we would just _not_ build those .so files, but that would require doing brain surgery on dpdk's
     # meson build, and maintaining such a change set is not worth it to avoid building some .so files.
     configureFlags = (orig.configureFlags or [ ]) ++ [
-      "--enable-shared"
+      "--enable-static"
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p "$static/lib";
@@ -87,7 +89,7 @@ in
     # we need to enable shared (in addition to static) to build dpdk.
     # See the note on libmd for reasoning.
     configureFlags = orig.configureFlags ++ [
-      "--enable-shared"
+      "--enable-static"
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p "$static/lib";
@@ -107,7 +109,17 @@ in
   # More, this is a very low level library designed to send messages between a privileged process and the kernel.
   # The simple fact that this appears in our toolchain justifies sanitizers like safe-stack and cfi and/or flags like
   # -fcf-protection=full.
-  libnl = dataplane-dep prev.libnl;
+  libnl = (dataplane-dep prev.libnl).overrideAttrs (orig: {
+    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+    configureFlags = (orig.configureFlags or [ ]) ++ [
+      "--enable-static"
+    ];
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p $static/lib
+      find $out/lib -name '*.la' -exec rm {} \;
+      mv $out/lib/*.a $static/lib/
+    '';
+  });
 
   # This is needed by DPDK in order to determine which pinned core runs on which numa node and which NIC is most
   # efficiently connected to which NUMA node.  You can disable the need for this library entirely by editing dpdk's
@@ -127,7 +139,7 @@ in
     # we need to enable shared (in addition to static) to build dpdk.
     # See the note on libmd for reasoning.
     configureFlags = (orig.configureFlags or [ ]) ++ [
-      "--enable-shared" # dpdk does not like to build its .so files if we don't build numa.so as well
+      "--enable-static" # dpdk does not like to build its .so files if we don't build numa.so as well
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p "$static/lib";
@@ -189,4 +201,6 @@ in
   # This wrapping process does not really cause any performance issue due to lto; the compiler is going to "unwrap"
   # these methods anyway.
   dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
+
+  inherit env;
 }

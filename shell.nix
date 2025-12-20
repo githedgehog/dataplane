@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
 {
+  overlay ? "dataplane",
+  target ? "x86_64-unknown-linux-gnu",
+  prof ? "debug",
+  instrumentation ? "none",
+  sanitize ? "",
+  sources ? import ./npins,
   pkgs ? import <nixpkgs> { },
 }:
 (pkgs.buildFHSEnv {

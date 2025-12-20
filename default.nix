@@ -48,13 +48,32 @@ let
     inherit sources;
     env = profile;
   };
-  pkgs = import sources.nixpkgs {
-    overlays = [
-      overlays.${overlay}
-    ];
-  };
+  pkgs =
+    (import sources.nixpkgs {
+      overlays = [
+        overlays.${overlay}
+      ];
+    }).pkgsCross.${arch.nixarch};
 in
-{
-  inherit sources profile;
-  pkgs = pkgs.pkgsCross.${arch.nixarch};
-}
+pkgs.lib.fix (final: {
+  inherit pkgs sources profile;
+  sysroot-list = with final.pkgs; [
+    libc.static
+    libc.out
+    libmd.static
+    libbsd.static
+    libnl.out
+    numactl.dev
+    numactl.static
+    rdma-core.static
+    dpdk.dev
+    dpdk.out
+    dpdk.static
+    dpdk-wrapper.dev
+    dpdk-wrapper.out
+  ];
+  sysroot = pkgs.symlinkJoin {
+    name = "sysroot";
+    paths = final.sysroot-list;
+  };
+})
