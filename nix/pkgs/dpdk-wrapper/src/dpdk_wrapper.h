@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
 #include <rte_config.h>
 
 #include <rte_alarm.h>
