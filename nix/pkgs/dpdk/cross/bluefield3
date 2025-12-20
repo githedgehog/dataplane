@@ -1,0 +1,17 @@
+[binaries]
+c = 'aarch64-unknown-linux-gnu-cc'
+cpp = 'aarch64-unknown-linux-gnu-c++'
+ar = 'aarch64-unknown-linux-gnu-ar'
+strip = 'aarch64-unknown-linux-gnu-strip'
+pkgconfig = 'aarch64-unknown-linux-gnu-pkg-config'
+pkg-config = 'aarch64-unknown-linux-gnu-pkg-config'
+pcap-config = ''
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'armv8.4-a'
+endian = 'little'
+
+[properties]
+platform = 'bluefield3'

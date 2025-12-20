@@ -13,15 +13,16 @@
   libnl,
   python3,
   build-params ? {
-    lto = "true";
-    build-type = "release"; # "debug" | "release"
+    lto = "false";
+    build-type = "debug"; # "debug" | "release"
   },
 }:
 
 stdenv.mkDerivation {
   pname = "dpdk";
   version = src.branch;
-  src = src.outPath;
+  # src = src.outPath;
+  src = ./src;
   nativeBuildInputs = [
     meson
     ninja
@@ -256,6 +257,7 @@ stdenv.mkDerivation {
       ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
       ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
       ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
+      ''--cross-file=${./cross/bluefield3.gnu}''
     ];
 
   outputs = [
@@ -264,6 +266,15 @@ stdenv.mkDerivation {
     "share"
     "static"
   ];
+
+  # AR = "aarch64-unknown-linux-gnu-ar";
+
+  # configurePhase = ''
+  #   meson setup arm-build --cross-file ${./cross/bluefield3}
+  #   cd build
+  # '';
+  #
+  CFLAGS = "-ffat-lto-objects -O1 -Wno-#warnings";
 
   postInstall = ''
     # Remove docs.  We don't build these anyway
