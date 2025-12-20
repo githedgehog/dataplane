@@ -2,12 +2,16 @@
 # Copyright Open Network Fabric Authors
 {
   overlay ? "dataplane",
-  target ? "x86_64-unknown-linux-gnu",
+  platform ? "x86-64-v3",
+  libc ? "gnu",
   prof ? "debug",
   instrumentation ? "none",
   sanitize ? "",
 }:
 let
+  lib = (import sources.nixpkgs { }).lib;
+  platform' = (import ./nix/machine.nix lib.recursiveUpdate).${platform};
+  target = "${platform'.arch}-unknown-linux-${libc}";
   arch =
     {
       "x86_64-unknown-linux-gnu" = {
@@ -38,14 +42,14 @@ let
     .${target};
   # helper method to work around nix's contrived builtin string split function.
   split-str = split: str: builtins.filter (elm: builtins.isString elm) (builtins.split split str);
-  sanitizers = if sanitize == null || sanitize == "" then [ ] else split-str ",+" sanitize;
+  sanitizers = split-str ",+" sanitize;
   sources = import ./npins;
   profile = import ./nix/profiles.nix {
     inherit prof sanitizers instrumentation;
     arch = arch.machine;
   };
   overlays = import ./nix/overlays {
-    inherit sources;
+    inherit sources sanitizers;
     env = profile;
   };
   pkgs =
@@ -56,7 +60,14 @@ let
     }).pkgsCross.${arch.nixarch};
 in
 pkgs.lib.fix (final: {
-  inherit pkgs sources profile;
+  inherit
+    pkgs
+    sources
+    profile
+    target
+    arch
+    ;
+  platform = platform';
   sysroot-list = with final.pkgs; [
     libc.static
     libc.out

@@ -241,17 +241,27 @@ stdenv.mkDerivation {
       cpu = stdenv.hostPlatform.parsed.cpu.arch;
       kernel = stdenv.hostPlatform.parsed.kernel.name;
       endian =
-        if stdenv.hostPlatform.parsed.cpu.significantByte.name == "littleEndian" then "little" else "big";
-      libc = if stdenv.hostPlatform.libc == "glibc" then "gnu" else stdenv.hostPlatform.libc;
+        {
+          littleEndian = "little";
+          bigEndian = "big";
+        }
+        .${stdenv.hostPlatform.parsed.cpu.significantByte.name};
+      libc-vendor =
+        {
+          glibc = "gnu";
+          musl = "musl";
+        }
+        .${stdenv.hostPlatform.libc};
       isCrossCompile = stdenv.buildPlatform.parsed != stdenv.hostPlatform.parsed;
+      cross-prefix = "${arch}-unknown-${kernel}-${libc-vendor}";
       cross-file = writeText "cross-file.ini" ''
         [binaries]
-        c = '${arch}-unknown-${kernel}-${libc}-cc'
-        cpp = '${arch}-unknown-${kernel}-${libc}-c++'
-        ar = '${arch}-unknown-${kernel}-${libc}-ar'
-        strip = '${arch}-unknown-${kernel}-${libc}-strip'
-        pkgconfig = '${arch}-unknown-${kernel}-${libc}-pkg-config'
-        pkg-config = '${arch}-unknown-${kernel}-${libc}-pkg-config'
+        c = '${cross-prefix}-cc'
+        cpp = '${cross-prefix}-c++'
+        ar = '${cross-prefix}-ar'
+        strip = '${cross-prefix}-strip'
+        pkgconfig = '${cross-prefix}-pkg-config'
+        pkg-config = '${cross-prefix}-pkg-config'
 
         [host_machine]
         system = '${kernel}'
@@ -261,7 +271,7 @@ stdenv.mkDerivation {
 
         [properties]
         platform = '${build-params.platform}'
-        libc = '${libc}'
+        libc = '${libc-vendor}'
       '';
     in
     with build-params;
