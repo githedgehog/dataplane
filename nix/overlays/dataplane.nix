@@ -2,7 +2,8 @@
 # Copyright Open Network Fabric Authors
 {
   sources,
-  env ? { },
+  sanitizers,
+  env,
 }:
 final: prev:
 let
@@ -15,21 +16,18 @@ let
   adapt = final.stdenvAdapters;
   bintools = final.buildPackages.llvmPackages.bintools;
   lld = final.buildPackages.llvmPackages.lld;
-  stdenv-llvm = adapt.addAttrsToDerivation (orig: {
+  stdenv' = adapt.addAttrsToDerivation (orig: {
     doCheck = false;
+    env = helpers.addToEnv env (orig.env or { });
     nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [
       bintools
       lld
     ];
   }) final.llvmPackages.stdenv;
-  # }) (adapt.makeStaticLibraries final.buildPackages.llvmPackages.stdenv);
-  stdenv-llvm-with-flags = adapt.addAttrsToDerivation (orig: {
-    env = helpers.addToEnv env (orig.env or { });
-  }) stdenv-llvm;
-  dataplane-dep = pkg: pkg.override { stdenv = stdenv-llvm-with-flags; };
+  dataplane-dep = pkg: pkg.override { stdenv = stdenv'; };
 in
 {
-  stdenv' = stdenv-llvm-with-flags;
+  inherit env stdenv';
   # Don't bother adapting ethtool or iproute2's build to our custom flags / env.  Failure to null this can trigger
   # _massive_ builds because ethtool depends on libnl (et al), and we _do_ overlay libnl.  Thus, the ethtool / iproute2
   # get rebuilt and you end up rebuilding the whole world.
@@ -48,8 +46,8 @@ in
   mscgen = null;
   pandoc = null;
 
-  # We should avoid accepting anything in our dpdk + friends pkgs which depends on udev / systemd; our deploy won't
-  # support any such mechanisms.
+  # We should avoid accepting anything in our dpdk + friends pkgs which depends on udev / systemd; our deploy simply
+  # won't support any such mechanisms.
   #
   # Usually this type of dependency takes the form of udev rules / systemd service files being generated (which is no
   # problem).  That said, builds which hard and fast depend on systemd or udev are very suspicious in this context, so
@@ -130,16 +128,14 @@ in
   # function.  In "the glorious future" we should bump all of this logic up to the dataplane's init process, compute
   # what we need to, pre-mmap _all_ of our heap memory, configure our cgroups and CPU affinities, and then pin our cores
   # and use memory pools local to the numa node of the pinned core.  That would be a fair amount of work, but it would
-  # liminate a fairly large dependency and likely increase the performance and security of the dataplane.
+  # eliminate a dependency and likely increase the performance and security of the dataplane.
   #
   # For now, we leave this on so DPDK can do some of that for us.  That said, this logic is quite cold and would ideally
   # be size optimized and punted far from all hot paths.  BOLT should be helpful here.
   numactl = (dataplane-dep prev.numactl).overrideAttrs (orig: {
     outputs = (prev.lib.lists.remove "man" orig.outputs) ++ [ "static" ];
-    # we need to enable shared (in addition to static) to build dpdk.
-    # See the note on libmd for reasoning.
     configureFlags = (orig.configureFlags or [ ]) ++ [
-      "--enable-static" # dpdk does not like to build its .so files if we don't build numa.so as well
+      "--enable-static"
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p "$static/lib";
@@ -159,29 +155,45 @@ in
   rdma-core = (dataplane-dep prev.rdma-core).overrideAttrs (orig: {
     version = sources.rdma-core.branch;
     src = sources.rdma-core.outPath;
-    outputs = [
-      "dev"
-      "out"
+    outputs = (orig.outputs or [ ]) ++ [
       "static"
     ];
-    cmakeFlags = orig.cmakeFlags ++ [
-      "-DENABLE_STATIC=1"
-      # we don't need pyverbs, and turning it off reduces build time / complexity.
-      "-DNO_PYVERBS=1"
-      # no need for docs in container images.
-      "-DNO_MAN_PAGES=1"
-      # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
-      # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
-      # build's internal complexity and makes lto easier.
-      "-DNO_COMPAT_SYMS=1"
-      # this allows thread sanitizer to build (thread/ub sanitizers do not like -Wl,-z,defs or -Wl,--no-undefined)
-      # Normally I would say that disabling -Wl,--no-undefined is a bad idea, but we throw away all the shared
-      # libs and executables from this build anwyway, so it it should be harmless.
-      "-DSUPPORTS_NO_UNDEFINED=0" # todo: find a way to enable this for only {thread,ub}san builds.
-    ];
+    cmakeFlags =
+      orig.cmakeFlags
+      ++ [
+        "-DENABLE_STATIC=1"
+        # we don't need pyverbs, and turning it off reduces build time / complexity.
+        "-DNO_PYVERBS=1"
+        # no need for docs in container images.
+        "-DNO_MAN_PAGES=1"
+        # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
+        # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
+        # build's internal complexity and makes lto easier.
+        "-DNO_COMPAT_SYMS=1"
+        # Very old versions of rdma-core used what they call the "legacy write path" to support rdma-operations.
+        # These have (long) since been superseded by the ioctl mode, but the library generates both code paths by
+        # default due to rdma-core's fairly aggressive backwards compatibility stance.
+        # We have absolutely no need or desire to support the legacy mode, and we can potentially save ourselves some
+        # instruction cache pressure by disabling that old code at compile time.
+        "-DIOCTL_MODE=ioctl"
+      ]
+      ++
+        final.lib.optionals
+          (
+            (builtins.elem "thread" sanitizers)
+            || (builtins.elem "address" sanitizers)
+            || (builtins.elem "safe-stack" sanitizers)
+          )
+          [
+            # This allows address / thread sanitizer to build (thread/ub sanitizers do not like -Wl,-z,defs or
+            # -Wl,--no-undefined).
+            # This isn't a hack: undefined symbols from sanitizers is a known issue and is not unique to us.
+            "-DSUPPORTS_NO_UNDEFINED=0"
+          ];
     postInstall = (orig.postInstall or "") + ''
-      mkdir -p $static/lib;
+      mkdir -p $static/lib $man;
       mv $out/lib/*.a $static/lib/
+      mv $out/share $man/
     '';
   });
 
@@ -201,6 +213,4 @@ in
   # This wrapping process does not really cause any performance issue due to lto; the compiler is going to "unwrap"
   # these methods anyway.
   dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
-
-  inherit env;
 }

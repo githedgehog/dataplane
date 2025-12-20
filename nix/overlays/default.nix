@@ -2,10 +2,11 @@
 # Copyright Open Network Fabric Authors
 {
   sources,
-  env ? { },
+  sanitizers,
+  env,
 }:
 {
   dataplane = import ./dataplane.nix {
-    inherit sources env;
+    inherit sources sanitizers env;
   };
 }
