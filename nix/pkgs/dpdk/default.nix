@@ -13,9 +13,11 @@
   libnl,
   python3,
   build-params ? {
-    lto = "false";
-    build-type = "debug"; # "debug" | "release"
+    lto = "true";
+    build-type = "release"; # "debug" | "release"
+    platform = "bluefield3";
   },
+  writeText,
 }:
 
 stdenv.mkDerivation {
@@ -235,6 +237,32 @@ stdenv.mkDerivation {
         "net/virtio"
         "vdpa/mlx5"
       ];
+      arch = stdenv.hostPlatform.parsed.cpu.name;
+      cpu = stdenv.hostPlatform.parsed.cpu.arch;
+      kernel = stdenv.hostPlatform.parsed.kernel.name;
+      endian =
+        if stdenv.hostPlatform.parsed.cpu.significantByte.name == "littleEndian" then "little" else "big";
+      libc = if stdenv.hostPlatform.libc == "glibc" then "gnu" else stdenv.hostPlatform.libc;
+      isCrossCompile = stdenv.buildPlatform.parsed != stdenv.hostPlatform.parsed;
+      cross-file = writeText "cross-file.ini" ''
+        [binaries]
+        c = '${arch}-unknown-${kernel}-${libc}-cc'
+        cpp = '${arch}-unknown-${kernel}-${libc}-c++'
+        ar = '${arch}-unknown-${kernel}-${libc}-ar'
+        strip = '${arch}-unknown-${kernel}-${libc}-strip'
+        pkgconfig = '${arch}-unknown-${kernel}-${libc}-pkg-config'
+        pkg-config = '${arch}-unknown-${kernel}-${libc}-pkg-config'
+
+        [host_machine]
+        system = '${kernel}'
+        cpu_family = '${arch}'
+        cpu = '${cpu}'
+        endian = '${endian}'
+
+        [properties]
+        platform = '${build-params.platform}'
+        libc = '${libc}'
+      '';
     in
     with build-params;
     [
@@ -257,8 +285,8 @@ stdenv.mkDerivation {
       ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
       ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
       ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
-      ''--cross-file=${./cross/bluefield3.gnu}''
-    ];
+    ]
+    ++ (if isCrossCompile then [ ''--cross-file=${cross-file}'' ] else [ ]);
 
   outputs = [
     "dev"
@@ -267,14 +295,7 @@ stdenv.mkDerivation {
     "static"
   ];
 
-  # AR = "aarch64-unknown-linux-gnu-ar";
-
-  # configurePhase = ''
-  #   meson setup arm-build --cross-file ${./cross/bluefield3}
-  #   cd build
-  # '';
-  #
-  CFLAGS = "-ffat-lto-objects -O1 -Wno-#warnings";
+  CFLAGS = if stdenv.targetPlatform.parsed.cpu.name == "aarch64" then "-ffat-lto-objects" else "";
 
   postInstall = ''
     # Remove docs.  We don't build these anyway

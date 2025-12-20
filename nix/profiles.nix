@@ -61,7 +61,11 @@ let
     "-mssse3"
   ];
   march.x86_64.NIX_CXXFLAGS_COMPILE = march.x86_64.NIX_CFLAGS_COMPILE;
-  march.aarch64.NIX_CFLAGS_COMPILE = [ ];
+  march.aarch64.NIX_CFLAGS_COMPILE = [
+      "-march=armv8.6-a"
+      "-mcpu=cortex-a78"
+      "-mtune=cortex-a78"
+  ];
   march.aarch64.NIX_CXXFLAGS_COMPILE = march.aarch64.NIX_CFLAGS_COMPILE;
   march.aarch64.NIX_CFLAGS_LINK = [ ];
   sanitize.address.NIX_CFLAGS_COMPILE = [
