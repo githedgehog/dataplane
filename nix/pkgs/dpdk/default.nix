@@ -294,6 +294,7 @@ stdenv.mkDerivation {
       ''-Ddisable_drivers=${lib.concatStringsSep "," disabledDrivers}''
       ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
       ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
+      ''-Ddisable_apps=*''
       ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
     ]
     ++ (if isCrossCompile then [ ''--cross-file=${cross-file}'' ] else [ ]);

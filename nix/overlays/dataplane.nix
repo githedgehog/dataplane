@@ -17,12 +17,11 @@ let
   adapt = final.stdenvAdapters;
   bintools = final.buildPackages.llvmPackages.bintools;
   lld = final.buildPackages.llvmPackages.lld;
-  env = helpers.addToEnv target.platform.override.stdenv.env profile;
+  added-to-env = helpers.addToEnv target.platform.override.stdenv.env profile;
   stdenv' = adapt.addAttrsToDerivation (orig: {
     doCheck = false;
-    env = helpers.addToEnv target.platform.override.stdenv.env (
-      helpers.addToEnv env (orig.env or { })
-    );
+    separateDebugInfo = true;
+    env = helpers.addToEnv added-to-env (orig.env or { });
     nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [
       bintools
       lld
@@ -31,7 +30,7 @@ let
   dataplane-dep = pkg: pkg.override { stdenv = stdenv'; };
 in
 {
-  inherit env stdenv';
+  inherit stdenv' added-to-env;
   # Don't bother adapting ethtool or iproute2's build to our custom flags / env.  Failure to null this can trigger
   # _massive_ builds because ethtool depends on libnl (et al), and we _do_ overlay libnl.  Thus, the ethtool / iproute2
   # get rebuilt and you end up rebuilding the whole world.
@@ -67,7 +66,7 @@ in
   # At minimum, the provided functions are generally quite small and likely to benefit from inlining, so static linking
   # is a solid plan.
   libmd = (dataplane-dep prev.libmd).overrideAttrs (orig: {
-    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+    outputs = (orig.outputs or [ "out" ]) ++ [ "man" "dev" "static" ];
     # we need to enable shared libs (in addition to static) to make dpdk's build happy. Basically, DPDK's build has no
     # means of disabling shared libraries, and it doesn't really make any sense to static link this into each .so
     # file.  Ideally we would just _not_ build those .so files, but that would require doing brain surgery on dpdk's
@@ -162,6 +161,12 @@ in
     outputs = (orig.outputs or [ ]) ++ [
       "static"
     ];
+    # CMake depends on -Werror to function, but the test program it uses to confirm that -Werror works "always produces
+    # warnings."  The reason for this is that we have injected our own CFLAGS and they have nothing to do with the
+    # trivial program.  This causes the unused-command-line-argument warning to trigger.
+    # We disable that warning here to make sure rdma-core can build (more specifically, to make sure that it can build
+    # with debug symbols).
+    CFLAGS = "-Wno-unused-command-line-argument";
     cmakeFlags =
       orig.cmakeFlags
       ++ [
@@ -209,7 +214,11 @@ in
   #
   # Also, while this library has a respectable security track record, this is also a super strong candidate for
   # cfi, safe-stack, and cf-protection.
-  dpdk = dataplane-dep (final.callPackage ../pkgs/dpdk { src = sources.dpdk; });
+  dpdk = dataplane-dep (
+    final.callPackage ../pkgs/dpdk (
+      target.platform.override.dpdk.buildInputs // { src = sources.dpdk; }
+    )
+  );
 
   # DPDK is largely composed of static-inline functions.
   # We need to wrap those functions with "_w" variants so that we can actually call them from rust.
