@@ -1,5 +1,5 @@
 [env]
-COMPILE_ENV = { value = "compile-env", relative = true, force = false }
+COMPILE_ENV = { value = "sysroot", relative = true, force = false }
 PATH = { value = "compile-env/bin", relative = true, force = true }
 LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
 PKG_CONFIG_PATH = { value = "compile-env/sysroot/x86_64-unknown-linux-gnu/release/lib/pkgconfig", relative = true, force = true }

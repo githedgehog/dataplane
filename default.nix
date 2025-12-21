@@ -45,6 +45,8 @@ let
     libmd.static
     libbsd.dev
     libbsd.static
+    libnl.dev
+    libnl.static
     numactl.dev
     numactl.static
     rdma-core.dev
@@ -74,11 +76,23 @@ pkgs.lib.fix (final: {
       name = "sysroot";
       paths = sysroot-list;
     };
+  clangd = pkgs.writeTextFile {
+    name = ".clangd";
+    text = ''
+      CompileFlags:
+        Add:
+          - "-I${final.sysroot}/include"
+          - "-I${final.pkgs.dpdk.dev}/include"
+          - "-Wno-deprecated-declarations"
+    '';
+    executable = false;
+    destination = "/.clangd";
+  };
   build-tools =
     with final.pkgs.buildPackages;
     symlinkJoin {
       name = "build-tools";
-      paths = build-tools-list;
+      paths = build-tools-list ++ [ final.clangd ];
     };
   dev-shell = final.pkgs.symlinkJoin {
     name = "dataplane-dev-shell";

@@ -31,7 +31,15 @@ let
         NIX_CFLAGS_LINK = [ ];
       };
     };
-    zen4 = lib.recursiveUpdate x86-64-v4 rec {
+    zen3 = lib.recursiveUpdate x86-64-v4 rec {
+      march = "znver3";
+      override.stdenv.env = rec {
+        NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
+        NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
+        NIX_CFLAGS_LINK = [ ];
+      };
+    };
+    zen4 = lib.recursiveUpdate zen3 rec {
       march = "znver4";
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-march=${march}" ];
