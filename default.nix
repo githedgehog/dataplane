@@ -72,7 +72,7 @@ let
   };
   dev-tools = pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
-    paths = with pkgs.buildPackages; [
+    paths = with pkgs.pkgsBuildHost; [
       clangd-config
       llvmPackages.bintools
       llvmPackages.clang
