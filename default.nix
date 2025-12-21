@@ -56,12 +56,17 @@ let
     dpdk-wrapper.dev
     dpdk-wrapper.out
   ];
-  build-tools-list = with pkgs.buildPackages.llvmPackages; [
-    bintools
-    clang
-    libclang.lib
-    lld
-  ];
+  build-tools-list =
+    with pkgs.buildPackages;
+    [
+      llvmPackages.bintools
+      llvmPackages.clang
+      llvmPackages.libclang.lib
+      llvmPackages.lld
+    ]
+    ++ [
+      npins
+    ];
 in
 pkgs.lib.fix (final: {
   inherit
