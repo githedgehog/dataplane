@@ -15,8 +15,8 @@ let
       with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) add)
     );
   adapt = final.stdenvAdapters;
-  bintools = final.buildPackages.llvmPackages.bintools;
-  lld = final.buildPackages.llvmPackages.lld;
+  bintools = final.pkgsBuildHost.llvmPackages.bintools;
+  lld = final.pkgsBuildHost.llvmPackages.lld;
   added-to-env = helpers.addToEnv target.platform.override.stdenv.env profile;
   stdenv' = adapt.addAttrsToDerivation (orig: {
     doCheck = false;
