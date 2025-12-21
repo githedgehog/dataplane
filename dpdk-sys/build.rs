@@ -71,7 +71,7 @@ fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let sysroot = dpdk_sysroot_helper::get_sysroot();
 
-    println!("cargo:rustc-link-arg=--sysroot={sysroot}");
+    // println!("cargo:rustc-link-arg=--sysroot={sysroot}");
     println!("cargo:rustc-link-search=all={sysroot}/lib");
 
     // NOTE: DPDK absolutely requires whole-archive in the linking command.
@@ -100,6 +100,7 @@ fn main() {
         "rte_rcu",
         "rte_ring",
         "rte_eal",
+        "rte_argparse",
         "rte_kvargs",
         "rte_telemetry",
         "rte_log",
