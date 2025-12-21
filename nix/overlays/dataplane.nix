@@ -66,7 +66,11 @@ in
   # At minimum, the provided functions are generally quite small and likely to benefit from inlining, so static linking
   # is a solid plan.
   libmd = (dataplane-dep prev.libmd).overrideAttrs (orig: {
-    outputs = (orig.outputs or [ "out" ]) ++ [ "man" "dev" "static" ];
+    outputs = (orig.outputs or [ "out" ]) ++ [
+      "man"
+      "dev"
+      "static"
+    ];
     # we need to enable shared libs (in addition to static) to make dpdk's build happy. Basically, DPDK's build has no
     # means of disabling shared libraries, and it doesn't really make any sense to static link this into each .so
     # file.  Ideally we would just _not_ build those .so files, but that would require doing brain surgery on dpdk's
