@@ -37,70 +37,58 @@ let
         overlays.${overlay}
       ];
     }).pkgsCross.${target.info.nixarch};
-
-  sysroot-list = with pkgs; [
-    stdenv'.cc.libc.dev
-    stdenv'.cc.libc.out
-    libmd.dev
-    libmd.static
-    libbsd.dev
-    libbsd.static
-    libnl.dev
-    libnl.static
-    numactl.dev
-    numactl.static
-    rdma-core.dev
-    rdma-core.static
-    dpdk.dev
-    dpdk.static
-    dpdk-wrapper.dev
-    dpdk-wrapper.out
-  ];
-  build-tools-list =
-    with pkgs.buildPackages;
-    [
-      llvmPackages.bintools
-      llvmPackages.clang
-      llvmPackages.libclang.lib
-      llvmPackages.lld
-    ]
-    ++ [
-      npins
+  sysroot = pkgs.symlinkJoin {
+    name = "sysroot";
+    paths = with pkgs; [
+      stdenv'.cc.libc.dev
+      stdenv'.cc.libc.out
+      libmd.dev
+      libmd.static
+      libbsd.dev
+      libbsd.static
+      libnl.dev
+      libnl.static
+      numactl.dev
+      numactl.static
+      rdma-core.dev
+      rdma-core.static
+      dpdk.dev
+      dpdk.static
+      dpdk-wrapper.dev
+      dpdk-wrapper.out
     ];
-in
-pkgs.lib.fix (final: {
-  inherit
-    pkgs
-    sources
-    profile
-    target
-    ;
-  sysroot =
-    with final.pkgs;
-    symlinkJoin {
-      name = "sysroot";
-      paths = sysroot-list;
-    };
-  clangd = pkgs.writeTextFile {
+  };
+  clangd-config = pkgs.writeTextFile {
     name = ".clangd";
     text = ''
       CompileFlags:
         Add:
-          - "-I${final.sysroot}/include"
-          - "-I${final.pkgs.dpdk.dev}/include"
+          - "-I${sysroot}/include"
+          - "-I${pkgs.dpdk.dev}/include"
           - "-Wno-deprecated-declarations"
     '';
     executable = false;
     destination = "/.clangd";
   };
-  build-tools =
-    with final.pkgs.buildPackages;
-    symlinkJoin {
-      name = "build-tools";
-      paths = build-tools-list ++ [ final.clangd ];
-    };
-  dev-shell = final.pkgs.symlinkJoin {
+  dev-tools = pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
-    paths = sysroot-list ++ build-tools-list;
+    paths = with pkgs.buildPackages; [
+      clangd-config
+      llvmPackages.bintools
+      llvmPackages.clang
+      llvmPackages.libclang.lib
+      llvmPackages.lld
+      npins
+    ];
   };
-})
+in
+{
+  inherit
+    pkgs
+    sources
+    profile
+    target
+    sysroot
+    dev-tools
+    ;
+}
