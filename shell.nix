@@ -2,25 +2,56 @@
 # Copyright Open Network Fabric Authors
 {
   overlay ? "dataplane",
-  target ? "x86_64-unknown-linux-gnu",
+  platform ? "x86-64-v3",
+  libc ? "gnu",
   prof ? "debug",
   instrumentation ? "none",
-  sanitize ? "",
-  sources ? import ./npins,
-  pkgs ? import <nixpkgs> { },
+  sanitize ? "address",
 }:
-(pkgs.buildFHSEnv {
-  name = "dataplane-shell";
+let
+  d = import ./default.nix {
+    inherit
+      overlay
+      platform
+      libc
+      prof
+      instrumentation
+      sanitize
+      ;
+  };
+  pkgs = import <nixpkgs> {};
+in
+(d.pkgs-super.buildPackages.buildFHSEnv {
+  name = "dataplane-dev";
   targetPkgs =
-    pkgs:
-    (with pkgs; [
-      # dev tools
-      bash
-      direnv
-      just
-      nil
-      nixd
-      npins
-      wget
-    ]);
+    pkgs: with pkgs; [
+      stdenv.cc.libc.dev
+      stdenv.cc.libc.out
+      # libmd.dev
+      # libmd.static
+      libbsd.dev
+      # libbsd.static
+      numactl.dev
+      # numactl.static
+      rdma-core.dev
+      # rdma-core.static
+      # dpdk.dev
+      # dpdk.static
+      # dpdk-wrapper.dev
+      # dpdk-wrapper.out
+    ];
+  # (with pkgs.buildPackages; [
+  #   # dev tools
+  #   bash
+  #   direnv
+  #   just
+  #   nil
+  #   nixd
+  #   npins
+  #   wget
+  #   llvmPackages.bintools
+  #   llvmPackages.clang
+  #   llvmPackages.libclang.lib
+  #   llvmPackages.lld
+  # ]);
 }).env

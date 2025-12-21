@@ -19,12 +19,7 @@ let
           NIX_CFLAGS_LINK = [ ];
         };
         dpdk = {
-          buildInputs = {
-            rdma-core = true;
-            libbsd = true;
-            libnl = true;
-            numactl = true;
-          };
+          buildInputs = { };
         };
       };
     };
@@ -67,10 +62,7 @@ let
         };
         dpdk = {
           buildInputs = {
-            rdma-core = true;
-            libbsd = true;
-            libnl = true;
-            numactl = false;
+            numactl = null;
           };
         };
       };
