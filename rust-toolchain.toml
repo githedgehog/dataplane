@@ -1,0 +1,27 @@
+[toolchain]
+# NOTE: you can and should manually update this on new rust releases
+
+channel = "1.92.0"
+components = [
+    "rustc",
+    "cargo",
+    "rust-std",
+    "rust-docs",
+    "rustfmt-preview",
+    "clippy-preview",
+    "rust-analyzer-preview",
+    "rust-src",
+
+    # disabled components
+    # "rust-mingw",
+    # "llvm-tools-preview", ## we already have a full llvm in the npins
+    # "rust-analysis", ## obsolete
+    # "miri-preview", ## not yet functional for us
+    # "rustc-codegen-cranelift-preview" ## not relevant to us
+]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl"
+]

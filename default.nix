@@ -16,27 +16,27 @@ let
     if str == "" then [ ] else builtins.filter (elm: builtins.isString elm) (builtins.split split str);
   sanitizers = split-str ",+" sanitize;
   sources = import ./npins;
-  target = import ./nix/target.nix {
+  platform' = import ./nix/platforms.nix {
     inherit lib platform libc;
   };
   profile = import ./nix/profiles.nix {
     inherit prof sanitizers instrumentation;
-    arch = target.platform.arch;
+    arch = platform'.arch;
   };
   overlays = import ./nix/overlays {
     inherit
       sources
       sanitizers
-      target
       profile
       ;
+    platform = platform';
   };
   pkgs =
     (import sources.nixpkgs {
       overlays = [
         overlays.${overlay}
       ];
-    }).pkgsCross.${target.info.nixarch};
+    }).pkgsCross.${platform'.info.nixarch};
   sysroot = pkgs.symlinkJoin {
     name = "sysroot";
     paths = with pkgs; [
@@ -84,11 +84,11 @@ let
 in
 {
   inherit
-    pkgs
-    sources
-    profile
-    target
-    sysroot
     dev-tools
+    pkgs
+    profile
+    sources
+    sysroot
     ;
+  platform = platform';
 }

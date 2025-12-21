@@ -13,6 +13,11 @@
       "url": "https://github.com/DPDK/dpdk/archive/ed957165eadbe60a47d5ec223578cdd1c13d0bd9.tar.gz",
       "hash": "09h7wnmq4c9xm1nsyv5mz1yf91c1l6vy9sdcamb09qjjx4wgs0q9"
     },
+    "fenix": {
+      "type": "Tarball",
+      "url": "https://github.com/nix-community/fenix/archive/main.tar.gz",
+      "hash": "1gkd9ppvsxl4jjg1jyw61wm99xhy4hdqx5dxqj06gfxi2zkamvzf"
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",

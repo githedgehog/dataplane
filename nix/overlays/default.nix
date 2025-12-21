@@ -3,7 +3,7 @@
 {
   sources,
   sanitizers,
-  target,
+  platform,
   profile,
 }:
 {
@@ -11,7 +11,7 @@
     inherit
       sources
       sanitizers
-      target
+      platform
       profile
       ;
   };

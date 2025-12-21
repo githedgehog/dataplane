@@ -3,7 +3,7 @@
 {
   sources,
   sanitizers,
-  target,
+  platform,
   profile,
 }:
 final: prev:
@@ -17,7 +17,7 @@ let
   adapt = final.stdenvAdapters;
   bintools = final.pkgsBuildHost.llvmPackages.bintools;
   lld = final.pkgsBuildHost.llvmPackages.lld;
-  added-to-env = helpers.addToEnv target.platform.override.stdenv.env profile;
+  added-to-env = helpers.addToEnv platform.override.stdenv.env profile;
   stdenv' = adapt.addAttrsToDerivation (orig: {
     doCheck = false;
     separateDebugInfo = true;
@@ -28,6 +28,11 @@ let
     ];
   }) final.llvmPackages.stdenv;
   dataplane-dep = pkg: pkg.override { stdenv = stdenv'; };
+  fenix = import sources.fenix { };
+  rust-toolchain = fenix.fromToolchainFile {
+    file = ../../rust-toolchain.toml;
+    sha256 = (builtins.fromJSON (builtins.readFile ../.rust-toolchain.manifest-lock.json)).hash.sha256;
+  };
 in
 {
   inherit stdenv' added-to-env;
@@ -219,9 +224,7 @@ in
   # Also, while this library has a respectable security track record, this is also a super strong candidate for
   # cfi, safe-stack, and cf-protection.
   dpdk = dataplane-dep (
-    final.callPackage ../pkgs/dpdk (
-      target.platform.override.dpdk.buildInputs // { src = sources.dpdk; }
-    )
+    final.callPackage ../pkgs/dpdk (platform.override.dpdk.buildInputs // { src = sources.dpdk; })
   );
 
   # DPDK is largely composed of static-inline functions.
@@ -230,4 +233,10 @@ in
   # This wrapping process does not really cause any performance issue due to lto; the compiler is going to "unwrap"
   # these methods anyway.
   dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
+
+  # TODO: doc this
+  rustPlatform = final.makeRustPlatform {
+    cargo = rust-toolchain;
+    rustc = rust-toolchain;
+  };
 }
