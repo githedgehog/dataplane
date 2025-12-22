@@ -1395,6 +1395,7 @@ version = "0.7.0"
 dependencies = [
  "bolero",
  "dataplane-hardware",
+ "dataplane-k8s-sample-derive",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-tracectl",

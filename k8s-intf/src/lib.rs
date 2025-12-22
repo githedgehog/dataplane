@@ -9,6 +9,7 @@
 pub mod bolero;
 pub mod client;
 pub mod generated;
+pub mod samplegen;
 pub mod utils;
 
 pub mod gateway_agent_crd {
