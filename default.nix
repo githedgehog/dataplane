@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
 {
-  overlay ? "dataplane",
   platform ? "x86-64-v3",
   libc ? "gnu",
   prof ? "debug",
@@ -31,15 +30,20 @@ let
       ;
     platform = platform';
   };
-  pkgs =
+  dataplane-dev-pkgs = import sources.nixpkgs {
+    overlays = [
+      overlays.dataplane-dev
+    ];
+  };
+  dataplane-pkgs =
     (import sources.nixpkgs {
       overlays = [
-        overlays.${overlay}
+        overlays.dataplane
       ];
     }).pkgsCross.${platform'.info.nixarch};
-  sysroot = pkgs.symlinkJoin {
+  sysroot = dataplane-pkgs.symlinkJoin {
     name = "sysroot";
-    paths = with pkgs; [
+    paths = with dataplane-pkgs; [
       stdenv'.cc.libc.dev
       stdenv'.cc.libc.out
       libmd.dev
@@ -58,34 +62,47 @@ let
       dpdk-wrapper.out
     ];
   };
-  clangd-config = pkgs.writeTextFile {
+  clangd-config = dataplane-pkgs.writeTextFile {
     name = ".clangd";
     text = ''
       CompileFlags:
         Add:
           - "-I${sysroot}/include"
-          - "-I${pkgs.dpdk.dev}/include"
+          - "-I${dataplane-pkgs.dpdk.dev}/include"
           - "-Wno-deprecated-declarations"
     '';
     executable = false;
     destination = "/.clangd";
   };
-  dev-tools = pkgs.symlinkJoin {
+  dev-tools = dataplane-pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
-    paths = with pkgs.pkgsBuildHost; [
+    paths = [
       clangd-config
-      llvmPackages.bintools
-      llvmPackages.clang
-      llvmPackages.libclang.lib
-      llvmPackages.lld
+    ]
+    ++ (with dataplane-pkgs.pkgsBuildHost.llvmPackages; [
+      bintools
+      clang
+      libclang.lib
+      lld
+    ])
+    ++ (with dataplane-dev-pkgs; [
+      bash
+      cargo-bolero
+      cargo-deny
+      cargo-depgraph
+      cargo-llvm-cov
+      cargo-nextest
+      direnv
+      just
       npins
-    ];
+    ]);
   };
 in
 {
   inherit
+    dataplane-dev-pkgs
+    dataplane-pkgs
     dev-tools
-    pkgs
     profile
     sources
     sysroot

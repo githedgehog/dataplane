@@ -15,4 +15,8 @@
       profile
       ;
   };
+
+  dataplane-dev = import ./dataplane-dev.nix {
+    inherit sources;
+  };
 }

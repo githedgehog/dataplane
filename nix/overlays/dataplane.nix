@@ -65,6 +65,8 @@ in
   udev = null;
   udevCheckHook = null;
 
+  llvmPackages = final.llvmPackages_21;
+
   # libmd is used by libbsd (et al) which is an optional dependency of dpdk.
   #
   # We _might_ actually care about perf here, so we lto this package.
@@ -167,6 +169,17 @@ in
   rdma-core = (dataplane-dep prev.rdma-core).overrideAttrs (orig: {
     version = sources.rdma-core.branch;
     src = sources.rdma-core.outPath;
+
+    # Patching the shebang lines in the perl scripts causes nixgraph to (incorrectly) think we depend on perl at
+    # runtime.  We absolutely do not (we don't even ship a perl interpreter), so don't patch these shebang lines.
+    # In fact, we don't use any of the scripts from this package.
+    dontPatchShebangs = true;
+
+    # The upstream postFixup is broken by dontPatchShebangs = true
+    # It's whole function was to further mutate the shebang lines in perl scripts, so we don't care.
+    # Just null it.
+    postFixup = null;
+
     outputs = (orig.outputs or [ ]) ++ [
       "static"
     ];
@@ -179,6 +192,8 @@ in
     cmakeFlags =
       orig.cmakeFlags
       ++ [
+        "-DRDMA_DYNAMIC_PROVIDERS=none"
+        "-DRDMA_STATIC_PROVIDERS=all"
         "-DENABLE_STATIC=1"
         # we don't need pyverbs, and turning it off reduces build time / complexity.
         "-DNO_PYVERBS=1"
@@ -234,8 +249,13 @@ in
   # these methods anyway.
   dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
 
+  pciutils = dataplane-dep (prev.pciutils.override { static = true; });
+  # This isn't directly required by dataplane,
+  perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
+
   # TODO: doc this
   rustPlatform = final.makeRustPlatform {
+    stdenv = stdenv';
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
