@@ -1430,6 +1430,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-k8s-sample-crds"
+version = "0.7.0"
+dependencies = [
+ "dataplane-k8s-intf",
+]
+
+[[package]]
 name = "dataplane-k8s-sample-derive"
 version = "0.7.0"
 dependencies = [
