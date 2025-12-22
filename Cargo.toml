@@ -19,6 +19,7 @@ members = [
     "interface-manager",
     "k8s-intf",
     "k8s-less",
+    "k8s-sample-derive",
     "left-right-tlcache",
     "mgmt",
     "nat",
@@ -73,6 +74,7 @@ pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] 
 pkt-meta = { path = "./pkt-meta", package = "dataplane-pkt-meta", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
+k8s-sample-derive = { path = "./k8s-sample-derive", package = "dataplane-k8s-sample-derive", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
 sysfs = { path = "./sysfs", package = "dataplane-sysfs", features = [] }
 test-utils = { path = "./test-utils", package = "dataplane-test-utils", features = [] }
