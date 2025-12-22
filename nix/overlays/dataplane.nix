@@ -253,6 +253,9 @@ in
   # This isn't directly required by dataplane,
   perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 
+  inherit rust-toolchain;
+  cargo = rust-toolchain;
+  rustc = rust-toolchain;
   # TODO: doc this
   rustPlatform = final.makeRustPlatform {
     stdenv = stdenv';
