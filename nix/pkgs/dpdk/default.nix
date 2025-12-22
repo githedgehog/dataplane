@@ -311,6 +311,8 @@ stdenv.mkDerivation {
   postInstall = ''
     # Remove docs.  We don't build these anyway
     rm -rf $out/share/doc
+    # Remove python files from bin output (we never use them and they confuse dependency reports)
+    rm $out/bin/*.py
     mkdir -p $static/lib $share;
     mv $out/lib/*.a $static/lib
     mv $out/share $share

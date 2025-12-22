@@ -18,11 +18,43 @@
       "url": "https://github.com/nix-community/fenix/archive/main.tar.gz",
       "hash": "1gkd9ppvsxl4jjg1jyw61wm99xhy4hdqx5dxqj06gfxi2zkamvzf"
     },
+    "kopium": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "kube-rs",
+        "repo": "kopium"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "0.22.5",
+      "revision": "f346e2044500c8d71523c35d474bc2f6235a0060",
+      "url": "https://api.github.com/repos/kube-rs/kopium/tarball/0.22.5",
+      "hash": "14lr2qgfh50rlpw5wgy6cw1qvkz44bwwx06srlks243hgkw9p2fd"
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre913981.7d853e518814/nixexprs.tar.xz",
       "hash": "1cpg513zly625rw05kbz1hvfiqcrwbd71c1bqhp61sh6ng8ifg4c"
+    },
+    "perftest": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "linux-rdma",
+        "repo": "perftest"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "25.10.0-0.128",
+      "revision": "8a1d3d7234add23fe006b2ff51d650ff022077a8",
+      "url": "https://api.github.com/repos/linux-rdma/perftest/tarball/25.10.0-0.128",
+      "hash": "192m2xlds308y0p2h6f6zciwspgq3k0q93q9lp1j4ijmwrpbcrl0"
     },
     "rdma-core": {
       "type": "Git",
