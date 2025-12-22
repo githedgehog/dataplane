@@ -75,6 +75,8 @@ let
     executable = false;
     destination = "/.clangd";
   };
+  crane = import sources.crane { };
+  craneLib = crane.craneLib.overrideToolchain dataplane-pkgs.rust-toolchain;
   dev-tools = dataplane-pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
     paths = [
@@ -98,8 +100,6 @@ let
       npins
     ]);
   };
-  # crane = import sources.crane { pkgs = dataplane-dev-pkgs; };
-  crane = import sources.crane { };
   dataplane-src = crane.cleanCargoSource ./.;
 
   # Common arguments can be set here to avoid repeating them later
@@ -264,6 +264,12 @@ in
     ;
   platform = platform';
   x = builtins.attrNames crane;
+  y = {
+    lib = {
+      x = (builtins.attrNames crane.craneLib);
+    };
+  };
+  z = dataplane-pkgs.runCommand "ls" { } "echo potato > $out";
   # y = crane.buildPackage
 
 }
