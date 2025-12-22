@@ -57,6 +57,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: Some(p),
                 not: None,
+                ports: None,
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
@@ -65,6 +66,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: None,
                 not: Some(p),
+                ports: None,
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
@@ -73,12 +75,14 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: Some(p),
                 not: None,
+                ports: None,
             });
         let not_as = generate_prefixes(d, num_v4_not_as, num_v6_not_as)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: None,
                 not: Some(p),
+                ports: None,
             });
 
         let mut subnets = Vec::new();
@@ -90,6 +94,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             subnets.push(GatewayAgentPeeringsPeeringExposeIps {
                 cidr: None,
                 not: None,
+                ports: None,
                 vpc_subnet: Some(name.clone()),
             });
         }
