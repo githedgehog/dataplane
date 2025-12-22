@@ -20,7 +20,7 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
 # internal
-n-vm = { workspace = true }
+# n-vm = { workspace = true }
 
 # external
 

@@ -20,11 +20,11 @@ impl ParseCallbacks for Cb {
     }
 }
 
-fn bind(path: &Path, sysroot: &str) {
+fn bind(path: &Path) {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let static_fn_path = out_path.join("generated.h");
     bindgen::Builder::default()
-        .header(format!("{sysroot}/include/dpdk_wrapper.h"))
+        .header(format!("./dpdk_wrapper.h"))
         .anon_fields_prefix("annon")
         .use_core()
         .generate_comments(true)
@@ -56,7 +56,7 @@ fn bind(path: &Path, sysroot: &str) {
         .opaque_type("rte_arp_ipv4")
         .opaque_type("rte_gtp_psc_generic_hdr")
         .opaque_type("rte_l2tpv2_combined_msg_hdr")
-        .clang_arg(format!("-I{sysroot}/include"))
+        // .clang_arg(format!("-I{sysroot}/include"))
         .clang_arg("-fretain-comments-from-system-headers")
         .clang_arg("-fparse-all-comments")
         .rust_edition(bindgen::RustEdition::Edition2024)
@@ -69,14 +69,13 @@ fn bind(path: &Path, sysroot: &str) {
 
 fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let sysroot = dpdk_sysroot_helper::get_sysroot();
+    let library_path  = env::var("LIBRARY_PATH").unwrap().to_string();
+    // let sysroot = dpdk_sysroot_helper::get_sysroot();
 
     // println!("cargo:rustc-link-arg=--sysroot={sysroot}");
-    println!("cargo:rustc-link-search=all={sysroot}/lib");
+    // println!("cargo:rustc-link-search=all={sysroot}/lib");
+    println!("cargo:rustc-link-search=all={library_path}");
 
-    // NOTE: DPDK absolutely requires whole-archive in the linking command.
-    // While I find this very questionable, it is what it is.
-    // It is just more work for the LTO later on I suppose ¯\_(ツ)_/¯
     let depends = [
         "dpdk_wrapper",
         "rte_net_virtio",
@@ -127,6 +126,9 @@ fn main() {
         "numa",
     ];
 
+    // NOTE: DPDK absolutely requires whole-archive in the linking command.
+    // While I find this very questionable, it is what it is.
+    // It is just more work for the LTO later on I suppose ¯\_(ツ)_/¯
     for dep in &depends {
         println!("cargo:rustc-link-lib=static:+whole-archive,+bundle={dep}");
     }
@@ -134,5 +136,5 @@ fn main() {
     for file in &rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");
     }
-    bind(&out_path, sysroot.as_str());
+    bind(&out_path);
 }

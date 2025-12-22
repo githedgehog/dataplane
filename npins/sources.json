@@ -1,5 +1,21 @@
 {
   "pins": {
+    "crane": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "ipetkov",
+        "repo": "crane"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.21.3",
+      "revision": "4a7cf504d83f7d0460f9cf28fe6cbaa5fb856034",
+      "url": "https://api.github.com/repos/ipetkov/crane/tarball/v0.21.3",
+      "hash": "1a27r58apm5arxyydn78j9yz0aa7d20v4ai688d23lbivfs0jaa5"
+    },
     "dpdk": {
       "type": "Git",
       "repository": {
@@ -33,6 +49,19 @@
       "revision": "f346e2044500c8d71523c35d474bc2f6235a0060",
       "url": "https://api.github.com/repos/kube-rs/kopium/tarball/0.22.5",
       "hash": "14lr2qgfh50rlpw5wgy6cw1qvkz44bwwx06srlks243hgkw9p2fd"
+    },
+    "naersk": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "nix-community",
+        "repo": "naersk"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "d4155d6ebb70fbe2314959842f744aa7cabbbf6a",
+      "url": "https://github.com/nix-community/naersk/archive/d4155d6ebb70fbe2314959842f744aa7cabbbf6a.tar.gz",
+      "hash": "1pmj1d3xp3fjz8m3msvmh8jnylwmgk76iah9qnfs8ddgwlij1v5g"
     },
     "nixpkgs": {
       "type": "Channel",

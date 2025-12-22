@@ -36,9 +36,9 @@ tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 # internal
-fixin = { workspace = true, features = [] }
+# fixin = { workspace = true, features = [] }
 id = { workspace = true, features = ["serde", "rkyv"] }
-n-vm = { workspace = true }
+# n-vm = { workspace = true }
 test-utils = { workspace = true, features = [] }
 
 # external

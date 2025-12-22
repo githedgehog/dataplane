@@ -60,6 +60,7 @@ let
       dpdk.static
       dpdk-wrapper.dev
       dpdk-wrapper.out
+      hwloc
     ];
   };
   clangd-config = dataplane-pkgs.writeTextFile {
@@ -97,6 +98,150 @@ let
       npins
     ]);
   };
+  # crane = import sources.crane { pkgs = dataplane-dev-pkgs; };
+  crane = import sources.crane { };
+  dataplane-src = crane.cleanCargoSource ./.;
+
+  # Common arguments can be set here to avoid repeating them later
+  commonArgs = {
+    src = dataplane-src;
+    strictDeps = true;
+    CARGO_PROFILE = "dev";
+
+    nativeBuildInputs = [
+      dataplane-pkgs.pkg-config
+      # dataplane-pkgs.libclang.lib
+    ];
+    buildInputs = [
+      dataplane-pkgs.hwloc
+    ];
+
+    # Additional environment variables can be set directly
+    # MY_CUSTOM_VAR = "some value";
+  };
+  # Build *just* the cargo dependencies (of the entire workspace),
+  # so we can reuse all of that work (e.g. via cachix) when running in CI
+  # It is *highly* recommended to use something like cargo-hakari to avoid
+  # cache misses when building individual top-level-crates
+  cargoArtifacts = crane.buildDepsOnly commonArgs;
+  individualCrateArgs = commonArgs // {
+    inherit cargoArtifacts;
+    inherit (crane.crateNameFromCargoToml { src = dataplane-src; }) version;
+    # NB: we disable tests since we'll run them all via cargo-nextest
+    doCheck = false;
+  };
+  fileSetForCrate =
+    crate:
+    lib.fileset.toSource {
+      root = ./.;
+      fileset = lib.fileset.unions [
+        ./.
+        ./Cargo.toml
+        ./Cargo.lock
+        # (crane.fileset.commonCargoSources ./crates/my-common)
+        # (crane.fileset.commonCargoSources ./crates/my-workspace-hack)
+        (crane.fileset.commonCargoSources crate)
+      ];
+    };
+  rekon = crane.buildPackage (
+    individualCrateArgs
+    // {
+      pname = "dataplane-rekon";
+      cargoExtraArgs = "--package dataplane-rekon";
+      src = fileSetForCrate ./rekon;
+    }
+  );
+  net = crane.buildPackage (
+    individualCrateArgs
+    // {
+      pname = "dataplane-net";
+      cargoExtraArgs = "--package dataplane-net";
+      src = fileSetForCrate ./net;
+    }
+  );
+  cli = crane.buildPackage (
+    individualCrateArgs
+    // {
+      pname = "dataplane-cli";
+      cargoExtraArgs = "--package dataplane-cli";
+      src = fileSetForCrate ./cli;
+    }
+  );
+  dataplane-dpdk-sysroot-helper = crane.buildPackage (
+    individualCrateArgs
+    // {
+      pname = "dataplane-dpdk-sysroot-helper";
+      cargoExtraArgs = "--package dataplane-dpdk-sysroot-helper";
+      src = fileSetForCrate ./dpdk-sysroot-helper;
+    }
+  );
+  dpdk-sys = crane.buildPackage (
+    individualCrateArgs
+    // {
+      pname = "dataplane-dpdk-sys";
+      cargoExtraArgs = "--package dataplane-dpdk-sys";
+      src = fileSetForCrate ./dpdk-sys;
+      env = {
+        LIBCLANG_PATH = "${dataplane-pkgs.llvmPackages.libclang.lib}/lib";
+        C_INCLUDE_PATH = "${dataplane-pkgs.dpdk.dev}/include:${dataplane-pkgs.libbsd.dev}/include:${dataplane-pkgs.stdenv'.cc.libc.dev}/include";
+        LIBRARY_PATH = "${sysroot}/lib";
+      };
+      nativeBuildInputs = [
+        dataplane-pkgs.pkg-config
+        dataplane-pkgs.llvmPackages.libclang.lib
+        dataplane-pkgs.llvmPackages.clang
+        dataplane-pkgs.llvmPackages.lld
+      ];
+      buildInputs = [
+        sysroot
+      ];
+    }
+  );
+  pdpdk = crane.buildPackage (
+    individualCrateArgs
+    // {
+      pname = "dataplane-dpdk";
+      cargoExtraArgs = "--package dataplane-dpdk";
+      src = fileSetForCrate ./dpdk;
+      env = {
+        LIBCLANG_PATH = "${dataplane-pkgs.llvmPackages.libclang.lib}/lib";
+        C_INCLUDE_PATH = "${dataplane-pkgs.dpdk.dev}/include:${dataplane-pkgs.libbsd.dev}/include:${dataplane-pkgs.stdenv'.cc.libc.dev}/include";
+        LIBRARY_PATH = "${sysroot}/lib";
+      };
+      nativeBuildInputs = [
+        dataplane-pkgs.pkg-config
+        dataplane-pkgs.llvmPackages.libclang.lib
+        dataplane-pkgs.llvmPackages.clang
+        dataplane-pkgs.llvmPackages.lld
+      ];
+      buildInputs = [
+        sysroot
+      ];
+    }
+  );
+  dataplane = crane.buildPackage (
+    individualCrateArgs
+    // {
+      pname = "dataplane";
+      cargoExtraArgs = "--package dataplane";
+      src = fileSetForCrate ./dataplane;
+      env = {
+        LIBCLANG_PATH = "${dataplane-pkgs.llvmPackages.libclang.lib}/lib";
+        C_INCLUDE_PATH = "${dataplane-pkgs.dpdk.dev}/include:${dataplane-pkgs.libbsd.dev}/include:${dataplane-pkgs.stdenv'.cc.libc.dev}/include";
+        LIBRARY_PATH = "${sysroot}/lib";
+      };
+      nativeBuildInputs = [
+        dataplane-pkgs.pkg-config
+        dataplane-pkgs.llvmPackages.libclang.lib
+        dataplane-pkgs.llvmPackages.clang
+        dataplane-pkgs.llvmPackages.lld
+      ];
+      buildInputs = [
+        sysroot
+      ];
+    }
+  );
+
 in
 {
   inherit
@@ -106,6 +251,19 @@ in
     profile
     sources
     sysroot
+    crane
+    commonArgs
+    cargoArtifacts
+    rekon
+    net
+    cli
+    dataplane-dpdk-sysroot-helper
+    dpdk-sys
+    pdpdk
+    dataplane
     ;
   platform = platform';
+  x = builtins.attrNames crane;
+  # y = crane.buildPackage
+
 }

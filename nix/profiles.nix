@@ -8,7 +8,7 @@
 }:
 let
   common.NIX_CFLAGS_COMPILE = [
-    "-glldb"
+    "-g3"
     "-gdwarf-5"
     # odr or strict-aliasing violations are indicative of LTO incompatibility, so check for that
     "-Werror=odr"
