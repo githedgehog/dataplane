@@ -254,12 +254,15 @@ in
   perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 
   inherit rust-toolchain;
-  cargo = rust-toolchain;
-  rustc = rust-toolchain;
-  # TODO: doc this
-  rustPlatform = final.makeRustPlatform {
-    stdenv = stdenv';
-    cargo = rust-toolchain;
-    rustc = rust-toolchain;
+
+  rustPlatform' = final.makeRustPlatform {
+    stdenv = final.llvmPackages.stdenv;
+    cargo = final.rust-toolchain;
+    rustc = final.rust-toolchain;
+  };
+
+  kopium = import ../pkgs/kopium {
+    src = sources.kopium;
+    rustPlatform = final.rustPlatform';
   };
 }
