@@ -22,7 +22,7 @@ serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true, features = [] }
 thiserror = { workspace = true, features = [] }
 tracing = { workspace = true, features = ["std"] }
-url = { workspace = true, features = ["std"] }
+url = { workspace = true, features = ["std", "serde"] }
 uuid = { workspace = true, features = [] }
 
 [dev-dependencies]

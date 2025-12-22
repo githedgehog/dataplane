@@ -1,0 +1,16 @@
+[package]
+name = "dataplane-k8s-less"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+gwname = { workspace = true }
+inotify = { workspace = true, features = ["stream"] }
+k8s-intf = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "fs"] }
+tracectl = { workspace = true }
+tracing = { workspace = true }
+tracing-test = { workspace = true }
