@@ -33,9 +33,14 @@ let
     file = ../../rust-toolchain.toml;
     sha256 = (builtins.fromJSON (builtins.readFile ../.rust-toolchain.manifest-lock.json)).hash.sha256;
   };
+  rustPlatform' = final.makeRustPlatform {
+    stdenv = stdenv';
+    cargo = rust-toolchain;
+    rustc = rust-toolchain;
+  };
 in
 {
-  inherit stdenv' added-to-env;
+  inherit rust-toolchain stdenv' rustPlatform';
   # Don't bother adapting ethtool or iproute2's build to our custom flags / env.  Failure to null this can trigger
   # _massive_ builds because ethtool depends on libnl (et al), and we _do_ overlay libnl.  Thus, the ethtool / iproute2
   # get rebuilt and you end up rebuilding the whole world.
@@ -64,8 +69,6 @@ in
   systemd = null;
   udev = null;
   udevCheckHook = null;
-
-  llvmPackages = final.llvmPackages_21;
 
   # libmd is used by libbsd (et al) which is an optional dependency of dpdk.
   #
@@ -252,17 +255,4 @@ in
   pciutils = dataplane-dep (prev.pciutils.override { static = true; });
   # This isn't directly required by dataplane,
   perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
-
-  inherit rust-toolchain;
-
-  rustPlatform' = final.makeRustPlatform {
-    stdenv = final.llvmPackages.stdenv;
-    cargo = final.rust-toolchain;
-    rustc = final.rust-toolchain;
-  };
-
-  kopium = import ../pkgs/kopium {
-    src = sources.kopium;
-    rustPlatform = final.rustPlatform';
-  };
 }

@@ -7,6 +7,10 @@
   profile,
 }:
 {
+  llvm = import ./llvm.nix {
+    inherit sources;
+  };
+
   dataplane = import ./dataplane.nix {
     inherit
       sources

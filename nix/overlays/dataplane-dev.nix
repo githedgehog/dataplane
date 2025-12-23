@@ -3,15 +3,13 @@
 {
   sources,
 }:
+final: prev:
 let
   fenix = import sources.fenix { };
   rust-toolchain = fenix.fromToolchainFile {
     file = ../../rust-toolchain.toml;
     sha256 = (builtins.fromJSON (builtins.readFile ../.rust-toolchain.manifest-lock.json)).hash.sha256;
   };
-in
-final: prev:
-let
   rustPlatform = final.makeRustPlatform {
     stdenv = final.llvmPackages.stdenv;
     cargo = rust-toolchain;
@@ -19,17 +17,27 @@ let
   };
 in
 {
-  inherit rust-toolchain rustPlatform;
-  llvmPackages = final.llvmPackages_21;
+  inherit rust-toolchain;
+  rustPlatform' = rustPlatform;
+
   kopium = import ../pkgs/kopium {
     src = sources.kopium;
     inherit rustPlatform;
   };
   cargo-bolero = prev.cargo-bolero.override { inherit rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit rustPlatform; };
-  cargo-pciutils = prev.cargo-deny.override { inherit rustPlatform; };
-  cargo-llvm-cov = prev.cargo-deny.override { inherit rustPlatform; };
-  cargo-nextest = prev.cargo-deny.override { inherit rustPlatform; };
-  just = prev.cargo-deny.override { inherit rustPlatform; };
-  npins = prev.cargo-deny.override { inherit rustPlatform; };
+  cargo-llvm-cov = prev.cargo-llvm-cov.override { inherit rustPlatform; };
+  cargo-nextest = prev.cargo-nextest.override { inherit rustPlatform; };
+  just = prev.just.override { inherit rustPlatform; };
+  npins = prev.npins.override { inherit rustPlatform; };
+  gateway-crd =
+    let
+      path = "config/crd/bases/gwint.githedgehog.com_gatewayagents.yaml";
+    in
+    final.writeTextFile {
+      name = "gateway-crd";
+      text = builtins.readFile "${sources.gateway}/${path}";
+      executable = false;
+      destination = "/src/gateway/${path}";
+    };
 }
