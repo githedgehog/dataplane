@@ -36,16 +36,13 @@ let
       overlays.dataplane-dev
     ];
   };
-  dataplane-pkgs = (
-    import sources.nixpkgs {
-      crossSystem = "aarch64-linux";
+  dataplane-pkgs =
+    (import sources.nixpkgs {
       overlays = [
         overlays.llvm
         overlays.dataplane
       ];
-    }
-  );
-  # }).pkgsCross.${platform'.info.nixarch};
+    }).pkgsCross.${platform'.info.nixarch};
   sysroot = dataplane-pkgs.pkgsHostHost.symlinkJoin {
     name = "sysroot";
     paths = with dataplane-pkgs.pkgsHostHost; [
@@ -231,7 +228,6 @@ let
             pname = "dataplane";
             cargoExtraArgs = "--package dataplane";
             src = fileSetForCrate ./dataplane;
-            # env.RUSTFLAGS = "-C linker=${llvmPackages.clang}/bin/clang -C link-arg=-fuse-ld=lld -C link-arg=--ld-path=${llvmPackages.lld}/bin/ld.lld";
             nativeBuildInputs = [
               pkg-config
               kopium

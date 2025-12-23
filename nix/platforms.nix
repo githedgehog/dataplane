@@ -64,9 +64,6 @@ let
       };
       override = {
         stdenv.env = rec {
-          # CFLAGS = [ "-mcpu=${mcpu}" ];
-          # CXXFLAGS = CFLAGS;
-          # LDFLAGS = [ ];
           NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
           NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
           NIX_CFLAGS_LINK = [ ];
@@ -85,9 +82,6 @@ let
         NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
         NIX_CFLAGS_LINK = [ ];
-        # NIX_CFLAGS_COMPILE = [ ];
-        # NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
-        # NIX_CFLAGS_LINK = [ ];
       };
     };
   };
