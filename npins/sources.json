@@ -34,6 +34,22 @@
       "url": "https://github.com/nix-community/fenix/archive/main.tar.gz",
       "hash": "1gkd9ppvsxl4jjg1jyw61wm99xhy4hdqx5dxqj06gfxi2zkamvzf"
     },
+    "gateway": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "gateway"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.33.0",
+      "revision": "18913fe34d78af396deb1e6a034d0258168122b1",
+      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/v0.33.0",
+      "hash": "0sjdagppmmb8wjpf8p7gpxjsh18xyy1n6zs3hy08h15ldv0ip2sz"
+    },
     "kopium": {
       "type": "GitRelease",
       "repository": {
@@ -70,20 +86,17 @@
       "hash": "1xx42m8amnda6z8nbm2ksv0plpzcdqxzymb1qqnp0xnf0k2bz2d1"
     },
     "perftest": {
-      "type": "GitRelease",
+      "type": "Git",
       "repository": {
         "type": "GitHub",
         "owner": "linux-rdma",
         "repo": "perftest"
       },
-      "pre_releases": false,
-      "version_upper_bound": null,
-      "release_prefix": null,
+      "branch": "master",
       "submodules": false,
-      "version": "25.10.0-0.128",
-      "revision": "8a1d3d7234add23fe006b2ff51d650ff022077a8",
-      "url": "https://api.github.com/repos/linux-rdma/perftest/tarball/25.10.0-0.128",
-      "hash": "192m2xlds308y0p2h6f6zciwspgq3k0q93q9lp1j4ijmwrpbcrl0"
+      "revision": "4e4f6629904ba07bf81f207b31433cb9dabbe8ab",
+      "url": "https://github.com/linux-rdma/perftest/archive/4e4f6629904ba07bf81f207b31433cb9dabbe8ab.tar.gz",
+      "hash": "0rvwmx9nbhr0m5zmrcpxcqwdjpl4bwsfwc7vmdn31n5gxn0qnn1x"
     },
     "rdma-core": {
       "type": "Git",

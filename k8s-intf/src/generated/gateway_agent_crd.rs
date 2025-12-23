@@ -140,12 +140,10 @@ pub struct GatewayAgentGroups {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentGroupsMembers {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "vtepIP")]
-    pub vtep_ip: Option<String>,
+    pub name: String,
+    pub priority: i32,
+    #[serde(rename = "vtepIP")]
+    pub vtep_ip: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -177,18 +175,29 @@ pub struct GatewayAgentPeeringsPeeringExpose {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentPeeringsPeeringExposeAs {
+    /// CIDR to include, only one of cidr, not can be set
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cidr: Option<String>,
+    /// CIDR to exclude, only one of cidr, not can be set
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not: Option<String>,
+    /// Port ranges (e.g. "80, 443, 3000-3100"), used together with exactly one of cidr, not
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ports: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentPeeringsPeeringExposeIps {
+    /// CIDR to include, only one of cidr, not, vpcSubnet can be set
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cidr: Option<String>,
+    /// CIDR to exclude, only one of cidr, not, vpcSubnet can be set
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not: Option<String>,
+    /// Port ranges (e.g. "80, 443, 3000-3100"), used together with exactly one of cidr, not, vpcSubnet
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ports: Option<String>,
+    /// CIDR by VPC subnet name to include, only one of cidr, not, vpcSubnet can be set
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "vpcSubnet")]
     pub vpc_subnet: Option<String>,
 }
