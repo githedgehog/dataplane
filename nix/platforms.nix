@@ -64,6 +64,9 @@ let
       };
       override = {
         stdenv.env = rec {
+          # CFLAGS = [ "-mcpu=${mcpu}" ];
+          # CXXFLAGS = CFLAGS;
+          # LDFLAGS = [ ];
           NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
           NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
           NIX_CFLAGS_LINK = [ ];
@@ -79,12 +82,12 @@ let
       march = "armv8.4-a";
       mcpu = "cortex-a78ae";
       override.stdenv.env = rec {
-        # NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
-        # NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
-        # NIX_CFLAGS_LINK = [ ];
-        NIX_CFLAGS_COMPILE = [ ];
+        NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
         NIX_CFLAGS_LINK = [ ];
+        # NIX_CFLAGS_COMPILE = [ ];
+        # NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
+        # NIX_CFLAGS_LINK = [ ];
       };
     };
   };
