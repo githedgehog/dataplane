@@ -22,8 +22,8 @@ final: prev: {
         final.runCommandLocal "llvm-version-for-our-rustc"
           {
             RUSTC = "${rust-toolchain.out}/bin/rustc";
-            GREP = "${final.gnugrep}/bin/grep";
-            SED = "${final.gnused}/bin/sed";
+            GREP = "${final.pkgsBuildHost.gnugrep}/bin/grep";
+            SED = "${final.pkgsBuildHost.gnused}/bin/sed";
           }
           ''
             $RUSTC --version --verbose | \
