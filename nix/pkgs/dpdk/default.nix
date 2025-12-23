@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
 {
   src,
   stdenv,
@@ -13,13 +15,16 @@
   build-params ? {
     lto = "true";
     build-type = "release"; # "debug" | "release"
+    platform = "bluefield3";
   },
+  writeText,
 }:
 
 stdenv.mkDerivation {
   pname = "dpdk";
   version = src.branch;
-  src = src.outPath;
+  # src = src.outPath;
+  src = ./src;
   nativeBuildInputs = [
     meson
     ninja
@@ -232,6 +237,42 @@ stdenv.mkDerivation {
         "net/virtio"
         "vdpa/mlx5"
       ];
+      arch = stdenv.hostPlatform.parsed.cpu.name;
+      cpu = stdenv.hostPlatform.parsed.cpu.arch;
+      kernel = stdenv.hostPlatform.parsed.kernel.name;
+      endian =
+        {
+          littleEndian = "little";
+          bigEndian = "big";
+        }
+        .${stdenv.hostPlatform.parsed.cpu.significantByte.name};
+      libc-vendor =
+        {
+          glibc = "gnu";
+          musl = "musl";
+        }
+        .${stdenv.hostPlatform.libc};
+      isCrossCompile = stdenv.buildPlatform.parsed != stdenv.hostPlatform.parsed;
+      cross-prefix = "${arch}-unknown-${kernel}-${libc-vendor}";
+      cross-file = writeText "cross-file.ini" ''
+        [binaries]
+        c = '${cross-prefix}-cc'
+        cpp = '${cross-prefix}-c++'
+        ar = '${cross-prefix}-ar'
+        strip = '${cross-prefix}-strip'
+        pkgconfig = '${cross-prefix}-pkg-config'
+        pkg-config = '${cross-prefix}-pkg-config'
+
+        [host_machine]
+        system = '${kernel}'
+        cpu_family = '${arch}'
+        cpu = '${cpu}'
+        endian = '${endian}'
+
+        [properties]
+        platform = '${build-params.platform}'
+        libc = '${libc-vendor}'
+      '';
     in
     with build-params;
     [
@@ -239,7 +280,7 @@ stdenv.mkDerivation {
       "-Dauto_features=disabled"
       "-Db_colorout=never"
       "-Db_lto=${lto}"
-      "-Db_lundef=true"
+      "-Db_lundef=false"
       "-Db_pgo=off"
       "-Db_pie=true"
       "-Dbackend=ninja"
@@ -253,19 +294,25 @@ stdenv.mkDerivation {
       ''-Ddisable_drivers=${lib.concatStringsSep "," disabledDrivers}''
       ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
       ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
+      ''-Ddisable_apps=*''
       ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
-    ];
+    ]
+    ++ (if isCrossCompile then [ ''--cross-file=${cross-file}'' ] else [ ]);
 
   outputs = [
-    "out"
-    "static"
     "dev"
+    "out"
     "share"
+    "static"
   ];
+
+  CFLAGS = if stdenv.targetPlatform.parsed.cpu.name == "aarch64" then "-ffat-lto-objects" else "";
 
   postInstall = ''
     # Remove docs.  We don't build these anyway
     rm -rf $out/share/doc
+    # Remove python files from bin output (we never use them and they confuse dependency reports)
+    rm $out/bin/*.py
     mkdir -p $static/lib $share;
     mv $out/lib/*.a $static/lib
     mv $out/share $share

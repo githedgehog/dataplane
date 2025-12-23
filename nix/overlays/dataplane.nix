@@ -1,6 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
 {
   sources,
-  env ? { },
+  sanitizers,
+  platform,
+  profile,
 }:
 final: prev:
 let
@@ -11,21 +15,32 @@ let
       with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) add)
     );
   adapt = final.stdenvAdapters;
-  bintools = final.buildPackages.llvmPackages.bintools;
-  lld = final.buildPackages.llvmPackages.lld;
-  stdenv-llvm = adapt.addAttrsToDerivation (orig: {
+  bintools = final.pkgsBuildHost.llvmPackages.bintools;
+  lld = final.pkgsBuildHost.llvmPackages.lld;
+  added-to-env = helpers.addToEnv platform.override.stdenv.env profile;
+  stdenv' = adapt.addAttrsToDerivation (orig: {
     doCheck = false;
+    separateDebugInfo = true;
+    env = helpers.addToEnv added-to-env (orig.env or { });
     nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [
       bintools
       lld
     ];
-  }) (adapt.makeStaticLibraries final.buildPackages.llvmPackages.stdenv);
-  stdenv-llvm-with-flags = adapt.addAttrsToDerivation (orig: {
-    env = helpers.addToEnv env (orig.env or { });
-  }) stdenv-llvm;
-  dataplane-dep = pkg: pkg.override { stdenv = stdenv-llvm-with-flags; };
+  }) final.llvmPackages.stdenv;
+  dataplane-dep = pkg: pkg.override { stdenv = stdenv'; };
+  fenix = import sources.fenix { };
+  rust-toolchain = fenix.fromToolchainFile {
+    file = ../../rust-toolchain.toml;
+    sha256 = (builtins.fromJSON (builtins.readFile ../.rust-toolchain.manifest-lock.json)).hash.sha256;
+  };
+  rustPlatform' = final.makeRustPlatform {
+    stdenv = stdenv';
+    cargo = rust-toolchain;
+    rustc = rust-toolchain;
+  };
 in
 {
+  inherit rust-toolchain stdenv' rustPlatform';
   # Don't bother adapting ethtool or iproute2's build to our custom flags / env.  Failure to null this can trigger
   # _massive_ builds because ethtool depends on libnl (et al), and we _do_ overlay libnl.  Thus, the ethtool / iproute2
   # get rebuilt and you end up rebuilding the whole world.
@@ -44,8 +59,8 @@ in
   mscgen = null;
   pandoc = null;
 
-  # We should avoid accepting anything in our dpdk + friends pkgs which depends on udev / systemd; our deploy won't
-  # support any such mechanisms.
+  # We should avoid accepting anything in our dpdk + friends pkgs which depends on udev / systemd; our deploy simply
+  # won't support any such mechanisms.
   #
   # Usually this type of dependency takes the form of udev rules / systemd service files being generated (which is no
   # problem).  That said, builds which hard and fast depend on systemd or udev are very suspicious in this context, so
@@ -61,13 +76,17 @@ in
   # At minimum, the provided functions are generally quite small and likely to benefit from inlining, so static linking
   # is a solid plan.
   libmd = (dataplane-dep prev.libmd).overrideAttrs (orig: {
-    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+    outputs = (orig.outputs or [ "out" ]) ++ [
+      "man"
+      "dev"
+      "static"
+    ];
     # we need to enable shared libs (in addition to static) to make dpdk's build happy. Basically, DPDK's build has no
     # means of disabling shared libraries, and it doesn't really make any sense to static link this into each .so
     # file.  Ideally we would just _not_ build those .so files, but that would require doing brain surgery on dpdk's
     # meson build, and maintaining such a change set is not worth it to avoid building some .so files.
     configureFlags = (orig.configureFlags or [ ]) ++ [
-      "--enable-shared"
+      "--enable-static"
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p "$static/lib";
@@ -85,7 +104,7 @@ in
     # we need to enable shared (in addition to static) to build dpdk.
     # See the note on libmd for reasoning.
     configureFlags = orig.configureFlags ++ [
-      "--enable-shared"
+      "--enable-static"
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p "$static/lib";
@@ -105,7 +124,17 @@ in
   # More, this is a very low level library designed to send messages between a privileged process and the kernel.
   # The simple fact that this appears in our toolchain justifies sanitizers like safe-stack and cfi and/or flags like
   # -fcf-protection=full.
-  libnl = dataplane-dep prev.libnl;
+  libnl = (dataplane-dep prev.libnl).overrideAttrs (orig: {
+    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+    configureFlags = (orig.configureFlags or [ ]) ++ [
+      "--enable-static"
+    ];
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p $static/lib
+      find $out/lib -name '*.la' -exec rm {} \;
+      mv $out/lib/*.a $static/lib/
+    '';
+  });
 
   # This is needed by DPDK in order to determine which pinned core runs on which numa node and which NIC is most
   # efficiently connected to which NUMA node.  You can disable the need for this library entirely by editing dpdk's
@@ -116,16 +145,14 @@ in
   # function.  In "the glorious future" we should bump all of this logic up to the dataplane's init process, compute
   # what we need to, pre-mmap _all_ of our heap memory, configure our cgroups and CPU affinities, and then pin our cores
   # and use memory pools local to the numa node of the pinned core.  That would be a fair amount of work, but it would
-  # liminate a fairly large dependency and likely increase the performance and security of the dataplane.
+  # eliminate a dependency and likely increase the performance and security of the dataplane.
   #
   # For now, we leave this on so DPDK can do some of that for us.  That said, this logic is quite cold and would ideally
   # be size optimized and punted far from all hot paths.  BOLT should be helpful here.
   numactl = (dataplane-dep prev.numactl).overrideAttrs (orig: {
     outputs = (prev.lib.lists.remove "man" orig.outputs) ++ [ "static" ];
-    # we need to enable shared (in addition to static) to build dpdk.
-    # See the note on libmd for reasoning.
     configureFlags = (orig.configureFlags or [ ]) ++ [
-      "--enable-shared" # dpdk does not like to build its .so files if we don't build numa.so as well
+      "--enable-static"
     ];
     postInstall = (orig.postInstall or "") + ''
       mkdir -p "$static/lib";
@@ -145,25 +172,64 @@ in
   rdma-core = (dataplane-dep prev.rdma-core).overrideAttrs (orig: {
     version = sources.rdma-core.branch;
     src = sources.rdma-core.outPath;
-    outputs = [
-      "dev"
-      "out"
+
+    # Patching the shebang lines in the perl scripts causes nixgraph to (incorrectly) think we depend on perl at
+    # runtime.  We absolutely do not (we don't even ship a perl interpreter), so don't patch these shebang lines.
+    # In fact, we don't use any of the scripts from this package.
+    dontPatchShebangs = true;
+
+    # The upstream postFixup is broken by dontPatchShebangs = true
+    # It's whole function was to further mutate the shebang lines in perl scripts, so we don't care.
+    # Just null it.
+    postFixup = null;
+
+    outputs = (orig.outputs or [ ]) ++ [
       "static"
     ];
-    cmakeFlags = orig.cmakeFlags ++ [
-      "-DENABLE_STATIC=1"
-      # we don't need pyverbs, and turning it off reduces build time / complexity.
-      "-DNO_PYVERBS=1"
-      # no need for docs in container images.
-      "-DNO_MAN_PAGES=1"
-      # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
-      # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
-      # build's internal complexity and makes lto easier.
-      "-DNO_COMPAT_SYMS=1"
-    ];
+    # CMake depends on -Werror to function, but the test program it uses to confirm that -Werror works "always produces
+    # warnings."  The reason for this is that we have injected our own CFLAGS and they have nothing to do with the
+    # trivial program.  This causes the unused-command-line-argument warning to trigger.
+    # We disable that warning here to make sure rdma-core can build (more specifically, to make sure that it can build
+    # with debug symbols).
+    CFLAGS = "-Wno-unused-command-line-argument";
+    cmakeFlags =
+      orig.cmakeFlags
+      ++ [
+        "-DRDMA_DYNAMIC_PROVIDERS=none"
+        "-DRDMA_STATIC_PROVIDERS=all"
+        "-DENABLE_STATIC=1"
+        # we don't need pyverbs, and turning it off reduces build time / complexity.
+        "-DNO_PYVERBS=1"
+        # no need for docs in container images.
+        "-DNO_MAN_PAGES=1"
+        # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
+        # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
+        # build's internal complexity and makes lto easier.
+        "-DNO_COMPAT_SYMS=1"
+        # Very old versions of rdma-core used what they call the "legacy write path" to support rdma-operations.
+        # These have (long) since been superseded by the ioctl mode, but the library generates both code paths by
+        # default due to rdma-core's fairly aggressive backwards compatibility stance.
+        # We have absolutely no need or desire to support the legacy mode, and we can potentially save ourselves some
+        # instruction cache pressure by disabling that old code at compile time.
+        "-DIOCTL_MODE=ioctl"
+      ]
+      ++
+        final.lib.optionals
+          (
+            (builtins.elem "thread" sanitizers)
+            || (builtins.elem "address" sanitizers)
+            || (builtins.elem "safe-stack" sanitizers)
+          )
+          [
+            # This allows address / thread sanitizer to build (thread/ub sanitizers do not like -Wl,-z,defs or
+            # -Wl,--no-undefined).
+            # This isn't a hack: undefined symbols from sanitizers is a known issue and is not unique to us.
+            "-DSUPPORTS_NO_UNDEFINED=0"
+          ];
     postInstall = (orig.postInstall or "") + ''
-      mkdir -p $static/lib;
+      mkdir -p $static/lib $man;
       mv $out/lib/*.a $static/lib/
+      mv $out/share $man/
     '';
   });
 
@@ -175,5 +241,18 @@ in
   #
   # Also, while this library has a respectable security track record, this is also a super strong candidate for
   # cfi, safe-stack, and cf-protection.
-  dpdk = dataplane-dep (final.callPackage ../pkgs/dpdk { src = sources.dpdk; });
+  dpdk = dataplane-dep (
+    final.callPackage ../pkgs/dpdk (platform.override.dpdk.buildInputs // { src = sources.dpdk; })
+  );
+
+  # DPDK is largely composed of static-inline functions.
+  # We need to wrap those functions with "_w" variants so that we can actually call them from rust.
+  #
+  # This wrapping process does not really cause any performance issue due to lto; the compiler is going to "unwrap"
+  # these methods anyway.
+  dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
+
+  pciutils = dataplane-dep (prev.pciutils.override { static = true; });
+  # This isn't directly required by dataplane,
+  perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 }

@@ -1,5 +1,21 @@
 {
   "pins": {
+    "crane": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "ipetkov",
+        "repo": "crane"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.21.3",
+      "revision": "4a7cf504d83f7d0460f9cf28fe6cbaa5fb856034",
+      "url": "https://api.github.com/repos/ipetkov/crane/tarball/v0.21.3",
+      "hash": "1a27r58apm5arxyydn78j9yz0aa7d20v4ai688d23lbivfs0jaa5"
+    },
     "dpdk": {
       "type": "Git",
       "repository": {
@@ -13,11 +29,74 @@
       "url": "https://github.com/DPDK/dpdk/archive/ed957165eadbe60a47d5ec223578cdd1c13d0bd9.tar.gz",
       "hash": "09h7wnmq4c9xm1nsyv5mz1yf91c1l6vy9sdcamb09qjjx4wgs0q9"
     },
+    "fenix": {
+      "type": "Tarball",
+      "url": "https://github.com/nix-community/fenix/archive/main.tar.gz",
+      "hash": "1gkd9ppvsxl4jjg1jyw61wm99xhy4hdqx5dxqj06gfxi2zkamvzf"
+    },
+    "gateway": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "gateway"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.33.0",
+      "revision": "18913fe34d78af396deb1e6a034d0258168122b1",
+      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/v0.33.0",
+      "hash": "0sjdagppmmb8wjpf8p7gpxjsh18xyy1n6zs3hy08h15ldv0ip2sz"
+    },
+    "kopium": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "kube-rs",
+        "repo": "kopium"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "0.22.5",
+      "revision": "f346e2044500c8d71523c35d474bc2f6235a0060",
+      "url": "https://api.github.com/repos/kube-rs/kopium/tarball/0.22.5",
+      "hash": "14lr2qgfh50rlpw5wgy6cw1qvkz44bwwx06srlks243hgkw9p2fd"
+    },
+    "naersk": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "nix-community",
+        "repo": "naersk"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "d4155d6ebb70fbe2314959842f744aa7cabbbf6a",
+      "url": "https://github.com/nix-community/naersk/archive/d4155d6ebb70fbe2314959842f744aa7cabbbf6a.tar.gz",
+      "hash": "1pmj1d3xp3fjz8m3msvmh8jnylwmgk76iah9qnfs8ddgwlij1v5g"
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre911335.23735a82a828/nixexprs.tar.xz",
-      "hash": "03cv7yy3ldb3i50in6qkm98y68nlid874l52wayzgx0z7pbpq1rk"
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre914780.306ea70f9eb0/nixexprs.tar.xz",
+      "hash": "1xx42m8amnda6z8nbm2ksv0plpzcdqxzymb1qqnp0xnf0k2bz2d1"
+    },
+    "perftest": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "linux-rdma",
+        "repo": "perftest"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "4e4f6629904ba07bf81f207b31433cb9dabbe8ab",
+      "url": "https://github.com/linux-rdma/perftest/archive/4e4f6629904ba07bf81f207b31433cb9dabbe8ab.tar.gz",
+      "hash": "0rvwmx9nbhr0m5zmrcpxcqwdjpl4bwsfwc7vmdn31n5gxn0qnn1x"
     },
     "rdma-core": {
       "type": "Git",

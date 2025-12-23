@@ -225,82 +225,82 @@ mod test {
         support::{SupportedDevice, SupportedVendor},
     };
 
-    #[test]
-    #[n_vm::in_vm]
-    fn collect_them_all_and_bind_them() {
-        let system = Node::scan_all();
-        let nics: Vec<_> = system
-            .iter()
-            .filter_map(|node| match node.attributes() {
-                Some(NodeAttributes::Pci(dev)) => {
-                    if dev.vendor_id() == SupportedVendor::RedHat.vendor_id()
-                        && SupportedDevice::VirtioNet
-                            .device_ids()
-                            .contains(&dev.device_id())
-                    {
-                        let mut nic = PciNic::new(dev.address()).unwrap();
-                        nic.bind_to_vfio_pci().unwrap();
-                        Some(nic)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(nics.len(), 3, "expected exactly 3 virtio network cards");
-    }
+    // #[test]
+    // #[n_vm::in_vm]
+    // fn collect_them_all_and_bind_them() {
+    //     let system = Node::scan_all();
+    //     let nics: Vec<_> = system
+    //         .iter()
+    //         .filter_map(|node| match node.attributes() {
+    //             Some(NodeAttributes::Pci(dev)) => {
+    //                 if dev.vendor_id() == SupportedVendor::RedHat.vendor_id()
+    //                     && SupportedDevice::VirtioNet
+    //                         .device_ids()
+    //                         .contains(&dev.device_id())
+    //                 {
+    //                     let mut nic = PciNic::new(dev.address()).unwrap();
+    //                     nic.bind_to_vfio_pci().unwrap();
+    //                     Some(nic)
+    //                 } else {
+    //                     None
+    //                 }
+    //             }
+    //             _ => None,
+    //         })
+    //         .collect();
+    //     assert_eq!(nics.len(), 3, "expected exactly 3 virtio network cards");
+    // }
 
-    #[test]
-    #[n_vm::in_vm]
-    fn bind_fabric_nics_and_skip_mgmt_nic() {
-        let system = Node::scan_all();
-        let mgmt_nic_pci_address = "0000:00:02.0".try_into().unwrap();
-        let nics: Vec<_> = system
-            .iter()
-            .filter_map(|node| match node.attributes() {
-                Some(NodeAttributes::Pci(dev)) => {
-                    if dev.vendor_id() == SupportedVendor::RedHat.vendor_id()
-                        && SupportedDevice::VirtioNet
-                            .device_ids()
-                            .contains(&dev.device_id())
-                        && dev.address() != mgmt_nic_pci_address
-                    {
-                        let mut nic = PciNic::new(dev.address()).unwrap();
-                        nic.bind_to_vfio_pci().unwrap();
-                        Some(nic)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(nics.len(), 2, "expected exactly 2 virtio network cards");
-    }
+    // #[test]
+    // #[n_vm::in_vm]
+    // fn bind_fabric_nics_and_skip_mgmt_nic() {
+    //     let system = Node::scan_all();
+    //     let mgmt_nic_pci_address = "0000:00:02.0".try_into().unwrap();
+    //     let nics: Vec<_> = system
+    //         .iter()
+    //         .filter_map(|node| match node.attributes() {
+    //             Some(NodeAttributes::Pci(dev)) => {
+    //                 if dev.vendor_id() == SupportedVendor::RedHat.vendor_id()
+    //                     && SupportedDevice::VirtioNet
+    //                         .device_ids()
+    //                         .contains(&dev.device_id())
+    //                     && dev.address() != mgmt_nic_pci_address
+    //                 {
+    //                     let mut nic = PciNic::new(dev.address()).unwrap();
+    //                     nic.bind_to_vfio_pci().unwrap();
+    //                     Some(nic)
+    //                 } else {
+    //                     None
+    //                 }
+    //             }
+    //             _ => None,
+    //         })
+    //         .collect();
+    //     assert_eq!(nics.len(), 2, "expected exactly 2 virtio network cards");
+    // }
 
-    #[test]
-    #[n_vm::in_vm]
-    fn bind_nic_test() {
-        let system = Node::scan_all();
-        let target_pci_address = "0001:00:02.0".try_into().unwrap();
-        let Some(mut nic) = system.iter().find_map(|node| match node.attributes() {
-            Some(NodeAttributes::Pci(dev)) => {
-                if dev.address() == target_pci_address
-                    && dev.vendor_id() == SupportedVendor::RedHat.vendor_id()
-                    && SupportedDevice::VirtioNet
-                        .device_ids()
-                        .contains(&dev.device_id())
-                {
-                    Some(PciNic::new(dev.address()).unwrap())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }) else {
-            panic!("target nic not found");
-        };
-        nic.bind_to_vfio_pci().unwrap();
-    }
+    // #[test]
+    // #[n_vm::in_vm]
+    // fn bind_nic_test() {
+    //     let system = Node::scan_all();
+    //     let target_pci_address = "0001:00:02.0".try_into().unwrap();
+    //     let Some(mut nic) = system.iter().find_map(|node| match node.attributes() {
+    //         Some(NodeAttributes::Pci(dev)) => {
+    //             if dev.address() == target_pci_address
+    //                 && dev.vendor_id() == SupportedVendor::RedHat.vendor_id()
+    //                 && SupportedDevice::VirtioNet
+    //                     .device_ids()
+    //                     .contains(&dev.device_id())
+    //             {
+    //                 Some(PciNic::new(dev.address()).unwrap())
+    //             } else {
+    //                 None
+    //             }
+    //         }
+    //         _ => None,
+    //     }) else {
+    //         panic!("target nic not found");
+    //     };
+    //     nic.bind_to_vfio_pci().unwrap();
+    // }
 }

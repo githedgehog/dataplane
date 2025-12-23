@@ -1,46 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"))
-        .ancestors()
-        .nth(1)
-        .expect("Workspace root not found")
-        .to_path_buf()
-}
-
-fn get_agent_crd_url() -> String {
-    let env_file_path = workspace_root().join("scripts").join("k8s-crd.env");
-    println!("cargo:rerun-if-changed={}", env_file_path.display());
-
-    let env_file =
-        dotenvy::from_path_iter(env_file_path).expect("Failed to read scripts/k8s-crd.env");
-
-    env_file
-        .filter_map(Result::ok)
-        .find_map(|(key, value)| {
-            if key == "K8S_GATEWAY_AGENT_CRD_URL" {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .expect("K8S_GATEWAY_AGENT_CRD_URL not found in scripts/k8s-crd.env")
-}
-
-fn fetch_crd(url: &str) -> String {
-    println!("cargo:note=Fetching CRD from: {url}");
-    ureq::get(url)
-        .call()
-        .expect("Failed to fetch agent CRD from url")
-        .body_mut()
-        .read_to_string()
-        .expect("Failed to read response body")
-}
 
 const LICENSE_PREAMBLE: &str = "// SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
@@ -124,8 +87,31 @@ fn code_needs_regen(new_code: &str) -> bool {
 }
 
 fn main() {
-    let agent_crd_url = get_agent_crd_url();
-    let agent_crd_contents = fetch_crd(&agent_crd_url);
+    let agent_crd_contents = {
+        let agent_crd_path =
+            PathBuf::from(std::env::var("GW_CRD_PATH").expect("GW_CRD_PATH var unset"))
+                .join("gwint.githedgehog.com_gatewayagents.yaml");
+        let mut agent_crd_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .open(&agent_crd_path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to open {path}: {e}",
+                    path = agent_crd_path.to_str().expect("non unicode crd path")
+                )
+            });
+        let mut contents = String::with_capacity(
+            agent_crd_file
+                .metadata()
+                .expect("unable to get crd metadata")
+                .len() as usize,
+        );
+        agent_crd_file
+            .read_to_string(&mut contents)
+            .unwrap_or_else(|e| panic!("unable to read crd data into string: {e}"));
+        contents
+    };
     let agent_generated_code = generate_rust_for_crd(&agent_crd_contents);
 
     if !code_needs_regen(&agent_generated_code) {
