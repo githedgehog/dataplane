@@ -247,8 +247,8 @@ let
     in
     dataplane-pkgs.callPackage expr {
       stdenv = dataplane-pkgs.stdenv';
-      # inherit (dataplane-dev-pkgs) pkg-config kopium;
-      # inherit (dataplane-pkgs) llvmPackages;
+      inherit (dataplane-dev-pkgs) pkg-config kopium;
+      inherit (dataplane-pkgs) llvmPackages;
     };
 
 in
