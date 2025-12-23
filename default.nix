@@ -36,32 +36,36 @@ let
       overlays.dataplane-dev
     ];
   };
-  dataplane-pkgs =
-    (import sources.nixpkgs {
+  dataplane-pkgs = (
+    import sources.nixpkgs {
+      crossSystem = "aarch64-linux";
       overlays = [
         overlays.llvm
         overlays.dataplane
       ];
-    }).pkgsCross.${platform'.info.nixarch};
-  sysroot = dataplane-pkgs.symlinkJoin {
+    }
+  );
+  # }).pkgsCross.${platform'.info.nixarch};
+  sysroot = dataplane-pkgs.pkgsHostHost.symlinkJoin {
     name = "sysroot";
-    paths = with dataplane-pkgs; [
-      stdenv'.cc.libc.dev
-      stdenv'.cc.libc.out
-      libmd.dev
-      libmd.static
-      libbsd.dev
-      libbsd.static
-      libnl.dev
-      libnl.static
-      numactl.dev
-      numactl.static
-      rdma-core.dev
-      rdma-core.static
+    paths = with dataplane-pkgs.pkgsHostHost; [
+      dataplane-pkgs.pkgsHostHost.libc.dev
+      dataplane-pkgs.pkgsHostHost.libc.out
+      fancy.libmd.dev
+      fancy.libmd.static
+      fancy.libbsd.dev
+      fancy.libbsd.static
+      fancy.libnl.dev
+      fancy.libnl.static
+      fancy.numactl.dev
+      fancy.numactl.static
+      fancy.rdma-core.dev
+      fancy.rdma-core.static
       dpdk.dev
       dpdk.static
       dpdk-wrapper.dev
       dpdk-wrapper.out
+      hwloc.dev
       hwloc
     ];
   };
@@ -77,8 +81,8 @@ let
     executable = false;
     destination = "/.clangd";
   };
-  crane-base = import sources.crane { };
-  crane = crane-base.craneLib.overrideToolchain dataplane-dev-pkgs.rust-toolchain;
+  crane-base = import sources.crane { pkgs = dataplane-pkgs; };
+  crane = crane-base.craneLib.overrideToolchain dataplane-pkgs.rust-toolchain;
   dev-tools = dataplane-pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
     paths = [
@@ -112,7 +116,7 @@ let
     CARGO_PROFILE = "dev";
 
     nativeBuildInputs = [
-      dataplane-pkgs.pkg-config
+      dataplane-dev-pkgs.pkg-config
       # dataplane-pkgs.libclang.lib
     ];
     buildInputs = [
@@ -120,15 +124,12 @@ let
     ];
 
     env = {
-      LIBCLANG_PATH = "${dataplane-pkgs.llvmPackages.libclang.lib}/lib";
+      LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
       C_INCLUDE_PATH = "${sysroot}/include";
       LIBRARY_PATH = "${sysroot}/lib";
       PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
       GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
     };
-
-    # Additional environment variables can be set directly
-    # MY_CUSTOM_VAR = "some value";
   };
   # Build *just* the cargo dependencies (of the entire workspace),
   # so we can reuse all of that work (e.g. via cachix) when running in CI
@@ -188,7 +189,7 @@ let
       cargoExtraArgs = "--package dataplane-dpdk-sys";
       src = fileSetForCrate ./dpdk-sys;
       nativeBuildInputs = [
-        dataplane-pkgs.pkg-config
+        dataplane-dev-pkgs.pkg-config
         dataplane-pkgs.llvmPackages.libclang.lib
         dataplane-pkgs.llvmPackages.clang
         dataplane-pkgs.llvmPackages.lld
@@ -205,7 +206,7 @@ let
       cargoExtraArgs = "--package dataplane-dpdk";
       src = fileSetForCrate ./dpdk;
       nativeBuildInputs = [
-        dataplane-pkgs.pkg-config
+        dataplane-dev-pkgs.pkg-config
         dataplane-pkgs.llvmPackages.libclang.lib
         dataplane-pkgs.llvmPackages.clang
         dataplane-pkgs.llvmPackages.lld
@@ -215,24 +216,40 @@ let
       ];
     }
   );
-  dataplane = crane.buildPackage (
-    individualCrateArgs
-    // {
-      pname = "dataplane";
-      cargoExtraArgs = "--package dataplane";
-      src = fileSetForCrate ./dataplane;
-      nativeBuildInputs = [
-        dataplane-pkgs.pkg-config
-        dataplane-pkgs.llvmPackages.libclang.lib
-        dataplane-pkgs.llvmPackages.clang
-        dataplane-pkgs.llvmPackages.lld
-        dataplane-dev-pkgs.kopium
-      ];
-      buildInputs = [
-        sysroot
-      ];
-    }
-  );
+  dataplane =
+    let
+      expr =
+        {
+          stdenv,
+          pkg-config,
+          kopium,
+          llvmPackages,
+        }:
+        crane.buildPackage (
+          individualCrateArgs
+          // {
+            pname = "dataplane";
+            cargoExtraArgs = "--package dataplane";
+            src = fileSetForCrate ./dataplane;
+            # env.RUSTFLAGS = "-C linker=${llvmPackages.clang}/bin/clang -C link-arg=-fuse-ld=lld -C link-arg=--ld-path=${llvmPackages.lld}/bin/ld.lld";
+            nativeBuildInputs = [
+              pkg-config
+              kopium
+              llvmPackages.libclang.lib
+              llvmPackages.clang
+              llvmPackages.lld
+            ];
+            buildInputs = [
+              # sysroot
+            ];
+          }
+        );
+    in
+    dataplane-pkgs.callPackage expr {
+      stdenv = dataplane-pkgs.stdenv';
+      # inherit (dataplane-dev-pkgs) pkg-config kopium;
+      # inherit (dataplane-pkgs) llvmPackages;
+    };
 
 in
 {
@@ -255,7 +272,7 @@ in
     dataplane
     ;
   platform = platform';
-  x = builtins.attrNames crane;
+  # x = crane.buildPackage.__functionArgs.;
   y = {
     lib = {
       x = (builtins.attrNames crane.craneLib);

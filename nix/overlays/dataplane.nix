@@ -38,6 +38,7 @@ let
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
+  rustPlatform = rustPlatform';
 in
 {
   inherit rust-toolchain stdenv' rustPlatform';
@@ -48,16 +49,16 @@ in
   # To be clear, we can still use ethtool / iproute2 if we want, we just don't need to optimize / lto it.
   # If you want to include ethtool / iproute2, I recommend just cutting another small overlay and static linking them.
   # Alternatively, you could skip that and just ship the default build of ethtool.
-  ethtool = null;
-  iproute2 = null;
+  # ethtool = null;
+  # iproute2 = null;
 
   # These are only used in docs and can make our build explode in size if we let any of this rebuild in this overlay.
   # It is much easier to just not build docs in this overlay.  We don't care if the build depends on pandoc per se, but
   # you will regret the need to rebuild ghc :shrug:
-  gd = null;
-  graphviz = null;
-  mscgen = null;
-  pandoc = null;
+  # gd = null;
+  # graphviz = null;
+  # mscgen = null;
+  # pandoc = null;
 
   # We should avoid accepting anything in our dpdk + friends pkgs which depends on udev / systemd; our deploy simply
   # won't support any such mechanisms.
@@ -66,16 +67,16 @@ in
   # problem).  That said, builds which hard and fast depend on systemd or udev are very suspicious in this context, so
   # exceptions to this removal should be granted with care and some level of prejudice.  At minimum, such exceptions
   # tend to make it hard to cross compile which is an important test case for our sysroot.
-  systemd = null;
-  udev = null;
-  udevCheckHook = null;
+  # systemd = null;
+  # udev = null;
+  # udevCheckHook = null;
 
   # libmd is used by libbsd (et al) which is an optional dependency of dpdk.
   #
   # We _might_ actually care about perf here, so we lto this package.
   # At minimum, the provided functions are generally quite small and likely to benefit from inlining, so static linking
   # is a solid plan.
-  libmd = (dataplane-dep prev.libmd).overrideAttrs (orig: {
+  fancy.libmd = (dataplane-dep prev.libmd).overrideAttrs (orig: {
     outputs = (orig.outputs or [ "out" ]) ++ [
       "man"
       "dev"
@@ -99,7 +100,7 @@ in
   #
   # This is also a reasonably important target for `-fsanitize=cfi` and or `-fsanitize=safe-stack` as libbsd provides
   # more secure versions of classic C string manipulation utilities, and I'm all about that defense-in-depth.
-  libbsd = (dataplane-dep prev.libbsd).overrideAttrs (orig: {
+  fancy.libbsd = ((dataplane-dep prev.libbsd).override { libmd = final.fancy.libmd; }).overrideAttrs (orig: {
     outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
     # we need to enable shared (in addition to static) to build dpdk.
     # See the note on libmd for reasoning.
@@ -124,7 +125,7 @@ in
   # More, this is a very low level library designed to send messages between a privileged process and the kernel.
   # The simple fact that this appears in our toolchain justifies sanitizers like safe-stack and cfi and/or flags like
   # -fcf-protection=full.
-  libnl = (dataplane-dep prev.libnl).overrideAttrs (orig: {
+  fancy.libnl = (dataplane-dep prev.libnl).overrideAttrs (orig: {
     outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
     configureFlags = (orig.configureFlags or [ ]) ++ [
       "--enable-static"
@@ -149,7 +150,7 @@ in
   #
   # For now, we leave this on so DPDK can do some of that for us.  That said, this logic is quite cold and would ideally
   # be size optimized and punted far from all hot paths.  BOLT should be helpful here.
-  numactl = (dataplane-dep prev.numactl).overrideAttrs (orig: {
+  fancy.numactl = (dataplane-dep prev.numactl).overrideAttrs (orig: {
     outputs = (prev.lib.lists.remove "man" orig.outputs) ++ [ "static" ];
     configureFlags = (orig.configureFlags or [ ]) ++ [
       "--enable-static"
@@ -169,7 +170,7 @@ in
   # link dynamically or statically, and we should make a strong effort to make sure that we always pick static linking
   # to enable inlining (wherever the compiler decides it makes sense).  You very likely want to enable lto here in any
   # release build.
-  rdma-core = (dataplane-dep prev.rdma-core).overrideAttrs (orig: {
+  fancy.rdma-core = ((dataplane-dep prev.rdma-core).override { libnl = final.fancy.libnl; }).overrideAttrs (orig: {
     version = sources.rdma-core.branch;
     src = sources.rdma-core.outPath;
 
@@ -241,9 +242,9 @@ in
   #
   # Also, while this library has a respectable security track record, this is also a super strong candidate for
   # cfi, safe-stack, and cf-protection.
-  dpdk = dataplane-dep (
+  dpdk = (dataplane-dep (
     final.callPackage ../pkgs/dpdk (platform.override.dpdk.buildInputs // { src = sources.dpdk; })
-  );
+  )).override { inherit (final.fancy) rdma-core libnl libbsd numactl; };
 
   # DPDK is largely composed of static-inline functions.
   # We need to wrap those functions with "_w" variants so that we can actually call them from rust.
@@ -255,4 +256,25 @@ in
   pciutils = dataplane-dep (prev.pciutils.override { static = true; });
   # This isn't directly required by dataplane,
   perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
+
+  kopium = import ../pkgs/kopium {
+    src = sources.kopium;
+    inherit rustPlatform;
+  };
+  cargo-bolero = prev.cargo-bolero.override { inherit rustPlatform; };
+  cargo-deny = prev.cargo-deny.override { inherit rustPlatform; };
+  cargo-llvm-cov = prev.cargo-llvm-cov.override { inherit rustPlatform; };
+  cargo-nextest = prev.cargo-nextest.override { inherit rustPlatform; };
+  just = prev.just.override { inherit rustPlatform; };
+  npins = prev.npins.override { inherit rustPlatform; };
+  gateway-crd =
+    let
+      path = "config/crd/bases/gwint.githedgehog.com_gatewayagents.yaml";
+    in
+    final.writeTextFile {
+      name = "gateway-crd";
+      text = builtins.readFile "${sources.gateway}/${path}";
+      executable = false;
+      destination = "/src/gateway/${path}";
+    };
 }

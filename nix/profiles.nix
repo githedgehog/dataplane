@@ -25,8 +25,8 @@ let
   debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
     "-fno-omit-frame-pointer"
-    "-D_FORTIFY_SOURCE=0" # disable security stuff because the goal is to make the asm as easy to understand as possible
-    "-Wno-macro-redefined" # many apps opt in to _FORTIFY_SOURCE={1,2,3} explicitly, and -Wall errors when you redefine
+    # "-D_FORTIFY_SOURCE=0" # disable security stuff because the goal is to make the asm as easy to understand as possible
+    # "-Wno-macro-redefined" # many apps opt in to _FORTIFY_SOURCE={1,2,3} explicitly, and -Wall errors when you redefine
   ];
   debug.NIX_CXXFLAGS_COMPILE = debug.NIX_CFLAGS_COMPILE;
   debug.NIX_CFLAGS_LINK = [ ];
