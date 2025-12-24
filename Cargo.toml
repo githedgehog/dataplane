@@ -194,8 +194,8 @@ rpath = true
 [profile.release]
 opt-level = 3
 panic = "unwind"
-debug = "full"
-lto = "thin"
+# debug = "full"
+# lto = "fat"
 debug-assertions = false
 overflow-checks = false
 codegen-units = 1

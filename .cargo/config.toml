@@ -6,7 +6,19 @@ C_INCLUDE_PATH = { value = "compile-env/sysroot/x86_64-unknown-linux-gnu/debug/i
 GW_CRD_PATH = { value = "devroot/src/gateway/config/crd/bases", relative = true, force = false }
 
 [build]
-rustflags = ["--cfg", "tokio_unstable"]
+rustflags = [
+  "--cfg",
+  "tokio_unstable",
+]
 
 [target.x86_64-unknown-linux-gnu]
 runner = ["scripts/test-runner.sh"]
+rustflags = [
+  "--cfg",
+  "tokio_unstable",
+  "-Clinker-plugin-lto",
+  "-Copt-level=3",
+  "-Cembed-bitcode=yes",
+  "-Ccodegen-units=1",
+  "-Crelro-level=full",
+]
