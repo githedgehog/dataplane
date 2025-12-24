@@ -22,6 +22,10 @@ let
     # we always want pic/pie and GOT offsets should be computed at compile time whenever possible
     "-Wl,-z,relro,-z,now"
   ];
+  common.RUSTFLAGS = [
+    "-Cdebug-info=full"
+    "-Cdwarf-version=5"
+  ];
   debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
     "-fno-omit-frame-pointer"
@@ -32,7 +36,7 @@ let
   debug.NIX_CFLAGS_LINK = [ ];
   optimize.NIX_CFLAGS_COMPILE = [
     "-O3"
-    "-flto=full"
+    "-flto=thin"
     "-fsplit-lto-unit" # important for compatibility with rust's LTO
   ];
   optimize.NIX_CXXFLAGS_COMPILE = optimize.NIX_CFLAGS_COMPILE ++ [

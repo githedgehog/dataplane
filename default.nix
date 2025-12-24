@@ -110,7 +110,7 @@ let
   commonArgs = {
     src = dataplane-src;
     strictDeps = true;
-    CARGO_PROFILE = "dev";
+    CARGO_PROFILE = "release";
 
     nativeBuildInputs = [
       dataplane-dev-pkgs.pkg-config
@@ -147,7 +147,53 @@ let
         ./.
       ];
     };
-  rekon = crane.buildPackage (
+  package-list = builtins.fromJSON (
+    builtins.readFile (
+      dataplane-pkgs.runCommandLocal "package-list"
+        {
+          TOMLQ = "${dataplane-dev-pkgs.yq}/bin/tomlq";
+          JQ = "${dataplane-dev-pkgs.jq}/bin/jq";
+        }
+        ''
+          $TOMLQ -r '.workspace.members | sort[]' ${./.}/Cargo.toml | while read -r p; do
+              $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${./.}/$p/Cargo.toml
+          done | $JQ --sort-keys --slurp 'add' > $out
+        ''
+    )
+  );
+  packages = builtins.mapAttrs (
+    p: pname:
+    (
+      let
+        package-expr =
+          {
+            pkg-config,
+            kopium,
+            llvmPackages,
+          }:
+          crane.buildPackage (
+            individualCrateArgs
+            // {
+              inherit pname;
+              cargoExtraArgs = "--package ${pname}";
+              src = fileSetForCrate (./. + p);
+              nativeBuildInputs = [
+                pkg-config
+                kopium
+                llvmPackages.clang
+                llvmPackages.lld
+              ];
+            }
+          );
+      in
+      dataplane-pkgs.callPackage package-expr {
+        inherit (dataplane-dev-pkgs) pkg-config kopium;
+        inherit (dataplane-dev-pkgs) llvmPackages;
+      }
+    )
+  ) package-list;
+
+  package.rekon = crane.buildPackage (
     individualCrateArgs
     // {
       pname = "dataplane-rekon";
@@ -155,7 +201,7 @@ let
       src = fileSetForCrate ./rekon;
     }
   );
-  net = crane.buildPackage (
+  package.net = crane.buildPackage (
     individualCrateArgs
     // {
       pname = "dataplane-net";
@@ -163,7 +209,7 @@ let
       src = fileSetForCrate ./net;
     }
   );
-  cli = crane.buildPackage (
+  package.cli = crane.buildPackage (
     individualCrateArgs
     // {
       pname = "dataplane-cli";
@@ -171,7 +217,7 @@ let
       src = fileSetForCrate ./cli;
     }
   );
-  dataplane-dpdk-sysroot-helper = crane.buildPackage (
+  package.dpdk-sysroot-helper = crane.buildPackage (
     individualCrateArgs
     // {
       pname = "dataplane-dpdk-sysroot-helper";
@@ -179,45 +225,26 @@ let
       src = fileSetForCrate ./dpdk-sysroot-helper;
     }
   );
-  dpdk-sys = crane.buildPackage (
+  package.dpdk-sys = crane.buildPackage (
     individualCrateArgs
     // {
       pname = "dataplane-dpdk-sys";
       cargoExtraArgs = "--package dataplane-dpdk-sys";
       src = fileSetForCrate ./dpdk-sys;
-      nativeBuildInputs = [
-        dataplane-dev-pkgs.pkg-config
-        dataplane-pkgs.llvmPackages.libclang.lib
-        dataplane-pkgs.llvmPackages.clang
-        dataplane-pkgs.llvmPackages.lld
-      ];
-      buildInputs = [
-        sysroot
-      ];
     }
   );
-  pdpdk = crane.buildPackage (
+  package.pdpdk = crane.buildPackage (
     individualCrateArgs
     // {
       pname = "dataplane-dpdk";
       cargoExtraArgs = "--package dataplane-dpdk";
       src = fileSetForCrate ./dpdk;
-      nativeBuildInputs = [
-        dataplane-dev-pkgs.pkg-config
-        dataplane-pkgs.llvmPackages.libclang.lib
-        dataplane-pkgs.llvmPackages.clang
-        dataplane-pkgs.llvmPackages.lld
-      ];
-      buildInputs = [
-        sysroot
-      ];
     }
   );
-  dataplane =
+  package.dataplane =
     let
       expr =
         {
-          stdenv,
           pkg-config,
           kopium,
           llvmPackages,
@@ -231,18 +258,16 @@ let
             nativeBuildInputs = [
               pkg-config
               kopium
-              llvmPackages.libclang.lib
-              llvmPackages.clang
-              llvmPackages.lld
+              # llvmPackages.libclang.lib
+              # llvmPackages.clang
+              # llvmPackages.lld
             ];
-            buildInputs = [
-              # sysroot
-            ];
+            buildInputs = [ ];
           }
         );
     in
     dataplane-pkgs.callPackage expr {
-      stdenv = dataplane-pkgs.stdenv';
+      # stdenv = dataplane-pkgs.stdenv';
       inherit (dataplane-dev-pkgs) pkg-config kopium;
       inherit (dataplane-pkgs) llvmPackages;
     };
@@ -259,6 +284,12 @@ in
     crane
     commonArgs
     cargoArtifacts
+    package
+    packages
+    package-list
+    ;
+
+  inherit (package)
     rekon
     net
     cli
@@ -268,12 +299,4 @@ in
     dataplane
     ;
   platform = platform';
-  # x = crane.buildPackage.__functionArgs.;
-  y = {
-    lib = {
-      x = (builtins.attrNames crane.craneLib);
-    };
-  };
-  # y = crane.buildPackage
-
 }
