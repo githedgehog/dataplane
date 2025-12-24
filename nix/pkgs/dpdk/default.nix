@@ -23,8 +23,7 @@
 stdenv.mkDerivation {
   pname = "dpdk";
   version = src.branch;
-  # src = src.outPath;
-  src = ./src;
+  src = src.outPath;
   nativeBuildInputs = [
     meson
     ninja

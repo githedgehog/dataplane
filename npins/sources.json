@@ -14,20 +14,20 @@
       "version": "v0.21.3",
       "revision": "4a7cf504d83f7d0460f9cf28fe6cbaa5fb856034",
       "url": "https://api.github.com/repos/ipetkov/crane/tarball/v0.21.3",
-      "hash": "1a27r58apm5arxyydn78j9yz0aa7d20v4ai688d23lbivfs0jaa5"
+      "hash": "sha256-RSkJtNtx0SEaQiYqsoFoRynwfZLo2OZ9z6rUq1DJR6g="
     },
     "dpdk": {
       "type": "Git",
       "repository": {
         "type": "GitHub",
-        "owner": "DPDK",
+        "owner": "githedgehog",
         "repo": "dpdk"
       },
-      "branch": "25.11",
+      "branch": "pr/daniel-noland/cross-compile-fix",
       "submodules": false,
-      "revision": "ed957165eadbe60a47d5ec223578cdd1c13d0bd9",
-      "url": "https://github.com/DPDK/dpdk/archive/ed957165eadbe60a47d5ec223578cdd1c13d0bd9.tar.gz",
-      "hash": "09h7wnmq4c9xm1nsyv5mz1yf91c1l6vy9sdcamb09qjjx4wgs0q9"
+      "revision": "6736a6e32f5b3a8d16b2bd0e84b73af32540de77",
+      "url": "https://github.com/githedgehog/dpdk/archive/6736a6e32f5b3a8d16b2bd0e84b73af32540de77.tar.gz",
+      "hash": "sha256-aVtrmUtFkkC2SsnfWJmRN/Klwfb/EGLG+YYtSLm5tBY="
     },
     "fenix": {
       "type": "Git",
@@ -40,7 +40,7 @@
       "submodules": false,
       "revision": "9591b811e48f906e0a9f7afe89676a1c333415dd",
       "url": "https://github.com/nix-community/fenix/archive/9591b811e48f906e0a9f7afe89676a1c333415dd.tar.gz",
-      "hash": "10ywa8zl95y35jqa1yzrdsqrpqvil9ys7mdx40n4n9dsfgcb9gnw"
+      "hash": "sha256-3L602HO6JUssIL3Vo32iceObsW75+6CwLMOXRD9S3IM="
     },
     "gateway": {
       "type": "GitRelease",
@@ -56,7 +56,7 @@
       "version": "v0.33.0",
       "revision": "18913fe34d78af396deb1e6a034d0258168122b1",
       "url": "https://api.github.com/repos/githedgehog/gateway/tarball/v0.33.0",
-      "hash": "0sjdagppmmb8wjpf8p7gpxjsh18xyy1n6zs3hy08h15ldv0ip2sz"
+      "hash": "sha256-X4sbwW60BIiAh0N/Y4P3HQWoZb/vXOSu5GjVeu9TTWo="
     },
     "kopium": {
       "type": "GitRelease",
@@ -72,7 +72,7 @@
       "version": "0.22.5",
       "revision": "f346e2044500c8d71523c35d474bc2f6235a0060",
       "url": "https://api.github.com/repos/kube-rs/kopium/tarball/0.22.5",
-      "hash": "14lr2qgfh50rlpw5wgy6cw1qvkz44bwwx06srlks243hgkw9p2fd"
+      "hash": "sha256-zYmb+HxwEKEnzdqAzvki5M+NA2fGP174pRkU6B4WmZI="
     },
     "naersk": {
       "type": "Git",
@@ -85,13 +85,13 @@
       "submodules": false,
       "revision": "d4155d6ebb70fbe2314959842f744aa7cabbbf6a",
       "url": "https://github.com/nix-community/naersk/archive/d4155d6ebb70fbe2314959842f744aa7cabbbf6a.tar.gz",
-      "hash": "1pmj1d3xp3fjz8m3msvmh8jnylwmgk76iah9qnfs8ddgwlij1v5g"
+      "hash": "sha256-r+wgI+WvNaSdxQmqaM58lVNvJYJ16zoq+tKN20cLst4="
     },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre915325.3a7affa77a5a/nixexprs.tar.xz",
-      "hash": "19kpsffj03kxvxwns3vpcjbg6n6bipsns229xzifazxvkshnddsk"
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre915678.cfc52a405c6e/nixexprs.tar.xz",
+      "hash": "sha256-7mq+kpw4eDnEzeg2WoxCXaLvcnG8oNs0e/+KoDZX+P4="
     },
     "perftest": {
       "type": "Git",
@@ -104,7 +104,7 @@
       "submodules": false,
       "revision": "4e4f6629904ba07bf81f207b31433cb9dabbe8ab",
       "url": "https://github.com/linux-rdma/perftest/archive/4e4f6629904ba07bf81f207b31433cb9dabbe8ab.tar.gz",
-      "hash": "0rvwmx9nbhr0m5zmrcpxcqwdjpl4bwsfwc7vmdn31n5gxn0qnn1x"
+      "hash": "sha256-PViLge2v2DBsq/sw7jRfhF7ZOGb9slx/qSDDZVOvfGc="
     },
     "rdma-core": {
       "type": "Git",
@@ -117,8 +117,8 @@
       "submodules": false,
       "revision": "9ae1b26593e2cb53239e1124f88ce1698d53857e",
       "url": "https://github.com/githedgehog/rdma-core/archive/9ae1b26593e2cb53239e1124f88ce1698d53857e.tar.gz",
-      "hash": "1djdsfga9if02pl8ynnyyf640xdd37fha6zp3xlylciy8apzn1r4"
+      "hash": "sha256-JAf7r0I+MuppH/cbBd0ZrXVAjPPeWo/oFcDFpJ7TTbY="
     }
   },
-  "version": 5
+  "version": 7
 }
