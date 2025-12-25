@@ -1,5 +1,4 @@
 [env]
-PATH = { value = "devroot/bin", relative = true, force = true }
 C_INCLUDE_PATH = { value = "sysroot/include", relative = true, force = false }
 GW_CRD_PATH = { value = "devroot/src/gateway/config/crd/bases", relative = true, force = false }
 LIBCLANG_PATH = { value = "devroot/lib", relative = true, force = true }
@@ -20,16 +19,6 @@ build-std-features = ["backtrace", "panic-unwind", "mem"]
 [build]
 rustflags = [
   "--cfg=tokio_unstable",
-  "-Clink-arg=-fuse-ld=lld",
-  "-Clinker=clang",
-]
-
-[target.x86_64-unknown-linux-gnu]
-runner = ["scripts/test-runner.sh"]
-
-[profile.dev]
-rustflags = [
-  "--cfg=tokio_unstable",
   "-Ccodegen-units=64",
   "-Cdebug-assertions=on",
   "-Cdebuginfo=full",
@@ -40,28 +29,3 @@ rustflags = [
   "-Coverflow-checks=on",
   "-Ctarget-cpu=generic",
 ]
-
-[profile.dev.build-override]
-rustflags = []
-
-[profile.release]
-rustflags = [
-  "--cfg=tokio_unstable",
-  "-Ccodegen-units=1",
-  "-Cdebug-assertions=off",
-  "-Cdebuginfo=full",
-  "-Cdwarf-version=5",
-  "-Cembed-bitcode=yes",
-  "-Clink-arg=-Wl,-z,relro,-z,now,--lto-whole-program-visibility,--as-needed,--gc-sections",
-  "-Clink-arg=-flto=full",
-  "-Clink-arg=-fuse-ld=lld",
-  "-Clinker-plugin-lto",
-  "-Clinker=clang",
-  "-Copt-level=3",
-  "-Coverflow-checks=off",
-  "-Crelro-level=full",
-  "-Zsplit-lto-unit",
-]
-
-[profile.release.build-override]
-rustflags = []
