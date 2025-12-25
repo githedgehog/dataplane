@@ -112,7 +112,7 @@ let
   commonArgs = {
     src = dataplane-src;
     strictDeps = true;
-    CARGO_PROFILE = "release";
+    CARGO_PROFILE = "dev";
 
     nativeBuildInputs = [
       dataplane-dev-pkgs.pkg-config
@@ -123,11 +123,15 @@ let
     ];
 
     env = {
+      PATH = "${devroot}/bin";
       LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
       C_INCLUDE_PATH = "${sysroot}/include";
       LIBRARY_PATH = "${sysroot}/lib";
       PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
       GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+      RUSTC_BOOTSTRAP = "1";
+      # RUSTFLAGS = "potato";
+      RUSTFLAGS = "--cfg=tokio_unstable -Ccodegen-units=64 -Cdebug-assertions=on -Cdebuginfo=full -Cdwarf-version=5 -Clink-arg=-fuse-ld=lld -Clink-arg=--ld-path=${devroot}/bin/ld.lld -Clinker=${devroot}/bin/clang -Copt-level=0 -Coverflow-checks=on -Ctarget-cpu=generic";
     };
   };
   # Build *just* the cargo dependencies (of the entire workspace),
@@ -141,6 +145,7 @@ let
     # NB: we disable tests since we'll run them all via cargo-nextest
     doCheck = false;
   };
+  # TODO: this is hacky nonsense, clean up the fileset call
   fileSetForCrate =
     crate:
     lib.fileset.toSource {
@@ -177,8 +182,12 @@ let
             individualCrateArgs
             // {
               inherit pname;
-              cargoExtraArgs = "--package ${pname}";
+              cargoExtraArgs = "-Z unstable-options --package ${pname}";
               src = fileSetForCrate (./. + p);
+              # RUSTC_BOOTSTRAP = "1";
+              # env = {
+              #   RUSTC_BOOTSTRAP = "1";
+              # };
               nativeBuildInputs = [
                 pkg-config
                 kopium
@@ -194,86 +203,6 @@ let
       }
     )
   ) package-list;
-
-  package.rekon = crane.buildPackage (
-    individualCrateArgs
-    // {
-      pname = "dataplane-rekon";
-      cargoExtraArgs = "--package dataplane-rekon";
-      src = fileSetForCrate ./rekon;
-    }
-  );
-  package.net = crane.buildPackage (
-    individualCrateArgs
-    // {
-      pname = "dataplane-net";
-      cargoExtraArgs = "--package dataplane-net";
-      src = fileSetForCrate ./net;
-    }
-  );
-  package.cli = crane.buildPackage (
-    individualCrateArgs
-    // {
-      pname = "dataplane-cli";
-      cargoExtraArgs = "--package dataplane-cli";
-      src = fileSetForCrate ./cli;
-    }
-  );
-  package.dpdk-sysroot-helper = crane.buildPackage (
-    individualCrateArgs
-    // {
-      pname = "dataplane-dpdk-sysroot-helper";
-      cargoExtraArgs = "--package dataplane-dpdk-sysroot-helper";
-      src = fileSetForCrate ./dpdk-sysroot-helper;
-    }
-  );
-  package.dpdk-sys = crane.buildPackage (
-    individualCrateArgs
-    // {
-      pname = "dataplane-dpdk-sys";
-      cargoExtraArgs = "--package dataplane-dpdk-sys";
-      src = fileSetForCrate ./dpdk-sys;
-    }
-  );
-  package.pdpdk = crane.buildPackage (
-    individualCrateArgs
-    // {
-      pname = "dataplane-dpdk";
-      cargoExtraArgs = "--package dataplane-dpdk";
-      src = fileSetForCrate ./dpdk;
-    }
-  );
-  package.dataplane =
-    let
-      expr =
-        {
-          pkg-config,
-          kopium,
-          llvmPackages,
-        }:
-        crane.buildPackage (
-          individualCrateArgs
-          // {
-            pname = "dataplane";
-            cargoExtraArgs = "--package dataplane";
-            src = fileSetForCrate ./dataplane;
-            nativeBuildInputs = [
-              pkg-config
-              kopium
-              # llvmPackages.libclang.lib
-              # llvmPackages.clang
-              # llvmPackages.lld
-            ];
-            buildInputs = [ ];
-          }
-        );
-    in
-    dataplane-pkgs.callPackage expr {
-      # stdenv = dataplane-pkgs.stdenv';
-      inherit (dataplane-dev-pkgs) pkg-config kopium;
-      inherit (dataplane-pkgs) llvmPackages;
-    };
-
 in
 {
   inherit
@@ -283,22 +212,11 @@ in
     dataplane-dev-pkgs
     dataplane-pkgs
     devroot
-    package
     package-list
     packages
     profile
     sources
     sysroot
-    ;
-
-  inherit (package)
-    rekon
-    net
-    cli
-    dataplane-dpdk-sysroot-helper
-    dpdk-sys
-    pdpdk
-    dataplane
     ;
   platform = platform';
 }
