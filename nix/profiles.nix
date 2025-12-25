@@ -2,7 +2,7 @@
 # Copyright Open Network Fabric Authors
 {
   arch,
-  prof,
+  profile,
   sanitizers,
   instrumentation,
 }:
@@ -129,7 +129,7 @@ let
     builtins.foldl' (
       acc: elem: acc // (builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) elem)
     ) { } features;
-  profile = {
+  profile-map = {
     debug = combine-profiles [
       common
       debug
@@ -143,7 +143,7 @@ let
 in
 combine-profiles (
   [
-    profile."${prof}"
+    profile-map."${profile}"
     march."${arch}"
     instrument."${instrumentation}"
   ]
