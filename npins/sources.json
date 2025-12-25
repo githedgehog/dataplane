@@ -118,6 +118,19 @@
       "revision": "9ae1b26593e2cb53239e1124f88ce1698d53857e",
       "url": "https://github.com/githedgehog/rdma-core/archive/9ae1b26593e2cb53239e1124f88ce1698d53857e.tar.gz",
       "hash": "sha256-JAf7r0I+MuppH/cbBd0ZrXVAjPPeWo/oFcDFpJ7TTbY="
+    },
+    "rust-overlay": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "oxalica",
+        "repo": "rust-overlay"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "3bf67c5e473f29ca79ff15904f3072d87cf6d087",
+      "url": "https://github.com/oxalica/rust-overlay/archive/3bf67c5e473f29ca79ff15904f3072d87cf6d087.tar.gz",
+      "hash": "sha256-wW15buPGU29v0XuAmDkc30+d5j4Tmg/V8AkpHH+hDWY="
     }
   },
   "version": 7

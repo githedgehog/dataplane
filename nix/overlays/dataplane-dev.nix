@@ -5,11 +5,7 @@
 }:
 final: prev:
 let
-  fenix = import sources.fenix { };
-  rust-toolchain = fenix.fromToolchainFile {
-    file = ../../rust-toolchain.toml;
-    sha256 = (builtins.fromJSON (builtins.readFile ../.rust-toolchain.manifest-lock.json)).hash.sha256;
-  };
+  rust-toolchain = final.rust-bin.fromRustupToolchainFile  ../../rust-toolchain.toml;
   rustPlatform = final.makeRustPlatform {
     stdenv = final.llvmPackages.stdenv;
     cargo = rust-toolchain;
