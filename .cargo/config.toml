@@ -5,16 +5,16 @@ LIBCLANG_PATH = { value = "devroot/lib", relative = true, force = true }
 LIBRARY_PATH = { value = "sysroot/lib", relative = true, force = false }
 PKG_CONFIG_PATH = { value = "sysroot/lib/pkgconfig", relative = true, force = true }
 
-[unstable]
-build-std = [
-  "compiler_builtins",
-  "core",
-  "alloc",
-  "std",
-  "panic_unwind",
-  "proc_macro"
-]
-build-std-features = ["backtrace", "panic-unwind", "mem"]
+# [unstable]
+# build-std = [
+#   "compiler_builtins",
+#   "core",
+#   "alloc",
+#   "std",
+#   "panic_unwind",
+#   "proc_macro"
+# ]
+# build-std-features = ["backtrace", "panic-unwind", "mem"]
 
 [build]
 rustflags = [

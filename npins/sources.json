@@ -38,9 +38,9 @@
       },
       "branch": "main",
       "submodules": false,
-      "revision": "9591b811e48f906e0a9f7afe89676a1c333415dd",
-      "url": "https://github.com/nix-community/fenix/archive/9591b811e48f906e0a9f7afe89676a1c333415dd.tar.gz",
-      "hash": "sha256-3L602HO6JUssIL3Vo32iceObsW75+6CwLMOXRD9S3IM="
+      "revision": "8bfb0290049432d3785d4b29950ae37ff20a89cb",
+      "url": "https://github.com/nix-community/fenix/archive/8bfb0290049432d3785d4b29950ae37ff20a89cb.tar.gz",
+      "hash": "sha256-UzzTtDkdc4s9qJY/QU52Ovuq2zWom0cLInCwaXLZlfo="
     },
     "gateway": {
       "type": "GitRelease",
@@ -90,8 +90,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre915678.cfc52a405c6e/nixexprs.tar.xz",
-      "hash": "sha256-7mq+kpw4eDnEzeg2WoxCXaLvcnG8oNs0e/+KoDZX+P4="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre916402.3c1016e6acd1/nixexprs.tar.xz",
+      "hash": "sha256-+nB3AQBn/uci4InrgicaaQhqxExFl4xHr2wyjem0TD8="
     },
     "perftest": {
       "type": "Git",

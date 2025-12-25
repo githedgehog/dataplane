@@ -3,7 +3,7 @@
 {
   platform ? "x86-64-v3",
   libc ? "gnu",
-  prof ? "debug",
+  profile ? "debug",
   instrumentation ? "none",
   sanitize ? "",
 }:
@@ -11,23 +11,26 @@ let
   lib = (import sources.nixpkgs { }).lib;
   # helper method to work around nix's contrived builtin string split function.
   split-str =
-    split: str:
-    if str == "" then [ ] else builtins.filter (elm: builtins.isString elm) (builtins.split split str);
+    split-on: string:
+    if string == "" then
+      [ ]
+    else
+      builtins.filter (elm: builtins.isString elm) (builtins.split split-on string);
   sanitizers = split-str ",+" sanitize;
   sources = import ./npins;
   platform' = import ./nix/platforms.nix {
     inherit lib platform libc;
   };
-  profile = import ./nix/profiles.nix {
-    inherit prof sanitizers instrumentation;
+  profile' = import ./nix/profiles.nix {
+    inherit sanitizers instrumentation profile;
     arch = platform'.arch;
   };
   overlays = import ./nix/overlays {
     inherit
       sources
       sanitizers
-      profile
       ;
+    profile = profile';
     platform = platform';
   };
   dataplane-dev-pkgs = import sources.nixpkgs {
@@ -172,6 +175,7 @@ let
     p: pname:
     (
       let
+        src = fileSetForCrate (./. + p);
         package-expr =
           {
             pkg-config,
@@ -181,9 +185,24 @@ let
           crane.buildPackage (
             individualCrateArgs
             // {
-              inherit pname;
-              cargoExtraArgs = "-Z unstable-options --package ${pname}";
-              src = fileSetForCrate (./. + p);
+              inherit pname src;
+              cargoExtraArgs = "-Z unstable-options -Z build-std --package ${pname}";
+              cargoVendorDir = crane.vendorMultipleCargoDeps {
+                inherit (crane.findCargoFiles src) cargoConfigs;
+                cargoLockList = [
+                  ./Cargo.lock
+
+                  # Unfortunately this approach requires IFD (import-from-derivation)
+                  # otherwise Nix will refuse to read the Cargo.lock from our toolchain
+                  # (unless we build with `--impure`).
+                  #
+                  # Another way around this is to manually copy the rustlib `Cargo.lock`
+                  # to the repo and import it with `./path/to/rustlib/Cargo.lock` which
+                  # will avoid IFD entirely but will require manually keeping the file
+                  # up to date!
+                  "${dataplane-dev-pkgs.rust-bin.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
+                ];
+              };
               # RUSTC_BOOTSTRAP = "1";
               # env = {
               #   RUSTC_BOOTSTRAP = "1";
@@ -198,8 +217,7 @@ let
           );
       in
       dataplane-pkgs.callPackage package-expr {
-        inherit (dataplane-dev-pkgs) pkg-config kopium;
-        inherit (dataplane-dev-pkgs) llvmPackages;
+        inherit (dataplane-dev-pkgs) pkg-config kopium llvmPackages;
       }
     )
   ) package-list;
@@ -214,9 +232,9 @@ in
     devroot
     package-list
     packages
-    profile
     sources
     sysroot
     ;
+  profile = profile';
   platform = platform';
 }
