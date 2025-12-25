@@ -23,7 +23,7 @@ let
     "-Wl,-z,relro,-z,now"
   ];
   common.RUSTFLAGS = [
-    "-Cdebug-info=full"
+    "-Cdebuginfo=full"
     "-Cdwarf-version=5"
   ];
   debug.NIX_CFLAGS_COMPILE = [

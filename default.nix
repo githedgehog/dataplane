@@ -33,8 +33,10 @@ let
     profile = profile';
     platform = platform';
   };
+  rust-overlay = import sources.rust-overlay;
   dataplane-dev-pkgs = import sources.nixpkgs {
     overlays = [
+      rust-overlay
       overlays.llvm
       overlays.dataplane-dev
     ];
@@ -42,6 +44,7 @@ let
   dataplane-pkgs =
     (import sources.nixpkgs {
       overlays = [
+        rust-overlay
         overlays.llvm
         overlays.dataplane
       ];
@@ -186,7 +189,7 @@ let
             individualCrateArgs
             // {
               inherit pname src;
-              cargoExtraArgs = "-Z unstable-options -Z build-std --package ${pname}";
+              cargoExtraArgs = "-Z unstable-options -Z build-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro --package ${pname}";
               cargoVendorDir = crane.vendorMultipleCargoDeps {
                 inherit (crane.findCargoFiles src) cargoConfigs;
                 cargoLockList = [
@@ -200,7 +203,7 @@ let
                   # to the repo and import it with `./path/to/rustlib/Cargo.lock` which
                   # will avoid IFD entirely but will require manually keeping the file
                   # up to date!
-                  "${dataplane-dev-pkgs.rust-bin.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
+                  "${dataplane-pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
                 ];
               };
               # RUSTC_BOOTSTRAP = "1";
@@ -217,7 +220,7 @@ let
           );
       in
       dataplane-pkgs.callPackage package-expr {
-        inherit (dataplane-dev-pkgs) pkg-config kopium llvmPackages;
+        inherit (dataplane-dev-pkgs) pkg-config llvmPackages kopium;
       }
     )
   ) package-list;
@@ -227,7 +230,7 @@ in
     cargoArtifacts
     commonArgs
     crane
-    dataplane-dev-pkgs
+    # dataplane-dev-pkgs
     dataplane-pkgs
     devroot
     package-list
