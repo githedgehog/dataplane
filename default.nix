@@ -84,8 +84,8 @@ let
     executable = false;
     destination = "/.clangd";
   };
-  crane-base = import sources.crane { pkgs = dataplane-pkgs; };
-  crane = crane-base.craneLib.overrideToolchain dataplane-pkgs.rust-toolchain;
+  crane = import sources.crane { pkgs = dataplane-pkgs; };
+  craneLib = crane.craneLib.overrideToolchain dataplane-pkgs.rust-toolchain;
   devroot = dataplane-pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
     paths = [
@@ -112,7 +112,15 @@ let
       rust-toolchain
     ]);
   };
-  dataplane-src = crane.cleanCargoSource ./.;
+  markdownFilter = path: _type: builtins.match ".*md$" path != null;
+  cHeaderFilter = path: _type: builtins.match ".*h$" path != null;
+  dataplane-src = dataplane-pkgs.lib.cleanSourceWith {
+    name = "dataplane-source";
+    src = ./.;
+    filter =
+      path: type:
+      (craneLib.filterCargoSources path type) || (markdownFilter path type) || (cHeaderFilter path type);
+  };
 
   # Common arguments can be set here to avoid repeating them later
   commonArgs = {
@@ -122,44 +130,51 @@ let
 
     nativeBuildInputs = [
       dataplane-dev-pkgs.pkg-config
+      devroot
       # dataplane-pkgs.libclang.lib
     ];
     buildInputs = [
       dataplane-pkgs.hwloc
+      # sysroot
     ];
 
-    env = {
-      PATH = "${devroot}/bin";
-      LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
-      C_INCLUDE_PATH = "${sysroot}/include";
-      LIBRARY_PATH = "${sysroot}/lib";
-      PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
-      GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
-      RUSTC_BOOTSTRAP = "1";
-      # RUSTFLAGS = "potato";
-      RUSTFLAGS = "--cfg=tokio_unstable -Ccodegen-units=64 -Cdebug-assertions=on -Cdebuginfo=full -Cdwarf-version=5 -Clink-arg=-fuse-ld=lld -Clink-arg=--ld-path=${devroot}/bin/ld.lld -Clinker=${devroot}/bin/clang -Copt-level=0 -Coverflow-checks=on -Ctarget-cpu=generic";
-    };
-  };
-  # Build *just* the cargo dependencies (of the entire workspace),
-  # so we can reuse all of that work (e.g. via cachix) when running in CI
-  # It is *highly* recommended to use something like cargo-hakari to avoid
-  # cache misses when building individual top-level-crates
-  cargoArtifacts = crane.buildDepsOnly commonArgs;
-  individualCrateArgs = commonArgs // {
-    inherit cargoArtifacts;
-    inherit (crane.crateNameFromCargoToml { src = dataplane-src; }) version;
+    # inherit cargoArtifacts;
+    inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
     # NB: we disable tests since we'll run them all via cargo-nextest
     doCheck = false;
+
+    env =
+      let
+        target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
+        isCross = dataplane-dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
+        linker = if isCross then "${target}-clang" else "clang";
+      in
+      {
+        SYSROOT = "${sysroot}";
+        # PATH = "${devroot}/bin";
+        # CC = "${devroot}/bin/${linker}";
+        LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
+        C_INCLUDE_PATH = "${sysroot}/include";
+        LIBRARY_PATH = "${sysroot}/lib";
+        PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
+        GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+        RUSTC_BOOTSTRAP = "1";
+        RUSTFLAGS = builtins.concatStringsSep " " (
+          profile'.RUSTFLAGS
+          ++ [
+            "--cfg=tokio_unstable"
+            "-Clink-arg=-fuse-ld=lld"
+            "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
+            "-Clinker=${devroot}/bin/${linker}"
+          ]
+        );
+      };
   };
-  # TODO: this is hacky nonsense, clean up the fileset call
-  fileSetForCrate =
-    crate:
-    lib.fileset.toSource {
-      root = ./.;
-      fileset = lib.fileset.unions [
-        ./.
-      ];
-    };
+  # # Build *just* the cargo dependencies (of the entire workspace),
+  # # so we can reuse all of that work (e.g. via cachix) when running in CI
+  # # It is *highly* recommended to use something like cargo-hakari to avoid
+  # # cache misses when building individual top-level-crates
+  # cargoArtifacts = craneLib.buildDepsOnly commonArgs;
   package-list = builtins.fromJSON (
     builtins.readFile (
       dataplane-pkgs.runCommandLocal "package-list"
@@ -169,7 +184,7 @@ let
         }
         ''
           $TOMLQ -r '.workspace.members | sort[]' ${./.}/Cargo.toml | while read -r p; do
-              $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${./.}/$p/Cargo.toml
+            $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${./.}/$p/Cargo.toml
           done | $JQ --sort-keys --slurp 'add' > $out
         ''
     )
@@ -178,15 +193,15 @@ let
     p: pname:
     (
       let
-        src = fileSetForCrate (./. + p);
+        src = dataplane-src;
         package-expr =
           {
             pkg-config,
             kopium,
             llvmPackages,
           }:
-          crane.buildPackage (
-            individualCrateArgs
+          craneLib.buildPackage (
+            commonArgs
             // {
               inherit pname src;
               cargoExtraArgs = "-Z unstable-options -Z build-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro --package ${pname}";
@@ -206,10 +221,6 @@ let
                   "${dataplane-pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
                 ];
               };
-              # RUSTC_BOOTSTRAP = "1";
-              # env = {
-              #   RUSTC_BOOTSTRAP = "1";
-              # };
               nativeBuildInputs = [
                 pkg-config
                 kopium
@@ -227,10 +238,10 @@ let
 in
 {
   inherit
-    cargoArtifacts
+    # cargoArtifacts
     commonArgs
-    crane
-    # dataplane-dev-pkgs
+
+    dataplane-dev-pkgs
     dataplane-pkgs
     devroot
     package-list
@@ -238,6 +249,7 @@ in
     sources
     sysroot
     ;
+  crane = craneLib;
   profile = profile';
   platform = platform';
 }

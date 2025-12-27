@@ -2,6 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 fn main() {
-    #[cfg(feature = "sysroot")]
+    #[cfg(feature = "_sysroot")]
     dpdk_sysroot_helper::use_sysroot();
 }

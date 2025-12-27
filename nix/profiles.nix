@@ -13,61 +13,83 @@ let
     # odr or strict-aliasing violations are indicative of LTO incompatibility, so check for that
     "-Werror=odr"
     "-Werror=strict-aliasing"
+    "-Wno-error=unused-command-line-argument"
   ];
   common.NIX_CXXFLAGS_COMPILE = common.NIX_CFLAGS_COMPILE;
   common.NIX_CFLAGS_LINK = [
     # getting proper LTO from LLVM compiled objects is best done with lld rather than ld, mold, or wild (at least at the
     # time of writing)
     "-fuse-ld=lld"
-    # we always want pic/pie and GOT offsets should be computed at compile time whenever possible
-    "-Wl,-z,relro,-z,now"
   ];
   common.RUSTFLAGS = [
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
   ];
-  debug.NIX_CFLAGS_COMPILE = [
+  optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
     "-fno-omit-frame-pointer"
-    # "-D_FORTIFY_SOURCE=0" # disable security stuff because the goal is to make the asm as easy to understand as possible
-    # "-Wno-macro-redefined" # many apps opt in to _FORTIFY_SOURCE={1,2,3} explicitly, and -Wall errors when you redefine
   ];
-  debug.NIX_CXXFLAGS_COMPILE = debug.NIX_CFLAGS_COMPILE;
-  debug.NIX_CFLAGS_LINK = [ ];
-  optimize.NIX_CFLAGS_COMPILE = [
+  optimize-for.debug.NIX_CXXFLAGS_COMPILE = optimize-for.debug.NIX_CFLAGS_COMPILE;
+  optimize-for.debug.NIX_CFLAGS_LINK = [ ];
+  optimize-for.debug.RUSTFLAGS = [
+    "-Copt-level=0"
+    "-Cdebug-assertions=on"
+    "-Coverflow-checks=on"
+  ];
+  optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
     "-flto=thin"
     "-fsplit-lto-unit" # important for compatibility with rust's LTO
   ];
-  optimize.NIX_CXXFLAGS_COMPILE = optimize.NIX_CFLAGS_COMPILE ++ [
+  optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
     "-fwhole-program-vtables"
   ];
-  optimize.NIX_CFLAGS_LINK = optimize.NIX_CXXFLAGS_COMPILE ++ [
+  optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
     "-Wl,--lto-whole-program-visibility"
     # just to keep the artifacts small, we don't currently use any linked artifact anyway
     "-Wl,--gc-sections"
     "-Wl,--as-needed"
   ];
+  optimize-for.performance.RUSTFLAGS = [
+    "-Copt-level=3"
+    "-Cdebug-assertions=off"
+    "-Coverflow-checks=off"
+    "-Clinker-plugin-lto"
+    "-Cembed-bitcode=yes"
+    "-Ccodegen-units=1"
+    "-Clink-arg=-flto=full"
+  ];
   secure.NIX_CFLAGS_COMPILE = [
     "-fstack-protector-strong"
     "-fstack-clash-protection"
+    # we always want pic/pie and GOT offsets should be computed at compile time whenever possible
+    "-Wl,-z,relro,-z,now"
     # "-fcf-protection=full" # requires extra testing before we enable
   ];
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
   secure.NIX_CFLAGS_LINK = secure.NIX_CFLAGS_COMPILE;
+  secure.RUSTFLAGS = [
+    "-Crelro-level=full"
+  ];
   march.x86_64.NIX_CFLAGS_COMPILE = [
     # DPDK functionally requires some -m flags on x86_64.
     # These features have been available for a long time and can be found on any reasonably recent machine, so just
     # enable them here for all x86_64 builds.
+    # In the (very) unlikely event that you need to edit these flags, also edit the associated RUSTFLAGS to match.
     "-mrtm"
     "-mcrc32"
     "-mssse3"
   ];
   march.x86_64.NIX_CXXFLAGS_COMPILE = march.x86_64.NIX_CFLAGS_COMPILE;
+  march.x86_64.RUSTFLAGS = [
+    # these should be kept in 1:1 alignment with the x86_64 NIX_CFLAGS_COMPILE settings
+    "-Ctarget-feature=+rtm,+crc32,+ssse3"
+  ];
   march.aarch64.NIX_CFLAGS_COMPILE = [ ];
   march.aarch64.NIX_CXXFLAGS_COMPILE = march.aarch64.NIX_CFLAGS_COMPILE;
   march.aarch64.NIX_CFLAGS_LINK = [ ];
+  march.aarch64.RUSTFLAGS = [ ];
   sanitize.address.NIX_CFLAGS_COMPILE = [
     "-fsanitize=address,local-bounds"
   ];
@@ -86,6 +108,9 @@ let
   sanitize.thread.NIX_CXXFLAGS_COMPILE = sanitize.thread.NIX_CFLAGS_COMPILE;
   sanitize.thread.NIX_CFLAGS_LINK = sanitize.thread.NIX_CFLAGS_COMPILE ++ [
     "-Wl,--allow-shlib-undefined"
+  ];
+  sanitize.thread.RUSTFLAGS = [
+    "-Zsanitizer=thread"
   ];
   # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds
   sanitize.cfi.NIX_CFLAGS_COMPILE = [
@@ -107,6 +132,11 @@ let
   ];
   sanitize.cfi.NIX_CXXFLAGS_COMPILE = sanitize.cfi.NIX_CFLAGS_COMPILE;
   sanitize.cfi.NIX_CFLAGS_LINK = sanitize.cfi.NIX_CFLAGS_COMPILE;
+  sanitize.cfi.RUSTFLAGS = [
+    "-Zsanitizer=cfi"
+    "-Zsanitizer-cfi-normalize-integers"
+    "-Zsanitizer-cfi-generalize-pointers"
+  ];
   sanitize.safe-stack.NIX_CFLAGS_COMPILE = [
     "-fsanitize=safe-stack"
   ];
@@ -114,9 +144,13 @@ let
   sanitize.safe-stack.NIX_CFLAGS_LINK = sanitize.safe-stack.NIX_CFLAGS_COMPILE ++ [
     "-Wl,--allow-shlib-undefined"
   ];
+  sanitize.safe-stack.RUSTFLAGS = [
+    "-Zsanitizer=safestack"
+  ];
   instrument.none.NIX_CFLAGS_COMPILE = [ ];
   instrument.none.NIX_CXXFLAGS_COMPILE = instrument.none.NIX_CFLAGS_COMPILE;
   instrument.none.NIX_CFLAGS_LINK = instrument.none.NIX_CFLAGS_COMPILE;
+  instrument.none.RUSTFLAGS = [ ];
   instrument.produce.NIX_CFLAGS_COMPILE = [
     "-fprofile-instr-generate"
     "-fcoverage-mapping"
@@ -124,6 +158,9 @@ let
   ];
   instrument.produce.NIX_CXXFLAGS_COMPILE = instrument.produce.NIX_CFLAGS_COMPILE;
   instrument.produce.NIX_CFLAGS_LINK = instrument.produce.NIX_CFLAGS_COMPILE;
+  instrument.produce.RUSTFLAGS = [
+    "-Cinstrument-coverage"
+  ];
   combine-profiles =
     features:
     builtins.foldl' (
@@ -132,11 +169,11 @@ let
   profile-map = {
     debug = combine-profiles [
       common
-      debug
+      optimize-for.debug
     ];
     release = combine-profiles [
       common
-      optimize
+      optimize-for.performance
       secure
     ];
   };
