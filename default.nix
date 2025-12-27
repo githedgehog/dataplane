@@ -92,32 +92,36 @@ let
   };
   crane = import sources.crane { pkgs = dataplane-pkgs; };
   craneLib = crane.craneLib.overrideToolchain dataplane-pkgs.rust-toolchain;
+  _devpkgs = [
+    clangd-config
+  ]
+  ++ (with dataplane-pkgs.pkgsBuildHost.llvmPackages; [
+    bintools
+    clang
+    libclang.lib
+    lld
+  ])
+  ++ (with dataplane-dev-pkgs; [
+    bash
+    cargo-bolero
+    cargo-deny
+    cargo-depgraph
+    cargo-llvm-cov
+    cargo-nextest
+    direnv
+    gateway-crd
+    just
+    kopium
+    # llvmPackages.clang ## TODO: determine if we actually need this.  It is quite heavy and may be confusing
+    npins
+    rust-toolchain
+  ]);
   devroot = dataplane-pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
-    paths = [
-      clangd-config
-    ]
-    ++ (with dataplane-pkgs.pkgsBuildHost.llvmPackages; [
-      bintools
-      clang
-      libclang.lib
-      lld
-    ])
-    ++ (with dataplane-dev-pkgs; [
-      bash
-      cargo-bolero
-      cargo-deny
-      cargo-depgraph
-      cargo-llvm-cov
-      cargo-nextest
-      direnv
-      gateway-crd
-      just
-      kopium
-      llvmPackages.clang
-      npins
-      rust-toolchain
-    ]);
+    paths = _devpkgs;
+  };
+  shell = dataplane-pkgs.mkShell {
+    packages = _devpkgs;
   };
   markdownFilter = path: _type: builtins.match ".*\.md$" path != null;
   cHeaderFilter = path: _type: builtins.match ".*\.h$" path != null;
@@ -249,6 +253,7 @@ in
     packages
     sources
     sysroot
+    shell
     ;
   crane = craneLib;
   profile = profile';

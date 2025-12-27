@@ -10,7 +10,7 @@ LIBCLANG_PATH = { value = "devroot/lib", relative = true, force = false }
 rustflags = ["--cfg=tokio_unstable"]
 
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["--cfg=tokio_unstable", "-Clinker=clang", "-Clink-arg=-fuse-ld=lld"]
+rustflags = ["--cfg=tokio_unstable"]
 
 [target.x86_64-unknown-linux-musl]
 rustflags = ["--cfg=tokio_unstable", "-Clinker=x86_64-unknown-linux-musl-clang", "-Clink-arg=-fuse-ld=lld"]

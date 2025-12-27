@@ -1,12 +1,3 @@
-# The primary point of this workflow is to ensure that the developer experience is good.
-# We take a very vanilla ubuntu image, install all necessary dependencies via "normal" means,
-# and then run the build and test steps as described in the README.md file.
-
-# The artifacts produced by these builds are not intended to be used for anything other than
-# ensuring that the developer experience is good.
-
-# Production artifacts are produced in a sterile environment (in another CI workflow).
-
 name: "dev.yml"
 
 on:
