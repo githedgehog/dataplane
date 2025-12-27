@@ -51,9 +51,6 @@ jobs:
         env:
             CACHE_REGISTRY: "run.h.hhdev.io:30000"
             UPSTREAM_REGISTRY: "ghcr.io"
-        needs:
-            - check_changes
-            - version
         permissions:
             checks: "write"
             pull-requests: "write"
