@@ -1,6 +1,7 @@
 **.profraw
 **/__fuzz__/**
-**/result*/**
+result
+result*/**
 **/target/**
 /.bin/**
 /.vscode/**
