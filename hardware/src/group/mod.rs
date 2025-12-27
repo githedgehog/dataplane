@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![doc = include_str!("README.md")]
-
-#[cfg(any(test, feature = "scan"))]
-#[allow(unused_imports)] // re-export
-pub use self::scan::*;
+//! # Logical hardware groupings
+//! 
+//! This module provides types for representing logical groups of hardware
+//! components. Groups are used in hardware topology to represent collections
+//! of related components that don't fit into other specific categories.
+//! 
+//! Groups can represent:
+//! 
+//! - NUMA distances
+//! - I/O groups
+//! - Logical partitions
+//! - Custom hardware groupings defined by the system
+//! 
+//! #[cfg(any(test, feature = "scan"))]
+//! #[allow(unused_imports)] // re-export
+//! pub use self::scan::*;
 
 /// Attributes for a logical hardware group.
 ///

@@ -7,8 +7,8 @@ version.workspace = true
 
 [features]
 default = []
-sysroot = ["dep:dpdk-sysroot-helper"]
-dpdk = ["sysroot", "dep:dpdk"]
+dpdk = ["dep:dpdk", "_sysroot"]
+_sysroot = ["dep:dpdk-sysroot-helper"]
 
 [dependencies]
 afpacket = { workspace = true, features = ["async-tokio"] }

@@ -31,16 +31,12 @@ pub fn get_target_name() -> String {
 
 #[must_use]
 pub fn get_sysroot() -> String {
-    let compile_env = env::var("COMPILE_ENV").expect("COMPILE_ENV not set");
-    let sysroot_env = format!("{compile_env}/sysroot");
-    let target = get_target_name();
-    let profile = get_profile_name();
-    let expected_sysroot = format!("{sysroot_env}/{target}/{profile}");
-    let expected_sysroot_path = Path::new(&expected_sysroot);
-    if expected_sysroot_path.exists() {
-        expected_sysroot
+    let sysroot_env = env::var("SYSROOT").expect("SYSROOT not set");
+    let sysroot_path = Path::new(&sysroot_env);
+    if sysroot_path.exists() {
+        sysroot_env
     } else {
-        panic!("sysroot not found at {expected_sysroot}")
+        panic!("sysroot not found at {sysroot_env}")
     }
 }
 

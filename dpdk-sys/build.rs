@@ -24,7 +24,7 @@ fn bind(path: &Path) {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let static_fn_path = out_path.join("generated.h");
     bindgen::Builder::default()
-        .header(format!("./dpdk_wrapper.h"))
+        .header("./dpdk_wrapper.h")
         .anon_fields_prefix("annon")
         .use_core()
         .generate_comments(true)
@@ -47,7 +47,6 @@ fn bind(path: &Path) {
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
         .blocklist_item("rte_atomic.*")
         .allowlist_item("rte.*")
-        .allowlist_item("wrte_.*")
         .allowlist_item("RTE.*")
         .blocklist_item("__*")
         .clang_macro_fallback()
@@ -69,7 +68,7 @@ fn bind(path: &Path) {
 
 fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let library_path  = env::var("LIBRARY_PATH").unwrap().to_string();
+    let library_path = env::var("LIBRARY_PATH").unwrap().to_string();
     // let sysroot = dpdk_sysroot_helper::get_sysroot();
 
     // println!("cargo:rustc-link-arg=--sysroot={sysroot}");
