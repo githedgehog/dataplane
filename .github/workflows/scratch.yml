@@ -61,21 +61,11 @@ jobs:
             fail-fast: false
             matrix:
                 profile:
-                    - name: "debug"
-                      sterile: ""
-                    - name: "debug"
-                      sterile: "sterile"
-                    - name: "release"
-                      sterile: "sterile"
-                    - name: "fuzz"
-                      sterile: "sterile"
-                    #- name: "release"
-                    #  sterile: ""
-                    #- name: "fuzz"
-                    #  sterile: ""
+                    - "debug"
+                    - "release"
                 debug_justfile:
                     - "${{ inputs.debug_justfile || false }}"
-        name: "${{matrix.profile.name}} ${{matrix.profile.sterile}}"
+        name: "${{matrix.profile}}"
         runs-on: "lab"
         timeout-minutes: 120
         steps:
@@ -104,10 +94,19 @@ jobs:
                   persist-credentials: "false"
                   fetch-depth: "0"
 
-            - name: "build sysroot/devroot"
+            - name: "devroot"
               run: |
-                  nix build -f default.nix sysroot --show-trace --max-jobs 8 --out-link sysroot
-                  nix build -f default.nix devroot --show-trace --max-jobs 8 --out-link devroot
+                  nix build -f default.nix --argstr profile ${{matrix.profile}} devroot --show-trace --max-jobs 3 --out-link devroot
+
+            - name: "sysroot"
+              run: |
+                  nix build -f default.nix --argstr profile ${{matrix.profile}} sysroot --show-trace --max-jobs 3 --out-link sysroot
+
+            - name: "bins"
+              run: |
+                  nix build -f default.nix --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 packages.dataplane --out-link output.dataplane
+                  nix build -f default.nix --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 packages.cli --out-link output.cli
+                  nix build -f default.nix --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 packages.init --out-link output.init
 
             - name: "cargo build / nextest"
               run: |
