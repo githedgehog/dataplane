@@ -1,32 +1,28 @@
 [env]
+SYSROOT = { value = "sysroot", relative = true, force = false }
 C_INCLUDE_PATH = { value = "sysroot/include", relative = true, force = false }
-GW_CRD_PATH = { value = "devroot/src/gateway/config/crd/bases", relative = true, force = false }
-LIBCLANG_PATH = { value = "devroot/lib", relative = true, force = false }
 LIBRARY_PATH = { value = "sysroot/lib", relative = true, force = false }
 PKG_CONFIG_PATH = { value = "sysroot/lib/pkgconfig", relative = true, force = false }
+GW_CRD_PATH = { value = "devroot/src/gateway/config/crd/bases", relative = true, force = false }
+LIBCLANG_PATH = { value = "devroot/lib", relative = true, force = false }
 
-# [unstable]
-# build-std = [
-#   "compiler_builtins",
-#   "core",
-#   "alloc",
-#   "std",
-#   "panic_unwind",
-#   "proc_macro"
-# ]
-# # build-std-features = ["backtrace", "panic-unwind", "mem", "llvm-libunwind"]
-# build-std-features = ["backtrace", "panic-unwind", "mem", "compiler-builtins-mem"]
+[build]
+rustflags = ["--cfg=tokio_unstable"]
 
-# [build]
-# rustflags = [
-#   "--cfg=tokio_unstable",
-#   "-Ccodegen-units=64",
-#   "-Cdebug-assertions=on",
-#   "-Cdebuginfo=full",
-#   "-Cdwarf-version=5",
-#   "-Clink-arg=-fuse-ld=lld",
-#   "-Clinker=clang",
-#   "-Copt-level=0",
-#   "-Coverflow-checks=on",
-#   "-Ctarget-cpu=generic",
-# ]
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=clang", "-Clink-arg=-fuse-ld=lld"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=x86_64-unknown-linux-musl-clang", "-Clink-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=aarch64-unknown-linux-gnu-clang", "-Clink-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=aarch64-unknown-linux-musl-clang", "-Clink-arg=-fuse-ld=lld"]
+
+[profile.debug]
+lto = "fat"
+
+[profile.release]
+rustflags = ["-Clinker-plugin-lto", "-Cembed-bitcode=yes", "-Clink-arg=-Wl,--as-needed,--gc-sections"]
