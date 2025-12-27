@@ -1,0 +1,609 @@
+name: "dev.yml"
+
+on:
+  pull_request: {}
+  push:
+    branches:
+      - "main"
+    tags:
+      - "v*"
+  merge_group:
+    types: ["checks_requested"]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: "boolean"
+        description: "Run with tmate enabled"
+        required: false
+        default: false
+      debug_justfile:
+        type: "boolean"
+        description: "enable to see debug statements from just recipes"
+        required: false
+        default: false
+      skip_vlab_tests:
+        type: "boolean"
+        description: "Skip VLAB tests (they run by default)"
+        required: false
+        default: false
+      run_hlab_tests:
+        type: "boolean"
+        description: "Run hybrid HLAB tests"
+        required: false
+        default: false
+      enable_release_tests:
+        type: "boolean"
+        description: "Enable release tests for VLAB/HLAB tests"
+        required: false
+        default: false
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: "read"
+  packages: "write"
+  id-token: "write"
+
+jobs:
+  check_changes:
+    name: "Deduce required tests from code changes"
+    permissions:
+      contents: "read"
+      pull-requests: "read"
+    runs-on: "ubuntu-latest"
+    outputs:
+      devfiles: "${{ steps.changes.outputs.devfiles }}"
+    steps:
+      - name: "Checkout"
+        if: "${{ !github.event.pull_request }}"
+        uses: "actions/checkout@v6"
+        with:
+          persist-credentials: "false"
+          fetch-depth: "0"
+      - name: "Check code changes"
+        uses: "dorny/paths-filter@v3"
+        id: "changes"
+        with:
+          filters: |
+            devfiles:
+              - '!(README.md|LICENSE|.gitattributes|.gitignore|.github/**)'
+              - '.github/workflows/dev.yml'
+
+  version:
+    runs-on: lab
+
+    permissions:
+      contents: read
+
+    outputs:
+      version: "${{ steps.version-gen.outputs.version }}"
+      ref: "${{ steps.version-gen.outputs.ref }}"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate temp artifacts version
+        id: version-gen
+        env:
+          commit_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          echo "version=v0-${commit_sha::9}" >> "$GITHUB_OUTPUT"
+          echo "ref=${commit_sha}" >> "$GITHUB_OUTPUT"
+
+  check:
+    env:
+      CACHE_REGISTRY: "run.h.hhdev.io:30000"
+      UPSTREAM_REGISTRY: "ghcr.io"
+    needs:
+      - check_changes
+      - version
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
+    permissions:
+      checks: "write"
+      pull-requests: "write"
+      contents: "read"
+      packages: "write"
+      id-token: "write"
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - name: "debug"
+            sterile: ""
+          - name: "debug"
+            sterile: "sterile"
+          - name: "release"
+            sterile: "sterile"
+          - name: "fuzz"
+            sterile: "sterile"
+          #- name: "release"
+          #  sterile: ""
+          #- name: "fuzz"
+          #  sterile: ""
+        debug_justfile:
+          - "${{ inputs.debug_justfile || false }}"
+    name: "${{matrix.profile.name}} ${{matrix.profile.sterile}}"
+    runs-on: "lab"
+    timeout-minutes: 45
+    steps:
+      - name: "login to ghcr.io"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.UPSTREAM_REGISTRY }}"
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "login to image cache"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.CACHE_REGISTRY }}"
+          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
+          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+
+      # it's temporarily needed to install skopeo
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+
+      - name: "Checkout"
+        uses: "actions/checkout@v6"
+        with:
+          persist-credentials: "false"
+          fetch-depth: "0"
+
+      - name: "install just"
+        run: |
+          # this keeps our GH actions logs from getting messed up with color codes
+          echo 'deb [trusted=yes] https://apt.gabe565.com /' | sudo tee /etc/apt/sources.list.d/gabe565.list
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends just
+
+      - name: "set up build environment"
+        run: |
+          REQUIRED_HUGEPAGES=512
+          HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+          OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
+          docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
+          docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
+          docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
+          just --yes \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            refresh-compile-env
+          just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
+
+      - name: "cargo deny check"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            ${{matrix.profile.sterile}} cargo deny check
+
+      - name: "push container"
+        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.UPSTREAM_REGISTRY}}" \
+            target=x86_64-unknown-linux-gnu \
+            version=${{ needs.version.outputs.version }}-${{ matrix.profile.name }} \
+            oci_repo="ghcr.io" \
+            push
+
+      - name: "print container image name"
+        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            version=${{ needs.version.outputs.version }}-${{ matrix.profile.name }} \
+            oci_repo="ghcr.io" \
+            print-container-tags
+
+      - name: "Check for uncommitted changes"
+        run: |
+          git diff --exit-code
+          if [ $? -ne 0 ]; then
+            echo "::error::Uncommitted changes detected:"
+            git diff
+            exit 1
+          fi
+          echo "No uncommitted changes found"
+
+      - name: "Check for untracked files"
+        run: |
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "::error::Untracked files detected:"
+            git ls-files --others --exclude-standard
+            exit 1
+          fi
+          echo "No untracked files found"
+
+      - id: "test"
+        name: "test"
+        run: |
+          set -euo pipefail
+          mkdir --parent ./target/nextest
+          # Run tests. The resulting results.json is not a full JSON object but
+          # a list of JSON objects, one per line.
+          if [ ${{ matrix.profile.name }} = "fuzz" ]; then
+            echo "::notice::Running fuzz tests"
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              ${{matrix.profile.sterile}} coverage \
+                --status-level=none \
+                --final-status-level=skip \
+                --message-format=libtest-json-plus > ./results.json
+          else
+            echo "::notice::Running regular tests"
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              ${{matrix.profile.sterile}} cargo nextest run \
+                --cargo-profile=${{matrix.profile.name}} \
+                --status-level=none \
+                --final-status-level=skip \
+                --message-format=libtest-json-plus \
+                > ./results.json
+            echo "::notice::Running Shuttle tests"
+            # We need to rebuild using the shuttle feature. To avoid running
+            # all tests a second time, we filter to run only tests with pattern
+            # "shuttle" in their name (test function name, file name, or module
+            # name).
+            #
+            # IF YOUR SHUTTLE TESTS DO NOT HAVE "shuttle" IN THEIR NAME, THEY
+            # WILL NOT RUN.
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              ${{matrix.profile.sterile}} cargo nextest run \
+                --cargo-profile=${{matrix.profile.name}} \
+                --status-level=none \
+                --final-status-level=none \
+                --message-format=libtest-json-plus \
+                --features shuttle \
+                shuttle \
+                >> ./results.json
+          fi
+          # look for any flakes (flakes have a #\\d+ match in their name field)
+          jq \
+            --raw-output \
+            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) |
+                     [.[0], (.[1] | tonumber)] | @csv
+          ' ./results.json > ./target/nextest/flakes.csv
+          if [ -s ./target/nextest/flakes.csv ]; then
+            {
+              echo "FLAKY_TESTS<<EOF"
+              echo -e "### :warning: Flaky tests (${{matrix.profile.name}} - ${{matrix.profile.sterile}})\n";
+              echo "| test | retries |"
+              echo "|------|---------|"
+              just cargo csview --style=markdown --no-headers --body-align=left ./target/nextest/flakes.csv;
+              echo "EOF"
+            } >> "${GITHUB_ENV}"
+          fi
+          rm results.json
+
+      - name: "upload test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/default/junit.xml
+          report_type: "test_results"
+          disable_search: "true"
+          use_oidc: "true"
+          verbose: true
+          flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
+
+      - name: "upload codecov analysis"
+        if: ${{ matrix.profile.name == 'fuzz' }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/coverage/codecov.json
+          report_type: "coverage"
+          disable_search: "true"
+          use_oidc: "true"
+          verbose: true
+          flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
+
+      - name: "clean up coverage data"
+        run: |
+          rm -f codecov codecov.SHA256SUM codecov.SHA256SUM.sig
+
+      - uses: "marocchino/sticky-pull-request-comment@v2"
+        if: ${{ always() }}
+        with:
+          header: "flakes_${{matrix.profile.name}}_${{matrix.profile.sterile}}"
+          ignore_empty: "true"
+          message: |
+            ${{ env.FLAKY_TESTS }}
+
+      - name: "publish test report"
+        uses: "mikepenz/action-junit-report@v6"
+        if: "${{ always() }}"
+        with:
+          annotate_notice: "false"
+          annotate_only: "false"
+          check_annotations: "true"
+          check_retries: "false"
+          comment: "false"
+          detailed_summary: "true"
+          fail_on_failure: "false"
+          fail_on_parse_error: "true"
+          flaky_summary: "true"
+          include_empty_in_summary: "true"
+          include_passed: "true"
+          include_time_in_summary: "true"
+          report_paths: "target/nextest/default/*junit.xml"
+          require_passed_tests: "true"
+          require_tests: "true"
+          simplified_summary: "true"
+          truncate_stack_traces: "false"
+          group_reports: "true"
+          check_name: "test-report-${{matrix.profile.name}}-sterile:${{matrix.profile.sterile == 'sterile'}}"
+          skip_success_summary: "false"
+          job_summary: "true"
+          verbose_summary: "false"
+
+      - id: "clippy"
+        name: "run clippy"
+        run: |
+          just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
+            ${{matrix.profile.sterile}} cargo clippy --all-targets --all-features -- -D warnings
+
+      - id: "docs"
+        name: "run rustdoc"
+        run: |
+          RUSTDOCFLAGS="-D warnings" just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            ${{matrix.profile.sterile}} cargo doc --no-deps
+
+      - name: "run doctests"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            ${{matrix.profile.sterile}} cargo test --doc
+
+      - name: "Setup tmate session for debug"
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true
+
+  vlab:
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
+    needs:
+      - check
+      - version
+
+    name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
+
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    with:
+      # ci:+hlab is required to enable hybrid lab tests on PR
+      # ci:-vlab disables virtual lab tests on PR
+      # ci:-upgrade disables upgrade tests on PR
+      # hlab is disabled for main and merge_queue till we have gateway tests for it
+      # upgrade jobs are temporarily skipped in merge_queue until we fix the issue with 25.05
+      skip: >-
+        ${{
+          github.event_name == 'pull_request'
+          && (
+            matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
+            || !matrix.hybrid && contains(github.event.pull_request.labels.*.name, 'ci:-vlab')
+            || matrix.upgradefrom != '' && contains(github.event.pull_request.labels.*.name, 'ci:-upgrade')
+          )
+
+          || github.event_name == 'workflow_dispatch'
+          && (
+            matrix.hybrid && inputs.run_hlab_tests != true
+            || !matrix.hybrid && inputs.skip_vlab_tests == true
+          )
+
+          || (github.event_name == 'push' || github.event_name == 'merge_group')
+          && (matrix.hybrid || matrix.upgradefrom != '')
+        }}
+      fabricatorref: master
+      prebuild: "just bump dataplane ${{ needs.version.outputs.version }}-release"
+      fabricmode: ${{ matrix.fabricmode }}
+      gateway: ${{ matrix.gateway }}
+      gateway_agentless: true
+      includeonie: ${{ matrix.includeonie }}
+      buildmode: ${{ matrix.buildmode }}
+      vpcmode: ${{ matrix.vpcmode }}
+      releasetest: ${{ contains(github.event.pull_request.labels.*.name, 'ci:+release') || inputs.enable_release_tests == true }}
+      hybrid: ${{ matrix.hybrid }}
+      upgradefrom: ${{ matrix.upgradefrom }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        fabricmode:
+          - spine-leaf
+        gateway:
+          - true
+        includeonie:
+          - false
+        buildmode:
+          - iso
+        vpcmode:
+          - l2vni
+        hybrid:
+          - false
+        upgradefrom:
+          - ""
+          - "25.05"
+        include:
+          # gateway l3vni
+          - fabricmode: spine-leaf
+            gateway: true
+            includeonie: false
+            buildmode: iso
+            vpcmode: l3vni
+            hybrid: false
+            upgradefrom: ""
+
+          # hlab gateway l2vni
+          - fabricmode: spine-leaf
+            gateway: true
+            includeonie: false
+            buildmode: iso
+            vpcmode: l2vni
+            hybrid: true
+            upgradefrom: ""
+
+  summary:
+    name: "Summary"
+    runs-on: "ubuntu-latest"
+    needs:
+      - check
+      - vlab
+    # Run always, except when the "check" job was skipped.
+    #
+    # When the check job is skipped, summary will be marked as skipped, and
+    # it's OK for CI (it's not a failure).
+    # Why don't we do the same for check jobs? Because their names depend on
+    # matrix values, and if we skip them the names won't be generated and
+    # GitHub won't be able to find skipped jobs for required status checks.
+    if: ${{ always() }}
+    steps:
+      - name: "Flag any check matrix failures"
+        if: ${{ needs.check.result != 'success' && needs.check.result != 'skipped' }}
+        run: |
+          echo '::error:: Some check job(s) failed'
+          exit 1
+      - name: "Flag any vlab matrix failures"
+        if: ${{ needs.vlab.result != 'success' && needs.vlab.result != 'skipped' }}
+        run: |
+          echo '::error:: Some vlab job(s) failed'
+          exit 1
+
+  publish:
+    env:
+      CACHE_REGISTRY: "run.h.hhdev.io:30000"
+      UPSTREAM_REGISTRY: "ghcr.io"
+    runs-on: lab
+    if: startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs:
+      - check
+      - vlab
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "login to image cache"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.CACHE_REGISTRY }}"
+          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
+          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+
+      - name: "set up build environment"
+        run: |
+          REQUIRED_HUGEPAGES=512
+          HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+          OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
+          docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
+          docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
+          docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
+          just --yes \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            refresh-compile-env
+          just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
+
+      - name: "push container"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=release \
+            dpdp_sys_registry="${{env.UPSTREAM_REGISTRY}}" \
+            target=x86_64-unknown-linux-gnu \
+            oci_repo="ghcr.io" \
+            push
+
+      # Bump dataplane in the fabricator repository
+
+      - name: Checkout fabricator repository
+        uses: actions/checkout@v6
+        with:
+          repository: githedgehog/fabricator
+          path: fab-repo
+          persist-credentials: false
+
+      - name: Bump dataplane in fabricator
+        working-directory: fab-repo
+        run: |
+          sed -i "s/^\tDataplaneVersion.*/\tDataplaneVersion=meta.Version(\"${{ github.ref_name }}\")/" pkg/fab/versions.go
+          go fmt pkg/fab/versions.go
+
+      - name: Generate token for the fabricator repository
+        uses: actions/create-github-app-token@v2
+        id: fab-app-token
+        with:
+          app-id: ${{ secrets.FAB_APP_ID }}
+          private-key: ${{ secrets.FAB_PRIVATE_KEY }}
+          repositories: |
+            fabricator
+
+      - name: Create Pull Request for fabricator
+        uses: peter-evans/create-pull-request@v8
+        id: fab-pr
+        with:
+          token: ${{ steps.fab-app-token.outputs.token }}
+          path: fab-repo
+          branch: pr/auto/dataplane-bump
+          commit-message: |
+            bump: dataplane to ${{ github.ref_name }}
+
+            This is an automated commit created by GitHub Actions workflow,
+            in the dataplane repository.
+          signoff: true
+          title: "bump: dataplane to ${{ github.ref_name }}"
+          body: |
+            This is an automated Pull Request created by GitHub Actions workflow,
+            in the dataplane repository.
