@@ -3,7 +3,6 @@ name: "dev.yml"
 on:
     pull_request: {}
     push:
-
         branches:
             - "main"
         tags:
@@ -55,7 +54,6 @@ jobs:
         needs:
             - check_changes
             - version
-        if: "${{ needs.check_changes.outputs.devfiles == 'true' || startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push' }}"
         permissions:
             checks: "write"
             pull-requests: "write"
