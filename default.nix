@@ -84,8 +84,8 @@ let
       CompileFlags:
         Add:
           - "-I${sysroot}/include"
-          - "-I${dataplane-pkgs.dpdk.dev}/include"
           - "-Wno-deprecated-declarations"
+          - "-Wno-quoted-include-in-framework-header"
     '';
     executable = false;
     destination = "/.clangd";
