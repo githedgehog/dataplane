@@ -1,4 +1,4 @@
-name: "dev.yml"
+name: "scratch"
 
 on:
     pull_request: {}
