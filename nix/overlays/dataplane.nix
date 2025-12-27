@@ -29,7 +29,7 @@ let
   }) final.llvmPackages.stdenv;
   dataplane-dep = pkg: pkg.override { stdenv = stdenv'; };
   # fenix = import sources.fenix { };
-  rust-toolchain = final.rust-bin.fromRustupToolchainFile  ../../rust-toolchain.toml;
+  rust-toolchain = final.rust-bin.fromRustupToolchainFile ../../rust-toolchain.toml;
   # rust-toolchain = fenix.fromToolchainFile {
   #   file = ../../rust-toolchain.toml;
   #   sha256 = (builtins.fromJSON (builtins.readFile ../.rust-toolchain.manifest-lock.json)).hash.sha256;
@@ -101,18 +101,20 @@ in
   #
   # This is also a reasonably important target for `-fsanitize=cfi` and or `-fsanitize=safe-stack` as libbsd provides
   # more secure versions of classic C string manipulation utilities, and I'm all about that defense-in-depth.
-  fancy.libbsd = ((dataplane-dep prev.libbsd).override { libmd = final.fancy.libmd; }).overrideAttrs (orig: {
-    outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
-    # we need to enable shared (in addition to static) to build dpdk.
-    # See the note on libmd for reasoning.
-    configureFlags = orig.configureFlags ++ [
-      "--enable-static"
-    ];
-    postInstall = (orig.postInstall or "") + ''
-      mkdir -p "$static/lib";
-      mv $out/lib/*.a $static/lib;
-    '';
-  });
+  fancy.libbsd =
+    ((dataplane-dep prev.libbsd).override { libmd = final.fancy.libmd; }).overrideAttrs
+      (orig: {
+        outputs = (orig.outputs or [ "out" ]) ++ [ "static" ];
+        # we need to enable shared (in addition to static) to build dpdk.
+        # See the note on libmd for reasoning.
+        configureFlags = orig.configureFlags ++ [
+          "--enable-static"
+        ];
+        postInstall = (orig.postInstall or "") + ''
+          mkdir -p "$static/lib";
+          mv $out/lib/*.a $static/lib;
+        '';
+      });
 
   # This is (for better or worse) used by dpdk to parse / manipulate netlink messages.
   #
@@ -171,69 +173,71 @@ in
   # link dynamically or statically, and we should make a strong effort to make sure that we always pick static linking
   # to enable inlining (wherever the compiler decides it makes sense).  You very likely want to enable lto here in any
   # release build.
-  fancy.rdma-core = ((dataplane-dep prev.rdma-core).override { libnl = final.fancy.libnl; }).overrideAttrs (orig: {
-    version = sources.rdma-core.branch;
-    src = sources.rdma-core.outPath;
+  fancy.rdma-core =
+    ((dataplane-dep prev.rdma-core).override { libnl = final.fancy.libnl; }).overrideAttrs
+      (orig: {
+        version = sources.rdma-core.branch;
+        src = sources.rdma-core.outPath;
 
-    # Patching the shebang lines in the perl scripts causes nixgraph to (incorrectly) think we depend on perl at
-    # runtime.  We absolutely do not (we don't even ship a perl interpreter), so don't patch these shebang lines.
-    # In fact, we don't use any of the scripts from this package.
-    dontPatchShebangs = true;
+        # Patching the shebang lines in the perl scripts causes nixgraph to (incorrectly) think we depend on perl at
+        # runtime.  We absolutely do not (we don't even ship a perl interpreter), so don't patch these shebang lines.
+        # In fact, we don't use any of the scripts from this package.
+        dontPatchShebangs = true;
 
-    # The upstream postFixup is broken by dontPatchShebangs = true
-    # It's whole function was to further mutate the shebang lines in perl scripts, so we don't care.
-    # Just null it.
-    postFixup = null;
+        # The upstream postFixup is broken by dontPatchShebangs = true
+        # It's whole function was to further mutate the shebang lines in perl scripts, so we don't care.
+        # Just null it.
+        postFixup = null;
 
-    outputs = (orig.outputs or [ ]) ++ [
-      "static"
-    ];
-    # CMake depends on -Werror to function, but the test program it uses to confirm that -Werror works "always produces
-    # warnings."  The reason for this is that we have injected our own CFLAGS and they have nothing to do with the
-    # trivial program.  This causes the unused-command-line-argument warning to trigger.
-    # We disable that warning here to make sure rdma-core can build (more specifically, to make sure that it can build
-    # with debug symbols).
-    CFLAGS = "-Wno-unused-command-line-argument";
-    cmakeFlags =
-      orig.cmakeFlags
-      ++ [
-        "-DRDMA_DYNAMIC_PROVIDERS=none"
-        "-DRDMA_STATIC_PROVIDERS=all"
-        "-DENABLE_STATIC=1"
-        # we don't need pyverbs, and turning it off reduces build time / complexity.
-        "-DNO_PYVERBS=1"
-        # no need for docs in container images.
-        "-DNO_MAN_PAGES=1"
-        # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
-        # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
-        # build's internal complexity and makes lto easier.
-        "-DNO_COMPAT_SYMS=1"
-        # Very old versions of rdma-core used what they call the "legacy write path" to support rdma-operations.
-        # These have (long) since been superseded by the ioctl mode, but the library generates both code paths by
-        # default due to rdma-core's fairly aggressive backwards compatibility stance.
-        # We have absolutely no need or desire to support the legacy mode, and we can potentially save ourselves some
-        # instruction cache pressure by disabling that old code at compile time.
-        "-DIOCTL_MODE=ioctl"
-      ]
-      ++
-        final.lib.optionals
-          (
-            (builtins.elem "thread" sanitizers)
-            || (builtins.elem "address" sanitizers)
-            || (builtins.elem "safe-stack" sanitizers)
-          )
-          [
-            # This allows address / thread sanitizer to build (thread/ub sanitizers do not like -Wl,-z,defs or
-            # -Wl,--no-undefined).
-            # This isn't a hack: undefined symbols from sanitizers is a known issue and is not unique to us.
-            "-DSUPPORTS_NO_UNDEFINED=0"
-          ];
-    postInstall = (orig.postInstall or "") + ''
-      mkdir -p $static/lib $man;
-      mv $out/lib/*.a $static/lib/
-      mv $out/share $man/
-    '';
-  });
+        outputs = (orig.outputs or [ ]) ++ [
+          "static"
+        ];
+        # CMake depends on -Werror to function, but the test program it uses to confirm that -Werror works "always produces
+        # warnings."  The reason for this is that we have injected our own CFLAGS and they have nothing to do with the
+        # trivial program.  This causes the unused-command-line-argument warning to trigger.
+        # We disable that warning here to make sure rdma-core can build (more specifically, to make sure that it can build
+        # with debug symbols).
+        CFLAGS = "-Wno-unused-command-line-argument";
+        cmakeFlags =
+          orig.cmakeFlags
+          ++ [
+            "-DRDMA_DYNAMIC_PROVIDERS=none"
+            "-DRDMA_STATIC_PROVIDERS=all"
+            "-DENABLE_STATIC=1"
+            # we don't need pyverbs, and turning it off reduces build time / complexity.
+            "-DNO_PYVERBS=1"
+            # no need for docs in container images.
+            "-DNO_MAN_PAGES=1"
+            # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
+            # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
+            # build's internal complexity and makes lto easier.
+            "-DNO_COMPAT_SYMS=1"
+            # Very old versions of rdma-core used what they call the "legacy write path" to support rdma-operations.
+            # These have (long) since been superseded by the ioctl mode, but the library generates both code paths by
+            # default due to rdma-core's fairly aggressive backwards compatibility stance.
+            # We have absolutely no need or desire to support the legacy mode, and we can potentially save ourselves some
+            # instruction cache pressure by disabling that old code at compile time.
+            "-DIOCTL_MODE=ioctl"
+          ]
+          ++
+            final.lib.optionals
+              (
+                (builtins.elem "thread" sanitizers)
+                || (builtins.elem "address" sanitizers)
+                || (builtins.elem "safe-stack" sanitizers)
+              )
+              [
+                # This allows address / thread sanitizer to build (thread/ub sanitizers do not like -Wl,-z,defs or
+                # -Wl,--no-undefined).
+                # This isn't a hack: undefined symbols from sanitizers is a known issue and is not unique to us.
+                "-DSUPPORTS_NO_UNDEFINED=0"
+              ];
+        postInstall = (orig.postInstall or "") + ''
+          mkdir -p $static/lib $man;
+          mv $out/lib/*.a $static/lib/
+          mv $out/share $man/
+        '';
+      });
 
   # Compiling DPDK is the primary objective of this overlay.
   #
@@ -243,9 +247,18 @@ in
   #
   # Also, while this library has a respectable security track record, this is also a super strong candidate for
   # cfi, safe-stack, and cf-protection.
-  dpdk = (dataplane-dep (
-    final.callPackage ../pkgs/dpdk (platform.override.dpdk.buildInputs // { src = sources.dpdk; })
-  )).override { inherit (final.fancy) rdma-core libnl libbsd numactl; };
+  dpdk =
+    (dataplane-dep (
+      final.callPackage ../pkgs/dpdk (platform.override.dpdk.buildInputs // { src = sources.dpdk; })
+    )).override
+      {
+        inherit (final.fancy)
+          rdma-core
+          libnl
+          libbsd
+          numactl
+          ;
+      };
 
   # DPDK is largely composed of static-inline functions.
   # We need to wrap those functions with "_w" variants so that we can actually call them from rust.
@@ -257,6 +270,17 @@ in
   pciutils = dataplane-dep (prev.pciutils.override { static = true; });
   # This isn't directly required by dataplane,
   perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
+
+  hwloc = (dataplane-dep (prev.hwloc)).overrideAttrs (orig: {
+    outputs = (orig.outputs or [ ]) ++ [ "static" ];
+    configureFlags = (orig.configureFlags or [ ]) ++ [
+      "--enable-static"
+    ];
+    postInstall = (orig.postInstall or "") + ''
+      mkdir -p $static/lib
+      mv $lib/lib/*.a $static/lib/
+    '';
+  });
 
   kopium = import ../pkgs/kopium {
     src = sources.kopium;

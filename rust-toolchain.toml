@@ -8,9 +8,10 @@ components = [
   "rust-std",
   "rust-docs",
   "rustfmt-preview",
-  "clippy-preview",
-  "rust-analyzer-preview",
+  "clippy",
+  "rust-analyzer",
   "rust-src",
+  # "llvm-tools"
 
   ## other (disabled) components ##
   # "rust-mingw", ## not relevant to us
