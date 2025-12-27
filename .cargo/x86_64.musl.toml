@@ -1,0 +1,2 @@
+[env]
+CC = { value = "devroot/bin/x86_64-unknown-linux-musl-clang", relative = true, force = false }

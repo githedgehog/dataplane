@@ -25,10 +25,12 @@ let
     inherit sanitizers instrumentation profile;
     arch = platform'.arch;
   };
-  profile'' = {
+  rust-profile =
+    {
       "debug" = "dev";
       "release" = "release";
-  }.${profile};
+    }
+    .${profile};
   overlays = import ./nix/overlays {
     inherit
       sources
@@ -112,6 +114,7 @@ let
       gateway-crd
       just
       kopium
+      llvmPackages.clang
       npins
       rust-toolchain
     ]);
@@ -142,7 +145,7 @@ let
     cargoBuildCommand = builtins.concatStringsSep " " [
       "cargo"
       "build"
-      "--profile=${profile''}"
+      "--profile=${rust-profile}"
       "-Zunstable-options"
       "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro"
       "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"

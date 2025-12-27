@@ -1,0 +1,2 @@
+[env]
+CC = { value = "devroot/bin/aarch64-unknown-linux-gnu-clang", relative = true, force = false }
