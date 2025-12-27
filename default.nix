@@ -25,6 +25,10 @@ let
     inherit sanitizers instrumentation profile;
     arch = platform'.arch;
   };
+  profile'' = {
+      "debug" = "dev";
+      "release" = "release";
+  }.${profile};
   overlays = import ./nix/overlays {
     inherit
       sources
@@ -69,7 +73,7 @@ let
       dpdk-wrapper.dev
       dpdk-wrapper.out
       hwloc.dev
-      hwloc
+      hwloc.static
     ];
   };
   clangd-config = dataplane-pkgs.writeTextFile {
@@ -112,8 +116,8 @@ let
       rust-toolchain
     ]);
   };
-  markdownFilter = path: _type: builtins.match ".*md$" path != null;
-  cHeaderFilter = path: _type: builtins.match ".*h$" path != null;
+  markdownFilter = path: _type: builtins.match ".*\.md$" path != null;
+  cHeaderFilter = path: _type: builtins.match ".*\.h$" path != null;
   dataplane-src = dataplane-pkgs.lib.cleanSourceWith {
     name = "dataplane-source";
     src = ./.;
@@ -123,21 +127,27 @@ let
   };
 
   # Common arguments can be set here to avoid repeating them later
+  vendored = crane.vendorMultipleCargoDeps {
+    inherit (crane.findCargoFiles dataplane-src) cargoConfigs;
+    cargoLockList = [
+      ./Cargo.lock
+      "${dataplane-pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
+    ];
+  };
   commonArgs = {
     src = dataplane-src;
     strictDeps = true;
     CARGO_PROFILE = "dev";
 
-    nativeBuildInputs = [
-      dataplane-dev-pkgs.pkg-config
-      devroot
-      # dataplane-pkgs.libclang.lib
+    cargoBuildCommand = builtins.concatStringsSep " " [
+      "cargo"
+      "build"
+      "--profile=${profile''}"
+      "-Zunstable-options"
+      "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro"
+      "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
     ];
-    buildInputs = [
-      dataplane-pkgs.hwloc
-      # sysroot
-    ];
-
+    cargoVendorDir = vendored;
     # inherit cargoArtifacts;
     inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
     # NB: we disable tests since we'll run them all via cargo-nextest
@@ -174,7 +184,7 @@ let
   # # so we can reuse all of that work (e.g. via cachix) when running in CI
   # # It is *highly* recommended to use something like cargo-hakari to avoid
   # # cache misses when building individual top-level-crates
-  # cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+  cargoArtifacts = craneLib.buildDepsOnly commonArgs;
   package-list = builtins.fromJSON (
     builtins.readFile (
       dataplane-pkgs.runCommandLocal "package-list"
@@ -189,52 +199,40 @@ let
         ''
     )
   );
-  packages = builtins.mapAttrs (
-    p: pname:
-    (
-      let
-        src = dataplane-src;
-        package-expr =
-          {
-            pkg-config,
-            kopium,
-            llvmPackages,
-          }:
-          craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit pname src;
-              cargoExtraArgs = "-Z unstable-options -Z build-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro --package ${pname}";
-              cargoVendorDir = crane.vendorMultipleCargoDeps {
-                inherit (crane.findCargoFiles src) cargoConfigs;
-                cargoLockList = [
-                  ./Cargo.lock
-
-                  # Unfortunately this approach requires IFD (import-from-derivation)
-                  # otherwise Nix will refuse to read the Cargo.lock from our toolchain
-                  # (unless we build with `--impure`).
-                  #
-                  # Another way around this is to manually copy the rustlib `Cargo.lock`
-                  # to the repo and import it with `./path/to/rustlib/Cargo.lock` which
-                  # will avoid IFD entirely but will require manually keeping the file
-                  # up to date!
-                  "${dataplane-pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
-                ];
-              };
-              nativeBuildInputs = [
-                pkg-config
-                kopium
-                llvmPackages.clang
-                llvmPackages.lld
-              ];
-            }
-          );
-      in
-      dataplane-pkgs.callPackage package-expr {
-        inherit (dataplane-dev-pkgs) pkg-config llvmPackages kopium;
-      }
-    )
-  ) package-list;
+  packages =
+    let
+      package-expr =
+        {
+          pkg-config,
+          kopium,
+          llvmPackages,
+          hwloc,
+          pname,
+        }:
+        craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit pname cargoArtifacts;
+            cargoExtraArgs = "--package=${pname}";
+            nativeBuildInputs = [
+              pkg-config
+              kopium
+              llvmPackages.clang
+              llvmPackages.lld
+            ];
+            buildInputs = [
+              hwloc.static
+            ];
+          }
+        );
+    in
+    builtins.mapAttrs (
+      _: pname:
+      (dataplane-pkgs.callPackage package-expr {
+        inherit (dataplane-dev-pkgs) kopium;
+        inherit pname;
+      })
+    ) package-list;
 in
 {
   inherit
