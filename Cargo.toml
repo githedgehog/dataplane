@@ -218,6 +218,7 @@ debug-assertions = true
 overflow-checks = true
 debug = "full"
 rpath = true
+incremental = false
 
 [profile.release]
 opt-level = 3

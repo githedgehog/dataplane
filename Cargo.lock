@@ -1670,6 +1670,7 @@ dependencies = [
  "caps",
  "dataplane-gwname",
  "nix 0.30.1",
+ "proc-macro-error-attr2",
  "rtnetlink",
  "tokio",
  "tracing",

@@ -12,3 +12,5 @@ nix = { workspace = true, default-features = false, features = ["sched", "fs"] }
 rtnetlink = { workspace = true, default-features = false, features = ["tokio_socket"] }
 tokio = { workspace = true, default-features = false, features = ["rt", "net", "time"] }
 tracing = { workspace = true, default-features = false, features = [] }
+
+proc-macro-error-attr2 = { version = "=2.0.0", default-features = true }

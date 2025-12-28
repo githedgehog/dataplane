@@ -114,6 +114,7 @@ let
     kopium
     llvmPackages.clang # yes, you do actually need the host compiler in order to link proc macros
     npins
+    pkg-config
     rust-toolchain
   ]);
   devroot = dataplane-pkgs.symlinkJoin {
@@ -136,8 +137,7 @@ let
       (craneLib.filterCargoSources p type) || (markdownFilter p type) || (cHeaderFilter p type);
   };
 
-  vendored = crane.vendorMultipleCargoDeps {
-    inherit (crane.findCargoFiles dataplane-src) cargoConfigs;
+  cargoVendorDir = craneLib.vendorMultipleCargoDeps {
     cargoLockList = [
       ./Cargo.lock
       "${dataplane-pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
@@ -155,8 +155,9 @@ let
       "-Zunstable-options"
       "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro"
       "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+      "--target=x86_64-unknown-linux-gnu"
     ];
-    cargoVendorDir = vendored;
+    inherit cargoVendorDir;
     inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
     doCheck = false;
 
@@ -174,12 +175,16 @@ let
         PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
         GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
         RUSTC_BOOTSTRAP = "1";
+        CARGO_BUILD_RUSTFLAGS = "";
         RUSTFLAGS = builtins.concatStringsSep " " (
           profile'.RUSTFLAGS
           ++ [
+            "-Cdebuginfo=0"
+            "-Ccodegen-units=1"
             "--cfg=tokio_unstable"
             "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
             "-Clinker=${devroot}/bin/${clang}"
+            "-Cunsafe-allow-abi-mismatch=sanitizer"
           ]
         );
       };
@@ -218,7 +223,7 @@ let
           // {
             # inherit pname cargoArtifacts;
             inherit pname;
-            cargoExtraArgs = "--package=${pname}";
+            cargoExtraArgs = "--package=${pname} --target=x86_64-unknown-linux-gnu";
             nativeBuildInputs = [
               pkg-config
               kopium

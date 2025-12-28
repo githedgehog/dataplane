@@ -41,7 +41,7 @@ let
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
     "-flto=thin"
-    "-fsplit-lto-unit" # important for compatibility with rust's LTO
+    # "-fsplit-lto-unit" # important for compatibility with rust's LTO
   ];
   optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
     "-fwhole-program-vtables"
