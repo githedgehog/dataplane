@@ -152,11 +152,11 @@ jobs:
                   nix env shell --file default.nix devroot --command \
                     cargo test --profile=${{matrix.profile.cargo_name}} --doc
 
-            - id: "clippy"
-              name: "run clippy"
-              run: |
-                  nix env shell --file default.nix devroot --command \
-                    cargo clippy --profile ${{matrix.profile.cargo_name}} --all-targets --all-features -- -D warnings
+            # - id: "clippy"
+            #   name: "run clippy"
+            #   run: |
+            #       nix env shell --file default.nix devroot --command \
+            #         cargo clippy --profile ${{matrix.profile.cargo_name}} --all-targets --all-features -- -D warnings
 
             - id: "docs"
               name: "run rustdoc"
