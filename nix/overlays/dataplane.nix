@@ -28,12 +28,7 @@ let
     ];
   }) final.llvmPackages.stdenv;
   dataplane-dep = pkg: pkg.override { stdenv = stdenv'; };
-  # fenix = import sources.fenix { };
   rust-toolchain = final.rust-bin.fromRustupToolchainFile ../../rust-toolchain.toml;
-  # rust-toolchain = fenix.fromToolchainFile {
-  #   file = ../../rust-toolchain.toml;
-  #   sha256 = (builtins.fromJSON (builtins.readFile ../.rust-toolchain.manifest-lock.json)).hash.sha256;
-  # };
   rustPlatform' = final.makeRustPlatform {
     stdenv = stdenv';
     cargo = rust-toolchain;

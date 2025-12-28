@@ -142,27 +142,27 @@ jobs:
             - name: "cargo nextest"
               run: |
                   export PATH="$(pwd)/devroot/bin:$PATH"
-                  nix env shell --file default.nix devroot --command \
+                  nix shell --file default.nix devroot --command \
                     cargo nextest archive --cargo-profile ${{matrix.profile.cargo_name}} --archive-file tests.tar.zst
-                  # nix env shell --file default.nix devroot --command \
+                  # nix shell --file default.nix devroot --command \
                   #   cargo nextest run --archive-file tests.tar.zst
 
             - name: "run doctests"
               run: |
-                  nix env shell --file default.nix devroot --command \
+                  nix shell --file default.nix devroot --command \
                     cargo test --profile=${{matrix.profile.cargo_name}} --doc
 
-            # - id: "clippy"
-            #   name: "run clippy"
-            #   run: |
-            #       nix env shell --file default.nix devroot --command \
-            #         cargo clippy --profile ${{matrix.profile.cargo_name}} --all-targets --all-features -- -D warnings
+            - id: "clippy"
+              name: "run clippy"
+              run: |
+                  nix shell --file default.nix shell --command \
+                    cargo clippy --profile ${{matrix.profile.cargo_name}} --all-targets --all-features -- -D warnings
 
             - id: "docs"
               name: "run rustdoc"
               run: |
-                  nix env shell --file default.nix devroot --command \
-                    RUSTDOCFLAGS="-D warnings" cargo doc --profile=${{matrix.profile_name}} --no-deps
+                  nix shell --file default.nix devroot --command \
+                    sh -c 'RUSTDOCFLAGS="-D warnings" cargo doc --profile=${{matrix.profile_name}} --no-deps'
 
             - name: "Setup tmate session for debug"
               # if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}

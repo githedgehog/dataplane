@@ -122,6 +122,9 @@ let
   };
   shell = dataplane-pkgs.mkShell {
     packages = _devpkgs;
+    env = {
+      RUSTDOCFLAGS = "-D warnings";
+    };
   };
   markdownFilter = path: _type: builtins.match ".*\.md$" path != null;
   cHeaderFilter = path: _type: builtins.match ".*\.h$" path != null;
@@ -224,6 +227,11 @@ let
             buildInputs = [
               hwloc.static
             ];
+            lint = craneLib.cargoClippy (commonArgs // {
+              inherit cargoArtifacts;
+              # Optional: Add extra arguments for clippy (e.g., denying warnings)
+              cargoClippyExtraArgs = "-- --deny warnings";
+            });
           }
         );
     in
