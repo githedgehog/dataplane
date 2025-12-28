@@ -98,48 +98,74 @@ jobs:
             - name: "log into cachix"
               uses: cachix/cachix-action@v14
               with:
-                  name: "dnoland-githedgehog-cache-2"
+                  name: "${{ vars.CACHIX_CACHE_NAME }}"
                   authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
                   signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
                   useDaemon: true
 
-            # - name: use cachix
-            #   run: |
-            #       cachix use dnoland-githedgehog-cache-2
-
             - name: "devroot"
               run: |
-                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A devroot | cachix push -m zstd dnoland-githedgehog-cache-2
+                  nix build \
+                     --argstr profile ${{matrix.profile}} \
+                     --show-trace \
+                     --max-jobs 3 \
+                     --file default.nix \
+                     devroot \
+                     --out-link devroot
 
             - name: "sysroot"
               run: |
-                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A sysroot | cachix push -m zstd dnoland-githedgehog-cache-2
+                  nix build \
+                     --argstr profile ${{matrix.profile}} \
+                     --show-trace \
+                     --max-jobs 3 \
+                     --file default.nix \
+                     sysroot \
+                     --out-link sysroot
 
             - name: "bins"
               run: |
-                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.dataplane | cachix push -m zstd dnoland-githedgehog-cache-2
-                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.cli | cachix push -m zstd dnoland-githedgehog-cache-2
-                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.init | cachix push -m zstd dnoland-githedgehog-cache-2
+                  nix build --file default.nix \
+                    --argstr profile ${{matrix.profile}} \
+                    --show-trace \
+                    --max-jobs 3 \
+                    packages.dataplane \
+                    --out-link packages.dataplane
+                  nix build --file default.nix \
+                    --argstr profile ${{matrix.profile}} \
+                    --show-trace \
+                    --max-jobs 3 \
+                    packages.cli \
+                    --out-link packages.cli
+                  nix build --file default.nix \
+                    --argstr profile ${{matrix.profile}} \
+                    --show-trace \
+                    --max-jobs 3 \
+                    packages.init \
+                    --out-link packages.init
 
-            # - name: "cargo build / nextest"
-            #   run: |
-            #       export PATH="$(pwd)/devroot/bin:$PATH"
-            #       cargo build
-            #       cargo nextest run
+            - name: "cargo build / nextest"
+              run: |
+                  export PATH="$(pwd)/devroot/bin:$PATH"
+                  nix env shell --file default.nix shell --command \
+                    'cargo nextest --cargo-profile ${{matrix.profile}} run'
 
             - id: "clippy"
               name: "run clippy"
               run: |
-                  cargo clippy --all-targets --all-features -- -D warnings
+                  nix env shell --file default.nix shell --command \
+                    'cargo --profile ${{matrix.profile}} clippy --all-targets --all-features -- -D warnings'
 
             - id: "docs"
               name: "run rustdoc"
               run: |
-                  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+                  nix env shell --file default.nix shell --command \
+                    'RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} doc --no-deps'
 
             - name: "run doctests"
               run: |
-                  cargo test --doc
+                  nix env shell --file default.nix shell --command \
+                    'RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} test --doc'
 
             - name: "Setup tmate session for debug"
               # if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
