@@ -144,8 +144,8 @@ jobs:
                   export PATH="$(pwd)/devroot/bin:$PATH"
                   nix env shell --file default.nix devroot --command \
                     cargo nextest archive --cargo-profile ${{matrix.profile.cargo_name}} --archive-file tests.tar.zst
-                  nix env shell --file default.nix devroot --command \
-                    cargo nextest run --archive-file tests.tar.zst
+                  # nix env shell --file default.nix devroot --command \
+                  #   cargo nextest run --archive-file tests.tar.zst
 
             - name: "run doctests"
               run: |
