@@ -97,10 +97,9 @@ jobs:
             - name: "log into cachix"
               uses: cachix/cachix-action@v14
               with:
-                  name: dnoland-githedgehog-cache-2
-                  signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
-                  # If you chose API tokens for write access OR if you have a private cache
+                  name: "dnoland-githedgehog-cache-2"
                   authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+                  signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
 
             - name: "devroot"
               run: |
