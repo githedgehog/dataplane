@@ -167,7 +167,7 @@ let
         clang = if isCross then "${target}-clang" else "clang";
       in
       {
-        SYSROOT = "${sysroot}";
+        DATAPLANE_SYSROOT = "${sysroot}";
         LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
         C_INCLUDE_PATH = "${sysroot}/include";
         LIBRARY_PATH = "${sysroot}/lib";
@@ -216,7 +216,8 @@ let
         craneLib.buildPackage (
           commonArgs
           // {
-            inherit pname cargoArtifacts;
+            # inherit pname cargoArtifacts;
+            inherit pname;
             cargoExtraArgs = "--package=${pname}";
             nativeBuildInputs = [
               pkg-config
@@ -241,17 +242,33 @@ let
       let
         package-expr =
           {
+            pkg-config,
+            kopium,
+            llvmPackages,
+            hwloc,
             pname,
           }:
           craneLib.cargoClippy {
             inherit pname cargoArtifacts;
             inherit (commonArgs) version src env;
-            # cargoExtraArgs = "--package=${pname}";
+            cargoExtraArgs = "--package=${pname}";
+            nativeBuildInputs = [
+              pkg-config
+              kopium
+              llvmPackages.clang
+              llvmPackages.lld
+            ];
+            buildInputs = [
+              hwloc.static
+            ];
           };
       in
       builtins.mapAttrs (
         _: pname:
-        (dataplane-pkgs.callPackage package-expr { inherit pname; })
+        (dataplane-pkgs.callPackage package-expr {
+            inherit pname;
+            inherit (dataplane-dev-pkgs) kopium;
+        })
       ) package-list;
 in
 {

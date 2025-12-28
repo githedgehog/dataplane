@@ -105,6 +105,7 @@ let
   ];
   sanitize.address.RUSTFLAGS = [
     "-Zsanitizer=address"
+    "-Zexternal-clangrt"
   ]
   ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.address.NIX_CFLAGS_LINK);
   sanitize.leak.NIX_CFLAGS_COMPILE = [
@@ -114,6 +115,7 @@ let
   sanitize.leak.NIX_CFLAGS_LINK = sanitize.leak.NIX_CFLAGS_COMPILE;
   sanitize.leak.RUSTFLAGS = [
     "-Zsanitizer=leak"
+    "-Zexternal-clangrt"
   ]
   ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
   sanitize.thread.NIX_CFLAGS_COMPILE = [
@@ -125,6 +127,7 @@ let
   ];
   sanitize.thread.RUSTFLAGS = [
     "-Zsanitizer=thread"
+    "-Zexternal-clangrt"
   ]
   ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.thread.NIX_CFLAGS_LINK);
   # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds
