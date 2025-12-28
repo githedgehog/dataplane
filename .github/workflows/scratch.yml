@@ -141,9 +141,9 @@ jobs:
               run: |
                   export PATH="$(pwd)/devroot/bin:$PATH"
                   nix env shell --file default.nix devroot --command \
-                    cargo nextest --cargo-profile ${{matrix.profile}} archive --archive-file tests.tar.zst
+                    cargo nextest archive --cargo-profile ${{matrix.profile}} --archive-file tests.tar.zst
                   nix env shell --file default.nix devroot --command \
-                    cargo nextest --cargo-profile ${{matrix.profile}} run --archive-file tests.tar.zst
+                    cargo nextest run --cargo-profile ${{matrix.profile}} --archive-file tests.tar.zst
 
             - id: "clippy"
               name: "run clippy"
