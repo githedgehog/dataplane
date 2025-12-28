@@ -100,6 +100,7 @@ jobs:
                   name: "dnoland-githedgehog-cache-2"
                   authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
                   signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
+                  useDaemon: false
 
             - name: "devroot"
               run: |
