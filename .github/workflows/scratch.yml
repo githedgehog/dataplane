@@ -62,11 +62,13 @@ jobs:
             fail-fast: false
             matrix:
                 profile:
-                    - "debug"
-                    - "release"
+                    - name: "debug"
+                      cargo_name: "dev"
+                    - name: "release"
+                      cargo_name: "release"
                 debug_justfile:
                     - "${{ inputs.debug_justfile || false }}"
-        name: "${{matrix.profile}}"
+        name: "${{matrix.profile.name}}"
         runs-on: "lab"
         timeout-minutes: 120
         steps:
@@ -107,7 +109,7 @@ jobs:
               run: |
                   nix build \
                      --log-format raw \
-                     --argstr profile ${{matrix.profile}} \
+                     --argstr profile ${{matrix.profile.name}} \
                      --show-trace \
                      --max-jobs 3 \
                      --file default.nix \
@@ -118,7 +120,7 @@ jobs:
               run: |
                   nix build \
                      --log-format raw \
-                     --argstr profile ${{matrix.profile}} \
+                     --argstr profile ${{matrix.profile.name}} \
                      --show-trace \
                      --max-jobs 3 \
                      --file default.nix \
@@ -130,7 +132,7 @@ jobs:
                   for pkg in dataplane cli init; do
                     nix build --file default.nix \
                         --log-format raw \
-                        --argstr profile ${{matrix.profile}} \
+                        --argstr profile ${{matrix.profile.name}} \
                         --show-trace \
                         --max-jobs 3 \
                         packages.dataplane \
@@ -141,26 +143,26 @@ jobs:
               run: |
                   export PATH="$(pwd)/devroot/bin:$PATH"
                   nix env shell --file default.nix devroot --command \
-                    cargo nextest archive --cargo-profile ${{matrix.profile}} --archive-file tests.tar.zst
+                    cargo nextest archive --cargo-profile ${{matrix.profile.cargo_name}} --archive-file tests.tar.zst
                   nix env shell --file default.nix devroot --command \
-                    cargo nextest run --cargo-profile ${{matrix.profile}} --archive-file tests.tar.zst
+                    cargo nextest run --archive-file tests.tar.zst
 
             - name: "run doctests"
               run: |
                   nix env shell --file default.nix devroot --command \
-                    cargo test --profile=${{matrix.profile}} --doc
+                    cargo test --profile=${{matrix.profile.cargo_name}} --doc
 
             - id: "clippy"
               name: "run clippy"
               run: |
                   nix env shell --file default.nix devroot --command \
-                    cargo clippy --profile ${{matrix.profile}} --all-targets --all-features -- -D warnings
+                    cargo clippy --profile ${{matrix.profile.cargo_name}} --all-targets --all-features -- -D warnings
 
             - id: "docs"
               name: "run rustdoc"
               run: |
                   nix env shell --file default.nix devroot --command \
-                    RUSTDOCFLAGS="-D warnings" cargo doc --profile=${{matrix.profile}} --no-deps
+                    RUSTDOCFLAGS="-D warnings" cargo doc --profile=${{matrix.profile_name}} --no-deps
 
             - name: "Setup tmate session for debug"
               # if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
