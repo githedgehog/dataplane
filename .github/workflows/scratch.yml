@@ -105,17 +105,6 @@ jobs:
                   signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
                   useDaemon: true
 
-            - name: "devroot"
-              run: |
-                  nix build \
-                     --log-format raw \
-                     --argstr profile ${{matrix.profile.name}} \
-                     --show-trace \
-                     --max-jobs 3 \
-                     --file default.nix \
-                     devroot \
-                     --out-link devroot
-
             - name: "sysroot"
               run: |
                   nix build \
@@ -126,6 +115,17 @@ jobs:
                      --file default.nix \
                      sysroot \
                      --out-link sysroot
+
+            - name: "devroot"
+              run: |
+                  nix build \
+                     --log-format raw \
+                     --argstr profile ${{matrix.profile.name}} \
+                     --show-trace \
+                     --max-jobs 3 \
+                     --file default.nix \
+                     devroot \
+                     --out-link devroot
 
             - name: "bins"
               run: |
