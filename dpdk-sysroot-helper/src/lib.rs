@@ -31,7 +31,7 @@ pub fn get_target_name() -> String {
 
 #[must_use]
 pub fn get_sysroot() -> String {
-    let sysroot_env = env::var("SYSROOT").expect("SYSROOT not set");
+    let sysroot_env = env::var("DATAPLANE_SYSROOT").expect("DATAPLANE_SYSROOT not set");
     let sysroot_path = Path::new(&sysroot_env);
     if sysroot_path.exists() {
         sysroot_env
