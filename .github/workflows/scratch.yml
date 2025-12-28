@@ -106,6 +106,7 @@ jobs:
             - name: "devroot"
               run: |
                   nix build \
+                     --log-format raw \
                      --argstr profile ${{matrix.profile}} \
                      --show-trace \
                      --max-jobs 3 \
@@ -116,6 +117,7 @@ jobs:
             - name: "sysroot"
               run: |
                   nix build \
+                     --log-format raw \
                      --argstr profile ${{matrix.profile}} \
                      --show-trace \
                      --max-jobs 3 \
@@ -127,6 +129,7 @@ jobs:
               run: |
                   for pkg in dataplane cli init; do
                     nix build --file default.nix \
+                        --log-format raw \
                         --argstr profile ${{matrix.profile}} \
                         --show-trace \
                         --max-jobs 3 \
