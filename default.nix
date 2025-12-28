@@ -133,7 +133,6 @@ let
       (craneLib.filterCargoSources path type) || (markdownFilter path type) || (cHeaderFilter path type);
   };
 
-  # Common arguments can be set here to avoid repeating them later
   vendored = crane.vendorMultipleCargoDeps {
     inherit (crane.findCargoFiles dataplane-src) cargoConfigs;
     cargoLockList = [
@@ -155,21 +154,17 @@ let
       "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
     ];
     cargoVendorDir = vendored;
-    # inherit cargoArtifacts;
     inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
-    # NB: we disable tests since we'll run them all via cargo-nextest
     doCheck = false;
 
     env =
       let
         target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
         isCross = dataplane-dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
-        linker = if isCross then "${target}-clang" else "clang";
+        clang = if isCross then "${target}-clang" else "clang";
       in
       {
         SYSROOT = "${sysroot}";
-        # PATH = "${devroot}/bin";
-        # CC = "${devroot}/bin/${linker}";
         LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
         C_INCLUDE_PATH = "${sysroot}/include";
         LIBRARY_PATH = "${sysroot}/lib";
@@ -180,9 +175,8 @@ let
           profile'.RUSTFLAGS
           ++ [
             "--cfg=tokio_unstable"
-            "-Clink-arg=-fuse-ld=lld"
             "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
-            "-Clinker=${devroot}/bin/${linker}"
+            "-Clinker=${devroot}/bin/${clang}"
           ]
         );
       };
@@ -253,6 +247,7 @@ in
     packages
     sources
     sysroot
+    _devpkgs
     shell
     ;
   crane = craneLib;

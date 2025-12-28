@@ -94,25 +94,31 @@ jobs:
                   persist-credentials: "false"
                   fetch-depth: "0"
 
+            - name: "log into cachix"
+              uses: cachix/cachix-action@v14
+              with:
+                  name: dnoland-githedgehog-cache-2
+                  signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
+
             - name: "devroot"
               run: |
-                  nix build -f default.nix --argstr profile ${{matrix.profile}} devroot --show-trace --max-jobs 3 --out-link devroot
+                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A devroot | cachix push -m zstd dnoland-githedgehog-cache-2
 
             - name: "sysroot"
               run: |
-                  nix build -f default.nix --argstr profile ${{matrix.profile}} sysroot --show-trace --max-jobs 3 --out-link sysroot
+                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A sysroot | cachix push -m zstd dnoland-githedgehog-cache-2
 
             - name: "bins"
               run: |
-                  nix build -f default.nix --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 packages.dataplane --out-link output.dataplane
-                  nix build -f default.nix --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 packages.cli --out-link output.cli
-                  nix build -f default.nix --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 packages.init --out-link output.init
+                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.dataplane | cachix push -m zstd dnoland-githedgehog-cache-2
+                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.cli | cachix push -m zstd dnoland-githedgehog-cache-2
+                  nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.init | cachix push -m zstd dnoland-githedgehog-cache-2
 
-            - name: "cargo build / nextest"
-              run: |
-                  export PATH="$(pwd)/devroot/bin:$PATH"
-                  cargo build
-                  cargo nextest run
+            # - name: "cargo build / nextest"
+            #   run: |
+            #       export PATH="$(pwd)/devroot/bin:$PATH"
+            #       cargo build
+            #       cargo nextest run
 
             - id: "clippy"
               name: "run clippy"

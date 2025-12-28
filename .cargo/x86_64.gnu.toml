@@ -2,4 +2,4 @@
 CC = { value = "devroot/bin/x86_64-unknown-linux-gnu-clang", relative = true, force = false }
 
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["--cfg=tokio_unstable", "-Clinker=x86_64-unknown-linux-gnu-clang", "-Clink-arg=-fuse-ld=lld"]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=x86_64-unknown-linux-gnu-clang"]
