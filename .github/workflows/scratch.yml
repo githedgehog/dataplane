@@ -145,22 +145,22 @@ jobs:
                   nix env shell --file default.nix devroot --command \
                     cargo nextest run --cargo-profile ${{matrix.profile}} --archive-file tests.tar.zst
 
+            - name: "run doctests"
+              run: |
+                  nix env shell --file default.nix devroot --command \
+                    cargo test --profile=${{matrix.profile}} --doc
+
             - id: "clippy"
               name: "run clippy"
               run: |
                   nix env shell --file default.nix devroot --command \
-                    cargo --profile ${{matrix.profile}} clippy --all-targets --all-features -- -D warnings
+                    cargo clippy --profile ${{matrix.profile}} --all-targets --all-features -- -D warnings
 
             - id: "docs"
               name: "run rustdoc"
               run: |
                   nix env shell --file default.nix devroot --command \
-                    RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} doc --no-deps
-
-            - name: "run doctests"
-              run: |
-                  nix env shell --file default.nix devroot --command \
-                    RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} test --doc
+                    RUSTDOCFLAGS="-D warnings" cargo doc --profile=${{matrix.profile}} --no-deps
 
             - name: "Setup tmate session for debug"
               # if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
