@@ -125,24 +125,14 @@ jobs:
 
             - name: "bins"
               run: |
-                  nix build --file default.nix \
-                    --argstr profile ${{matrix.profile}} \
-                    --show-trace \
-                    --max-jobs 3 \
-                    packages.dataplane \
-                    --out-link packages.dataplane
-                  nix build --file default.nix \
-                    --argstr profile ${{matrix.profile}} \
-                    --show-trace \
-                    --max-jobs 3 \
-                    packages.cli \
-                    --out-link packages.cli
-                  nix build --file default.nix \
-                    --argstr profile ${{matrix.profile}} \
-                    --show-trace \
-                    --max-jobs 3 \
-                    packages.init \
-                    --out-link packages.init
+                  for pkg in dataplane cli init; do
+                    nix build --file default.nix \
+                        --argstr profile ${{matrix.profile}} \
+                        --show-trace \
+                        --max-jobs 3 \
+                        packages.dataplane \
+                        --out-link "packages.${pkg}"
+                  done
 
             - name: "cargo build / nextest"
               run: |
@@ -173,4 +163,3 @@ jobs:
               timeout-minutes: 120
               with:
                   limit-access-to-actor: true
-
