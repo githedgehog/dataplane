@@ -134,28 +134,30 @@ jobs:
                         --out-link "packages.${pkg}"
                   done
 
-            - name: "cargo build / nextest"
+            - name: "cargo nextest"
               run: |
                   export PATH="$(pwd)/devroot/bin:$PATH"
-                  nix env shell --file default.nix shell --command \
-                    'cargo nextest --cargo-profile ${{matrix.profile}} run'
+                  nix env shell --file default.nix devroot --command \
+                    cargo nextest --cargo-profile ${{matrix.profile}} archive --archive-file tests.tar.zst
+                  nix env shell --file default.nix devroot --command \
+                    cargo nextest --cargo-profile ${{matrix.profile}} run --archive-file tests.tar.zst
 
             - id: "clippy"
               name: "run clippy"
               run: |
-                  nix env shell --file default.nix shell --command \
-                    'cargo --profile ${{matrix.profile}} clippy --all-targets --all-features -- -D warnings'
+                  nix env shell --file default.nix devroot --command \
+                    cargo --profile ${{matrix.profile}} clippy --all-targets --all-features -- -D warnings
 
             - id: "docs"
               name: "run rustdoc"
               run: |
-                  nix env shell --file default.nix shell --command \
-                    'RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} doc --no-deps'
+                  nix env shell --file default.nix devroot --command \
+                    RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} doc --no-deps
 
             - name: "run doctests"
               run: |
-                  nix env shell --file default.nix shell --command \
-                    'RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} test --doc'
+                  nix env shell --file default.nix devroot --command \
+                    RUSTDOCFLAGS="-D warnings" cargo --profile=${{matrix.profile}} test --doc
 
             - name: "Setup tmate session for debug"
               # if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
