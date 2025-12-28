@@ -1,2 +1,9 @@
 [env]
-CC = { value = "devroot/bin/x86_64-unknown-linux-musl-clang", relative = true, force = false }
+CC = { value = "x86_64-unknown-linux-musl-clang", relative = false, force = true }
+PATH = { value = "devroot/bin", relative = true, force = true }
+
+[build]
+target = "x86_64-unknown-linux-musl"
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=x86_64-unknown-linux-musl-clang", "-Clink-arg=-fuse-ld=lld"]

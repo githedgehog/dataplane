@@ -9,10 +9,10 @@
 final: prev:
 let
   helpers.addToEnv =
-    add: orig:
+    new: orig:
     orig
     // (
-      with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) add)
+      with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) new)
     );
   adapt = final.stdenvAdapters;
   bintools = final.pkgsBuildHost.llvmPackages.bintools;
@@ -34,7 +34,6 @@ let
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
-  rustPlatform = rustPlatform';
 in
 {
   inherit rust-toolchain stdenv' rustPlatform';
@@ -169,7 +168,15 @@ in
   # to enable inlining (wherever the compiler decides it makes sense).  You very likely want to enable lto here in any
   # release build.
   fancy.rdma-core =
-    ((dataplane-dep prev.rdma-core).override { libnl = final.fancy.libnl; }).overrideAttrs
+    ((dataplane-dep prev.rdma-core).override {
+        docutils = null;
+        ethtool = null;
+        iproute2 = null;
+        libnl = final.fancy.libnl;
+        pandoc = null;
+        udev = null;
+        udevCheckHook = null;
+    }).overrideAttrs
       (orig: {
         version = sources.rdma-core.branch;
         src = sources.rdma-core.outPath;
@@ -196,22 +203,21 @@ in
         cmakeFlags =
           orig.cmakeFlags
           ++ [
-            "-DRDMA_DYNAMIC_PROVIDERS=none"
-            "-DRDMA_STATIC_PROVIDERS=all"
             "-DENABLE_STATIC=1"
             # we don't need pyverbs, and turning it off reduces build time / complexity.
             "-DNO_PYVERBS=1"
             # no need for docs in container images.
             "-DNO_MAN_PAGES=1"
             # we don't care about this lib's exported symbols / compat situation _at all_ because we static link (which
-            # doesn't even have symbol versioning / compatibility in the first place).  Turning this off just reduces the
-            # build's internal complexity and makes lto easier.
+            # doesn't have symbol versioning in the first place).  Turning this off just reduces the build's internal
+            # complexity and makes lto easier.
             "-DNO_COMPAT_SYMS=1"
+            # IOCTL_MODE can be "write" or "ioctl" or "both" (default).
             # Very old versions of rdma-core used what they call the "legacy write path" to support rdma-operations.
-            # These have (long) since been superseded by the ioctl mode, but the library generates both code paths by
+            # These have (long since) been superseded by the ioctl mode, but the library generates both code paths by
             # default due to rdma-core's fairly aggressive backwards compatibility stance.
-            # We have absolutely no need or desire to support the legacy mode, and we can potentially save ourselves some
-            # instruction cache pressure by disabling that old code at compile time.
+            # We have absolutely no need or desire to support the legacy mode, and we can potentially save ourselves
+            # some instruction cache pressure by disabling that old code at compile time.
             "-DIOCTL_MODE=ioctl"
           ]
           ++
@@ -240,7 +246,7 @@ in
   # or debugging.  After all, if you aren't doing something performance critical then I don't know why you want DPDK at
   # all :)
   #
-  # Also, while this library has a respectable security track record, this is also a super strong candidate for
+  # Also, while this library has a respectable security track record, this is also a very strong candidate for
   # cfi, safe-stack, and cf-protection.
   dpdk =
     (dataplane-dep (
@@ -263,8 +269,6 @@ in
   dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
 
   pciutils = dataplane-dep (prev.pciutils.override { static = true; });
-  # This isn't directly required by dataplane,
-  perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 
   hwloc = (dataplane-dep (prev.hwloc)).overrideAttrs (orig: {
     outputs = (orig.outputs or [ ]) ++ [ "static" ];
@@ -277,24 +281,6 @@ in
     '';
   });
 
-  kopium = import ../pkgs/kopium {
-    src = sources.kopium;
-    inherit rustPlatform;
-  };
-  cargo-bolero = prev.cargo-bolero.override { inherit rustPlatform; };
-  cargo-deny = prev.cargo-deny.override { inherit rustPlatform; };
-  cargo-llvm-cov = prev.cargo-llvm-cov.override { inherit rustPlatform; };
-  cargo-nextest = prev.cargo-nextest.override { inherit rustPlatform; };
-  just = prev.just.override { inherit rustPlatform; };
-  npins = prev.npins.override { inherit rustPlatform; };
-  gateway-crd =
-    let
-      path = "config/crd/bases/gwint.githedgehog.com_gatewayagents.yaml";
-    in
-    final.writeTextFile {
-      name = "gateway-crd";
-      text = builtins.readFile "${sources.gateway}/${path}";
-      executable = false;
-      destination = "/src/gateway/${path}";
-    };
+  # This isn't directly required by dataplane,
+  perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 }

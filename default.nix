@@ -25,7 +25,7 @@ let
     inherit sanitizers instrumentation profile;
     arch = platform'.arch;
   };
-  rust-profile =
+  cargo-profile =
     {
       "debug" = "dev";
       "release" = "release";
@@ -112,7 +112,7 @@ let
     gateway-crd
     just
     kopium
-    # llvmPackages.clang ## TODO: determine if we actually need this.  It is quite heavy and may be confusing
+    llvmPackages.clang # yes, you do actually need the host compiler in order to link proc macros
     npins
     rust-toolchain
   ]);
@@ -126,14 +126,14 @@ let
       RUSTDOCFLAGS = "-D warnings";
     };
   };
-  markdownFilter = path: _type: builtins.match ".*\.md$" path != null;
-  cHeaderFilter = path: _type: builtins.match ".*\.h$" path != null;
+  markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
+  cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
   dataplane-src = dataplane-pkgs.lib.cleanSourceWith {
     name = "dataplane-source";
     src = ./.;
     filter =
-      path: type:
-      (craneLib.filterCargoSources path type) || (markdownFilter path type) || (cHeaderFilter path type);
+      p: type:
+      (craneLib.filterCargoSources p type) || (markdownFilter p type) || (cHeaderFilter p type);
   };
 
   vendored = crane.vendorMultipleCargoDeps {
@@ -146,12 +146,12 @@ let
   commonArgs = {
     src = dataplane-src;
     strictDeps = true;
-    CARGO_PROFILE = "dev";
+    CARGO_PROFILE = cargo-profile;
 
     cargoBuildCommand = builtins.concatStringsSep " " [
       "cargo"
       "build"
-      "--profile=${rust-profile}"
+      "--profile=${cargo-profile}"
       "-Zunstable-options"
       "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro"
       "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
@@ -227,11 +227,6 @@ let
             buildInputs = [
               hwloc.static
             ];
-            lint = craneLib.cargoClippy (commonArgs // {
-              inherit cargoArtifacts;
-              # Optional: Add extra arguments for clippy (e.g., denying warnings)
-              cargoClippyExtraArgs = "-- --deny warnings";
-            });
           }
         );
     in
@@ -242,6 +237,22 @@ let
         inherit pname;
       })
     ) package-list;
+    lints =
+      let
+        package-expr =
+          {
+            pname,
+          }:
+          craneLib.cargoClippy {
+            inherit pname cargoArtifacts;
+            inherit (commonArgs) version src env;
+            # cargoExtraArgs = "--package=${pname}";
+          };
+      in
+      builtins.mapAttrs (
+        _: pname:
+        (dataplane-pkgs.callPackage package-expr { inherit pname; })
+      ) package-list;
 in
 {
   inherit
@@ -257,6 +268,7 @@ in
     sysroot
     _devpkgs
     shell
+    lints
     ;
   crane = craneLib;
   profile = profile';

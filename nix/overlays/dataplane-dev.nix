@@ -28,12 +28,12 @@ in
   npins = prev.npins.override { inherit rustPlatform; };
   gateway-crd =
     let
-      path = "config/crd/bases/gwint.githedgehog.com_gatewayagents.yaml";
+      p = "config/crd/bases/gwint.githedgehog.com_gatewayagents.yaml";
     in
     final.writeTextFile {
       name = "gateway-crd";
-      text = builtins.readFile "${sources.gateway}/${path}";
+      text = builtins.readFile "${sources.gateway}/${p}";
       executable = false;
-      destination = "/src/gateway/${path}";
+      destination = "/src/gateway/${p}";
     };
 }

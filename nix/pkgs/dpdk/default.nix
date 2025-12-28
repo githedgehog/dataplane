@@ -308,7 +308,7 @@ stdenv.mkDerivation {
   CFLAGS = if stdenv.targetPlatform.parsed.cpu.name == "aarch64" then "-ffat-lto-objects" else "";
 
   postInstall = ''
-    # Remove docs.  We don't build these anyway
+    # Remove docs.  We don't want these anyway
     rm -rf $out/share/doc
     # Remove python files from bin output (we never use them and they confuse dependency reports)
     rm $out/bin/*.py
