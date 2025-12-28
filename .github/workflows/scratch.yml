@@ -103,19 +103,20 @@ jobs:
                   signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
                   useDaemon: true
 
+            # - name: use cachix
+            #   run: |
+            #       cachix use dnoland-githedgehog-cache-2
+
             - name: "devroot"
               run: |
-                  cachix use dnoland-githedgehog-cache-2
                   nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A devroot | cachix push -m zstd dnoland-githedgehog-cache-2
 
             - name: "sysroot"
               run: |
-                  cachix use dnoland-githedgehog-cache-2
                   nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A sysroot | cachix push -m zstd dnoland-githedgehog-cache-2
 
             - name: "bins"
               run: |
-                  cachix use dnoland-githedgehog-cache-2
                   nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.dataplane | cachix push -m zstd dnoland-githedgehog-cache-2
                   nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.cli | cachix push -m zstd dnoland-githedgehog-cache-2
                   nix-build --argstr profile ${{matrix.profile}} --show-trace --max-jobs 3 -A packages.init | cachix push -m zstd dnoland-githedgehog-cache-2
