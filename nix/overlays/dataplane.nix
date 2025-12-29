@@ -270,14 +270,18 @@ in
 
   pciutils = dataplane-dep (prev.pciutils.override { static = true; });
 
-  hwloc = (dataplane-dep (prev.hwloc)).overrideAttrs (orig: {
+  hwloc = ((dataplane-dep prev.hwloc).override {
+    inherit (final.fancy) numactl;
+    cairo = null;
+    libX11 = null;
+  }).overrideAttrs (orig: {
     outputs = (orig.outputs or [ ]) ++ [ "static" ];
     configureFlags = (orig.configureFlags or [ ]) ++ [
-      "--enable-static"
+    "--enable-static"
     ];
     postInstall = (orig.postInstall or "") + ''
-      mkdir -p $static/lib
-      mv $lib/lib/*.a $static/lib/
+    mkdir -p $static/lib
+    mv $lib/lib/*.a $static/lib/
     '';
   });
 

@@ -92,6 +92,7 @@ let
   };
   crane = import sources.crane { pkgs = dataplane-pkgs; };
   craneLib = crane.craneLib.overrideToolchain dataplane-pkgs.rust-toolchain;
+  craneLibCrossEnv = crane.craneLib.mkCrossToolchainEnv (p: p.stdenv');
   _devpkgs = [
     clangd-config
   ]
@@ -133,8 +134,7 @@ let
     name = "dataplane-source";
     src = ./.;
     filter =
-      p: type:
-      (craneLib.filterCargoSources p type) || (markdownFilter p type) || (cHeaderFilter p type);
+      p: type: (craneLib.filterCargoSources p type) || (markdownFilter p type) || (cHeaderFilter p type);
   };
 
   cargoVendorDir = craneLib.vendorMultipleCargoDeps {
@@ -143,31 +143,31 @@ let
       "${dataplane-pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
   };
-  commonArgs = {
-    src = dataplane-src;
-    strictDeps = true;
-    CARGO_PROFILE = cargo-profile;
+  commonArgs =
+    let
+      target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
+      isCross = dataplane-dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
+      clang = if isCross then "${target}-clang" else "clang";
+    in
+    {
+      src = dataplane-src;
+      strictDeps = true;
+      CARGO_PROFILE = cargo-profile;
 
-    cargoBuildCommand = builtins.concatStringsSep " " [
-      "cargo"
-      "build"
-      "--profile=${cargo-profile}"
-      "-Zunstable-options"
-      "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro,sysroot"
-      "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
-      "--target=x86_64-unknown-linux-gnu"
-    ];
-    inherit cargoVendorDir;
-    inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
-    doCheck = false;
+      cargoBuildCommand = builtins.concatStringsSep " " [
+        "cargo"
+        "build"
+        "--profile=${cargo-profile}"
+        "-Zunstable-options"
+        "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
+        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+        "--target=${target}"
+      ];
+      inherit cargoVendorDir;
+      inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
+      doCheck = false;
 
-    env =
-      let
-        target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
-        isCross = dataplane-dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
-        clang = if isCross then "${target}-clang" else "clang";
-      in
-      {
+      env = {
         DATAPLANE_SYSROOT = "${sysroot}";
         LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
         C_INCLUDE_PATH = "${sysroot}/include";
@@ -187,12 +187,7 @@ let
           ]
         );
       };
-  };
-  # # Build *just* the cargo dependencies (of the entire workspace),
-  # # so we can reuse all of that work (e.g. via cachix) when running in CI
-  # # It is *highly* recommended to use something like cargo-hakari to avoid
-  # # cache misses when building individual top-level-crates
-  cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+    };
   package-list = builtins.fromJSON (
     builtins.readFile (
       dataplane-pkgs.runCommandLocal "package-list"
@@ -209,6 +204,7 @@ let
   );
   packages =
     let
+      target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
       package-expr =
         {
           pkg-config,
@@ -220,10 +216,8 @@ let
         craneLib.buildPackage (
           commonArgs
           // {
-            # inherit pname cargoArtifacts;
             inherit pname;
-            # TODO: remove target spec or make dynamic
-            cargoExtraArgs = "--package=${pname} --target=x86_64-unknown-linux-gnu";
+            cargoExtraArgs = "--package=${pname} --target=${target}";
             nativeBuildInputs = [
               pkg-config
               kopium
@@ -241,40 +235,51 @@ let
       (dataplane-pkgs.callPackage package-expr {
         inherit (dataplane-dev-pkgs) kopium;
         inherit pname;
+      }).overrideAttrs
+        (orig: {
+          # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
+          # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
+          # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
+          # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
+          # hook actually runs.
+          postBuild = ''
+            unset RUSTFLAGS;
+          ''
+          + (orig.postBuild or "");
+        })
+    ) package-list;
+  lints =
+    let
+      package-expr =
+        {
+          pkg-config,
+          kopium,
+          llvmPackages,
+          hwloc,
+          pname,
+        }:
+        craneLib.cargoClippy {
+          inherit pname;
+          inherit (commonArgs) version src env;
+          cargoExtraArgs = "--package=${pname}";
+          nativeBuildInputs = [
+            pkg-config
+            kopium
+            llvmPackages.clang
+            llvmPackages.lld
+          ];
+          buildInputs = [
+            hwloc.static
+          ];
+        };
+    in
+    builtins.mapAttrs (
+      _: pname:
+      (dataplane-pkgs.callPackage package-expr {
+        inherit pname;
+        inherit (dataplane-dev-pkgs) kopium;
       })
     ) package-list;
-    lints =
-      let
-        package-expr =
-          {
-            pkg-config,
-            kopium,
-            llvmPackages,
-            hwloc,
-            pname,
-          }:
-          craneLib.cargoClippy {
-            inherit pname cargoArtifacts;
-            inherit (commonArgs) version src env;
-            cargoExtraArgs = "--package=${pname}";
-            nativeBuildInputs = [
-              pkg-config
-              kopium
-              llvmPackages.clang
-              llvmPackages.lld
-            ];
-            buildInputs = [
-              hwloc.static
-            ];
-          };
-      in
-      builtins.mapAttrs (
-        _: pname:
-        (dataplane-pkgs.callPackage package-expr {
-            inherit pname;
-            inherit (dataplane-dev-pkgs) kopium;
-        })
-      ) package-list;
 in
 {
   inherit
@@ -291,6 +296,7 @@ in
     _devpkgs
     shell
     lints
+    craneLibCrossEnv
     ;
   crane = craneLib;
   profile = profile';

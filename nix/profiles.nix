@@ -41,15 +41,14 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
-    "-flto=thin"
-    # "-fsplit-lto-unit" # important for compatibility with rust's LTO
+    "-flto=full"
+    "-fsplit-lto-unit" # important for compatibility with rust's LTO
   ];
   optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
     "-fwhole-program-vtables"
   ];
   optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
     "-Wl,--lto-whole-program-visibility"
-    # just to keep the artifacts small, we don't currently use any linked artifact anyway
     "-Wl,--gc-sections"
     "-Wl,--as-needed"
   ];
@@ -59,7 +58,9 @@ let
     "-Coverflow-checks=off"
     "-Clinker-plugin-lto"
     "-Cembed-bitcode=yes"
+    "-Clto=true"
     "-Ccodegen-units=1"
+    "-Zsplit-lto-unit"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [
@@ -169,24 +170,43 @@ let
   sanitize.safe-stack.RUSTFLAGS = [
     "-Zsanitizer=safestack"
     "-Zexternal-clangrt"
+    # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
+    "-Cunsafe-allow-abi-mismatch=sanitizer"
+    "-Ctarget-feature=-crt-static" # safe-stack doesn't work with any static libc of any kind
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.safe-stack.NIX_CFLAGS_LINK);
+  sanitize.shadow-stack.NIX_CFLAGS_COMPILE = [
+    "-ffixed-x18"
+    "-fsanitize=shadow-call-stack"
+  ];
+  sanitize.shadow-stack.NIX_CXXFLAGS_COMPILE = sanitize.shadow-stack.NIX_CFLAGS_COMPILE;
+  sanitize.shadow-stack.NIX_CFLAGS_LINK = sanitize.shadow-stack.NIX_CFLAGS_COMPILE ++ [
+    # "-Wl,--allow-shlib-undefined"
+  ];
+  sanitize.shadow-stack.RUSTFLAGS = [
+    "-Zfixed-x18"
+    "-Zsanitizer=shadow-call-stack"
+    "-Zexternal-clangrt"
+    # gimli doesn't like shadow-stack sanitizer, but it shouldn't be an issue since that is all build time logic
+    "-Cunsafe-allow-abi-mismatch=sanitizer,fixed-x18"
+    "-Ctarget-feature=-crt-static" # shadow-stack doesn't work with static libc
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.shadow-stack.NIX_CFLAGS_LINK);
   instrument.none.NIX_CFLAGS_COMPILE = [ ];
   instrument.none.NIX_CXXFLAGS_COMPILE = instrument.none.NIX_CFLAGS_COMPILE;
   instrument.none.NIX_CFLAGS_LINK = instrument.none.NIX_CFLAGS_COMPILE;
   instrument.none.RUSTFLAGS =
     [ ] ++ (map (flag: "-Clink-arg=${flag}") instrument.none.NIX_CFLAGS_LINK);
-  instrument.produce.NIX_CFLAGS_COMPILE = [
+  instrument.coverage.NIX_CFLAGS_COMPILE = [
     "-fprofile-instr-generate"
     "-fcoverage-mapping"
-    "-fno-omit-frame-pointer"
   ];
-  instrument.produce.NIX_CXXFLAGS_COMPILE = instrument.produce.NIX_CFLAGS_COMPILE;
-  instrument.produce.NIX_CFLAGS_LINK = instrument.produce.NIX_CFLAGS_COMPILE;
-  instrument.produce.RUSTFLAGS = [
+  instrument.coverage.NIX_CXXFLAGS_COMPILE = instrument.coverage.NIX_CFLAGS_COMPILE;
+  instrument.coverage.NIX_CFLAGS_LINK = instrument.coverage.NIX_CFLAGS_COMPILE;
+  instrument.coverage.RUSTFLAGS = [
     "-Cinstrument-coverage"
   ]
-  ++ (map (flag: "-Clink-arg=${flag}") instrument.produce.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
