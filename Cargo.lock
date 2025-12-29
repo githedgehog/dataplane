@@ -1472,6 +1472,7 @@ dependencies = [
  "dataplane-id",
  "dataplane-interface-manager",
  "dataplane-k8s-intf",
+ "dataplane-k8s-less",
  "dataplane-lpm",
  "dataplane-nat",
  "dataplane-net",

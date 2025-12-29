@@ -158,6 +158,7 @@ fn main() {
     /* start management */
     start_mgmt(MgmtParams {
         grpc_addr,
+        config_dir: args.config_dir().cloned(),
         hostname: get_gw_name().unwrap_or_else(|| unreachable!()).to_owned(),
         processor_params: ConfigProcessorParams {
             router_ctl: setup.router.get_ctl_tx(),
