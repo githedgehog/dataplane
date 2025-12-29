@@ -24,6 +24,7 @@ gateway_config = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
 k8s-intf = { workspace = true }
+k8s-less = { workspace = true }
 lpm = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true }

@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::processor::k8s_client::{K8sClient, K8sClientError};
+use crate::processor::k8s_less_client::{K8sLess, K8sLessError};
 use crate::processor::proc::ConfigProcessor;
 
 use std::fmt::Display;
@@ -47,6 +48,9 @@ pub enum LaunchError {
     ProcessorError(std::io::Error),
     #[error("Error starting/waiting for Config Processor task: {0}")]
     ProcessorJoinError(tokio::task::JoinError),
+
+    #[error("Error in k8s-less mode: {0}")]
+    K8LessError(#[from] K8sLessError),
 }
 
 /// Start the gRPC server on TCP
@@ -181,6 +185,7 @@ impl Display for ServerAddress {
 
 pub struct MgmtParams {
     pub grpc_addr: Option<GrpcAddress>,
+    pub config_dir: Option<String>,
     pub hostname: String,
     pub processor_params: ConfigProcessorParams,
 }
@@ -229,7 +234,17 @@ pub fn start_mgmt(
                         Err(LaunchError::PrematureGrpcExit)
                     }
                 })
-            } else {
+            }  else if let Some(config_dir) = &params.config_dir {
+                warn!("Running in k8s-less mode....");
+                rt.block_on(async {
+                    let (processor, client) = ConfigProcessor::new(params.processor_params);
+                    let k8sless = Arc::new(K8sLess::new(config_dir, client));
+                    tokio::spawn(async { processor.run().await });
+                    K8sLess::start_config_watch(k8sless).await
+                })?;
+                Ok(())
+            }
+            else {
                 debug!("Will start watching k8s for configuration changes");
                 rt.block_on(async {
                     let (processor, client) = ConfigProcessor::new(params.processor_params);
