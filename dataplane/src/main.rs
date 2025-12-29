@@ -121,12 +121,12 @@ fn main() {
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     let ctrlc_stop_tx = stop_tx.clone();
-    // ctrlc::set_handler(move || {
-    //     ctrlc_stop_tx
-    //         .send(0)
-    //         .expect("Error sending shutdown signal");
-    // })
-    // .expect("failed to set SIGINT handler");
+    ctrlc::set_handler(move || {
+        ctrlc_stop_tx
+            .send(0)
+            .expect("Error sending shutdown signal");
+    })
+    .expect("failed to set SIGINT handler");
 
     let grpc_addr = match args.grpc_address() {
         Ok(addr) => addr,
