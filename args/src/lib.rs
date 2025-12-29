@@ -555,7 +555,8 @@ pub struct RoutingConfigSection {
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct ConfigServerSection {
     /// gRPC server address (TCP or Unix socket)
-    pub address: GrpcAddress,
+    pub address: Option<GrpcAddress>,
+    pub config_dir: Option<String>,
 }
 
 /// Complete dataplane launch configuration.
@@ -1088,12 +1089,12 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             general: GeneralConfigSection {
                 name: value.get_name().cloned(),
             },
-            config_server: value
-                .grpc_address()
-                .map_err(InvalidCmdArguments::InvalidGrpcAddress)?
-                .map(|grpc_address| ConfigServerSection {
-                    address: grpc_address,
-                }),
+            config_server: Some(ConfigServerSection {
+                address: value
+                    .grpc_address()
+                    .map_err(InvalidCmdArguments::InvalidGrpcAddress)?,
+                config_dir: value.config_dir().cloned(),
+            }),
             driver: match &value.driver {
                 Some(driver) if driver == "dpdk" => {
                     // TODO: adjust command line to specify lcore usage more flexibly in next PR
@@ -1275,6 +1276,17 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
 
     #[arg(long, help = "Set the name of this gateway")]
     name: Option<String>,
+
+    #[arg(
+        long,
+        help = "Run in k8s-less mode using this directory to watch for configurations.
+You can copy json/yaml config files in this directory to reconfigure dataplane. You can modify existing
+files or just 'touch' them to trigger a new reconfiguration. Every change will increase the generation id by one.
+NOTE: dataplane tracks file 'save' events. If you modify an existing file, depending on the editor used, this will
+trigger more than one reconfiguration (e.g. gedit). If this is undesired, use nano or vi(m), or edit your file
+elsewhere and copy it in the configuration directory. This mode is meant mostly for debugging or early testing."
+    )]
+    config_dir: Option<String>,
 }
 
 impl CmdArgs {
@@ -1463,6 +1475,14 @@ impl CmdArgs {
     #[must_use]
     pub fn get_name(&self) -> Option<&String> {
         self.name.as_ref()
+    }
+
+    /// Get the configuration directory.
+    /// Setting the configuration directory enables k8s-less mode, where configurations are retrieved from files
+    /// or their changes in the configuration directory.
+    #[must_use]
+    pub fn config_dir(&self) -> Option<&String> {
+        self.config_dir.as_ref()
     }
 }
 
