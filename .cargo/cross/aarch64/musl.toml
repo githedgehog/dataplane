@@ -1,6 +1,5 @@
 [env]
 CC = { value = "aarch64-unknown-linux-musl-clang", relative = false, force = true }
-PATH = { value = "devroot/bin", relative = true, force = true }
 
 [build]
 target = "aarch64-unknown-linux-musl"

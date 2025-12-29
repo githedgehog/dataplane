@@ -143,51 +143,87 @@ let
       "${dataplane-pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
   };
-  commonArgs =
-    let
-      target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
-      isCross = dataplane-dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
-      clang = if isCross then "${target}-clang" else "clang";
-    in
-    {
-      src = dataplane-src;
-      strictDeps = true;
-      CARGO_PROFILE = cargo-profile;
+  target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
+  isCross = dataplane-dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
+  cc = if isCross then "${target}-clang" else "clang";
+  commonArgs = {
+    src = dataplane-src;
+    strictDeps = true;
+    CARGO_PROFILE = cargo-profile;
 
-      cargoBuildCommand = builtins.concatStringsSep " " [
-        "cargo"
-        "build"
-        "--profile=${cargo-profile}"
-        "-Zunstable-options"
-        "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
-        "--target=${target}"
-      ];
-      inherit cargoVendorDir;
-      inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
-      doCheck = false;
+    cargoBuildCommand = builtins.concatStringsSep " " [
+      "cargo"
+      "build"
+      "--profile=${cargo-profile}"
+      "-Zunstable-options"
+      "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
+      "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+      "--target=${target}"
+    ];
+    inherit cargoVendorDir;
+    inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
+    doCheck = false;
+    dontStrip = true;
 
-      env = {
-        DATAPLANE_SYSROOT = "${sysroot}";
-        LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
-        C_INCLUDE_PATH = "${sysroot}/include";
-        LIBRARY_PATH = "${sysroot}/lib";
-        PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
-        GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
-        RUSTC_BOOTSTRAP = "1";
-        CARGO_BUILD_RUSTFLAGS = "";
-        RUSTFLAGS = builtins.concatStringsSep " " (
-          profile'.RUSTFLAGS
-          ++ [
-            "-Cdebuginfo=0"
-            "-Ccodegen-units=1"
-            "--cfg=tokio_unstable"
-            "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
-            "-Clinker=${devroot}/bin/${clang}"
-          ]
-        );
-      };
+    env = {
+      DATAPLANE_SYSROOT = "${sysroot}";
+      LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
+      C_INCLUDE_PATH = "${sysroot}/include";
+      LIBRARY_PATH = "${sysroot}/lib";
+      PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
+      GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+      RUSTC_BOOTSTRAP = "1";
+      CARGO_BUILD_RUSTFLAGS = "";
+      RUSTFLAGS = builtins.concatStringsSep " " (
+        profile'.RUSTFLAGS
+        ++ [
+          "--cfg=tokio_unstable"
+          "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
+          "-Clinker=${devroot}/bin/${cc}"
+        ]
+      );
     };
+  };
+
+  commonArgs-nextest = {
+    src = dataplane-src;
+    strictDeps = true;
+    CARGO_PROFILE = cargo-profile;
+
+    cargoBuildCommand = builtins.concatStringsSep " " [
+      "cargo"
+      "nextest"
+      "archive"
+      "--profile=${cargo-profile}"
+      "-Zunstable-options"
+      "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
+      "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+      "--target=${target}"
+    ];
+    inherit cargoVendorDir;
+    inherit (craneLib.crateNameFromCargoToml { src = dataplane-src; }) version;
+    doCheck = false;
+    dontStrip = true;
+
+    env = {
+      DATAPLANE_SYSROOT = "${sysroot}";
+      LIBCLANG_PATH = "${dataplane-pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
+      C_INCLUDE_PATH = "${sysroot}/include";
+      LIBRARY_PATH = "${sysroot}/lib";
+      PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
+      GW_CRD_PATH = "${dataplane-dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+      RUSTC_BOOTSTRAP = "1";
+      CARGO_BUILD_RUSTFLAGS = "";
+      RUSTFLAGS = builtins.concatStringsSep " " (
+        profile'.RUSTFLAGS
+        ++ [
+          "--cfg=tokio_unstable"
+          "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
+          "-Clinker=${devroot}/bin/${cc}"
+        ]
+      );
+    };
+  };
   package-list = builtins.fromJSON (
     builtins.readFile (
       dataplane-pkgs.runCommandLocal "package-list"
@@ -202,84 +238,152 @@ let
         ''
     )
   );
-  packages =
-    let
-      target = dataplane-pkgs.stdenv'.targetPlatform.rust.rustcTarget;
-      package-expr =
-        {
-          pkg-config,
-          kopium,
-          llvmPackages,
-          hwloc,
-          pname,
-        }:
-        craneLib.buildPackage (
-          commonArgs
-          // {
-            inherit pname;
-            cargoExtraArgs = "--package=${pname} --target=${target}";
-            nativeBuildInputs = [
-              pkg-config
-              kopium
-              llvmPackages.clang
-              llvmPackages.lld
-            ];
-            buildInputs = [
-              hwloc.static
-            ];
-          }
-        );
-    in
-    builtins.mapAttrs (
-      _: pname:
-      (dataplane-pkgs.callPackage package-expr {
-        inherit (dataplane-dev-pkgs) kopium;
-        inherit pname;
-      }).overrideAttrs
-        (orig: {
-          # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
-          # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
-          # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
-          # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
-          # hook actually runs.
-          postBuild = ''
-            unset RUSTFLAGS;
-          ''
-          + (orig.postBuild or "");
-        })
-    ) package-list;
-  lints =
-    let
-      package-expr =
-        {
-          pkg-config,
-          kopium,
-          llvmPackages,
-          hwloc,
-          pname,
-        }:
-        craneLib.cargoClippy {
-          inherit pname;
-          inherit (commonArgs) version src env;
-          cargoExtraArgs = "--package=${pname}";
+  package-expr =
+    {
+      operation,
+      cargoArtifacts ? null,
+      pname ? null,
+    }:
+    {
+      pkg-config,
+      kopium,
+      llvmPackages,
+      hwloc,
+    }:
+    craneLib.${operation} (
+      commonArgs
+      // {
+        inherit pname cargoArtifacts;
+        cargoExtraArgs = (if pname != null then "--package=${pname} " else "") + "--target=${target}";
+        nativeBuildInputs = [
+          pkg-config
+          kopium
+          llvmPackages.clang
+          llvmPackages.lld
+        ];
+        buildInputs = [
+          hwloc.static
+        ];
+      }
+    );
+  nextest-expr =
+    {
+      cargoArtifacts ? null,
+      pname ? null,
+    }:
+    dataplane-pkgs.callPackage (
+      {
+        stdenv',
+        pkg-config,
+        kopium,
+        cargo-nextest,
+        llvmPackages,
+        hwloc,
+        rust-toolchain,
+      }:
+      stdenv'.mkDerivation (
+        commonArgs-nextest
+        // {
+          inherit pname cargoArtifacts;
+          buildCommand = builtins.concatStringsSep " " [
+            "cd $src;"
+            "cargo"
+            "nextest"
+            "archive"
+            "--profile=${cargo-profile}"
+            "-Zunstable-options"
+            "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
+            "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+            (
+              "--target=${target} "
+              + (
+                if pname != null then
+                  "--package=${pname} --archive-file $out/${pname}.tar.zst "
+                else
+                  "--archive-file $out/nextest.tar.zst "
+              )
+            )
+          ];
           nativeBuildInputs = [
             pkg-config
             kopium
             llvmPackages.clang
             llvmPackages.lld
+            rust-toolchain
+            cargo-nextest
           ];
           buildInputs = [
             hwloc.static
           ];
-        };
-    in
-    builtins.mapAttrs (
-      _: pname:
-      (dataplane-pkgs.callPackage package-expr {
-        inherit pname;
-        inherit (dataplane-dev-pkgs) kopium;
+        }
+      )
+    );
+  craneOp =
+    {
+      operation ? "buildPackage",
+      cargoArtifacts ? null,
+      pname ? null,
+    }@inputs:
+    (dataplane-pkgs.callPackage (package-expr (inputs // { inherit pname; })) {
+      inherit (dataplane-dev-pkgs) kopium;
+    }).overrideAttrs
+      (orig: {
+        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
+        # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
+        # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
+        # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
+        # hook actually runs.
+        postBuild = ''
+          unset RUSTFLAGS;
+        ''
+        + (orig.postBuild or "");
+      });
+  nextestOp =
+    {
+      cargoArtifacts ? null,
+      pname ? null,
+    }@inputs:
+    (
+      ((nextest-expr (inputs // { inherit pname; })) {
+        inherit (dataplane-dev-pkgs) kopium cargo-nextest;
       })
-    ) package-list;
+    ).overrideAttrs
+      (orig: {
+        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
+        # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
+        # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
+        # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
+        # hook actually runs.
+        postBuild = ''
+          unset RUSTFLAGS;
+        ''
+        + (orig.postBuild or "");
+      });
+  cargo.build = builtins.mapAttrs (
+    _: pname:
+    craneOp {
+      operation = "buildPackage";
+      inherit pname;
+    }
+  ) package-list;
+  cargo.clippy = craneOp {
+    operation = "cargoClippy";
+    cargoArtifacts = cargo.build.dataplane;
+  };
+  cargo.nextest = builtins.mapAttrs (
+    package: pname:
+    (nextest-expr {
+      cargoArtifacts = cargo.build.${package};
+      inherit pname;
+    })
+      {
+        inherit (dataplane-dev-pkgs) kopium cargo-nextest;
+      }
+  ) package-list;
+  cargo.doctest = craneOp {
+    operation = "cargoDocTest";
+    cargoArtifacts = cargo.build.dataplane;
+  };
 in
 {
   inherit
@@ -290,13 +394,12 @@ in
     dataplane-pkgs
     devroot
     package-list
-    packages
     sources
     sysroot
     _devpkgs
     shell
-    lints
     craneLibCrossEnv
+    cargo
     ;
   crane = craneLib;
   profile = profile';

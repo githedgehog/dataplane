@@ -1,6 +1,5 @@
 [env]
 CC = { value = "x86_64-unknown-linux-gnu-clang", relative = false, force = true }
-PATH = { value = "devroot/bin", relative = true, force = true }
 
 [build]
 target = "x86_64-unknown-linux-gnu"
