@@ -24,8 +24,9 @@ let
   common.RUSTFLAGS = [
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
+    "-Csymbol-mangling-version=v0"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
     "-fno-omit-frame-pointer"
@@ -37,7 +38,7 @@ let
     "-Cdebug-assertions=on"
     "-Coverflow-checks=on"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
     "-flto=thin"
@@ -60,7 +61,7 @@ let
     "-Cembed-bitcode=yes"
     "-Ccodegen-units=1"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [
     "-fstack-protector-strong"
     "-fstack-clash-protection"
@@ -74,7 +75,7 @@ let
   secure.RUSTFLAGS = [
     "-Crelro-level=full"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") secure.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") secure.NIX_CFLAGS_LINK);
   march.x86_64.NIX_CFLAGS_COMPILE = [
     # DPDK functionally requires some -m flags on x86_64.
     # These features have been available for a long time and can be found on any reasonably recent machine, so just
@@ -90,12 +91,12 @@ let
     # these should be kept in 1:1 alignment with the x86_64 NIX_CFLAGS_COMPILE settings
     "-Ctarget-feature=+rtm,+crc32,+ssse3"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") march.x86_64.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") march.x86_64.NIX_CFLAGS_LINK);
   march.aarch64.NIX_CFLAGS_COMPILE = [ ];
   march.aarch64.NIX_CXXFLAGS_COMPILE = march.aarch64.NIX_CFLAGS_COMPILE;
   march.aarch64.NIX_CFLAGS_LINK = [ ];
   march.aarch64.RUSTFLAGS =
-    [ ] ++ (builtins.map (flag: "-Clink-arg=${flag}") march.aarch64.NIX_CFLAGS_LINK);
+    [ ] ++ (map (flag: "-Clink-arg=${flag}") march.aarch64.NIX_CFLAGS_LINK);
   sanitize.address.NIX_CFLAGS_COMPILE = [
     "-fsanitize=address,local-bounds"
   ];
@@ -107,7 +108,7 @@ let
     "-Zsanitizer=address"
     "-Zexternal-clangrt"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.address.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.address.NIX_CFLAGS_LINK);
   sanitize.leak.NIX_CFLAGS_COMPILE = [
     "-fsanitize=leak"
   ];
@@ -117,7 +118,7 @@ let
     "-Zsanitizer=leak"
     "-Zexternal-clangrt"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
   sanitize.thread.NIX_CFLAGS_COMPILE = [
     "-fsanitize=thread"
   ];
@@ -128,8 +129,10 @@ let
   sanitize.thread.RUSTFLAGS = [
     "-Zsanitizer=thread"
     "-Zexternal-clangrt"
+    # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
+    "-Cunsafe-allow-abi-mismatch=sanitizer"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.thread.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.thread.NIX_CFLAGS_LINK);
   # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds
   sanitize.cfi.NIX_CFLAGS_COMPILE = [
     "-fsanitize=cfi"
@@ -155,7 +158,7 @@ let
     "-Zsanitizer-cfi-normalize-integers"
     "-Zsanitizer-cfi-generalize-pointers"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.cfi.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.cfi.NIX_CFLAGS_LINK);
   sanitize.safe-stack.NIX_CFLAGS_COMPILE = [
     "-fsanitize=safe-stack"
   ];
@@ -165,13 +168,14 @@ let
   ];
   sanitize.safe-stack.RUSTFLAGS = [
     "-Zsanitizer=safestack"
+    "-Zexternal-clangrt"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") sanitize.safe-stack.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.safe-stack.NIX_CFLAGS_LINK);
   instrument.none.NIX_CFLAGS_COMPILE = [ ];
   instrument.none.NIX_CXXFLAGS_COMPILE = instrument.none.NIX_CFLAGS_COMPILE;
   instrument.none.NIX_CFLAGS_LINK = instrument.none.NIX_CFLAGS_COMPILE;
   instrument.none.RUSTFLAGS =
-    [ ] ++ (builtins.map (flag: "-Clink-arg=${flag}") instrument.none.NIX_CFLAGS_LINK);
+    [ ] ++ (map (flag: "-Clink-arg=${flag}") instrument.none.NIX_CFLAGS_LINK);
   instrument.produce.NIX_CFLAGS_COMPILE = [
     "-fprofile-instr-generate"
     "-fcoverage-mapping"
@@ -182,11 +186,11 @@ let
   instrument.produce.RUSTFLAGS = [
     "-Cinstrument-coverage"
   ]
-  ++ (builtins.map (flag: "-Clink-arg=${flag}") instrument.produce.NIX_CFLAGS_LINK);
+  ++ (map (flag: "-Clink-arg=${flag}") instrument.produce.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
-      acc: elem: acc // (builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) elem)
+      acc: element: acc // (builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) element)
     ) { } features;
   profile-map = {
     debug = combine-profiles [
@@ -206,5 +210,5 @@ combine-profiles (
     march."${arch}"
     instrument."${instrumentation}"
   ]
-  ++ (builtins.map (s: sanitize.${s}) sanitizers)
+  ++ (map (s: sanitize.${s}) sanitizers)
 )

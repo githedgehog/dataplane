@@ -153,7 +153,7 @@ let
       "build"
       "--profile=${cargo-profile}"
       "-Zunstable-options"
-      "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro"
+      "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,proc_macro,sysroot"
       "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
       "--target=x86_64-unknown-linux-gnu"
     ];
@@ -184,7 +184,6 @@ let
             "--cfg=tokio_unstable"
             "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
             "-Clinker=${devroot}/bin/${clang}"
-            "-Cunsafe-allow-abi-mismatch=sanitizer"
           ]
         );
       };
@@ -223,6 +222,7 @@ let
           // {
             # inherit pname cargoArtifacts;
             inherit pname;
+            # TODO: remove target spec or make dynamic
             cargoExtraArgs = "--package=${pname} --target=x86_64-unknown-linux-gnu";
             nativeBuildInputs = [
               pkg-config
