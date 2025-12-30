@@ -3,6 +3,5 @@
 
 //! Converters
 
-pub mod grpc;
 pub mod k8s;
 pub mod strings;
