@@ -4,6 +4,7 @@
   stdenv,
   dpdk,
   libbsd,
+  ...
 }:
 stdenv.mkDerivation {
   pname = "dpdk-wrapper";

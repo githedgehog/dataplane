@@ -4,6 +4,7 @@
   rdma-core,
   autoreconfHook,
   pciutils,
+  ...
 }:
 stdenv.mkDerivation (final: {
   pname = "perftest";

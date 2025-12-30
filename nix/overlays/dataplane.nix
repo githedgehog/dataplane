@@ -3,7 +3,6 @@
 {
   sources,
   sanitizers,
-  platform,
   ...
 }:
 final: prev:
@@ -193,28 +192,19 @@ in
   #
   # Also, while this library has a respectable security track record, this is also a very strong candidate for
   # cfi, safe-stack, and cf-protection.
-  dpdk =
-    (dataplane-dep (
-      final.callPackage ../pkgs/dpdk (platform.override.dpdk.buildInputs // { src = sources.dpdk; })
-    )).override
-      {
-        inherit (final.fancy)
-          rdma-core
-          libnl
-          libbsd
-          numactl
-          ;
-      };
+  dpdk = dataplane-dep (final.callPackage ../pkgs/dpdk (final.fancy // { src = sources.dpdk; }));
 
   # DPDK is largely composed of static-inline functions.
   # We need to wrap those functions with "_w" variants so that we can actually call them from rust.
   #
   # This wrapping process does not really cause any performance issue due to lto; the compiler is going to "unwrap"
   # these methods anyway.
-  dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper { });
+  dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper final.fancy);
 
+  # TODO: consistent packages
   pciutils = dataplane-dep (prev.pciutils.override { static = true; });
 
+  # TODO: consistent packages, min deps
   hwloc =
     ((dataplane-dep prev.hwloc).override {
       inherit (final.fancy) numactl;
@@ -233,5 +223,7 @@ in
       });
 
   # This isn't directly required by dataplane,
-  perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
+  perftest = dataplane-dep (
+    final.callPackage ../pkgs/perftest final.fancy // { src = sources.perftest; }
+  );
 }

@@ -26,10 +26,15 @@ let
       lld
     ];
   }) final.llvmPackages.stdenv;
-  # note: rust-bin comes from oxa's overlay, not nixpkgs
+  # note: rust-bin comes from oxa's overlay, not nixpkgs.  This overlay only works if you have a rust overlay as well.
   rust-toolchain = prev.rust-bin.fromRustupToolchainFile ../../rust-toolchain.toml;
   rustPlatform' = prev.makeRustPlatform {
     stdenv = stdenv';
+    cargo = rust-toolchain;
+    rustc = rust-toolchain;
+  };
+  rustPlatform'-dev = prev.makeRustPlatform {
+    stdenv = final.llvmPackages.stdenv;
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
@@ -54,6 +59,6 @@ let
   );
 in
 {
-  inherit rust-toolchain rustPlatform';
+  inherit rust-toolchain rustPlatform' rustPlatform'-dev stdenv';
   llvmPackages' = prev."llvmPackages_${llvm-version}";
 }

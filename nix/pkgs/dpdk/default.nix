@@ -8,7 +8,7 @@
   meson,
   ninja,
   libbsd,
-  numactl,
+  # numactl,
   rdma-core,
   libnl,
   python3,
@@ -18,6 +18,7 @@
     platform = "bluefield3";
   },
   writeText,
+  ...
 }:
 
 stdenv.mkDerivation {
@@ -35,7 +36,7 @@ stdenv.mkDerivation {
   buildInputs = [
     libbsd
     libnl
-    numactl
+    # numactl
     rdma-core
   ];
 
@@ -286,7 +287,7 @@ stdenv.mkDerivation {
       "-Ddefault_library=static"
       "-Denable_docs=false"
       "-Denable_driver_sdk=false"
-      "-Dmax_numa_nodes=8"
+      "-Dmax_numa_nodes=1"
       "-Dtests=false" # Running DPDK tests in CI is usually silly
       "-Duse_hpet=false"
       "-Ddebug=false"

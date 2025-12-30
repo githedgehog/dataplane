@@ -43,7 +43,7 @@ let
     overlays = [
       overlays.rust
       overlays.llvm
-      # overlays.dataplane-dev
+      overlays.dataplane-dev
     ];
   };
   pkgs =
@@ -154,10 +154,10 @@ let
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
-  cargo-cmd-prefix = builtins.concatStringsSep " " [
+  cargo-cmd-prefix = [
     "--profile=${cargo-profile}"
     "-Zunstable-options"
-    "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
+    "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
     "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
     "--target=${target}"
   ];
@@ -184,6 +184,10 @@ let
       doCheck = false;
       strictDeps = true;
       dontStrip = true;
+      # dontFixup = true;
+      doRemapPathPrefix = true;
+      doNotRemoveReferencesToRustToolchain = true;
+      doNotRemoveReferencesToVendorDir = true;
 
       nativeBuildInputs = [
         pkg-config
@@ -209,9 +213,20 @@ let
         RUSTFLAGS = builtins.concatStringsSep " " (
           profile'.RUSTFLAGS
           ++ [
-            "--cfg=tokio_unstable"
-            "-Clink-arg=--ld-path=${devroot}/bin/ld.lld"
-            "-Clinker=${devroot}/bin/${cc}"
+            "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
+            "-Clinker=${pkgs.pkgsBuildHost.llvmPackages.clang}/bin/${cc}"
+            # NOTE: this is basically a trick to get our source code to be available to debuggers
+            # Normally remap-path-prefix takes the form  --remap-path-prefix=FROM=TO where FROM and TO are directories.
+            # This is intended to map source code paths to generic, relative, or redacted paths.
+            # We are sorta using that mechanism in reverse here in that the empth FROM in the next expression maps our
+            # source code in the debug info from the current working directory to ${src} (the nix store path we where
+            # we have copied our source code).
+            #
+            # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the .dwo files
+            # we strip out of the final binaries we cook.  Then we can include gdb/lldbserver binaries in
+            # some debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
+            # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
+            "--remap-path-prefix==${src}"
           ]
         );
       };
@@ -245,6 +260,26 @@ let
         ''
         + (orig.postBuild or "");
       });
+  dataplane =
+    let
+      pkgs-expr = package-expr-builder {
+        pname = "dataplane";
+      };
+    in
+    (pkgs.callPackage pkgs-expr {
+      inherit (dev-pkgs) kopium;
+    }).overrideAttrs
+      (orig: {
+        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
+        # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
+        # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
+        # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
+        # hook actually runs.
+        postBuild = ''
+          unset RUSTFLAGS;
+        ''
+        + (orig.postBuild or "");
+      });
 in
 {
   inherit
@@ -256,6 +291,7 @@ in
     sources
     sysroot
     cli
+    dataplane
     ;
   crane = craneLib;
   profile = profile';

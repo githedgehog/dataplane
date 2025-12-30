@@ -18,9 +18,6 @@ let
           NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
           NIX_CFLAGS_LINK = [ ];
         };
-        dpdk = {
-          buildInputs = { };
-        };
       };
     };
     x86-64-v4 = lib.recursiveUpdate x86-64-v3 rec {
@@ -67,11 +64,6 @@ let
           NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
           NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
           NIX_CFLAGS_LINK = [ ];
-        };
-        dpdk = {
-          buildInputs = {
-            numactl = null;
-          };
         };
       };
     };

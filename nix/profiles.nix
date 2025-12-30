@@ -22,6 +22,7 @@ let
     "-fuse-ld=lld"
   ];
   common.RUSTFLAGS = [
+    "--cfg=tokio_unstable"
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
@@ -41,8 +42,7 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
     "-O3"
-    "-flto=full"
-    "-fsplit-lto-unit" # important for compatibility with rust's LTO
+    "-flto=thin"
   ];
   optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
     "-fwhole-program-vtables"
@@ -53,14 +53,8 @@ let
     "-Wl,--as-needed"
   ];
   optimize-for.performance.RUSTFLAGS = [
-    "-Copt-level=3"
-    "-Cdebug-assertions=off"
-    "-Coverflow-checks=off"
     "-Clinker-plugin-lto"
     "-Cembed-bitcode=yes"
-    "-Clto=true"
-    "-Ccodegen-units=1"
-    "-Zsplit-lto-unit"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [
@@ -68,13 +62,14 @@ let
     "-fstack-clash-protection"
     # we always want pic/pie and GOT offsets should be computed at compile time whenever possible
     "-Wl,-z,relro,-z,now"
-    # "-fcf-protection=full" # requires extra testing before we enable
+    "-fcf-protection=full" # requires extra testing before we enable
   ];
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
   secure.NIX_CFLAGS_LINK = secure.NIX_CFLAGS_COMPILE;
   secure.RUSTFLAGS = [
     "-Crelro-level=full"
+    "-Zcf-protection=full"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") secure.NIX_CFLAGS_LINK);
   march.x86_64.NIX_CFLAGS_COMPILE = [
@@ -142,7 +137,7 @@ let
     # NOTE: you also want to enable -Wl,--lto-whole-program-visibility in the linker flags if visibility=default so that
     # symbols can be refined to hidden visibility at link time.
     # This "whole-program-visibility" flag is already enabled by the optimize profile, and
-    # given that the optimize profile is required for cfi to even bild, we don't explicitly enable it again here.
+    # given that the optimize profile is required for cfi to even build, we don't explicitly enable it again here.
     "-fvisibility=default"
     # required to properly link with rust
     "-fsanitize-cfi-icall-experimental-normalize-integers"
@@ -150,6 +145,8 @@ let
     # Type fudging is common in C code, especially in cases where function pointers are used with lax const correctness.
     # Ideally we wouldn't enable this, but we can't really re-write all of the C code in the world.
     "-fsanitize-cfi-icall-generalize-pointers"
+    # "-fsanitize-cfi-cross-dso"
+    "-fsplit-lto-unit" # important for compatibility with rust's LTO
   ];
   sanitize.cfi.NIX_CXXFLAGS_COMPILE = sanitize.cfi.NIX_CFLAGS_COMPILE;
   sanitize.cfi.NIX_CFLAGS_LINK = sanitize.cfi.NIX_CFLAGS_COMPILE;
@@ -157,6 +154,8 @@ let
     "-Zsanitizer=cfi"
     "-Zsanitizer-cfi-normalize-integers"
     "-Zsanitizer-cfi-generalize-pointers"
+    # "-Zsanitizer-cfi-cross-dso"
+    "-Zsplit-lto-unit"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.cfi.NIX_CFLAGS_LINK);
   sanitize.safe-stack.NIX_CFLAGS_COMPILE = [

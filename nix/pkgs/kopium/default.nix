@@ -1,6 +1,7 @@
 {
   src,
   rustPlatform,
+  ...
 }:
 rustPlatform.buildRustPackage (final: {
   pname = "kopium";
