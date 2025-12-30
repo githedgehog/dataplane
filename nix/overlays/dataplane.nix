@@ -4,68 +4,13 @@
   sources,
   sanitizers,
   platform,
-  profile,
+  ...
 }:
 final: prev:
 let
-  helpers.addToEnv =
-    new: orig:
-    orig
-    // (
-      with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) new)
-    );
-  adapt = final.stdenvAdapters;
-  bintools = final.pkgsBuildHost.llvmPackages.bintools;
-  lld = final.pkgsBuildHost.llvmPackages.lld;
-  added-to-env = helpers.addToEnv platform.override.stdenv.env profile;
-  stdenv' = adapt.addAttrsToDerivation (orig: {
-    doCheck = false;
-    separateDebugInfo = true;
-    env = helpers.addToEnv added-to-env (orig.env or { });
-    nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [
-      bintools
-      lld
-    ];
-  }) final.llvmPackages.stdenv;
-  dataplane-dep = pkg: pkg.override { stdenv = stdenv'; };
-  rust-toolchain = final.rust-bin.fromRustupToolchainFile ../../rust-toolchain.toml;
-  rustPlatform' = final.makeRustPlatform {
-    stdenv = stdenv';
-    cargo = rust-toolchain;
-    rustc = rust-toolchain;
-  };
+  dataplane-dep = pkg: pkg.override { stdenv = final.stdenv'; };
 in
 {
-  inherit rust-toolchain stdenv' rustPlatform';
-  # Don't bother adapting ethtool or iproute2's build to our custom flags / env.  Failure to null this can trigger
-  # _massive_ builds because ethtool depends on libnl (et al), and we _do_ overlay libnl.  Thus, the ethtool / iproute2
-  # get rebuilt and you end up rebuilding the whole world.
-  #
-  # To be clear, we can still use ethtool / iproute2 if we want, we just don't need to optimize / lto it.
-  # If you want to include ethtool / iproute2, I recommend just cutting another small overlay and static linking them.
-  # Alternatively, you could skip that and just ship the default build of ethtool.
-  # ethtool = null;
-  # iproute2 = null;
-
-  # These are only used in docs and can make our build explode in size if we let any of this rebuild in this overlay.
-  # It is much easier to just not build docs in this overlay.  We don't care if the build depends on pandoc per se, but
-  # you will regret the need to rebuild ghc :shrug:
-  # gd = null;
-  # graphviz = null;
-  # mscgen = null;
-  # pandoc = null;
-
-  # We should avoid accepting anything in our dpdk + friends pkgs which depends on udev / systemd; our deploy simply
-  # won't support any such mechanisms.
-  #
-  # Usually this type of dependency takes the form of udev rules / systemd service files being generated (which is no
-  # problem).  That said, builds which hard and fast depend on systemd or udev are very suspicious in this context, so
-  # exceptions to this removal should be granted with care and some level of prejudice.  At minimum, such exceptions
-  # tend to make it hard to cross compile which is an important test case for our sysroot.
-  # systemd = null;
-  # udev = null;
-  # udevCheckHook = null;
-
   # libmd is used by libbsd (et al) which is an optional dependency of dpdk.
   #
   # We _might_ actually care about perf here, so we lto this package.
@@ -169,13 +114,13 @@ in
   # release build.
   fancy.rdma-core =
     ((dataplane-dep prev.rdma-core).override {
-        docutils = null;
-        ethtool = null;
-        iproute2 = null;
-        libnl = final.fancy.libnl;
-        pandoc = null;
-        udev = null;
-        udevCheckHook = null;
+      docutils = null;
+      ethtool = null;
+      iproute2 = null;
+      libnl = final.fancy.libnl;
+      pandoc = null;
+      udev = null;
+      udevCheckHook = null;
     }).overrideAttrs
       (orig: {
         version = sources.rdma-core.branch;
@@ -270,20 +215,22 @@ in
 
   pciutils = dataplane-dep (prev.pciutils.override { static = true; });
 
-  hwloc = ((dataplane-dep prev.hwloc).override {
-    inherit (final.fancy) numactl;
-    cairo = null;
-    libX11 = null;
-  }).overrideAttrs (orig: {
-    outputs = (orig.outputs or [ ]) ++ [ "static" ];
-    configureFlags = (orig.configureFlags or [ ]) ++ [
-    "--enable-static"
-    ];
-    postInstall = (orig.postInstall or "") + ''
-    mkdir -p $static/lib
-    mv $lib/lib/*.a $static/lib/
-    '';
-  });
+  hwloc =
+    ((dataplane-dep prev.hwloc).override {
+      inherit (final.fancy) numactl;
+      cairo = null;
+      libX11 = null;
+    }).overrideAttrs
+      (orig: {
+        outputs = (orig.outputs or [ ]) ++ [ "static" ];
+        configureFlags = (orig.configureFlags or [ ]) ++ [
+          "--enable-static"
+        ];
+        postInstall = (orig.postInstall or "") + ''
+          mkdir -p $static/lib
+          mv $lib/lib/*.a $static/lib/
+        '';
+      });
 
   # This isn't directly required by dataplane,
   perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });

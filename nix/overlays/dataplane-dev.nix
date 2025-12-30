@@ -2,30 +2,28 @@
 # Copyright Open Network Fabric Authors
 {
   sources,
+  ...
 }:
 final: prev:
 let
-  rust-toolchain = final.rust-bin.fromRustupToolchainFile  ../../rust-toolchain.toml;
-  rustPlatform = final.makeRustPlatform {
-    stdenv = final.llvmPackages.stdenv;
-    cargo = rust-toolchain;
-    rustc = rust-toolchain;
+  override-packages = {
+    stdenv = final.llvmPackages'.stdenv;
+    rustPlatform = final.rustPlatform';
   };
 in
 {
-  inherit rust-toolchain;
-  rustPlatform' = rustPlatform;
-
-  kopium = import ../pkgs/kopium {
-    src = sources.kopium;
-    inherit rustPlatform;
-  };
-  cargo-bolero = prev.cargo-bolero.override { inherit rustPlatform; };
-  cargo-deny = prev.cargo-deny.override { inherit rustPlatform; };
-  cargo-llvm-cov = prev.cargo-llvm-cov.override { inherit rustPlatform; };
-  cargo-nextest = prev.cargo-nextest.override { inherit rustPlatform; };
-  just = prev.just.override { inherit rustPlatform; };
-  npins = prev.npins.override { inherit rustPlatform; };
+  kopium = import ../pkgs/kopium (
+    {
+      src = sources.kopium;
+    }
+    // override-packages
+  );
+  cargo-bolero = prev.cargo-bolero.override override-packages;
+  cargo-deny = prev.cargo-deny.override override-packages;
+  cargo-llvm-cov = prev.cargo-llvm-cov.override override-packages;
+  cargo-nextest = prev.cargo-nextest.override override-packages;
+  just = prev.just.override override-packages;
+  npins = prev.npins.override override-packages;
   gateway-crd =
     let
       p = "config/crd/bases/gwint.githedgehog.com_gatewayagents.yaml";

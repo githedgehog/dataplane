@@ -39,18 +39,17 @@ let
     profile = profile';
     platform = platform';
   };
-  rust-overlay = import sources.rust-overlay;
   dev-pkgs = import sources.nixpkgs {
     overlays = [
-      rust-overlay
+      overlays.rust
       overlays.llvm
-      overlays.dataplane-dev
+      # overlays.dataplane-dev
     ];
   };
   pkgs =
     (import sources.nixpkgs {
       overlays = [
-        rust-overlay
+        overlays.rust
         overlays.llvm
         overlays.dataplane
       ];
@@ -122,12 +121,15 @@ let
   };
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
-  bigFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
-  sourceFilter = pkgs.lib.cleanSourceWith (
-    p: t:
-    (bigFilter p t) && (markdownFilter p t) && (cHeaderFilter p t) && (craneLib.filterCargoSources p t)
-  );
-  src = pkgs.lib.cleanSource ./.;
+  outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
+  src = pkgs.lib.cleanSourceWith {
+    filter =
+      p: t:
+      (markdownFilter p t)
+      || (cHeaderFilter p t)
+      || ((outputsFilter p t) && (craneLib.filterCargoSources p t));
+    src = ./.;
+  };
   cargoVendorDir = craneLib.vendorMultipleCargoDeps {
     cargoLockList = [
       ./Cargo.lock
@@ -152,6 +154,13 @@ let
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
+  cargo-cmd-prefix = builtins.concatStringsSep " " [
+    "--profile=${cargo-profile}"
+    "-Zunstable-options"
+    "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+    "--target=${target}"
+  ];
   package-expr-builder =
     {
       cargoArtifacts ? null,
@@ -207,15 +216,13 @@ let
         );
       };
 
-      cargoBuildCommand = builtins.concatStringsSep " " [
-        "cargo"
-        "build"
-        "--profile=${cargo-profile}"
-        "-Zunstable-options"
-        "-Zbuild-std=compiler_builtins,std,panic_unwind,sysroot"
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
-        "--target=${target}"
-      ];
+      cargoBuildCommand = builtins.concatStringsSep " " (
+        [
+          "cargo"
+          "build"
+        ]
+        ++ cargo-cmd-prefix
+      );
       cargoExtraArgs = (if pname != null then "--package=${pname} " else "") + "--target=${target}";
     };
   cli =
