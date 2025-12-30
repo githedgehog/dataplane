@@ -3,7 +3,6 @@
 
 //! Dataplane management module
 
-mod grpc;
 mod processor;
 mod tests;
 pub mod vpc_manager;

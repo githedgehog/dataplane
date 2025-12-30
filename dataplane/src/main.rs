@@ -27,8 +27,6 @@ use tracectl::{custom_target, get_trace_ctl, trace_target};
 use tracing::{error, info, level_filters::LevelFilter};
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
-custom_target!("tonic", LevelFilter::ERROR, &[]);
-custom_target!("h2", LevelFilter::ERROR, &[]);
 custom_target!("Pyroscope", LevelFilter::INFO, &[]);
 
 fn init_name(args: &CmdArgs) -> Result<(), String> {
