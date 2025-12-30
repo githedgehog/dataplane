@@ -61,7 +61,6 @@ use std::borrow::Borrow;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::path::PathBuf;
 use std::str::FromStr;
 
 #[derive(
@@ -330,18 +329,6 @@ pub struct GeneralConfigSection {
     name: Option<String>,
 }
 
-/// Enum to represent either a TCP socket address or a UNIX socket path
-#[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
-)]
-#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
-pub enum GrpcAddress {
-    /// TCP socket address (IP address and port)
-    Tcp(SocketAddr),
-    /// Unix domain socket path
-    UnixSocket(String),
-}
-
 /// Configuration for the packet processing driver used by the dataplane.
 ///
 /// The dataplane supports two packet processing backends:
@@ -554,8 +541,6 @@ pub struct RoutingConfigSection {
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct ConfigServerSection {
-    /// gRPC server address (TCP or Unix socket)
-    pub address: Option<GrpcAddress>,
     pub config_dir: Option<String>,
 }
 
@@ -1037,14 +1022,6 @@ impl AsFinalizedMemFile for IntegrityCheck {
 /// when argument values are invalid or inconsistent.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum InvalidCmdArguments {
-    /// Invalid gRPC address specification.
-    ///
-    /// This occurs when:
-    /// - TCP address cannot be parsed as `IP:PORT`
-    /// - Unix socket path is not absolute when `--grpc-unix-socket` is set
-    #[error("Illegal grpc address: {0}")]
-    InvalidGrpcAddress(String), // TODO: this should have a stronger error type
-
     /// Invalid PCI device address format.
     ///
     /// PCI addresses must follow the format: `domain:bus:device.function`
@@ -1090,9 +1067,6 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                 name: value.get_name().cloned(),
             },
             config_server: Some(ConfigServerSection {
-                address: value
-                    .grpc_address()
-                    .map_err(InvalidCmdArguments::InvalidGrpcAddress)?,
                 config_dir: value.config_dir().cloned(),
             }),
             driver: match &value.driver {
@@ -1192,19 +1166,6 @@ Note: multiple interfaces can be specified separated by commas and no spaces"
         help = "Number of worker threads for the kernel driver in [1..64]"
     )]
     num_workers: u16,
-
-    /// gRPC server address (IP:PORT for TCP or path for UNIX socket)
-    #[arg(
-        long,
-        value_name = "ADDRESS",
-        help = "IP Address and port or UNIX socket path to listen for GRPC management connections.
-If this parameter and --grpc_unix_socket are both absent, the dataplane will directly fetch configuration from K8s"
-    )]
-    grpc_address: Option<String>,
-
-    /// Treat grpc-address as a UNIX socket path
-    #[arg(long, help = "Use a unix socket to listen for management connections")]
-    grpc_unix_socket: Option<bool>,
 
     #[arg(
         long,
@@ -1391,46 +1352,6 @@ impl CmdArgs {
     // interface getter. This should be used by all drivers
     pub fn interfaces(&self) -> impl Iterator<Item = InterfaceArg> {
         self.interface.iter().cloned()
-    }
-
-    /// Parse and validate the gRPC server address configuration.
-    ///
-    /// This method interprets the `--grpc-address` and `--grpc-unix-socket` arguments
-    /// to determine the appropriate gRPC listening address.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Unix socket path is not absolute when `--grpc-unix-socket` is set
-    /// - TCP address cannot be parsed as a valid `IP:PORT` combination
-    pub fn grpc_address(&self) -> Result<Option<GrpcAddress>, String> {
-        if self.grpc_address.is_none() && self.grpc_unix_socket.is_none() {
-            return Ok(None);
-        }
-
-        let grpc_address = if let Some(addr) = self.grpc_address.as_ref() {
-            addr
-        } else {
-            "0.0.0.0:50051"
-        };
-
-        // If UNIX socket flag is set, treat the address as a UNIX socket path
-        if self.grpc_unix_socket.unwrap_or(false) {
-            // Validate that the address is a valid UNIX socket path
-            let grpc_path = PathBuf::from(grpc_address);
-            if !grpc_path.is_absolute() {
-                return Err(format!(
-                    "Invalid configuration: --grpc-unix-socket flag is set, but --grpc-address '{grpc_address}' is not a valid absolute UNIX socket path",
-                ));
-            }
-            return Ok(Some(GrpcAddress::UnixSocket(grpc_address.to_string())));
-        }
-
-        // Otherwise, parse as a TCP socket address
-        match grpc_address.parse::<SocketAddr>() {
-            Ok(addr) => Ok(Some(GrpcAddress::Tcp(addr))),
-            Err(e) => Err(format!("Invalid gRPC TCP address '{grpc_address}': {e}",)),
-        }
     }
 
     /// Get the control plane interface socket path.

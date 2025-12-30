@@ -128,14 +128,6 @@ fn main() {
     })
     .expect("failed to set SIGINT handler");
 
-    let grpc_addr = match args.grpc_address() {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!("Invalid gRPC address configuration: {e}");
-            panic!("Management service configuration error. Aborting...");
-        }
-    };
-
     /* router parameters */
     let Ok(config) = RouterParamsBuilder::default()
         .cli_sock_path(args.cli_sock_path())
@@ -157,7 +149,6 @@ fn main() {
 
     /* start management */
     start_mgmt(MgmtParams {
-        grpc_addr,
         config_dir: args.config_dir().cloned(),
         hostname: get_gw_name().unwrap_or_else(|| unreachable!()).to_owned(),
         processor_params: ConfigProcessorParams {

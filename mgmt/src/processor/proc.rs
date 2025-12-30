@@ -358,7 +358,7 @@ impl ConfigProcessor {
     pub async fn run(mut self) {
         info!("Starting config processor...");
         loop {
-            // receive config requests over channel from gRPC server
+            // receive config requests over channel from a `ConfigClient`
             match self.rx.recv().await {
                 Some(req) => {
                     let response = match req.request {
