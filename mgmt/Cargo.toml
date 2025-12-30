@@ -53,7 +53,6 @@ serde = { workspace = true, features = ["rc", "derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
-tonic = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
 
