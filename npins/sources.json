@@ -11,10 +11,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.21.3",
-      "revision": "4a7cf504d83f7d0460f9cf28fe6cbaa5fb856034",
-      "url": "https://api.github.com/repos/ipetkov/crane/tarball/v0.21.3",
-      "hash": "sha256-RSkJtNtx0SEaQiYqsoFoRynwfZLo2OZ9z6rUq1DJR6g="
+      "version": "v0.22.0",
+      "revision": "40203daff663c9e0b70d052aae12819dea8e6798",
+      "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.22.0",
+      "hash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM="
     },
     "dpdk": {
       "type": "Git",
@@ -38,9 +38,9 @@
       },
       "branch": "main",
       "submodules": false,
-      "revision": "8bfb0290049432d3785d4b29950ae37ff20a89cb",
-      "url": "https://github.com/nix-community/fenix/archive/8bfb0290049432d3785d4b29950ae37ff20a89cb.tar.gz",
-      "hash": "sha256-UzzTtDkdc4s9qJY/QU52Ovuq2zWom0cLInCwaXLZlfo="
+      "revision": "dfa623c0a6682e6bd4269cc6192f965beb69aa03",
+      "url": "https://github.com/nix-community/fenix/archive/dfa623c0a6682e6bd4269cc6192f965beb69aa03.tar.gz",
+      "hash": "sha256-6RfhhB6fzxY0p6eE6UhBXoWSaEAcjCgDG9UaQ6ge1tQ="
     },
     "gateway": {
       "type": "GitRelease",
@@ -90,8 +90,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre916402.3c1016e6acd1/nixexprs.tar.xz",
-      "hash": "sha256-+nB3AQBn/uci4InrgicaaQhqxExFl4xHr2wyjem0TD8="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre918100.0744ef1b047f/nixexprs.tar.xz",
+      "hash": "sha256-Ot0xSLsfRXy6IlMvnc8hSLHKNn/7R8yFDc7uI5Cjpr4="
     },
     "perftest": {
       "type": "Git",
@@ -102,9 +102,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "4e4f6629904ba07bf81f207b31433cb9dabbe8ab",
-      "url": "https://github.com/linux-rdma/perftest/archive/4e4f6629904ba07bf81f207b31433cb9dabbe8ab.tar.gz",
-      "hash": "sha256-PViLge2v2DBsq/sw7jRfhF7ZOGb9slx/qSDDZVOvfGc="
+      "revision": "1c4dc79b81060f0707830c54bf5dae7102fdbbfa",
+      "url": "https://github.com/linux-rdma/perftest/archive/1c4dc79b81060f0707830c54bf5dae7102fdbbfa.tar.gz",
+      "hash": "sha256-XHWZGB5qo9FdJ1yVEiwaSMmRmT34V6hngAlZ1ptYkiw="
     },
     "rdma-core": {
       "type": "Git",
@@ -128,9 +128,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "3bf67c5e473f29ca79ff15904f3072d87cf6d087",
-      "url": "https://github.com/oxalica/rust-overlay/archive/3bf67c5e473f29ca79ff15904f3072d87cf6d087.tar.gz",
-      "hash": "sha256-wW15buPGU29v0XuAmDkc30+d5j4Tmg/V8AkpHH+hDWY="
+      "revision": "9fe44e7f05b734a64a01f92fc51ad064fb0a884f",
+      "url": "https://github.com/oxalica/rust-overlay/archive/9fe44e7f05b734a64a01f92fc51ad064fb0a884f.tar.gz",
+      "hash": "sha256-w+o3AIBI56tzfMJRqRXg9tSXnpQRN5hAT15o2t9rxYw="
     }
   },
   "version": 7
