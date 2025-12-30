@@ -338,7 +338,7 @@ pub mod test {
         comtable
     }
 
-    /* build sample external config as it would be received via gRPC */
+    /* build sample external config as it would be received via gRPC/k8s */
     pub fn sample_external_config() -> ExternalConfig {
         /* build sample DEVICE config and add it to config */
         let device_cfg = sample_device_config();
