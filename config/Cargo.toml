@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 # internal
-gateway_config = { workspace = true }
 gwname = { workspace = true }
 hardware = { workspace = true }
 net = { workspace = true }
@@ -37,7 +36,6 @@ k8s-intf = { workspace = true, features = ["bolero"] }
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 caps = { workspace = true }
-gateway_config = { workspace = true, features = ["bolero"] }
 ipnet = { workspace = true }
 pretty_assertions = { workspace = true, features = ["std"] }
 tracing-test = { workspace = true, features = [] }
