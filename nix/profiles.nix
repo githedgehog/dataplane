@@ -48,18 +48,13 @@ let
     "-fwhole-program-vtables"
   ];
   optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
-    # "-Wl,--lto-whole-program-visibility"
-    # "-Wl,--gc-sections"
-    # "-Wl,--as-needed"
-    "-Wl,-z,common-page-size=0x200000"
-    "-Wl,-z,max-page-size=0x200000"
+    "-Wl,--lto-whole-program-visibility"
+    "-Wl,--gc-sections"
+    "-Wl,--as-needed"
   ];
   optimize-for.performance.RUSTFLAGS = [
     "-Clinker-plugin-lto"
     "-Cembed-bitcode=yes"
-    "-Clink-arg=-Wl,-z,common-page-size=0x200000"
-    "-Clink-arg=-Wl,-z,max-page-size=0x200000"
-    "-Ctarget-feature=+crt-static"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
   secure.NIX_CFLAGS_COMPILE = [

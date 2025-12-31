@@ -215,7 +215,8 @@ let
           ++ [
             "-Clinker=${pkgs.pkgsBuildHost.llvmPackages.clang}/bin/${cc}"
             "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
-            "-Clink-arg=-Wl,T${src}/ld.script"
+            # "-Clink-arg=-T"
+            # "-Clink-arg=${./ld.script}"
             # NOTE: this is basically a trick to get our source code to be available to debuggers
             # Normally remap-path-prefix takes the form  --remap-path-prefix=FROM=TO where FROM and TO are directories.
             # This is intended to map source code paths to generic, relative, or redacted paths.
