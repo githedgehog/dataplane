@@ -58,6 +58,7 @@ let
     name = "sysroot";
     paths = with pkgs.pkgsHostHost; [
       pkgs.pkgsHostHost.libc.dev
+      pkgs.pkgsHostHost.libc.static
       pkgs.pkgsHostHost.libc.out
       fancy.libmd.dev
       fancy.libmd.static
@@ -209,12 +210,12 @@ let
         PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
         GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
         RUSTC_BOOTSTRAP = "1";
-        CARGO_BUILD_RUSTFLAGS = "";
         RUSTFLAGS = builtins.concatStringsSep " " (
           profile'.RUSTFLAGS
           ++ [
-            "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
             "-Clinker=${pkgs.pkgsBuildHost.llvmPackages.clang}/bin/${cc}"
+            "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
+            "-Clink-arg=-Wl,T${src}/ld.script"
             # NOTE: this is basically a trick to get our source code to be available to debuggers
             # Normally remap-path-prefix takes the form  --remap-path-prefix=FROM=TO where FROM and TO are directories.
             # This is intended to map source code paths to generic, relative, or redacted paths.
@@ -260,6 +261,29 @@ let
         ''
         + (orig.postBuild or "");
       });
+
+  packages = builtins.mapAttrs (
+    dir: pname:
+    let
+      pkgs-expr = package-expr-builder {
+        inherit pname;
+      };
+    in
+    (pkgs.callPackage pkgs-expr {
+      inherit (dev-pkgs) kopium;
+    }).overrideAttrs
+      (orig: {
+        # # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
+        # # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
+        # # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
+        # # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
+        # # hook actually runs.
+        # postBuild = ''
+        #   unset RUSTFLAGS;
+        # ''
+        # + (orig.postBuild or "");
+      })
+  ) package-list;
   dataplane =
     let
       pkgs-expr = package-expr-builder {
@@ -292,6 +316,7 @@ in
     sysroot
     cli
     dataplane
+    packages
     ;
   crane = craneLib;
   profile = profile';
