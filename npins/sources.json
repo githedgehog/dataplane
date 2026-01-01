@@ -100,11 +100,11 @@
         "owner": "githedgehog",
         "repo": "rdma-core"
       },
-      "branch": "fix-lto-60.0",
+      "branch": "fix-lto-61.0",
       "submodules": false,
-      "revision": "9ae1b26593e2cb53239e1124f88ce1698d53857e",
-      "url": "https://github.com/githedgehog/rdma-core/archive/9ae1b26593e2cb53239e1124f88ce1698d53857e.tar.gz",
-      "hash": "sha256-JAf7r0I+MuppH/cbBd0ZrXVAjPPeWo/oFcDFpJ7TTbY="
+      "revision": "998375a38e27e66bc74ed7419a0b93d0066e8194",
+      "url": "https://github.com/githedgehog/rdma-core/archive/998375a38e27e66bc74ed7419a0b93d0066e8194.tar.gz",
+      "hash": "sha256-Qm5IhgRI5k+sDdBzyTIILg60jlmYroGWYyERSHKfuV4="
     },
     "rust-overlay": {
       "type": "Git",
@@ -115,9 +115,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "943d2d0bf1b86267287aff826ebd1138d83113b7",
-      "url": "https://github.com/oxalica/rust-overlay/archive/943d2d0bf1b86267287aff826ebd1138d83113b7.tar.gz",
-      "hash": "sha256-hfKAOJQYbR0mlwabV56tOlEMUgESRroHqlDpX0hwOpU="
+      "revision": "2be15c4abeba7ade2cf9bc4c17ab310441e533b9",
+      "url": "https://github.com/oxalica/rust-overlay/archive/2be15c4abeba7ade2cf9bc4c17ab310441e533b9.tar.gz",
+      "hash": "sha256-l4ftzyoD7XX0biEoTEwhOkFhvHhmggkVQyl2jEES0so="
     }
   },
   "version": 7

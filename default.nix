@@ -58,24 +58,24 @@ let
     name = "sysroot";
     paths = with pkgs.pkgsHostHost; [
       pkgs.pkgsHostHost.libc.dev
-      pkgs.pkgsHostHost.libc.static
       pkgs.pkgsHostHost.libc.out
-      fancy.libmd.dev
-      fancy.libmd.static
+      fancy.dpdk-wrapper.dev
+      fancy.dpdk-wrapper.out
+      fancy.dpdk.dev
+      fancy.dpdk.static
+      fancy.hwloc.dev
+      fancy.hwloc.static
       fancy.libbsd.dev
       fancy.libbsd.static
+      fancy.libmd.dev
+      fancy.libmd.static
       fancy.libnl.dev
       fancy.libnl.static
+      fancy.libunwind.out
       fancy.numactl.dev
       fancy.numactl.static
       fancy.rdma-core.dev
       fancy.rdma-core.static
-      dpdk.dev
-      dpdk.static
-      dpdk-wrapper.dev
-      dpdk-wrapper.out
-      hwloc.dev
-      hwloc.static
     ];
   };
   clangd-config = pkgs.writeTextFile {
@@ -159,7 +159,7 @@ let
     "--profile=${cargo-profile}"
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
-    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
     "--target=${target}"
   ];
   package-expr-builder =
@@ -189,6 +189,7 @@ let
       doRemapPathPrefix = true;
       doNotRemoveReferencesToRustToolchain = true;
       doNotRemoveReferencesToVendorDir = true;
+      separateDebugInfo = true;
 
       nativeBuildInputs = [
         pkg-config
@@ -198,7 +199,7 @@ let
       ];
 
       buildInputs = [
-        hwloc.static
+        hwloc
       ];
 
       env = {
@@ -215,18 +216,17 @@ let
           ++ [
             "-Clinker=${pkgs.pkgsBuildHost.llvmPackages.clang}/bin/${cc}"
             "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
-            # "-Clink-arg=-T"
-            # "-Clink-arg=${./ld.script}"
-            # NOTE: this is basically a trick to get our source code to be available to debuggers
-            # Normally remap-path-prefix takes the form  --remap-path-prefix=FROM=TO where FROM and TO are directories.
+            "-Clink-arg=-L${sysroot}/lib"
+            # NOTE: this is basically a trick to make our source code available to debuggers.
+            # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
             # This is intended to map source code paths to generic, relative, or redacted paths.
-            # We are sorta using that mechanism in reverse here in that the empth FROM in the next expression maps our
-            # source code in the debug info from the current working directory to ${src} (the nix store path we where
-            # we have copied our source code).
+            # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
+            # source code in the debug info from the current working directory to ${src} (the nix store path where we
+            # have copied our source code).
             #
-            # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the .dwo files
-            # we strip out of the final binaries we cook.  Then we can include gdb/lldbserver binaries in
-            # some debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
+            # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
+            # we strip out of the final binaries we cook and include a gdbserver binary in some
+            # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
             # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
             "--remap-path-prefix==${src}"
           ]
@@ -242,27 +242,6 @@ let
       );
       cargoExtraArgs = (if pname != null then "--package=${pname} " else "") + "--target=${target}";
     };
-  cli =
-    let
-      pkgs-expr = package-expr-builder {
-        pname = "dataplane-cli";
-      };
-    in
-    (pkgs.callPackage pkgs-expr {
-      inherit (dev-pkgs) kopium;
-    }).overrideAttrs
-      (orig: {
-        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
-        # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
-        # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
-        # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
-        # hook actually runs.
-        postBuild = ''
-          unset RUSTFLAGS;
-        ''
-        + (orig.postBuild or "");
-      });
-
   packages = builtins.mapAttrs (
     dir: pname:
     let
@@ -272,39 +251,24 @@ let
     in
     (pkgs.callPackage pkgs-expr {
       inherit (dev-pkgs) kopium;
+      # inherit (pkgs.fancy) hwloc;
     }).overrideAttrs
       (orig: {
-        # # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
-        # # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
-        # # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
-        # # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
-        # # hook actually runs.
-        # postBuild = ''
-        #   unset RUSTFLAGS;
-        # ''
-        # + (orig.postBuild or "");
-      })
-  ) package-list;
-  dataplane =
-    let
-      pkgs-expr = package-expr-builder {
-        pname = "dataplane";
-      };
-    in
-    (pkgs.callPackage pkgs-expr {
-      inherit (dev-pkgs) kopium;
-    }).overrideAttrs
-      (orig: {
-        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but there is no easy way to distinguish
-        # RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS intended for the runtime dependencies.
-        # One unfortunate conseqnence of this is that is you set platform specific RUSTFLAGS then the postBuild hook
-        # malfunctions in the cross compile.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild
-        # hook actually runs.
+        separateDebugInfo = true;
+
+        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
+        # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
+        # intended for the runtime dependencies.
+        # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
+        # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
+        # We don't need to set any optimization flags for postBuild tooling anyway.
         postBuild = ''
           unset RUSTFLAGS;
         ''
         + (orig.postBuild or "");
-      });
+
+      })
+  ) package-list;
 in
 {
   inherit
@@ -315,8 +279,6 @@ in
     package-list
     sources
     sysroot
-    cli
-    dataplane
     packages
     ;
   crane = craneLib;

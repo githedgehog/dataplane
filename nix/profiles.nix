@@ -20,6 +20,7 @@ let
     # getting proper LTO from LLVM compiled objects is best done with lld rather than ld, mold, or wild (at least at the
     # time of writing)
     "-fuse-ld=lld"
+    "-Wl,--build-id"
   ];
   common.RUSTFLAGS = [
     "--cfg=tokio_unstable"
