@@ -12,7 +12,7 @@ components = [
   "rust-analyzer",
   "rust-src",
 
-  ## other (disabled) components
+  ## disabled components ##
   # "rust-mingw", # not relevant to us
   # "llvm-tools", # we already have a full llvm in the npins, no need for another
   # "miri", # not yet functional for us
