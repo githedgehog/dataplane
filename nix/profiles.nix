@@ -177,6 +177,23 @@ let
     "-Ctarget-feature=-crt-static" # safe-stack doesn't work with any static libc of any kind
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.safe-stack.NIX_CFLAGS_LINK);
+  sanitize.shadow-stack.NIX_CFLAGS_COMPILE = [
+    "-ffixed-x18"
+    "-fsanitize=shadow-call-stack"
+  ];
+  sanitize.shadow-stack.NIX_CXXFLAGS_COMPILE = sanitize.shadow-stack.NIX_CFLAGS_COMPILE;
+  sanitize.shadow-stack.NIX_CFLAGS_LINK = sanitize.shadow-stack.NIX_CFLAGS_COMPILE ++ [
+    # "-Wl,--allow-shlib-undefined"
+  ];
+  sanitize.shadow-stack.RUSTFLAGS = [
+    "-Zfixed-x18"
+    "-Zsanitizer=shadow-call-stack"
+    "-Zexternal-clangrt"
+    # gimli doesn't like shadow-stack sanitizer, but it shouldn't be an issue since that is all build time logic
+    "-Cunsafe-allow-abi-mismatch=sanitizer,fixed-x18"
+    "-Ctarget-feature=-crt-static" # shadow-stack doesn't work with static libc
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.shadow-stack.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
