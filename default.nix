@@ -157,9 +157,9 @@ let
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
   cargo-cmd-prefix = [
     "--profile=${cargo-profile}"
-    # "-Zunstable-options"
-    # "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
-    # "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
+    "-Zunstable-options"
+    "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
     "--target=${target}"
   ];
   builder-expr =
@@ -374,7 +374,7 @@ let
       # inherit (pkgs.fancy) hwloc;
     }).overrideAttrs
       (orig: {
-        # separateDebugInfo = true;
+        separateDebugInfo = true;
 
         # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
         # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
@@ -382,11 +382,19 @@ let
         # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
         # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
         # We don't need to set any optimization flags for postBuild tooling anyway.
-        # postBuild = ''
-        # unset RUSTFLAGS;
-        # ''
-        # + (orig.postBuild or "");
-
+        postBuild = (orig.postBuild or "") + ''
+          unset RUSTFLAGS;
+        '';
+        postInstall = (orig.postInstall or "") + ''
+          mkdir -p $debug/bin
+          for f in $out/bin/*; do
+            strip --only-keep-debug "$f" -o "$out/bin/$(basename "$f").dbg"
+            strip --strip-debug "$f"
+            cd $out/bin
+            objcopy --add-gnu-debuglink="$(basename "$f").dbg" "$(basename "$f")"
+            mv "$(basename "$f")".dbg "$debug/bin/"
+          done
+        '';
       })
   ) package-list;
   package-test-builder =
@@ -626,6 +634,40 @@ let
         '';
       })
   ) package-list;
+  env.base = pkgs.buildEnv {
+    name = "base-env";
+    pathsToLink = [
+      "/etc"
+      "/var"
+    ];
+    paths = [
+      pkgs.pkgsHostHost.libc.out
+      pkgs.pkgsHostHost.libgcc.libgcc
+      pkgs.pkgsHostHost.dockerTools.fakeNss
+    ];
+  };
+  containers.base = pkgs.dockerTools.buildImage {
+    name = "containers-base";
+    tag = "v0.0.0";
+    copyToRoot = env.base;
+  };
+  dataplane-tar = pkgs.stdenv'.mkDerivation {
+    pname = "dataplane-tar";
+    version = "0.0.0";
+    dontUnpack = true;
+    src = null;
+    buildPhase = ''
+      tmp="$(mktemp -d)"
+      mkdir -p "$tmp/"{bin,var,run}
+      mkdir -p "$tmp/run/dataplane" "$tmp/run/frr/hh" "$tmp/run/dataplane"
+      ln -s /run "$tmp/var/run"
+      cp "${packages.dataplane}/bin/dataplane" "$tmp/bin/"
+      cp "${packages.cli}/bin/cli" "$tmp/bin/cli"
+      ln -s cli "$tmp/bin/sh"
+      cd "$tmp"
+      tar -czvf "$out" .
+    '';
+  };
 in
 {
   inherit
@@ -640,6 +682,9 @@ in
     tests
     clippy
     deps
+    containers
+    env
+    dataplane-tar
     ;
   crane = craneLib;
   profile = profile';
