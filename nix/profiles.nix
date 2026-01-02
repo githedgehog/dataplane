@@ -118,6 +118,20 @@ let
     "-Zexternal-clangrt"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
+  sanitize.thread.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=thread"
+  ];
+  sanitize.thread.NIX_CXXFLAGS_COMPILE = sanitize.thread.NIX_CFLAGS_COMPILE;
+  sanitize.thread.NIX_CFLAGS_LINK = sanitize.thread.NIX_CFLAGS_COMPILE ++ [
+    "-Wl,--allow-shlib-undefined"
+  ];
+  sanitize.thread.RUSTFLAGS = [
+    "-Zsanitizer=thread"
+    "-Zexternal-clangrt"
+    # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
+    "-Cunsafe-allow-abi-mismatch=sanitizer"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.thread.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
