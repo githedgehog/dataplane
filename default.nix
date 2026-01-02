@@ -169,6 +169,7 @@ let
         pname = null;
         cargoArtifacts = null;
       },
+      cargo-nextest,
       hwloc,
       llvmPackages,
       pkg-config,
@@ -190,10 +191,11 @@ let
         separateDebugInfo = true;
 
         nativeBuildInputs = [
-          pkg-config
           (dev-pkgs.kopium)
+          cargo-nextest
           llvmPackages.clang
           llvmPackages.lld
+          pkg-config
         ];
 
         buildInputs = [
@@ -242,13 +244,24 @@ let
         # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
         # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
         # We don't need to set any optimization flags for postBuild tooling anyway.
-        postBuild = ''
+        postBuild = (orig.postBuild or "") + ''
           unset RUSTFLAGS;
-        ''
-        + (orig.postBuild or "");
-
+        '';
+        postInstall = (orig.postInstall or "") + ''
+          mkdir -p $debug/bin
+          for f in $out/bin/*; do
+            strip --only-keep-debug "$f" -o "$out/bin/$(basename "$f").dbg"
+            strip --strip-debug "$f"
+            cd $out/bin
+            objcopy --add-gnu-debuglink="$(basename "$f").dbg" "$(basename "$f")"
+            mv "$(basename "$f")".dbg "$debug/bin/"
+          done
+        '';
+        postFixup = (orig.postFixup or "") + ''
+          rm -f $out/target.tar.zst
+        '';
       });
-  builder-expr =
+  dep-builder =
     {
       pname ? null,
       cargoArtifacts ? null,
@@ -268,378 +281,102 @@ let
     });
   deps = builtins.mapAttrs (
     dir: pname:
-    (pkgs.callPackage builder-expr {
+    dep-builder {
       inherit pname;
-    }).overrideAttrs
-      (orig: {
-      })
+    }
   ) package-list;
-  package-expr-builder =
+  package-builder =
     {
-      cargoArtifacts ? null,
       pname ? null,
+      cargoArtifacts ? null,
     }:
-    {
-      pkg-config,
-      kopium,
-      llvmPackages,
-      hwloc,
-    }:
-    craneLib.buildPackage {
-      inherit
-        src
-        version
-        pname
-        cargoArtifacts
-        cargoVendorDir
-        ;
-
-      doCheck = false;
-      strictDeps = true;
-      dontStrip = true;
-      dontFixup = true;
-      doRemapPathPrefix = true;
-      doNotRemoveReferencesToRustToolchain = true;
-      doNotRemoveReferencesToVendorDir = true;
-      # separateDebugInfo = true;
-
-      nativeBuildInputs = [
-        pkg-config
-        kopium
-        llvmPackages.clang
-        llvmPackages.lld
-      ];
-
-      buildInputs = [
-        hwloc
-      ];
-
-      env = {
-        CARGO_PROFILE = cargo-profile;
-        DATAPLANE_SYSROOT = "${sysroot}";
-        LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
-        C_INCLUDE_PATH = "${sysroot}/include";
-        LIBRARY_PATH = "${sysroot}/lib";
-        PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
-        GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
-        RUSTC_BOOTSTRAP = "1";
-        RUSTFLAGS = builtins.concatStringsSep " " (
-          profile'.RUSTFLAGS
-          ++ [
-            "-Clinker=${pkgs.pkgsBuildHost.llvmPackages.clang}/bin/${cc}"
-            "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
-            "-Clink-arg=-L${sysroot}/lib"
-            # NOTE: this is basically a trick to make our source code available to debuggers.
-            # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
-            # This is intended to map source code paths to generic, relative, or redacted paths.
-            # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
-            # source code in the debug info from the current working directory to ${src} (the nix store path where we
-            # have copied our source code).
-            #
-            # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
-            # we strip out of the final binaries we cook and include a gdbserver binary in some
-            # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
-            # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
-            "--remap-path-prefix==${src}"
+    pkgs.callPackage invoke {
+      builder = craneLib.buildPackage;
+      args = {
+        inherit pname cargoArtifacts;
+        buildPhaseCargoCommand = ''
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        ''
+        + (builtins.concatStringsSep " " (
+          [
+            "cargo"
+            "build"
           ]
-        );
+          ++ cargo-cmd-prefix
+          ++ [
+            "--message-format json-render-diagnostics >$cargoBuildLog"
+          ]
+        ));
       };
-
-      buildPhaseCargoCommand = ''
-        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-      ''
-      + (builtins.concatStringsSep " " (
-        [
-          "cargo"
-          "build"
-        ]
-        ++ cargo-cmd-prefix
-        ++ [
-          "--message-format json-render-diagnostics >$cargoBuildLog"
-        ]
-      ));
-      # cargoBuildCommand = builtins.concatStringsSep " " (
-      #   [
-      #     "cargo"
-      #     "build"
-      #   ]
-      #   ++ cargo-cmd-prefix
-      # );
-      # cargoExtraArgs = (if pname != null then "--package=${pname} " else "") + "--target=${target}";
     };
   packages = builtins.mapAttrs (
     dir: pname:
-    let
-      pkgs-expr = package-expr-builder {
-        inherit pname;
-        cargoArtifacts = deps.${dir};
-      };
-    in
-    (pkgs.callPackage pkgs-expr {
-      inherit (dev-pkgs) kopium;
-      # inherit (pkgs.fancy) hwloc;
-    }).overrideAttrs
-      (orig: {
-        separateDebugInfo = true;
-
-        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
-        # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
-        # intended for the runtime dependencies.
-        # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
-        # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
-        # We don't need to set any optimization flags for postBuild tooling anyway.
-        postBuild = (orig.postBuild or "") + ''
-          unset RUSTFLAGS;
-        '';
-        postInstall = (orig.postInstall or "") + ''
-          mkdir -p $debug/bin
-          for f in $out/bin/*; do
-            strip --only-keep-debug "$f" -o "$out/bin/$(basename "$f").dbg"
-            strip --strip-debug "$f"
-            cd $out/bin
-            objcopy --add-gnu-debuglink="$(basename "$f").dbg" "$(basename "$f")"
-            mv "$(basename "$f")".dbg "$debug/bin/"
-          done
-        '';
-      })
+    package-builder {
+      inherit pname;
+      cargoArtifacts = deps.${dir};
+    }
   ) package-list;
-  package-test-builder =
+  test-builder =
     {
-      cargoArtifacts ? null,
       pname ? null,
+      cargoArtifacts ? null,
     }:
-    {
-      pkg-config,
-      kopium,
-      llvmPackages,
-      hwloc,
-      cargo-nextest,
-    }:
-    craneLib.mkCargoDerivation {
-      inherit
-        src
-        version
-        pname
-        cargoArtifacts
-        cargoVendorDir
-        ;
-
-      doCheck = false;
-      strictDeps = true;
-      dontStrip = true;
-      doRemapPathPrefix = true;
-      doNotRemoveReferencesToRustToolchain = true;
-      doNotRemoveReferencesToVendorDir = true;
-      # separateDebugInfo = true;
-
-      nativeBuildInputs = [
-        pkg-config
-        kopium
-        llvmPackages.clang
-        llvmPackages.lld
-        cargo-nextest
-      ];
-
-      buildInputs = [
-        hwloc
-      ];
-
-      env = {
-        CARGO_PROFILE = cargo-profile;
-        DATAPLANE_SYSROOT = "${sysroot}";
-        LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
-        C_INCLUDE_PATH = "${sysroot}/include";
-        LIBRARY_PATH = "${sysroot}/lib";
-        PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
-        GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
-        RUSTC_BOOTSTRAP = "1";
-        RUSTFLAGS = builtins.concatStringsSep " " (
-          profile'.RUSTFLAGS
-          ++ [
-            "-Clinker=${pkgs.pkgsBuildHost.llvmPackages.clang}/bin/${cc}"
-            "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
-            "-Clink-arg=-L${sysroot}/lib"
-            # NOTE: this is basically a trick to make our source code available to debuggers.
-            # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
-            # This is intended to map source code paths to generic, relative, or redacted paths.
-            # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
-            # source code in the debug info from the current working directory to ${src} (the nix store path where we
-            # have copied our source code).
-            #
-            # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
-            # we strip out of the final binaries we cook and include a gdbserver binary in some
-            # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
-            # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
-            "--remap-path-prefix==${src}"
-          ]
-        );
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      args = {
+        inherit pname cargoArtifacts;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " [
+          "mkdir -p $out;"
+          "cargo"
+          "nextest"
+          "archive"
+          "--archive-file"
+          "$out/${pname}.tar.zst"
+          "--cargo-profile=${cargo-profile}"
+          "-Zunstable-options"
+          "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
+          "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
+          "--target=${target}"
+          "--package=${pname}"
+        ];
       };
-
-      buildPhaseCargoCommand = builtins.concatStringsSep " " ([
-        "cargo"
-        "nextest"
-        "archive"
-        "--archive-file"
-        "$out/${pname}.tar.zst"
-        "--cargo-profile=${cargo-profile}"
-        "-Zunstable-options"
-        "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
-        "--target=${target}"
-        "--package=${pname}"
-      ]);
     };
   tests = builtins.mapAttrs (
     dir: pname:
-    let
-      pkgs-expr = package-test-builder {
-        inherit pname;
-      };
-    in
-    (pkgs.callPackage pkgs-expr {
-      inherit (dev-pkgs) kopium;
-      # inherit (pkgs.fancy) hwloc;
-    }).overrideAttrs
-      (orig: {
-        separateDebugInfo = true;
-        # cargoArtifacts = packages.${dir};
-
-        preBuild = ''
-          mkdir $out
-        '';
-        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
-        # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
-        # intended for the runtime dependencies.
-        # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
-        # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
-        # We don't need to set any optimization flags for postBuild tooling anyway.
-        postBuild = ''
-          unset RUSTFLAGS;
-        ''
-        + (orig.postBuild or "");
-
-        postFixup = ''
-          rm -f $out/target.tar.zst
-        '';
-      })
+    test-builder {
+      inherit pname;
+      # cargoArtifacts = deps.${dir};
+    }
   ) package-list;
-  package-clippy-builder =
+  clippy-builder =
     {
-      cargoArtifacts ? null,
       pname ? null,
     }:
-    {
-      pkg-config,
-      kopium,
-      llvmPackages,
-      hwloc,
-      cargo-nextest,
-    }:
-    craneLib.mkCargoDerivation {
-      inherit
-        src
-        version
-        pname
-        cargoArtifacts
-        cargoVendorDir
-        ;
-
-      doCheck = false;
-      strictDeps = true;
-      dontStrip = true;
-      doRemapPathPrefix = true;
-      doNotRemoveReferencesToRustToolchain = true;
-      doNotRemoveReferencesToVendorDir = true;
-      separateDebugInfo = true;
-
-      nativeBuildInputs = [
-        pkg-config
-        kopium
-        llvmPackages.clang
-        llvmPackages.lld
-        cargo-nextest
-      ];
-
-      buildInputs = [
-        hwloc
-      ];
-
-      env = {
-        CARGO_PROFILE = cargo-profile;
-        DATAPLANE_SYSROOT = "${sysroot}";
-        LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages.libclang.lib}/lib";
-        C_INCLUDE_PATH = "${sysroot}/include";
-        LIBRARY_PATH = "${sysroot}/lib";
-        PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
-        GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
-        RUSTC_BOOTSTRAP = "1";
-        RUSTFLAGS = builtins.concatStringsSep " " (
-          profile'.RUSTFLAGS
-          ++ [
-            "-Clinker=${pkgs.pkgsBuildHost.llvmPackages.clang}/bin/${cc}"
-            "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages.lld}/bin/ld.lld"
-            "-Clink-arg=-L${sysroot}/lib"
-            # NOTE: this is basically a trick to make our source code available to debuggers.
-            # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
-            # This is intended to map source code paths to generic, relative, or redacted paths.
-            # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
-            # source code in the debug info from the current working directory to ${src} (the nix store path where we
-            # have copied our source code).
-            #
-            # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
-            # we strip out of the final binaries we cook and include a gdbserver binary in some
-            # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
-            # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
-            "--remap-path-prefix==${src}"
-          ]
-        );
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      args = {
+        inherit pname;
+        cargoArtifacts = null;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " [
+          "set -e;"
+          "cargo"
+          "clippy"
+          "--profile=${cargo-profile}"
+          "-Zunstable-options"
+          "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
+          "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
+          "--target=${target}"
+          "--package=${pname}"
+          "--"
+          "-D warnings"
+        ];
       };
-
-      buildPhaseCargoCommand = builtins.concatStringsSep " " [
-        "cargo"
-        "clippy"
-        "--profile=${cargo-profile}"
-        "-Zunstable-options"
-        "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
-        "--target=${target}"
-        "--package=${pname}"
-      ];
     };
   clippy = builtins.mapAttrs (
     dir: pname:
-    let
-      pkgs-expr = package-clippy-builder {
-        inherit pname;
-        cargoArtifacts = packages.${dir};
-      };
-    in
-    (pkgs.callPackage pkgs-expr {
-      inherit (dev-pkgs) kopium;
-      # inherit (pkgs.fancy) hwloc;
-    }).overrideAttrs
-      (orig: {
-        separateDebugInfo = true;
-
-        preBuild = ''
-          mkdir $out
-        '';
-        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
-        # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
-        # intended for the runtime dependencies.
-        # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
-        # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
-        # We don't need to set any optimization flags for postBuild tooling anyway.
-        postBuild = ''
-          unset RUSTFLAGS;
-        ''
-        + (orig.postBuild or "");
-
-        postFixup = ''
-          rm -f $out/target.tar.zst
-        ''
-        + (orig.postFixup or "");
-      })
+    clippy-builder {
+      inherit pname;
+    }
   ) package-list;
   env.base = pkgs.buildEnv {
     name = "base-env";
