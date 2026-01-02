@@ -4,6 +4,28 @@
   profile,
 }:
 let
+  common.NIX_CFLAGS_COMPILE = [
+    "-g3"
+    "-gdwarf-5"
+    # odr or strict-aliasing violations are indicative of LTO incompatibility, so check for that
+    "-Werror=odr"
+    "-Werror=strict-aliasing"
+    "-Wno-error=unused-command-line-argument"
+  ];
+  common.NIX_CXXFLAGS_COMPILE = common.NIX_CFLAGS_COMPILE;
+  common.NIX_CFLAGS_LINK = [
+    # getting proper LTO from LLVM compiled objects is best done with lld rather than ld, mold, or wild (at least at the
+    # time of writing)
+    "-fuse-ld=lld"
+    "-Wl,--build-id"
+  ];
+  common.RUSTFLAGS = [
+    "--cfg=tokio_unstable"
+    "-Cdebuginfo=full"
+    "-Cdwarf-version=5"
+    "-Csymbol-mangling-version=v0"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
@@ -11,8 +33,10 @@ let
     ) { } features;
   profile-map = {
     debug = combine-profiles [
+      common
     ];
     release = combine-profiles [
+      common
     ];
   };
 in
