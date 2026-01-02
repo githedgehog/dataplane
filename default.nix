@@ -156,7 +156,6 @@ let
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
   cargo-cmd-prefix = [
-    "--profile=${cargo-profile}"
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
     "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
@@ -185,7 +184,7 @@ let
         doCheck = false;
         strictDeps = true;
         dontStrip = true;
-        doRemapPathPrefix = true;
+        doRemapPathPrefix = false; # TODO: this setting may be wrong, test with debugger
         doNotRemoveReferencesToRustToolchain = true;
         doNotRemoveReferencesToVendorDir = true;
         separateDebugInfo = true;
@@ -261,30 +260,6 @@ let
           rm -f $out/target.tar.zst
         '';
       });
-  dep-builder =
-    {
-      pname ? null,
-      cargoArtifacts ? null,
-    }:
-    (pkgs.callPackage invoke {
-      builder = craneLib.buildDepsOnly;
-      args = {
-        inherit pname cargoArtifacts;
-        buildPhaseCargoCommand = builtins.concatStringsSep " " (
-          [
-            "cargo"
-            "build"
-          ]
-          ++ cargo-cmd-prefix
-        );
-      };
-    });
-  deps = builtins.mapAttrs (
-    dir: pname:
-    dep-builder {
-      inherit pname;
-    }
-  ) package-list;
   package-builder =
     {
       pname ? null,
@@ -294,26 +269,25 @@ let
       builder = craneLib.buildPackage;
       args = {
         inherit pname cargoArtifacts;
-        buildPhaseCargoCommand = ''
-          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-        ''
-        + (builtins.concatStringsSep " " (
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
+            "cargoBuildLog=$(mktemp cargoBuildLogXXXX.json);"
             "cargo"
             "build"
+            "--package=${pname}"
+            "--profile=${cargo-profile}"
           ]
           ++ cargo-cmd-prefix
           ++ [
-            "--message-format json-render-diagnostics >$cargoBuildLog"
+            "--message-format json-render-diagnostics > $cargoBuildLog"
           ]
-        ));
+        );
       };
     };
   packages = builtins.mapAttrs (
     dir: pname:
     package-builder {
       inherit pname;
-      cargoArtifacts = deps.${dir};
     }
   ) package-list;
   test-builder =
@@ -325,27 +299,25 @@ let
       builder = craneLib.mkCargoDerivation;
       args = {
         inherit pname cargoArtifacts;
-        buildPhaseCargoCommand = builtins.concatStringsSep " " [
-          "mkdir -p $out;"
-          "cargo"
-          "nextest"
-          "archive"
-          "--archive-file"
-          "$out/${pname}.tar.zst"
-          "--cargo-profile=${cargo-profile}"
-          "-Zunstable-options"
-          "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
-          "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
-          "--target=${target}"
-          "--package=${pname}"
-        ];
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "mkdir -p $out;"
+            "cargo"
+            "nextest"
+            "archive"
+            "--archive-file"
+            "$out/${pname}.tar.zst"
+            "--cargo-profile=${cargo-profile}"
+            "--package=${pname}"
+          ]
+          ++ cargo-cmd-prefix
+        );
       };
     };
   tests = builtins.mapAttrs (
     dir: pname:
     test-builder {
       inherit pname;
-      # cargoArtifacts = deps.${dir};
     }
   ) package-list;
   clippy-builder =
@@ -357,19 +329,19 @@ let
       args = {
         inherit pname;
         cargoArtifacts = null;
-        buildPhaseCargoCommand = builtins.concatStringsSep " " [
-          "set -e;"
-          "cargo"
-          "clippy"
-          "--profile=${cargo-profile}"
-          "-Zunstable-options"
-          "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
-          "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
-          "--target=${target}"
-          "--package=${pname}"
-          "--"
-          "-D warnings"
-        ];
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargo"
+            "clippy"
+            "--profile=${cargo-profile}"
+            "--package=${pname}"
+          ]
+          ++ cargo-cmd-prefix
+          ++ [
+            "--"
+            "-D warnings"
+          ]
+        );
       };
     };
   clippy = builtins.mapAttrs (
@@ -425,7 +397,6 @@ in
     packages
     tests
     clippy
-    deps
     containers
     env
     dataplane-tar

@@ -78,15 +78,19 @@ let
     # These features have been available for a long time and can be found on any reasonably recent machine, so just
     # enable them here for all x86_64 builds.
     # In the (very) unlikely event that you need to edit these flags, also edit the associated RUSTFLAGS to match.
-    "-mrtm"
+    "-mrtm" # TODO: try to convince DPDK not to rely on rtm
     "-mcrc32"
     "-mssse3"
   ];
   march.x86_64.NIX_CXXFLAGS_COMPILE = march.x86_64.NIX_CFLAGS_COMPILE;
   march.x86_64.NIX_CFLAGS_LINK = march.x86_64.NIX_CXXFLAGS_COMPILE;
   march.x86_64.RUSTFLAGS = [
-    # these should be kept in 1:1 alignment with the x86_64 NIX_CFLAGS_COMPILE settings
-    "-Ctarget-feature=+rtm,+crc32,+ssse3"
+    # Ideally these should be kept in 1:1 alignment with the x86_64 NIX_CFLAGS_COMPILE settings.
+    # That said, rtm and crc32 are only kinda supported by rust, and rtm is functionally deprecated anyway, so we should
+    # try to remove DPDK's insistence on it.  We are absolutely not using hardware memory transactions anyway; they
+    # proved to be broken in Intel's implementation, and AMD never built them in the first place.
+    # "-Ctarget-feature=+rtm,+crc32,+ssse3"
+    "-Ctarget-feature=+ssse3"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") march.x86_64.NIX_CFLAGS_LINK);
   march.aarch64.NIX_CFLAGS_COMPILE = [ ];
