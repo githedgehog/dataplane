@@ -38,6 +38,23 @@ let
     "-Coverflow-checks=on"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
+  optimize-for.performance.NIX_CFLAGS_COMPILE = [
+    "-O3"
+    "-flto=thin"
+  ];
+  optimize-for.performance.NIX_CXXFLAGS_COMPILE = optimize-for.performance.NIX_CFLAGS_COMPILE ++ [
+    "-fwhole-program-vtables"
+  ];
+  optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
+    "-Wl,--lto-whole-program-visibility"
+    "-Wl,--gc-sections"
+    "-Wl,--as-needed"
+  ];
+  optimize-for.performance.RUSTFLAGS = [
+    "-Clinker-plugin-lto"
+    "-Cembed-bitcode=yes"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
@@ -50,6 +67,7 @@ let
     ];
     release = combine-profiles [
       common
+      optimize-for.performance
     ];
   };
 in
