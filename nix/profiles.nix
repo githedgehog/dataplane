@@ -55,6 +55,21 @@ let
     "-Cembed-bitcode=yes"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.performance.NIX_CFLAGS_LINK);
+  secure.NIX_CFLAGS_COMPILE = [
+    "-fstack-protector-strong"
+    "-fstack-clash-protection"
+    # we always want pic/pie and GOT offsets should be computed at compile time whenever possible
+    "-Wl,-z,relro,-z,now"
+    # "-fcf-protection=full" # requires extra testing before we enable
+  ];
+  secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
+  # handing the CFLAGS back to clang/lld is basically required for -fsanitize
+  secure.NIX_CFLAGS_LINK = secure.NIX_CFLAGS_COMPILE;
+  secure.RUSTFLAGS = [
+    "-Crelro-level=full"
+    # "-Zcf-protection=full"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") secure.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
@@ -68,6 +83,7 @@ let
     release = combine-profiles [
       common
       optimize-for.performance
+      secure
     ];
   };
 in
