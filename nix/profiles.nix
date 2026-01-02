@@ -26,6 +26,18 @@ let
     "-Csymbol-mangling-version=v0"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
+  optimize-for.debug.NIX_CFLAGS_COMPILE = [
+    "-fno-inline"
+    "-fno-omit-frame-pointer"
+  ];
+  optimize-for.debug.NIX_CXXFLAGS_COMPILE = optimize-for.debug.NIX_CFLAGS_COMPILE;
+  optimize-for.debug.NIX_CFLAGS_LINK = [ ];
+  optimize-for.debug.RUSTFLAGS = [
+    "-Copt-level=0"
+    "-Cdebug-assertions=on"
+    "-Coverflow-checks=on"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
@@ -34,6 +46,7 @@ let
   profile-map = {
     debug = combine-profiles [
       common
+      optimize-for.debug
     ];
     release = combine-profiles [
       common
