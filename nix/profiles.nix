@@ -108,6 +108,16 @@ let
     "-Zexternal-clangrt"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.address.NIX_CFLAGS_LINK);
+  sanitize.leak.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=leak"
+  ];
+  sanitize.leak.NIX_CXXFLAGS_COMPILE = sanitize.leak.NIX_CFLAGS_COMPILE;
+  sanitize.leak.NIX_CFLAGS_LINK = sanitize.leak.NIX_CFLAGS_COMPILE;
+  sanitize.leak.RUSTFLAGS = [
+    "-Zsanitizer=leak"
+    "-Zexternal-clangrt"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
