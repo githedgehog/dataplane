@@ -4,6 +4,7 @@
   arch,
   profile,
   sanitizers,
+  instrumentation,
 }:
 let
   common.NIX_CFLAGS_COMPILE = [
@@ -194,6 +195,21 @@ let
     "-Ctarget-feature=-crt-static" # shadow-stack doesn't work with static libc
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.shadow-stack.NIX_CFLAGS_LINK);
+  instrument.none.NIX_CFLAGS_COMPILE = [ ];
+  instrument.none.NIX_CXXFLAGS_COMPILE = instrument.none.NIX_CFLAGS_COMPILE;
+  instrument.none.NIX_CFLAGS_LINK = instrument.none.NIX_CFLAGS_COMPILE;
+  instrument.none.RUSTFLAGS =
+    [ ] ++ (map (flag: "-Clink-arg=${flag}") instrument.none.NIX_CFLAGS_LINK);
+  instrument.coverage.NIX_CFLAGS_COMPILE = [
+    "-fprofile-instr-generate"
+    "-fcoverage-mapping"
+  ];
+  instrument.coverage.NIX_CXXFLAGS_COMPILE = instrument.coverage.NIX_CFLAGS_COMPILE;
+  instrument.coverage.NIX_CFLAGS_LINK = instrument.coverage.NIX_CFLAGS_COMPILE;
+  instrument.coverage.RUSTFLAGS = [
+    "-Cinstrument-coverage"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") instrument.coverage.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
@@ -215,6 +231,7 @@ combine-profiles (
   [
     profile-map."${profile}"
     march."${arch}"
+    instrument."${instrumentation}"
   ]
   ++ (map (s: sanitize.${s}) sanitizers)
 )
