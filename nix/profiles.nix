@@ -162,6 +162,21 @@ let
     "-Zsplit-lto-unit"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.cfi.NIX_CFLAGS_LINK);
+  sanitize.safe-stack.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=safe-stack"
+  ];
+  sanitize.safe-stack.NIX_CXXFLAGS_COMPILE = sanitize.safe-stack.NIX_CFLAGS_COMPILE;
+  sanitize.safe-stack.NIX_CFLAGS_LINK = sanitize.safe-stack.NIX_CFLAGS_COMPILE ++ [
+    "-Wl,--allow-shlib-undefined"
+  ];
+  sanitize.safe-stack.RUSTFLAGS = [
+    "-Zsanitizer=safestack"
+    "-Zexternal-clangrt"
+    # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
+    "-Cunsafe-allow-abi-mismatch=sanitizer"
+    "-Ctarget-feature=-crt-static" # safe-stack doesn't work with any static libc of any kind
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.safe-stack.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
