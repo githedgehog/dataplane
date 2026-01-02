@@ -63,14 +63,14 @@ let
     "-fstack-clash-protection"
     # we always want pic/pie and GOT offsets should be computed at compile time whenever possible
     "-Wl,-z,relro,-z,now"
-    "-fcf-protection=full" # requires extra testing before we enable
+    # "-fcf-protection=full" # requires extra testing before we enable
   ];
   secure.NIX_CXXFLAGS_COMPILE = secure.NIX_CFLAGS_COMPILE;
   # handing the CFLAGS back to clang/lld is basically required for -fsanitize
   secure.NIX_CFLAGS_LINK = secure.NIX_CFLAGS_COMPILE;
   secure.RUSTFLAGS = [
     "-Crelro-level=full"
-    "-Zcf-protection=full"
+    # "-Zcf-protection=full"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") secure.NIX_CFLAGS_LINK);
   march.x86_64.NIX_CFLAGS_COMPILE = [
