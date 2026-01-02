@@ -132,6 +132,36 @@ let
     "-Cunsafe-allow-abi-mismatch=sanitizer"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.thread.NIX_CFLAGS_LINK);
+  # note: cfi _requires_ LTO and is fundamentally ill suited to debug builds
+  sanitize.cfi.NIX_CFLAGS_COMPILE = [
+    "-fsanitize=cfi"
+    # visibility=default is functionally required if you use basically any cfi higher than icall.
+    # In theory we could set -fvisibility=hidden, but in practice that doesn't work because too many dependencies
+    # fail to build with that setting enabled.
+    # NOTE: you also want to enable -Wl,--lto-whole-program-visibility in the linker flags if visibility=default so that
+    # symbols can be refined to hidden visibility at link time.
+    # This "whole-program-visibility" flag is already enabled by the optimize profile, and
+    # given that the optimize profile is required for cfi to even build, we don't explicitly enable it again here.
+    "-fvisibility=default"
+    # required to properly link with rust
+    "-fsanitize-cfi-icall-experimental-normalize-integers"
+    # required in cases where perfect type strictness is not maintained but you still want to use CFI.
+    # Type fudging is common in C code, especially in cases where function pointers are used with lax const correctness.
+    # Ideally we wouldn't enable this, but we can't really re-write all of the C code in the world.
+    "-fsanitize-cfi-icall-generalize-pointers"
+    # "-fsanitize-cfi-cross-dso"
+    "-fsplit-lto-unit" # important for compatibility with rust's LTO
+  ];
+  sanitize.cfi.NIX_CXXFLAGS_COMPILE = sanitize.cfi.NIX_CFLAGS_COMPILE;
+  sanitize.cfi.NIX_CFLAGS_LINK = sanitize.cfi.NIX_CFLAGS_COMPILE;
+  sanitize.cfi.RUSTFLAGS = [
+    "-Zsanitizer=cfi"
+    "-Zsanitizer-cfi-normalize-integers"
+    "-Zsanitizer-cfi-generalize-pointers"
+    # "-Zsanitizer-cfi-cross-dso"
+    "-Zsplit-lto-unit"
+  ]
+  ++ (map (flag: "-Clink-arg=${flag}") sanitize.cfi.NIX_CFLAGS_LINK);
   combine-profiles =
     features:
     builtins.foldl' (
