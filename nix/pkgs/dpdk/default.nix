@@ -262,13 +262,11 @@ stdenv.mkDerivation {
         strip = '${cross-prefix}-strip'
         pkgconfig = '${cross-prefix}-pkg-config'
         pkg-config = '${cross-prefix}-pkg-config'
-
         [host_machine]
         system = '${kernel}'
         cpu_family = '${arch}'
         cpu = '${cpu}'
         endian = '${endian}'
-
         [properties]
         platform = '${build-params.platform}'
         libc = '${libc-vendor}'
