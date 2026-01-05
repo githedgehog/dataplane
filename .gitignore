@@ -1,6 +1,7 @@
 **.profraw
 **/__fuzz__/**
-**/result*/**
+result*
+result*/**
 **/target/**
 /.bin/**
 /.vscode/**
@@ -13,3 +14,5 @@
 /dpdk-sys/dpdk_wrapper-precompile.h*
 *.pch
 /bin
+sysroot
+devroot
