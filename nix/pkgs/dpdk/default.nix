@@ -8,19 +8,15 @@
   meson,
   ninja,
   libbsd,
-  # numactl,
+  numactl,
   rdma-core,
   libnl,
   python3,
-  build-params ? {
-    lto = "true";
-    build-type = "release"; # "debug" | "release"
-    platform = "bluefield3";
-  },
   writeText,
+
+  platform,
   ...
 }:
-
 stdenv.mkDerivation {
   pname = "dpdk";
   version = src.branch;
@@ -36,9 +32,9 @@ stdenv.mkDerivation {
   buildInputs = [
     libbsd
     libnl
-    # numactl
     rdma-core
-  ];
+  ]
+  ++ lib.optionals (platform.numa.max-nodes > 1) [ numactl ];
 
   postPatch = ''
     patchShebangs config/arm buildtools
@@ -268,34 +264,33 @@ stdenv.mkDerivation {
         cpu = '${cpu}'
         endian = '${endian}'
         [properties]
-        platform = '${build-params.platform}'
+        platform = '${platform.name}'
         libc = '${libc-vendor}'
       '';
     in
-    with build-params;
     [
-      "--buildtype=${build-type}"
-      "-Dauto_features=disabled"
-      "-Db_colorout=never"
-      "-Db_lto=${lto}"
+      "--buildtype=release"
+      "-Db_lto=true"
       "-Db_lundef=false"
       "-Db_pgo=off"
       "-Db_pie=true"
+      "-Dauto_features=disabled"
+      "-Db_colorout=never"
+      "-Db_lundef=false" # normally I would enable undef symbol checks, but it breaks sanitizer builds
       "-Dbackend=ninja"
       "-Ddefault_library=static"
       "-Denable_docs=false"
       "-Denable_driver_sdk=false"
-      "-Dmax_numa_nodes=1"
+      "-Dmax_numa_nodes=${toString platform.numa.max-nodes}"
       "-Dtests=false" # Running DPDK tests in CI is usually silly
       "-Duse_hpet=false"
-      "-Ddebug=false"
       ''-Ddisable_drivers=${lib.concatStringsSep "," disabledDrivers}''
       ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
       ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
       ''-Ddisable_apps=*''
       ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
     ]
-    ++ (if isCrossCompile then [ ''--cross-file=${cross-file}'' ] else [ ]);
+    ++ (if isCrossCompile then [ "--cross-file=${cross-file}" ] else [ ]);
 
   outputs = [
     "dev"

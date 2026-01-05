@@ -59,6 +59,11 @@ let
   );
 in
 {
-  inherit rust-toolchain rustPlatform' rustPlatform'-dev stdenv';
+  inherit
+    rust-toolchain
+    rustPlatform'
+    rustPlatform'-dev
+    stdenv'
+    ;
   llvmPackages' = prev."llvmPackages_${llvm-version}";
 }

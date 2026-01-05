@@ -37,5 +37,4 @@ lpm = { workspace = true, features = [] }
 net = { workspace = true, features = ["bolero", "test_buffer"] }
 
 [build-dependencies]
-dotenvy = { workspace = true, features = [] }
-ureq = { workspace = true, features = ["rustls", "gzip"] }
+dpdk-sysroot-helper = { workspace = true }

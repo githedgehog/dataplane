@@ -52,24 +52,13 @@ let
         NIX_CFLAGS_LINK = [ ];
       };
     };
-    bluefield2 = rec {
+    bluefield3 = rec {
       arch = "aarch64";
-      march = "armv8.2-a";
-      mcpu = "cortex-a72";
+      march = "armv8.4-a";
+      mcpu = "cortex-a78ae";
       numa = {
         max-nodes = 1;
       };
-      override = {
-        stdenv.env = rec {
-          NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
-          NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
-          NIX_CFLAGS_LINK = [ ];
-        };
-      };
-    };
-    bluefield3 = lib.recursiveUpdate bluefield2 rec {
-      march = "armv8.4-a";
-      mcpu = "cortex-a78ae";
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
@@ -82,6 +71,7 @@ lib.fix (
   final:
   platforms.${platform}
   // {
+    name = platform;
     info =
       {
         x86_64 = {

@@ -1,0 +1,124 @@
+{
+  "pins": {
+    "crane": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "ipetkov",
+        "repo": "crane"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.22.0",
+      "revision": "40203daff663c9e0b70d052aae12819dea8e6798",
+      "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.22.0",
+      "hash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM="
+    },
+    "dpdk": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "dpdk"
+      },
+      "branch": "pr/daniel-noland/cross-compile-fix",
+      "submodules": false,
+      "revision": "6736a6e32f5b3a8d16b2bd0e84b73af32540de77",
+      "url": "https://github.com/githedgehog/dpdk/archive/6736a6e32f5b3a8d16b2bd0e84b73af32540de77.tar.gz",
+      "hash": "sha256-aVtrmUtFkkC2SsnfWJmRN/Klwfb/EGLG+YYtSLm5tBY="
+    },
+    "gateway": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "gateway"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.33.0",
+      "revision": "18913fe34d78af396deb1e6a034d0258168122b1",
+      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/v0.33.0",
+      "hash": "sha256-X4sbwW60BIiAh0N/Y4P3HQWoZb/vXOSu5GjVeu9TTWo="
+    },
+    "kopium": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "kube-rs",
+        "repo": "kopium"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "0.22.5",
+      "revision": "f346e2044500c8d71523c35d474bc2f6235a0060",
+      "url": "https://api.github.com/repos/kube-rs/kopium/tarball/0.22.5",
+      "hash": "sha256-zYmb+HxwEKEnzdqAzvki5M+NA2fGP174pRkU6B4WmZI="
+    },
+    "naersk": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "nix-community",
+        "repo": "naersk"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "d4155d6ebb70fbe2314959842f744aa7cabbbf6a",
+      "url": "https://github.com/nix-community/naersk/archive/d4155d6ebb70fbe2314959842f744aa7cabbbf6a.tar.gz",
+      "hash": "sha256-r+wgI+WvNaSdxQmqaM58lVNvJYJ16zoq+tKN20cLst4="
+    },
+    "nixpkgs": {
+      "type": "Channel",
+      "name": "nixpkgs-unstable",
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre921317.16c7794d0a28/nixexprs.tar.xz",
+      "hash": "sha256-G6ie+qOCRSV7wzOY+6L1o8GvcH1qDcE/DTzDT4CRdNw="
+    },
+    "perftest": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "linux-rdma",
+        "repo": "perftest"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "1c4dc79b81060f0707830c54bf5dae7102fdbbfa",
+      "url": "https://github.com/linux-rdma/perftest/archive/1c4dc79b81060f0707830c54bf5dae7102fdbbfa.tar.gz",
+      "hash": "sha256-XHWZGB5qo9FdJ1yVEiwaSMmRmT34V6hngAlZ1ptYkiw="
+    },
+    "rdma-core": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "rdma-core"
+      },
+      "branch": "fix-lto-61.0",
+      "submodules": false,
+      "revision": "998375a38e27e66bc74ed7419a0b93d0066e8194",
+      "url": "https://github.com/githedgehog/rdma-core/archive/998375a38e27e66bc74ed7419a0b93d0066e8194.tar.gz",
+      "hash": "sha256-Qm5IhgRI5k+sDdBzyTIILg60jlmYroGWYyERSHKfuV4="
+    },
+    "rust-overlay": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "oxalica",
+        "repo": "rust-overlay"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "0b3a5ad260479f2c9bdadf3ba5b2a4be359cfcdd",
+      "url": "https://github.com/oxalica/rust-overlay/archive/0b3a5ad260479f2c9bdadf3ba5b2a4be359cfcdd.tar.gz",
+      "hash": "sha256-znoNJs2QZFl+wCFLd6FbUJ00c74kvzOjyQYXc45uFvo="
+    }
+  },
+  "version": 7
+}
