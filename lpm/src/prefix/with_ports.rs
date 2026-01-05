@@ -6,6 +6,7 @@ use crate::prefix::{Prefix, PrefixSize};
 use bnum::BUint;
 use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
+use std::str::FromStr;
 
 /// A type for the size of IP/port combinations for IP prefixes with associated port ranges.
 /// We need something larger than u128 to cover all possible combinations: the maximum value is
@@ -300,6 +301,12 @@ pub enum PortRangeError {
     /// The port range is not empty, but should be.
     #[error("Non-empty port range (expected empty)")]
     SomePortRange,
+    /// Invalid port number format.
+    #[error("Invalid port number format: {0}")]
+    ParseError(String),
+    /// Too many ports in string.
+    #[error("Expected start and end port, found: {0}")]
+    TooManyPorts(String),
 }
 
 impl From<PrefixWithPorts> for PrefixWithOptionalPorts {
@@ -486,6 +493,26 @@ impl RangeBounds<u16> for PortRange {
     }
     fn end_bound(&self) -> Bound<&u16> {
         Bound::Included(&self.end)
+    }
+}
+
+impl FromStr for PortRange {
+    type Err = PortRangeError;
+
+    fn from_str(ports: &str) -> Result<Self, Self::Err> {
+        let parsed_ports = ports
+            // Split start port / end port on '-'.
+            // Spaces are not allowed, so we don't trim.
+            .split('-')
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| PortRangeError::ParseError(e.to_string()))?;
+        match parsed_ports.len() {
+            0 => unreachable!("splitting string always produce at least one string"),
+            1 => Ok(PortRange::new(parsed_ports[0], parsed_ports[0])?),
+            2 => Ok(PortRange::new(parsed_ports[0], parsed_ports[1])?),
+            _ => Err(PortRangeError::TooManyPorts(ports.to_string())),
+        }
     }
 }
 
@@ -945,5 +972,95 @@ mod tests {
             result[0],
             PrefixWithOptionalPorts::new(prefix_v6("2001:db8:8000::/33"), Some(ports))
         );
+    }
+
+    // PortRange - FromStr
+
+    #[test]
+    fn test_port_range_from_str_single_port() {
+        let result = PortRange::from_str("80").unwrap();
+        assert_eq!(result.start(), 80);
+        assert_eq!(result.end(), 80);
+    }
+
+    #[test]
+    fn test_port_range_from_str_valid_range() {
+        let result = "8000-8080".parse::<PortRange>().unwrap();
+        assert_eq!(result.start(), 8000);
+        assert_eq!(result.end(), 8080);
+    }
+
+    #[test]
+    fn test_port_range_from_str_same_start_end() {
+        let result = PortRange::from_str("443-443").unwrap();
+        assert_eq!(result.start(), 443);
+        assert_eq!(result.end(), 443);
+    }
+
+    #[test]
+    fn test_port_range_from_str_empty_string() {
+        let result = PortRange::from_str("");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PortRangeError::ParseError(_))));
+    }
+
+    #[test]
+    fn test_port_range_from_str_invalid_format() {
+        let result = PortRange::from_str("abc");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PortRangeError::ParseError(_))));
+    }
+
+    #[test]
+    fn test_port_range_from_str_too_many_parts() {
+        let result = PortRange::from_str("80-90-100");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PortRangeError::TooManyPorts(_))));
+    }
+
+    #[test]
+    fn test_port_range_from_str_invalid_range() {
+        // PortRange::new should fail if start > end
+        let result = PortRange::from_str("8080-8000");
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(PortRangeError::InvalidRange(8080, 8000))
+        ));
+    }
+
+    #[test]
+    fn test_port_range_from_str_zero_port() {
+        let result = PortRange::from_str("0").unwrap();
+        assert_eq!(result.start(), 0);
+        assert_eq!(result.end(), 0);
+    }
+
+    #[test]
+    fn test_port_range_from_str_max_port() {
+        let result = PortRange::from_str("65535").unwrap();
+        assert_eq!(result.start(), 65535);
+        assert_eq!(result.end(), 65535);
+    }
+
+    #[test]
+    fn test_port_range_from_str_overflow() {
+        let result = PortRange::from_str("65536");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PortRangeError::ParseError(_))));
+    }
+
+    #[test]
+    fn test_port_range_from_str_negative() {
+        let result = PortRange::from_str("-1");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PortRangeError::ParseError(_))));
+    }
+
+    #[test]
+    fn test_port_range_from_str_with_spaces() {
+        let result = PortRange::from_str("80 - 90");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PortRangeError::ParseError(_))));
     }
 }

@@ -7,18 +7,49 @@ use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps,
 };
-use lpm::prefix::{Prefix, PrefixString, PrefixWithOptionalPorts};
+use lpm::prefix::{PortRange, Prefix, PrefixString, PrefixWithOptionalPorts, PrefixWithPorts};
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::SubnetMap;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
+fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversionError> {
+    ports_str
+        // Split port ranges for prefix on ','
+        .split(',')
+        .map(|port_range_str| {
+            port_range_str
+                .trim()
+                .parse::<PortRange>()
+                .map_err(|e| FromK8sConversionError::ParseError(format!("Invalid port range: {e}")))
+        })
+        .collect()
+}
+
+fn map_ports(
+    prefix: Prefix,
+    ports_opt: Option<&str>,
+) -> Result<Vec<PrefixWithOptionalPorts>, FromK8sConversionError> {
+    let Some(ports_str) = ports_opt else {
+        return Ok(vec![PrefixWithOptionalPorts::from(prefix)]);
+    };
+    parse_port_ranges(ports_str)?
+        .into_iter()
+        // Derive one PrefixWithOptionalPorts for each port range
+        .map(|port_range| {
+            Ok(PrefixWithOptionalPorts::PrefixPorts(PrefixWithPorts::new(
+                prefix, port_range,
+            )))
+        })
+        .collect::<Result<Vec<_>, _>>()
+}
+
 fn process_ip_block(
-    vpc_expose: VpcExpose,
+    mut vpc_expose: VpcExpose,
     ip: &GatewayAgentPeeringsPeeringExposeIps,
     subnets: &SubnetMap,
 ) -> Result<VpcExpose, FromK8sConversionError> {
-    Ok(match (&ip.cidr, &ip.vpc_subnet, &ip.not) {
+    match (&ip.cidr, &ip.vpc_subnet, &ip.not) {
         (None, None, None) => {
             return Err(FromK8sConversionError::MissingData(
                 "Expose ip object must specify subnet, cidr, or not".to_string(),
@@ -51,28 +82,35 @@ fn process_ip_block(
                     "Expose references unknown VPC subnet {subnet_name}"
                 ))
             })?;
-            vpc_expose.ip(PrefixWithOptionalPorts::from(*prefix)) // FIXME
+            for prefix in map_ports(*prefix, ip.ports.as_deref())? {
+                vpc_expose = vpc_expose.ip(prefix);
+            }
         }
         (Some(cidr), None, None) => {
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
                 FromK8sConversionError::ParseError(format!("Invalid CIDR format: {cidr}: {e}"))
             })?;
-            vpc_expose.ip(prefix.into()) // FIXME
+            for prefix in map_ports(prefix, ip.ports.as_deref())? {
+                vpc_expose = vpc_expose.ip(prefix);
+            }
         }
         (None, None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
                 FromK8sConversionError::Invalid(format!("Invalid CIDR format: {not}: {e}"))
             })?;
-            vpc_expose.not(prefix.into()) // FIXME
+            for prefix in map_ports(prefix, ip.ports.as_deref())? {
+                vpc_expose = vpc_expose.not(prefix);
+            }
         }
-    })
+    }
+    Ok(vpc_expose)
 }
 
 fn process_as_block(
-    vpc_expose: VpcExpose,
+    mut vpc_expose: VpcExpose,
     ip: &GatewayAgentPeeringsPeeringExposeAs,
 ) -> Result<VpcExpose, FromK8sConversionError> {
-    Ok(match (&ip.cidr, &ip.not) {
+    match (&ip.cidr, &ip.not) {
         (None, None) => {
             return Err(FromK8sConversionError::MissingData(
                 "Expose as object must specify cidr or not".to_string(),
@@ -87,15 +125,20 @@ fn process_as_block(
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
                 FromK8sConversionError::ParseError(format!("Invalid CIDR format: {cidr}: {e}"))
             })?;
-            vpc_expose.as_range(prefix.into()) // FIXME
+            for prefix in map_ports(prefix, ip.ports.as_deref())? {
+                vpc_expose = vpc_expose.as_range(prefix);
+            }
         }
         (None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
                 FromK8sConversionError::Invalid(format!("Invalid CIDR format: {not}: {e}"))
             })?;
-            vpc_expose.not_as(prefix.into()) // FIXME
+            for prefix in map_ports(prefix, ip.ports.as_deref())? {
+                vpc_expose = vpc_expose.not_as(prefix);
+            }
         }
-    })
+    }
+    Ok(vpc_expose)
 }
 
 impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
@@ -135,6 +178,145 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_map_ports_no_ports() {
+        let prefix = "10.0.0.0/24".parse::<Prefix>().unwrap();
+        let result = map_ports(prefix, None).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].prefix(), prefix);
+    }
+
+    #[test]
+    fn test_map_ports_single_port() {
+        let prefix = "10.0.0.0/24".parse::<Prefix>().unwrap();
+        let result = map_ports(prefix, Some("80")).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].prefix(), prefix);
+        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
+            assert_eq!(pp.ports().start(), 80);
+            assert_eq!(pp.ports().end(), 80);
+        } else {
+            panic!("Expected PrefixPorts variant");
+        }
+    }
+
+    #[test]
+    fn test_map_ports_single_range() {
+        let prefix = "10.0.0.0/24".parse::<Prefix>().unwrap();
+        let result = map_ports(prefix, Some("8000-8080")).unwrap();
+
+        assert_eq!(result.len(), 1);
+        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
+            assert_eq!(pp.ports().start(), 8000);
+            assert_eq!(pp.ports().end(), 8080);
+        } else {
+            panic!("Expected PrefixPorts variant");
+        }
+    }
+
+    #[test]
+    fn test_map_ports_multiple_ranges() {
+        let prefix = "10.0.0.0/24".parse::<Prefix>().unwrap();
+        let result = map_ports(prefix, Some("80,443,8000-8080")).unwrap();
+
+        assert_eq!(result.len(), 3);
+
+        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
+            assert_eq!(pp.prefix(), prefix);
+            assert_eq!(pp.ports().start(), 80);
+            assert_eq!(pp.ports().end(), 80);
+        } else {
+            panic!("Expected PrefixPorts variant");
+        }
+
+        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[1] {
+            assert_eq!(pp.prefix(), prefix);
+            assert_eq!(pp.ports().start(), 443);
+            assert_eq!(pp.ports().end(), 443);
+        } else {
+            panic!("Expected PrefixPorts variant");
+        }
+
+        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[2] {
+            assert_eq!(pp.prefix(), prefix);
+            assert_eq!(pp.ports().start(), 8000);
+            assert_eq!(pp.ports().end(), 8080);
+        } else {
+            panic!("Expected PrefixPorts variant");
+        }
+    }
+
+    #[test]
+    fn test_map_ports_invalid_port_in_list() {
+        let prefix = "10.0.0.0/24".parse::<Prefix>().unwrap();
+        let result = map_ports(prefix, Some("80,invalid,443"));
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(FromK8sConversionError::ParseError(_))));
+    }
+
+    #[test]
+    fn test_map_ports_empty_string() {
+        let prefix = "10.0.0.0/24".parse::<Prefix>().unwrap();
+        let result = map_ports(prefix, Some(""));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_map_ports_ipv6_prefix() {
+        let prefix = "2001:db8::/32".parse::<Prefix>().unwrap();
+        let result = map_ports(prefix, Some("80,443,8000-8080")).unwrap();
+
+        assert_eq!(result.len(), 3);
+
+        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
+            assert_eq!(pp.prefix(), prefix);
+            assert_eq!(pp.ports().start(), 80);
+            assert_eq!(pp.ports().end(), 80);
+        } else {
+            panic!("Expected PrefixPorts variant");
+        }
+
+        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[1] {
+            assert_eq!(pp.prefix(), prefix);
+            assert_eq!(pp.ports().start(), 443);
+            assert_eq!(pp.ports().end(), 443);
+        } else {
+            panic!("Expected PrefixPorts variant");
+        }
+    }
+
+    // See https://github.com/githedgehog/gateway/pull/268/changes#diff-a0a0f9914d0cR239-R271
+    #[test]
+    fn test_parse_port_ranges() {
+        assert!(parse_port_ranges("").is_err()); // Reject empty string, we expect None
+        assert!(parse_port_ranges("80").is_ok());
+        assert!(parse_port_ranges("80-80").is_ok());
+        assert!(parse_port_ranges("80,443").is_ok());
+        assert!(parse_port_ranges("80,443,3000-3100").is_ok());
+        assert!(parse_port_ranges("80,443,3000-3100,8080").is_ok());
+        assert!(parse_port_ranges("80,443,3000-3100,8080").is_ok());
+        assert!(parse_port_ranges("  80  ").is_ok());
+        assert!(parse_port_ranges("  80  ,  443  ").is_ok());
+        assert!(parse_port_ranges("  80  ,  443  ,  3000-3100  ").is_ok());
+        assert!(parse_port_ranges("  80  ,443,3000-3100,8080").is_ok());
+        assert!(parse_port_ranges("80-79").is_err());
+        //assert!(parse_port_ranges("0").is_err()); // We support this internally
+        assert!(parse_port_ranges("65536").is_err());
+        assert!(parse_port_ranges("1-65536").is_err());
+        //assert!(parse_port_ranges("0-80").is_err()); // We support this internally
+        assert!(parse_port_ranges("-80").is_err());
+        assert!(parse_port_ranges("80-").is_err());
+        assert!(parse_port_ranges("  -  80  ").is_err());
+        assert!(parse_port_ranges("  80  -  ").is_err());
+        assert!(parse_port_ranges("1-80,65536").is_err());
+        // Add another one: multiple commas
+        assert!(parse_port_ranges("80,,443").is_err());
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
