@@ -70,6 +70,9 @@ let
     bluefield3 = lib.recursiveUpdate bluefield2 rec {
       march = "armv8.4-a";
       mcpu = "cortex-a78ae";
+      numa = {
+        max-nodes = 1;
+      };
       override.stdenv.env = rec {
         NIX_CFLAGS_COMPILE = [ "-mcpu=${mcpu}" ];
         NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
@@ -82,6 +85,7 @@ lib.fix (
   final:
   platforms.${platform}
   // {
+    name = platform;
     info =
       {
         x86_64 = {
