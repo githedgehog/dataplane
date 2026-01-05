@@ -187,21 +187,21 @@ url = { version = "2.5.7", default-features = false, features = [] }
 uuid = { version = "1.19.0", default-features = false, features = [] }
 
 [profile.dev]
+opt-level = 0
 panic = "unwind"
+debug = "full"
 debug-assertions = true
 overflow-checks = true
-debug = "full"
-rpath = true
+incremental = false
 
 [profile.release]
 opt-level = 3
 panic = "unwind"
 debug = "full"
-lto = "thin"
 debug-assertions = false
 overflow-checks = false
+lto = "thin"
 codegen-units = 1
-rpath = true
 
 [profile.fuzz]
 inherits = "release"
