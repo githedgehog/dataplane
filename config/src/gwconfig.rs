@@ -3,7 +3,7 @@
 
 //! Top-level configuration object for the dataplane
 
-use crate::errors::ConfigResult;
+use crate::errors::{ConfigError, ConfigResult};
 use crate::external::{ExternalConfig, GenId};
 use crate::internal::InternalConfig;
 use std::time::SystemTime;
@@ -12,43 +12,47 @@ use tracing::debug;
 /// Metadata associated to a gateway configuration
 #[derive(Clone, Debug)]
 pub struct GwConfigMeta {
-    pub create_t: SystemTime,        /* time when config was built (received) */
-    pub apply_t: Option<SystemTime>, /* last time when config was applied successfully */
-    pub replace_t: Option<SystemTime>, /* time when config was un-applied */
-    pub replacement: Option<GenId>,  /* Id of config that replaced this one */
-    pub is_applied: bool,            /* True if the config is currently applied */
+    // generation Id of a config
+    pub genid: GenId,
+
+    // time when a config was learnt
+    pub create_t: SystemTime,
+
+    // time when a config was applied
+    pub apply_t: Option<SystemTime>,
+
+    // error if configuration could not be applied
+    pub error: Option<ConfigError>,
 }
 impl GwConfigMeta {
     ////////////////////////////////////////////////////////////////////////////////
-    /// Build config metadata. This is automatically built when creating a `GwConfig
+    /// Build config metadata. This is automatically built when creating a `GwConfig`
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    fn new() -> Self {
+    fn new(genid: GenId) -> Self {
         Self {
+            genid,
             create_t: SystemTime::now(),
             apply_t: None,
-            replace_t: None,
-            replacement: None,
-            is_applied: false,
+            error: None,
         }
     }
     ////////////////////////////////////////////////////////////////////////////////
-    /// Set the state of this config. The management processor will always be responsible
-    /// for setting this, regardless of how it stores the configurations. The metadata
-    /// is included here in case other components needed some of its data.
+    /// Set the time when attempting to apply a configuration finished, whether it
+    /// succeeded or not.
     ////////////////////////////////////////////////////////////////////////////////
-    pub fn set_state(&mut self, genid: GenId, value: bool, replacement: Option<GenId>) {
-        if value {
-            self.apply_t = Some(SystemTime::now());
-            self.replace_t.take();
-            self.replacement.take();
-            debug!("Config {genid} has been marked as active");
-        } else {
-            self.replace_t = Some(SystemTime::now());
-            self.replacement = replacement;
-            debug!("Config {genid} has been marked as inactive");
+    pub fn apply_time(&mut self) {
+        self.apply_t = Some(SystemTime::now());
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    /// Set the `ConfigError` if a configuration failed to be applied.
+    ////////////////////////////////////////////////////////////////////////////////
+    pub fn error(&mut self, result: &ConfigResult) {
+        self.error.take();
+        if let Err(e) = result {
+            self.error = Some(e.clone());
         }
-        self.is_applied = value;
     }
 }
 
@@ -66,7 +70,7 @@ impl GwConfig {
     #[must_use]
     pub fn new(external: ExternalConfig) -> Self {
         Self {
-            meta: GwConfigMeta::new(),
+            meta: GwConfigMeta::new(external.genid),
             external,
             internal: None,
         }

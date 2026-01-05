@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! "Kubeless" client that learns configs from a directory and requests
+//! the configuration processor to apply them.
+
 use config::{ExternalConfig, GwConfig};
 use futures::TryFutureExt;
 use k8s_less::kubeless_watch_gateway_agent_crd;

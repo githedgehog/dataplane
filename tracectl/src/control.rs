@@ -17,7 +17,7 @@ use crate::targets::{TRACING_TAG_ALL, TRACING_TARGETS};
 use crate::trace_target;
 trace_target!("tracectl", LevelFilter::INFO, &[]);
 
-#[derive(Debug, Error, PartialEq)]
+#[derive(Clone, Debug, Error, PartialEq)]
 pub enum TraceCtlError {
     #[error("Reload tracing failure: {0}")]
     ReloadFailure(String),

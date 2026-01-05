@@ -16,7 +16,7 @@ use net::eth::mac::Mac;
 use thiserror::Error;
 
 /// The reasons why we may reject a configuration
-#[derive(Debug, Error, PartialEq)]
+#[derive(Clone, Debug, Error, PartialEq)]
 pub enum ConfigError {
     #[error("A VPC with name '{0}' already exists")]
     DuplicateVpcName(String),
