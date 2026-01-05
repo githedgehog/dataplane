@@ -85,7 +85,7 @@ arc-swap = { version = "1.8.0", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 async-trait = { version = "0.1.89", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
-axum = { version = "0.8.7", default-features = false, features = [] }
+axum = { version = "0.8.8", default-features = false, features = [] }
 axum-server = { version = "0.8.0", default-features = false, features = [] }
 bincode2 = { version = "2.0.1", default-features = false, features = [] } # TODO: try to remove this
 bindgen = { version = "0.72.1", default-features = false, features = [] }
