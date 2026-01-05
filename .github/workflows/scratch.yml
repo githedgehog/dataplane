@@ -1,0 +1,172 @@
+name: "scratch.yml"
+
+on:
+    pull_request: {}
+    push:
+        branches:
+            - "main"
+        tags:
+            - "v*"
+    merge_group:
+        types: ["checks_requested"]
+    workflow_dispatch:
+        inputs:
+            debug_enabled:
+                type: "boolean"
+                description: "Run with tmate enabled"
+                required: false
+                default: false
+            debug_justfile:
+                type: "boolean"
+                description: "enable to see debug statements from just recipes"
+                required: false
+                default: false
+            skip_vlab_tests:
+                type: "boolean"
+                description: "Skip VLAB tests (they run by default)"
+                required: false
+                default: false
+            run_hlab_tests:
+                type: "boolean"
+                description: "Run hybrid HLAB tests"
+                required: false
+                default: false
+            enable_release_tests:
+                type: "boolean"
+                description: "Enable release tests for VLAB/HLAB tests"
+                required: false
+                default: false
+
+concurrency:
+    group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
+    cancel-in-progress: true
+
+permissions:
+    contents: "read"
+    packages: "write"
+    id-token: "write"
+
+jobs:
+    check:
+        env:
+            CACHE_REGISTRY: "run.h.hhdev.io:30000"
+            UPSTREAM_REGISTRY: "ghcr.io"
+            USER: "runner"
+        permissions:
+            checks: "write"
+            pull-requests: "write"
+            contents: "read"
+            packages: "write"
+            id-token: "write"
+        strategy:
+            fail-fast: false
+            matrix:
+                profile:
+                    - name: "debug"
+                      cargo_name: "dev"
+                    - name: "release"
+                      cargo_name: "release"
+                debug_justfile:
+                    - "${{ inputs.debug_justfile || false }}"
+        name: "${{matrix.profile.name}}"
+        runs-on: "lab"
+        timeout-minutes: 120
+        steps:
+            - name: "install nix"
+              uses: "cachix/install-nix-action@v31"
+              with:
+                  nix_path: nixpkgs=channel:nixpkgs-unstable
+
+            - name: "login to ghcr.io"
+              uses: "docker/login-action@v3"
+              with:
+                  registry: "${{ env.UPSTREAM_REGISTRY }}"
+                  username: "${{ github.actor }}"
+                  password: "${{ secrets.GITHUB_TOKEN }}"
+
+            - name: "login to image cache"
+              uses: "docker/login-action@v3"
+              with:
+                  registry: "${{ env.CACHE_REGISTRY }}"
+                  username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
+                  password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+
+            - name: "Checkout"
+              uses: "actions/checkout@v6"
+              with:
+                  persist-credentials: "false"
+                  fetch-depth: "0"
+
+            - name: "log into cachix"
+              uses: cachix/cachix-action@v14
+              with:
+                  name: "${{ vars.CACHIX_CACHE_NAME }}"
+                  authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+                  signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
+                  useDaemon: true
+
+            - name: "sysroot"
+              run: |
+                  nix build \
+                     --log-format raw \
+                     --argstr profile ${{matrix.profile.name}} \
+                     --show-trace \
+                     --max-jobs 3 \
+                     --file default.nix \
+                     sysroot \
+                     --out-link sysroot
+
+            - name: "devroot"
+              run: |
+                  nix build \
+                     --log-format raw \
+                     --argstr profile ${{matrix.profile.name}} \
+                     --show-trace \
+                     --max-jobs 3 \
+                     --file default.nix \
+                     devroot \
+                     --out-link devroot
+
+            - name: "bins"
+              run: |
+                  for pkg in dataplane cli init; do
+                    nix build --file default.nix \
+                        --log-format raw \
+                        --argstr profile ${{matrix.profile.name}} \
+                        --show-trace \
+                        --max-jobs 3 \
+                        packages.dataplane \
+                        --out-link "packages.${pkg}"
+                  done
+
+            - name: "cargo nextest"
+              run: |
+                  export PATH="$(pwd)/devroot/bin:$PATH"
+                  nix shell --file default.nix devroot --command \
+                    cargo nextest archive --cargo-profile ${{matrix.profile.cargo_name}} --archive-file tests.tar.zst
+                  # nix shell --file default.nix devroot --command \
+                  #   cargo nextest run --archive-file tests.tar.zst
+
+            - name: "run doctests"
+              run: |
+                  nix shell --file default.nix devroot --command \
+                    cargo test --profile=${{matrix.profile.cargo_name}} --doc
+
+            - id: "clippy"
+              name: "run clippy"
+              run: |
+                  nix shell --file default.nix shell --command \
+                    cargo clippy --profile ${{matrix.profile.cargo_name}} --all-targets --all-features -- -D warnings
+
+            - id: "docs"
+              name: "run rustdoc"
+              run: |
+                  nix shell --file default.nix devroot --command \
+                    sh -c 'RUSTDOCFLAGS="-D warnings" cargo doc --profile=${{matrix.profile_name}} --no-deps'
+
+            - name: "Setup tmate session for debug"
+              # if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+              uses: "mxschmitt/action-tmate@v3"
+              timeout-minutes: 120
+              with:
+                  limit-access-to-actor: true
