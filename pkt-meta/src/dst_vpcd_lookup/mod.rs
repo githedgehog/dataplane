@@ -269,6 +269,9 @@ impl DstVpcdLookup {
                     // pipeline stage to see if we have a session that can help us determine the
                     // right destination VPC. So, we do NOT mark the packet as "done" here, we just
                     // pass it along with no dst_vpcd attached.
+                    debug!(
+                        "{nfi}: ambiguous dst_vpcd for {dst_ip} in src_vpcd {src_vpcd}: falling back to flow table lookup to see if a session exists"
+                    );
                 }
             } else {
                 debug!(
