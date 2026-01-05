@@ -12,7 +12,7 @@ use config::{ExternalConfig, GenId, GwConfig, GwConfigMeta, InternalConfig};
 
 macro_rules! CONFIGDB_TBL_FMT {
     () => {
-        " {:>6} {:<25} {:<25} {:<25} {:>6} {:<10}"
+        " {:>6} {:<25} {:<25} {}"
     };
 }
 
@@ -20,18 +20,11 @@ fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Re
     writeln!(
         f,
         "{}",
-        format_args!(
-            CONFIGDB_TBL_FMT!(),
-            "GenId", "created", "applied", "replaced", "by", "active"
-        )
+        format_args!(CONFIGDB_TBL_FMT!(), "GenId", "created", "applied", "error")
     )
 }
 
-fn fmt_gwconfig_summary(
-    meta: &GwConfigMeta,
-    genid: GenId,
-    f: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
+fn fmt_gwconfig_summary(meta: &GwConfigMeta, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let created = DateTime::<Utc>::from(meta.create_t).format("%H:%M:%S on %Y/%m/%d");
     let apply_time = if let Some(time) = meta.apply_t {
         let time = DateTime::<Utc>::from(time).format("%H:%M:%S on %Y/%m/%d");
@@ -39,45 +32,35 @@ fn fmt_gwconfig_summary(
     } else {
         "--".to_string()
     };
-    let replace_time = if let Some(time) = meta.replace_t {
-        let time = DateTime::<Utc>::from(time).format("%H:%M:%S on %Y/%m/%d");
-        format!("{time}")
-    } else {
-        "--".to_string()
-    };
 
-    let applied = if meta.is_applied { "yes" } else { "no" };
-    let replacement = meta
-        .replacement
-        .map(|genid| genid.to_string())
-        .unwrap_or("--".to_string());
+    let error = meta
+        .error
+        .as_ref()
+        .map(|e| e.to_string())
+        .unwrap_or("none".to_string());
+
     writeln!(
         f,
         "{}",
-        format_args!(
-            CONFIGDB_TBL_FMT!(),
-            genid, created, apply_time, replace_time, replacement, applied
-        )
+        format_args!(CONFIGDB_TBL_FMT!(), meta.genid, created, apply_time, error)
     )
 }
 
-pub struct GwConfigDatabaseSummary<'a>(pub &'a GwConfigDatabase);
+pub struct ConfigHistory<'a>(pub &'a GwConfigDatabase);
 
-impl Display for GwConfigDatabaseSummary<'_> {
+impl Display for ConfigHistory<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!(
-            "Configuration database summary ({} configs)",
-            self.0.len()
-        ))
-        .fmt(f)?;
+        Heading("Configuration history".to_string()).fmt(f)?;
+
         if let Some(curr) = self.0.get_current_gen() {
             writeln!(f, " current generation: {curr}")?;
         } else {
             writeln!(f, " current generation: --")?;
         }
+
         fmt_configdb_summary_heading(f)?;
-        for (genid, gwconfig) in self.0.iter() {
-            fmt_gwconfig_summary(&gwconfig.meta, *genid, f)?;
+        for meta in self.0.history() {
+            fmt_gwconfig_summary(meta, f)?;
         }
         Ok(())
     }

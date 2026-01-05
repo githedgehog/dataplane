@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! The configuration processor
+
 use crate::processor::k8s_client::{K8sClient, K8sClientError};
 use crate::processor::k8s_less_client::{K8sLess, K8sLessError};
 use crate::processor::proc::ConfigProcessor;

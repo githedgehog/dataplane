@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-// !Configuration processor
+//! Configuration processor
 
 use concurrency::sync::Arc;
 use std::collections::{HashMap, HashSet};
@@ -25,7 +25,7 @@ use nat::stateless::setup::build_nat_configuration;
 use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
 use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 
-use crate::processor::display::GwConfigDatabaseSummary;
+use crate::processor::display::ConfigHistory;
 use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::processor::mgmt_client::{
     ConfigChannelRequest, ConfigClient, ConfigRequest, ConfigResponse,
@@ -118,12 +118,6 @@ impl ConfigProcessor {
 
     /// Main entry point for new configurations
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
-        let genid = config.genid();
-        /* reject config if it uses the id of an existing one */
-        if genid != ExternalConfig::BLANK_GENID && self.config_db.contains(genid) {
-            error!("Rejecting config request: a config with id {genid} exists");
-            return Err(ConfigError::ConfigAlreadyExists(genid));
-        }
         config.validate()?;
         let internal = build_internal_config(&config)?;
         config.set_internal_config(internal);
@@ -135,8 +129,8 @@ impl ConfigProcessor {
             }
         };
 
-        let summary = GwConfigDatabaseSummary(&self.config_db);
-        debug!("The config DB is:\n{summary}");
+        let history = ConfigHistory(&self.config_db);
+        info!("\n{history}");
         e
     }
 
@@ -156,11 +150,11 @@ impl ConfigProcessor {
 
         let current = self.config_db.get_current_config_mut();
         if let Some(current) = &current {
-            debug!("The current config is {}", current.genid());
+            debug!("The currently applied config genid is {}", current.genid());
         }
 
         // FIXME(fredi): pass &mut self.params
-        apply_gw_config(
+        let result = apply_gw_config(
             &self.vpc_mgr,
             &mut config,
             current.as_deref(),
@@ -170,25 +164,22 @@ impl ConfigProcessor {
             &mut self.proc_params.natallocatorw,
             &mut self.proc_params.vpcdtablesw,
         )
-        .await?;
+        .await;
 
-        if let Some(current) = current {
-            current.meta.set_state(current.genid(), false, Some(genid));
+        // set time and error (if failed to apply), and update the config history
+        config.meta.apply_time();
+        config.meta.error(&result);
+        self.config_db.history_mut().push(config.meta.clone());
+        if result.is_ok() {
+            self.config_db.store(config);
         }
-        config.meta.set_state(genid, true, None);
-        self.config_db.set_current_gen(genid);
-        if !self.config_db.contains(genid) {
-            self.config_db.add(config);
-        }
-        Ok(())
+        result
     }
 
     /// Attempt to apply the previously applied config
     async fn rollback(&mut self) {
-        let current = self.config_db.get_current_gen();
-        let rollback_cfg = current.unwrap_or(ExternalConfig::BLANK_GENID);
-        info!("Rolling back to config '{rollback_cfg}'...");
-        if let Some(prior) = self.config_db.get_mut(rollback_cfg) {
+        info!("Rolling back ...");
+        if let Some(prior) = self.config_db.get_current_config_mut() {
             // FIXME(fredi): pass &mut self.params
             let _ = apply_gw_config(
                 &self.vpc_mgr,

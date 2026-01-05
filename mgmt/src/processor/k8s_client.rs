@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! K8s client that glues the gateway to k8s
+
 use std::sync::Arc;
 use std::time::SystemTime;
 
