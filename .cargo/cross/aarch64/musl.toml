@@ -1,0 +1,8 @@
+[env]
+CC = { value = "aarch64-unknown-linux-musl-clang", relative = false, force = true }
+
+[build]
+target = "aarch64-unknown-linux-musl"
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=aarch64-unknown-linux-musl-clang", "-Clink-arg=-fuse-ld=lld"]
