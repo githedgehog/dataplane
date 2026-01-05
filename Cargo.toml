@@ -173,7 +173,7 @@ strum_macros = { version = "0.27.2", default-features = false, features = [] }
 syn = { version = "2.0.113", default-features = false, features = [] }
 thiserror = { version = "2.0.17", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
-tokio = { version = "1.48.0", default-features = false, features = [] }
+tokio = { version = "1.49.0", default-features = false, features = [] }
 tokio-stream = { version = "0.1.17", default-features = false, features = [] }
 tonic = { version = "0.14.2", default-features = false, features = [] }
 tracing = { version = "0.1.43", default-features = false, features = [] }
