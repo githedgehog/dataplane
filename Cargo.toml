@@ -81,7 +81,7 @@ vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { version = "0.8.12", default-features = false, features = [] }
-arc-swap = { version = "1.7.1", default-features = false, features = [] }
+arc-swap = { version = "1.8.0", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 async-trait = { version = "0.1.89", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
