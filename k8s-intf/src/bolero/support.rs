@@ -31,8 +31,6 @@ impl UniqueV4CidrGenerator {
 }
 
 impl ValueGenerator for UniqueV4CidrGenerator {
-    // Remove this allow once we upgrade to Rust 1.87.0
-    #![allow(unstable_name_collisions)]
     type Output = Vec<String>;
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
@@ -90,8 +88,6 @@ impl UniqueV6CidrGenerator {
 }
 
 impl ValueGenerator for UniqueV6CidrGenerator {
-    // Remove this allow once we upgrade to Rust 1.87.0
-    #![allow(unstable_name_collisions)]
     type Output = Vec<String>;
 
     fn generate<D: Driver>(&self, d: &mut D) -> Option<Self::Output> {
