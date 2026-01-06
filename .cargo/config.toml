@@ -1,9 +1,4 @@
 [env]
-# COMPILE_ENV = { value = "compile-env", relative = true, force = false }
-# PATH = { value = "compile-env/bin", relative = true, force = true }
-# LIBCLANG_PATH = { value = "compile-env/lib", relative = true, force = true }
-# PKG_CONFIG_PATH = { value = "compile-env/sysroot/x86_64-unknown-linux-gnu/release/lib/pkgconfig", relative = true, force = true }
-
 DATAPLANE_SYSROOT = { value = "sysroot", relative = true, force = false }
 C_INCLUDE_PATH = { value = "sysroot/include", relative = true, force = false }
 LIBRARY_PATH = { value = "sysroot/lib", relative = true, force = false }
@@ -12,15 +7,4 @@ PKG_CONFIG_PATH = { value = "sysroot/lib/pkgconfig", relative = true, force = fa
 LIBCLANG_PATH = { value = "devroot/lib", relative = true, force = false }
 
 [build]
-# target = "x86_64-unknown-linux-gnu"
-# rustc = "compile-env/bin/rustc"
-rustflags = ["--cfg=tokio_unstable"]
-
-[profile.dev]
-rustflags = ["--cfg=tokio_unstable"]
-
-[profile.release]
-rustflags = ["--cfg=tokio_unstable"]
-
-[profile.fuzz]
 rustflags = ["--cfg=tokio_unstable"]

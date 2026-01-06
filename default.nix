@@ -121,6 +121,14 @@ let
       rust-toolchain
     ]);
   };
+  devenv = pkgs.mkShell {
+    name = "dataplane-dev-shell";
+    packages = [ devroot ];
+    inputsFrom = [ sysroot ];
+    shellHook = ''
+      export RUSTC_BOOTSTRAP=1
+    '';
+  };
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
   outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
@@ -502,6 +510,7 @@ in
     clippy
     containers
     dataplane-tar
+    devenv
     ;
   profile = profile';
   platform = platform';
