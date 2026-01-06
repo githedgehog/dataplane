@@ -60,6 +60,7 @@ let
     paths = with pkgs.pkgsHostHost; [
       pkgs.pkgsHostHost.libc.dev
       pkgs.pkgsHostHost.libc.out
+      pkgs.pkgsHostHost.libgcc.lib
       fancy.dpdk-wrapper.dev
       fancy.dpdk-wrapper.out
       fancy.dpdk.dev
@@ -169,9 +170,15 @@ let
   cargo-cmd-prefix = [
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
-    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
     "--target=${target}"
-  ];
+  ]
+  ++ (
+    if builtins.elem "thread" sanitizers then
+      # [ "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind" ]
+      [ "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem" ]
+    else
+      [ "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind" ]
+  );
 
   invoke =
     {
@@ -244,7 +251,11 @@ let
             ++ (
               if ((builtins.elem "thread" sanitizers) || (builtins.elem "safe-stack" sanitizers)) then
                 [
-                  "-Clink-arg=-Wl,--allow-shlib-undefined"
+                  "-Zexternal-clangrt"
+                  "-Clink-arg=--rtlib=compiler-rt"
+                  # "-Clink-arg=-Wl,--allow-shlib-undefined"
+                  # "-Clink-arg=-static-libgcc"
+                  # "-Clink-arg=-static-libstdc++"
                 ]
               else
                 [ ]
@@ -377,8 +388,8 @@ let
     }
   ) package-list;
 
-  base-etc = pkgs.buildEnv {
-    name = "base-etc";
+  base = pkgs.buildEnv {
+    name = "base";
     pathsToLink = [
       "/etc"
     ];
@@ -399,13 +410,13 @@ let
       in
       ''
         tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,var,etc,run/dataplane,run/frr/hh,run/netns}
+        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns}
         ln -s /run "$tmp/var/run"
         cp --dereference "${packages.dataplane}/bin/dataplane" "$tmp/bin"
         cp --dereference "${packages.cli}/bin/cli" "$tmp/bin"
         cp --dereference "${packages.init}/bin/dataplane-init" "$tmp/bin"
         ln -s cli "$tmp/bin/sh"
-        for f in "${base-etc}/etc/"*; do
+        for f in "${base}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
         done
         cd "$tmp"
@@ -470,7 +481,8 @@ let
           --file "$out" \
           \
           . \
-          ${pkgs.pkgsHostHost.libc.out}
+          ${pkgs.pkgsHostHost.libc.out} \
+          ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.libgcc.libgcc else ""} \
       '';
 
   };
