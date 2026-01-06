@@ -344,18 +344,26 @@ mod test {
             .with_generator(expose_gen)
             .for_each(|k8s_expose| {
                 let expose = VpcExpose::try_from((&subnets, k8s_expose)).unwrap();
-                // FIXME: Add support for port ranges
                 let mut ips = expose
                     .ips
                     .iter()
-                    .map(|p| p.prefix().to_string())
+                    .map(|p| {
+                        (
+                            p.prefix().to_string(),
+                            p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 ips.sort();
                 let mut nots = expose
                     .nots
                     .iter()
-                    // FIXME: Add support for port ranges
-                    .map(|p| p.prefix().to_string())
+                    .map(|p| {
+                        (
+                            p.prefix().to_string(),
+                            p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 nots.sort();
 
@@ -363,18 +371,26 @@ mod test {
                     let mut ret = nat
                         .as_range
                         .iter()
-                        // FIXME: Add support for port ranges
-                        .map(|p| p.prefix().to_string())
+                        .map(|p| {
+                            (
+                                p.prefix().to_string(),
+                                p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
+                            )
+                        })
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
                 });
                 let not_as = expose.nat.as_ref().map(|nat| {
-                    // FIXME: Add support for port ranges
                     let mut ret = nat
                         .not_as
                         .iter()
-                        .map(|p| p.prefix().to_string())
+                        .map(|p| {
+                            (
+                                p.prefix().to_string(),
+                                p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
+                            )
+                        })
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
@@ -386,7 +402,12 @@ mod test {
                     .map(|ips| {
                         ips.iter()
                             .filter(|ip| ip.cidr.is_some())
-                            .map(|ip| ip.cidr.as_ref().unwrap().clone())
+                            .map(|ip| {
+                                (
+                                    ip.cidr.as_ref().unwrap().clone(),
+                                    ip.ports.clone().unwrap_or_default(),
+                                )
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or(vec![]);
@@ -396,7 +417,12 @@ mod test {
                     .map(|ips| {
                         ips.iter()
                             .filter(|ip| ip.not.is_some())
-                            .map(|ip| ip.not.as_ref().unwrap().clone())
+                            .map(|ip| {
+                                (
+                                    ip.not.as_ref().unwrap().clone(),
+                                    ip.ports.clone().unwrap_or_default(),
+                                )
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or(vec![]);
@@ -408,10 +434,13 @@ mod test {
                         ips.iter()
                             .filter(|ip| ip.vpc_subnet.is_some())
                             .map(|ip| {
-                                subnets
-                                    .get(ip.vpc_subnet.as_ref().unwrap())
-                                    .unwrap()
-                                    .to_string()
+                                (
+                                    subnets
+                                        .get(ip.vpc_subnet.as_ref().unwrap())
+                                        .unwrap()
+                                        .to_string(),
+                                    ip.ports.clone().unwrap_or_default(),
+                                )
                             })
                             .collect::<Vec<_>>()
                     })
@@ -423,7 +452,12 @@ mod test {
                     let mut ret = r#as
                         .iter()
                         .filter(|r#as| r#as.cidr.is_some())
-                        .map(|r#as| r#as.cidr.as_ref().unwrap().clone())
+                        .map(|r#as| {
+                            (
+                                r#as.cidr.as_ref().unwrap().clone(),
+                                r#as.ports.clone().unwrap_or_default(),
+                            )
+                        })
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
@@ -433,7 +467,12 @@ mod test {
                     let mut ret = r#as
                         .iter()
                         .filter(|r#as| r#as.not.is_some())
-                        .map(|r#as| r#as.not.as_ref().unwrap().clone())
+                        .map(|r#as| {
+                            (
+                                r#as.not.as_ref().unwrap().clone(),
+                                r#as.ports.clone().unwrap_or_default(),
+                            )
+                        })
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
