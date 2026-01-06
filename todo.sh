@@ -27,9 +27,9 @@ docker run --rm -it dataplane:v0.0.0-debug-sanitize-address /bin/dataplane || tr
 
 # build dataplane container (thread sanitizer mode)
 
-# nix --max-jobs 8 --extra-experimental-features nix-command build -f default.nix dataplane-tar --out-link /tmp/dataplane.tar --argstr sanitize thread
-# docker import /tmp/dataplane.tar dataplane:v0.0.0-debug-sanitize-thread
-# docker run --rm -it dataplane:v0.0.0-debug-sanitize-thread /bin/dataplane || true
+nix --max-jobs 8 --extra-experimental-features nix-command build -f default.nix dataplane-tar --out-link /tmp/dataplane.tar --argstr sanitize thread
+docker import /tmp/dataplane.tar dataplane:v0.0.0-debug-sanitize-thread
+docker run --rm -it dataplane:v0.0.0-debug-sanitize-thread /bin/dataplane || true
 
 # build dataplane container (release with stack sanitizer mode)
 
