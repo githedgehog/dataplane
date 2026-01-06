@@ -12,11 +12,13 @@ use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
     GatewayAgentPeeringsPeeringExposeNatStateful, GatewayAgentPeeringsPeeringExposeNatStateless,
 };
+use lpm::prefix::PortRange;
 
 /// Generate a legal value for `GatewayAgentPeeringsPeeringExpose`
 ///
-/// This is not exhaustive over all legal values due to the complexity
-/// of doing this.  The cidr generators in particular are not exhaustive.
+/// This is not exhaustive over all legal values due to the complexity of doing this. For example,
+/// the CIDR generators are not exhaustive; and we use a single port range for all CIDRs rather than
+/// trying different combinations.
 pub struct LegalValueExposeGenerator<'a> {
     subnets: &'a SubnetMap,
 }
@@ -52,12 +54,24 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         let num_v4_not_as = d.gen_u16(Bound::Included(&0), Bound::Included(&num_as_not))?;
         let num_v6_not_as = num_as_not - num_v4_not_as;
 
+        let ports = if d.gen_bool(None)? {
+            let bound1 = d.gen_u16(Bound::Excluded(&0), Bound::Included(&u16::MAX))?;
+            let bound2 = d.gen_u16(Bound::Excluded(&0), Bound::Included(&u16::MAX))?;
+            Some(
+                PortRange::new(bound1.min(bound2), bound1.max(bound2))
+                    .unwrap()
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
         let ips = generate_prefixes(d, num_v4_ips, num_v6_ips)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: Some(p),
                 not: None,
-                ports: None,
+                ports: ports.clone(),
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
@@ -66,7 +80,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: None,
                 not: Some(p),
-                ports: None,
+                ports: ports.clone(),
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
@@ -75,14 +89,14 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: Some(p),
                 not: None,
-                ports: None,
+                ports: ports.clone(),
             });
         let not_as = generate_prefixes(d, num_v4_not_as, num_v6_not_as)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: None,
                 not: Some(p),
-                ports: None,
+                ports: ports.clone(),
             });
 
         let mut subnets = Vec::new();
@@ -94,7 +108,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             subnets.push(GatewayAgentPeeringsPeeringExposeIps {
                 cidr: None,
                 not: None,
-                ports: None,
+                ports: ports.clone(),
                 vpc_subnet: Some(name.clone()),
             });
         }
