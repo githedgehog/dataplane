@@ -104,6 +104,7 @@ fn main() {
         "efa",
         "hns",
         "mana",
+        "ionic",
         "bnxt_re-rdmav59",
         "cxgb4-rdmav59",
         "erdma-rdmav59",

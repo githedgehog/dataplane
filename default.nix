@@ -241,6 +241,14 @@ let
               # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
               "--remap-path-prefix==${src}"
             ]
+            ++ (
+              if ((builtins.elem "thread" sanitizers) || (builtins.elem "safe-stack" sanitizers)) then
+                [
+                  "-Clink-arg=-Wl,--allow-shlib-undefined"
+                ]
+              else
+                [ ]
+            )
           );
         };
       }

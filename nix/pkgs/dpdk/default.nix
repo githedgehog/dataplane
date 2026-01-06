@@ -269,6 +269,11 @@ stdenv.mkDerivation {
       '';
     in
     [
+      "--buildtype=release"
+      "-Db_lto=true"
+      "-Db_lundef=false"
+      "-Db_pgo=off"
+      "-Db_pie=true"
       "-Dauto_features=disabled"
       "-Db_colorout=never"
       "-Db_lundef=false" # normally I would enable undef symbol checks, but it breaks sanitizer builds
