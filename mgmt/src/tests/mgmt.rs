@@ -16,7 +16,6 @@ pub mod test {
     use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
-    use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
@@ -425,9 +424,6 @@ pub mod test {
         /* create NatAllocator for stateful nat */
         let natallocatorw = NatAllocatorWriter::new();
 
-        /* create VniTables for dst_vni_lookup */
-        let vpcdtablesw = VpcDiscTablesWriter::new();
-
         /* create FlowFilterTable for flow filtering */
         let flowfilterw = FlowFilterTableWriter::new();
 
@@ -440,7 +436,6 @@ pub mod test {
             vpcmapw,
             nattablesw,
             natallocatorw,
-            vpcdtablesw,
             flowfilterw,
             vpc_stats_store,
         };
