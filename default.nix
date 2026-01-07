@@ -60,7 +60,7 @@ let
     paths = with pkgs.pkgsHostHost; [
       pkgs.pkgsHostHost.libc.dev
       pkgs.pkgsHostHost.libc.out
-      pkgs.pkgsHostHost.libgcc.lib
+      pkgs.pkgsHostHost.libgcc.libgcc
       fancy.dpdk-wrapper.dev
       fancy.dpdk-wrapper.out
       fancy.dpdk.dev
@@ -169,17 +169,10 @@ let
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
   cargo-cmd-prefix = [
     "-Zunstable-options"
-    "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,sysroot"
+    "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
     "--target=${target}"
-  ]
-  ++ (
-    if builtins.elem "thread" sanitizers then
-      # [ "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind" ]
-      [ "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem" ]
-    else
-      [ "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind" ]
-  );
-
+  ];
   invoke =
     {
       builder,
@@ -254,8 +247,6 @@ let
                   "-Zexternal-clangrt"
                   "-Clink-arg=--rtlib=compiler-rt"
                   # "-Clink-arg=-Wl,--allow-shlib-undefined"
-                  # "-Clink-arg=-static-libgcc"
-                  # "-Clink-arg=-static-libstdc++"
                 ]
               else
                 [ ]
@@ -317,7 +308,7 @@ let
       };
     };
 
-  packages = builtins.mapAttrs (
+  workspace = builtins.mapAttrs (
     dir: pname:
     package-builder {
       inherit pname;
@@ -412,9 +403,9 @@ let
         tmp="$(mktemp -d)"
         mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns}
         ln -s /run "$tmp/var/run"
-        cp --dereference "${packages.dataplane}/bin/dataplane" "$tmp/bin"
-        cp --dereference "${packages.cli}/bin/cli" "$tmp/bin"
-        cp --dereference "${packages.init}/bin/dataplane-init" "$tmp/bin"
+        cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
+        cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
+        cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
         ln -s cli "$tmp/bin/sh"
         for f in "${base}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
@@ -506,12 +497,12 @@ let
         pkgs.pkgsBuildHost.iproute2
         pkgs.pkgsBuildHost.ethtool
 
-        packages.cli
-        packages.cli.debug
-        packages.dataplane
-        packages.dataplane.debug
-        packages.init
-        packages.init.debug
+        workspace.cli
+        workspace.cli.debug
+        workspace.dataplane
+        workspace.dataplane.debug
+        workspace.init
+        workspace.init.debug
       ];
     };
   };
@@ -519,18 +510,18 @@ let
 in
 {
   inherit
-    pkgs
-    dev-pkgs
-    devroot
-    package-list
-    sources
-    sysroot
-    packages
-    tests
     clippy
     containers
     dataplane-tar
+    dev-pkgs
     devenv
+    devroot
+    package-list
+    pkgs
+    sources
+    sysroot
+    tests
+    workspace
     ;
   profile = profile';
   platform = platform';
