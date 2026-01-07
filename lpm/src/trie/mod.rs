@@ -5,6 +5,9 @@ use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use std::borrow::Borrow;
 use std::net::IpAddr;
 
+mod ip_port_prefix_trie;
+pub use ip_port_prefix_trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
+
 mod prefix_map_impl;
 pub use prefix_map_impl::*;
 
