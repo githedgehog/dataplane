@@ -22,6 +22,7 @@ mod tests {
     use config::internal::routing::vrf::VrfConfig;
     use config::{ConfigError, GwConfig};
     use etherparse::Icmpv4Type;
+    use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
     use net::headers::{
@@ -38,8 +39,6 @@ mod tests {
     use net::udp::{TruncatedUdp, UdpPort};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
-    use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
-    use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
     use pkt_meta::flow_table::flow_key::Uni;
     use pkt_meta::flow_table::{FlowKey, FlowTable, IpProtoKey, LookupNF, UdpProtoKey};
     use std::net::{IpAddr, Ipv4Addr};
@@ -1167,7 +1166,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn check_packet_with_vpcd_lookup(
         nat: &mut StatefulNat,
-        vpcdlookup: &mut DstVpcdLookup,
+        vpcdlookup: &mut FlowFilter,
         flow_lookup_stage: Option<&mut LookupNF>,
         src_vni: Vni,
         src_ip: &str,
@@ -1245,10 +1244,10 @@ mod tests {
         config.validate().unwrap();
 
         // Build VPC discriminant lookup stage
-        let vpcd_tables = build_dst_vni_lookup_configuration(&config.external.overlay).unwrap();
-        let mut vpcdtablesw = VpcDiscTablesWriter::new();
-        vpcdtablesw.update_vpcd_tables(vpcd_tables);
-        let mut vpcdlookup = DstVpcdLookup::new("vpcd-lookup", vpcdtablesw.get_reader());
+        let vpcd_tables = FlowFilterTable::build_from_overlay(&config.external.overlay).unwrap();
+        let mut vpcdtablesw = FlowFilterTableWriter::new();
+        vpcdtablesw.update_flow_filter_table(vpcd_tables);
+        let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcdtablesw.get_reader());
 
         /////////////////////////////////////////////////////////////////
         // First NAT stage: We do not search for the destination VPC discriminant in the flow table.
@@ -1541,10 +1540,10 @@ mod tests {
         );
 
         // Build VPC discriminant lookup stage
-        let vpcd_tables = build_dst_vni_lookup_configuration(&config.external.overlay).unwrap();
-        let mut vpcdtablesw = VpcDiscTablesWriter::new();
-        vpcdtablesw.update_vpcd_tables(vpcd_tables);
-        let mut vpcdlookup = DstVpcdLookup::new("vpcd-lookup", vpcdtablesw.get_reader());
+        let vpcd_tables = FlowFilterTable::build_from_overlay(&config.external.overlay).unwrap();
+        let mut vpcdtablesw = FlowFilterTableWriter::new();
+        vpcdtablesw.update_flow_filter_table(vpcd_tables);
+        let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcdtablesw.get_reader());
 
         // Build flow table lookup stage
         let flow_table = Arc::new(FlowTable::default());

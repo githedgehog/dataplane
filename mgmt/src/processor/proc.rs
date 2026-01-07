@@ -23,8 +23,6 @@ use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
-use pkt_meta::dst_vpcd_lookup::VpcDiscTablesWriter;
-use pkt_meta::dst_vpcd_lookup::setup::build_dst_vni_lookup_configuration;
 
 use crate::processor::display::ConfigHistory;
 use crate::processor::gwconfigdb::GwConfigDatabase;
@@ -81,9 +79,6 @@ pub struct ConfigProcessorParams {
 
     // writer for stateful NAT allocator
     pub natallocatorw: NatAllocatorWriter,
-
-    // writer for VPC routing table
-    pub vpcdtablesw: VpcDiscTablesWriter,
 
     // writer for flow filter table
     pub flowfilterw: FlowFilterTableWriter,
@@ -486,16 +481,6 @@ fn apply_stateful_nat_config(
     Ok(())
 }
 
-/// Update the VNI tables for dst_vni_lookup
-fn apply_dst_vpcd_lookup_config(
-    overlay: &Overlay,
-    vpcdtablesw: &mut VpcDiscTablesWriter,
-) -> ConfigResult {
-    let vpcd_tables = build_dst_vni_lookup_configuration(overlay)?;
-    vpcdtablesw.update_vpcd_tables(vpcd_tables);
-    Ok(())
-}
-
 fn apply_flow_filtering_config(
     overlay: &Overlay,
     flowfilterw: &mut FlowFilterTableWriter,
@@ -535,7 +520,6 @@ impl ConfigProcessor {
         let vpcmapw = &mut self.proc_params.vpcmapw;
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
-        let vpcdtablesw = &mut self.proc_params.vpcdtablesw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
 
         /* build internal config if it hasn't been built */
@@ -572,9 +556,6 @@ impl ConfigProcessor {
 
         /* apply stateful NAT config */
         apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
-
-        /* apply dst_vpcd_lookup config */
-        apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
 
         /* apply flow filtering config */
         apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;

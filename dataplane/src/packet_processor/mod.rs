@@ -13,7 +13,6 @@ use super::packet_processor::ipforward::IpForwarder;
 use concurrency::sync::Arc;
 
 use flow_filter::{FlowFilter, FlowFilterTableWriter};
-use pkt_meta::dst_vpcd_lookup::{DstVpcdLookup, VpcDiscTablesWriter};
 use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
 
 use nat::stateful::NatAllocatorWriter;
@@ -39,7 +38,6 @@ where
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
-    pub vpcdtablesw: VpcDiscTablesWriter,
     pub flowfiltertablesw: FlowFilterTableWriter,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
@@ -51,7 +49,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let nattablesw = NatTablesWriter::new();
     let natallocatorw = NatAllocatorWriter::new();
-    let vpcdtablesw = VpcDiscTablesWriter::new();
     let flowfiltertablesw = FlowFilterTableWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
@@ -68,7 +65,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
-    let vpcdtablesr_factory = vpcdtablesw.get_reader_factory();
     let flowfiltertablesr_factory = flowfiltertablesw.get_reader_factory();
     let atabler_factory = router.get_atabler_factory();
     let nattabler_factory = nattablesw.get_reader_factory();
@@ -78,7 +74,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
-        let dst_vpcd_lookup = DstVpcdLookup::new("dst-vni-lookup", vpcdtablesr_factory.handle());
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
         let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattabler_factory.handle());
@@ -98,7 +93,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         DynPipeline::new()
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
-            .add_stage(dst_vpcd_lookup)
             .add_stage(flow_filter)
             .add_stage(flow_lookup_nf)
             .add_stage(stateless_nat)
@@ -116,7 +110,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         vpcmapw,
         nattablesw,
         natallocatorw,
-        vpcdtablesw,
         flowfiltertablesw,
         stats,
         vpc_stats_store,

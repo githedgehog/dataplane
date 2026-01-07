@@ -28,7 +28,6 @@ k8s-less = { workspace = true }
 lpm = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true }
-pkt-meta = { workspace = true }
 rekon = { workspace = true }
 routing = { workspace = true }
 stats = { workspace = true }
