@@ -134,15 +134,6 @@ impl ConfigProcessor {
         e
     }
 
-    /// Apply a blank configuration
-    #[allow(unused)]
-    async fn apply_blank_config(&mut self) -> ConfigResult {
-        let mut blank = GwConfig::blank();
-        let internal = build_internal_config(&blank)?;
-        blank.set_internal_config(internal);
-        self.apply(blank).await
-    }
-
     /// Apply the provided configuration and update the history. On success, store it.
     async fn apply(&mut self, mut config: GwConfig) -> ConfigResult {
         let result = self.apply_gw_config(&mut config).await;
@@ -155,7 +146,10 @@ impl ConfigProcessor {
         result
     }
 
-    /// Attempt to apply the previously applied config
+    /// Attempt to apply the previously applied config. If no config was applied, this
+    /// will apply a blank config as we stored it in the config db.
+    /// Note: when we apply a "rollback" config, the config history is not updated.
+    /// TODO: decide if we want the history to include rollbacks.
     async fn rollback(&mut self) {
         if let Some(mut current) = self.config_db.get_current_config_mut().cloned() {
             info!("Rolling back to config with genid {}...", current.genid());
@@ -530,13 +524,12 @@ impl ConfigProcessor {
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let vpcdtablesw = &mut self.proc_params.vpcdtablesw;
 
-        /* make sure we built internal config */
-        let Some(internal) = &config.internal else {
-            error!("Config for genid {genid} does not have internal config");
-            return Err(ConfigError::InternalFailure(
-                "No internal config was built".to_string(),
-            ));
-        };
+        /* build internal config if it hasn't been built */
+        if config.internal.is_none() {
+            let internal = build_internal_config(config)?;
+            config.set_internal_config(internal);
+        }
+        let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
 
         /* apply device config */
         apply_device_config(&config.external.device)?;
