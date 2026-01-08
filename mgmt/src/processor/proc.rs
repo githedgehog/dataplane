@@ -153,16 +153,11 @@ impl ConfigProcessor {
             debug!("The currently applied config genid is {}", current.genid());
         }
 
-        // FIXME(fredi): pass &mut self.params
         let result = apply_gw_config(
             &self.vpc_mgr,
+            &mut self.proc_params,
             &mut config,
             current.as_deref(),
-            &mut self.proc_params.router_ctl,
-            &mut self.proc_params.vpcmapw,
-            &mut self.proc_params.nattablesw,
-            &mut self.proc_params.natallocatorw,
-            &mut self.proc_params.vpcdtablesw,
         )
         .await;
 
@@ -180,18 +175,7 @@ impl ConfigProcessor {
     async fn rollback(&mut self) {
         info!("Rolling back ...");
         if let Some(prior) = self.config_db.get_current_config_mut() {
-            // FIXME(fredi): pass &mut self.params
-            let _ = apply_gw_config(
-                &self.vpc_mgr,
-                prior,
-                None,
-                &mut self.proc_params.router_ctl,
-                &mut self.proc_params.vpcmapw,
-                &mut self.proc_params.nattablesw,
-                &mut self.proc_params.natallocatorw,
-                &mut self.proc_params.vpcdtablesw,
-            )
-            .await;
+            let _ = apply_gw_config(&self.vpc_mgr, &mut self.proc_params, prior, None).await;
         }
     }
 
@@ -549,19 +533,19 @@ fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Main function to apply a config
-// FIXME(fredi): receive &mut self.params
 async fn apply_gw_config(
     vpc_mgr: &VpcManager<RequiredInformationBase>,
+    proc_params: &mut ConfigProcessorParams,
     config: &mut GwConfig,
     _current: Option<&GwConfig>,
-    router_ctl: &mut RouterCtlSender,
-    vpcmapw: &mut VpcMapWriter<VpcMapName>,
-    nattablesw: &mut NatTablesWriter,
-    natallocatorw: &mut NatAllocatorWriter,
-    vpcdtablesw: &mut VpcDiscTablesWriter,
 ) -> ConfigResult {
+    let router_ctl = &mut proc_params.router_ctl;
+    let vpcmapw = &mut proc_params.vpcmapw;
+    let nattablesw = &mut proc_params.nattablesw;
+    let natallocatorw = &mut proc_params.natallocatorw;
+    let vpcdtablesw = &mut proc_params.vpcdtablesw;
+
     let genid = config.genid();
 
     /* make sure we built internal config */
