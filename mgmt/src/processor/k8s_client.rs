@@ -38,6 +38,46 @@ fn to_datetime(opt_time: Option<&SystemTime>) -> chrono::DateTime<Utc> {
     }
 }
 
+/// Main function to create a `GatewayAgentStatus` object
+pub(crate) async fn build_gateway_status(
+    config_client: &ConfigClient,
+) -> Option<GatewayAgentStatus> {
+    let status = config_client.get_status().await;
+    let status = match status {
+        Ok(status) => status,
+        Err(err) => {
+            error!(
+                "Failed to fetch dataplane status, skipping status update: {}",
+                err
+            );
+            return None;
+        }
+    };
+
+    let (last_applied_gen, last_applied_time) = match config_client.get_current_config().await {
+        Ok(config) => (config.genid(), to_datetime(config.meta.apply_t.as_ref())),
+        Err(e) => {
+            error!("Failed to get current config, skipping status update: {e}");
+            return None;
+        }
+    };
+
+    let k8s_status = match GatewayAgentStatus::try_from(&DataplaneStatusForK8sConversion {
+        last_applied_gen: Some(last_applied_gen),
+        last_applied_time: Some(&last_applied_time),
+        last_collected_time: Some(&chrono::Utc::now()),
+        last_heartbeat: Some(&chrono::Utc::now()),
+        status: Some(&status),
+    }) {
+        Ok(status) => status,
+        Err(err) => {
+            error!("Failed to convert status to GatewayAgentStatus: {err}");
+            return None;
+        }
+    };
+    Some(k8s_status)
+}
+
 pub struct K8sClient {
     hostname: String,
     client: ConfigClient,
@@ -81,41 +121,10 @@ impl K8sClient {
         Ok(())
     }
 
-    async fn update_gateway_status(&self) -> () {
-        let status = self.client.get_status().await;
-        let status = match status {
-            Ok(status) => status,
-            Err(err) => {
-                error!(
-                    "Failed to fetch dataplane status, skipping status update: {}",
-                    err
-                );
-                return;
-            }
+    async fn update_gateway_status(&self) {
+        let Some(k8s_status) = build_gateway_status(&self.client).await else {
+            return;
         };
-
-        let (last_applied_gen, last_applied_time) = match self.client.get_current_config().await {
-            Ok(config) => (config.genid(), to_datetime(config.meta.apply_t.as_ref())),
-            Err(e) => {
-                error!("Failed to get current config, skipping status update: {e}");
-                return;
-            }
-        };
-
-        let k8s_status = match GatewayAgentStatus::try_from(&DataplaneStatusForK8sConversion {
-            last_applied_gen: Some(last_applied_gen),
-            last_applied_time: Some(&last_applied_time),
-            last_collected_time: Some(&chrono::Utc::now()),
-            last_heartbeat: Some(&chrono::Utc::now()),
-            status: Some(&status),
-        }) {
-            Ok(status) => status,
-            Err(err) => {
-                error!("Failed to convert status to GatewayAgentStatus: {err}");
-                return;
-            }
-        };
-
         match replace_gateway_status(&self.hostname, &k8s_status).await {
             Ok(()) => (),
             Err(err) => {
