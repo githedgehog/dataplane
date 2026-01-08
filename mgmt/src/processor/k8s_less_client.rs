@@ -4,10 +4,14 @@
 use config::{ExternalConfig, GwConfig};
 use futures::TryFutureExt;
 use k8s_less::kubeless_watch_gateway_agent_crd;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::fs::create_dir_all;
 use tracing::{error, info};
 
+use crate::processor::k8s_client::build_gateway_status;
 use crate::processor::mgmt_client::{ConfigClient, ConfigProcessorError};
+use k8s_intf::utils::save;
 
 #[derive(Debug, thiserror::Error)]
 pub enum K8sLessError {
@@ -15,10 +19,13 @@ pub enum K8sLessError {
     EarlyTermination,
     #[error("Watching error: {0}")]
     WatchError(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 pub struct K8sLess {
     pathdir: String,
+    statedir: String,
     client: ConfigClient,
 }
 
@@ -26,11 +33,33 @@ impl K8sLess {
     pub fn new(pathdir: &str, client: ConfigClient) -> Self {
         Self {
             pathdir: pathdir.to_string(),
+            statedir: pathdir.to_string() + "/state",
             client,
         }
     }
 
+    async fn update_gateway_status(&self) {
+        let Some(k8s_status) = build_gateway_status(&self.client).await else {
+            return;
+        };
+        let mut state_dir = PathBuf::from(&self.statedir);
+        state_dir.push("gwstatus");
+
+        let state_file = state_dir.to_str().unwrap_or_else(|| unreachable!());
+        if let Err(e) = save(state_file, &k8s_status) {
+            error!("Failed to save state: {e}");
+        }
+    }
+
     pub async fn start_config_watch(k8sless: Arc<Self>) -> Result<(), K8sLessError> {
+        // create directory to store status updates
+        create_dir_all(&k8sless.statedir).await.map_err(|e| {
+            K8sLessError::Internal(format!(
+                "Failed to create directory '{}': {e}",
+                k8sless.statedir
+            ))
+        })?;
+
         info!("Starting config watcher for directory {}", k8sless.pathdir);
 
         kubeless_watch_gateway_agent_crd(&k8sless.pathdir.clone(), async move |ga| {
@@ -55,7 +84,10 @@ impl K8sLess {
 
                     // request the config processor to apply the config and update status on success
                     match k8sless.client.apply_config(gwconfig).await {
-                        Ok(()) => info!("Config for generation {genid} was successfully applied"),
+                        Ok(()) => {
+                            info!("Config for generation {genid} was successfully applied. Updating status...");
+                            k8sless.update_gateway_status().await;
+                        },
                         Err(e) => error!("Failed to apply the config for generation {genid}: {e}"),
                     }
                 }
