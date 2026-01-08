@@ -143,25 +143,9 @@ impl ConfigProcessor {
         self.apply(blank).await
     }
 
-    /// Apply the provided configuration. On success, store it and update its meta-data.
+    /// Apply the provided configuration and update the history. On success, store it.
     async fn apply(&mut self, mut config: GwConfig) -> ConfigResult {
-        let genid = config.genid();
-        debug!("Applying config with genid '{genid}'...");
-
-        let current = self.config_db.get_current_config_mut();
-        if let Some(current) = &current {
-            debug!("The currently applied config genid is {}", current.genid());
-        }
-
-        let result = apply_gw_config(
-            &self.vpc_mgr,
-            &mut self.proc_params,
-            &mut config,
-            current.as_deref(),
-        )
-        .await;
-
-        // set time and error (if failed to apply), and update the config history
+        let result = self.apply_gw_config(&mut config).await;
         config.meta.apply_time();
         config.meta.error(&result);
         self.config_db.history_mut().push(config.meta.clone());
@@ -173,9 +157,9 @@ impl ConfigProcessor {
 
     /// Attempt to apply the previously applied config
     async fn rollback(&mut self) {
-        info!("Rolling back ...");
-        if let Some(prior) = self.config_db.get_current_config_mut() {
-            let _ = apply_gw_config(&self.vpc_mgr, &mut self.proc_params, prior, None).await;
+        if let Some(mut current) = self.config_db.get_current_config_mut().cloned() {
+            info!("Rolling back to config with genid {}...", current.genid());
+            let _ = self.apply_gw_config(&mut current).await;
         }
     }
 
@@ -533,67 +517,65 @@ fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
     Ok(())
 }
 
-/// Main function to apply a config
-async fn apply_gw_config(
-    vpc_mgr: &VpcManager<RequiredInformationBase>,
-    proc_params: &mut ConfigProcessorParams,
-    config: &mut GwConfig,
-    _current: Option<&GwConfig>,
-) -> ConfigResult {
-    let router_ctl = &mut proc_params.router_ctl;
-    let vpcmapw = &mut proc_params.vpcmapw;
-    let nattablesw = &mut proc_params.nattablesw;
-    let natallocatorw = &mut proc_params.natallocatorw;
-    let vpcdtablesw = &mut proc_params.vpcdtablesw;
+impl ConfigProcessor {
+    /// Main method to apply a config
+    async fn apply_gw_config(&mut self, config: &mut GwConfig) -> ConfigResult {
+        let genid = config.genid();
+        debug!("Applying config with genid '{genid}'...");
 
-    let genid = config.genid();
+        let vpc_mgr = &self.vpc_mgr;
+        let router_ctl = &mut self.proc_params.router_ctl;
+        let vpcmapw = &mut self.proc_params.vpcmapw;
+        let nattablesw = &mut self.proc_params.nattablesw;
+        let natallocatorw = &mut self.proc_params.natallocatorw;
+        let vpcdtablesw = &mut self.proc_params.vpcdtablesw;
 
-    /* make sure we built internal config */
-    let Some(internal) = &config.internal else {
-        error!("Config for genid {genid} does not have internal config");
-        return Err(ConfigError::InternalFailure(
-            "No internal config was built".to_string(),
-        ));
-    };
+        /* make sure we built internal config */
+        let Some(internal) = &config.internal else {
+            error!("Config for genid {genid} does not have internal config");
+            return Err(ConfigError::InternalFailure(
+                "No internal config was built".to_string(),
+            ));
+        };
 
-    /* apply device config */
-    apply_device_config(&config.external.device)?;
+        /* apply device config */
+        apply_device_config(&config.external.device)?;
 
-    if genid == ExternalConfig::BLANK_GENID {
+        if genid == ExternalConfig::BLANK_GENID {
+            /* apply config with VPC manager */
+            vpc_mgr.apply_config(internal, genid).await?;
+            info!("Successfully applied config for genid {genid}");
+            return Ok(());
+        }
+
+        /* lock the CPI to prevent updates on the routing db */
+        let _guard = router_ctl
+            .lock()
+            .await
+            .map_err(|_| ConfigError::InternalFailure("Could not lock the CPI".to_string()))?;
+
         /* apply config with VPC manager */
         vpc_mgr.apply_config(internal, genid).await?;
+
+        /* get vrf interfaces from kernel and build a hashmap keyed by name */
+        let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
+
+        /* apply stateless NAT config */
+        apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
+
+        /* apply stateful NAT config */
+        apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
+
+        /* apply dst_vpcd_lookup config */
+        apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
+
+        /* update stats mappings and seed names to the stats store */
+        let _ = update_stats_vpc_mappings(config, vpcmapw);
+
+        /* apply config in router */
+        apply_router_config(&kernel_vrfs, config, router_ctl).await?;
+
         info!("Successfully applied config for genid {genid}");
-        return Ok(());
+        Ok(())
     }
-
-    /* lock the CPI to prevent updates on the routing db */
-    let _guard = router_ctl
-        .lock()
-        .await
-        .map_err(|_| ConfigError::InternalFailure("Could not lock the CPI".to_string()))?;
-
-    /* apply config with VPC manager */
-    vpc_mgr.apply_config(internal, genid).await?;
-
-    /* get vrf interfaces from kernel and build a hashmap keyed by name */
-    let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
-
-    /* apply stateless NAT config */
-    apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
-
-    /* apply stateful NAT config */
-    apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
-
-    /* apply dst_vpcd_lookup config */
-    apply_dst_vpcd_lookup_config(&config.external.overlay, vpcdtablesw)?;
-
-    /* update stats mappings and seed names to the stats store */
-    let pairs = update_stats_vpc_mappings(config, vpcmapw);
-    drop(pairs); // pairs used by caller
-
-    /* apply config in router */
-    apply_router_config(&kernel_vrfs, config, router_ctl).await?;
-
-    info!("Successfully applied config for genid {genid}");
-    Ok(())
 }
