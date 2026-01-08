@@ -443,7 +443,7 @@ let
           --exclude '${libc}/etc' \
           \
           `# There are a few components of glibc which have absolutely nothing to do with our goals and present` \
-          `# material and trivially avoided hazzards just by their presence.  Thus, we filter them out here` \
+          `# material and trivially avoided hazzards just by their presence.  Thus, we filter them out here.` \
           `# None of this applies to musl (if we ever decide to ship with musl).  That said, these filters will` \
           `# just not do anything in that case. ` \
            \
@@ -452,7 +452,6 @@ let
           `# Intercepting and messing with dynamic library loading is _absolutely_ not on our todo list, and this ` \
           `# stuff has a history of causing security issues (arbitrary code execution).  Just disarm this.` \
           `# Go check out this one, it is a classic: ` \
-          \
           `# https://www.exploit-db.com/exploits/18105 ` \
           \
           --exclude '${libc}/lib/audit*' \
@@ -460,10 +459,9 @@ let
           `# The glibc character set conversion code is not only useless to us, is is an increasingly common attack ` \
           `# vector (see CVE-2024-2961 for example).  We are 100% unicode only, so all of these legacy character ` \
           `# conversion algorithms can and should be excluded.  We wouldn't run on (e.g.) old MAC hardware anyway.` \
-          `# More, we have zero need or desire (or meaningful ability) to change glibc locales in the container. ` \
-          `# This type of setting wouldn't be respected by rust's core/std libs anyway.  Given that it can be ` \
-          `# weaponized and is _never_ useful, it should be excluded. This is how fedora packages glibc, and for the ` \
-          `# same basic reasons.` \
+          `# More, we have zero need or desire (or meaningful ability) to change glibc locales in the container ` \
+          `# and it wouldn't be respected by rust's core/std libs anyway. ` \
+          `# This is also how fedora packages glibc, and for the same basic reasons.` \
           `# See https://fedoraproject.org/wiki/Changes/Gconv_package_split_in_glibc` \
           --exclude '${libc}/lib/gconv*' \
           --exclude '${libc}/share/i18n*' \
