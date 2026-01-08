@@ -247,6 +247,11 @@ mod tests {
                     let multicast_ip = UnicastIpAddr::try_from(ip).unwrap_err();
                     assert!(multicast_ip.is_multicast());
                     assert_eq!(ip, multicast_ip);
+                } else if let IpAddr::V4(ipv4) = ip
+                    && ipv4.is_broadcast()
+                {
+                    let broadcast_ip = UnicastIpAddr::try_from(ip).unwrap_err();
+                    assert_eq!(ip, broadcast_ip);
                 } else {
                     let unicast_ip = UnicastIpAddr::try_from(ip).unwrap();
                     assert!(!unicast_ip.inner().is_multicast());
