@@ -60,7 +60,6 @@ let
     paths = with pkgs.pkgsHostHost; [
       pkgs.pkgsHostHost.libc.dev
       pkgs.pkgsHostHost.libc.out
-      pkgs.pkgsHostHost.libgcc.libgcc
       fancy.dpdk-wrapper.dev
       fancy.dpdk-wrapper.out
       fancy.dpdk.dev
@@ -170,9 +169,18 @@ let
   cargo-cmd-prefix = [
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
-    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
     "--target=${target}"
-  ];
+  ]
+  ++ (
+    if builtins.elem "thread" sanitizers then
+      [
+        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+      ]
+    else
+      [
+        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
+      ]
+  );
   invoke =
     {
       builder,
@@ -244,9 +252,8 @@ let
             ++ (
               if ((builtins.elem "thread" sanitizers) || (builtins.elem "safe-stack" sanitizers)) then
                 [
-                  "-Zexternal-clangrt"
-                  "-Clink-arg=--rtlib=compiler-rt"
-                  # "-Clink-arg=-Wl,--allow-shlib-undefined"
+                  # "-Zexternal-clangrt"
+                  # "-Clink-arg=--rtlib=compiler-rt"
                 ]
               else
                 [ ]
@@ -271,11 +278,9 @@ let
         postInstall = (orig.postInstall or "") + ''
           mkdir -p $debug/bin
           for f in $out/bin/*; do
-            ${strip} --only-keep-debug "$f" -o "$out/bin/$(basename "$f").dbg"
-            ${strip} --strip-debug "$f"
-            cd $out/bin
-            ${objcopy} --add-gnu-debuglink="$(basename "$f").dbg" "$(basename "$f")"
-            mv "$(basename "$f")".dbg "$debug/bin/"
+            mv "$f" "$debug/bin/$(basename "$f")"
+            ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
+            ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
           done
         '';
         postFixup = (orig.postFixup or "") + ''
@@ -473,12 +478,12 @@ let
           \
           . \
           ${pkgs.pkgsHostHost.libc.out} \
-          ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.libgcc.libgcc else ""} \
+          ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.glibc.libgcc or "" else ""} \
       '';
 
   };
 
-  containers.dataplane-debugger = pkgs.dockerTools.buildImage {
+  containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
     name = "dataplane-debugger";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -497,11 +502,9 @@ let
         pkgs.pkgsBuildHost.iproute2
         pkgs.pkgsBuildHost.ethtool
 
-        workspace.cli
+        pkgs.pkgsHostHost.libc.debug
         workspace.cli.debug
-        workspace.dataplane
         workspace.dataplane.debug
-        workspace.init
         workspace.init.debug
       ];
     };
