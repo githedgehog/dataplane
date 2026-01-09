@@ -310,6 +310,14 @@ let
         );
       };
     };
+
+  workspace = builtins.mapAttrs (
+    dir: pname:
+    package-builder {
+      inherit pname;
+    }
+  ) package-list;
+
 in
 {
   inherit
@@ -320,6 +328,7 @@ in
     pkgs
     sources
     sysroot
+    workspace
     ;
   profile = profile';
   platform = platform';
