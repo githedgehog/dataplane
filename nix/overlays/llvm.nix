@@ -33,6 +33,11 @@ let
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
+  rustPlatform'-dev = prev.makeRustPlatform {
+    stdenv = final.llvmPackages.stdenv;
+    cargo = rust-toolchain;
+    rustc = rust-toolchain;
+  };
   # It is essential that we always use the same version of llvm that our rustc is backed by.
   # To minimize maintenance burden, we explicitly compute the version of LLVM we need by asking rustc
   # which version it is using.
@@ -54,6 +59,11 @@ let
   );
 in
 {
-  inherit rust-toolchain rustPlatform' stdenv';
+  inherit
+    rust-toolchain
+    rustPlatform'
+    rustPlatform'-dev
+    stdenv'
+    ;
   llvmPackages' = prev."llvmPackages_${llvm-version}";
 }

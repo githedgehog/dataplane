@@ -542,3 +542,15 @@ depgraph:
   just cargo depgraph --exclude dataplane-test-utils,dataplane-dpdk-sysroot-helper  --workspace-only \
     | sed 's/dataplane-//g' \
     | dot -Grankdir=TD -Gsplines=polyline -Granksep=1.5 -Tsvg > workspace-deps.svg
+
+# Generate the test matrix
+[script]
+generate-todo-list param=".":
+    {{ _just_debug_ }}
+    yq -r -c '[
+      {{ param }} as $matrix |
+      $matrix | keys as $factors |
+      [range(0; $factors | length)] as $itr |
+      $factors | map($matrix[.]) | combinations as $combinations |
+      $itr | map({($factors[.]): $combinations[.]}) | add
+    ]' ./builds.yml

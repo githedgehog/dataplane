@@ -103,7 +103,7 @@ color-eyre = { version = "0.6.5", default-features = false, features = [] }
 colored = { version = "3.0.0", default-features = false, features = [] }
 command-fds = { version = "0.3.2", default-features = false, features = [] }
 crossbeam-channel = { version = "0.5.15", default-features = false, features = [] }
-ctrlc = { version = "3.5.1", default-features = false, features = [] }
+ctrlc = { version = "3.5.1", default-features = false, features = [] } # TODO: remove this in favor of tokio signal handling
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = [] }
 dotenvy = { version = "0.15.7", default-features = false, features = [] }
@@ -123,7 +123,7 @@ k8s-openapi = { version = "0.26.1", default-features = false, features = [] }
 kanal = { version = "0.1.1", default-features = false, features = [] }
 kube = { version = "2.0.1", default-features = false, features = [] }
 left-right = { version = "0.11.7", default-features = false, features = [] }
-libc = { version = "1.0.0-alpha.1", default-features = false, features = [] }
+libc = { version = "0.2.178", default-features = false, features = [] }
 linkme = { version = "0.3.35", default-features = false, features = [] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = [] }
 log = { version = "0.4.29", default-features = false, features = [] } # TODO: try to remove this
@@ -135,7 +135,7 @@ metrics-exporter-prometheus = { version = "0.18.1", default-features = false, fe
 miette = { version = "7.6.0", default-features = false, features = [] }
 mio = { version = "1.1.1", default-features = false, features = [] }
 multi_index_map = { version = "0.15.0", default-features = false, features = [] }
-n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.9", default-features = false, features = [], package = "n-vm" }
+n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.9", default-features = false, features = [] } # TODO: merge this in to the main repo
 netdev = { version = "0.40.0", default-features = false, features = [] }
 nix = { version = "0.30.1", default-features = false, features = [] }
 num-derive = { version = "0.4.2", default-features = false, features = [] }
@@ -157,7 +157,7 @@ rand = { version = "0.9.2", default-features = false, features = [] }
 rapidhash = { version = "4.2.0", default-features = false, features = [] }
 rkyv = { version = "0.8.13", default-features = false, features = [] }
 roaring = { version = "0.11.3", default-features = false, features = [] }
-rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
+rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] } # TODO: update this
 rustls = { version = "0.23.35", default-features = false, features = [] }
 rustyline = { version = "17.0.2", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
@@ -186,21 +186,21 @@ url = { version = "2.5.7", default-features = false, features = [] }
 uuid = { version = "1.19.0", default-features = false, features = [] }
 
 [profile.dev]
+opt-level = 0
 panic = "unwind"
+debug = "full"
 debug-assertions = true
 overflow-checks = true
-debug = "full"
-rpath = true
+incremental = false
 
 [profile.release]
 opt-level = 3
 panic = "unwind"
 debug = "full"
-lto = "thin"
 debug-assertions = false
 overflow-checks = false
+lto = "thin"
 codegen-units = 1
-rpath = true
 
 [profile.fuzz]
 inherits = "release"

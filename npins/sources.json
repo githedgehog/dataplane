@@ -1,5 +1,21 @@
 {
   "pins": {
+    "crane": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "ipetkov",
+        "repo": "crane"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.22.0",
+      "revision": "40203daff663c9e0b70d052aae12819dea8e6798",
+      "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.22.0",
+      "hash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM="
+    },
     "dpdk": {
       "type": "Git",
       "repository": {
@@ -29,11 +45,40 @@
       "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.33.0",
       "hash": "sha256-X4sbwW60BIiAh0N/Y4P3HQWoZb/vXOSu5GjVeu9TTWo="
     },
+    "kopium": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "kube-rs",
+        "repo": "kopium"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "0.22.5",
+      "revision": "f346e2044500c8d71523c35d474bc2f6235a0060",
+      "url": "https://api.github.com/repos/kube-rs/kopium/tarball/refs/tags/0.22.5",
+      "hash": "sha256-zYmb+HxwEKEnzdqAzvki5M+NA2fGP174pRkU6B4WmZI="
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
       "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre921317.16c7794d0a28/nixexprs.tar.xz",
       "hash": "sha256-G6ie+qOCRSV7wzOY+6L1o8GvcH1qDcE/DTzDT4CRdNw="
+    },
+    "perftest": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "linux-rdma",
+        "repo": "perftest"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "1c4dc79b81060f0707830c54bf5dae7102fdbbfa",
+      "url": "https://github.com/linux-rdma/perftest/archive/1c4dc79b81060f0707830c54bf5dae7102fdbbfa.tar.gz",
+      "hash": "sha256-XHWZGB5qo9FdJ1yVEiwaSMmRmT34V6hngAlZ1ptYkiw="
     },
     "rdma-core": {
       "type": "Git",
@@ -47,6 +92,22 @@
       "revision": "998375a38e27e66bc74ed7419a0b93d0066e8194",
       "url": "https://github.com/githedgehog/rdma-core/archive/998375a38e27e66bc74ed7419a0b93d0066e8194.tar.gz",
       "hash": "sha256-Qm5IhgRI5k+sDdBzyTIILg60jlmYroGWYyERSHKfuV4="
+    },
+    "rust": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "rust-lang",
+        "repo": "rust"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "1.92.0",
+      "revision": "cbf451e10e2ed937b6a207461f3ab59f96bb1fc1",
+      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.92.0",
+      "hash": "sha256-blkXmsqX6uH2hNbyZIc2KwIwYBv2gYGXxnISVxtL10E="
     },
     "rust-overlay": {
       "type": "Git",
