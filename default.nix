@@ -139,6 +139,12 @@ let
       || ((outputsFilter p t) && (craneLib.filterCargoSources p t));
     src = ./.;
   };
+  cargoVendorDir = craneLib.vendorMultipleCargoDeps {
+    cargoLockList = [
+      ./Cargo.lock
+      "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
+    ];
+  };
 in
 {
   inherit
