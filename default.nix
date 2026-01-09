@@ -92,6 +92,34 @@ let
   };
   crane = import sources.crane { pkgs = pkgs; };
   craneLib = crane.craneLib.overrideToolchain pkgs.rust-toolchain;
+  devroot = pkgs.symlinkJoin {
+    name = "dataplane-dev-shell";
+    paths = [
+      clangd-config
+    ]
+    ++ (with pkgs.pkgsBuildHost.llvmPackages'; [
+      bintools
+      clang
+      libclang.lib
+      lld
+    ])
+    ++ (with dev-pkgs; [
+      bash
+      cargo-bolero
+      cargo-deny
+      cargo-depgraph
+      cargo-llvm-cov
+      cargo-nextest
+      direnv
+      gateway-crd
+      just
+      kopium
+      llvmPackages'.clang # you need the host compiler in order to link proc macros
+      npins
+      pkg-config
+      rust-toolchain
+    ]);
+  };
 in
 {
   inherit
