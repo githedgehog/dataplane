@@ -31,6 +31,14 @@ let
       "release" = "release";
     }
     .${profile};
+  overlays = import ./nix/overlays {
+    inherit
+      sources
+      sanitizers
+      ;
+    profile = profile';
+    platform = platform';
+  };
 in
 {
   inherit sources;
