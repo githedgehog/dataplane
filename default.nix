@@ -381,17 +381,6 @@ let
       inherit pname;
     }
   ) package-list;
-  
-  base = pkgs.buildEnv {
-    name = "base";
-    pathsToLink = [
-      "/etc"
-    ];
-    paths = [
-      pkgs.pkgsHostHost.libc.out
-      pkgs.pkgsHostHost.dockerTools.fakeNss
-    ];
-  };
 
   dataplane-tar = pkgs.stdenv'.mkDerivation {
     pname = "dataplane-tar";
