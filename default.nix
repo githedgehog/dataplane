@@ -33,5 +33,7 @@ let
     .${profile};
 in
 {
+  profile = profile';
+  platform = platform';
 
 }
