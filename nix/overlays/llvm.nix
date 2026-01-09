@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
 {
+  sources,
   platform,
   profile,
   ...
@@ -14,8 +15,8 @@ let
       with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) new)
     );
   adapt = final.stdenvAdapters;
-  bintools = final.pkgsBuildHost.llvmPackages.bintools;
-  lld = final.pkgsBuildHost.llvmPackages.lld;
+  bintools = final.pkgsBuildHost.llvmPackages'.bintools;
+  lld = final.pkgsBuildHost.llvmPackages'.lld;
   added-to-env = helpers.addToEnv platform.override.stdenv.env profile;
   stdenv' = adapt.addAttrsToDerivation (orig: {
     doCheck = false;
@@ -25,16 +26,31 @@ let
       bintools
       lld
     ];
-  }) final.llvmPackages.stdenv;
+  }) final.llvmPackages'.stdenv;
   # note: rust-bin comes from oxa's overlay, not nixpkgs.  This overlay only works if you have a rust overlay as well.
-  rust-toolchain = prev.rust-bin.fromRustupToolchainFile ../../rust-toolchain.toml;
-  rustPlatform' = prev.makeRustPlatform {
+  rust-toolchain = final.rust-bin.fromRustupToolchain {
+    channel = sources.rust.version;
+    components = [
+      "rustc"
+      "cargo"
+      "rust-std"
+      "rust-docs"
+      "rustfmt"
+      "clippy"
+      "rust-analyzer"
+      "rust-src"
+    ];
+    targets = [
+      platform.info.target
+    ];
+  };
+  rustPlatform' = final.makeRustPlatform {
     stdenv = stdenv';
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
-  rustPlatform'-dev = prev.makeRustPlatform {
-    stdenv = final.llvmPackages.stdenv;
+  rustPlatform'-dev = final.makeRustPlatform {
+    stdenv = final.llvmPackages'.stdenv;
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
@@ -45,11 +61,11 @@ let
   # every time rust updates.
   # Unfortunately, this is also IFD, so it slows down the nix build a bit :shrug:
   llvm-version = builtins.readFile (
-    prev.runCommand "llvm-version-for-our-rustc"
+    final.runCommand "llvm-version-for-our-rustc"
       {
         RUSTC = "${rust-toolchain.out}/bin/rustc";
-        GREP = "${prev.pkgsBuildHost.gnugrep}/bin/grep";
-        SED = "${prev.pkgsBuildHost.gnused}/bin/sed";
+        GREP = "${final.pkgsBuildHost.gnugrep}/bin/grep";
+        SED = "${final.pkgsBuildHost.gnused}/bin/sed";
       }
       ''
         $RUSTC --version --verbose | \
