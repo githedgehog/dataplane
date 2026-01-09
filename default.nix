@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
 {
+  platform ? "x86-64-v3",
+  libc ? "gnu",
+  profile ? "debug",
+  instrumentation ? "none",
+  sanitize ? "",
 }:
 let
   sources = import ./npins;
@@ -11,6 +16,21 @@ let
       [ ]
     else
       builtins.filter (elm: builtins.isString elm) (builtins.split split-on string);
+  lib = (import sources.nixpkgs { }).lib;
+  platform' = import ./nix/platforms.nix {
+    inherit lib platform libc;
+  };
+  sanitizers = split-str ",+" sanitize;
+  profile' = import ./nix/profiles.nix {
+    inherit sanitizers instrumentation profile;
+    inherit (platform') arch;
+  };
+  cargo-profile =
+    {
+      "debug" = "dev";
+      "release" = "release";
+    }
+    .${profile};
 in
 {
 
