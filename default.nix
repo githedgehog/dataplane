@@ -504,6 +504,7 @@ in
     dev-pkgs
     devroot
     devenv
+    package-list
     pkgs
     sysroot
     tests
