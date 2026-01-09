@@ -350,6 +350,38 @@ let
     }
   ) package-list;
 
+  clippy-builder =
+    {
+      pname ? null,
+    }:
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      args = {
+        inherit pname;
+        cargoArtifacts = null;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargo"
+            "clippy"
+            "--profile=${cargo-profile}"
+            "--package=${pname}"
+          ]
+          ++ cargo-cmd-prefix
+          ++ [
+            "--"
+            "-D warnings"
+          ]
+        );
+      };
+    };
+
+  clippy = builtins.mapAttrs (
+    dir: pname:
+    clippy-builder {
+      inherit pname;
+    }
+  ) package-list;
+
 in
 {
   inherit
