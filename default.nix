@@ -39,6 +39,21 @@ let
     profile = profile';
     platform = platform';
   };
+  dev-pkgs = import sources.nixpkgs {
+    overlays = [
+      overlays.rust
+      overlays.llvm
+      overlays.dataplane-dev
+    ];
+  };
+  pkgs =
+    (import sources.nixpkgs {
+      overlays = [
+        overlays.rust
+        overlays.llvm
+        overlays.dataplane
+      ];
+    }).pkgsCross.${platform'.info.nixarch};
 in
 {
   profile = profile';
