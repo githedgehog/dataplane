@@ -358,6 +358,7 @@ in
     devenv
     pkgs
     sysroot
+    tests
     workspace
     ;
   profile = profile';
