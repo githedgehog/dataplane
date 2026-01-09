@@ -8,7 +8,7 @@
   meson,
   ninja,
   libbsd,
-  # numactl,
+  numactl,
   rdma-core,
   libnl,
   python3,
@@ -18,6 +18,8 @@
     platform = "bluefield3";
   },
   writeText,
+
+  platform,
   ...
 }:
 
@@ -36,9 +38,9 @@ stdenv.mkDerivation {
   buildInputs = [
     libbsd
     libnl
-    # numactl
     rdma-core
-  ];
+  ]
+  ++ lib.optionals (platform.numa.max-nodes > 1) [ numactl ];
 
   postPatch = ''
     patchShebangs config/arm buildtools
@@ -285,7 +287,7 @@ stdenv.mkDerivation {
       "-Ddefault_library=static"
       "-Denable_docs=false"
       "-Denable_driver_sdk=false"
-      "-Dmax_numa_nodes=1"
+      "-Dmax_numa_nodes=${toString platform.numa.max-nodes}"
       "-Dtests=false" # Running DPDK tests in CI is usually silly
       "-Duse_hpet=false"
       "-Ddebug=false"
