@@ -150,6 +150,20 @@ let
   cc = if is-cross-compile then "${target}-clang" else "clang";
   strip = if is-cross-compile then "${target}-strip" else "strip";
   objcopy = if is-cross-compile then "${target}-objcopy" else "objcopy";
+  package-list = builtins.fromJSON (
+    builtins.readFile (
+      pkgs.runCommandLocal "package-list"
+        {
+          TOMLQ = "${dev-pkgs.yq}/bin/tomlq";
+          JQ = "${dev-pkgs.jq}/bin/jq";
+        }
+        ''
+          $TOMLQ -r '.workspace.members | sort[]' ${src}/Cargo.toml | while read -r p; do
+            $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${src}/$p/Cargo.toml
+          done | $JQ --sort-keys --slurp 'add' > $out
+        ''
+    )
+  );
 in
 {
   inherit
