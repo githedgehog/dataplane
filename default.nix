@@ -326,6 +326,7 @@ in
     devenv
     pkgs
     sysroot
+    workspace
     ;
   profile = profile';
   platform = platform';
