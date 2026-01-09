@@ -318,6 +318,38 @@ let
     }
   ) package-list;
 
+  test-builder =
+    {
+      pname ? null,
+      cargoArtifacts ? null,
+    }:
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      args = {
+        inherit pname cargoArtifacts;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "mkdir -p $out;"
+            "cargo"
+            "nextest"
+            "archive"
+            "--archive-file"
+            "$out/${pname}.tar.zst"
+            "--cargo-profile=${cargo-profile}"
+            "--package=${pname}"
+          ]
+          ++ cargo-cmd-prefix
+        );
+      };
+    };
+
+  tests = builtins.mapAttrs (
+    dir: pname:
+    test-builder {
+      inherit pname;
+    }
+  ) package-list;
+
 in
 {
   inherit
@@ -328,6 +360,7 @@ in
     pkgs
     sources
     sysroot
+    tests
     workspace
     ;
   profile = profile';
