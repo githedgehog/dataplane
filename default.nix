@@ -90,6 +90,8 @@ let
     executable = false;
     destination = "/.clangd";
   };
+  crane = import sources.crane { pkgs = pkgs; };
+  craneLib = crane.craneLib.overrideToolchain pkgs.rust-toolchain;
 in
 {
   inherit
