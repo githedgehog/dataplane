@@ -145,6 +145,11 @@ let
       "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
   };
+  target = pkgs.stdenv'.targetPlatform.rust.rustcTarget;
+  is-cross-compile = dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
+  cc = if is-cross-compile then "${target}-clang" else "clang";
+  strip = if is-cross-compile then "${target}-strip" else "strip";
+  objcopy = if is-cross-compile then "${target}-objcopy" else "objcopy";
 in
 {
   inherit
