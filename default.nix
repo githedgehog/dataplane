@@ -477,11 +477,39 @@ let
 
   };
 
+  containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
+    name = "dataplane-debugger";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "dataplane-debugger-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [
+        pkgs.pkgsBuildHost.gdb
+        pkgs.pkgsBuildHost.rr
+        pkgs.pkgsBuildHost.coreutils
+        pkgs.pkgsBuildHost.bashInteractive
+        pkgs.pkgsBuildHost.iproute2
+        pkgs.pkgsBuildHost.ethtool
+
+        pkgs.pkgsHostHost.libc.debug
+        workspace.cli.debug
+        workspace.dataplane.debug
+        workspace.init.debug
+      ];
+    };
+  };
+
 in
 {
   inherit
     clippy
     dataplane-tar
+    containers
     dev-pkgs
     devroot
     devenv
