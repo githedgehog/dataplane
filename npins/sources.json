@@ -1,5 +1,18 @@
 {
   "pins": {
+    "dpdk": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "dpdk"
+      },
+      "branch": "pr/daniel-noland/cross-compile-fix",
+      "submodules": false,
+      "revision": "6736a6e32f5b3a8d16b2bd0e84b73af32540de77",
+      "url": "https://github.com/githedgehog/dpdk/archive/6736a6e32f5b3a8d16b2bd0e84b73af32540de77.tar.gz",
+      "hash": "sha256-aVtrmUtFkkC2SsnfWJmRN/Klwfb/EGLG+YYtSLm5tBY="
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
