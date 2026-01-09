@@ -124,6 +124,7 @@ in
 {
   inherit
     dev-pkgs
+    devroot
     pkgs
     sysroot
     ;
