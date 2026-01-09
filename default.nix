@@ -83,6 +83,7 @@ in
   inherit
     dev-pkgs
     pkgs
+    sysroot
     ;
   profile = profile';
   platform = platform';
