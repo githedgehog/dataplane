@@ -54,6 +54,30 @@ let
         overlays.dataplane
       ];
     }).pkgsCross.${platform'.info.nixarch};
+  sysroot = pkgs.pkgsHostHost.symlinkJoin {
+    name = "sysroot";
+    paths = with pkgs.pkgsHostHost; [
+      pkgs.pkgsHostHost.libc.dev
+      pkgs.pkgsHostHost.libc.out
+      fancy.dpdk-wrapper.dev
+      fancy.dpdk-wrapper.out
+      fancy.dpdk.dev
+      fancy.dpdk.static
+      fancy.hwloc.dev
+      fancy.hwloc.static
+      fancy.libbsd.dev
+      fancy.libbsd.static
+      fancy.libmd.dev
+      fancy.libmd.static
+      fancy.libnl.dev
+      fancy.libnl.static
+      fancy.libunwind.out
+      fancy.numactl.dev
+      fancy.numactl.static
+      fancy.rdma-core.dev
+      fancy.rdma-core.static
+    ];
+  };
 in
 {
   inherit
