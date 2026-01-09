@@ -6,6 +6,19 @@
       "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre921317.16c7794d0a28/nixexprs.tar.xz",
       "hash": "sha256-G6ie+qOCRSV7wzOY+6L1o8GvcH1qDcE/DTzDT4CRdNw="
     },
+    "rdma-core": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "rdma-core"
+      },
+      "branch": "fix-lto-61.0",
+      "submodules": false,
+      "revision": "998375a38e27e66bc74ed7419a0b93d0066e8194",
+      "url": "https://github.com/githedgehog/rdma-core/archive/998375a38e27e66bc74ed7419a0b93d0066e8194.tar.gz",
+      "hash": "sha256-Qm5IhgRI5k+sDdBzyTIILg60jlmYroGWYyERSHKfuV4="
+    },
     "rust-overlay": {
       "type": "Git",
       "repository": {
