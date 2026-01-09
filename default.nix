@@ -385,6 +385,7 @@ let
 in
 {
   inherit
+    clippy
     dev-pkgs
     devroot
     devenv
