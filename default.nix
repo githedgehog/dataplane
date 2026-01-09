@@ -381,6 +381,103 @@ let
       inherit pname;
     }
   ) package-list;
+  
+  base = pkgs.buildEnv {
+    name = "base";
+    pathsToLink = [
+      "/etc"
+    ];
+    paths = [
+      pkgs.pkgsHostHost.libc.out
+      pkgs.pkgsHostHost.dockerTools.fakeNss
+    ];
+  };
+
+  dataplane-tar = pkgs.stdenv'.mkDerivation {
+    pname = "dataplane-tar";
+    inherit version;
+    dontUnpack = true;
+    src = null;
+    buildPhase =
+      let
+        libc = pkgs.pkgsHostHost.libc;
+      in
+      ''
+        tmp="$(mktemp -d)"
+        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns}
+        ln -s /run "$tmp/var/run"
+        cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
+        cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
+        cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
+        ln -s cli "$tmp/bin/sh"
+        for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
+          cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
+        done
+        cd "$tmp"
+        # we take some care to make the tar file reproducible here
+        tar \
+          --create \
+          \
+          --sort=name \
+          \
+          --clamp-mtime \
+          --mtime=0 \
+          \
+          --format=posix \
+          --numeric-owner \
+          --owner=0 \
+          --group=0 \
+          \
+          `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
+          `# More, we expressly forbid setuid / setgid anything.  May as well toss in the sticky bit as well.` \
+          --mode='u-sw,go=' \
+          \
+          `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
+          --no-acls \
+          --no-xattrs \
+          --no-selinux \
+          \
+          `# we already copied this stuff in to /etc directly, no need to copy it into the store again.` \
+          --exclude '${libc}/etc' \
+          \
+          `# There are a few components of glibc which have absolutely nothing to do with our goals and present` \
+          `# material and trivially avoided hazzards just by their presence.  Thus, we filter them out here.` \
+          `# None of this applies to musl (if we ever decide to ship with musl).  That said, these filters will` \
+          `# just not do anything in that case. ` \
+           \
+          `# First up, anybody even trying to access the glibc audit functionality in our container environment is ` \
+          `# 100% up to no good.` \
+          `# Intercepting and messing with dynamic library loading is _absolutely_ not on our todo list, and this ` \
+          `# stuff has a history of causing security issues (arbitrary code execution).  Just disarm this.` \
+          `# Go check out this one, it is a classic: ` \
+          `# https://www.exploit-db.com/exploits/18105 ` \
+          \
+          --exclude '${libc}/lib/audit*' \
+          \
+          `# The glibc character set conversion code is not only useless to us, is is an increasingly common attack ` \
+          `# vector (see CVE-2024-2961 for example).  We are 100% unicode only, so all of these legacy character ` \
+          `# conversion algorithms can and should be excluded.  We wouldn't run on (e.g.) old MAC hardware anyway.` \
+          `# More, we have zero need or desire (or meaningful ability) to change glibc locales in the container ` \
+          `# and it wouldn't be respected by rust's core/std libs anyway. ` \
+          `# This is also how fedora packages glibc, and for the same basic reasons.` \
+          `# See https://fedoraproject.org/wiki/Changes/Gconv_package_split_in_glibc` \
+          --exclude '${libc}/lib/gconv*' \
+          --exclude '${libc}/share/i18n*' \
+          --exclude '${libc}/share/locale*' \
+          \
+          `# getconf isn't even shipped in the container so this is useless.  You couldn't change limits in the ` \
+          `# container like this anyway.  Even if we needed to and could, we wouldn't use setconf et al.` \
+          --exclude '${libc}/libexec*' \
+          \
+          --verbose \
+          --file "$out" \
+          \
+          . \
+          ${pkgs.pkgsHostHost.libc.out} \
+          ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.glibc.libgcc or "" else ""} \
+      '';
+
+  };
 
 in
 {
