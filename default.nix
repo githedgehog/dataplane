@@ -500,6 +500,7 @@ in
   inherit
     clippy
     containers
+    dataplane-tar
     dev-pkgs
     devroot
     devenv
