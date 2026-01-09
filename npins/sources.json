@@ -13,6 +13,22 @@
       "url": "https://github.com/githedgehog/dpdk/archive/6736a6e32f5b3a8d16b2bd0e84b73af32540de77.tar.gz",
       "hash": "sha256-aVtrmUtFkkC2SsnfWJmRN/Klwfb/EGLG+YYtSLm5tBY="
     },
+    "gateway": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "gateway"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.33.0",
+      "revision": "18913fe34d78af396deb1e6a034d0258168122b1",
+      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.33.0",
+      "hash": "sha256-X4sbwW60BIiAh0N/Y4P3HQWoZb/vXOSu5GjVeu9TTWo="
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
