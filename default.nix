@@ -164,6 +164,152 @@ let
         ''
     )
   );
+  version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
+  cargo-cmd-prefix = [
+    "-Zunstable-options"
+    "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
+    "--target=${target}"
+  ]
+  ++ (
+    if builtins.elem "thread" sanitizers then
+      [
+        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+      ]
+    else
+      [
+        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
+      ]
+  );
+  invoke =
+    {
+      builder,
+      args ? {
+        pname = null;
+        cargoArtifacts = null;
+      },
+      cargo-nextest,
+      hwloc,
+      llvmPackages',
+      pkg-config,
+    }:
+    (builder (
+      {
+        inherit
+          src
+          version
+          cargoVendorDir
+          ;
+
+        doCheck = false;
+        strictDeps = true;
+        dontStrip = true;
+        doRemapPathPrefix = false; # TODO: this setting may be wrong, test with debugger
+        doNotRemoveReferencesToRustToolchain = true;
+        doNotRemoveReferencesToVendorDir = true;
+        separateDebugInfo = true;
+
+        nativeBuildInputs = [
+          (dev-pkgs.kopium)
+          cargo-nextest
+          llvmPackages'.clang
+          llvmPackages'.lld
+          pkg-config
+        ];
+
+        buildInputs = [
+          hwloc
+        ];
+
+        env = {
+          CARGO_PROFILE = cargo-profile;
+          DATAPLANE_SYSROOT = "${sysroot}";
+          LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages'.libclang.lib}/lib";
+          C_INCLUDE_PATH = "${sysroot}/include";
+          LIBRARY_PATH = "${sysroot}/lib";
+          PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
+          GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+          RUSTC_BOOTSTRAP = "1";
+          RUSTFLAGS = builtins.concatStringsSep " " (
+            profile'.RUSTFLAGS
+            ++ [
+              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}"
+              "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
+              "-Clink-arg=-L${sysroot}/lib"
+              # NOTE: this is basically a trick to make our source code available to debuggers.
+              # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
+              # This is intended to map source code paths to generic, relative, or redacted paths.
+              # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
+              # source code in the debug info from the current working directory to ${src} (the nix store path where we
+              # have copied our source code).
+              #
+              # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
+              # we strip out of the final binaries we cook and include a gdbserver binary in some
+              # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
+              # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
+              "--remap-path-prefix==${src}"
+            ]
+            ++ (
+              if ((builtins.elem "thread" sanitizers) || (builtins.elem "safe-stack" sanitizers)) then
+                [
+                  # "-Zexternal-clangrt"
+                  # "-Clink-arg=--rtlib=compiler-rt"
+                ]
+              else
+                [ ]
+            )
+          );
+        };
+      }
+      // args
+    )).overrideAttrs
+      (orig: {
+        separateDebugInfo = true;
+
+        # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
+        # There is no easy way to distinguish RUSTFLAGS intended for the build-time dependencies from the RUSTFLAGS
+        # intended for the runtime dependencies.
+        # One unfortunate consequence of this is that if you set platform specific RUSTFLAGS then the postBuild hook
+        # malfunctions.  Fortunately, the "fix" is easy: just unset RUSTFLAGS before the postBuild hook actually runs.
+        # We don't need to set any optimization flags for postBuild tooling anyway.
+        postBuild = (orig.postBuild or "") + ''
+          unset RUSTFLAGS;
+        '';
+        postInstall = (orig.postInstall or "") + ''
+          mkdir -p $debug/bin
+          for f in $out/bin/*; do
+            mv "$f" "$debug/bin/$(basename "$f")"
+            ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
+            ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
+          done
+        '';
+        postFixup = (orig.postFixup or "") + ''
+          rm -f $out/target.tar.zst
+        '';
+      });
+  package-builder =
+    {
+      pname ? null,
+      cargoArtifacts ? null,
+    }:
+    pkgs.callPackage invoke {
+      builder = craneLib.buildPackage;
+      args = {
+        inherit pname cargoArtifacts;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargoBuildLog=$(mktemp cargoBuildLogXXXX.json);"
+            "cargo"
+            "build"
+            "--package=${pname}"
+            "--profile=${cargo-profile}"
+          ]
+          ++ cargo-cmd-prefix
+          ++ [
+            "--message-format json-render-diagnostics > $cargoBuildLog"
+          ]
+        );
+      };
+    };
 in
 {
   inherit
