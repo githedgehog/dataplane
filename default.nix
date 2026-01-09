@@ -56,6 +56,10 @@ let
     }).pkgsCross.${platform'.info.nixarch};
 in
 {
+  inherit
+    dev-pkgs
+    pkgs
+    ;
   profile = profile';
   platform = platform';
 
