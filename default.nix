@@ -310,6 +310,14 @@ let
         );
       };
     };
+
+  workspace = builtins.mapAttrs (
+    dir: pname:
+    package-builder {
+      inherit pname;
+    }
+  ) package-list;
+
 in
 {
   inherit
