@@ -133,6 +133,7 @@ in
   inherit
     dev-pkgs
     devroot
+    devenv
     pkgs
     sysroot
     ;
