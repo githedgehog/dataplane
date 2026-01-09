@@ -78,6 +78,18 @@ let
       fancy.rdma-core.static
     ];
   };
+  clangd-config = pkgs.writeTextFile {
+    name = ".clangd";
+    text = ''
+      CompileFlags:
+        Add:
+          - "-I${sysroot}/include"
+          - "-Wno-deprecated-declarations"
+          - "-Wno-quoted-include-in-framework-header"
+    '';
+    executable = false;
+    destination = "/.clangd";
+  };
 in
 {
   inherit
