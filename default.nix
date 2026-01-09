@@ -120,6 +120,14 @@ let
       rust-toolchain
     ]);
   };
+  devenv = pkgs.mkShell {
+    name = "dataplane-dev-shell";
+    packages = [ devroot ];
+    inputsFrom = [ sysroot ];
+    shellHook = ''
+      export RUSTC_BOOTSTRAP=1
+    '';
+  };
 in
 {
   inherit
