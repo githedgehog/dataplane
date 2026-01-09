@@ -506,6 +506,7 @@ in
     devenv
     package-list
     pkgs
+    sources
     sysroot
     tests
     workspace
