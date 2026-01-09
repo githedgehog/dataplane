@@ -499,6 +499,7 @@ in
 {
   inherit
     clippy
+    containers
     dev-pkgs
     devroot
     devenv
