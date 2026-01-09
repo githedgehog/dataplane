@@ -2,6 +2,9 @@
 # Copyright Open Network Fabric Authors
 {
 }:
+let
+  sources = import ./npins;
+in
 {
-
+  inherit sources;
 }
