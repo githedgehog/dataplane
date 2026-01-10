@@ -355,7 +355,7 @@ impl PortAddrTranslationValue {
                     .iter()
                     .find(|pr| pr.contains(&key.start.port))
                     .unwrap_or_else(|| unreachable!()),
-            ) && merge_value.0.merge(&value.0).is_some()
+            ) && merge_value.0.extend_right(&value.0).is_some()
             {
                 // Merge was successful, insert new value
                 self.ranges_tree.insert(merge_key, merge_value);
@@ -561,7 +561,7 @@ impl IpPortRange {
     // # Returns
     //
     // Returns `Some(())` if the ranges were merged, or `None` otherwise.
-    fn merge(&mut self, next: &IpPortRange) -> Option<()> {
+    fn extend_right(&mut self, next: &IpPortRange) -> Option<()> {
         // Always merge on the "right side". This is because we call this method assuming that
         // ranges are ordered (by IP range start, then port range start values), and we process the
         // smaller ones first; if we try to merge a new one into an existing one, it's a "bigger"
@@ -569,12 +569,12 @@ impl IpPortRange {
 
         // Case 1: port ranges are identical
         if self.port_range == next.port_range {
-            return self.ip_range.merge(&next.ip_range);
+            return self.ip_range.extend_right(&next.ip_range);
         }
 
         // Case 2: IP ranges are identical
         if self.ip_range == next.ip_range {
-            return self.port_range.merge(next.port_range);
+            return self.port_range.extend_right(next.port_range);
         }
         None
     }
@@ -676,7 +676,7 @@ impl IpRange {
     // # Returns
     //
     // Returns `Some(())` if the ranges were merged, or `None` otherwise.
-    fn merge(&mut self, next: &IpRange) -> Option<()> {
+    fn extend_right(&mut self, next: &IpRange) -> Option<()> {
         // Always merge on the "right side". This is because we call this method when processing
         // ranges obtained from prefixes in a BTreeSet, so they are ordered, and we process the
         // smaller ones first; if we try to merge a new one into an existing one, it's a "bigger"
