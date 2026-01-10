@@ -606,6 +606,10 @@ impl IpRangeWithPorts for IpPortRange {
     fn subtract(&self, _other: &Self) -> Vec<Self> {
         unimplemented!()
     }
+
+    fn merge(&self, _other: &Self) -> Option<Self> {
+        unimplemented!()
+    }
 }
 
 // Represents an IP address range, with a start and an end address.

@@ -31,6 +31,10 @@ pub trait IpRangeWithPorts {
     fn subtract(&self, other: &Self) -> Vec<Self>
     where
         Self: Sized;
+    /// Returns the merge of the two ranges, if any.
+    fn merge(&self, other: &Self) -> Option<Self>
+    where
+        Self: Sized;
     /// Returns the total number of (IP, port) combinations covered by the IP and port ranges.
     fn size(&self) -> PrefixWithPortsSize {
         let ip_len = match self.addr_range_len() {
@@ -110,6 +114,22 @@ impl IpRangeWithPorts for PrefixWithPorts {
             }
         }
         result
+    }
+
+    fn merge(&self, other: &Self) -> Option<Self> {
+        if self.prefix == other.prefix {
+            Some(PrefixWithPorts::new(
+                self.prefix,
+                self.ports.merge(other.ports)?,
+            ))
+        } else if self.ports == other.ports {
+            Some(PrefixWithPorts::new(
+                self.prefix.merge(&other.prefix)?,
+                self.ports,
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -288,6 +308,44 @@ impl IpRangeWithPorts for PrefixWithOptionalPorts {
                 PrefixWithOptionalPorts::Prefix(self_prefix),
                 PrefixWithOptionalPorts::Prefix(other_prefix),
             ) => convert_result_type(self_prefix.subtract(other_prefix), false),
+        }
+    }
+
+    fn merge(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (
+                PrefixWithOptionalPorts::Prefix(self_prefix),
+                PrefixWithOptionalPorts::Prefix(other_prefix),
+            ) => self_prefix
+                .merge(other_prefix)
+                .map(PrefixWithOptionalPorts::Prefix),
+            (
+                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
+                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
+            ) => self_prefix_with_ports
+                .merge(other_prefix_with_ports)
+                .map(PrefixWithOptionalPorts::PrefixPorts),
+            (
+                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
+                PrefixWithOptionalPorts::Prefix(prefix),
+            )
+            | (
+                PrefixWithOptionalPorts::Prefix(prefix),
+                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
+            ) => {
+                if prefix_with_ports.prefix() == *prefix {
+                    // Same IP prefix, and one of them covers all of the ports
+                    Some(PrefixWithOptionalPorts::Prefix(*prefix))
+                } else if prefix_with_ports.ports().is_max_range() {
+                    // Same (full) port ranges, try merging the prefixes
+                    prefix
+                        .merge(&prefix_with_ports.prefix())
+                        .map(PrefixWithOptionalPorts::Prefix)
+                } else {
+                    // Different IP ranges and ports, nothing we can do
+                    None
+                }
+            }
         }
     }
 }
@@ -473,6 +531,18 @@ impl PortRange {
             return Some(());
         }
         None
+    }
+
+    // Return a merged range if the two ranges overlap or are adjacent
+    #[must_use]
+    pub fn merge(&self, other: Self) -> Option<Self> {
+        let (left, right) = (self.min(&other), self.max(&other));
+        if u32::from(left.end) + 1 < u32::from(right.start) {
+            None
+        } else {
+            // We know we have left.start <= right.end given that left <= right
+            Some(PortRange::new(left.start, right.end).unwrap_or_else(|_| unreachable!()))
+        }
     }
 }
 
@@ -972,6 +1042,169 @@ mod tests {
             result[0],
             PrefixWithOptionalPorts::new(prefix_v6("2001:db8:8000::/33"), Some(ports))
         );
+    }
+
+    // PrefixWithOptionalPorts - merge
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_both_prefix_adjacent() {
+        // Two adjacent prefixes without ports should merge
+        let pwop1 = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.0/25"), None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.128/25"), None);
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix_v4("10.0.0.0/24"));
+        assert_eq!(merged.ports(), None);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_both_prefix_not_adjacent() {
+        // Two non-adjacent prefixes without ports should not merge
+        let pwop1 = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.0/24"), None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix_v4("10.0.2.0/24"), None);
+
+        let merged = pwop1.merge(&pwop2);
+        assert!(merged.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_both_prefix_identical() {
+        // Two identical prefixes without ports should merge
+        let pwop = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.0/24"), None);
+
+        let merged = pwop.merge(&pwop).expect("Should merge");
+        assert_eq!(merged, pwop);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_both_prefix_ports_same_prefix() {
+        // Same prefix with adjacent port ranges should merge
+        let prefix = prefix_v4("10.0.0.0/24");
+        let pwop1 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(80, 100).unwrap()));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(101, 200).unwrap()));
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix);
+        assert_eq!(merged.ports(), Some(PortRange::new(80, 200).unwrap()));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_both_prefix_ports_same_ports() {
+        // Adjacent prefixes with same port range should merge
+        let ports = PortRange::new(80, 100).unwrap();
+        let pwop1 = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.0/25"), Some(ports));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.128/25"), Some(ports));
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix_v4("10.0.0.0/24"));
+        assert_eq!(merged.ports(), Some(ports));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_both_prefix_ports_different_both() {
+        // Different prefixes and different port ranges should not merge
+        let pwop1 = PrefixWithOptionalPorts::new(
+            prefix_v4("10.0.0.0/24"),
+            Some(PortRange::new(80, 100).unwrap()),
+        );
+        let pwop2 = PrefixWithOptionalPorts::new(
+            prefix_v4("10.0.1.0/24"),
+            Some(PortRange::new(101, 300).unwrap()),
+        );
+
+        let merged = pwop1.merge(&pwop2);
+        assert!(merged.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_both_prefix_ports_identical() {
+        // Two identical PrefixWithPorts should merge to themselves
+        let pwop = PrefixWithOptionalPorts::new(
+            prefix_v4("10.0.0.0/24"),
+            Some(PortRange::new(80, 100).unwrap()),
+        );
+
+        let merged = pwop.merge(&pwop).expect("Should merge");
+        assert_eq!(merged, pwop);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_prefix_and_prefix_ports_same_prefix() {
+        // Same prefix, one with ports and one without (covers all ports)
+        // Should merge to prefix without ports (all ports)
+        let prefix = prefix_v4("10.0.0.0/24");
+        let pwop1 = PrefixWithOptionalPorts::new(prefix, None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(80, 100).unwrap()));
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix);
+        assert_eq!(merged.ports(), None);
+
+        // Test symmetry
+        let merged2 = pwop2.merge(&pwop1).expect("Should merge");
+        assert_eq!(merged2, merged);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_prefix_and_prefix_ports_max_range() {
+        // Different prefixes but PrefixPorts has max port range (equivalent to no ports)
+        let pwop1 = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.0/25"), None);
+        let pwop2 = PrefixWithOptionalPorts::new(
+            prefix_v4("10.0.0.128/25"),
+            Some(PortRange::new_max_range()),
+        );
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix_v4("10.0.0.0/24"));
+        assert_eq!(merged.ports(), None);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_prefix_and_prefix_ports_different_prefix_limited_ports()
+     {
+        // Different prefixes and PrefixPorts has limited port range
+        let pwop1 = PrefixWithOptionalPorts::new(prefix_v4("10.0.0.0/24"), None);
+        let pwop2 = PrefixWithOptionalPorts::new(
+            prefix_v4("10.0.1.0/24"),
+            Some(PortRange::new(80, 100).unwrap()),
+        );
+
+        let merged = pwop1.merge(&pwop2);
+        assert!(merged.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_ipv6() {
+        // Test merging with IPv6 prefixes
+        let pwop1 = PrefixWithOptionalPorts::new(prefix_v6("2001:db8::/33"), None);
+        let pwop2 = PrefixWithOptionalPorts::new(prefix_v6("2001:db8:8000::/33"), None);
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix_v6("2001:db8::/32"));
+        assert_eq!(merged.ports(), None);
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_overlapping_port_ranges() {
+        // Overlapping (not just adjacent) port ranges should merge
+        let prefix = prefix_v4("10.0.0.0/24");
+        let pwop1 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(80, 150).unwrap()));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(100, 200).unwrap()));
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix);
+        assert_eq!(merged.ports(), Some(PortRange::new(80, 200).unwrap()));
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_non_adjacent_port_ranges() {
+        // Non-adjacent port ranges should not merge
+        let prefix = prefix_v4("10.0.0.0/24");
+        let pwop1 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(80, 100).unwrap()));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(200, 300).unwrap()));
+
+        let merged = pwop1.merge(&pwop2);
+        assert!(merged.is_none());
     }
 
     // PortRange - FromStr
