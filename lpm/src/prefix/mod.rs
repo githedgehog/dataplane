@@ -297,6 +297,104 @@ impl Prefix {
         result
     }
 
+    /// Merge two contiguous prefixes, if possible
+    ///
+    /// # Returns
+    ///
+    /// - `Some(parent)` if the prefixes are contiguous and can be merged
+    /// - `None` if the prefixes are not contiguous or have different lengths
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use dataplane_lpm::prefix::{Prefix, Ipv4Prefix, Ipv6Prefix};
+    /// # use std::str::FromStr;
+    /// fn prefix_v4(s: &str) -> Prefix {
+    ///     Prefix::from(Ipv4Prefix::from_str(s).unwrap())
+    /// }
+    /// fn prefix_v6(s: &str) -> Prefix {
+    ///     Prefix::from(Ipv6Prefix::from_str(s).unwrap())
+    /// }
+    ///
+    /// let prefix1 = prefix_v4("1.0.1.0/25");
+    /// let prefix2 = prefix_v4("1.0.1.128/25");
+    /// assert_eq!(
+    ///     prefix1.merge(&prefix2),
+    ///     Some(prefix_v4("1.0.1.0/24"))
+    /// );
+    ///
+    /// let prefix1 = prefix_v4("1.0.0.0/24");
+    /// let prefix2 = prefix_v4("1.0.1.0/24");
+    /// assert_eq!(
+    ///     prefix1.merge(&prefix2),
+    ///     Some(prefix_v4("1.0.0.0/23"))
+    /// );
+    ///
+    /// let prefix1 = prefix_v4("1.0.0.0/16");
+    /// let prefix2 = prefix_v4("1.0.1.0/24");
+    /// assert_eq!(
+    ///     prefix1.merge(&prefix2),
+    ///     Some(prefix_v4("1.0.0.0/16"))
+    /// );
+    ///
+    /// let prefix1 = prefix_v4("1.0.0.0/24");
+    /// let prefix2 = prefix_v4("1.0.200.0/24");
+    /// assert_eq!(
+    ///     prefix1.merge(&prefix2),
+    ///     None
+    /// );
+    ///
+    /// // Contiguous but not forming a valid CIDR
+    /// let prefix1 = prefix_v4("1.0.1.0/24");
+    /// let prefix2 = prefix_v4("1.0.2.0/24");
+    /// assert_eq!(
+    ///     prefix1.merge(&prefix2),
+    ///     None
+    /// );
+    ///
+    /// let prefix1 = prefix_v4("0.0.0.0/0");
+    /// let prefix2 = prefix_v6("::/0");
+    /// assert_eq!(
+    ///     prefix1.merge(&prefix2),
+    ///     None
+    /// );
+    /// ```
+    #[must_use]
+    pub fn merge(&self, other: &Self) -> Option<Self> {
+        if self.covers(other) {
+            return Some(*self);
+        }
+        if other.covers(self) {
+            return Some(*other);
+        }
+        if self.length() != other.length() {
+            return None;
+        }
+        if self.is_ipv4() != other.is_ipv4() {
+            return None;
+        }
+
+        // We can't have 0-length, because both prefixes have equal length but are distinct and of
+        // different IP version.
+        debug_assert_ne!(self.length(), 0);
+        debug_assert_ne!(other.length(), 0);
+
+        let parent = match self {
+            Prefix::IPV4(prefix) => {
+                Prefix::IPV4(Ipv4Prefix::new(prefix.network(), prefix.len() - 1).ok()?)
+            }
+            Prefix::IPV6(prefix) => {
+                Prefix::IPV6(Ipv6Prefix::new(prefix.network(), prefix.len() - 1).ok()?)
+            }
+        };
+        if parent.covers(other) {
+            // The immediate parent CIDR covers both distinct prefixes, so we're good
+            Some(parent)
+        } else {
+            None
+        }
+    }
+
     #[cfg(any(test, feature = "testing"))]
     #[allow(clippy::missing_panics_doc)]
     pub fn expect_from<T>(val: T) -> Self
