@@ -148,7 +148,7 @@ pci-info = { version = "0.3.4", default-features = false, features = [] }
 prefix-trie = { version = "0.8.1", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = [] }
 priority-queue = { version = "2.7.0", default-features = false, features = [] }
-proc-macro2 = { version = "1.0.104", default-features = false, features = [] }
+proc-macro2 = { version = "1.0.105", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
 pyroscope = { version = "0.5.8", default-features = false, features = [] }
 pyroscope_pprofrs = { version = "0.2.10", default-features = false, features = [] }
