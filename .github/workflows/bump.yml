@@ -87,21 +87,25 @@ jobs:
           BASE="$(git rev-parse HEAD)"
 
           # Run "cargo update"
+          echo "::notice::Running cargo update"
           just cargo update
           if ! git diff --quiet; then
+              echo "Found changes after cargo update, creating commit"
               git add Cargo.lock
               git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
           fi
 
           # Check updates available with "cargo upgrade",
           # then bump each package individually through separate commits
-          just cargo upgrade --incompatible=allow --dry-run > upgrade_output.txt
-          sed '/^====/d; /^name .* new req$/d; s/ .*//' upgrade_output.txt > list_packages.txt
+          echo "::notice::Looking for depencies to upgrade"
+          just cargo upgrade --incompatible=allow --dry-run | tee upgrade_output.txt
+          sed '/^====/d; /^name .*old req .*new req/d; s/ .*//' upgrade_output.txt > list_packages.txt
           nb_upgrades=$(wc -l < list_packages.txt)
 
           echo "Found the following ${nb_upgrades} upgrade(s) available:"
           cat list_packages.txt
 
+          echo "::notice::Upgrading packages that need an upgrade (if any), one by one"
           while read -r package; do
               echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
               echo '' | tee -a commit_msg.txt
