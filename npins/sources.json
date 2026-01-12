@@ -43,7 +43,8 @@
       "version": "v0.33.0",
       "revision": "18913fe34d78af396deb1e6a034d0258168122b1",
       "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.33.0",
-      "hash": "sha256-X4sbwW60BIiAh0N/Y4P3HQWoZb/vXOSu5GjVeu9TTWo="
+      "hash": "sha256-X4sbwW60BIiAh0N/Y4P3HQWoZb/vXOSu5GjVeu9TTWo=",
+      "frozen": true
     },
     "kopium": {
       "type": "GitRelease",
@@ -64,8 +65,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre921317.16c7794d0a28/nixexprs.tar.xz",
-      "hash": "sha256-G6ie+qOCRSV7wzOY+6L1o8GvcH1qDcE/DTzDT4CRdNw="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre925980.4d113fe1f7bb/nixexprs.tar.xz",
+      "hash": "sha256-rw7WRzk/98Qi8P++Nb/PCc+Had6XjHuut4CHCvj92p8="
     },
     "perftest": {
       "type": "Git",
@@ -76,9 +77,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "1c4dc79b81060f0707830c54bf5dae7102fdbbfa",
-      "url": "https://github.com/linux-rdma/perftest/archive/1c4dc79b81060f0707830c54bf5dae7102fdbbfa.tar.gz",
-      "hash": "sha256-XHWZGB5qo9FdJ1yVEiwaSMmRmT34V6hngAlZ1ptYkiw="
+      "revision": "c77a2b17ccee8a2f7434135513794bdd29881f1f",
+      "url": "https://github.com/linux-rdma/perftest/archive/c77a2b17ccee8a2f7434135513794bdd29881f1f.tar.gz",
+      "hash": "sha256-3hEmBo1SPePbeOjT3tXAWZAnt///4lv4lZuh6tlkEDI="
     },
     "rdma-core": {
       "type": "Git",
@@ -118,9 +119,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "499e9eed88ff9494b6604205b42847e847dfeb91",
-      "url": "https://github.com/oxalica/rust-overlay/archive/499e9eed88ff9494b6604205b42847e847dfeb91.tar.gz",
-      "hash": "sha256-x0n73J6ufD/EhDlVdcoAmF0OQHZ+b0a2cKDc8RZyt+o="
+      "revision": "af69e497567a5945a64057717bc9b17c8478097e",
+      "url": "https://github.com/oxalica/rust-overlay/archive/af69e497567a5945a64057717bc9b17c8478097e.tar.gz",
+      "hash": "sha256-nkpIe3zkpeoFuOl8xBpexulECsHLQ9Ljg1gW3bPCjSI="
     }
   },
   "version": 7
