@@ -5,3 +5,5 @@
 #[allow(clippy::all, clippy::pedantic)]
 #[rustfmt::skip]
 pub mod gateway_agent_crd;
+
+pub use k8s_sample_derive::Sample;

@@ -1,0 +1,270 @@
+agentVersion: FIXME
+communities:
+  fixme-key-1: FIXME
+  fixme-key-2: FIXME
+gateway:
+  asn: 0
+  groups:
+  - name: FIXME
+    priority: 0
+  - name: FIXME
+    priority: 0
+  interfaces:
+    fixme-key-1:
+      ips:
+      - FIXME
+      - FIXME
+      kernel: FIXME
+      mtu: 0
+      pci: FIXME
+    fixme-key-2:
+      ips:
+      - FIXME
+      - FIXME
+      kernel: FIXME
+      mtu: 0
+      pci: FIXME
+  logs:
+    default: FIXME
+    tags:
+      fixme-key-1: FIXME
+      fixme-key-2: FIXME
+  neighbors:
+  - asn: 0
+    ip: FIXME
+    source: FIXME
+  - asn: 0
+    ip: FIXME
+    source: FIXME
+  profiling:
+    enabled: false
+  protocolIP: FIXME
+  vtepIP: FIXME
+  vtepMAC: FIXME
+  vtepMTU: 0
+  workers: 0
+groups:
+  fixme-key-1:
+    members:
+    - name: FIXME
+      priority: 0
+      vtepIP: FIXME
+    - name: FIXME
+      priority: 0
+      vtepIP: FIXME
+  fixme-key-2:
+    members:
+    - name: FIXME
+      priority: 0
+      vtepIP: FIXME
+    - name: FIXME
+      priority: 0
+      vtepIP: FIXME
+peerings:
+  fixme-key-1:
+    gatewayGroup: FIXME
+    peering:
+      fixme-key-1:
+        expose:
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+      fixme-key-2:
+        expose:
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+  fixme-key-2:
+    gatewayGroup: FIXME
+    peering:
+      fixme-key-1:
+        expose:
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+      fixme-key-2:
+        expose:
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+        - as:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+          ips:
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          - cidr: FIXME
+            not: FIXME
+            ports: FIXME
+            vpcSubnet: FIXME
+          nat:
+            stateful:
+              idleTimeout:
+                secs: 0
+                nanos: 0
+            stateless: {}
+vpcs:
+  fixme-key-1:
+    internalID: FIXME
+    subnets:
+      fixme-key-1:
+        cidr: FIXME
+      fixme-key-2:
+        cidr: FIXME
+    vni: 0
+  fixme-key-2:
+    internalID: FIXME
+    subnets:
+      fixme-key-1:
+        cidr: FIXME
+      fixme-key-2:
+        cidr: FIXME
+    vni: 0

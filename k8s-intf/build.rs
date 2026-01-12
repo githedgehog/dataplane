@@ -45,6 +45,8 @@ fn fetch_crd(url: &str) -> String {
 const LICENSE_PREAMBLE: &str = "// SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use k8s_sample_derive::Sample;
+use crate::samplegen::sample::Sample;
 ";
 
 /// Fixup the types in the generated Rust code
@@ -75,7 +77,7 @@ fn fixup_types(raw: String) -> String {
 fn generate_rust_for_crd(crd_content: &str) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
-        .args(["-D", "PartialEq", "-Af", "-"])
+        .args(["-D", "PartialEq", "-D", "Sample", "-Af", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
