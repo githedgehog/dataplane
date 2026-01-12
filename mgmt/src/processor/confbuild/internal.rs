@@ -322,7 +322,7 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     let external = &config.external;
 
     /* Build internal config: device and underlay configs are copied as received */
-    let mut internal = InternalConfig::new(external.device.clone());
+    let mut internal = InternalConfig::new(&config.gwname, external.device.clone());
     internal.add_vrf_config(external.underlay.vrf.clone())?;
     internal.set_vtep(external.underlay.vtep.clone());
 

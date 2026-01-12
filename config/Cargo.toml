@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 # internal
-gwname = { workspace = true }
 hardware = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }

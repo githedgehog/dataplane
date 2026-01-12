@@ -7,7 +7,6 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-gwname = { workspace = true }
 inotify = { workspace = true, features = ["stream"] }
 k8s-intf = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "fs"] }

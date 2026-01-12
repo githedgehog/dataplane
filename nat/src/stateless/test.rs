@@ -25,7 +25,6 @@ mod tests {
     use crate::stateless::setup::build_nat_configuration;
     use crate::stateless::setup::tables::{NatTables, PerVniTable};
 
-    use fixin::wrap;
     use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
     use net::buffer::PacketBufferMut;
     use net::eth::mac::Mac;
@@ -42,7 +41,6 @@ mod tests {
     use pipeline::NetworkFunction;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
-    use test_utils::with_gw_name;
     use tracing_test::traced_test;
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
@@ -564,7 +562,7 @@ mod tests {
             .build()
             .expect("Failed to build external config");
 
-        GwConfig::new(external_config)
+        GwConfig::new("test-gw", external_config)
     }
 
     fn check_packet(
@@ -591,7 +589,6 @@ mod tests {
 
     #[test]
     #[traced_test]
-    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_full_config() {
         let mut config = build_sample_config();
@@ -817,7 +814,6 @@ mod tests {
     }
 
     #[test]
-    #[wrap(with_gw_name())]
     #[traced_test]
     fn test_config_with_port_ranges_basic() {
         let expose1 = VpcExpose::empty()
@@ -883,7 +879,6 @@ mod tests {
 
     #[test]
     #[traced_test]
-    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_config_with_port_ranges_complex() {
         let expose1 = VpcExpose::empty()
