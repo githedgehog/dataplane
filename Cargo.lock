@@ -1309,10 +1309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dataplane-gwname"
-version = "0.7.0"
-
-[[package]]
 name = "dataplane-hardware"
 version = "0.7.0"
 dependencies = [

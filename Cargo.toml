@@ -12,7 +12,6 @@ members = [
     "dpdk-sysroot-helper",
     "errno",
     "flow-info",
-    "gwname",
     "hardware",
     "id",
     "init",
@@ -57,7 +56,6 @@ dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpd
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8fc33db10e1d00785f2a2b90cbadcad7900f200", features = [] }
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
 flow-info = { path = "./flow-info", package = "dataplane-flow-info", features = [] }
-gwname = { path = "./gwname", package = "dataplane-gwname", features = [] }
 hardware = { path = "./hardware", package = "dataplane-hardware", features = [] }
 id = { path = "./id", package = "dataplane-id", features = [] }
 init = { path = "./init", package = "dataplane-init", features = [] }
