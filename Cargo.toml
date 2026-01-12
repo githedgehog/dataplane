@@ -156,7 +156,7 @@ rapidhash = { version = "4.2.1", default-features = false, features = [] }
 rkyv = { version = "0.8.13", default-features = false, features = [] }
 roaring = { version = "0.11.3", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
-rustls = { version = "0.23.35", default-features = false, features = [] }
+rustls = { version = "0.23.36", default-features = false, features = [] }
 rustyline = { version = "17.0.2", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = [] }
