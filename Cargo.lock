@@ -1246,7 +1246,6 @@ dependencies = [
  "bolero",
  "caps",
  "chrono",
- "dataplane-gwname",
  "dataplane-hardware",
  "dataplane-k8s-intf",
  "dataplane-lpm",
@@ -1419,7 +1418,6 @@ dependencies = [
 name = "dataplane-k8s-less"
 version = "0.7.0"
 dependencies = [
- "dataplane-gwname",
  "dataplane-k8s-intf",
  "dataplane-tracectl",
  "inotify",
@@ -1467,7 +1465,6 @@ dependencies = [
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-config",
- "dataplane-gwname",
  "dataplane-id",
  "dataplane-interface-manager",
  "dataplane-k8s-intf",

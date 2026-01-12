@@ -22,7 +22,6 @@ mod tests {
     use config::internal::routing::vrf::VrfConfig;
     use config::{ConfigError, GwConfig};
     use etherparse::Icmpv4Type;
-    use fixin::wrap;
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
     use net::headers::{
@@ -46,7 +45,6 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
     use std::time::Duration;
-    use test_utils::with_gw_name;
     use tracectl::get_trace_ctl;
     use tracing_test::traced_test;
 
@@ -97,7 +95,7 @@ mod tests {
             .build()
             .expect("Failed to build external config");
 
-        GwConfig::new(external_config)
+        GwConfig::new("test-gw", external_config)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -351,7 +349,6 @@ mod tests {
 
     #[test]
     #[traced_test]
-    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_full_config() {
         let mut config = build_sample_config(build_overlay_4vpcs());
@@ -565,7 +562,6 @@ mod tests {
     }
 
     #[test]
-    #[wrap(with_gw_name())]
     #[traced_test]
     fn test_full_config_unidirectional_nat() {
         let mut config = build_sample_config(build_overlay_2vpcs_unidirectional_nat());
@@ -653,7 +649,6 @@ mod tests {
     }
 
     #[test]
-    #[wrap(with_gw_name())]
     #[traced_test]
     fn test_full_config_no_nat() {
         let mut config = build_sample_config(build_overlay_2vpcs_no_nat());
@@ -752,7 +747,6 @@ mod tests {
     }
 
     #[test]
-    #[wrap(with_gw_name())]
     #[traced_test]
     fn test_icmp_echo_nat() {
         let mut config = build_sample_config(build_overlay_2vpcs());
@@ -850,7 +844,6 @@ mod tests {
     }
 
     #[test]
-    #[wrap(with_gw_name())]
     #[traced_test]
     fn test_icmp_echo_unidirectional_nat() {
         let mut config = build_sample_config(build_overlay_2vpcs_unidirectional_nat());
@@ -999,7 +992,6 @@ mod tests {
     }
 
     #[test]
-    #[wrap(with_gw_name())]
     #[traced_test]
     fn test_icmp_error_nat() {
         let mut config = build_sample_config(build_overlay_2vpcs());
@@ -1243,7 +1235,6 @@ mod tests {
     }
 
     #[test]
-    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_full_config_unidirectional_nat_overlapping_destination() {
         let tctl = get_trace_ctl();
@@ -1535,7 +1526,6 @@ mod tests {
 
     #[test]
     #[traced_test]
-    #[wrap(with_gw_name())]
     #[allow(clippy::too_many_lines)]
     fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peering() {
         let mut config =

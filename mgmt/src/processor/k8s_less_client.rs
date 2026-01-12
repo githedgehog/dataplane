@@ -27,14 +27,16 @@ pub enum K8sLessError {
 }
 
 pub struct K8sLess {
+    name: String,
     pathdir: String,
     statedir: String,
     client: ConfigClient,
 }
 
 impl K8sLess {
-    pub fn new(pathdir: &str, client: ConfigClient) -> Self {
+    pub fn new(name: &str, pathdir: &str, client: ConfigClient) -> Self {
         Self {
+            name: name.to_owned(),
             pathdir: pathdir.to_string(),
             statedir: pathdir.to_string() + "/state",
             client,
@@ -65,7 +67,7 @@ impl K8sLess {
 
         info!("Starting config watcher for directory {}", k8sless.pathdir);
 
-        kubeless_watch_gateway_agent_crd(&k8sless.pathdir.clone(), async move |ga| {
+        kubeless_watch_gateway_agent_crd(&k8sless.name.clone(), &k8sless.pathdir.clone(), async move |ga| {
             info!("Attempting to deserialize new gateway CRD ...");
 
             let external_config = ExternalConfig::try_from(ga);
@@ -83,7 +85,7 @@ impl K8sLess {
                     };
                     info!("Current configuration is {applied_genid}");
 
-                    let gwconfig = GwConfig::new(external_config);
+                    let gwconfig = GwConfig::new(&k8sless.name, external_config);
 
                     // request the config processor to apply the config and update status on success
                     match k8sless.client.apply_config(gwconfig).await {

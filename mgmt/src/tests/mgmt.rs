@@ -10,7 +10,6 @@ pub mod test {
     use config::external::gwgroup::GwGroupMember;
     use config::external::gwgroup::GwGroupTable;
 
-    use fixin::wrap;
     use lpm::prefix::Prefix;
     use nat::stateful::NatAllocatorWriter;
     use nat::stateless::NatTablesWriter;
@@ -21,7 +20,6 @@ pub mod test {
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use test_utils::with_caps;
-    use test_utils::with_gw_name;
     use tracectl::get_trace_ctl;
     use tracing::error;
     use tracing_test::traced_test;
@@ -368,12 +366,11 @@ pub mod test {
     }
 
     #[traced_test]
-    #[wrap(with_gw_name())]
     #[test]
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
-        let mut config = GwConfig::new(external);
+        let mut config = GwConfig::new("test-gw", external);
         config.validate().expect("Config validation failed");
         if false {
             let vpc_table = &config.external.overlay.vpc_table;
@@ -386,7 +383,6 @@ pub mod test {
     }
 
     #[tokio::test]
-    #[wrap(with_gw_name())]
     #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_sample_config() {
         get_trace_ctl()
@@ -398,7 +394,7 @@ pub mod test {
         println!("External config is:\n{external:#?}");
 
         /* build a gw config from a sample external config */
-        let config = GwConfig::new(external);
+        let config = GwConfig::new("test-gw", external);
 
         /* build router config */
         let router_params = RouterParamsBuilder::default()

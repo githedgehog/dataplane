@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use gwname::get_gw_name;
 use inotify::{Event, EventMask, Inotify, WatchMask};
 use k8s_intf::gateway_agent_crd::GatewayAgent;
 use k8s_intf::utils::load_crd_from_file;
@@ -57,15 +56,10 @@ fn check_event(event: &Event<&OsStr>, dir: &str) -> Option<PathBuf> {
 /// # Errors
 /// Returns an error if the directory or the corresponding watch cannot be created.
 pub async fn kubeless_watch_gateway_agent_crd(
+    gwname: &str,
     path: &str,
     callback: impl AsyncFn(&GatewayAgent),
 ) -> Result<(), String> {
-    let gwname = get_gw_name().unwrap_or_else(|| {
-        let name = "test-gw";
-        warn!("Warning, gateway name is NOT set. Setting to '{name}'...");
-        name
-    });
-
     create_dir_all(path)
         .await
         .map_err(|e| format!("Failed to create directory '{path}': {e}"))?;
@@ -133,6 +127,7 @@ mod test {
     #[traced_test]
     async fn test_kubeless() {
         let path = "/tmp/kubeless-dir";
+        let gwname = "test-gw";
 
         // spawn a task to create a config file in the directory watched by kubeless
         tokio::spawn(async move {
@@ -153,7 +148,7 @@ gateway:
 
         // start watcher. Watcher will exit as soon as a config is detected and successfully
         // deserialized into a GatewayAgent object
-        kubeless_watch_gateway_agent_crd(path, async move |crd| {
+        kubeless_watch_gateway_agent_crd(gwname, path, async move |crd| {
             let generation = crd.metadata.generation.unwrap();
             let name = crd.metadata.name.as_ref().unwrap();
             let asn = crd.spec.gateway.as_ref().unwrap().asn.unwrap();

@@ -13,7 +13,6 @@ use crate::{ConfigError, ConfigResult};
 use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
-use gwname::get_gw_name;
 use overlay::Overlay;
 use tracing::{debug, warn};
 use underlay::Underlay;
@@ -91,8 +90,7 @@ impl ExternalConfig {
         }
     }
 
-    fn validate_peering_gw_groups(&mut self) -> ConfigResult {
-        let gwname = get_gw_name().unwrap_or_else(|| unreachable!());
+    fn validate_peering_gw_groups(&mut self, gwname: &str) -> ConfigResult {
         let gwgroups = &self.gwgroups;
         let comtable = &self.communities;
         for vpc in self.overlay.vpc_table.values_mut() {
@@ -116,11 +114,11 @@ impl ExternalConfig {
         }
         Ok(())
     }
-    pub fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&mut self, gwname: &str) -> ConfigResult {
         self.device.validate()?;
         self.underlay.validate()?;
         self.overlay.validate()?;
-        self.validate_peering_gw_groups()?;
+        self.validate_peering_gw_groups(gwname)?;
 
         // if there are vpcs configured, there MUST be a vtep configured
         if !self.overlay.vpc_table.is_empty() && self.underlay.vtep.is_none() {

@@ -63,7 +63,7 @@ pub fn start_mgmt(
                 warn!("Running in k8s-less mode....");
                 rt.block_on(async {
                     let (processor, client) = ConfigProcessor::new(params.processor_params);
-                    let k8sless = Arc::new(K8sLess::new(config_dir, client));
+                    let k8sless = Arc::new(K8sLess::new(params.hostname.as_str(), config_dir, client));
                     tokio::spawn(async { processor.run().await });
                     K8sLess::start_config_watch(k8sless).await
                 })?;
