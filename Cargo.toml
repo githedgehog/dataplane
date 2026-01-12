@@ -163,7 +163,7 @@ rustyline = { version = "17.0.2", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = [] }
 serde-duration-ext = { version = "0.1.0", default-features = false, features = [] }
-serde_json = { version = "1.0.148", default-features = false, features = [] }
+serde_json = { version = "1.0.149", default-features = false, features = [] }
 serde_yaml_ng = { version = "0.10.0", default-features = false, features = [] }
 serial_test = { version = "3.3.1", default-features = false, features = [] }
 sha2 = { version = "0.10.9", default-features = false, features = [] }
