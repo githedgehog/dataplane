@@ -16,7 +16,6 @@ ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
 futures = { workspace = true }
-gwname = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }

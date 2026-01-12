@@ -20,7 +20,6 @@ use nix::unistd::gethostname;
 use pyroscope::PyroscopeAgent;
 use pyroscope_pprofrs::{PprofConfig, pprof_backend};
 
-use gwname::{get_gw_name, set_gw_name};
 use routing::RouterParamsBuilder;
 use tracectl::{custom_target, get_trace_ctl, trace_target};
 
@@ -29,25 +28,21 @@ use tracing::{error, info, level_filters::LevelFilter};
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 custom_target!("Pyroscope", LevelFilter::INFO, &[]);
 
-fn init_name(args: &CmdArgs) -> Result<(), String> {
+fn init_name(args: &CmdArgs) -> Result<String, String> {
     if let Some(name) = args.get_name() {
-        set_gw_name(name)?;
+        Ok(name.clone())
     } else {
         let hostname =
             gethostname().map_err(|errno| format!("Failed to get hostname: {}", errno.desc()))?;
         let name = hostname
             .to_str()
             .ok_or_else(|| format!("Failed to convert hostname {}", hostname.display()))?;
-        set_gw_name(name)?;
+        Ok(name.to_string())
     }
-    Ok(())
 }
-fn init_logging() {
+fn init_logging(gwname: &str) {
     let tctl = get_trace_ctl();
-    info!(
-        " ━━━━━━ Dataplane for '{}' started ━━━━━━",
-        get_gw_name().unwrap_or_else(|| unreachable!())
-    );
+    info!(" ━━━━━━ Dataplane for '{gwname}' started ━━━━━━",);
 
     tctl.set_default_level(LevelFilter::DEBUG)
         .expect("Setting default loglevel failed");
@@ -86,11 +81,14 @@ fn process_tracing_cmds(args: &CmdArgs) {
 #[allow(clippy::too_many_lines)]
 fn main() {
     let args = CmdArgs::parse();
-    if let Err(e) = init_name(&args) {
-        eprintln!("Failed to set gateway name: {e}");
-        std::process::exit(1);
-    }
-    init_logging();
+    let gwname = match init_name(&args) {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!("Failed to set gateway name: {e}");
+            std::process::exit(1);
+        }
+    };
+    init_logging(&gwname);
 
     let agent_running = args.pyroscope_url().and_then(|url| {
         match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
@@ -148,7 +146,7 @@ fn main() {
     /* start management */
     start_mgmt(MgmtParams {
         config_dir: args.config_dir().cloned(),
-        hostname: get_gw_name().unwrap_or_else(|| unreachable!()).to_owned(),
+        hostname: gwname.clone(),
         processor_params: ConfigProcessorParams {
             router_ctl: setup.router.get_ctl_tx(),
             vpcmapw: setup.vpcmapw,
