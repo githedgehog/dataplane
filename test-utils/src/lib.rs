@@ -4,7 +4,6 @@
 //! Testing utilities for the dataplane
 
 use caps::{CapSet, Capability};
-use gwname::set_gw_name;
 use rtnetlink::NetworkNamespace;
 use std::panic::{RefUnwindSafe, UnwindSafe, catch_unwind};
 use tracing::error;
@@ -124,16 +123,6 @@ pub fn with_caps<F: UnwindSafe + FnOnce() -> T, T>(
                 .unwrap_or_else(|err| panic!("unable to drop capability to {cap}: {err}"));
         }
         ret.unwrap()
-    }
-}
-
-/// Fixture which sets the static gateway name to a known value common to all tests.
-pub fn with_gw_name<F: FnOnce() -> T, T>() -> impl FnOnce(F) -> T {
-    move |f: F| {
-        const TEST_GW_NAME: &str = "test-gw";
-        println!("Setting gateway name to {TEST_GW_NAME}");
-        set_gw_name(TEST_GW_NAME).unwrap();
-        f()
     }
 }
 
