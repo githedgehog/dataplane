@@ -1689,6 +1689,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-validator"
+version = "0.8.0"
+dependencies = [
+ "dataplane-config",
+ "dataplane-k8s-intf",
+ "serde",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "dataplane-vpcmap"
 version = "0.8.0"
 dependencies = [

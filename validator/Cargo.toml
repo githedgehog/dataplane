@@ -1,0 +1,17 @@
+[package]
+name = "dataplane-validator"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "validator"
+path = "src/main.rs"
+
+[dependencies]
+config = { workspace = true }
+k8s-intf = { workspace = true }
+
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
