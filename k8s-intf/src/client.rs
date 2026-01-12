@@ -91,10 +91,9 @@ pub async fn replace_gateway_status(
     for attempt_num in 0..NUM_CONFLICT_RETRIES {
         let mut status_obj = api.get_status(gateway_object_name).await?;
         status_obj.status = Some(status.clone());
-        let status_json = serde_json::to_vec(&status_obj)?;
 
         match api
-            .replace_status(gateway_object_name, &PostParams::default(), status_json)
+            .replace_status(gateway_object_name, &PostParams::default(), &status_obj)
             .await
         {
             Ok(_) => break,
