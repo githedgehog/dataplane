@@ -16,8 +16,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 use tokio_util::codec::FramedRead;
 
-use tracing::debug;
 use crate::bmp::handler::BmpHandler;
+use tracing::debug;
 
 #[derive(Clone, Debug)]
 pub struct BmpServerConfig {

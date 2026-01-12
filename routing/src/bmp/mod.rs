@@ -12,7 +12,7 @@ use concurrency::sync::{Arc, RwLock};
 use config::internal::status::DataplaneStatus;
 use netgauze_bmp_pkt::BmpMessage;
 use tokio::task::JoinHandle;
-use tracing::{error, info, debug};
+use tracing::{debug, error, info};
 
 /// Background BMP server runner that updates shared dataplane status.
 pub struct StatusHandler {

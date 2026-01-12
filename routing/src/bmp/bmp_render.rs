@@ -106,7 +106,10 @@ fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
 
     let peer_as = peer.peer_as();
     let bgp_id = peer.bgp_id().to_string();
-    let peer_addr = peer.address().map(|a| a.to_string()).unwrap_or_else(|| "none".to_string());
+    let peer_addr = peer
+        .address()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "none".to_string());
     let peer_port = pu.remote_port().unwrap_or_default() as u32;
 
     let bgp = ensure_bgp(status);
@@ -181,13 +184,19 @@ fn on_peer_down(status: &mut DataplaneStatus, pd: &PeerDownNotificationMessage) 
                     neigh.connections_dropped
                 );
             } else {
-                debug!("BMP: peer-down for unknown neighbor: vrf={} key={}", vrf, key);
+                debug!(
+                    "BMP: peer-down for unknown neighbor: vrf={} key={}",
+                    vrf, key
+                );
             }
         } else {
             debug!("BMP: peer-down for unknown vrf: vrf={} key={}", vrf, key);
         }
     } else {
-        debug!("BMP: peer-down but DataplaneStatus.bgp is None (vrf={} key={})", vrf, key);
+        debug!(
+            "BMP: peer-down but DataplaneStatus.bgp is None (vrf={} key={})",
+            vrf, key
+        );
     }
 }
 

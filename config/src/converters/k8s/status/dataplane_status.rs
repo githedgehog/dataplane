@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use k8s_intf::gateway_agent_crd::{
-    GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateDataplane,
-    GatewayAgentStatusStateFrr, GatewayAgentStatusStatePeerings, GatewayAgentStatusStateVpcs,
+    GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateBgp,
+    GatewayAgentStatusStateDataplane, GatewayAgentStatusStateFrr, GatewayAgentStatusStatePeerings,
+    GatewayAgentStatusStateVpcs,
 };
 
 use crate::converters::k8s::ToK8sConversionError;
@@ -69,6 +70,16 @@ impl TryFrom<&DataplaneStatusForK8sConversion<'_>> for GatewayAgentStatus {
             })
             .transpose()?;
 
+        let bgp = status
+            .status
+            .and_then(|status| {
+                status
+                    .bgp
+                    .as_ref()
+                    .map(GatewayAgentStatusStateBgp::try_from)
+            })
+            .transpose()?;
+
         Ok(GatewayAgentStatus {
             agent_version: None,
             last_applied_gen: status.last_applied_gen,
@@ -79,6 +90,7 @@ impl TryFrom<&DataplaneStatusForK8sConversion<'_>> for GatewayAgentStatus {
                 .last_heartbeat
                 .map(|lhb| lhb.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
             state: status.status.map(|_| GatewayAgentStatusState {
+                bgp,
                 dataplane: Some(GatewayAgentStatusStateDataplane {
                     version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
                 }),

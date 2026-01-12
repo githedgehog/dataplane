@@ -109,6 +109,7 @@ impl K8sClient {
                     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
                 ),
                 state: Some(GatewayAgentStatusState {
+                    bgp: None,
                     dataplane: Some(GatewayAgentStatusStateDataplane {
                         version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
                     }),
@@ -162,7 +163,7 @@ impl K8sClient {
                         Ok(()) => {
                             info!("Config for generation {genid} was successfully applied. Updating status...");
                             k8s_client.update_gateway_status().await;
-                        },
+                        }
                         Err(e) => error!("Failed to apply the config for generation {genid}: {e}"),
                     }
                 }
