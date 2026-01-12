@@ -9,6 +9,7 @@ use lpm::prefix::Prefix;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
 
+use super::bmp::BmpOptions;
 // FRR defaults {datacenter | traditional}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -68,7 +69,7 @@ pub struct BgpNeighCapabilities {
     pub ext_nhop: bool,
     pub fqdn: bool,
     pub software_ver: bool,
-    //ORF
+    // ORF
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +191,7 @@ pub struct BgpConfig {
     pub af_ipv4unicast: Option<AfIpv4Ucast>,
     pub af_ipv6unicast: Option<AfIpv6Ucast>,
     pub af_l2vpnevpn: Option<AfL2vpnEvpn>,
+    pub bmp: Option<BmpOptions>,
 }
 
 /* ===== impls: Builders ===== */
@@ -574,6 +576,7 @@ impl BgpOptions {
         self
     }
 }
+
 impl BgpConfig {
     #[must_use]
     pub fn new(asn: u32) -> Self {
@@ -606,5 +609,10 @@ impl BgpConfig {
     }
     pub fn set_af_ipv6unicast(&mut self, af_ipv6unicast: AfIpv6Ucast) {
         self.af_ipv6unicast = Some(af_ipv6unicast);
+    }
+
+    pub fn set_bmp_options(&mut self, bmp: BmpOptions) -> &Self {
+        self.bmp = Some(bmp);
+        self
     }
 }

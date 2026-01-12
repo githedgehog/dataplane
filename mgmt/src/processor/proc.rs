@@ -3,7 +3,7 @@
 
 //! Configuration processor
 
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, RwLock};
 use std::collections::{HashMap, HashSet};
 
 use tokio::spawn;
@@ -17,7 +17,7 @@ use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
 
-use crate::processor::confbuild::internal::build_internal_config;
+use crate::processor::confbuild::internal::build_internal_config_with_bmp;
 use crate::processor::confbuild::router::generate_router_config;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
@@ -44,6 +44,9 @@ use stats::VpcMapName;
 use stats::VpcStatsStore;
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::{VpcMap, VpcMapWriter};
+
+// bring in BmpOptions to pass through to internal config builder
+use config::internal::routing::bmp::BmpOptions;
 
 /// Populate FRR status into the dataplane status structure
 pub async fn populate_status_with_frr(
@@ -86,6 +89,12 @@ pub struct ConfigProcessorParams {
 
     // store for vpc stats
     pub vpc_stats_store: Arc<VpcStatsStore>,
+
+    // read-handle to shared dataplane status
+    pub dp_status_r: Arc<RwLock<DataplaneStatus>>,
+
+    // BMP options to inject into InternalConfig
+    pub bmp_options: Option<BmpOptions>,
 }
 
 impl ConfigProcessor {
@@ -119,8 +128,12 @@ impl ConfigProcessor {
     /// Main entry point for new configurations
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         config.validate()?;
-        let internal = build_internal_config(&config)?;
+
+        // BMP-aware internal builder
+        let internal =
+            build_internal_config_with_bmp(&config, self.proc_params.bmp_options.clone())?;
         config.set_internal_config(internal);
+
         let e = match self.apply(config).await {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -133,8 +146,18 @@ impl ConfigProcessor {
         info!("\n{history}");
         e
     }
+    /// Apply a blank configuration
+    #[allow(unused)]
+    async fn apply_blank_config(&mut self) -> ConfigResult {
+        let mut blank = GwConfig::blank();
+        // BMP-aware internal builder (even for blank, so FRR reflects BMP if needed)
+        let internal =
+            build_internal_config_with_bmp(&blank, self.proc_params.bmp_options.clone())?;
+        blank.set_internal_config(internal);
+        self.apply(blank).await
+    }
 
-    /// Apply the provided configuration and update the history. On success, store it.
+    /// Apply the provided configuration. On success, store it and update its meta-data.
     async fn apply(&mut self, mut config: GwConfig) -> ConfigResult {
         let result = self.apply_gw_config(&mut config).await;
         config.meta.apply_time();
@@ -184,7 +207,14 @@ impl ConfigProcessor {
 
     /// RPC handler: get dataplane status
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
-        let mut status = DataplaneStatus::new();
+        let mut status: DataplaneStatus = {
+            let guard = self
+                .proc_params
+                .dp_status_r
+                .read()
+                .expect("dp_status RwLock poisoned");
+            guard.clone()
+        };
 
         let stats_store = &self.proc_params.vpc_stats_store;
 
@@ -256,7 +286,8 @@ impl ConfigProcessor {
             status.add_vpc(name, v);
         }
 
-        // Emit only pair counters with traffic
+        // Replace peering counters with the latest snapshot (only pairs with traffic)
+        status.vpc_peering_counters.clear();
         for ((src, dst), fs) in pairs_with_traffic {
             let src_name = name_of
                 .get(&src)
@@ -276,14 +307,15 @@ impl ConfigProcessor {
                     dst_vpc: dst_name,
                     packets: fs.ctr.packets,
                     bytes: fs.ctr.bytes,
-                    drops: 0, // TODO: Add this in a later release
+                    drops: 0,
                     pps: fs.rate.pps,
                     bps: fs.rate.bps,
                 },
             );
         }
 
-        // Emit per-VPC total counters (numeric; includes bytes)
+        // Replace per-VPC totals with the latest snapshot
+        status.vpc_counters.clear();
         for (disc, fs) in vpc_snap {
             let name = name_of
                 .get(&disc)
@@ -523,10 +555,11 @@ impl ConfigProcessor {
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let vpcdtablesw = &mut self.proc_params.vpcdtablesw;
+        let bmp_options = self.proc_params.bmp_options.clone();
 
         /* build internal config if it hasn't been built */
         if config.internal.is_none() {
-            let internal = build_internal_config(config)?;
+            let internal = build_internal_config_with_bmp(config, bmp_options)?;
             config.set_internal_config(internal);
         }
         let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());

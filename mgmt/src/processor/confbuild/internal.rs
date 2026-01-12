@@ -21,6 +21,7 @@ use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
 
 use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
+use config::internal::routing::bmp::BmpOptions;
 use config::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
 };
@@ -225,7 +226,7 @@ impl VpcRoutingConfigIpv4 {
     }
 }
 
-/// Build BGP config for a VPC VRF
+/// Build BGP config for a VPC VRF (bmp is applied elsewhere)
 fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpConfig {
     let mut bgp = BgpConfig::new(asn).set_vrf_name(vpc.vrf_name());
     if let Some(router_id) = router_id {
@@ -315,15 +316,37 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
-/// Top-level function to build internal config from external config
+/// without BMP
 pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
+    build_internal_config_with_bmp(config, None)
+}
+
+/// Public entry — build with BMP (global options injected into default VRF and import views)
+pub fn build_internal_config_with_bmp(
+    config: &GwConfig,
+    bmp: Option<BmpOptions>,
+) -> Result<InternalConfig, ConfigError> {
     let genid = config.genid();
     debug!("Building internal config for gen {genid}");
     let external = &config.external;
 
-    /* Build internal config: device and underlay configs are copied as received */
+    // Prepare default VRF (possibly inject global BMP with VRF import views)
+    let mut default_vrf = external.underlay.vrf.clone();
+
+    // If BMP is provided and default VRF has BGP, attach BMP there and add import views
+    if let (Some(mut bmp_opts), Some(bgp_default)) = (bmp, default_vrf.bgp.as_mut()) {
+        // Collect all overlay VRF names to import
+        for vpc in external.overlay.vpc_table.values() {
+            // requires BmpOptions::push_import_vrf_view(String)
+            bmp_opts.push_import_vrf_view(vpc.vrf_name());
+        }
+        // Inject BMP into default VRF BGP
+        bgp_default.set_bmp_options(bmp_opts);
+    }
+
+    /* Build internal config: device and underlay configs are copied as received (with adjusted default_vrf) */
     let mut internal = InternalConfig::new(external.device.clone());
-    internal.add_vrf_config(external.underlay.vrf.clone())?;
+    internal.add_vrf_config(default_vrf)?;
     internal.set_vtep(external.underlay.vtep.clone());
 
     /* Build overlay config */
