@@ -114,15 +114,15 @@ impl TryFrom<&BgpNeighborStatus> for GatewayAgentStatusStateBgpVrfsNeighbors {
         Ok(GatewayAgentStatusStateBgpVrfsNeighbors {
             connections_dropped: Some(n.connections_dropped),
             enabled: Some(n.enabled),
-            established_transitions: i64::try_from(n.established_transitions).ok(),
+            established_transitions: Some(n.established_transitions),
             ipv4_unicast_prefixes,
             ipv6_unicast_prefixes,
             l2_vpnevpn_prefixes,
             last_reset_reason: (!n.last_reset_reason.is_empty())
                 .then(|| n.last_reset_reason.clone()),
-            local_as: i32::try_from(n.local_as).ok(),
+            local_as: Some(n.local_as),
             messages,
-            peer_as: i32::try_from(n.peer_as).ok(),
+            peer_as: Some(n.peer_as),
             remote_router_id: (!n.remote_router_id.is_empty()).then(|| n.remote_router_id.clone()),
             session_state: Some(n.session_state.into()),
         })
@@ -149,12 +149,12 @@ impl TryFrom<&BgpMessages> for GatewayAgentStatusStateBgpVrfsNeighborsMessages {
 impl From<&BgpMessageCounters> for GatewayAgentStatusStateBgpVrfsNeighborsMessagesReceived {
     fn from(c: &BgpMessageCounters) -> Self {
         Self {
-            capability: i64::try_from(c.capability).ok(),
-            keepalive: i64::try_from(c.keepalive).ok(),
-            notification: i64::try_from(c.notification).ok(),
-            open: i64::try_from(c.open).ok(),
-            route_refresh: i64::try_from(c.route_refresh).ok(),
-            update: i64::try_from(c.update).ok(),
+            capability: Some(c.capability),
+            keepalive: Some(c.keepalive),
+            notification: Some(c.notification),
+            open: Some(c.open),
+            route_refresh: Some(c.route_refresh),
+            update: Some(c.update),
         }
     }
 }
@@ -162,12 +162,12 @@ impl From<&BgpMessageCounters> for GatewayAgentStatusStateBgpVrfsNeighborsMessag
 impl From<&BgpMessageCounters> for GatewayAgentStatusStateBgpVrfsNeighborsMessagesSent {
     fn from(c: &BgpMessageCounters) -> Self {
         Self {
-            capability: i64::try_from(c.capability).ok(),
-            keepalive: i64::try_from(c.keepalive).ok(),
-            notification: i64::try_from(c.notification).ok(),
-            open: i64::try_from(c.open).ok(),
-            route_refresh: i64::try_from(c.route_refresh).ok(),
-            update: i64::try_from(c.update).ok(),
+            capability: Some(c.capability),
+            keepalive: Some(c.keepalive),
+            notification: Some(c.notification),
+            open: Some(c.open),
+            route_refresh: Some(c.route_refresh),
+            update: Some(c.update),
         }
     }
 }
@@ -175,9 +175,9 @@ impl From<&BgpMessageCounters> for GatewayAgentStatusStateBgpVrfsNeighborsMessag
 impl From<&BgpNeighborPrefixes> for GatewayAgentStatusStateBgpVrfsNeighborsIpv4UnicastPrefixes {
     fn from(p: &BgpNeighborPrefixes) -> Self {
         Self {
-            received: i32::try_from(p.received).ok(),
-            received_pre_policy: i32::try_from(p.received_pre_policy).ok(),
-            sent: i32::try_from(p.sent).ok(),
+            received: Some(p.received),
+            received_pre_policy: Some(p.received_pre_policy),
+            sent: Some(p.sent),
         }
     }
 }
@@ -185,9 +185,9 @@ impl From<&BgpNeighborPrefixes> for GatewayAgentStatusStateBgpVrfsNeighborsIpv4U
 impl From<&BgpNeighborPrefixes> for GatewayAgentStatusStateBgpVrfsNeighborsIpv6UnicastPrefixes {
     fn from(p: &BgpNeighborPrefixes) -> Self {
         Self {
-            received: i32::try_from(p.received).ok(),
-            received_pre_policy: i32::try_from(p.received_pre_policy).ok(),
-            sent: i32::try_from(p.sent).ok(),
+            received: Some(p.received),
+            received_pre_policy: Some(p.received_pre_policy),
+            sent: Some(p.sent),
         }
     }
 }
@@ -195,9 +195,9 @@ impl From<&BgpNeighborPrefixes> for GatewayAgentStatusStateBgpVrfsNeighborsIpv6U
 impl From<&BgpNeighborPrefixes> for GatewayAgentStatusStateBgpVrfsNeighborsL2VpnevpnPrefixes {
     fn from(p: &BgpNeighborPrefixes) -> Self {
         Self {
-            received: i32::try_from(p.received).ok(),
-            received_pre_policy: i32::try_from(p.received_pre_policy).ok(),
-            sent: i32::try_from(p.sent).ok(),
+            received: Some(p.received),
+            received_pre_policy: Some(p.received_pre_policy),
+            sent: Some(p.sent),
         }
     }
 }
