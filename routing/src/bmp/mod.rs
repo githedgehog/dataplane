@@ -60,7 +60,7 @@ pub fn spawn_background(
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => handle.spawn(fut),
         Err(_) => {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("failed to build Tokio runtime for BMP");
