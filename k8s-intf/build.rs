@@ -13,23 +13,34 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn get_agent_crd_url() -> String {
-    let env_file_path = workspace_root().join("scripts").join("k8s-crd.env");
-    println!("cargo:rerun-if-changed={}", env_file_path.display());
+#[derive(Default)]
+struct EnvConfig {
+    url: Option<String>,
+    local_path: Option<String>,
+}
 
+fn read_env_config() -> EnvConfig {
+    let env_file_path = workspace_root().join("scripts").join("k8s-crd.env");
     let env_file =
         dotenvy::from_path_iter(env_file_path).expect("Failed to read scripts/k8s-crd.env");
 
-    env_file
-        .filter_map(Result::ok)
-        .find_map(|(key, value)| {
-            if key == "K8S_GATEWAY_AGENT_CRD_URL" {
-                Some(value)
-            } else {
-                None
+    let mut config = EnvConfig::default();
+    env_file.filter_map(Result::ok).for_each(|(key, value)| {
+        match key.as_str() {
+            "K8S_GATEWAY_AGENT_CRD_URL" => {
+                if !value.is_empty() {
+                    config.url = Some(value);
+                }
             }
-        })
-        .expect("K8S_GATEWAY_AGENT_CRD_URL not found in scripts/k8s-crd.env")
+            "K8S_GATEWAY_AGENT_CRD_PATH" => {
+                if !value.is_empty() {
+                    config.local_path = Some(value);
+                }
+            }
+            _ => { /* ignore undeclared variables */ }
+        }
+    });
+    config
 }
 
 fn fetch_crd(url: &str) -> String {
@@ -40,6 +51,14 @@ fn fetch_crd(url: &str) -> String {
         .body_mut()
         .read_to_string()
         .expect("Failed to read response body")
+}
+
+fn fetch_crd_from_file(path: &str) -> String {
+    println!("cargo:note=Fetching CRD from file at {path}");
+    match fs::read_to_string(path) {
+        Ok(crd) => crd,
+        Err(e) => panic!("Failed to read CRD from {path}: {e}"),
+    }
 }
 
 const LICENSE_PREAMBLE: &str = "// SPDX-License-Identifier: Apache-2.0
@@ -126,10 +145,25 @@ fn code_needs_regen(new_code: &str) -> bool {
 }
 
 fn main() {
-    let agent_crd_url = get_agent_crd_url();
-    let agent_crd_contents = fetch_crd(&agent_crd_url);
-    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents);
+    // get config from env file
+    let config = read_env_config();
 
+    // get CRD spec from local path or URL
+    let crd_spec = if let Some(agent_crd_file) = config.local_path {
+        fetch_crd_from_file(&agent_crd_file)
+    } else if let Some(agent_crd_url) = config.url {
+        fetch_crd(&agent_crd_url)
+    } else {
+        panic!("No CRD path or URL is set in env file");
+    };
+
+    // CRD spec can't be empty
+    if crd_spec.is_empty() {
+        panic!("Empty CRD specification");
+    }
+
+    // generate rust types from the read crd_spec
+    let agent_generated_code = generate_rust_for_crd(&crd_spec);
     if !code_needs_regen(&agent_generated_code) {
         println!("cargo:note=No changes to code generated from CRD");
         return;
