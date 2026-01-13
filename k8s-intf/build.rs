@@ -47,6 +47,10 @@ const LICENSE_PREAMBLE: &str = "// SPDX-License-Identifier: Apache-2.0
 
 ";
 
+fn fixup_signed_types(raw: String) -> String {
+    raw.replace("i64", "u64").replace("i32", "u32")
+}
+
 /// Fixup the types in the generated Rust code
 ///
 /// This is gross, but needed.  OpenAPI v3 does not have any unsigned types
@@ -56,20 +60,18 @@ const LICENSE_PREAMBLE: &str = "// SPDX-License-Identifier: Apache-2.0
 /// By rewriting the types, serde_json used by kube-rs should parse the
 /// json correctly.
 fn fixup_types(raw: String) -> String {
+    let raw = fixup_signed_types(raw);
     raw.replace("asn: Option<i32>", "asn: Option<u32>")
-        // This should get both vtep_mtu and plain mtu
-        .replace("mtu: Option<i32>", "mtu: Option<u32>")
-        .replace("vni: Option<i32>", "vni: Option<u32>")
-        .replace("workers: Option<i64>", "workers: Option<u8>") // Gateway Go code says this is a u8
+        .replace("workers: Option<u64>", "workers: Option<u8>") // Gateway Go code says this is a u8
         .replace(
             "idle_timeout: Option<String>",
             "idle_timeout: Option<std::time::Duration>",
         )
-        .replace("b: Option<i64>", "b: Option<u64>")
-        .replace("d: Option<i64>", "d: Option<u64>")
-        .replace("p: Option<i64>", "p: Option<u64>")
-        .replace("priority: Option<i32>", "priority: Option<u32>")
-        .replace("priority: i32", "priority: u32")
+        .replace(
+            "last_applied_gen: Option<u64>",
+            "last_applied_gen: Option<i64>",
+        )
+    // fixme: we should consider to use u64 for generation Ids?
 }
 
 fn generate_rust_for_crd(crd_content: &str) -> String {

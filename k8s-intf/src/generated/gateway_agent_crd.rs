@@ -312,7 +312,7 @@ pub struct GatewayAgentStatusStateBgpVrfsNeighbors {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "establishedTransitions")]
-    pub established_transitions: Option<i64>,
+    pub established_transitions: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "ipv4UnicastPrefixes")]
     pub ipv4_unicast_prefixes: Option<GatewayAgentStatusStateBgpVrfsNeighborsIpv4UnicastPrefixes>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "ipv6UnicastPrefixes")]
@@ -322,11 +322,11 @@ pub struct GatewayAgentStatusStateBgpVrfsNeighbors {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "lastResetReason")]
     pub last_reset_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "localAS")]
-    pub local_as: Option<i32>,
+    pub local_as: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<GatewayAgentStatusStateBgpVrfsNeighborsMessages>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "peerAS")]
-    pub peer_as: Option<i32>,
+    pub peer_as: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "remoteRouterID")]
     pub remote_router_id: Option<String>,
     /// BGPNeighborSessionState represents the BGP FSM state for a neighbor.
@@ -337,31 +337,31 @@ pub struct GatewayAgentStatusStateBgpVrfsNeighbors {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentStatusStateBgpVrfsNeighborsIpv4UnicastPrefixes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub received: Option<i32>,
+    pub received: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "receivedPrePolicy")]
-    pub received_pre_policy: Option<i32>,
+    pub received_pre_policy: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sent: Option<i32>,
+    pub sent: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentStatusStateBgpVrfsNeighborsIpv6UnicastPrefixes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub received: Option<i32>,
+    pub received: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "receivedPrePolicy")]
-    pub received_pre_policy: Option<i32>,
+    pub received_pre_policy: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sent: Option<i32>,
+    pub sent: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentStatusStateBgpVrfsNeighborsL2VpnevpnPrefixes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub received: Option<i32>,
+    pub received: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "receivedPrePolicy")]
-    pub received_pre_policy: Option<i32>,
+    pub received_pre_policy: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sent: Option<i32>,
+    pub sent: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -375,33 +375,33 @@ pub struct GatewayAgentStatusStateBgpVrfsNeighborsMessages {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentStatusStateBgpVrfsNeighborsMessagesReceived {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability: Option<i64>,
+    pub capability: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keepalive: Option<i64>,
+    pub keepalive: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notification: Option<i64>,
+    pub notification: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open: Option<i64>,
+    pub open: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "routeRefresh")]
-    pub route_refresh: Option<i64>,
+    pub route_refresh: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub update: Option<i64>,
+    pub update: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GatewayAgentStatusStateBgpVrfsNeighborsMessagesSent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability: Option<i64>,
+    pub capability: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keepalive: Option<i64>,
+    pub keepalive: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notification: Option<i64>,
+    pub notification: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open: Option<i64>,
+    pub open: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "routeRefresh")]
-    pub route_refresh: Option<i64>,
+    pub route_refresh: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub update: Option<i64>,
+    pub update: Option<u64>,
 }
 
 /// Neighbors keyed by an ip address string
