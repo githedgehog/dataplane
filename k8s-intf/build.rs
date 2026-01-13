@@ -15,6 +15,7 @@ fn workspace_root() -> PathBuf {
 
 #[derive(Default)]
 struct EnvConfig {
+    version: Option<String>,
     url: Option<String>,
     local_path: Option<String>,
 }
@@ -27,6 +28,11 @@ fn read_env_config() -> EnvConfig {
     let mut config = EnvConfig::default();
     env_file.filter_map(Result::ok).for_each(|(key, value)| {
         match key.as_str() {
+            "K8S_GATEWAY_AGENT_REF" => {
+                if !value.is_empty() {
+                    config.version = Some(value);
+                }
+            }
             "K8S_GATEWAY_AGENT_CRD_URL" => {
                 if !value.is_empty() {
                     config.url = Some(value);
@@ -40,6 +46,12 @@ fn read_env_config() -> EnvConfig {
             _ => { /* ignore undeclared variables */ }
         }
     });
+
+    // don't set version if we'll build from local crd spec
+    if config.local_path.is_some() {
+        config.version.take();
+    }
+
     config
 }
 
@@ -91,7 +103,16 @@ fn fixup_types(raw: String) -> String {
         .replace("priority: i32", "priority: u32")
 }
 
-fn generate_rust_for_crd(crd_content: &str) -> String {
+fn gen_version_const(version: &Option<String>) -> String {
+    let version = version
+        .as_ref()
+        .map(|v| format!("Some(\"{v}\")"))
+        .unwrap_or("None".to_string());
+
+    format!("pub const GW_API_VERSION: Option<&str> = {version};\n\n")
+}
+
+fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
         .args(["-D", "PartialEq", "-Af", "-"])
@@ -120,7 +141,7 @@ fn generate_rust_for_crd(crd_content: &str) -> String {
 
     let raw = String::from_utf8(output.stdout).expect("Failed to convert kopium output to string");
 
-    LICENSE_PREAMBLE.to_string() + &fixup_types(raw)
+    LICENSE_PREAMBLE.to_string() + gen_version_const(version).as_str() + &fixup_types(raw)
 }
 
 const GENERATED_OUTPUT_DIR: &str = "src/generated";
@@ -163,7 +184,7 @@ fn main() {
     }
 
     // generate rust types from the read crd_spec
-    let agent_generated_code = generate_rust_for_crd(&crd_spec);
+    let agent_generated_code = generate_rust_for_crd(&crd_spec, &config.version);
     if !code_needs_regen(&agent_generated_code) {
         println!("cargo:note=No changes to code generated from CRD");
         return;
