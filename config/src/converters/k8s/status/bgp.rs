@@ -61,31 +61,35 @@ impl TryFrom<&BgpVrfStatus> for GatewayAgentStatusStateBgpVrfs {
     }
 }
 
+impl From<BgpNeighborSessionState> for GatewayAgentStatusStateBgpVrfsNeighborsSessionState {
+    fn from(value: BgpNeighborSessionState) -> Self {
+        match value {
+            BgpNeighborSessionState::Unset => {
+                GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Unset
+            }
+            BgpNeighborSessionState::Idle => {
+                GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Idle
+            }
+            BgpNeighborSessionState::Connect => {
+                GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Connect
+            }
+            BgpNeighborSessionState::Active => {
+                GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Active
+            }
+            BgpNeighborSessionState::Open => {
+                GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Open
+            }
+            BgpNeighborSessionState::Established => {
+                GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Established
+            }
+        }
+    }
+}
+
 impl TryFrom<&BgpNeighborStatus> for GatewayAgentStatusStateBgpVrfsNeighbors {
     type Error = ToK8sConversionError;
 
     fn try_from(n: &BgpNeighborStatus) -> Result<Self, Self::Error> {
-        let session_state = match n.session_state {
-            BgpNeighborSessionState::Unset => {
-                Some(GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Unset)
-            }
-            BgpNeighborSessionState::Idle => {
-                Some(GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Idle)
-            }
-            BgpNeighborSessionState::Connect => {
-                Some(GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Connect)
-            }
-            BgpNeighborSessionState::Active => {
-                Some(GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Active)
-            }
-            BgpNeighborSessionState::Open => {
-                Some(GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Open)
-            }
-            BgpNeighborSessionState::Established => {
-                Some(GatewayAgentStatusStateBgpVrfsNeighborsSessionState::Established)
-            }
-        };
-
         let messages = n
             .messages
             .as_ref()
@@ -120,7 +124,7 @@ impl TryFrom<&BgpNeighborStatus> for GatewayAgentStatusStateBgpVrfsNeighbors {
             messages,
             peer_as: i32::try_from(n.peer_as).ok(),
             remote_router_id: (!n.remote_router_id.is_empty()).then(|| n.remote_router_id.clone()),
-            session_state,
+            session_state: Some(n.session_state.into()),
         })
     }
 }
