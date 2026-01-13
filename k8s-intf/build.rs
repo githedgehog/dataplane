@@ -13,6 +13,10 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn env_file_name() -> PathBuf {
+    workspace_root().join("scripts").join("k8s-crd.env")
+}
+
 #[derive(Default)]
 struct EnvConfig {
     version: Option<String>,
@@ -21,7 +25,7 @@ struct EnvConfig {
 }
 
 fn read_env_config() -> EnvConfig {
-    let env_file_path = workspace_root().join("scripts").join("k8s-crd.env");
+    let env_file_path = env_file_name();
     let env_file =
         dotenvy::from_path_iter(env_file_path).expect("Failed to read scripts/k8s-crd.env");
 
@@ -165,7 +169,13 @@ fn code_needs_regen(new_code: &str) -> bool {
     true
 }
 
+fn rerun() {
+    println!("cargo:rerun-if-changed={}", env_file_name().display());
+}
+
 fn main() {
+    rerun();
+
     // get config from env file
     let config = read_env_config();
 
