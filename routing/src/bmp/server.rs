@@ -111,7 +111,7 @@ async fn handle_peer<H: BmpHandler>(
     while let Some(frame) = reader.next().await {
         match frame {
             Ok(msg) => {
-                debug!("BMP: received message from {}: {:?}", peer, msg);
+                tracing::info!("BMP: received message from {}: {:?}", peer, msg);
                 // netgauze_bmp_pkt::BmpMessage for both v3 and v4. TODO: smatov: v4 handling
                 handler.on_message(peer, msg).await;
             }
