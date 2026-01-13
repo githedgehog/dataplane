@@ -109,6 +109,7 @@ impl K8sClient {
                     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
                 ),
                 state: Some(GatewayAgentStatusState {
+                    bgp: None,
                     dataplane: Some(GatewayAgentStatusStateDataplane {
                         version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
                     }),

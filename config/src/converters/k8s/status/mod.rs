@@ -3,6 +3,7 @@
 
 //! Converter for gateway-schema k8s objects from internal status
 
+pub mod bgp;
 pub mod dataplane_status;
 pub mod frr;
 pub mod peerings;
