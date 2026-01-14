@@ -2,21 +2,22 @@
 // Copyright Open Network Fabric Authors
 
 //! Minimal BMP server built on NetGauze 0.8.0
-//! - Frames a TCP stream with `BmpCodec`
-//! - Yields `netgauze_bmp_pkt::BmpMessage` items
-//! - Hands each item to a user-provided `BmpHandler`
+//! - Reads a TCP stream into a BytesMut
+//! - Decodes BMP frames using `BmpCodec`
+//! - On decode error: discards one BMP frame (best-effort resync) and continues
+//!   so FRR doesn't see "connection reset by peer".
 
 use anyhow::{Context, Result};
+use bytes::{Buf, BytesMut};
 use concurrency::sync::Arc;
-use futures_util::StreamExt;
-use netgauze_bmp_pkt::BmpMessage;
 use netgauze_bmp_pkt::codec::BmpCodec;
 use std::net::SocketAddr;
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
-use tokio_util::codec::FramedRead;
+use tokio_util::codec::Decoder;
+use tracing::{debug, info, warn};
 
-use tracing::debug;
 use crate::bmp::handler::BmpHandler;
 
 #[derive(Clone, Debug)]
@@ -57,7 +58,7 @@ impl<H: BmpHandler> BmpServer<H> {
         let listener = TcpListener::bind(self.cfg.bind_addr)
             .await
             .with_context(|| format!("bind {}", self.cfg.bind_addr))?;
-        tracing::info!("BMP server listening on {}", self.cfg.bind_addr);
+        info!("BMP server listening on {}", self.cfg.bind_addr);
 
         let mut tasks: JoinSet<Result<()>> = JoinSet::new();
         let mut active: usize = 0;
@@ -66,7 +67,7 @@ impl<H: BmpHandler> BmpServer<H> {
             let (sock, peer) = listener.accept().await?;
             if let Some(cap) = self.cfg.max_conns {
                 if active >= cap {
-                    tracing::warn!("rejecting {} (max_conns reached)", peer);
+                    warn!("rejecting {} (max_conns reached)", peer);
                     continue;
                 }
             }
@@ -83,11 +84,11 @@ impl<H: BmpHandler> BmpServer<H> {
                     Ok(Ok(())) => active = active.saturating_sub(1),
                     Ok(Err(e)) => {
                         active = active.saturating_sub(1);
-                        tracing::warn!("bmp task error: {e:#}");
+                        warn!("bmp task error: {e:#}");
                     }
                     Err(e) => {
                         active = active.saturating_sub(1);
-                        tracing::warn!("bmp task join error: {e:#}");
+                        warn!("bmp task join error: {e:#}");
                     }
                 }
             }
@@ -95,35 +96,87 @@ impl<H: BmpHandler> BmpServer<H> {
     }
 }
 
+/// BMP common header is:
+/// - version: u8
+/// - length:  u32 (network endian), total length INCLUDING the common header
+const BMP_COMMON_HDR_LEN: usize = 1 + 4;
+
+fn drop_one_bmp_frame_best_effort(buf: &mut BytesMut) {
+    if buf.len() < BMP_COMMON_HDR_LEN {
+        // Not enough data to know length; drop what we have to avoid infinite loop.
+        buf.clear();
+        return;
+    }
+
+    // buf[0] = version
+    let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+
+    if len < BMP_COMMON_HDR_LEN {
+        // Bogus length; drop one byte and try to resync.
+        buf.advance(1);
+        return;
+    }
+
+    if buf.len() >= len {
+        // Drop exactly one frame.
+        buf.advance(len);
+    } else {
+        // We don't have full frame yet; keep buffer and wait for more bytes.
+        // But to avoid looping forever on the same error without progress, drop 1 byte.
+        buf.advance(1);
+    }
+}
+
 async fn handle_peer<H: BmpHandler>(
-    sock: TcpStream,
+    mut sock: TcpStream,
     peer: SocketAddr,
     cfg: BmpServerConfig,
     handler: Arc<H>,
 ) -> Result<()> {
     if cfg.tcp_nodelay {
-        let _ = sock.set_nodelay(true);
-    }
-    // Frame the stream as BMP
-    let codec = BmpCodec::default();
-    let mut reader = FramedRead::new(sock, codec);
-
-    while let Some(frame) = reader.next().await {
-        match frame {
-            Ok(msg) => {
-                tracing::info!("BMP: received message from {}: {:?}", peer, msg);
-                // netgauze_bmp_pkt::BmpMessage for both v3 and v4. TODO: smatov: v4 handling
-                handler.on_message(peer, msg).await;
-            }
-            Err(e) => {
-                handler
-                    .on_disconnect(peer, &format!("decode error: {e:?}"))
-                    .await;
-                return Ok(());
-            }
+        if let Err(e) = sock.set_nodelay(true) {
+            warn!("BMP: could not set TCP_NODELAY for {}: {}", peer, e);
         }
     }
 
-    handler.on_disconnect(peer, "eof").await;
-    Ok(())
+    // Buffer for stream and codec for BMP framing/parsing
+    let mut buf = BytesMut::with_capacity(cfg.tcp_recv_buf.unwrap_or(1 << 20));
+    let mut codec = BmpCodec::default();
+
+    loop {
+        // Read more bytes from TCP
+        let n = sock
+            .read_buf(&mut buf)
+            .await
+            .with_context(|| format!("read from {peer}"))?;
+
+        if n == 0 {
+            handler.on_disconnect(peer, "eof").await;
+            return Ok(());
+        }
+
+        // Drain as many BMP messages as possible from current buffer
+        loop {
+            match codec.decode(&mut buf) {
+                Ok(Some(msg)) => {
+                    debug!("BMP: received message from {}: {:?}", peer, msg);
+                    handler.on_message(peer, msg).await;
+                }
+                Ok(None) => {
+                    // Need more bytes
+                    break;
+                }
+                Err(e) => {
+                    // IMPORTANT: do not drop the TCP connection.
+                    // Log + best-effort resync by discarding a frame.
+                    debug!(
+                        "BMP decode error from {}: {:?} (dropping one BMP frame and continuing)",
+                        peer, e
+                    );
+                    drop_one_bmp_frame_best_effort(&mut buf);
+                    // continue loop and try decoding again
+                }
+            }
+        }
+    }
 }

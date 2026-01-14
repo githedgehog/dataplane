@@ -324,11 +324,6 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
-/// without BMP
-pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, ConfigError> {
-    build_internal_config_with_bmp(config, None)
-}
-
 /// Public entry — build with BMP (global options injected into default VRF and import views)
 pub fn build_internal_config_with_bmp(
     config: &GwConfig,
@@ -345,7 +340,6 @@ pub fn build_internal_config_with_bmp(
     if let (Some(mut bmp_opts), Some(bgp_default)) = (bmp, default_vrf.bgp.as_mut()) {
         // Collect all overlay VRF names to import
         for vpc in external.overlay.vpc_table.values() {
-            // requires BmpOptions::push_import_vrf_view(String)
             bmp_opts.push_import_vrf_view(vpc.vrf_name());
         }
         // Inject BMP into default VRF BGP

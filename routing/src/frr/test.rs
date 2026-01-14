@@ -127,7 +127,6 @@ pub mod tests {
     use concurrency::sync::{Arc, RwLock};
     use config::internal::status::DataplaneStatus;
     use std::time::Duration;
-    use tokio::sync::watch;
     use tracing_test::traced_test;
 
     #[traced_test]
