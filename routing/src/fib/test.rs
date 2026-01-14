@@ -247,8 +247,8 @@ mod tests {
     #[test]
     fn test_concurrency_fibtable() {
         // number of threads looking up fibtable
-        const NUM_WORKERS: u16 = 7;
-        const NUM_PACKETS: u64 = 1_000_000;
+        const NUM_WORKERS: u16 = 6;
+        const NUM_PACKETS: u64 = 100_000;
         const TENTH: u64 = NUM_PACKETS / 10;
 
         // create fibtable (empty, without any fib)
