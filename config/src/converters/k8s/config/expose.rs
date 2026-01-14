@@ -170,6 +170,22 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
     ) -> Result<Self, Self::Error> {
         let mut vpc_expose = VpcExpose::empty();
 
+        // check if it is a default expose
+        vpc_expose.default = expose.default.unwrap_or(false);
+        if vpc_expose.default {
+            if expose.ips.as_ref().is_some_and(|ips| !ips.is_empty()) {
+                return Err(FromK8sConversionError::Invalid(
+                    "A Default expose can't contain prefixes".to_string(),
+                ));
+            }
+            if expose.r#as.as_ref().is_some_and(|r#as| !r#as.is_empty()) {
+                return Err(FromK8sConversionError::Invalid(
+                    "A Default expose can't contain 'as' prefixes".to_string(),
+                ));
+            }
+            return Ok(vpc_expose);
+        }
+
         // Process PeeringIP rules
         if let Some(ips) = expose.ips.as_ref() {
             if ips.is_empty() {
