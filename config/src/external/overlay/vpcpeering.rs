@@ -590,11 +590,7 @@ impl VpcPeeringTable {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    /// Empty a [`VpcPeeringTable`]
-    pub fn clear(&mut self) {
-        debug!("Emptying peering table...");
-        self.0.clear();
-    }
+
     /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
     pub fn add(&mut self, peering: VpcPeering) -> ConfigResult {
         if peering.name.is_empty() {
