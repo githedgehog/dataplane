@@ -66,6 +66,7 @@ fn empty_btreeset() -> &'static BTreeSet<PrefixWithOptionalPorts> {
 use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
+    pub default: bool,
     pub ips: BTreeSet<PrefixWithOptionalPorts>,
     pub nots: BTreeSet<PrefixWithOptionalPorts>,
     pub nat: Option<VpcExposeNat>,
