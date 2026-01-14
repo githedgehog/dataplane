@@ -44,7 +44,7 @@ pub mod test {
 
     use routing::Render;
 
-    use crate::processor::confbuild::internal::build_internal_config;
+    use crate::processor::confbuild::internal::build_internal_config_with_bmp;
     use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
     use routing::{Router, RouterParamsBuilder};
     use tracing::debug;
@@ -380,7 +380,8 @@ pub mod test {
             let peering_table = &config.external.overlay.peering_table;
             println!("\n{vpc_table}\n{peering_table}");
         }
-        let internal = build_internal_config(&config).expect("Should succeed");
+        let bmp_config = None;
+        let internal = build_internal_config_with_bmp(&config, bmp_config).expect("Should succeed");
         let rendered = internal.render(&config.genid());
         println!("{rendered}");
     }
