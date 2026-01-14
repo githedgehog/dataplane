@@ -7,7 +7,6 @@ use lpm::prefix::{IpRangeWithPorts, Prefix, PrefixWithOptionalPorts, PrefixWithP
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
-use tracing::debug;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStatelessNat;
@@ -592,8 +591,9 @@ impl VpcPeering {
             gw_group,
         }
     }
+    #[cfg(test)]
+    /// Validate A VpcPeering. Only used in tests. Dataplane validates `Peerings`
     pub fn validate(&self) -> ConfigResult {
-        debug!("Validating VPC peering '{}'...", &self.name);
         self.left.validate()?;
         self.right.validate()?;
         Ok(())

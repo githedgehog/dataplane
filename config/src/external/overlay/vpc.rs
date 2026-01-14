@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use tracing::{debug, error, warn};
 
+use crate::converters::k8s::config::peering;
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
@@ -31,6 +32,21 @@ pub struct Peering {
     pub remote_id: VpcId,             /* Id of peer */
     pub gwgroup: Option<String>,      /* gateway group serving this peering */
     pub adv_communities: Vec<String>, /* communities with which to advertise prefixes in this peering */
+}
+
+impl Peering {
+    fn validate(&self) -> ConfigResult {
+        debug!(
+            "Validating manifest of VPC {} in peering {}",
+            self.local.name, self.name
+        );
+        self.local.validate()?;
+        if false {
+            // not needed will be validated when validating the remote vpc
+            self.remote.validate()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq)]
@@ -115,7 +131,8 @@ impl Vpc {
     }
 
     /// Check that a [`Vpc`] does not peer more than once with another.
-    pub fn check_peering_count(&self) -> ConfigResult {
+    fn check_peering_count(&self) -> ConfigResult {
+        debug!("Checking peering duplicates for for VPC {}...", self.name);
         // We use the VPC Ids to identify peer VPCs.
         let mut peers = BTreeSet::new();
         for peering in &self.peerings {
@@ -130,9 +147,20 @@ impl Vpc {
         Ok(())
     }
 
+    /// Check the peerings that a VPC participates in
+    fn check_peerings(&self) -> ConfigResult {
+        debug!("Checking peerings of VPC {}...", self.name);
+        for peering in &self.peerings {
+            peering.validate()?;
+        }
+        Ok(())
+    }
+
     /// Validate a [`Vpc`]
     pub fn validate(&self) -> ConfigResult {
+        debug!("Validating config for VPC {}...", self.name);
         self.check_peering_count()?;
+        self.check_peerings()?;
         Ok(())
     }
 
