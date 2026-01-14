@@ -43,7 +43,6 @@ impl Overlay {
         for peering in self.peering_table.values() {
             self.check_peering_vpc(&peering.name, &peering.left)?;
             self.check_peering_vpc(&peering.name, &peering.right)?;
-            peering.validate()?;
         }
         Ok(())
     }
