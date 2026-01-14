@@ -8,6 +8,7 @@
 use crate::external::overlay::vpc::Vpc;
 use std::fmt::Display;
 
+use crate::external::overlay::Overlay;
 use crate::external::overlay::vpc::{Peering, VpcId, VpcTable};
 use crate::external::overlay::vpcpeering::VpcManifest;
 use crate::external::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
@@ -28,6 +29,9 @@ const SEP: &str = "       ";
 impl Display for VpcExpose {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut carriage = false;
+        if self.default {
+            write!(f, "{SEP} prefixes: default")?;
+        }
         if !self.ips.is_empty() {
             write!(f, "{SEP} prefixes:")?;
             self.ips.iter().for_each(|x| {
@@ -232,5 +236,12 @@ impl Display for VpcPeeringTable {
             peering.fmt(f)?;
         }
         Ok(())
+    }
+}
+
+impl Display for Overlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.vpc_table.fmt(f)?;
+        self.peering_table.fmt(f)
     }
 }
