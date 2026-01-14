@@ -1,0 +1,902 @@
+{
+  "nodes": [
+    {
+      "uid": 3312287155,
+      "function": {
+        "uid": 3312287155,
+        "name": "InitialNode",
+        "documentation": "Engine-generated boundary node",
+        "consumes": [],
+        "produces": [],
+        "group": null
+      },
+      "is_artificial_graph_start": true,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 1862179572,
+      "function": {
+        "uid": 1862179572,
+        "name": "ProcessCLI",
+        "documentation": "**Process CLI**\nParses the command line arguments provided by the user.\nReturns the global settings and the specific config path found.",
+        "consumes": [
+          {
+            "uid": 3056436994,
+            "kind": {
+              "Variable": {
+                "uid": 3364744656,
+                "name": "InitialCommand",
+                "documentation": "**Initial Command**\nRaw input from the CLI arguments.\nRepresents the user's intent (e.g., `build`, `watch`)."
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 3239088686,
+              "kind": {
+                "Constant": {
+                  "uid": 1258653480,
+                  "name": "Settings",
+                  "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ],
+          [
+            {
+              "uid": 2781954702,
+              "kind": {
+                "Variable": {
+                  "uid": 3903963449,
+                  "name": "PathToConfig",
+                  "documentation": "**Path To Config**\nThe resolved location of the configuration file.\nDefaults to `./tect.toml` if not provided."
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": {
+          "uid": 119823002,
+          "name": "Environment",
+          "documentation": "**Environment Group**\nSetup and configuration phase.\nHandles the transition from CLI input to internal settings."
+        }
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 420917339,
+      "function": {
+        "uid": 420917339,
+        "name": "LoadConfig",
+        "documentation": "**Load Config**\nReads the configuration file from disk and hydrates the\nglobal Settings object.",
+        "consumes": [
+          {
+            "uid": 245343900,
+            "kind": {
+              "Variable": {
+                "uid": 3903963449,
+                "name": "PathToConfig",
+                "documentation": "**Path To Config**\nThe resolved location of the configuration file.\nDefaults to `./tect.toml` if not provided."
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 3507956683,
+              "kind": {
+                "Constant": {
+                  "uid": 1258653480,
+                  "name": "Settings",
+                  "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": {
+          "uid": 119823002,
+          "name": "Environment",
+          "documentation": "**Environment Group**\nSetup and configuration phase.\nHandles the transition from CLI input to internal settings."
+        }
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 1823095060,
+      "function": {
+        "uid": 1823095060,
+        "name": "LoadTemplates",
+        "documentation": "**Load Templates**\nLocates and compiles the Handlebars templates from the\ndirectory specified in the settings.",
+        "consumes": [
+          {
+            "uid": 4266350666,
+            "kind": {
+              "Constant": {
+                "uid": 1258653480,
+                "name": "Settings",
+                "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 1732961030,
+              "kind": {
+                "Constant": {
+                  "uid": 1137376136,
+                  "name": "Templates",
+                  "documentation": "**Templates**\nThe registry of HTML templates used for rendering.\n*Note: Requires a valid handlebars setup.*"
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": null
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 4069362651,
+      "function": {
+        "uid": 4069362651,
+        "name": "ScanFS",
+        "documentation": "**Scan File System**\nRecursively walks the source directory to find markdown files.\nReturns a collection of `SourceFile` or a collection of errors.",
+        "consumes": [
+          {
+            "uid": 720956269,
+            "kind": {
+              "Constant": {
+                "uid": 1258653480,
+                "name": "Settings",
+                "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 1889669997,
+              "kind": {
+                "Constant": {
+                  "uid": 3977794926,
+                  "name": "SourceFile",
+                  "documentation": "**Source File**\nA raw input file from the filesystem.\nThis represents a single `.md` file before processing."
+                }
+              },
+              "cardinality": "Collection"
+            }
+          ],
+          [
+            {
+              "uid": 4126579574,
+              "kind": {
+                "Error": {
+                  "uid": 4092812300,
+                  "name": "FileSystemError",
+                  "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+                }
+              },
+              "cardinality": "Collection"
+            }
+          ]
+        ],
+        "group": {
+          "uid": 4005172437,
+          "name": "Ingestion",
+          "documentation": "**Ingestion Group**\nReading data from the physical world.\nFocuses on filesystem discovery."
+        }
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 3260984437,
+      "function": {
+        "uid": 3260984437,
+        "name": "ParseMarkdown",
+        "documentation": "**Parse Markdown**\nExtracts metadata and converts markdown content to HTML fragments.",
+        "consumes": [
+          {
+            "uid": 3114057185,
+            "kind": {
+              "Constant": {
+                "uid": 3977794926,
+                "name": "SourceFile",
+                "documentation": "**Source File**\nA raw input file from the filesystem.\nThis represents a single `.md` file before processing."
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 4092437058,
+              "kind": {
+                "Constant": {
+                  "uid": 4015523321,
+                  "name": "Article",
+                  "documentation": "**Article**\nThe processed data structure.\nContains the parsed markdown body and extracted front-matter metadata\nsuch as **title**, **date**, and **tags**."
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ],
+          [
+            {
+              "uid": 2508726456,
+              "kind": {
+                "Error": {
+                  "uid": 4092812300,
+                  "name": "FileSystemError",
+                  "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": null
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 4155902627,
+      "function": {
+        "uid": 4155902627,
+        "name": "RenderHTMLArticles",
+        "documentation": "**Render HTML Articles**\nCombines a single article with the site templates to produce\nthe final standalone HTML file.",
+        "consumes": [
+          {
+            "uid": 2678920914,
+            "kind": {
+              "Constant": {
+                "uid": 4015523321,
+                "name": "Article",
+                "documentation": "**Article**\nThe processed data structure.\nContains the parsed markdown body and extracted front-matter metadata\nsuch as **title**, **date**, and **tags**."
+              }
+            },
+            "cardinality": "Unitary"
+          },
+          {
+            "uid": 235293600,
+            "kind": {
+              "Constant": {
+                "uid": 1137376136,
+                "name": "Templates",
+                "documentation": "**Templates**\nThe registry of HTML templates used for rendering.\n*Note: Requires a valid handlebars setup.*"
+              }
+            },
+            "cardinality": "Unitary"
+          },
+          {
+            "uid": 3244713543,
+            "kind": {
+              "Constant": {
+                "uid": 1258653480,
+                "name": "Settings",
+                "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 3250651259,
+              "kind": {
+                "Variable": {
+                  "uid": 3598817370,
+                  "name": "HTMLarticle",
+                  "documentation": "**HTML Article**\nThe final rendered HTML string for a single blog post."
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": {
+          "uid": 646185203,
+          "name": "Rendering",
+          "documentation": "**Rendering Group**\nGenerating the presentation layer.\nTransforms pure data into user-facing HTML."
+        }
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 1861761156,
+      "function": {
+        "uid": 1861761156,
+        "name": "RenderHTMLIndex",
+        "documentation": "**Render HTML Index**\nAggregates all processed articles to generate the main listing page.",
+        "consumes": [
+          {
+            "uid": 1578406279,
+            "kind": {
+              "Constant": {
+                "uid": 4015523321,
+                "name": "Article",
+                "documentation": "**Article**\nThe processed data structure.\nContains the parsed markdown body and extracted front-matter metadata\nsuch as **title**, **date**, and **tags**."
+              }
+            },
+            "cardinality": "Collection"
+          },
+          {
+            "uid": 2848411695,
+            "kind": {
+              "Constant": {
+                "uid": 1258653480,
+                "name": "Settings",
+                "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 140877122,
+              "kind": {
+                "Variable": {
+                  "uid": 21158828,
+                  "name": "HTMLIndex",
+                  "documentation": "**HTML Index**\nThe final generated index page containing the list of all articles."
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": {
+          "uid": 646185203,
+          "name": "Rendering",
+          "documentation": "**Rendering Group**\nGenerating the presentation layer.\nTransforms pure data into user-facing HTML."
+        }
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 1664348767,
+      "function": {
+        "uid": 1664348767,
+        "name": "WriteArticlesToDisk",
+        "documentation": "**Write Articles To Disk**\nSaves individual article HTML files to their respective paths.",
+        "consumes": [
+          {
+            "uid": 1275171805,
+            "kind": {
+              "Variable": {
+                "uid": 3598817370,
+                "name": "HTMLarticle",
+                "documentation": "**HTML Article**\nThe final rendered HTML string for a single blog post."
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 2252411779,
+              "kind": {
+                "Variable": {
+                  "uid": 2139269258,
+                  "name": "SuccessReport",
+                  "documentation": "**Success Report**\nA final summary of the operations performed.\nIncludes timing data and the count of files written."
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ],
+          [
+            {
+              "uid": 2594537754,
+              "kind": {
+                "Error": {
+                  "uid": 4092812300,
+                  "name": "FileSystemError",
+                  "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": {
+          "uid": 1642658993,
+          "name": "IO",
+          "documentation": "**IO Group**\nCommitting data back to disk."
+        }
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 3805538920,
+      "function": {
+        "uid": 3805538920,
+        "name": "WriteIndexToDisk",
+        "documentation": "**Write Index To Disk**\nSaves the generated index page to the output directory.",
+        "consumes": [
+          {
+            "uid": 3392575922,
+            "kind": {
+              "Variable": {
+                "uid": 21158828,
+                "name": "HTMLIndex",
+                "documentation": "**HTML Index**\nThe final generated index page containing the list of all articles."
+              }
+            },
+            "cardinality": "Unitary"
+          }
+        ],
+        "produces": [
+          [
+            {
+              "uid": 219681608,
+              "kind": {
+                "Variable": {
+                  "uid": 2139269258,
+                  "name": "SuccessReport",
+                  "documentation": "**Success Report**\nA final summary of the operations performed.\nIncludes timing data and the count of files written."
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ],
+          [
+            {
+              "uid": 1087097773,
+              "kind": {
+                "Error": {
+                  "uid": 4092812300,
+                  "name": "FileSystemError",
+                  "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+                }
+              },
+              "cardinality": "Unitary"
+            }
+          ]
+        ],
+        "group": {
+          "uid": 1642658993,
+          "name": "IO",
+          "documentation": "**IO Group**\nCommitting data back to disk."
+        }
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 2740539319,
+      "function": {
+        "uid": 2740539319,
+        "name": "FinalNode",
+        "documentation": "Engine-generated boundary node",
+        "consumes": [],
+        "produces": [],
+        "group": null
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": true,
+      "is_artificial_error_termination": false
+    },
+    {
+      "uid": 156735434,
+      "function": {
+        "uid": 156735434,
+        "name": "FatalErrors",
+        "documentation": "Engine-generated boundary node",
+        "consumes": [],
+        "produces": [],
+        "group": null
+      },
+      "is_artificial_graph_start": false,
+      "is_artificial_graph_end": false,
+      "is_artificial_error_termination": true
+    }
+  ],
+  "edges": [
+    {
+      "from_node_uid": 3312287155,
+      "to_node_uid": 1862179572,
+      "token": {
+        "uid": 3056436994,
+        "kind": {
+          "Variable": {
+            "uid": 3364744656,
+            "name": "InitialCommand",
+            "documentation": "**Initial Command**\nRaw input from the CLI arguments.\nRepresents the user's intent (e.g., `build`, `watch`)."
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1862179572,
+      "to_node_uid": 420917339,
+      "token": {
+        "uid": 2781954702,
+        "kind": {
+          "Variable": {
+            "uid": 3903963449,
+            "name": "PathToConfig",
+            "documentation": "**Path To Config**\nThe resolved location of the configuration file.\nDefaults to `./tect.toml` if not provided."
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1862179572,
+      "to_node_uid": 1823095060,
+      "token": {
+        "uid": 3239088686,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 420917339,
+      "to_node_uid": 1823095060,
+      "token": {
+        "uid": 3507956683,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1862179572,
+      "to_node_uid": 4069362651,
+      "token": {
+        "uid": 3239088686,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 420917339,
+      "to_node_uid": 4069362651,
+      "token": {
+        "uid": 3507956683,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 4069362651,
+      "to_node_uid": 3260984437,
+      "token": {
+        "uid": 1889669997,
+        "kind": {
+          "Constant": {
+            "uid": 3977794926,
+            "name": "SourceFile",
+            "documentation": "**Source File**\nA raw input file from the filesystem.\nThis represents a single `.md` file before processing."
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 3260984437,
+      "to_node_uid": 4155902627,
+      "token": {
+        "uid": 4092437058,
+        "kind": {
+          "Constant": {
+            "uid": 4015523321,
+            "name": "Article",
+            "documentation": "**Article**\nThe processed data structure.\nContains the parsed markdown body and extracted front-matter metadata\nsuch as **title**, **date**, and **tags**."
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1823095060,
+      "to_node_uid": 4155902627,
+      "token": {
+        "uid": 1732961030,
+        "kind": {
+          "Constant": {
+            "uid": 1137376136,
+            "name": "Templates",
+            "documentation": "**Templates**\nThe registry of HTML templates used for rendering.\n*Note: Requires a valid handlebars setup.*"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1862179572,
+      "to_node_uid": 4155902627,
+      "token": {
+        "uid": 3239088686,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 420917339,
+      "to_node_uid": 4155902627,
+      "token": {
+        "uid": 3507956683,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 3260984437,
+      "to_node_uid": 1861761156,
+      "token": {
+        "uid": 4092437058,
+        "kind": {
+          "Constant": {
+            "uid": 4015523321,
+            "name": "Article",
+            "documentation": "**Article**\nThe processed data structure.\nContains the parsed markdown body and extracted front-matter metadata\nsuch as **title**, **date**, and **tags**."
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1862179572,
+      "to_node_uid": 1861761156,
+      "token": {
+        "uid": 3239088686,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 420917339,
+      "to_node_uid": 1861761156,
+      "token": {
+        "uid": 3507956683,
+        "kind": {
+          "Constant": {
+            "uid": 1258653480,
+            "name": "Settings",
+            "documentation": "**Settings**\nThe global configuration object for the generator.\nContains:\n- `source_dir`: Path to markdown files\n- `build_dir`: Path for output\n- `site_url`: Canonical URL"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 4155902627,
+      "to_node_uid": 1664348767,
+      "token": {
+        "uid": 3250651259,
+        "kind": {
+          "Variable": {
+            "uid": 3598817370,
+            "name": "HTMLarticle",
+            "documentation": "**HTML Article**\nThe final rendered HTML string for a single blog post."
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1861761156,
+      "to_node_uid": 3805538920,
+      "token": {
+        "uid": 140877122,
+        "kind": {
+          "Variable": {
+            "uid": 21158828,
+            "name": "HTMLIndex",
+            "documentation": "**HTML Index**\nThe final generated index page containing the list of all articles."
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "data_flow"
+    },
+    {
+      "from_node_uid": 1664348767,
+      "to_node_uid": 2740539319,
+      "token": {
+        "uid": 2252411779,
+        "kind": {
+          "Variable": {
+            "uid": 2139269258,
+            "name": "SuccessReport",
+            "documentation": "**Success Report**\nA final summary of the operations performed.\nIncludes timing data and the count of files written."
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "terminal_flow"
+    },
+    {
+      "from_node_uid": 3805538920,
+      "to_node_uid": 2740539319,
+      "token": {
+        "uid": 219681608,
+        "kind": {
+          "Variable": {
+            "uid": 2139269258,
+            "name": "SuccessReport",
+            "documentation": "**Success Report**\nA final summary of the operations performed.\nIncludes timing data and the count of files written."
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "terminal_flow"
+    },
+    {
+      "from_node_uid": 3805538920,
+      "to_node_uid": 156735434,
+      "token": {
+        "uid": 1087097773,
+        "kind": {
+          "Error": {
+            "uid": 4092812300,
+            "name": "FileSystemError",
+            "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "error_flow"
+    },
+    {
+      "from_node_uid": 1664348767,
+      "to_node_uid": 156735434,
+      "token": {
+        "uid": 2594537754,
+        "kind": {
+          "Error": {
+            "uid": 4092812300,
+            "name": "FileSystemError",
+            "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "error_flow"
+    },
+    {
+      "from_node_uid": 1823095060,
+      "to_node_uid": 2740539319,
+      "token": {
+        "uid": 1732961030,
+        "kind": {
+          "Constant": {
+            "uid": 1137376136,
+            "name": "Templates",
+            "documentation": "**Templates**\nThe registry of HTML templates used for rendering.\n*Note: Requires a valid handlebars setup.*"
+          }
+        },
+        "cardinality": "Unitary"
+      },
+      "relation": "terminal_flow"
+    },
+    {
+      "from_node_uid": 3260984437,
+      "to_node_uid": 156735434,
+      "token": {
+        "uid": 2508726456,
+        "kind": {
+          "Error": {
+            "uid": 4092812300,
+            "name": "FileSystemError",
+            "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "error_flow"
+    },
+    {
+      "from_node_uid": 4069362651,
+      "to_node_uid": 156735434,
+      "token": {
+        "uid": 4126579574,
+        "kind": {
+          "Error": {
+            "uid": 4092812300,
+            "name": "FileSystemError",
+            "documentation": "**File System Error**\nTriggered when IO operations fail.\ncommon causes:\n1. *Permission Denied*\n2. *Disk Full*\n3. *Path Not Found*"
+          }
+        },
+        "cardinality": "Collection"
+      },
+      "relation": "error_flow"
+    }
+  ]
+}

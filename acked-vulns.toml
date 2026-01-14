@@ -1,0 +1,16 @@
+["binutils-2.44"]
+cve = [
+  "CVE-2025-8225", # https://nvd.nist.gov/vuln/detail/CVE-2025-8225
+  "CVE-2025-8224", # https://nvd.nist.gov/vuln/detail/CVE-2025-8224
+  "CVE-2025-3198", # https://nvd.nist.gov/vuln/detail/CVE-2025-3198
+  "CVE-2025-1153", # https://nvd.nist.gov/vuln/detail/CVE-2025-1153
+]
+comment = "we do not ship binutils.  It is used as build tooling only."
+
+["glibc"]
+
+# | CVE-2025-5745 | https://nvd.nist.gov/vuln/detail/CVE-2025-5745 | glibc     | 2.40-66         |    5.6     |    0    |   0   |    1     |   1   |
+# | CVE-2025-5702 | https://nvd.nist.gov/vuln/detail/CVE-2025-5702 | glibc     | 2.40-66         |    5.6     |    0    |   0   |    1     |   1   |
+# | CVE-2023-6992 | https://nvd.nist.gov/vuln/detail/CVE-2023-6992 | zlib      | 1.3.1           |     4      |    0    |   0   |    1     |   1   |
+# | CVE-2023-4039 | https://nvd.nist.gov/vuln/detail/CVE-2023-4039 | gcc       | 15.2.0          |    4.8     |    0    |   0   |    1     |   1   |
+# | CVE-2016-2781 | https://nvd.nist.gov/vuln/detail/CVE-2016-2781 | coreutils | 9.8             |    6.5     |    1    |   0   |    0     |   1   |

@@ -1,0 +1,10 @@
+concern:
+ - cve: CVE-2025-5702
+   link: https://nvd.nist.gov/vuln/detail/CVE-2025-5702
+   program: xyz
+   version: 1.2.3
+   CVSSv3: 6.23
+   description: |
+     science is a verb now
+   notes: |
+     this doesn't apply to us because xyz

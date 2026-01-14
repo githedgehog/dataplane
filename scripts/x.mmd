@@ -1,0 +1,74 @@
+flowchart TD
+    classDef default fill:#1e293b,stroke:#334155,color:#fff;
+    classDef startend fill:#059669,stroke:#047857,color:#fff;
+    classDef error fill:#dc2626,stroke:#b91c1c,color:#fff;
+    classDef function fill:#2563eb,stroke:#1d4ed8,color:#fff;
+    classDef group0 fill:#2563eb,stroke:#2563eb,stroke-width:3px,color:#fff;
+    classDef group1 fill:#2563eb,stroke:#d97706,stroke-width:3px,color:#fff;
+    classDef group2 fill:#2563eb,stroke:#7c3aed,stroke-width:3px,color:#fff;
+    classDef group3 fill:#2563eb,stroke:#db2777,stroke-width:3px,color:#fff;
+    classDef group4 fill:#2563eb,stroke:#0891b2,stroke-width:3px,color:#fff;
+    classDef group5 fill:#2563eb,stroke:#ea580c,stroke-width:3px,color:#fff;
+    classDef group6 fill:#2563eb,stroke:#4f46e5,stroke-width:3px,color:#fff;
+    classDef group7 fill:#2563eb,stroke:#c026d3,stroke-width:3px,color:#fff;
+    classDef group8 fill:#2563eb,stroke:#0284c7,stroke-width:3px,color:#fff;
+    classDef group9 fill:#2563eb,stroke:#ca8a04,stroke-width:3px,color:#fff;
+        N_3312287155("InitialNode")
+        class N_3312287155 startend
+        N_1823095060["LoadTemplates"]
+        class N_1823095060 function
+        N_3260984437["ParseMarkdown"]
+        class N_3260984437 function
+        N_2740539319("FinalNode")
+        class N_2740539319 startend
+        N_156735434{"FatalErrors"}
+        class N_156735434 error
+    subgraph Environment
+        direction TB
+        N_1862179572["ProcessCLI"]
+        class N_1862179572 group2
+        N_420917339["LoadConfig"]
+        class N_420917339 group2
+    end
+    subgraph Rendering
+        direction TB
+        N_4155902627["RenderHTMLArticles"]
+        class N_4155902627 group3
+        N_1861761156["RenderHTMLIndex"]
+        class N_1861761156 group3
+    end
+    subgraph IO
+        direction TB
+        N_1664348767["WriteArticlesToDisk"]
+        class N_1664348767 group8
+        N_3805538920["WriteIndexToDisk"]
+        class N_3805538920 group8
+    end
+    subgraph Ingestion
+        direction TB
+        N_4069362651["ScanFS"]
+        class N_4069362651 group1
+    end
+    N_3312287155 -->|InitialCommand| N_1862179572
+    N_1862179572 -->|PathToConfig| N_420917339
+    N_1862179572 -->|Settings| N_1823095060
+    N_420917339 -->|Settings| N_1823095060
+    N_1862179572 -->|Settings| N_4069362651
+    N_420917339 -->|Settings| N_4069362651
+    N_4069362651 -->|SourceFile| N_3260984437
+    N_3260984437 -->|Article| N_4155902627
+    N_1823095060 -->|Templates| N_4155902627
+    N_1862179572 -->|Settings| N_4155902627
+    N_420917339 -->|Settings| N_4155902627
+    N_3260984437 -->|Article| N_1861761156
+    N_1862179572 -->|Settings| N_1861761156
+    N_420917339 -->|Settings| N_1861761156
+    N_4155902627 -->|HTMLarticle| N_1664348767
+    N_1861761156 -->|HTMLIndex| N_3805538920
+    N_1664348767 -->|SuccessReport| N_2740539319
+    N_3805538920 -->|SuccessReport| N_2740539319
+    N_3805538920 -.->|FileSystemError| N_156735434
+    N_1664348767 -.->|FileSystemError| N_156735434
+    N_1823095060 -->|Templates| N_2740539319
+    N_3260984437 -.->|FileSystemError| N_156735434
+    N_4069362651 -.->|FileSystemError| N_156735434

@@ -11,10 +11,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.22.0",
-      "revision": "40203daff663c9e0b70d052aae12819dea8e6798",
-      "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.22.0",
-      "hash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM="
+      "version": "v0.23.0",
+      "revision": "61594d90dab41c2f3cd336baf0a8fcd6c37e0408",
+      "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.23.0",
+      "hash": "sha256-VFkNyxHxkqGp8gf8kfFMW1j6XeBy609kv6TE9uF/0Js="
     },
     "dpdk": {
       "type": "Git",
@@ -40,10 +40,11 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.33.0",
-      "revision": "18913fe34d78af396deb1e6a034d0258168122b1",
-      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.33.0",
-      "hash": "sha256-X4sbwW60BIiAh0N/Y4P3HQWoZb/vXOSu5GjVeu9TTWo="
+      "version": "v0.34.0",
+      "revision": "835e28f42d1ccb12f4797eeba287ca57e304bc66",
+      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.34.0",
+      "hash": "sha256-1YtPF0KtkVQztgayfz6ktXtGdNhE4hstj8yXZsL1pMI=",
+      "frozen": true
     },
     "kopium": {
       "type": "GitRelease",
@@ -64,8 +65,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre921317.16c7794d0a28/nixexprs.tar.xz",
-      "hash": "sha256-G6ie+qOCRSV7wzOY+6L1o8GvcH1qDcE/DTzDT4CRdNw="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre926999.61db79b0c6b8/nixexprs.tar.xz",
+      "hash": "sha256-Lfye53RXLVIu4mXNfYjaSRQL1ajKpmBQ4EdvOnXHycc="
     },
     "perftest": {
       "type": "Git",
@@ -76,9 +77,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "1c4dc79b81060f0707830c54bf5dae7102fdbbfa",
-      "url": "https://github.com/linux-rdma/perftest/archive/1c4dc79b81060f0707830c54bf5dae7102fdbbfa.tar.gz",
-      "hash": "sha256-XHWZGB5qo9FdJ1yVEiwaSMmRmT34V6hngAlZ1ptYkiw="
+      "revision": "c77a2b17ccee8a2f7434135513794bdd29881f1f",
+      "url": "https://github.com/linux-rdma/perftest/archive/c77a2b17ccee8a2f7434135513794bdd29881f1f.tar.gz",
+      "hash": "sha256-3hEmBo1SPePbeOjT3tXAWZAnt///4lv4lZuh6tlkEDI="
     },
     "rdma-core": {
       "type": "Git",
@@ -118,9 +119,25 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "499e9eed88ff9494b6604205b42847e847dfeb91",
-      "url": "https://github.com/oxalica/rust-overlay/archive/499e9eed88ff9494b6604205b42847e847dfeb91.tar.gz",
-      "hash": "sha256-x0n73J6ufD/EhDlVdcoAmF0OQHZ+b0a2cKDc8RZyt+o="
+      "revision": "03dda130a8701b08b0347fcaf850a190c53a3c1e",
+      "url": "https://github.com/oxalica/rust-overlay/archive/03dda130a8701b08b0347fcaf850a190c53a3c1e.tar.gz",
+      "hash": "sha256-Tg/kL8eKMpZtceDvBDQYU8zowgpr7ucFRnpP/AtfuRM="
+    },
+    "sbomnix": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "tiiuae",
+        "repo": "sbomnix"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v1.7.4",
+      "revision": "fe2a608c000127092b3d27c9cfd65c26f325bb28",
+      "url": "https://api.github.com/repos/tiiuae/sbomnix/tarball/refs/tags/v1.7.4",
+      "hash": "sha256-pYZax5cxBHa+jcxTsQKEVHhXMtmvLGD1ISUyli2ZreU="
     }
   },
   "version": 7
