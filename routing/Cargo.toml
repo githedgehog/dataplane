@@ -31,7 +31,7 @@ linkme = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync"] }
 tracing = { workspace = true }
 
 # arp resolver
