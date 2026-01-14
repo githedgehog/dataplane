@@ -5,7 +5,7 @@ use std::convert::TryFrom;
 
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
-    GatewayAgentPeeringsPeeringExposeIps,
+    GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
 };
 use lpm::prefix::{PortRange, Prefix, PrefixString, PrefixWithOptionalPorts, PrefixWithPorts};
 
@@ -141,6 +141,27 @@ fn process_as_block(
     Ok(vpc_expose)
 }
 
+fn process_nat_block(
+    vpc_expose: VpcExpose,
+    nat: Option<&GatewayAgentPeeringsPeeringExposeNat>,
+) -> Result<VpcExpose, FromK8sConversionError> {
+    match nat {
+        Some(nat) => match (&nat.stateful, &nat.stateless) {
+            (Some(_), Some(_)) => Err(FromK8sConversionError::Invalid(
+                "Cannot have both stateful and stateless nat configured on the same expose block"
+                    .to_string(),
+            )),
+            (Some(stateful), None) => vpc_expose
+                .make_stateful_nat(stateful.idle_timeout)
+                .map_err(|e| FromK8sConversionError::Invalid(e.to_string())),
+            (None, Some(_)) => vpc_expose
+                .make_stateless_nat()
+                .map_err(|e| FromK8sConversionError::Invalid(e.to_string())),
+            (None, None) => Ok(vpc_expose), // Rely on default behavior for NAT
+        },
+        None => Ok(vpc_expose),
+    }
+}
 impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
     type Error = FromK8sConversionError;
 
@@ -165,6 +186,8 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
             ));
         }
 
+        vpc_expose = process_nat_block(vpc_expose, expose.nat.as_ref())?;
+
         if let Some(ases) = expose.r#as.as_ref() {
             for r#as in ases {
                 vpc_expose = process_as_block(vpc_expose, r#as)?;
@@ -177,6 +200,8 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
 
 #[cfg(test)]
 mod test {
+    use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
+
     use super::*;
 
     #[test]
@@ -482,6 +507,43 @@ mod test {
                 assert_eq!(nots, k8s_nots);
                 assert_eq!(r#as, k8s_as);
                 assert_eq!(not_as, k8s_not_as);
+                match (expose.nat.as_ref(), k8s_expose.nat.as_ref()) {
+                    (Some(nat), None) => {
+                        assert!(
+                            k8s_expose.r#as.is_some(),
+                            "K8s does not have NAT set, but nat is configured: {expose}"
+                        );
+                        assert!(
+                            nat.is_stateless(),
+                            "Default NAT configured via 'as' by k8s, but nat is not stateless: {expose}"
+                        );
+                    }
+                    (None, Some(_)) => {
+                        panic!("K8s has NAT configured, but dataplane config does not")
+                    }
+                    (Some(nat), Some(k8s_nat)) => match &nat.config {
+                        VpcExposeNatConfig::Stateful(c) => {
+                            if let Some(k8s_stateful) = k8s_nat.stateful.as_ref() {
+                                if let Some(k8s_idle_timeout) = k8s_stateful.idle_timeout {
+                                    assert_eq!(c.idle_timeout, k8s_idle_timeout);
+                                } else {
+                                    assert_eq!(c.idle_timeout, std::time::Duration::new(2 * 60, 0));
+                                }
+                            } else {
+                                panic!("Stateful NAT configured but not by K8s");
+                            }
+                        }
+                        VpcExposeNatConfig::Stateless(_) => {
+                            assert!(k8s_nat.stateful.is_none(),"Stateless NAT configured but K8s configured stateful NAT: {expose:#?}\nk8s: {k8s_nat:#?}");
+                            if k8s_nat.stateless.is_none() {
+                                assert!(k8s_expose.r#as.is_some());
+                            }
+                        }
+                    },
+                    (None, None) => {
+                        assert!(k8s_expose.r#as.is_none());
+                    }
+                }
             });
     }
 }
