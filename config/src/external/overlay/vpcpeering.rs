@@ -307,6 +307,40 @@ impl VpcExpose {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
     }
 
+    fn validate_default_expose(&self) -> ConfigResult {
+        if self.default {
+            if !self.ips.is_empty() || !self.nots.is_empty() || self.nat.is_some() {
+                return Err(ConfigError::Invalid(
+                    "Default expose cannot have ips/nots or nat configuration".to_string(),
+                ));
+            }
+        } else {
+            if self.ips.iter().any(|p| p.prefix().is_root()) {
+                return Err(ConfigError::Forbidden(
+                    "Expose: root prefix as 'ip' forbidden",
+                ));
+            }
+            if self.nots.iter().any(|p| p.prefix().is_root()) {
+                return Err(ConfigError::Forbidden(
+                    "Expose: root prefix as 'not' is forbidden",
+                ));
+            }
+            if let Some(nat) = &self.nat {
+                if nat.as_range.iter().any(|p| p.prefix().is_root()) {
+                    return Err(ConfigError::Forbidden(
+                        "Expose: root prefix as NAT 'as' is forbidden",
+                    ));
+                }
+                if nat.not_as.iter().any(|p| p.prefix().is_root()) {
+                    return Err(ConfigError::Forbidden(
+                        "Expose: root prefix as NAT 'as-not' is forbidden",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Validate the [`VpcExpose`]:
     ///
     /// 1. Make sure that all prefixes and exclusion prefixes for this [`VpcExpose`] are of the same
@@ -321,6 +355,9 @@ impl VpcExpose {
     /// 5. Make sure we have the same number of addresses available on each side (public/private),
     ///    taking exclusion prefixes into account.
     pub fn validate(&self) -> ConfigResult {
+        // 0. Check default exposes and prefixes
+        self.validate_default_expose()?;
+
         // 1. Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
         //    support NAT46 or NAT64 at the moment.
         //
@@ -612,6 +649,7 @@ impl VpcPeeringTable {
             Ok(())
         }
     }
+
     /// Iterate over all [`VpcPeering`]s in a [`VpcPeeringTable`]
     pub fn values(&self) -> impl Iterator<Item = &VpcPeering> {
         self.0.values()
