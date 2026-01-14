@@ -110,21 +110,21 @@ impl VpcExpose {
         mut self,
         idle_timeout: Option<Duration>,
     ) -> Result<Self, ConfigError> {
+        let options = idle_timeout
+            .map(|to| VpcExposeStatefulNat { idle_timeout: to })
+            .unwrap_or_default();
         match self.nat.as_mut() {
             Some(nat) if nat.is_stateful() => {
-                nat.config = VpcExposeNatConfig::Stateful(VpcExposeStatefulNat {
-                    idle_timeout: idle_timeout.unwrap_or_default(),
-                });
+                nat.config = VpcExposeNatConfig::Stateful(options);
                 Ok(self)
             }
             Some(_) => Err(ConfigError::Invalid(format!(
                 "refusing to overwrite stateless NAT mode with stateful NAT mode for VpcExpose {self}"
             ))),
+
             None => {
                 self.nat = Some(VpcExposeNat {
-                    config: VpcExposeNatConfig::Stateful(VpcExposeStatefulNat {
-                        idle_timeout: idle_timeout.unwrap_or_default(),
-                    }),
+                    config: VpcExposeNatConfig::Stateful(options),
                     ..VpcExposeNat::default()
                 });
                 Ok(self)
