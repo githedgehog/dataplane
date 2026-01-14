@@ -126,7 +126,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         Some(GatewayAgentPeeringsPeeringExpose {
             r#as: Some(final_as).filter(|f| !f.is_empty()),
             ips: Some(final_ips).filter(|f| !f.is_empty()),
-            nat: if has_as {
+            nat: if has_as && d.produce::<bool>()? {
                 Some(
                     d.produce::<LegalValue<GatewayAgentPeeringsPeeringExposeNat>>()?
                         .take(),
