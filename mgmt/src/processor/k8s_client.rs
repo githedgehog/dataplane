@@ -80,6 +80,32 @@ pub(crate) async fn build_gateway_status(
     Some(k8s_status)
 }
 
+/// Create an initial `GatewayAgentStatus` object to reset status in k8s
+pub(crate) fn build_init_status() -> GatewayAgentStatus {
+    GatewayAgentStatus {
+        agent_version: None,
+        last_applied_gen: Some(0),
+        last_applied_time: Some(
+            Utc.timestamp_opt(0, 0)
+                .unwrap()
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        ),
+        last_heartbeat: Some(
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        ),
+        state: Some(GatewayAgentStatusState {
+            bgp: None,
+            dataplane: Some(GatewayAgentStatusStateDataplane {
+                version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
+            }),
+            frr: None,
+            last_collected_time: None,
+            peerings: None,
+            vpcs: None,
+        }),
+    }
+}
+
 pub struct K8sClient {
     hostname: String,
     client: ConfigClient,
@@ -95,32 +121,14 @@ impl K8sClient {
 
     pub async fn init(&self) -> Result<(), K8sClientError> {
         // Reset the config generation and applied time in K8s
-        replace_gateway_status(
-            &self.hostname,
-            &GatewayAgentStatus {
-                agent_version: None,
-                last_applied_gen: Some(0),
-                last_applied_time: Some(
-                    Utc.timestamp_opt(0, 0)
-                        .unwrap()
-                        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                ),
-                last_heartbeat: Some(
-                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                ),
-                state: Some(GatewayAgentStatusState {
-                    bgp: None,
-                    dataplane: Some(GatewayAgentStatusStateDataplane {
-                        version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
-                    }),
-                    frr: None,
-                    last_collected_time: None,
-                    peerings: None,
-                    vpcs: None,
-                }),
-            },
-        )
-        .await?;
+        let k8s_status = build_init_status();
+
+        replace_gateway_status(&self.hostname, &k8s_status)
+            .await
+            .inspect_err(|e| {
+                error!("Failed to initialize gateway status: {e}");
+            })?;
+
         Ok(())
     }
 
