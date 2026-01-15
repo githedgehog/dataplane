@@ -64,6 +64,7 @@ pub fn start_mgmt(
                 rt.block_on(async {
                     let (processor, client) = ConfigProcessor::new(params.processor_params);
                     let k8sless = Arc::new(K8sLess::new(params.hostname.as_str(), config_dir, client));
+                    k8sless.init().await?;
                     tokio::spawn(async { processor.run().await });
                     K8sLess::start_config_watch(k8sless).await
                 })?;
