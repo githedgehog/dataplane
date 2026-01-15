@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::fs::create_dir_all;
 use tracing::{error, info};
 
-use crate::processor::k8s_client::build_gateway_status;
+use crate::processor::k8s_client::{build_gateway_status, build_init_status};
 use crate::processor::mgmt_client::{ConfigClient, ConfigProcessorError};
 use k8s_intf::utils::save;
 
@@ -43,6 +43,26 @@ impl K8sLess {
         }
     }
 
+    pub async fn init(&self) -> Result<(), K8sLessError> {
+        // create directory to store status updates
+        create_dir_all(&self.statedir).await.map_err(|e| {
+            K8sLessError::Internal(format!(
+                "Failed to create directory '{}': {e}",
+                self.statedir
+            ))
+        })?;
+
+        info!("Resetting initial status of gateway dataplane...");
+        let k8s_status = build_init_status();
+
+        let mut state_dir = PathBuf::from(&self.statedir);
+        state_dir.push("gwstatus");
+
+        let state_file = state_dir.to_str().unwrap_or_else(|| unreachable!());
+        save(state_file, &k8s_status)
+            .map_err(|e| K8sLessError::Internal(format!("Failed to save initial state: {e}")))
+    }
+
     async fn update_gateway_status(&self) {
         let Some(k8s_status) = build_gateway_status(&self.client).await else {
             return;
@@ -57,14 +77,6 @@ impl K8sLess {
     }
 
     pub async fn start_config_watch(k8sless: Arc<Self>) -> Result<(), K8sLessError> {
-        // create directory to store status updates
-        create_dir_all(&k8sless.statedir).await.map_err(|e| {
-            K8sLessError::Internal(format!(
-                "Failed to create directory '{}': {e}",
-                k8sless.statedir
-            ))
-        })?;
-
         info!("Starting config watcher for directory {}", k8sless.pathdir);
 
         kubeless_watch_gateway_agent_crd(&k8sless.name.clone(), &k8sless.pathdir.clone(), async move |ga| {
