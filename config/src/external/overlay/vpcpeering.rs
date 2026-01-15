@@ -207,6 +207,20 @@ impl VpcExpose {
     pub fn has_host_prefixes(&self) -> bool {
         self.ips.iter().filter(|p| p.prefix().is_host()).count() > 0
     }
+
+    /// The prefixes of an expose to be advertised to a remote peer
+    #[must_use]
+    pub fn adv_prefixes(&self) -> Vec<Prefix> {
+        if self.default {
+            // only V4 atm
+            vec![Prefix::root_v4()]
+        } else if let Some(nat) = self.nat.as_ref() {
+            nat.as_range.iter().map(|p| p.prefix()).collect::<Vec<_>>()
+        } else {
+            self.ips.iter().map(|p| p.prefix()).collect::<Vec<_>>()
+        }
+    }
+
     // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
     // public IPs are those from the "ips" list. This method returns the current list of public IPs
     // for the VpcExpose.
@@ -221,6 +235,7 @@ impl VpcExpose {
             &nat.as_range
         }
     }
+
     // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
     // public IPs are those from the "ips" list. This method returns a mutable reference to the current list of public IPs
     // for the VpcExpose.
@@ -235,6 +250,7 @@ impl VpcExpose {
             &mut nat.as_range
         }
     }
+    
     // Same as public_ips, but returns the list of excluded prefixes
     #[must_use]
     pub fn public_excludes(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
