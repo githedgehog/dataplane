@@ -9,7 +9,7 @@ use kube::{Api, Client};
 use tracectl::trace_target;
 use tracing::{error, info};
 
-use crate::gateway_agent_crd::{GatewayAgent, GatewayAgentStatus};
+use crate::gateway_agent_crd::{GW_API_VERSION, GatewayAgent, GatewayAgentStatus};
 
 trace_target!("k8s-client", LevelFilter::INFO, &["management"]);
 
@@ -43,7 +43,10 @@ pub async fn watch_gateway_agent_crd(
     // Relevant gateway agent objects are in the "fab" namespace
     let gws: Api<GatewayAgent> = Api::namespaced(client.clone(), "fab");
 
-    info!("Starting K8s GatewayAgent watcher...");
+    info!(
+        "Starting K8s GatewayAgent watcher. GW_API_VERSION = {}",
+        GW_API_VERSION.unwrap_or("EXPERIMENTAL")
+    );
 
     let watch_config = watcher::Config {
         // The service account for this gateway only has access to its corresponding
