@@ -42,7 +42,10 @@ fn init_name(args: &CmdArgs) -> Result<String, String> {
 }
 fn init_logging(gwname: &str) {
     let tctl = get_trace_ctl();
-    info!(" ━━━━━━ Dataplane for '{gwname}' started ━━━━━━",);
+    info!(
+        " ━━━━━━ Starting dataplane for gateway '{gwname}' (Version = {}) ━━━━━━",
+        option_env!("VERSION").unwrap_or("dev").to_string()
+    );
 
     tctl.set_default_level(LevelFilter::DEBUG)
         .expect("Setting default loglevel failed");
@@ -113,7 +116,6 @@ fn main() {
         }
     });
     process_tracing_cmds(&args);
-    info!("Starting gateway process...");
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     let ctrlc_stop_tx = stop_tx.clone();
