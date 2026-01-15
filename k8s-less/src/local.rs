@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use inotify::{Event, EventMask, Inotify, WatchMask};
-use k8s_intf::gateway_agent_crd::GatewayAgent;
+use k8s_intf::gateway_agent_crd::{GW_API_VERSION, GatewayAgent};
 use k8s_intf::utils::load_crd_from_file;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -76,7 +76,11 @@ pub async fn kubeless_watch_gateway_agent_crd(
     let async_fd = AsyncFd::new(inotify.as_raw_fd())
         .map_err(|e| format!("Failed to create async fd for inotify: {e}"))?;
 
-    debug!("Starting kubeless watcher for directory '{path}'...");
+    debug!(
+        "Starting kubeless watcher for directory '{path}'. GW_API_VERSION = {}",
+        GW_API_VERSION.unwrap_or("EXPERIMENTAL")
+    );
+
     loop {
         trace!("Waiting for changes...");
         let Ok(mut guard) = async_fd.readable().await else {
