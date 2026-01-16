@@ -236,21 +236,6 @@ impl VpcExpose {
         }
     }
 
-    // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
-    // public IPs are those from the "ips" list. This method returns a mutable reference to the current list of public IPs
-    // for the VpcExpose.
-    #[must_use]
-    pub fn public_ips_mut(&mut self) -> &mut BTreeSet<PrefixWithOptionalPorts> {
-        let Some(nat) = self.nat.as_mut() else {
-            return &mut self.ips;
-        };
-        if nat.as_range.is_empty() {
-            &mut self.ips
-        } else {
-            &mut nat.as_range
-        }
-    }
-    
     // Same as public_ips, but returns the list of excluded prefixes
     #[must_use]
     pub fn public_excludes(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
