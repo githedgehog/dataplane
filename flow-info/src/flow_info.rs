@@ -107,8 +107,6 @@ impl From<FlowStatus> for AtomicFlowStatus {
 pub struct FlowInfoLocked {
     // We need this to use downcast to avoid circular dependencies between crates.
 
-    // Destination VPC information
-    pub dst_vpc_info: Option<Box<dyn FlowInfoItem>>,
     // State information for stateful NAT
     pub nat_state: Option<Box<dyn FlowInfoItem>>,
 }

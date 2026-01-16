@@ -6,9 +6,8 @@
 use tracing::debug;
 
 use concurrency::sync::Arc;
-use flow_info::ExtractRef;
 use net::buffer::PacketBufferMut;
-use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::packet::Packet;
 use pipeline::NetworkFunction;
 
 use crate::flow_table::{FlowKey, FlowTable};
@@ -37,34 +36,19 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).ok();
-            let Some(flow_key) = flow_key else {
-                return packet.enforce();
-            };
-            if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
+            if let Some(flow_key) = flow_key
+                && let Some(flow_info) = self.flow_table.lookup(&flow_key)
+            {
                 debug!(
-                    "LookupNF: Tagging packet with flow info for flow key {:?}",
-                    flow_key
+                    "{}: Tagging packet with flow info for flow key {:?}",
+                    self.name, flow_key
                 );
-                if let Some(dst_vpc_info) = flow_info.locked.read().unwrap().dst_vpc_info.as_ref() {
-                    let dst_vpcd = dst_vpc_info.extract_ref::<VpcDiscriminant>();
-                    if let Some(dst_vpcd) = dst_vpcd {
-                        debug!(
-                            "LookupNF: Tagging packet with dst_vpcd from flow info {:?}, old dst_vpcd {:?}",
-                            dst_vpcd, packet.meta.dst_vpcd
-                        );
-                        packet.meta.dst_vpcd = Some(*dst_vpcd);
-                    }
-                }
                 packet.meta.flow_info = Some(flow_info);
-            }
-            if packet.meta.dst_vpcd.is_none() {
+            } else {
                 debug!(
-                    "{}: no dst_vpcd found for {} in src_vpcd {:?}: marking packet as unroutable",
-                    self.name,
-                    flow_key.data().dst_ip(),
-                    flow_key.data().src_vpcd()
+                    "{}: No flow info found for flow key {:?}",
+                    self.name, flow_key
                 );
-                packet.done(DoneReason::Unroutable);
             }
             packet.enforce()
         })
@@ -94,7 +78,6 @@ mod test {
         let flow_table = Arc::new(FlowTable::default());
         let mut lookup_nf = LookupNF::new("test_lookup_nf", flow_table.clone());
         let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
-        let dst_vpcd = VpcDiscriminant::VNI(Vni::new_checked(200).unwrap());
         let src_ip = "1.2.3.4".parse::<UnicastIpAddr>().unwrap();
         let dst_ip = "5.6.7.8".parse::<IpAddr>().unwrap();
         let src_port = TcpPort::new_checked(1025).unwrap();
@@ -111,13 +94,11 @@ mod test {
         // Insert matching flow entry
         let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).unwrap();
         let flow_info = FlowInfo::new(Instant::now() + Duration::from_secs(10));
-        flow_info.locked.write().unwrap().dst_vpc_info = Some(Box::new(dst_vpcd));
         flow_table.insert(flow_key, flow_info);
 
         // Ensure packet is tagged
         let mut output_iter = lookup_nf.process(std::iter::once(packet));
         let output = output_iter.next().unwrap();
         assert!(output.meta.flow_info.is_some());
-        assert_eq!(output.meta.dst_vpcd, Some(dst_vpcd));
     }
 }
