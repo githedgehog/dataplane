@@ -109,7 +109,13 @@ impl FlowFilterTable {
 
         // We have a dst_connection_data object for our source VPC, IP, port. From this object, we
         // need to retrieve the prefix information associated to our destination IP and port.
-        let remote_prefix_data = dst_connection_data.lookup(dst_addr, dst_port)?;
+        let Some(remote_prefix_data) = dst_connection_data.lookup(dst_addr, dst_port) else {
+            let default_remote_opt = dst_connection_data.default_remote;
+            debug!(
+                "No remote prefix information found, looking for default remote: {default_remote_opt:?}"
+            );
+            return default_remote_opt;
+        };
         debug!("Found remote_prefix_data: {remote_prefix_data:?}");
 
         // We have a remote_prefix_data object for our destination address, and the port ranges
@@ -148,6 +154,23 @@ impl FlowFilterTable {
         }
         Ok(())
     }
+
+    pub(crate) fn insert_default_remote(
+        &mut self,
+        dst_vpcd: VpcDiscriminant,
+        src_vpcd: VpcDiscriminant,
+        src_prefix: Prefix,
+        src_port_range: OptionalPortRange,
+    ) -> Result<(), ConfigError> {
+        if let Some(table) = self.get_table_mut(src_vpcd) {
+            table.insert_default(dst_vpcd, src_prefix, src_port_range)?;
+        } else {
+            let mut table = VpcConnectionsTable::new();
+            table.insert_default(dst_vpcd, src_prefix, src_port_range)?;
+            self.insert_table(src_vpcd, table);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +202,21 @@ impl VpcConnectionsTable {
         }
         Ok(())
     }
+
+    fn insert_default(
+        &mut self,
+        dst_vpcd: VpcDiscriminant,
+        src_prefix: Prefix,
+        src_port_range: OptionalPortRange,
+    ) -> Result<(), ConfigError> {
+        if let Some(value) = self.0.get_mut(src_prefix) {
+            value.update_for_default(src_port_range, dst_vpcd)?;
+        } else {
+            let value = SrcConnectionData::new_for_default_remote(src_port_range, dst_vpcd);
+            self.0.insert(src_prefix, value);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +235,21 @@ impl SrcConnectionData {
         dst_port_range: OptionalPortRange,
     ) -> Self {
         let connection_data = DstConnectionData::new(dst_vpcd, dst_prefix, dst_port_range);
+        Self::new_from_dst_connection_data(src_port_range, connection_data)
+    }
+
+    fn new_for_default_remote(
+        src_port_range: OptionalPortRange,
+        dst_vpcd: VpcDiscriminant,
+    ) -> Self {
+        let connection_data = DstConnectionData::new_for_default_remote(dst_vpcd);
+        Self::new_from_dst_connection_data(src_port_range, connection_data)
+    }
+
+    fn new_from_dst_connection_data(
+        src_port_range: OptionalPortRange,
+        connection_data: DstConnectionData,
+    ) -> Self {
         match src_port_range {
             OptionalPortRange::NoPortRangeMeansAllPorts => {
                 SrcConnectionData::AllPorts(connection_data)
@@ -207,6 +260,7 @@ impl SrcConnectionData {
             }
         }
     }
+
     fn get_remote_prefixes_data(&self, src_port: Option<u16>) -> Option<&DstConnectionData> {
         match self {
             SrcConnectionData::AllPorts(remote_prefixes_data) => Some(remote_prefixes_data),
@@ -230,8 +284,28 @@ impl SrcConnectionData {
         dst_prefix: Prefix,
         dst_port_range: OptionalPortRange,
     ) -> Result<(), ConfigError> {
-        let remote_prefixes_data = match self {
-            SrcConnectionData::AllPorts(remote_prefixes_data) => remote_prefixes_data,
+        self.get_dst_connection_data_mut(src_port_range)?.update(
+            dst_vpcd,
+            dst_prefix,
+            dst_port_range,
+        )
+    }
+
+    fn update_for_default(
+        &mut self,
+        src_port_range: OptionalPortRange,
+        dst_vpcd: VpcDiscriminant,
+    ) -> Result<(), ConfigError> {
+        self.get_dst_connection_data_mut(src_port_range)?
+            .update_for_default(dst_vpcd)
+    }
+
+    fn get_dst_connection_data_mut(
+        &mut self,
+        src_port_range: OptionalPortRange,
+    ) -> Result<&mut DstConnectionData, ConfigError> {
+        match self {
+            SrcConnectionData::AllPorts(remote_prefixes_data) => Ok(remote_prefixes_data),
             SrcConnectionData::Ranges(map) => {
                 let OptionalPortRange::Some(src_port_range) = src_port_range else {
                     // We're trying to add a port range that covers all existing ports: this means
@@ -245,10 +319,9 @@ impl SrcConnectionData {
                     // We found an entry for this port range, we should have the port range in the map
                     .ok_or(ConfigError::InternalFailure(
                         "Cannot find entry to update in port ranges map".to_string(),
-                    ))?
+                    ))
             }
-        };
-        remote_prefixes_data.update(dst_vpcd, dst_prefix, dst_port_range)
+        }
     }
 }
 
@@ -324,7 +397,10 @@ impl ValueWithAssociatedRanges for RemotePrefixPortData {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct DstConnectionData(IpPortPrefixTrie<RemotePrefixPortData>);
+pub(crate) struct DstConnectionData {
+    trie: IpPortPrefixTrie<RemotePrefixPortData>,
+    default_remote: Option<VpcDiscriminant>,
+}
 
 impl DstConnectionData {
     fn new(vpcd: VpcDiscriminant, prefix: Prefix, port_range: OptionalPortRange) -> Self {
@@ -334,11 +410,21 @@ impl DstConnectionData {
                 RemotePrefixPortData::Ranges(DisjointRangesBTreeMap::from_iter([(range, vpcd)]))
             }
         };
-        DstConnectionData(IpPortPrefixTrie::from(prefix, remote_data))
+        Self {
+            trie: IpPortPrefixTrie::from(prefix, remote_data),
+            default_remote: None,
+        }
+    }
+
+    fn new_for_default_remote(vpcd: VpcDiscriminant) -> Self {
+        Self {
+            trie: IpPortPrefixTrie::new(),
+            default_remote: Some(vpcd),
+        }
     }
 
     fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<&RemotePrefixPortData> {
-        self.0.lookup(addr, port).map(|(_, data)| data)
+        self.trie.lookup(addr, port).map(|(_, data)| data)
     }
 
     fn update(
@@ -347,7 +433,7 @@ impl DstConnectionData {
         prefix: Prefix,
         port_range: OptionalPortRange,
     ) -> Result<(), ConfigError> {
-        match (self.0.get_mut(prefix), port_range) {
+        match (self.trie.get_mut(prefix), port_range) {
             (
                 Some(RemotePrefixPortData::Ranges(existing_range_map)),
                 OptionalPortRange::Some(range),
@@ -363,9 +449,19 @@ impl DstConnectionData {
             }
             (None, range) => {
                 let prefix_data = RemotePrefixPortData::new(range, vpcd);
-                self.0.insert(prefix, prefix_data);
+                self.trie.insert(prefix, prefix_data);
             }
         }
+        Ok(())
+    }
+
+    fn update_for_default(&mut self, vpcd: VpcDiscriminant) -> Result<(), ConfigError> {
+        if self.default_remote.is_some() {
+            return Err(ConfigError::InternalFailure(
+                "Trying to update default remote with an existing default remote".to_string(),
+            ));
+        }
+        self.default_remote = Some(vpcd);
         Ok(())
     }
 }
