@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 use crate::FlowFilterTable;
-use crate::tables::VpcdLookupResult;
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
@@ -42,20 +41,46 @@ impl FlowFilterTable {
             .remote
             .exposes
             .iter()
-            .flat_map(|expose| expose.public_ips());
+            .flat_map(|expose| expose.public_ips())
+            .collect::<Vec<_>>();
+        // We support one default at most for now
+        let remote_has_default = peering.remote.exposes.iter().any(|expose| expose.default);
 
-        // For each local prefix, add one entry for each associated remote prefix
-        for local_prefix in local_prefixes {
-            for remote_prefix in remote_prefixes.clone() {
-                self.insert(
+        if remote_prefixes.is_empty() && !remote_has_default {
+            return Err(ConfigError::FailureApply(
+                "No remote prefixes found".to_string(),
+            ));
+        } else if remote_prefixes.is_empty() && remote_has_default {
+            // Corner case: all prefixes go to the default remote. In this case we need to build
+            // entries for the source prefixes, so that we can validate that packets come from
+            // legitimate source prefixes, but we do not associate any destination (we'll fall back
+            // to the default destination)
+            for local_prefix in local_prefixes {
+                self.insert_default_only(
                     local_vpcd,
-                    VpcdLookupResult::Single(dst_vpcd),
                     local_prefix.prefix(),
                     local_prefix.ports().into(),
-                    remote_prefix.prefix(),
-                    remote_prefix.ports().into(),
                 )?;
             }
+        } else {
+            // remote_prefixes is not empty: for each local prefix, add one entry for each
+            // associated remote prefix
+            for local_prefix in local_prefixes {
+                for remote_prefix in &remote_prefixes {
+                    self.insert(
+                        local_vpcd,
+                        dst_vpcd,
+                        local_prefix.prefix(),
+                        local_prefix.ports().into(),
+                        remote_prefix.prefix(),
+                        remote_prefix.ports().into(),
+                    )?;
+                }
+            }
+        }
+
+        if remote_has_default {
+            self.add_default_remote(local_vpcd, dst_vpcd)?;
         }
         Ok(())
     }
