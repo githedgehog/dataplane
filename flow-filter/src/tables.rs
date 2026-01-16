@@ -129,9 +129,9 @@ impl FlowFilterTable {
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
         src_prefix: Prefix,
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
         dst_prefix: Prefix,
-        dst_port_range: OptionalPortRange,
+        dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         if let Some(table) = self.get_table_mut(src_vpcd) {
             table.insert(
@@ -160,7 +160,7 @@ impl FlowFilterTable {
         dst_vpcd: VpcDiscriminant,
         src_vpcd: VpcDiscriminant,
         src_prefix: Prefix,
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         if let Some(table) = self.get_table_mut(src_vpcd) {
             table.insert_default(dst_vpcd, src_prefix, src_port_range)?;
@@ -189,9 +189,9 @@ impl VpcConnectionsTable {
         &mut self,
         dst_vpcd: VpcDiscriminant,
         src_prefix: Prefix,
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
         dst_prefix: Prefix,
-        dst_port_range: OptionalPortRange,
+        dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         if let Some(value) = self.0.get_mut(src_prefix) {
             value.update(src_port_range, dst_vpcd, dst_prefix, dst_port_range)?;
@@ -207,7 +207,7 @@ impl VpcConnectionsTable {
         &mut self,
         dst_vpcd: VpcDiscriminant,
         src_prefix: Prefix,
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         if let Some(value) = self.0.get_mut(src_prefix) {
             value.update_for_default(src_port_range, dst_vpcd)?;
@@ -229,17 +229,17 @@ pub(crate) enum SrcConnectionData {
 
 impl SrcConnectionData {
     fn new(
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
         dst_vpcd: VpcDiscriminant,
         dst_prefix: Prefix,
-        dst_port_range: OptionalPortRange,
+        dst_port_range: Option<PortRange>,
     ) -> Self {
         let connection_data = DstConnectionData::new(dst_vpcd, dst_prefix, dst_port_range);
         Self::new_from_dst_connection_data(src_port_range, connection_data)
     }
 
     fn new_for_default_remote(
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
         dst_vpcd: VpcDiscriminant,
     ) -> Self {
         let connection_data = DstConnectionData::new_for_default_remote(dst_vpcd);
@@ -247,14 +247,12 @@ impl SrcConnectionData {
     }
 
     fn new_from_dst_connection_data(
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
         connection_data: DstConnectionData,
     ) -> Self {
         match src_port_range {
-            OptionalPortRange::NoPortRangeMeansAllPorts => {
-                SrcConnectionData::AllPorts(connection_data)
-            }
-            OptionalPortRange::Some(port_range) => {
+            None => SrcConnectionData::AllPorts(connection_data),
+            Some(port_range) => {
                 let map = DisjointRangesBTreeMap::from_iter([(port_range, connection_data)]);
                 SrcConnectionData::Ranges(map)
             }
@@ -279,10 +277,10 @@ impl SrcConnectionData {
 
     fn update(
         &mut self,
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
         dst_vpcd: VpcDiscriminant,
         dst_prefix: Prefix,
-        dst_port_range: OptionalPortRange,
+        dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         self.get_dst_connection_data_mut(src_port_range)?.update(
             dst_vpcd,
@@ -293,7 +291,7 @@ impl SrcConnectionData {
 
     fn update_for_default(
         &mut self,
-        src_port_range: OptionalPortRange,
+        src_port_range: Option<PortRange>,
         dst_vpcd: VpcDiscriminant,
     ) -> Result<(), ConfigError> {
         self.get_dst_connection_data_mut(src_port_range)?
@@ -302,19 +300,14 @@ impl SrcConnectionData {
 
     fn get_dst_connection_data_mut(
         &mut self,
-        src_port_range: OptionalPortRange,
+        src_port_range_opt: Option<PortRange>,
     ) -> Result<&mut DstConnectionData, ConfigError> {
         match self {
             SrcConnectionData::AllPorts(remote_prefixes_data) => Ok(remote_prefixes_data),
             SrcConnectionData::Ranges(map) => {
-                let OptionalPortRange::Some(src_port_range) = src_port_range else {
-                    // We're trying to add a port range that covers all existing ports: this means
-                    // we've got some overlap
-                    return Err(ConfigError::InternalFailure(
-                        "Trying to update (local) port ranges map with overlapping ranges"
-                            .to_string(),
-                    ));
-                };
+                let src_port_range = src_port_range_opt.ok_or(ConfigError::InternalFailure(
+                    "Trying to update (local) port ranges map with overlapping ranges".to_string(),
+                ))?;
                 map.get_mut(&src_port_range)
                     // We found an entry for this port range, we should have the port range in the map
                     .ok_or(ConfigError::InternalFailure(
@@ -355,10 +348,10 @@ pub(crate) enum RemotePrefixPortData {
 }
 
 impl RemotePrefixPortData {
-    fn new(port_range: OptionalPortRange, vpcd: VpcDiscriminant) -> Self {
+    fn new(port_range: Option<PortRange>, vpcd: VpcDiscriminant) -> Self {
         match port_range {
-            OptionalPortRange::NoPortRangeMeansAllPorts => RemotePrefixPortData::AllPorts(vpcd),
-            OptionalPortRange::Some(range) => {
+            None => RemotePrefixPortData::AllPorts(vpcd),
+            Some(range) => {
                 RemotePrefixPortData::Ranges(DisjointRangesBTreeMap::from_iter([(range, vpcd)]))
             }
         }
@@ -403,10 +396,10 @@ pub(crate) struct DstConnectionData {
 }
 
 impl DstConnectionData {
-    fn new(vpcd: VpcDiscriminant, prefix: Prefix, port_range: OptionalPortRange) -> Self {
+    fn new(vpcd: VpcDiscriminant, prefix: Prefix, port_range: Option<PortRange>) -> Self {
         let remote_data = match port_range {
-            OptionalPortRange::NoPortRangeMeansAllPorts => RemotePrefixPortData::AllPorts(vpcd),
-            OptionalPortRange::Some(range) => {
+            None => RemotePrefixPortData::AllPorts(vpcd),
+            Some(range) => {
                 RemotePrefixPortData::Ranges(DisjointRangesBTreeMap::from_iter([(range, vpcd)]))
             }
         };
@@ -431,13 +424,10 @@ impl DstConnectionData {
         &mut self,
         vpcd: VpcDiscriminant,
         prefix: Prefix,
-        port_range: OptionalPortRange,
+        port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         match (self.trie.get_mut(prefix), port_range) {
-            (
-                Some(RemotePrefixPortData::Ranges(existing_range_map)),
-                OptionalPortRange::Some(range),
-            ) => {
+            (Some(RemotePrefixPortData::Ranges(existing_range_map)), Some(range)) => {
                 existing_range_map.insert(range, vpcd);
             }
             (Some(_), _) => {
@@ -463,21 +453,6 @@ impl DstConnectionData {
         }
         self.default_remote = Some(vpcd);
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OptionalPortRange {
-    NoPortRangeMeansAllPorts,
-    Some(PortRange),
-}
-
-impl From<Option<PortRange>> for OptionalPortRange {
-    fn from(opt: Option<PortRange>) -> Self {
-        match opt {
-            Some(range) => OptionalPortRange::Some(range),
-            None => OptionalPortRange::NoPortRangeMeansAllPorts,
-        }
     }
 }
 
@@ -512,14 +487,7 @@ mod tests {
         let dst_prefix = Prefix::from("20.0.0.0/24");
 
         table
-            .insert(
-                src_vpcd,
-                dst_vpcd,
-                src_prefix,
-                OptionalPortRange::NoPortRangeMeansAllPorts,
-                dst_prefix,
-                OptionalPortRange::NoPortRangeMeansAllPorts,
-            )
+            .insert(src_vpcd, dst_vpcd, src_prefix, None, dst_prefix, None)
             .unwrap();
 
         // Should allow traffic from src to dst
@@ -547,8 +515,8 @@ mod tests {
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
-        let src_port_range = OptionalPortRange::Some(PortRange::new(1024, 2048).unwrap());
-        let dst_port_range = OptionalPortRange::Some(PortRange::new(80, 80).unwrap());
+        let src_port_range = Some(PortRange::new(1024, 2048).unwrap());
+        let dst_port_range = Some(PortRange::new(80, 80).unwrap());
 
         table
             .insert(
@@ -594,9 +562,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd1,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -605,9 +573,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd2,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("30.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -631,13 +599,7 @@ mod tests {
         let dst_prefix = Prefix::from("20.0.0.0/24");
 
         table
-            .insert(
-                dst_vpcd,
-                src_prefix,
-                OptionalPortRange::NoPortRangeMeansAllPorts,
-                dst_prefix,
-                OptionalPortRange::NoPortRangeMeansAllPorts,
-            )
+            .insert(dst_vpcd, src_prefix, None, dst_prefix, None)
             .unwrap();
 
         // Lookup should succeed
@@ -658,8 +620,8 @@ mod tests {
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
-        let src_port_range = OptionalPortRange::Some(PortRange::new(8080, 8090).unwrap());
-        let dst_port_range = OptionalPortRange::NoPortRangeMeansAllPorts;
+        let src_port_range = Some(PortRange::new(8080, 8090).unwrap());
+        let dst_port_range = None;
 
         table
             .insert(
@@ -681,18 +643,6 @@ mod tests {
     }
 
     #[test]
-    fn test_optional_port_range_from() {
-        let from_some = OptionalPortRange::from(Some(PortRange::new(80, 80).unwrap()));
-        assert!(matches!(from_some, OptionalPortRange::Some(_)));
-
-        let from_none = OptionalPortRange::from(None);
-        assert!(matches!(
-            from_none,
-            OptionalPortRange::NoPortRangeMeansAllPorts
-        ));
-    }
-
-    #[test]
     fn test_flow_filter_table_ipv6() {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
@@ -702,14 +652,7 @@ mod tests {
         let dst_prefix = Prefix::from("2001:db9::/32");
 
         table
-            .insert(
-                src_vpcd,
-                dst_vpcd,
-                src_prefix,
-                OptionalPortRange::NoPortRangeMeansAllPorts,
-                dst_prefix,
-                OptionalPortRange::NoPortRangeMeansAllPorts,
-            )
+            .insert(src_vpcd, dst_vpcd, src_prefix, None, dst_prefix, None)
             .unwrap();
 
         let src_addr = "2001:db8::1".parse().unwrap();
@@ -731,9 +674,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd1,
                 Prefix::from("10.0.0.0/16"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/16"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -743,9 +686,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd2,
                 Prefix::from("10.0.1.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.1.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
