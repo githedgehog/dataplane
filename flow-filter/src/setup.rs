@@ -50,9 +50,9 @@ impl FlowFilterTable {
                     local_vpcd,
                     dst_vpcd,
                     local_prefix.prefix(),
-                    local_prefix.ports().into(),
+                    local_prefix.ports(),
                     remote_prefix.prefix(),
-                    remote_prefix.ports().into(),
+                    remote_prefix.ports(),
                 )?;
             }
         }

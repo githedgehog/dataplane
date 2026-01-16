@@ -122,7 +122,6 @@ fn format_packet_addrs_ports(
 mod tests {
     use super::*;
     use crate::filter_rw::FlowFilterTableWriter;
-    use crate::tables::OptionalPortRange;
     use lpm::prefix::Prefix;
     use net::buffer::TestBuffer;
     use net::headers::{Net, TryHeadersMut, TryIpMut};
@@ -187,9 +186,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -226,9 +225,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -287,9 +286,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -325,9 +324,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("2001:db8::/32"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("2001:db9::/32"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -364,9 +363,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
