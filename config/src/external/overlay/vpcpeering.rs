@@ -162,6 +162,11 @@ impl VpcExpose {
         Self::default()
     }
     #[must_use]
+    pub fn set_default(mut self) -> Self {
+        self.default = true;
+        self
+    }
+    #[must_use]
     pub fn ip(mut self, prefix: PrefixWithOptionalPorts) -> Self {
         self.ips.insert(prefix);
         self

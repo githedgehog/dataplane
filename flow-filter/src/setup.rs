@@ -37,23 +37,30 @@ impl FlowFilterTable {
         let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
         let local_prefixes = peering.local.exposes.iter().flat_map(|expose| &expose.ips);
-        let remote_prefixes = peering
-            .remote
-            .exposes
-            .iter()
-            .flat_map(|expose| expose.public_ips());
 
-        // For each local prefix, add one entry for each associated remote prefix
-        for local_prefix in local_prefixes {
-            for remote_prefix in remote_prefixes.clone() {
-                self.insert(
-                    local_vpcd,
-                    dst_vpcd,
-                    local_prefix.prefix(),
-                    local_prefix.ports().into(),
-                    remote_prefix.prefix(),
-                    remote_prefix.ports().into(),
-                )?;
+        for remote in &peering.remote.exposes {
+            if remote.default {
+                for local_prefix in local_prefixes.clone() {
+                    self.insert_default_remote(
+                        dst_vpcd,
+                        local_vpcd,
+                        local_prefix.prefix(),
+                        local_prefix.ports().into(),
+                    )?;
+                }
+            } else {
+                for local_prefix in local_prefixes.clone() {
+                    for remote_prefix in remote.public_ips() {
+                        self.insert(
+                            local_vpcd,
+                            dst_vpcd,
+                            local_prefix.prefix(),
+                            local_prefix.ports().into(),
+                            remote_prefix.prefix(),
+                            remote_prefix.ports().into(),
+                        )?;
+                    }
+                }
             }
         }
         Ok(())
