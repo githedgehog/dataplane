@@ -98,6 +98,13 @@ impl<T: TrieMap<Value: Default> + TrieMapFactory<T>> TrieMap for TrieMapWithDefa
         self.0.get_mut(prefix)
     }
 
+    fn contains_key<B>(&self, prefix: B) -> bool
+    where
+        B: Borrow<Self::Prefix>,
+    {
+        self.0.contains_key(prefix)
+    }
+
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

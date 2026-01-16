@@ -72,6 +72,11 @@ where
         self.0.get_mut(prefix)
     }
 
+    /// Check if the trie contains a prefix.
+    pub fn contains_key(&self, prefix: Prefix) -> bool {
+        self.0.contains_key(prefix)
+    }
+
     /// Look up an IP address and optional port in the trie.
     ///
     /// Returns the longest matching prefix and its associated value, if any.

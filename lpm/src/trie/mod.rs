@@ -43,6 +43,10 @@ pub trait TrieMap {
     where
         B: Borrow<Self::Prefix>;
 
+    fn contains_key<B>(&self, prefix: B) -> bool
+    where
+        B: Borrow<Self::Prefix>;
+
     fn iter(&self) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>;
     fn iter_mut(&mut self) -> impl Iterator<Item = (&Self::Prefix, &mut Self::Value)>;
     fn is_empty(&self) -> bool;
@@ -101,6 +105,16 @@ impl<V: Clone> IpPrefixTrie<V> {
         match addr.into() {
             IpAddr::V4(ip) => self.ipv4.lookup(ip).map(|(k, v)| (Prefix::IPV4(*k), v)),
             IpAddr::V6(ip) => self.ipv6.lookup(ip).map(|(k, v)| (Prefix::IPV6(*k), v)),
+        }
+    }
+
+    pub fn contains_key<Q>(&self, prefix: Q) -> bool
+    where
+        Q: Into<Prefix>,
+    {
+        match prefix.into() {
+            Prefix::IPV4(prefix) => self.ipv4.contains_key(prefix),
+            Prefix::IPV6(prefix) => self.ipv6.contains_key(prefix),
         }
     }
 
