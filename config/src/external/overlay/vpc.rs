@@ -10,8 +10,9 @@ use lpm::prefix::Prefix;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
+use crate::converters::k8s::config::peering;
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
@@ -31,6 +32,21 @@ pub struct Peering {
     pub remote_id: VpcId,             /* Id of peer */
     pub gwgroup: Option<String>,      /* gateway group serving this peering */
     pub adv_communities: Vec<String>, /* communities with which to advertise prefixes in this peering */
+}
+
+impl Peering {
+    fn validate(&self) -> ConfigResult {
+        debug!(
+            "Validating manifest of VPC {} in peering {}",
+            self.local.name, self.name
+        );
+        self.local.validate()?;
+        if false {
+            // not needed will be validated when validating the remote vpc
+            self.remote.validate()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq)]
@@ -89,7 +105,7 @@ impl Vpc {
     }
 
     /// Collect all peerings from the [`VpcPeeringTable`] table this vpc participates in
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    pub fn set_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for vpc '{}'...", self.name);
         self.peerings = peering_table
             .peerings_vpc(&self.name)
@@ -112,6 +128,40 @@ impl Vpc {
         } else {
             debug!("Vpc '{}' has {} peerings", self.name, self.peerings.len());
         }
+    }
+
+    /// Check that a [`Vpc`] does not peer more than once with another.
+    fn check_peering_count(&self) -> ConfigResult {
+        debug!("Checking peering duplicates for for VPC {}...", self.name);
+        // We use the VPC Ids to identify peer VPCs.
+        let mut peers = BTreeSet::new();
+        for peering in &self.peerings {
+            if (!peers.insert(peering.remote_id.clone())) {
+                error!(
+                    "VPC {} peers more than once with peer {}",
+                    self.name, peering.remote.name
+                );
+                return Err(ConfigError::DuplicateVpcPeerings(peering.name.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Check the peerings that a VPC participates in
+    fn check_peerings(&self) -> ConfigResult {
+        debug!("Checking peerings of VPC {}...", self.name);
+        for peering in &self.peerings {
+            peering.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Validate a [`Vpc`]
+    pub fn validate(&self) -> ConfigResult {
+        debug!("Validating config for VPC {}...", self.name);
+        self.check_peering_count()?;
+        self.check_peerings()?;
+        Ok(())
     }
 
     /// Tell how many peerings this VPC has
@@ -170,6 +220,7 @@ impl VpcTable {
         self.vpcs.insert(vpc.name.clone(), vpc);
         Ok(())
     }
+
     /// Get a [`Vpc`] from the vpc table by name
     #[must_use]
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
@@ -205,27 +256,13 @@ impl VpcTable {
     pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for all VPCs..");
         self.values_mut()
-            .for_each(|vpc| vpc.collect_peerings(peering_table, idmap));
-    }
-    /// Clear set of vnis
-    pub fn clear_vnis(&mut self) {
-        self.vnis.clear();
+            .for_each(|vpc| vpc.set_peerings(peering_table, idmap));
     }
 
     /// Validate the [`VpcTable`]
     pub fn validate(&self) -> ConfigResult {
         for vpc in self.values() {
-            let mut peers = BTreeSet::new();
-            // For each VPC, loop over all peerings
-            for peering in &vpc.peerings {
-                // Check whether we have duplicate remote VPCs between peerings.
-                // If we fail to insert, this means the remote VPC ID is already in our set,
-                // and we have a duplicate peering: this is a configuration error.
-                if (!peers.insert(peering.remote_id.clone())) {
-                    return Err(ConfigError::DuplicateVpcPeerings(peering.name.clone()));
-                }
-            }
-            peers.clear();
+            vpc.validate()?;
         }
         Ok(())
     }

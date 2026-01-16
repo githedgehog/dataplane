@@ -170,11 +170,8 @@ impl VpcRoutingConfigIpv4 {
         }
 
         /* advertise */
-        let nets = rmanifest.exposes.iter().flat_map(|e| {
-            e.public_ips()
-                .iter()
-                .map(|prefix_with_ports| prefix_with_ports.prefix())
-        });
+        let nets = rmanifest.exposes.iter().flat_map(|e| e.adv_prefixes());
+
         self.adv_nets.extend(nets);
 
         /* build adv prefix list and route-map */
@@ -184,13 +181,9 @@ impl VpcRoutingConfigIpv4 {
             Some(vpc.adv_plist_desc(&rmanifest.name)),
         );
         for expose in rmanifest.exposes.iter() {
-            let prefixes = expose.public_ips().iter();
-            let plists = prefixes.map(|prefix_with_ports| {
-                PrefixListEntry::new(
-                    PrefixListAction::Permit,
-                    PrefixListPrefix::Prefix(prefix_with_ports.prefix()),
-                    None,
-                )
+            let prefixes = expose.adv_prefixes().into_iter();
+            let plists = prefixes.map(|p| {
+                PrefixListEntry::new(PrefixListAction::Permit, PrefixListPrefix::Prefix(p), None)
             });
             adv_plist.add_entries(plists)?;
         }

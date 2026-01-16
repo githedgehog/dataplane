@@ -7,7 +7,6 @@ use lpm::prefix::{IpRangeWithPorts, Prefix, PrefixWithOptionalPorts, PrefixWithP
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
-use tracing::debug;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStatelessNat;
@@ -66,6 +65,7 @@ fn empty_btreeset() -> &'static BTreeSet<PrefixWithOptionalPorts> {
 use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
+    pub default: bool,
     pub ips: BTreeSet<PrefixWithOptionalPorts>,
     pub nots: BTreeSet<PrefixWithOptionalPorts>,
     pub nat: Option<VpcExposeNat>,
@@ -207,6 +207,20 @@ impl VpcExpose {
     pub fn has_host_prefixes(&self) -> bool {
         self.ips.iter().filter(|p| p.prefix().is_host()).count() > 0
     }
+
+    /// The prefixes of an expose to be advertised to a remote peer
+    #[must_use]
+    pub fn adv_prefixes(&self) -> Vec<Prefix> {
+        if self.default {
+            // only V4 atm
+            vec![Prefix::root_v4()]
+        } else if let Some(nat) = self.nat.as_ref() {
+            nat.as_range.iter().map(|p| p.prefix()).collect::<Vec<_>>()
+        } else {
+            self.ips.iter().map(|p| p.prefix()).collect::<Vec<_>>()
+        }
+    }
+
     // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
     // public IPs are those from the "ips" list. This method returns the current list of public IPs
     // for the VpcExpose.
@@ -221,20 +235,7 @@ impl VpcExpose {
             &nat.as_range
         }
     }
-    // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
-    // public IPs are those from the "ips" list. This method returns a mutable reference to the current list of public IPs
-    // for the VpcExpose.
-    #[must_use]
-    pub fn public_ips_mut(&mut self) -> &mut BTreeSet<PrefixWithOptionalPorts> {
-        let Some(nat) = self.nat.as_mut() else {
-            return &mut self.ips;
-        };
-        if nat.as_range.is_empty() {
-            &mut self.ips
-        } else {
-            &mut nat.as_range
-        }
-    }
+    
     // Same as public_ips, but returns the list of excluded prefixes
     #[must_use]
     pub fn public_excludes(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
@@ -306,6 +307,40 @@ impl VpcExpose {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
     }
 
+    fn validate_default_expose(&self) -> ConfigResult {
+        if self.default {
+            if !self.ips.is_empty() || !self.nots.is_empty() || self.nat.is_some() {
+                return Err(ConfigError::Invalid(
+                    "Default expose cannot have ips/nots or nat configuration".to_string(),
+                ));
+            }
+        } else {
+            if self.ips.iter().any(|p| p.prefix().is_root()) {
+                return Err(ConfigError::Forbidden(
+                    "Expose: root prefix as 'ip' forbidden",
+                ));
+            }
+            if self.nots.iter().any(|p| p.prefix().is_root()) {
+                return Err(ConfigError::Forbidden(
+                    "Expose: root prefix as 'not' is forbidden",
+                ));
+            }
+            if let Some(nat) = &self.nat {
+                if nat.as_range.iter().any(|p| p.prefix().is_root()) {
+                    return Err(ConfigError::Forbidden(
+                        "Expose: root prefix as NAT 'as' is forbidden",
+                    ));
+                }
+                if nat.not_as.iter().any(|p| p.prefix().is_root()) {
+                    return Err(ConfigError::Forbidden(
+                        "Expose: root prefix as NAT 'as-not' is forbidden",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Validate the [`VpcExpose`]:
     ///
     /// 1. Make sure that all prefixes and exclusion prefixes for this [`VpcExpose`] are of the same
@@ -320,6 +355,9 @@ impl VpcExpose {
     /// 5. Make sure we have the same number of addresses available on each side (public/private),
     ///    taking exclusion prefixes into account.
     pub fn validate(&self) -> ConfigResult {
+        // 0. Check default exposes and prefixes
+        self.validate_default_expose()?;
+
         // 1. Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
         //    support NAT46 or NAT64 at the moment.
         //
@@ -554,8 +592,9 @@ impl VpcPeering {
             gw_group,
         }
     }
+    #[cfg(test)]
+    /// Validate A VpcPeering. Only used in tests. Dataplane validates `Peerings`
     pub fn validate(&self) -> ConfigResult {
-        debug!("Validating VPC peering '{}'...", &self.name);
         self.left.validate()?;
         self.right.validate()?;
         Ok(())
@@ -589,11 +628,7 @@ impl VpcPeeringTable {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    /// Empty a [`VpcPeeringTable`]
-    pub fn clear(&mut self) {
-        debug!("Emptying peering table...");
-        self.0.clear();
-    }
+
     /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
     pub fn add(&mut self, peering: VpcPeering) -> ConfigResult {
         if peering.name.is_empty() {
@@ -615,6 +650,7 @@ impl VpcPeeringTable {
             Ok(())
         }
     }
+
     /// Iterate over all [`VpcPeering`]s in a [`VpcPeeringTable`]
     pub fn values(&self) -> impl Iterator<Item = &VpcPeering> {
         self.0.values()
