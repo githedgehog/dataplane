@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 use crate::FlowFilterTable;
-use crate::tables::VpcdLookupResult;
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
@@ -49,7 +48,7 @@ impl FlowFilterTable {
             for remote_prefix in remote_prefixes.clone() {
                 self.insert(
                     local_vpcd,
-                    VpcdLookupResult::Single(dst_vpcd),
+                    dst_vpcd,
                     local_prefix.prefix(),
                     local_prefix.ports().into(),
                     remote_prefix.prefix(),
@@ -93,7 +92,6 @@ fn clone_skipping_peerings(vpc: &Vpc) -> Vpc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VpcdLookupResult;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeeringTable};
     use net::packet::VpcDiscriminant;
@@ -142,10 +140,7 @@ mod tests {
         let dst_addr = "20.0.0.5".parse().unwrap();
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(
-            dst_vpcd,
-            Some(VpcdLookupResult::Single(VpcDiscriminant::VNI(vni2)))
-        );
+        assert_eq!(dst_vpcd, Some(VpcDiscriminant::VNI(vni2)));
     }
 
     #[test]
@@ -221,9 +216,6 @@ mod tests {
         let dst_addr = "20.0.0.5".parse().unwrap();
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(
-            dst_vpcd,
-            Some(VpcdLookupResult::Single(VpcDiscriminant::VNI(vni2)))
-        );
+        assert_eq!(dst_vpcd, Some(VpcDiscriminant::VNI(vni2)));
     }
 }

@@ -30,7 +30,6 @@ pub use tables::FlowFilterTable;
 
 use tracectl::trace_target;
 
-use crate::tables::VpcdLookupResult;
 trace_target!("flow-filter", LevelFilter::INFO, &["pipeline"]);
 
 /// A structure to implement the flow-filter pipeline stage.
@@ -77,9 +76,7 @@ impl FlowFilter {
         });
         let log_str = format_packet_addrs_ports(&src_ip, &dst_ip, ports);
 
-        let Some(VpcdLookupResult::Single(dst_vpcd)) =
-            tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports)
-        else {
+        let Some(dst_vpcd) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) else {
             debug!("{nfi}: Flow not allowed, dropping packet: {log_str}");
             packet.done(DoneReason::Filtered);
             return;
@@ -188,7 +185,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                VpcdLookupResult::Single(dst_vpcd),
+                dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("20.0.0.0/24"),
@@ -227,7 +224,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                VpcdLookupResult::Single(dst_vpcd),
+                dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("20.0.0.0/24"),
@@ -288,7 +285,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                VpcdLookupResult::Single(dst_vpcd),
+                dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("20.0.0.0/24"),
@@ -326,7 +323,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                VpcdLookupResult::Single(dst_vpcd),
+                dst_vpcd,
                 Prefix::from("2001:db8::/32"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("2001:db9::/32"),
@@ -365,7 +362,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                VpcdLookupResult::Single(dst_vpcd),
+                dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("20.0.0.0/24"),
