@@ -121,7 +121,6 @@ fn format_packet_addrs_ports(
 mod tests {
     use super::*;
     use crate::filter_rw::FlowFilterTableWriter;
-    use crate::tables::OptionalPortRange;
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -207,9 +206,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -246,9 +245,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -307,9 +306,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -345,9 +344,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("2001:db8::/32"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("2001:db9::/32"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -384,9 +383,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -423,9 +422,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::Some(PortRange::new(1025, 1999).unwrap()),
+                Some(PortRange::new(1025, 1999).unwrap()),
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
@@ -606,9 +605,9 @@ mod tests {
                 src_vpcd,
                 dst_vpcd,
                 Prefix::from("10.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
                 Prefix::from("20.0.0.0/24"),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
+                None,
             )
             .unwrap();
 
