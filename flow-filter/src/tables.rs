@@ -17,16 +17,6 @@ use tracectl::trace_target;
 use tracing::debug;
 trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 
-/// The result of a VPC discriminant lookup in the flow filter table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum VpcdLookupResult {
-    /// A single VPC discriminant was found.
-    Single(VpcDiscriminant),
-    // Note: This enum briefly supported another "MultipleMatches" variant, introduced in commit
-    // 2461c5e90579 ("feat(flow-filter): Add new flow-filter stage to enforce peering rules") for
-    // supporting overlapping exposed prefixes, but this is now rejected at validation time.
-}
-
 /// A structure to store information about allowed flows between VPCs.
 /// It contains one table per source VPC discriminant.
 //
@@ -52,8 +42,8 @@ pub(crate) enum VpcdLookupResult {
 //           LPM trie containing destination IP prefixes and associated port/VPC information
 //
 //        RemotePrefixPortData (enum)
-//          -> AllPorts(VpcdLookupResult): destination VPC for all ports (no port range specified)
-//          -> Ranges(DisjointRangesBTreeMap<PortRange, VpcdLookupResult>):
+//          -> AllPorts(VpcDiscriminant): destination VPC for all ports (no port range specified)
+//          -> Ranges(DisjointRangesBTreeMap<PortRange, VpcDiscriminant>):
 //             associates destination port ranges to destination VPC discriminants
 //
 // How this works:
@@ -70,10 +60,10 @@ pub(crate) enum VpcdLookupResult {
 // 4. Using the destination IP and port, look up in the DstConnectionData's trie to find the
 //    RemotePrefixPortData that matches the destination IP prefix.
 //
-// 5. From the RemotePrefixPortData, extract the VpcdLookupResult that matches the destination
+// 5. From the RemotePrefixPortData, extract the VpcDiscriminant that matches the destination
 //    port (if port ranges are specified).
 //
-// 6. If we found a match, then the connection is valid; we return the VpcdLookupResult which
+// 6. If we found a match, then the connection is valid; we return the VpcDiscriminant which
 //    contains either a single destination VPC discriminant or indicates multiple matches.
 #[derive(Debug, Clone)]
 pub struct FlowFilterTable(HashMap<VpcDiscriminant, VpcConnectionsTable>);
@@ -102,7 +92,7 @@ impl FlowFilterTable {
         src_addr: &IpAddr,
         dst_addr: &IpAddr,
         ports: Option<(u16, u16)>,
-    ) -> Option<VpcdLookupResult> {
+    ) -> Option<VpcDiscriminant> {
         // Get the table related to the source VPC for the packet
         let table = self.get_table(src_vpcd)?;
 
@@ -131,7 +121,7 @@ impl FlowFilterTable {
     pub(crate) fn insert(
         &mut self,
         src_vpcd: VpcDiscriminant,
-        dst_vpcd: VpcdLookupResult,
+        dst_vpcd: VpcDiscriminant,
         src_prefix: Prefix,
         src_port_range: OptionalPortRange,
         dst_prefix: Prefix,
@@ -174,7 +164,7 @@ impl VpcConnectionsTable {
 
     fn insert(
         &mut self,
-        dst_vpcd: VpcdLookupResult,
+        dst_vpcd: VpcDiscriminant,
         src_prefix: Prefix,
         src_port_range: OptionalPortRange,
         dst_prefix: Prefix,
@@ -202,7 +192,7 @@ pub(crate) enum SrcConnectionData {
 impl SrcConnectionData {
     fn new(
         src_port_range: OptionalPortRange,
-        dst_vpcd: VpcdLookupResult,
+        dst_vpcd: VpcDiscriminant,
         dst_prefix: Prefix,
         dst_port_range: OptionalPortRange,
     ) -> Self {
@@ -236,7 +226,7 @@ impl SrcConnectionData {
     fn update(
         &mut self,
         src_port_range: OptionalPortRange,
-        dst_vpcd: VpcdLookupResult,
+        dst_vpcd: VpcDiscriminant,
         dst_prefix: Prefix,
         dst_port_range: OptionalPortRange,
     ) -> Result<(), ConfigError> {
@@ -287,12 +277,12 @@ impl ValueWithAssociatedRanges for SrcConnectionData {
 
 #[derive(Debug, Clone)]
 pub(crate) enum RemotePrefixPortData {
-    AllPorts(VpcdLookupResult),
-    Ranges(DisjointRangesBTreeMap<PortRange, VpcdLookupResult>),
+    AllPorts(VpcDiscriminant),
+    Ranges(DisjointRangesBTreeMap<PortRange, VpcDiscriminant>),
 }
 
 impl RemotePrefixPortData {
-    fn new(port_range: OptionalPortRange, vpcd: VpcdLookupResult) -> Self {
+    fn new(port_range: OptionalPortRange, vpcd: VpcDiscriminant) -> Self {
         match port_range {
             OptionalPortRange::NoPortRangeMeansAllPorts => RemotePrefixPortData::AllPorts(vpcd),
             OptionalPortRange::Some(range) => {
@@ -301,7 +291,7 @@ impl RemotePrefixPortData {
         }
     }
 
-    fn get_vpcd(&self, dst_port: Option<u16>) -> Option<&VpcdLookupResult> {
+    fn get_vpcd(&self, dst_port: Option<u16>) -> Option<&VpcDiscriminant> {
         match self {
             RemotePrefixPortData::AllPorts(vpcd) => Some(vpcd),
             RemotePrefixPortData::Ranges(ranges) => {
@@ -337,7 +327,7 @@ impl ValueWithAssociatedRanges for RemotePrefixPortData {
 pub(crate) struct DstConnectionData(IpPortPrefixTrie<RemotePrefixPortData>);
 
 impl DstConnectionData {
-    fn new(vpcd: VpcdLookupResult, prefix: Prefix, port_range: OptionalPortRange) -> Self {
+    fn new(vpcd: VpcDiscriminant, prefix: Prefix, port_range: OptionalPortRange) -> Self {
         let remote_data = match port_range {
             OptionalPortRange::NoPortRangeMeansAllPorts => RemotePrefixPortData::AllPorts(vpcd),
             OptionalPortRange::Some(range) => {
@@ -353,7 +343,7 @@ impl DstConnectionData {
 
     fn update(
         &mut self,
-        vpcd: VpcdLookupResult,
+        vpcd: VpcDiscriminant,
         prefix: Prefix,
         port_range: OptionalPortRange,
     ) -> Result<(), ConfigError> {
@@ -420,7 +410,7 @@ mod tests {
     fn test_flow_filter_table_insert_and_contains_simple() {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+        let dst_vpcd = vpcd(200);
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -428,7 +418,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_vpcd.clone(),
+                dst_vpcd,
                 src_prefix,
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 dst_prefix,
@@ -457,7 +447,7 @@ mod tests {
     fn test_flow_filter_table_with_port_ranges() {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+        let dst_vpcd = vpcd(200);
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -467,7 +457,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_vpcd.clone(),
+                dst_vpcd,
                 src_prefix,
                 src_port_range,
                 dst_prefix,
@@ -499,14 +489,14 @@ mod tests {
     fn test_flow_filter_table_multiple_entries() {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd1 = VpcdLookupResult::Single(vpcd(200));
-        let dst_vpcd2 = VpcdLookupResult::Single(vpcd(300));
+        let dst_vpcd1 = vpcd(200);
+        let dst_vpcd2 = vpcd(300);
 
         // Add two entries for different destination prefixes
         table
             .insert(
                 src_vpcd,
-                dst_vpcd1.clone(),
+                dst_vpcd1,
                 Prefix::from("10.0.0.0/24"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("20.0.0.0/24"),
@@ -517,7 +507,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_vpcd2.clone(),
+                dst_vpcd2,
                 Prefix::from("10.0.0.0/24"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("30.0.0.0/24"),
@@ -539,7 +529,7 @@ mod tests {
     #[test]
     fn test_vpc_connections_table_lookup() {
         let mut table = VpcConnectionsTable::new();
-        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+        let dst_vpcd = vpcd(200);
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -568,7 +558,7 @@ mod tests {
     #[test]
     fn test_vpc_connections_table_with_ports() {
         let mut table = VpcConnectionsTable::new();
-        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+        let dst_vpcd = vpcd(200);
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -610,7 +600,7 @@ mod tests {
     fn test_flow_filter_table_ipv6() {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = VpcdLookupResult::Single(vpcd(200));
+        let dst_vpcd = vpcd(200);
 
         let src_prefix = Prefix::from("2001:db8::/32");
         let dst_prefix = Prefix::from("2001:db9::/32");
@@ -618,7 +608,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_vpcd.clone(),
+                dst_vpcd,
                 src_prefix,
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 dst_prefix,
@@ -636,14 +626,14 @@ mod tests {
     fn test_flow_filter_table_longest_prefix_match() {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd1 = VpcdLookupResult::Single(vpcd(200));
-        let dst_vpcd2 = VpcdLookupResult::Single(vpcd(300));
+        let dst_vpcd1 = vpcd(200);
+        let dst_vpcd2 = vpcd(300);
 
         // Insert broader prefix
         table
             .insert(
                 src_vpcd,
-                dst_vpcd1.clone(),
+                dst_vpcd1,
                 Prefix::from("10.0.0.0/16"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("20.0.0.0/16"),
@@ -655,7 +645,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_vpcd2.clone(),
+                dst_vpcd2,
                 Prefix::from("10.0.1.0/24"),
                 OptionalPortRange::NoPortRangeMeansAllPorts,
                 Prefix::from("20.0.1.0/24"),
