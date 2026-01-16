@@ -22,9 +22,9 @@ trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 pub(crate) enum VpcdLookupResult {
     /// A single VPC discriminant was found.
     Single(VpcDiscriminant),
-    /// Multiple VPC discriminants were found, we cannot tell which is the right one for this
-    /// packet.
-    MultipleMatches,
+    // Note: This enum briefly supported another "MultipleMatches" variant, introduced in commit
+    // 2461c5e90579 ("feat(flow-filter): Add new flow-filter stage to enforce peering rules") for
+    // supporting overlapping exposed prefixes, but this is now rejected at validation time.
 }
 
 /// A structure to store information about allowed flows between VPCs.
@@ -363,21 +363,6 @@ impl DstConnectionData {
                 OptionalPortRange::Some(range),
             ) => {
                 existing_range_map.insert(range, vpcd);
-            }
-            (
-                Some(RemotePrefixPortData::AllPorts(existing_vpcd)),
-                OptionalPortRange::NoPortRangeMeansAllPorts,
-            ) => {
-                // We should only hit this case if we already inserted a similar entry
-                if *existing_vpcd != VpcdLookupResult::MultipleMatches
-                    && vpcd != VpcdLookupResult::MultipleMatches
-                {
-                    return Err(ConfigError::InternalFailure(
-                        "Trying to insert conflicting values for remote port range".to_string(),
-                    ));
-                } else {
-                    // That's OK
-                }
             }
             (Some(_), _) => {
                 // At least one of the entries, the existing or the new, covers all ports, so we
