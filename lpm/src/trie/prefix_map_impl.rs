@@ -105,6 +105,13 @@ where
         self.0.get_mut(&IpPrefixW(prefix.borrow().clone()))
     }
 
+    fn contains_key<B>(&self, prefix: B) -> bool
+    where
+        B: Borrow<Self::Prefix>,
+    {
+        self.0.contains_key(&IpPrefixW(prefix.borrow().clone()))
+    }
+
     fn len(&self) -> usize {
         self.0.len()
     }
