@@ -1,22 +1,35 @@
-def rate:
+def rate_icon:
     . as $score |
-    if $score >= 9.0 then ":rotating_light::radioactive::rotating_light:"
+    if $score >= 9.0 then ":fire:"
     elif $score >= 8.0 then ":rotating_light:"
     elif $score >= 6.0 then ":warning:"
     elif $score >= 4.0 then ":orange_circle:"
-    else ":yellow_circle:"
+    elif $score >= 3.0 then ":yellow_circle:"
+    else ":white_square_button:"
     end
 ;
 
 def md_for_cve(cve; prog):
-    "### [" + (prog.cvssv3_basescore[cve] | rate) + " " + cve + "](https://nvd.nist.gov/vuln/detail/" + cve + ")\n" +
+    "### " + (prog.cvssv3_basescore[cve] | rate_icon) + "[" + cve + "](https://nvd.nist.gov/vuln/detail/" + cve + ")\n" +
     "\n" +
     "| Package | Version | CVSSv3 |\n" +
     "|:--------|:--------|:-------|\n" +
-    "|" + prog.pname + " | " + (prog.version | tostring) + "|" + (prog.cvssv3_basescore[cve] | tostring) + "|\n\n" +
-    if ($acks[][cve]?.description) then $acks[][cve].description else prog.description[cve] end + "\n" +
+    "| " + prog.pname + " | " + (prog.version | tostring) + " | " + (prog.cvssv3_basescore[cve] | tostring) + " |\n" +
     "\n" +
-    if ($acks[][cve].note) then ("#### Notes\n\n" + $acks[][cve].note + "\n") else "" end
+    if ($acks[][cve]?.description) then (
+        $acks[][cve].description
+    ) else (
+        prog.description[cve]
+    ) end +
+    "\n\n" +
+    if ($acks[][cve].note) then (
+       "#### Impact on Hedgehog Dataplane\n" +
+       "\n" +
+       $acks[][cve].note +
+       "\n"
+    ) else (
+        ""
+    ) end
 ;
 
 def all_cves:
@@ -34,6 +47,7 @@ def main:
     $all_cves | map(select(.key | in($acks[]) | not)) as $new_cves |
     $all_cves | map(select(.key | in($acks[]))) as $acked_cves |
     "# Security Scan\n\n" +
+    (now | todate) + "\n\n" +
     if ($new_cves == []) then
         "## No newly reported CVEs\n\n"
     else
