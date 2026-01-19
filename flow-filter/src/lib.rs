@@ -93,7 +93,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
             if let Some(tablesr) = &self.tablesr.enter() {
-                if !packet.is_done() {
+                if !packet.is_done() && packet.get_meta().is_overlay() {
                     self.process_packet(tablesr, &mut packet);
                 }
             } else {
@@ -178,6 +178,7 @@ mod tests {
             IpAddr::V4(_) => build_test_ipv4_packet(100).unwrap(),
             IpAddr::V6(_) => build_test_ipv6_packet(100).unwrap(),
         };
+        packet.get_meta_mut().set_overlay(true);
         set_src_addr(&mut packet, src_addr);
         set_dst_addr(&mut packet, dst_addr);
         packet.meta.src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
@@ -192,6 +193,7 @@ mod tests {
         let mut packet =
             build_test_icmp4_echo(src_addr, dst_addr, 1, IcmpEchoDirection::Request).unwrap();
         packet.meta.src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
+        packet.get_meta_mut().set_overlay(true);
         packet
     }
 
