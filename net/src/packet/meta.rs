@@ -112,6 +112,7 @@ bitflags! {
         const NAT         = 0b0000_0100; /* if true, NAT stage should attempt to NAT the packet */
         const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
+        const IS_OVERLAY  = 0b0010_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
     }
 }
 
@@ -166,6 +167,20 @@ impl PacketMeta {
             self.flags.remove(MetaFlags::IS_L2_BCAST);
         }
     }
+
+    #[must_use]
+    pub fn is_overlay(&self) -> bool {
+        self.flags.contains(MetaFlags::IS_OVERLAY)
+    }
+
+    pub fn set_overlay(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::IS_OVERLAY);
+        } else {
+            self.flags.remove(MetaFlags::IS_OVERLAY);
+        }
+    }
+
     #[must_use]
     pub fn checksum_refresh(&self) -> bool {
         self.flags.contains(MetaFlags::REFR_CHKSUM)

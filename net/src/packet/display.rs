@@ -254,11 +254,14 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.nat() {
         write!(f, " do-nat")?;
     }
-    if meta.keep() {
-        write!(f, " keep")?;
+    if meta.is_overlay() {
+        write!(f, " overlay")?;
     }
     if meta.checksum_refresh() {
         write!(f, " refresh-chksum")?;
+    }
+    if meta.keep() {
+        write!(f, " keep")?;
     }
     writeln!(f)
 }
