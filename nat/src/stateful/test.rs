@@ -1109,4 +1109,128 @@ mod tests {
         assert_eq!(output_inner_seq_number, orig_echo_seq_number);
         assert_eq!(done_reason, None);
     }
+
+    fn build_overlay_2vpcs_with_default() -> Overlay {
+        fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
+            manifest.add_expose(expose).expect("Failed to add expose");
+        }
+
+        let mut vpc_table = VpcTable::new();
+        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+
+        let expose121 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("1.1.0.0/16".into())
+            .as_range("2.2.0.0/16".into());
+        let expose211 = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("1.2.2.0/24".into())
+            .as_range("3.3.3.0/24".into());
+        let expose212 = VpcExpose::empty().set_default();
+
+        let mut manifest12 = VpcManifest::new("VPC-1");
+        add_expose(&mut manifest12, expose121);
+        let mut manifest21 = VpcManifest::new("VPC-2");
+        add_expose(&mut manifest21, expose211);
+        add_expose(&mut manifest21, expose212);
+
+        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering12).expect("Failed to add peering");
+
+        Overlay::new(vpc_table, peering_table)
+    }
+
+    #[test]
+    fn test_default_expose() {
+        let mut config = build_sample_config(build_overlay_2vpcs_with_default());
+        config.validate().unwrap();
+
+        // Check that we can validate the allocator
+        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        allocator
+            .update_allocator(&config.external.overlay.vpc_table)
+            .unwrap();
+
+        // Using the expose with a prefix
+        let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.1.0.1", "3.3.3.3", 9999, 443);
+        let (target_src, target_dst) = ("2.2.0.0", "1.2.2.0");
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) = check_packet(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            orig_src_port,
+            orig_dst_port,
+        );
+        assert_eq!(done_reason, None);
+
+        assert_eq!(output_src, addr_v4(target_src));
+        assert_eq!(output_dst, addr_v4(target_dst));
+        // Reverse path
+        let (
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            done_reason,
+        ) = check_packet(
+            &mut nat,
+            vni(200),
+            vni(100),
+            target_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(orig_src));
+        assert_eq!(return_output_src_port, orig_dst_port);
+        assert_eq!(return_output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+
+        // Using the default expose
+        let (orig_src, orig_dst, orig_src_port, orig_dst_port) =
+            ("1.1.0.1", "10.11.12.13", 9999, 443);
+        let (target_src, target_dst) = ("2.2.0.0", "10.11.12.13");
+        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) = check_packet(
+            &mut nat,
+            vni(100),
+            vni(200),
+            orig_src,
+            orig_dst,
+            orig_src_port,
+            orig_dst_port,
+        );
+        assert_eq!(done_reason, None);
+
+        assert_eq!(output_src, addr_v4(target_src));
+        assert_eq!(output_dst, addr_v4(target_dst));
+        // Reverse path
+        let (
+            return_output_src,
+            return_output_dst,
+            return_output_src_port,
+            return_output_dst_port,
+            done_reason,
+        ) = check_packet(
+            &mut nat,
+            vni(200),
+            vni(100),
+            target_dst,
+            target_src,
+            output_dst_port,
+            output_src_port,
+        );
+        assert_eq!(return_output_src, addr_v4(orig_dst));
+        assert_eq!(return_output_dst, addr_v4(orig_src));
+        assert_eq!(return_output_src_port, orig_dst_port);
+        assert_eq!(return_output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+    }
 }
