@@ -6,7 +6,7 @@
 #![allow(unused)]
 #![allow(clippy::missing_errors_doc)]
 
-use lpm::prefix::Prefix;
+use lpm::prefix::IpRangeWithPorts;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -156,11 +156,48 @@ impl Vpc {
         Ok(())
     }
 
+    /// Check that prefixes exposed to a given VPC do not overlap (except with default expose)
+    fn check_overlap(&self) -> ConfigResult {
+        // FIXME: Find a less expensive approach to find overlapping prefixes
+        for (i, current_peering) in self.peerings.iter().enumerate() {
+            for other_peering in &self.peerings[i + 1..] {
+                for current_expose in &current_peering.remote.exposes {
+                    if current_expose.default {
+                        // Overlap is allowed with default expose
+                        continue;
+                    }
+                    for other_expose in &other_peering.remote.exposes {
+                        if other_expose.default {
+                            // Overlap is allowed with default expose
+                            continue;
+                        }
+                        for current_prefix in current_expose.public_ips() {
+                            for other_prefix in other_expose.public_ips() {
+                                if current_prefix.overlaps(other_prefix) {
+                                    error!(
+                                        "Prefixes exposed to VPC {} overlap: {} and {}",
+                                        self.name, current_prefix, other_prefix
+                                    );
+                                    return Err(ConfigError::OverlappingPrefixes(
+                                        *current_prefix,
+                                        *other_prefix,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Validate a [`Vpc`]
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating config for VPC {}...", self.name);
         self.check_peering_count()?;
         self.check_peerings()?;
+        self.check_overlap()?;
         Ok(())
     }
 
