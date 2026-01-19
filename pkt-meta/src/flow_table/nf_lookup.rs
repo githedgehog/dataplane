@@ -35,20 +35,22 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
-            let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).ok();
-            if let Some(flow_key) = flow_key
-                && let Some(flow_info) = self.flow_table.lookup(&flow_key)
-            {
-                debug!(
-                    "{}: Tagging packet with flow info for flow key {:?}",
-                    self.name, flow_key
-                );
-                packet.meta.flow_info = Some(flow_info);
-            } else {
-                debug!(
-                    "{}: No flow info found for flow key {:?}",
-                    self.name, flow_key
-                );
+            if !packet.is_done() && packet.get_meta().is_overlay() {
+                let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).ok();
+                if let Some(flow_key) = flow_key
+                    && let Some(flow_info) = self.flow_table.lookup(&flow_key)
+                {
+                    debug!(
+                        "{}: Tagging packet with flow info for flow key {:?}",
+                        self.name, flow_key
+                    );
+                    packet.meta.flow_info = Some(flow_info);
+                } else {
+                    debug!(
+                        "{}: No flow info found for flow key {:?}",
+                        self.name, flow_key
+                    );
+                }
             }
             packet.enforce()
         })
