@@ -629,7 +629,6 @@ impl StatefulNat {
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`StatefulNat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
-        // TODO: What if no VNI
         let Some(src_vpc_id) = Self::get_src_vpc_id(packet) else {
             warn!(
                 "{}: Packet has no source VPC discriminant!. Will drop...",
@@ -657,6 +656,7 @@ impl StatefulNat {
             }
             Ok(true) => {
                 packet.get_meta_mut().set_checksum_refresh(true);
+                packet.get_meta_mut().natted(true);
                 debug!("{}: Packet was NAT'ed", self.name());
             }
             Ok(false) => {
@@ -717,8 +717,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            // FIXME: See comment in stateless NAT's implementation
-            if !packet.is_done() && packet.get_meta().nat() {
+            if !packet.is_done() && packet.get_meta().is_overlay() && !packet.get_meta().is_natted()
+            {
                 self.process_packet(&mut packet);
             }
             packet.enforce()

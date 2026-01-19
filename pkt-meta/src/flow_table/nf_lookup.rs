@@ -92,6 +92,7 @@ mod test {
         packet.set_ip_destination(dst_ip).unwrap();
         packet.set_tcp_source_port(src_port).unwrap();
         packet.set_tcp_destination_port(dst_port).unwrap();
+        packet.get_meta_mut().set_overlay(true);
 
         // Insert matching flow entry
         let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).unwrap();

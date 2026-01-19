@@ -251,8 +251,8 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.is_l2bcast() {
         write!(f, " bcast")?;
     }
-    if meta.nat() {
-        write!(f, " do-nat")?;
+    if meta.is_natted() {
+        write!(f, " natted")?;
     }
     if meta.is_overlay() {
         write!(f, " overlay")?;

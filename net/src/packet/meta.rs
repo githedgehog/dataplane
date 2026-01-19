@@ -109,7 +109,7 @@ bitflags! {
     struct MetaFlags: u16 {
         const INITIALIZED = 0b0000_0001; /* initialized */
         const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
-        const NAT         = 0b0000_0100; /* if true, NAT stage should attempt to NAT the packet */
+        const NATTED      = 0b0000_0100; /* set to true if a packet has been NATed */
         const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
         const IS_OVERLAY  = 0b0010_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
@@ -142,14 +142,14 @@ impl PacketMeta {
         ret
     }
     #[must_use]
-    pub fn nat(&self) -> bool {
-        self.flags.contains(MetaFlags::NAT)
+    pub fn is_natted(&self) -> bool {
+        self.flags.contains(MetaFlags::NATTED)
     }
-    pub fn set_nat(&mut self, value: bool) {
+    pub fn natted(&mut self, value: bool) {
         if value {
-            self.flags.insert(MetaFlags::NAT);
+            self.flags.insert(MetaFlags::NATTED);
         } else {
-            self.flags.remove(MetaFlags::NAT);
+            self.flags.remove(MetaFlags::NATTED);
         }
     }
     #[must_use]

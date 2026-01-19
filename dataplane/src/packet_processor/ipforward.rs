@@ -155,7 +155,6 @@ impl IpForwarder {
                 make lookups from */
                 packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
                 packet.get_meta_mut().vrf = Some(next_vrf);
-                packet.get_meta_mut().set_nat(true);
                 packet.get_meta_mut().set_overlay(true);
             }
             Some(Err(bad)) => {
