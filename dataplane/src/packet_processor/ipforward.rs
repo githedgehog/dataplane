@@ -14,7 +14,7 @@ use std::net::IpAddr;
 use tracing::{debug, error, warn};
 
 use routing::{
-    EgressObject, Encapsulation, FibEntry, FibKey, FibTableReader, PktInstruction, VrfId, Vtep,
+    EgressObject, Encapsulation, FibEntry, FibKey, FibTableReader, PktInstruction, Vtep,
     VxlanEncapsulation,
 };
 
@@ -47,13 +47,31 @@ impl IpForwarder {
     }
 
     /// Forward a [`Packet`]
-    fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, vrfid: VrfId) {
+    #[allow(clippy::collapsible_else_if)]
+    fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         let nfi = &self.name;
+        let vrfid = packet.get_meta().vrf;
+
         let fibkey = if let Some(dst_vpcd) = packet.get_meta().dst_vpcd {
             let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
             FibKey::from_vni(dst_vni)
-        } else {
+        } else if let Some(vrfid) = vrfid {
             FibKey::from_vrfid(vrfid)
+        } else {
+            if packet.get_meta().is_overlay() {
+                warn!(
+                    "{}: missing vrf/vpc annotation to handle packet. Will drop it.",
+                    self.name
+                );
+                packet.done(DoneReason::InternalFailure);
+                return;
+            }
+            debug!(
+                "{}: there is no vrf/vpc annotation to handle packet. Skipping...",
+                self.name
+            );
+            // not dropped
+            return;
         };
 
         /* get destination ip address */
@@ -62,7 +80,7 @@ impl IpForwarder {
             packet.done(DoneReason::InternalFailure);
             return;
         };
-        debug!("{nfi}: processing packet to {dst} with vrf {vrfid}");
+        debug!("{nfi}: processing packet to {dst} with FIB {fibkey}");
 
         /* access fib, by fetching FibReader from cache */
         let Ok(fibr) = &self.fibtr.get_fib_reader(fibkey) else {
@@ -89,8 +107,14 @@ impl IpForwarder {
                 return;
             }
         }
+
         /* execute instructions according to FIB */
         self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
+
+        /* strip vrfid */
+        if packet.get_meta().vrf == vrfid {
+            packet.get_meta_mut().vrf.take();
+        }
     }
 
     /// Execute a local packet instruction
@@ -132,6 +156,7 @@ impl IpForwarder {
                 packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
                 packet.get_meta_mut().vrf = Some(next_vrf);
                 packet.get_meta_mut().set_nat(true);
+                packet.get_meta_mut().set_overlay(true);
             }
             Some(Err(bad)) => {
                 debug!("The decapsulated packet is malformed!: {bad:#?}");
@@ -372,13 +397,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IpForwarder {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             if !packet.is_done() {
-                // strip off vrf id from metadata
-                let vrfid = packet.get_meta_mut().vrf.take();
-                if let Some(vrfid) = vrfid {
-                    self.forward_packet(&mut packet, vrfid);
-                } else {
-                    warn!("{}: missing vrf annotation to handle packet", self.name);
-                }
+                self.forward_packet(&mut packet);
             }
             packet.enforce()
         })
