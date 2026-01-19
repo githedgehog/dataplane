@@ -156,20 +156,49 @@ impl Vpc {
         Ok(())
     }
 
-    /// Check that prefixes exposed to a given VPC do not overlap (except with default expose)
-    fn check_overlap(&self) -> ConfigResult {
+    /// Check that prefixes exposed to a given VPC do not overlap (except with default expose).
+    /// Also check that at most one default expose is exposed to the VPC.
+    fn check_overlap_and_default(&self) -> ConfigResult {
+        let mut found_default = false;
+
         // FIXME: Find a less expensive approach to find overlapping prefixes
         for (i, current_peering) in self.peerings.iter().enumerate() {
+            // Check we don't have multiple default expose blocks in the peering
+            for expose in &current_peering.remote.exposes {
+                if expose.default {
+                    if found_default {
+                        error!(
+                            "Multiple 'default' expose blocks for a same peering in VPC {}",
+                            self.name
+                        );
+                        return Err(ConfigError::Forbidden(
+                            "Multiple 'default' expose blocks for a same peering",
+                        ));
+                    }
+                    found_default = true;
+                }
+            }
+
+            // Check we don't have non-default, overlapping prefixes exposed to the VPC
             for other_peering in &self.peerings[i + 1..] {
                 for current_expose in &current_peering.remote.exposes {
-                    if current_expose.default {
-                        // Overlap is allowed with default expose
-                        continue;
-                    }
                     for other_expose in &other_peering.remote.exposes {
-                        if other_expose.default {
-                            // Overlap is allowed with default expose
-                            continue;
+                        match (current_expose.default, other_expose.default) {
+                            (true, true) => {
+                                // We support at most one default destination exposed to any VPC
+                                error!(
+                                    "Multiple 'default' destinations exposed to VPC {}",
+                                    self.name
+                                );
+                                return Err(ConfigError::Forbidden(
+                                    "Multiple 'default' destinations exposed to VPC",
+                                ));
+                            }
+                            (true, false) | (false, true) => {
+                                // Overlap is allowed between a prefix and a default expose
+                                continue;
+                            }
+                            (false, false) => { /* keep processing */ }
                         }
                         for current_prefix in current_expose.public_ips() {
                             for other_prefix in other_expose.public_ips() {
@@ -197,7 +226,7 @@ impl Vpc {
         debug!("Validating config for VPC {}...", self.name);
         self.check_peering_count()?;
         self.check_peerings()?;
-        self.check_overlap()?;
+        self.check_overlap_and_default()?;
         Ok(())
     }
 

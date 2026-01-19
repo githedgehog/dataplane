@@ -931,4 +931,165 @@ pub mod test {
         let mut overlay = Overlay::new(vpc_table, peering_table);
         assert!(overlay.validate().is_ok());
     }
+
+    #[test]
+    fn test_overlay_with_multiple_remotes_to_distinct_vpcs() {
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", 100).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", 200).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc3", "VPC03", 300).unwrap())
+            .unwrap();
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                        "5.0.0.0/24".into(),
+                        Some(PortRange::new(6001, 8000).unwrap()),
+                    ))],
+                },
+                None,
+            ))
+            .unwrap();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc3",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                VpcManifest {
+                    name: "vpc3".to_string(),
+                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                        "6.0.0.0/24".into(),
+                        Some(PortRange::new(6001, 8000).unwrap()),
+                    ))],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        assert!(overlay.validate().is_ok());
+    }
+
+    #[test]
+    fn test_overlay_with_multiple_remotes_to_same_vpc() {
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", 100).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", 200).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc3", "VPC03", 300).unwrap())
+            .unwrap();
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                        "1.0.0.0/24".into(),
+                        Some(PortRange::new(6001, 8000).unwrap()),
+                    ))],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                None,
+            ))
+            .unwrap();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc3",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                        "1.0.0.0/24".into(),
+                        Some(PortRange::new(6001, 8000).unwrap()),
+                    ))],
+                },
+                VpcManifest {
+                    name: "vpc3".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        assert_eq!(
+            overlay.validate(),
+            Err(ConfigError::Forbidden(
+                "Multiple 'default' destinations exposed to VPC"
+            )),
+        );
+    }
+
+    #[test]
+    fn test_overlay_with_multiple_remotes_in_peering() {
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", 100).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", 200).unwrap())
+            .unwrap();
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                        "1.0.0.0/24".into(),
+                        Some(PortRange::new(6001, 8000).unwrap()),
+                    ))],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty().set_default(),
+                        VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                            "4.0.0.0/24".into(),
+                            Some(PortRange::new(6001, 8000).unwrap()),
+                        )),
+                        VpcExpose::empty().set_default(),
+                        VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                            "5.0.0.0/24".into(),
+                            Some(PortRange::new(6001, 8000).unwrap()),
+                        )),
+                        VpcExpose::empty().set_default(),
+                    ],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        assert_eq!(
+            overlay.validate(),
+            Err(ConfigError::Forbidden(
+                "Multiple 'default' expose blocks for a same peering",
+            )),
+        );
+    }
 }
