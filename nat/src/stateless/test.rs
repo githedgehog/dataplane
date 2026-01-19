@@ -827,14 +827,10 @@ mod tests {
                 "10.1.0.0/16".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
             ));
-        let expose2 =
-            VpcExpose::empty()
-                .make_stateless_nat()
-                .unwrap()
-                .ip(PrefixWithOptionalPorts::new(
-                    "10.2.0.0/16".into(),
-                    Some(PortRange::new(1, 5).unwrap()),
-                ));
+        let expose2 = VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+            "10.2.0.0/16".into(),
+            Some(PortRange::new(1, 5).unwrap()),
+        ));
 
         let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
         let nat_tables = build_nat_configuration(&gw_config.external.overlay.vpc_table).unwrap();
@@ -1087,6 +1083,112 @@ mod tests {
         assert_eq!(output_src_port, target_src_port);
         assert_eq!(output_dst_addr, target_dst_addr);
         assert_eq!(output_dst_port, target_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(200),
+                vni(100),
+                output_dst_addr,
+                output_dst_port,
+                output_src_addr,
+                output_src_port,
+            );
+        assert_eq!(output_src_addr, orig_dst_addr);
+        assert_eq!(output_src_port, orig_dst_port);
+        assert_eq!(output_dst_addr, orig_src_addr);
+        assert_eq!(output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_config_with_port_ranges_with_default() {
+        let expose1 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "1.1.0.0/16".into(),
+                Some(PortRange::new(4001, 5000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.1.0.0/16".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        let expose2 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "1.2.0.0/16".into(),
+                Some(PortRange::new(2001, 3000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.2.0.0/16".into(),
+                Some(PortRange::new(6001, 7000).unwrap()),
+            ));
+        let expose3 = VpcExpose::empty().set_default();
+
+        let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2, expose3]);
+        let nat_tables = build_nat_configuration(&gw_config.external.overlay.vpc_table).unwrap();
+        let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+        tablesw.update_nat_tables(nat_tables);
+
+        // Using the expose with a prefix
+        let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
+            (addr_v4("1.1.2.3"), 4024, addr_v4("10.2.2.18"), 7000);
+        let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
+            (addr_v4("10.1.2.3"), 8024, addr_v4("1.2.2.18"), 3000);
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_src_addr,
+                orig_src_port,
+                orig_dst_addr,
+                orig_dst_port,
+            );
+        assert_eq!(output_src_addr, target_src_addr);
+        assert_eq!(output_src_port, target_src_port);
+        assert_eq!(output_dst_addr, target_dst_addr);
+        assert_eq!(output_dst_port, target_dst_port);
+        assert_eq!(done_reason, None);
+        // Reverse path
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(200),
+                vni(100),
+                output_dst_addr,
+                output_dst_port,
+                output_src_addr,
+                output_src_port,
+            );
+        assert_eq!(output_src_addr, orig_dst_addr);
+        assert_eq!(output_src_port, orig_dst_port);
+        assert_eq!(output_dst_addr, orig_src_addr);
+        assert_eq!(output_dst_port, orig_src_port);
+        assert_eq!(done_reason, None);
+
+        // Using the default expose
+        let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
+            (addr_v4("1.1.2.3"), 4024, addr_v4("123.123.123.123"), 7000);
+        let (target_src_addr, target_src_port) = (addr_v4("10.1.2.3"), 8024);
+        let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
+            check_packet_with_ports(
+                &mut nat,
+                vni(100),
+                vni(200),
+                orig_src_addr,
+                orig_src_port,
+                orig_dst_addr,
+                orig_dst_port,
+            );
+        assert_eq!(output_src_addr, target_src_addr);
+        assert_eq!(output_src_port, target_src_port);
+        assert_eq!(output_dst_addr, orig_dst_addr);
+        assert_eq!(output_dst_port, orig_dst_port);
         assert_eq!(done_reason, None);
         // Reverse path
         let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
