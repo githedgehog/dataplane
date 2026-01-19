@@ -82,7 +82,14 @@ impl PerVniTable {
         dst_vni: Vni,
     ) -> Option<(IpAddr, Option<u16>)> {
         debug!("Looking up source mapping for address: {addr}, port: {port:?}, dst_vni: {dst_vni}");
-        Self::find_mapping(addr, port, self.src_nat.get(&dst_vni)?)
+        let result = Self::find_mapping(addr, port, self.src_nat.get(&dst_vni)?);
+        match result {
+            None => debug!("No src mapping found for {addr}:{port:?}, dst_vni: {dst_vni}"),
+            Some((ipaddr, opt_port)) => {
+                debug!("Found src mapping; ipdaddr: {ipaddr} port: {opt_port:?}");
+            }
+        }
+        result
     }
 
     #[must_use]
@@ -92,7 +99,14 @@ impl PerVniTable {
         port: Option<u16>,
     ) -> Option<(IpAddr, Option<u16>)> {
         debug!("Looking up destination mapping for address: {addr}, port: {port:?}");
-        Self::find_mapping(addr, port, &self.dst_nat)
+        let result = Self::find_mapping(addr, port, &self.dst_nat);
+        match result {
+            None => debug!("No dst mapping found for {addr}:{port:?}"),
+            Some((ipaddr, opt_port)) => {
+                debug!("Found dst mapping; ipdaddr: {ipaddr} port: {opt_port:?}");
+            }
+        }
+        result
     }
 
     fn find_mapping(
