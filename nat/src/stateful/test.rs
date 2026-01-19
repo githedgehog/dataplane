@@ -311,7 +311,7 @@ mod tests {
             sport,
             dport,
         );
-        packet.get_meta_mut().set_nat(true);
+        packet.get_meta_mut().set_overlay(true);
         packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
@@ -722,7 +722,7 @@ mod tests {
     ) -> (Ipv4Addr, Ipv4Addr, u16, Option<DoneReason>) {
         let mut packet: Packet<TestBuffer> =
             build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
-        packet.get_meta_mut().set_nat(true);
+        packet.get_meta_mut().set_overlay(true);
         packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
@@ -948,7 +948,7 @@ mod tests {
             inner_param_2,
         )
         .unwrap();
-        packet.get_meta_mut().set_nat(true);
+        packet.get_meta_mut().set_overlay(true);
         packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
