@@ -40,7 +40,7 @@ pub struct Packet<Buf: PacketBufferMut> {
     headers: Headers,
     payload: Buf,
     /// packet metadata added by stages to drive other stages down the pipeline
-    pub meta: PacketMeta,
+    pub(crate) meta: PacketMeta,
 }
 
 /// Errors which may occur when failing to produce a [`Packet`]

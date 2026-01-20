@@ -61,7 +61,7 @@ impl FlowFilter {
             return;
         };
 
-        let Some(src_vpcd) = packet.meta.src_vpcd else {
+        let Some(src_vpcd) = packet.meta().src_vpcd else {
             debug!("{nfi}: Missing source VPC discriminant, dropping packet");
             packet.done(DoneReason::Unroutable);
             return;
@@ -78,7 +78,7 @@ impl FlowFilter {
 
         if let Some(dst_vpcd) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
             debug!("{nfi}: Flow allowed: {log_str}, setting packet dst_vpcd to {dst_vpcd}");
-            packet.meta.dst_vpcd = Some(dst_vpcd);
+            packet.meta_mut().dst_vpcd = Some(dst_vpcd);
         } else {
             debug!("{nfi}: Flow not allowed, dropping packet: {log_str}");
             packet.done(DoneReason::Filtered);
@@ -181,7 +181,7 @@ mod tests {
         packet.meta_mut().set_overlay(true);
         set_src_addr(&mut packet, src_addr);
         set_dst_addr(&mut packet, dst_addr);
-        packet.meta.src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
+        packet.meta_mut().src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
         packet
     }
 
@@ -192,7 +192,7 @@ mod tests {
     ) -> Packet<TestBuffer> {
         let mut packet =
             build_test_icmp4_echo(src_addr, dst_addr, 1, IcmpEchoDirection::Request).unwrap();
-        packet.meta.src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
+        packet.meta_mut().src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
         packet.meta_mut().set_overlay(true);
         packet
     }
@@ -233,7 +233,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
     }
 
     #[test]
@@ -371,7 +371,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
     }
 
     #[test]
@@ -410,7 +410,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
     }
 
     #[test]
@@ -449,7 +449,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(packets[0].is_done());
-        assert_eq!(packets[0].meta.dst_vpcd, None);
+        assert_eq!(packets[0].meta().dst_vpcd, None);
     }
 
     #[traced_test]
@@ -533,7 +533,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni2.into())));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
 
         // VPC-1 -> VPC-2 using default range
         let packet = create_test_packet(
@@ -548,7 +548,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni2.into())));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
 
         // VPC-1 -> VPC-3, using source prefix overlapping with VPC-1 <-> VPC-2 peering
         let packet = create_test_packet(
@@ -563,7 +563,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni3.into())));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
 
         // VPC-1 -> VPC-3, using the other source prefix
         let packet = create_test_packet(
@@ -578,7 +578,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(vpcd(vni3.into())));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
 
         // Invalid: source from VPC-1 <-> VPC-3 peering, but invalid destination
         let packet = create_test_packet(
@@ -593,7 +593,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(packets[0].is_done());
-        assert_eq!(packets[0].meta.dst_vpcd, None);
+        assert_eq!(packets[0].meta().dst_vpcd, None);
     }
 
     #[test]
@@ -642,10 +642,10 @@ mod tests {
 
         assert_eq!(packets.len(), 3);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta.dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
         assert_eq!(packets[1].get_done(), Some(DoneReason::Filtered));
         assert!(!packets[2].is_done());
-        assert_eq!(packets[2].meta.dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[2].meta().dst_vpcd, Some(dst_vpcd));
     }
 
     #[test]
