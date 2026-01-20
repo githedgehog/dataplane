@@ -425,6 +425,13 @@ impl Render for BgpOptions {
         if !self.supress_duplicates {
             cfg += " no bgp suppress-duplicates";
         }
+        if self.always_compare_med {
+            cfg += " bgp always-compare-med";
+        }
+        if self.bestpath_aspath_relax {
+            cfg += " bgp bestpath as-path multipath-relax";
+        }
+
         self.minimum_holdtime
             .as_ref()
             .map(|time| cfg += format!(" bgp minimum-holdtime {time}"));

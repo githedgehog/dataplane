@@ -113,6 +113,8 @@ fn vpc_bgp_options() -> BgpOptions {
         .set_ebgp_requires_policy(false)
         .set_bgp_default_unicast(false)
         .set_supress_duplicates(true)
+        .set_always_compare_med(true)
+        .set_bestpath_aspath_relax(true)
 }
 
 struct VpcRoutingConfigIpv4 {

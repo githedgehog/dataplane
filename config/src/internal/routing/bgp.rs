@@ -158,6 +158,8 @@ pub struct BgpOptions {
     pub network_import_check: bool,
     pub ebgp_requires_policy: bool,
     pub bgp_default_unicast: bool,
+    pub bestpath_aspath_relax: bool,
+    pub always_compare_med: bool,
     pub supress_fib_pending: bool,
     pub supress_duplicates: bool,
     pub minimum_holdtime: Option<u16>,
@@ -169,6 +171,8 @@ impl Default for BgpOptions {
         Self {
             network_import_check: false,
             ebgp_requires_policy: false,
+            bestpath_aspath_relax: false,
+            always_compare_med: false,
             bgp_default_unicast: false,
             supress_duplicates: true,
             supress_fib_pending: false,
@@ -541,6 +545,16 @@ impl BgpOptions {
     #[must_use]
     pub fn set_ebgp_requires_policy(mut self, value: bool) -> Self {
         self.ebgp_requires_policy = value;
+        self
+    }
+    #[must_use]
+    pub fn set_bestpath_aspath_relax(mut self, value: bool) -> Self {
+        self.bestpath_aspath_relax = value;
+        self
+    }
+    #[must_use]
+    pub fn set_always_compare_med(mut self, value: bool) -> Self {
+        self.always_compare_med = value;
         self
     }
     #[must_use]
