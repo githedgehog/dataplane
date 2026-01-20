@@ -102,12 +102,10 @@ impl Completer for CmdCompleter {
             }
         }
 
-        // if we did not fill candidates (there are no args), offer children
-        if candidates.is_empty() {
-            for c in node.children.values() {
-                if c.name.starts_with(last) {
-                    candidates.push(c.name.clone());
-                }
+        // offer children nodes
+        for c in node.children.values() {
+            if c.name.starts_with(last) {
+                candidates.push(c.name.clone());
             }
         }
 
