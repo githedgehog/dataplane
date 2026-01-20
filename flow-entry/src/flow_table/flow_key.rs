@@ -611,8 +611,8 @@ impl Hash for FlowKey {
 ///
 /// Example:
 /// ```
-/// # use dataplane_pkt_meta::flow_table::FlowKey;
-/// # use dataplane_pkt_meta::flow_table::flow_key::{Uni};
+/// # use dataplane_flow_entry::flow_table::FlowKey;
+/// # use dataplane_flow_entry::flow_table::flow_key::{Uni};
 /// # use net::ip::NextHeader;
 /// # let packet = net::packet::test_utils::build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
 /// let flow_key = FlowKey::try_from(Uni(&packet));
@@ -626,8 +626,8 @@ pub struct Uni<T>(pub T);
 ///
 /// Example:
 /// ```
-/// # use dataplane_pkt_meta::flow_table::FlowKey;
-/// # use dataplane_pkt_meta::flow_table::flow_key::{Bidi};
+/// # use dataplane_flow_entry::flow_table::FlowKey;
+/// # use dataplane_flow_entry::flow_table::flow_key::{Bidi};
 /// # use net::ip::NextHeader;
 /// # let packet = net::packet::test_utils::build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
 /// let flow_key = FlowKey::try_from(Bidi(&packet));

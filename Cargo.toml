@@ -11,6 +11,7 @@ members = [
     "dpdk-sys",
     "dpdk-sysroot-helper",
     "errno",
+    "flow-entry",
     "flow-filter",
     "flow-info",
     "hardware",
@@ -24,7 +25,6 @@ members = [
     "nat",
     "net",
     "pipeline",
-    "pkt-meta",
     "rekon",
     "routing",
     "stats",
@@ -57,6 +57,7 @@ dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys", features = [] 
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper", features = [] }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8fc33db10e1d00785f2a2b90cbadcad7900f200", features = [] }
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
+flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features = [] }
 flow-filter = { path = "./flow-filter", package = "dataplane-flow-filter", features = [] }
 flow-info = { path = "./flow-info", package = "dataplane-flow-info", features = [] }
 hardware = { path = "./hardware", package = "dataplane-hardware", features = [] }
@@ -71,7 +72,6 @@ mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
-pkt-meta = { path = "./pkt-meta", package = "dataplane-pkt-meta", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }

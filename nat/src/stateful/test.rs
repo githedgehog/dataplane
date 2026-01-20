@@ -20,6 +20,8 @@ mod tests {
     use config::internal::routing::bgp::BgpConfig;
     use config::internal::routing::vrf::VrfConfig;
     use etherparse::Icmpv4Type;
+    use flow_entry::flow_table::flow_key::Uni;
+    use flow_entry::flow_table::{FlowKey, FlowTable, IpProtoKey, UdpProtoKey};
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
     use net::headers::{
@@ -36,8 +38,6 @@ mod tests {
     use net::udp::{TruncatedUdp, UdpPort};
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
-    use pkt_meta::flow_table::flow_key::Uni;
-    use pkt_meta::flow_table::{FlowKey, FlowTable, IpProtoKey, UdpProtoKey};
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
     use std::time::Duration;

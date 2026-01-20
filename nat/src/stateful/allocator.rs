@@ -4,8 +4,8 @@
 //! NAT allocator trait: a trait to build allocators to manage IP addresses and ports for stateful NAT.
 
 use crate::port::NatPortError;
+use flow_entry::flow_table::FlowKey;
 use net::ip::NextHeader;
-use pkt_meta::flow_table::FlowKey;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 
