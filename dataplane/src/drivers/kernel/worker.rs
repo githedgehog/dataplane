@@ -295,7 +295,7 @@ fn packet_recv(
                 let buf = TestBuffer::from_raw_data(&raw[..std::cmp::min(raw.len(), bytes)]);
                 match Packet::new(buf) {
                     Ok(mut incoming) => {
-                        incoming.get_meta_mut().iif = Some(if_index);
+                        incoming.meta_mut().iif = Some(if_index);
                         pkts.push(Box::new(incoming));
                     }
                     Err(e) => {
@@ -392,7 +392,7 @@ async fn tx_packet(
     pkt: Packet<TestBuffer>,
 ) {
     // get outgoing interface marking. Should have one, except if packet is to be dropped.
-    let Some(oif) = pkt.get_meta().oif else {
+    let Some(oif) = pkt.meta().oif else {
         match pkt.get_done() {
             Some(DoneReason::Delivered) => {
                 error!(

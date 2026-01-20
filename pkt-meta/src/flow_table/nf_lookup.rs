@@ -35,7 +35,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
-            if !packet.is_done() && packet.get_meta().is_overlay() {
+            if !packet.is_done() && packet.meta().is_overlay() {
                 let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).ok();
                 if let Some(flow_key) = flow_key
                     && let Some(flow_info) = self.flow_table.lookup(&flow_key)
@@ -92,7 +92,7 @@ mod test {
         packet.set_ip_destination(dst_ip).unwrap();
         packet.set_tcp_source_port(src_port).unwrap();
         packet.set_tcp_destination_port(dst_port).unwrap();
-        packet.get_meta_mut().set_overlay(true);
+        packet.meta_mut().set_overlay(true);
 
         // Insert matching flow entry
         let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).unwrap();

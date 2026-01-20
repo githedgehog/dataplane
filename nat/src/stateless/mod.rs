@@ -330,14 +330,14 @@ impl StatelessNat {
         let nfi = self.name();
 
         /* get source VNI annotation */
-        let Some(VpcDiscriminant::VNI(src_vni)) = packet.get_meta().src_vpcd else {
+        let Some(VpcDiscriminant::VNI(src_vni)) = packet.meta().src_vpcd else {
             warn!("{nfi}: Packet has no source VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
         };
 
         /* get destination VNI annotation */
-        let Some(VpcDiscriminant::VNI(dst_vni)) = packet.get_meta().dst_vpcd else {
+        let Some(VpcDiscriminant::VNI(dst_vni)) = packet.meta().dst_vpcd else {
             warn!("{nfi}: Packet has no destination VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;
@@ -350,9 +350,9 @@ impl StatelessNat {
             }
             Ok(modified) => {
                 if modified {
-                    packet.get_meta_mut().set_checksum_refresh(true);
+                    packet.meta_mut().set_checksum_refresh(true);
                     debug!("{nfi}: Packet was NAT'ed");
-                    packet.get_meta_mut().natted(true);
+                    packet.meta_mut().natted(true);
                 } else {
                     debug!("{nfi}: No NAT translation needed");
                 }
@@ -394,8 +394,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done() && packet.get_meta().is_overlay() && !packet.get_meta().is_natted()
-            {
+            if !packet.is_done() && packet.meta().is_overlay() && !packet.meta().is_natted() {
                 // fixme: ideally, we'd `enter` once for the whole batch. However,
                 // this requires boxing the closures, which may be worse than
                 // calling `enter` per packet? ... if not uglier

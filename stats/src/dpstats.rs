@@ -670,8 +670,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             }
         }
         input.filter_map(|mut packet| {
-            let sdisc = packet.get_meta().src_vpcd;
-            let ddisc = packet.get_meta().dst_vpcd;
+            let sdisc = packet.meta().src_vpcd;
+            let ddisc = packet.meta().dst_vpcd;
             let is_drop =
                 !(packet.get_done().unwrap_or_else(|| unreachable!()) == DoneReason::Delivered);
             let bytes: u64 = packet.total_len().into();
@@ -726,7 +726,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
                     trace!("no source or dest discriminants for packet");
                 }
             }
-            packet.get_meta_mut().set_keep(false); /* no longer disable enforce */
+            packet.meta_mut().set_keep(false); /* no longer disable enforce */
             packet.enforce()
         })
     }

@@ -195,7 +195,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         // refresh checksums if told to. N.B. this is DISABLED as the (single) caller does this.
         // TODO: decide if this should be done here or not.
         #[allow(clippy::overly_complex_bool_expr)]
-        if false && self.get_meta().checksum_refresh() {
+        if false && self.meta().checksum_refresh() {
             self.update_checksums();
         }
         //compute room required
@@ -253,7 +253,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Update the network and transport checksums based on the current headers.
     pub fn update_checksums(&mut self) -> &mut Self {
         self.headers.update_checksums(&self.payload);
-        self.get_meta_mut().set_checksum_refresh(false);
+        self.meta_mut().set_checksum_refresh(false);
         self
     }
 
@@ -354,12 +354,12 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 
     /// Get an immutable reference to the metadata of this `Packet`
-    pub fn get_meta(&self) -> &PacketMeta {
+    pub fn meta(&self) -> &PacketMeta {
         &self.meta
     }
 
     /// Get a mutable reference to the metadata of this `Packet`
-    pub fn get_meta_mut(&mut self) -> &mut PacketMeta {
+    pub fn meta_mut(&mut self) -> &mut PacketMeta {
         &mut self.meta
     }
 
