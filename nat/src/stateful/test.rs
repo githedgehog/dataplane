@@ -338,7 +338,7 @@ mod tests {
 
         let flow_key = get_flow_key(packet);
         if let Some(flow_info) = flow_table.lookup(&flow_key) {
-            packet.meta.flow_info = Some(flow_info);
+            packet.meta_mut().flow_info = Some(flow_info);
         }
     }
 

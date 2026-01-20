@@ -44,7 +44,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
                         "{}: Tagging packet with flow info for flow key {:?}",
                         self.name, flow_key
                     );
-                    packet.meta.flow_info = Some(flow_info);
+                    packet.meta_mut().flow_info = Some(flow_info);
                 } else {
                     debug!(
                         "{}: No flow info found for flow key {:?}",
@@ -87,7 +87,7 @@ mod test {
 
         // Create a packet with the right info
         let mut packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
-        packet.meta.src_vpcd = Some(src_vpcd);
+        packet.meta_mut().src_vpcd = Some(src_vpcd);
         packet.set_ip_source(src_ip).unwrap();
         packet.set_ip_destination(dst_ip).unwrap();
         packet.set_tcp_source_port(src_port).unwrap();
@@ -102,6 +102,6 @@ mod test {
         // Ensure packet is tagged
         let mut output_iter = lookup_nf.process(std::iter::once(packet));
         let output = output_iter.next().unwrap();
-        assert!(output.meta.flow_info.is_some());
+        assert!(output.meta().flow_info.is_some());
     }
 }
