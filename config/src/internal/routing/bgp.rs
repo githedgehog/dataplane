@@ -171,7 +171,7 @@ impl Default for BgpOptions {
         Self {
             network_import_check: false,
             ebgp_requires_policy: false,
-            bestpath_aspath_relax: false,
+            bestpath_aspath_relax: true,
             always_compare_med: false,
             bgp_default_unicast: false,
             supress_duplicates: true,
