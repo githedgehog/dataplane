@@ -15,6 +15,7 @@ concurrency = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }
 dpdk = { workspace = true }
 dyn-iter = { workspace = true }
+flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true }
@@ -33,7 +34,6 @@ once_cell = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 parking_lot = { workspace = true }
 pipeline = { workspace = true }
-pkt-meta = { workspace = true }
 pyroscope = { workspace = true }
 pyroscope_pprofrs = { workspace = true }
 routing = { workspace = true }

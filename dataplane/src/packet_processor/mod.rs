@@ -12,8 +12,8 @@ use super::packet_processor::ipforward::IpForwarder;
 
 use concurrency::sync::Arc;
 
+use flow_entry::flow_table::{ExpirationsNF, FlowTable, LookupNF};
 use flow_filter::{FlowFilter, FlowFilterTableWriter};
-use pkt_meta::flow_table::{ExpirationsNF, FlowTable, LookupNF};
 
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;

@@ -14,6 +14,7 @@ arc-swap = { workspace = true }
 bnum = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
+flow-entry = { workspace = true }
 flow-filter = { workspace = true }
 flow-info = { workspace = true }
 left-right = { workspace = true }
@@ -21,7 +22,6 @@ linkme = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
-pkt-meta = { workspace = true }
 rand = { workspace = true, features = ["thread_rng"] }
 roaring = { workspace = true }
 shuttle = { workspace = true, optional = true }
