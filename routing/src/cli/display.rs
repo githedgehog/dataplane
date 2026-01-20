@@ -40,6 +40,7 @@ use std::fmt::Display;
 use std::fmt::Write;
 use std::os::unix::net::SocketAddr;
 use std::rc::Rc;
+use std::time::Instant;
 
 use tracing::{error, warn};
 
@@ -209,9 +210,33 @@ impl Display for RouteFlags {
         Ok(())
     }
 }
+
+struct Age(Instant);
+impl Display for Age {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let duration = self.0.elapsed();
+        let total = duration.as_secs();
+        let days = total / 86_400;
+        let hours = (total % 86_400) / 3_600;
+        let minutes = (total % 3_600) / 60;
+        let seconds = total % 60;
+
+        if days != 0 {
+            write!(f, "{days:02}d")?;
+        }
+        write!(f, "{hours:02}:{minutes:02}:{seconds:02}")?;
+        Ok(())
+    }
+}
+
 impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{} [{}/{}]", self.origin, self.distance, self.metric)?;
+        let age = Age(self.tstamp);
+        writeln!(
+            f,
+            "{} [{}/{}] {age}",
+            self.origin, self.distance, self.metric
+        )?;
         for shim in &self.s_nhops {
             writeln!(f, "       {shim}")?;
         }
