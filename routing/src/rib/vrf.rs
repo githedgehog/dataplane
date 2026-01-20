@@ -19,6 +19,7 @@ use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
 use net::route::RouteTableId;
 use net::vxlan::Vni;
+use std::time::Instant;
 
 /// Every VRF is univocally identified with a numerical VRF id
 pub type VrfId = u32;
@@ -65,6 +66,7 @@ pub struct Route {
     pub distance: u8,
     pub metric: u32,
     pub s_nhops: Vec<ShimNhop>,
+    pub tstamp: Instant,
 }
 impl Default for Route {
     fn default() -> Self {
@@ -74,6 +76,7 @@ impl Default for Route {
             distance: 0,
             metric: 0,
             s_nhops: Vec::with_capacity(1),
+            tstamp: Instant::now(),
         }
     }
 }
@@ -798,6 +801,7 @@ pub mod tests {
             distance,
             metric,
             s_nhops: vec![],
+            tstamp: Instant::now(),
         }
     }
 
