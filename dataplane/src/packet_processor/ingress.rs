@@ -54,7 +54,7 @@ impl Ingress {
                 }
                 let vrfid = fibkey.as_u32();
                 debug!("{nfi}: Packet is for VRF {vrfid}");
-                packet.get_meta_mut().vrf = Some(vrfid);
+                packet.meta_mut().vrf = Some(vrfid);
             }
             Some(Attachment::BridgeDomain) => {
                 debug!("{nfi}: Bridge domains are not supported");
@@ -91,7 +91,7 @@ impl Ingress {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = self.name();
-        packet.get_meta_mut().set_l2bcast(true);
+        packet.meta_mut().set_l2bcast(true);
         packet.done(DoneReason::Unhandled);
         debug!(
             "{nfi}: Processing of broadcast frames is not supported (iif:{ifname})",
@@ -160,7 +160,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Ingress {
             let nfi = self.name();
             if !packet.is_done() {
                 if let Some(iftable) = self.iftr.enter() {
-                    match packet.get_meta().iif {
+                    match packet.meta().iif {
                         None => {
                             warn!("no iif set in packet metadata (driver bug)");
                             packet.done(DoneReason::InternalFailure);

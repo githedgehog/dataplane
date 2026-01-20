@@ -334,7 +334,7 @@ impl<Buf: PacketBufferMut> Display for Packet<Buf> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         fmt_packet_buf(f, self.payload())?;
         write!(f, "headers: {}", self.get_headers())?;
-        write!(f, "{}", self.get_meta())?;
+        write!(f, "{}", self.meta())?;
         Ok(())
     }
 }

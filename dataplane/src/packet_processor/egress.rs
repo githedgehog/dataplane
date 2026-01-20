@@ -150,7 +150,7 @@ impl Egress {
         // to us (on the same subnet). So, fetch the destination IP address and try to
         // resolve it with the adjacency table as well. If that fails, that's where the
         // ARP/ND would need to be triggered.
-        if let Some(nh_addr) = packet.get_meta().nh_addr {
+        if let Some(nh_addr) = packet.meta().nh_addr {
             self.get_adj_mac(packet, nh_addr, ifindex)
         } else if let Some(destination) = packet.ip_destination() {
             self.get_adj_mac(packet, destination, ifindex)
@@ -162,7 +162,7 @@ impl Egress {
 
     #[inline]
     fn egress_process<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, iftable: &IfTable) {
-        let Some(oif) = packet.get_meta().oif else {
+        let Some(oif) = packet.meta().oif else {
             warn!("{}: Missing oif metadata!", &self.name);
             packet.done(DoneReason::RouteFailure);
             return;

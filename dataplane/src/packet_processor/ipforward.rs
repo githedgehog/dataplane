@@ -50,15 +50,15 @@ impl IpForwarder {
     #[allow(clippy::collapsible_else_if)]
     fn forward_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         let nfi = &self.name;
-        let vrfid = packet.get_meta().vrf;
+        let vrfid = packet.meta().vrf;
 
-        let fibkey = if let Some(dst_vpcd) = packet.get_meta().dst_vpcd {
+        let fibkey = if let Some(dst_vpcd) = packet.meta().dst_vpcd {
             let VpcDiscriminant::VNI(dst_vni) = dst_vpcd;
             FibKey::from_vni(dst_vni)
         } else if let Some(vrfid) = vrfid {
             FibKey::from_vrfid(vrfid)
         } else {
-            if packet.get_meta().is_overlay() {
+            if packet.meta().is_overlay() {
                 warn!(
                     "{}: missing vrf/vpc annotation to handle packet. Will drop it.",
                     self.name
@@ -112,8 +112,8 @@ impl IpForwarder {
         self.packet_exec_instructions(packet, fibentry, fib.get_vtep());
 
         /* strip vrfid */
-        if packet.get_meta().vrf == vrfid {
-            packet.get_meta_mut().vrf.take();
+        if packet.meta().vrf == vrfid {
+            packet.meta_mut().vrf.take();
         }
     }
 
@@ -153,9 +153,9 @@ impl IpForwarder {
                 /* At this point decapsulation has already happened and `Packet` refers to
                 the innner packet. Annotate the incoming vni and the corresponding vrf to
                 make lookups from */
-                packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
-                packet.get_meta_mut().vrf = Some(next_vrf);
-                packet.get_meta_mut().set_overlay(true);
+                packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
+                packet.meta_mut().vrf = Some(next_vrf);
+                packet.meta_mut().set_overlay(true);
             }
             Some(Err(bad)) => {
                 debug!("The decapsulated packet is malformed!: {bad:#?}");
@@ -257,7 +257,7 @@ impl IpForwarder {
 
         // If packet requires updating checksums (e.g. because it was natted), do so.
         // Otherwise, refresh at least the ipv4 checksum, as we decremented the TTL.
-        if packet.get_meta().checksum_refresh() {
+        if packet.meta().checksum_refresh() {
             packet.update_checksums();
         } else if let Some(ipv4) = packet.headers_mut().try_ipv4_mut() {
             ipv4.update_checksum(&())
@@ -283,7 +283,7 @@ impl IpForwarder {
                         .unwrap_or_else(|| unreachable!())
                         .vxlan_vni();
 
-                    packet.get_meta_mut().dst_vpcd = vni.map(VpcDiscriminant::VNI);
+                    packet.meta_mut().dst_vpcd = vni.map(VpcDiscriminant::VNI);
                 }
                 Err(e) => {
                     error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");
@@ -315,7 +315,7 @@ impl IpForwarder {
         packet: &mut Packet<Buf>,
         egress: &EgressObject,
     ) {
-        let meta = packet.get_meta_mut();
+        let meta = packet.meta_mut();
         if let Some(ifindex) = egress.ifindex() {
             meta.oif = Some(*ifindex);
         }

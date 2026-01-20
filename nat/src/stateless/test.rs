@@ -274,12 +274,12 @@ mod tests {
 
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
         let mut packet_reply = packet.clone();
-        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
-        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
-        packet_reply.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
-        packet_reply.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
-        packet.get_meta_mut().set_overlay(true);
-        packet_reply.get_meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        packet_reply.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        packet_reply.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+        packet.meta_mut().set_overlay(true);
+        packet_reply.meta_mut().set_overlay(true);
 
         let orig_src_ip = get_src_ip_v4(&packet);
         let orig_dst_ip = get_dst_ip_v4(&packet);
@@ -340,9 +340,9 @@ mod tests {
         )
         .unwrap();
 
-        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
-        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
-        packet.get_meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+        packet.meta_mut().set_overlay(true);
 
         let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
         assert_eq!(packets_out.len(), 1);
@@ -573,9 +573,9 @@ mod tests {
         orig_dst_ip: Ipv4Addr,
     ) -> (Ipv4Addr, Ipv4Addr, Option<DoneReason>) {
         let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
-        packet.get_meta_mut().set_overlay(true);
-        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
-        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
         set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 
         let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
@@ -795,9 +795,9 @@ mod tests {
     ) -> (Ipv4Addr, u16, Ipv4Addr, u16, Option<DoneReason>) {
         let mut packet =
             build_test_ipv4_packet_with_transport(u8::MAX, Some(NextHeader::TCP)).unwrap();
-        packet.get_meta_mut().set_overlay(true);
-        packet.get_meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
-        packet.get_meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
         set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
         set_ports(&mut packet, orig_src_port, orig_dst_port);
 

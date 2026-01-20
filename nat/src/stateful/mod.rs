@@ -134,11 +134,11 @@ impl StatefulNat {
     }
 
     fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {
-        packet.get_meta().src_vpcd
+        packet.meta().src_vpcd
     }
 
     fn get_dst_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {
-        packet.get_meta().dst_vpcd
+        packet.meta().dst_vpcd
     }
 
     // Look up for a session for a packet, based on attached flow key.
@@ -146,7 +146,7 @@ impl StatefulNat {
     fn lookup_session<I: NatIpWithBitmap, Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
     ) -> Option<NatTranslationData> {
-        let flow_info = packet.get_meta_mut().flow_info.as_mut()?;
+        let flow_info = packet.meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
         flow_info.reset_expiry(state.idle_timeout).ok()?;
@@ -655,8 +655,8 @@ impl StatefulNat {
                 error!("{}: Error processing packet: {error}", self.name());
             }
             Ok(true) => {
-                packet.get_meta_mut().set_checksum_refresh(true);
-                packet.get_meta_mut().natted(true);
+                packet.meta_mut().set_checksum_refresh(true);
+                packet.meta_mut().natted(true);
                 debug!("{}: Packet was NAT'ed", self.name());
             }
             Ok(false) => {
@@ -717,8 +717,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done() && packet.get_meta().is_overlay() && !packet.get_meta().is_natted()
-            {
+            if !packet.is_done() && packet.meta().is_overlay() && !packet.meta().is_natted() {
                 self.process_packet(&mut packet);
             }
             packet.enforce()
