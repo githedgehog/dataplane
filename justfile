@@ -542,3 +542,15 @@ depgraph:
   just cargo depgraph --exclude dataplane-test-utils,dataplane-dpdk-sysroot-helper  --workspace-only \
     | sed 's/dataplane-//g' \
     | dot -Grankdir=TD -Gsplines=polyline -Granksep=1.5 -Tsvg > workspace-deps.svg
+
+# Bump the minor version in Cargo.toml and reset patch version to 0
+[script]
+bump_minor_version:
+    CURRENT_VERSION=$(yq '.workspace.package.version' Cargo.toml)
+    echo "Current version: ${CURRENT_VERSION}"
+    MAJOR_VNUM=$(echo ${CURRENT_VERSION} | cut -d. -f1)
+    MINOR_VNUM=$(echo ${CURRENT_VERSION} | cut -d. -f2)
+    NEW_VERSION="${MAJOR_VNUM}.$((MINOR_VNUM + 1)).0"
+    echo "New version: ${NEW_VERSION}"
+    sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+    just cargo update -w
