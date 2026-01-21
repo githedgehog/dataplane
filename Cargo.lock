@@ -1436,6 +1436,7 @@ dependencies = [
  "futures",
  "k8s-openapi",
  "kube",
+ "kube-core",
  "linkme",
  "rustls",
  "schemars 1.2.0",
