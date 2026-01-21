@@ -115,4 +115,11 @@ impl K8sLess {
 
         Err(K8sLessError::EarlyTermination)
     }
+
+    pub async fn start_status_update(&self, status_update_interval: &std::time::Duration) {
+        loop {
+            self.update_gateway_status().await;
+            tokio::time::sleep(*status_update_interval).await;
+        }
+    }
 }
