@@ -55,6 +55,8 @@ impl Rendered for Protocol {
     }
 }
 
+#[allow(clippy::ignored_unit_patterns)]
+#[allow(clippy::format_push_string)]
 impl Render for BmpOptions {
     type Context = ();
     type Output = ConfigBuilder;
@@ -68,10 +70,8 @@ impl Render for BmpOptions {
         if let (Some(minr), Some(maxr)) = (self.min_retry_ms, self.max_retry_ms) {
             connect.push_str(&format!(" min-retry {minr} max-retry {maxr}"));
         }
-        if let Some(src) = &self.source {
-            if let BmpSource::Interface(ifn) = src {
-                connect.push_str(&format!(" source-interface {}", ifn));
-            }
+        if let Some(BmpSource::Interface(ifn)) = &self.source {
+            connect.push_str(&format!(" source-interface {ifn} "));
         }
         cfg += connect;
 
@@ -94,7 +94,7 @@ impl Render for BmpOptions {
 
         // import-vrf-view lines (rendered only under default VRF)
         for vrf in &self.import_vrf_views {
-            cfg += format!(" bmp import-vrf-view {}", vrf);
+            cfg += format!(" bmp import-vrf-view {vrf}");
         }
 
         cfg += "exit";

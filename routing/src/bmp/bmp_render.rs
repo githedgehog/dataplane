@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! BMP message handlers to update internal DataplaneStatus model.
+//! BMP message handlers to update internal `DataplaneStatus` model.
 
 use netgauze_bgp_pkt::BgpMessage;
 use netgauze_bmp_pkt::v3::{
@@ -44,6 +44,7 @@ pub fn handle_bmp_message(status: &mut DataplaneStatus, msg: &BmpMessage) {
 ///
 /// Format:
 /// `<peer_type>-<bgp_id>-<peer_as>-<addr|-none>-<rd|-no-rd>`
+#[allow(clippy::map_unwrap_or)]
 fn key_from_peer_header(peer: &netgauze_bmp_pkt::PeerHeader) -> String {
     let pt = peer.peer_type();
     let id = peer.bgp_id();
@@ -63,7 +64,7 @@ fn key_from_peer_header(peer: &netgauze_bmp_pkt::PeerHeader) -> String {
 /// VRF bucket key. Warning: Not working with FRR BMP Update Messages with per-vrf
 /// routing dump. Wireshark also can't decode it, seems it's not convenient to do so.
 ///
-/// - If PeerHeader has an RD, that is the best discriminator for “per-VRF” in BMP.
+/// - If `PeerHeader` has an RD, that is the best discriminator for “per-VRF” in BMP.
 /// - If RD is absent, fall back to a key based on the peer type so you don’t collapse
 ///   Local/Global/LocRIB streams into one bucket.
 ///
@@ -117,17 +118,18 @@ fn ensure_neighbor<'a>(vrf: &'a mut BgpVrfStatus, neigh_key: &str) -> &'a mut Bg
 
 fn post_policy_from_peer_type(pt: BmpPeerType) -> bool {
     match pt {
-        BmpPeerType::GlobalInstancePeer { post_policy, .. } => post_policy,
-        BmpPeerType::RdInstancePeer { post_policy, .. } => post_policy,
-        BmpPeerType::LocalInstancePeer { post_policy, .. } => post_policy,
-        BmpPeerType::LocRibInstancePeer { .. } => false,
-        BmpPeerType::Experimental251 { .. }
+        BmpPeerType::GlobalInstancePeer { post_policy, .. }
+        | BmpPeerType::RdInstancePeer { post_policy, .. }
+        | BmpPeerType::LocalInstancePeer { post_policy, .. } => post_policy,
+        BmpPeerType::LocRibInstancePeer { .. }
+        | BmpPeerType::Experimental251 { .. }
         | BmpPeerType::Experimental252 { .. }
         | BmpPeerType::Experimental253 { .. }
         | BmpPeerType::Experimental254 { .. } => false,
     }
 }
 
+#[allow(clippy::map_unwrap_or)]
 fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
     let peer = pu.peer_header();
     let vrf = vrf_from_peer_header(peer);
@@ -139,7 +141,7 @@ fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
         .address()
         .map(|a| a.to_string())
         .unwrap_or_else(|| "none".to_string());
-    let peer_port = pu.remote_port().unwrap_or_default() as u32;
+    let peer_port = u32::from(pu.remote_port().unwrap_or_default());
 
     let bgp = ensure_bgp(status);
     let vrf_s = ensure_vrf(bgp, &vrf);
@@ -148,7 +150,7 @@ fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
     let prev_state = neigh.session_state;
 
     neigh.peer_as = peer_as;
-    neigh.remote_router_id = bgp_id.clone();
+    neigh.remote_router_id.clone_from(&bgp_id);
     neigh.peer_port = peer_port;
 
     // PeerUp implies Established for the monitored session.
@@ -157,7 +159,7 @@ fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
     // Local AS: try to read from the OPEN we sent, if present.
     // NOTE: don’t depend on router-id helpers here; peer header already provides bgp_id.
     if let BgpMessage::Open(open) = pu.sent_message() {
-        neigh.local_as = open.my_as() as u32;
+        neigh.local_as = u32::from(open.my_as());
     }
 
     if neigh.messages.is_none() {

@@ -28,7 +28,6 @@ mod routingdb;
 
 // re-exports
 pub use atable::atablerw::AtableReader;
-pub use bmp::server::{BmpServer, BmpServerConfig};
 pub use config::RouterConfig;
 pub use errors::RouterError;
 pub use evpn::Vtep;

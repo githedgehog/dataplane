@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Minimal BMP server built on NetGauze 0.8.0
-//! - Reads a TCP stream into a BytesMut
+//!   BMP server built on `NetGauze` 0.8.0
+//! - Reads a TCP stream into a `BytesMut`
 //! - Decodes BMP frames using `BmpCodec`
 //! - On decode error: discards one BMP frame (best-effort resync) and continues
 //!   so FRR doesn't see "connection reset by peer".
