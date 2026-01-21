@@ -19,7 +19,7 @@ use thiserror::Error;
 
 /// A request type to the `ConfigProcessor`
 #[derive(Debug)]
-pub enum ConfigRequest {
+pub(crate) enum ConfigRequest {
     ApplyConfig(Box<GwConfig>),
     GetCurrentConfig,
     GetGeneration,
@@ -28,7 +28,7 @@ pub enum ConfigRequest {
 
 /// A response from the `ConfigProcessor`
 #[derive(Debug)]
-pub enum ConfigResponse {
+pub(crate) enum ConfigResponse {
     ApplyConfig(ConfigResult),
     GetCurrentConfig(Box<Option<GwConfig>>),
     GetGeneration(Option<GenId>),
@@ -38,7 +38,7 @@ type ConfigResponseChannel = oneshot::Sender<ConfigResponse>;
 
 /// A type that includes a request to the `ConfigProcessor` and a channel to
 /// issue the response back
-pub struct ConfigChannelRequest {
+pub(crate) struct ConfigChannelRequest {
     pub(crate) request: ConfigRequest, /* a request to the mgmt processor */
     pub(crate) reply_tx: ConfigResponseChannel, /* the one-shot channel to respond */
 }
