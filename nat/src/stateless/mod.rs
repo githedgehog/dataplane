@@ -394,7 +394,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done() && packet.meta().is_overlay() && !packet.meta().is_natted() {
+            if !packet.is_done()
+                && packet.meta().requires_stateless_nat()
+                && !packet.meta().is_natted()
+            {
                 // fixme: ideally, we'd `enter` once for the whole batch. However,
                 // this requires boxing the closures, which may be worse than
                 // calling `enter` per packet? ... if not uglier
