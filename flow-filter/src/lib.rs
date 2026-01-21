@@ -13,6 +13,7 @@
 //!   IP, port corresponding to existing, valid connections between the prefixes in exposed lists of
 //!   peerings, get dropped.
 
+use crate::tables::{NatRequirement, RemoteData};
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTransport};
 use net::packet::{DoneReason, Packet};
@@ -84,6 +85,7 @@ impl FlowFilter {
                 dst_data.vpcd
             );
             packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
+            set_nat_requirements(packet, dst_data);
         } else {
             debug!("{nfi}: Flow {tuple} is NOT allowed, dropping packet",);
             packet.done(DoneReason::Filtered);
@@ -151,11 +153,23 @@ impl std::fmt::Display for FlowTuple {
     }
 }
 
+fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &RemoteData) {
+    if matches!(data.src_nat_req, NatRequirement::StatefulNatRequired)
+        || matches!(data.dst_nat_req, NatRequirement::StatefulNatRequired)
+    {
+        packet.meta_mut().set_stateful_nat(true);
+    }
+    if matches!(data.src_nat_req, NatRequirement::StatelessNatRequired)
+        || matches!(data.dst_nat_req, NatRequirement::StatelessNatRequired)
+    {
+        packet.meta_mut().set_stateless_nat(true);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::filter_rw::FlowFilterTableWriter;
-    use crate::tables::{NatRequirement, RemoteData};
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -580,6 +594,8 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(!packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
 
         // VPC-1 -> VPC-2 using default range
         let packet = create_test_packet(
@@ -756,6 +772,147 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_flow_filter_table_check_nat_requirements() {
+        let vni1 = Vni::new_checked(100).unwrap();
+        let vni2 = Vni::new_checked(200).unwrap();
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty().ip("1.0.0.0/24".into()), // No NAT
+                        VpcExpose::empty()
+                            .make_stateless_nat()
+                            .unwrap()
+                            .ip("2.0.0.0/24".into())
+                            .as_range("20.0.0.0/24".into()), // Stateless NAT
+                        VpcExpose::empty()
+                            .make_stateful_nat(None)
+                            .unwrap()
+                            .ip("3.0.0.0/24".into())
+                            .as_range("30.0.0.0/24".into()), // Stateful NAT
+                        VpcExpose::empty().set_default(),           // Default (no NAT)
+                    ],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty().ip("5.0.0.0/24".into()), // No NAT
+                        VpcExpose::empty()
+                            .make_stateless_nat()
+                            .unwrap()
+                            .ip("6.0.0.0/24".into())
+                            .as_range("60.0.0.0/24".into()), // Stateless NAT
+                        VpcExpose::empty()
+                            .make_stateful_nat(None)
+                            .unwrap()
+                            .ip("7.0.0.0/24".into())
+                            .as_range("70.0.0.0/24".into()), // Stateful NAT
+                        VpcExpose::empty().set_default(),           // Default (no NAT)
+                    ],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        // Validation is necessary to build overlay.vpc_table's peerings from peering_table
+        overlay.validate().unwrap();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with packets
+
+        // src: no NAT, dst: no NAT
+        let packet = create_test_packet(
+            Some(Vni::new_checked(100).unwrap().into()),
+            "1.0.0.5".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(!packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+
+        // src: stateless NAT, dst: stateless NAT
+        let packet = create_test_packet(
+            Some(vni1.into()),
+            "2.0.0.5".parse().unwrap(),
+            "60.0.0.10".parse().unwrap(),
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(!packets[0].meta().requires_stateful_nat());
+        assert!(packets[0].meta().requires_stateless_nat());
+
+        // src: stateful NAT, dst: no NAT
+        let packet = create_test_packet(
+            Some(vni1.into()),
+            "3.0.0.5".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+
+        // src: no NAT, dst: stateful NAT
+        let packet = create_test_packet(
+            Some(vni1.into()),
+            "1.0.0.5".parse().unwrap(),
+            "70.0.0.10".parse().unwrap(),
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+
+        // src: stateful NAT, dst: default (no NAT)
+        let packet = create_test_packet(
+            Some(vni1.into()),
+            "3.0.0.5".parse().unwrap(),
+            "99.0.0.10".parse().unwrap(),
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
     }
 
     #[test]

@@ -113,6 +113,8 @@ bitflags! {
         const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
         const IS_OVERLAY  = 0b0010_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
+        const REQ_STATEFUL_NAT  = 0b0100_0000;      /* Packet requires stateful NAT (source and/or destination) */
+        const REQ_STATELESS_NAT = 0b1000_0000;      /* Packet requires stateless NAT (source and/or destination) */
     }
 }
 
@@ -152,6 +154,30 @@ impl PacketMeta {
             self.flags.remove(MetaFlags::NATTED);
         }
     }
+
+    #[must_use]
+    pub fn requires_stateful_nat(&self) -> bool {
+        self.flags.contains(MetaFlags::REQ_STATEFUL_NAT)
+    }
+    pub fn set_stateful_nat(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::REQ_STATEFUL_NAT);
+        } else {
+            self.flags.remove(MetaFlags::REQ_STATEFUL_NAT);
+        }
+    }
+    #[must_use]
+    pub fn requires_stateless_nat(&self) -> bool {
+        self.flags.contains(MetaFlags::REQ_STATELESS_NAT)
+    }
+    pub fn set_stateless_nat(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::REQ_STATELESS_NAT);
+        } else {
+            self.flags.remove(MetaFlags::REQ_STATELESS_NAT);
+        }
+    }
+
     #[must_use]
     pub fn is_initialized(&self) -> bool {
         self.flags.contains(MetaFlags::INITIALIZED)
