@@ -579,7 +579,7 @@ pub struct BmpConfigSection {
 /// 3. **Transfer**: Passed via sealed memfd to the worker process
 /// 4. **Worker Process**: Calls [`LaunchConfiguration::inherit()`] to access the config
 ///
-/// TODO: implement bytecheck::Validate in addition to CheckBytes on all components of the launch config.
+/// TODO: implement `bytecheck::Validate` in addition to `CheckBytes` on all components of the launch config.
 #[derive(
     Debug,
     PartialEq,
