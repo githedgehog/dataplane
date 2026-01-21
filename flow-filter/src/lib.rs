@@ -176,7 +176,7 @@ mod tests {
     use tracing_test::traced_test;
 
     fn vpcd(vni: u32) -> VpcDiscriminant {
-        VpcDiscriminant::VNI(Vni::new_checked(vni).unwrap())
+        VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap())
     }
 
     fn set_src_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
@@ -204,7 +204,7 @@ mod tests {
     }
 
     fn create_test_packet(
-        src_vpcd: Option<Vni>,
+        src_vpcd: Option<VpcDiscriminant>,
         src_addr: IpAddr,
         dst_addr: IpAddr,
     ) -> Packet<TestBuffer> {
@@ -215,18 +215,18 @@ mod tests {
         packet.meta_mut().set_overlay(true);
         set_src_addr(&mut packet, src_addr);
         set_dst_addr(&mut packet, dst_addr);
-        packet.meta_mut().src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
+        packet.meta_mut().src_vpcd = src_vpcd;
         packet
     }
 
     fn create_test_icmp_v4_packet(
-        src_vpcd: Option<Vni>,
+        src_vpcd: Option<VpcDiscriminant>,
         src_addr: Ipv4Addr,
         dst_addr: Ipv4Addr,
     ) -> Packet<TestBuffer> {
         let mut packet =
             build_test_icmp4_echo(src_addr, dst_addr, 1, IcmpEchoDirection::Request).unwrap();
-        packet.meta_mut().src_vpcd = src_vpcd.map(VpcDiscriminant::VNI);
+        packet.meta_mut().src_vpcd = src_vpcd;
         packet.meta_mut().set_overlay(true);
         packet
     }
@@ -256,7 +256,7 @@ mod tests {
 
         // Create test packet
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             "10.0.0.5".parse().unwrap(),
             "20.0.0.10".parse().unwrap(),
         );
@@ -299,7 +299,7 @@ mod tests {
 
         // Create test packet with non-matching destination
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             "10.0.0.5".parse().unwrap(),
             "30.0.0.10".parse().unwrap(),
         );
@@ -360,7 +360,7 @@ mod tests {
 
         // Create test packet with non-matching source address
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             "11.0.0.5".parse().unwrap(),
             "20.0.0.10".parse().unwrap(),
         );
@@ -402,7 +402,7 @@ mod tests {
 
         // Create test packet
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             "2001:db8::1".parse().unwrap(),
             "2001:db9::1".parse().unwrap(),
         );
@@ -445,7 +445,7 @@ mod tests {
 
         // Create test packet
         let packet = create_test_icmp_v4_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             Ipv4Addr::from_str("10.0.0.5").unwrap(),
             Ipv4Addr::from_str("20.0.0.10").unwrap(),
         );
@@ -484,7 +484,7 @@ mod tests {
 
         // Create test packet
         let packet = create_test_icmp_v4_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             Ipv4Addr::from_str("10.0.0.5").unwrap(),
             Ipv4Addr::from_str("20.0.0.10").unwrap(),
         );
@@ -568,7 +568,7 @@ mod tests {
 
         // VPC-1 -> VPC-2 using prefix
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(vni1.into()),
             "1.0.0.5".parse().unwrap(),
             "5.0.0.10".parse().unwrap(),
         );
@@ -583,7 +583,7 @@ mod tests {
 
         // VPC-1 -> VPC-2 using default range
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(vni1.into()),
             "1.0.0.6".parse().unwrap(),
             "17.34.51.68".parse().unwrap(),
         );
@@ -598,7 +598,7 @@ mod tests {
 
         // VPC-1 -> VPC-3, using source prefix overlapping with VPC-1 <-> VPC-2 peering
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(vni1.into()),
             "1.0.0.7".parse().unwrap(),
             "6.0.0.8".parse().unwrap(),
         );
@@ -613,7 +613,7 @@ mod tests {
 
         // VPC-1 -> VPC-3, using the other source prefix
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(vni1.into()),
             "2.0.0.24".parse().unwrap(),
             "6.0.0.8".parse().unwrap(),
         );
@@ -628,7 +628,7 @@ mod tests {
 
         // Invalid: source from VPC-1 <-> VPC-3 peering, but invalid destination
         let packet = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(vni1.into()),
             "2.0.0.24".parse().unwrap(),
             "25.50.100.200".parse().unwrap(),
         );
@@ -686,7 +686,7 @@ mod tests {
         // Test with a packet
 
         let packet = create_test_packet(
-            Some(vni1),
+            Some(vni1.into()),
             "99.99.99.99".parse().unwrap(), // From "default" expose, use any address
             "5.0.0.8".parse().unwrap(),
         );
@@ -744,7 +744,7 @@ mod tests {
         // Test with packets
 
         let packet = create_test_packet(
-            Some(vni1),
+            Some(vni1.into()),
             "99.99.99.99".parse().unwrap(),
             "77.77.77.77".parse().unwrap(),
         );
@@ -787,17 +787,17 @@ mod tests {
 
         // Create multiple test packets
         let packet1 = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             "10.0.0.5".parse().unwrap(),
             "20.0.0.10".parse().unwrap(),
         );
         let packet2 = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             "10.0.0.6".parse().unwrap(),
             "30.0.0.10".parse().unwrap(), // Should be filtered
         );
         let packet3 = create_test_packet(
-            Some(Vni::new_checked(100).unwrap()),
+            Some(src_vpcd),
             "10.0.0.7".parse().unwrap(),
             "20.0.0.20".parse().unwrap(),
         );
