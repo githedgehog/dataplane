@@ -4,6 +4,7 @@
 //! Adds main parser for command arguments
 
 #![deny(clippy::all, clippy::pedantic)]
+#![allow(clippy::collapsible_if)]
 
 use argsparse::{ArgsError, CliArgs};
 use clap::Parser;
@@ -186,31 +187,30 @@ fn main() {
 
     // infinite loop until user quits
     while terminal.runs() {
-        let mut bad_syntax = false;
         let mut input = terminal.prompt();
         if !terminal.is_connected() {
             terminal.connect(&cmdline.bind_address, &cmdline.path);
         }
-        if let Some(node) = cmds.find_best(input.get_tokens()) {
-            if let Some(action) = &node.action {
-                if let Ok(args) = process_args(&input) {
-                    execute_action(*action, &args, &cmdline, &mut terminal);
-                }
-            } else if node.depth > 0 {
-                print_err!("No action associated to command");
-                if node.children.is_empty() {
-                    print_err!("Command is not implemented");
+        // don't process input if it starts with # ... but keep it in history
+        if !input.get_line().starts_with('#') {
+            if let Some(node) = cmds.find_best(input.get_tokens()) {
+                if let Some(action) = &node.action {
+                    if let Ok(args) = process_args(&input) {
+                        execute_action(*action, &args, &cmdline, &mut terminal);
+                    }
+                } else if node.depth > 0 {
+                    print_err!("No action associated to command");
+                    if node.children.is_empty() {
+                        print_err!("Command is not implemented");
+                    } else {
+                        print_err!("Options are:");
+                        node.show_children();
+                    }
                 } else {
-                    print_err!("Options are:");
-                    node.show_children();
+                    print_err!("syntax error");
                 }
-            } else {
-                print_err!("syntax error");
-                bad_syntax = true;
             }
         }
-        if !bad_syntax || input.get_line().starts_with('#') {
-            terminal.add_history_entry(input.get_line().to_owned());
-        }
+        terminal.add_history_entry(input.get_line().to_owned());
     }
 }
