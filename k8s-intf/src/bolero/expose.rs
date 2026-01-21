@@ -150,7 +150,7 @@ impl TypeGenerator for LegalValue<GatewayAgentPeeringsPeeringExposeNat> {
             Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
                 stateless: None,
                 stateful: Some(GatewayAgentPeeringsPeeringExposeNatStateful {
-                    idle_timeout: Some(idle_timeout),
+                    idle_timeout: Some(idle_timeout.into()),
                 }),
             }))
         } else {
