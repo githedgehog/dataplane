@@ -20,6 +20,7 @@ tracing = { workspace = true }
 bolero = { workspace = true, optional = true }
 futures = { workspace = true }
 kube = { workspace = true, features = ["client", "derive", "runtime", "rustls-tls"] }
+kube-core = { workspace = true }
 k8s-openapi = { workspace = true, features = ["latest", "schemars", "std"] }
 linkme = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }

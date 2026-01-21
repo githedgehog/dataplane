@@ -151,9 +151,12 @@ fn process_nat_block(
                 "Cannot have both stateful and stateless nat configured on the same expose block"
                     .to_string(),
             )),
-            (Some(stateful), None) => vpc_expose
-                .make_stateful_nat(stateful.idle_timeout)
-                .map_err(|e| FromK8sConversionError::Invalid(e.to_string())),
+            (Some(stateful), None) => {
+                let idle_timeout = stateful.idle_timeout.map(std::time::Duration::from);
+                vpc_expose
+                    .make_stateful_nat(idle_timeout)
+                    .map_err(|e| FromK8sConversionError::Invalid(e.to_string()))
+            }
             (None, Some(_)) => vpc_expose
                 .make_stateless_nat()
                 .map_err(|e| FromK8sConversionError::Invalid(e.to_string())),

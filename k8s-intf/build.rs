@@ -100,7 +100,7 @@ fn fixup_types(raw: String) -> String {
         .replace("workers: Option<u64>", "workers: Option<u8>") // Gateway Go code says this is a u8
         .replace(
             "idle_timeout: Option<String>",
-            "idle_timeout: Option<std::time::Duration>",
+            "idle_timeout: Option<kube_core::duration::Duration>",
         )
         .replace(
             "last_applied_gen: Option<u64>",
