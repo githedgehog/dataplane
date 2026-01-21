@@ -97,8 +97,12 @@ impl FlowFilterTable {
         let table = self.get_table(src_vpcd)?;
 
         let (src_port, dst_port) = ports.unzip();
-        // Look for valid connections information in the table that matches the source address and port
-        let (_, src_connection_data) = table.lookup(src_addr, src_port)?;
+        // Look for valid connections information in the table that matches the source address and port.
+        // If nothing matches, use the default source entry, if any.
+        let src_connection_data = table
+            .lookup(src_addr, src_port)
+            .map(|(_, data)| data)
+            .or(table.default_source_opt.as_ref())?;
         debug!("Found src_connection_data: {src_connection_data:?}");
 
         // We have a src_connection_data object for our source VPC and source IP, and source port
@@ -157,8 +161,8 @@ impl FlowFilterTable {
 
     pub(crate) fn insert_default_remote(
         &mut self,
-        dst_vpcd: VpcDiscriminant,
         src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
         src_prefix: Prefix,
         src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
@@ -171,18 +175,56 @@ impl FlowFilterTable {
         }
         Ok(())
     }
+
+    pub(crate) fn insert_default_source(
+        &mut self,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+        dst_prefix: Prefix,
+        dst_port_range: Option<PortRange>,
+    ) -> Result<(), ConfigError> {
+        if let Some(table) = self.get_table_mut(src_vpcd) {
+            table.update_default_source(dst_vpcd, dst_prefix, dst_port_range)?;
+        } else {
+            let mut table = VpcConnectionsTable::new();
+            table.create_default_source(dst_vpcd, dst_prefix, dst_port_range)?;
+            self.insert_table(src_vpcd, table);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn insert_default_source_to_default_remote(
+        &mut self,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+    ) -> Result<(), ConfigError> {
+        if let Some(table) = self.get_table_mut(src_vpcd) {
+            table.update_default_source_to_default_remote(dst_vpcd)?;
+        } else {
+            let mut table = VpcConnectionsTable::new();
+            table.create_default_source_to_default_remote(dst_vpcd)?;
+            self.insert_table(src_vpcd, table);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
-struct VpcConnectionsTable(IpPortPrefixTrie<SrcConnectionData>);
+struct VpcConnectionsTable {
+    trie: IpPortPrefixTrie<SrcConnectionData>,
+    default_source_opt: Option<SrcConnectionData>,
+}
 
 impl VpcConnectionsTable {
     fn new() -> Self {
-        Self(IpPortPrefixTrie::new())
+        Self {
+            trie: IpPortPrefixTrie::new(),
+            default_source_opt: None,
+        }
     }
 
     fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<(Prefix, &SrcConnectionData)> {
-        self.0.lookup(addr, port)
+        self.trie.lookup(addr, port)
     }
 
     fn insert(
@@ -193,12 +235,12 @@ impl VpcConnectionsTable {
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(value) = self.0.get_mut(src_prefix) {
+        if let Some(value) = self.trie.get_mut(src_prefix) {
             value.update(src_port_range, dst_vpcd, dst_prefix, dst_port_range)?;
         } else {
             let value =
                 SrcConnectionData::new(src_port_range, dst_vpcd, dst_prefix, dst_port_range);
-            self.0.insert(src_prefix, value);
+            self.trie.insert(src_prefix, value);
         }
         Ok(())
     }
@@ -209,13 +251,73 @@ impl VpcConnectionsTable {
         src_prefix: Prefix,
         src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(value) = self.0.get_mut(src_prefix) {
-            value.update_for_default(src_port_range, dst_vpcd)?;
+        if let Some(value) = self.trie.get_mut(src_prefix) {
+            value.update_for_default(dst_vpcd, src_port_range)?;
         } else {
             let value = SrcConnectionData::new_for_default_remote(src_port_range, dst_vpcd);
-            self.0.insert(src_prefix, value);
+            self.trie.insert(src_prefix, value);
         }
         Ok(())
+    }
+
+    fn create_default_source(
+        &mut self,
+        dst_vpcd: VpcDiscriminant,
+        dst_prefix: Prefix,
+        dst_port_range: Option<PortRange>,
+    ) -> Result<(), ConfigError> {
+        if self.default_source_opt.is_some() {
+            return Err(ConfigError::InternalFailure(
+                "Trying to override existing default source".to_string(),
+            ));
+        } else {
+            self.default_source_opt = Some(SrcConnectionData::AllPorts(DstConnectionData::new(
+                dst_vpcd,
+                dst_prefix,
+                dst_port_range,
+            )))
+        }
+        Ok(())
+    }
+
+    fn create_default_source_to_default_remote(
+        &mut self,
+        dst_vpcd: VpcDiscriminant,
+    ) -> Result<(), ConfigError> {
+        if self.default_source_opt.is_some() {
+            return Err(ConfigError::InternalFailure(
+                "Trying to override existing default source".to_string(),
+            ));
+        } else {
+            self.default_source_opt = Some(SrcConnectionData::AllPorts(
+                DstConnectionData::new_for_default_remote(dst_vpcd),
+            ))
+        }
+        Ok(())
+    }
+
+    fn update_default_source(
+        &mut self,
+        dst_vpcd: VpcDiscriminant,
+        dst_prefix: Prefix,
+        dst_port_range: Option<PortRange>,
+    ) -> Result<(), ConfigError> {
+        if let Some(src_connection_data) = &mut self.default_source_opt {
+            src_connection_data.update(None, dst_vpcd, dst_prefix, dst_port_range)
+        } else {
+            self.create_default_source(dst_vpcd, dst_prefix, dst_port_range)
+        }
+    }
+
+    fn update_default_source_to_default_remote(
+        &mut self,
+        dst_vpcd: VpcDiscriminant,
+    ) -> Result<(), ConfigError> {
+        if let Some(src_connection_data) = &mut self.default_source_opt {
+            src_connection_data.update_for_default(dst_vpcd, None)
+        } else {
+            self.create_default_source_to_default_remote(dst_vpcd)
+        }
     }
 }
 
@@ -291,8 +393,8 @@ impl SrcConnectionData {
 
     fn update_for_default(
         &mut self,
-        src_port_range: Option<PortRange>,
         dst_vpcd: VpcDiscriminant,
+        src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         self.get_dst_connection_data_mut(src_port_range)?
             .update_for_default(dst_vpcd)

@@ -40,27 +40,46 @@ impl FlowFilterTable {
         for remote_expose in &peering.remote.exposes {
             if remote_expose.default {
                 for local_expose in &peering.local.exposes {
-                    for local_prefix in &local_expose.ips {
-                        self.insert_default_remote(
-                            dst_vpcd,
-                            local_vpcd,
-                            local_prefix.prefix(),
-                            local_prefix.ports(),
-                        )?;
-                    }
-                }
-            } else {
-                for local_expose in &peering.local.exposes {
-                    for local_prefix in &local_expose.ips {
-                        for remote_prefix in remote_expose.public_ips() {
-                            self.insert(
+                    if local_expose.default {
+                        // Both the local and remote expose are default exposes
+                        self.insert_default_source_to_default_remote(local_vpcd, dst_vpcd)?;
+                    } else {
+                        // Only the remote expose is a default expose
+                        for local_prefix in &local_expose.ips {
+                            self.insert_default_remote(
                                 local_vpcd,
                                 dst_vpcd,
                                 local_prefix.prefix(),
                                 local_prefix.ports(),
+                            )?;
+                        }
+                    }
+                }
+            } else {
+                for local_expose in &peering.local.exposes {
+                    if local_expose.default {
+                        // Only the local expose is a default expose
+                        for remote_prefix in remote_expose.public_ips() {
+                            self.insert_default_source(
+                                local_vpcd,
+                                dst_vpcd,
                                 remote_prefix.prefix(),
                                 remote_prefix.ports(),
                             )?;
+                        }
+                    } else {
+                        // No default expose
+                        for local_prefix in &local_expose.ips {
+                            for remote_prefix in remote_expose.public_ips() {
+                                self.insert(
+                                    local_vpcd,
+                                    dst_vpcd,
+                                    local_prefix.prefix(),
+                                    local_prefix.ports(),
+                                    remote_prefix.prefix(),
+                                    remote_prefix.ports(),
+                                )?;
+                            }
                         }
                     }
                 }
