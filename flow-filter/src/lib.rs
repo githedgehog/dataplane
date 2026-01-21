@@ -595,6 +595,122 @@ mod tests {
         assert_eq!(packets[0].meta().dst_vpcd, None);
     }
 
+    #[traced_test]
+    #[test]
+    fn test_flow_filter_table_check_send_from_default() {
+        let vni1 = Vni::new_checked(100).unwrap();
+        let vni2 = Vni::new_checked(200).unwrap();
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        // Validation is necessary to build overlay.vpc_table's peerings from peering_table
+        overlay.validate().unwrap();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with a packet
+
+        let packet = create_test_packet(
+            Some(vni1),
+            "99.99.99.99".parse().unwrap(), // From "default" expose, use any address
+            "5.0.0.8".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_flow_filter_table_check_default_to_default() {
+        let vni1 = Vni::new_checked(100).unwrap();
+        let vni2 = Vni::new_checked(200).unwrap();
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        // Validation is necessary to build overlay.vpc_table's peerings from peering_table
+        overlay.validate().unwrap();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with packets
+
+        let packet = create_test_packet(
+            Some(vni1),
+            "99.99.99.99".parse().unwrap(),
+            "77.77.77.77".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+    }
+
     #[test]
     fn test_flow_filter_batch_processing() {
         // Setup table
