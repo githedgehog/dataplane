@@ -38,10 +38,10 @@ trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 //         destination connection data
 //
 //      DstConnectionData
-//        -> IpPortPrefixTrie<RemotePrefixPortData>
+//        -> IpPortPrefixTrie<RemotePortRangesData>
 //           LPM trie containing destination IP prefixes and associated port/VPC information
 //
-//        RemotePrefixPortData (enum)
+//        RemotePortRangesData (enum)
 //          -> AllPorts(VpcDiscriminant): destination VPC for all ports (no port range specified)
 //          -> Ranges(DisjointRangesBTreeMap<PortRange, VpcDiscriminant>):
 //             associates destination port ranges to destination VPC discriminants
@@ -58,9 +58,9 @@ trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 //    (if port ranges are specified).
 //
 // 4. Using the destination IP and port, look up in the DstConnectionData's trie to find the
-//    RemotePrefixPortData that matches the destination IP prefix.
+//    RemotePortRangesData that matches the destination IP prefix.
 //
-// 5. From the RemotePrefixPortData, extract the VpcDiscriminant that matches the destination
+// 5. From the RemotePortRangesData, extract the VpcDiscriminant that matches the destination
 //    port (if port ranges are specified).
 //
 // 6. If we found a match, then the connection is valid; we return the VpcDiscriminant which
@@ -458,25 +458,25 @@ impl ValueWithAssociatedRanges for SrcConnectionData {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum RemotePrefixPortData {
+pub(crate) enum RemotePortRangesData {
     AllPorts(VpcDiscriminant),
     Ranges(DisjointRangesBTreeMap<PortRange, VpcDiscriminant>),
 }
 
-impl RemotePrefixPortData {
+impl RemotePortRangesData {
     fn new(port_range: Option<PortRange>, vpcd: VpcDiscriminant) -> Self {
         match port_range {
-            None => RemotePrefixPortData::AllPorts(vpcd),
+            None => RemotePortRangesData::AllPorts(vpcd),
             Some(range) => {
-                RemotePrefixPortData::Ranges(DisjointRangesBTreeMap::from_iter([(range, vpcd)]))
+                RemotePortRangesData::Ranges(DisjointRangesBTreeMap::from_iter([(range, vpcd)]))
             }
         }
     }
 
     fn get_vpcd(&self, dst_port: Option<u16>) -> Option<&VpcDiscriminant> {
         match self {
-            RemotePrefixPortData::AllPorts(vpcd) => Some(vpcd),
-            RemotePrefixPortData::Ranges(ranges) => {
+            RemotePortRangesData::AllPorts(vpcd) => Some(vpcd),
+            RemotePortRangesData::Ranges(ranges) => {
                 // If we don't have a destination port, we can't hope to find a matching port range
                 let dst_port = dst_port?;
                 ranges.lookup(&dst_port).map(|(_, vpcd)| vpcd)
@@ -485,11 +485,11 @@ impl RemotePrefixPortData {
     }
 }
 
-impl ValueWithAssociatedRanges for RemotePrefixPortData {
+impl ValueWithAssociatedRanges for RemotePortRangesData {
     fn covers_all_ports(&self) -> bool {
         match self {
-            RemotePrefixPortData::AllPorts(_) => true,
-            RemotePrefixPortData::Ranges(ranges) => {
+            RemotePortRangesData::AllPorts(_) => true,
+            RemotePortRangesData::Ranges(ranges) => {
                 ranges.iter().fold(0, |sum, (range, _)| sum + range.len()) == PortRange::MAX_LENGTH
             }
         }
@@ -497,8 +497,8 @@ impl ValueWithAssociatedRanges for RemotePrefixPortData {
 
     fn covers_port(&self, port: u16) -> bool {
         match self {
-            RemotePrefixPortData::AllPorts(_) => true,
-            RemotePrefixPortData::Ranges(ranges) => {
+            RemotePortRangesData::AllPorts(_) => true,
+            RemotePortRangesData::Ranges(ranges) => {
                 ranges.iter().any(|(range, _)| range.contains(&port))
             }
         }
@@ -507,16 +507,16 @@ impl ValueWithAssociatedRanges for RemotePrefixPortData {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DstConnectionData {
-    trie: IpPortPrefixTrie<RemotePrefixPortData>,
-    default_remote: Option<RemotePrefixPortData>,
+    trie: IpPortPrefixTrie<RemotePortRangesData>,
+    default_remote: Option<RemotePortRangesData>,
 }
 
 impl DstConnectionData {
     fn new(vpcd: VpcDiscriminant, prefix: Prefix, port_range: Option<PortRange>) -> Self {
         let remote_data = match port_range {
-            None => RemotePrefixPortData::AllPorts(vpcd),
+            None => RemotePortRangesData::AllPorts(vpcd),
             Some(range) => {
-                RemotePrefixPortData::Ranges(DisjointRangesBTreeMap::from_iter([(range, vpcd)]))
+                RemotePortRangesData::Ranges(DisjointRangesBTreeMap::from_iter([(range, vpcd)]))
             }
         };
         Self {
@@ -528,11 +528,11 @@ impl DstConnectionData {
     fn new_for_default_remote(vpcd: VpcDiscriminant) -> Self {
         Self {
             trie: IpPortPrefixTrie::new(),
-            default_remote: Some(RemotePrefixPortData::AllPorts(vpcd)),
+            default_remote: Some(RemotePortRangesData::AllPorts(vpcd)),
         }
     }
 
-    fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<&RemotePrefixPortData> {
+    fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<&RemotePortRangesData> {
         self.trie
             .lookup(addr, port)
             .map(|(_, data)| data)
@@ -546,7 +546,7 @@ impl DstConnectionData {
         port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         match (self.trie.get_mut(prefix), port_range) {
-            (Some(RemotePrefixPortData::Ranges(existing_range_map)), Some(range)) => {
+            (Some(RemotePortRangesData::Ranges(existing_range_map)), Some(range)) => {
                 existing_range_map.insert(range, vpcd);
             }
             (Some(_), _) => {
@@ -557,7 +557,7 @@ impl DstConnectionData {
                 ));
             }
             (None, range) => {
-                let prefix_data = RemotePrefixPortData::new(range, vpcd);
+                let prefix_data = RemotePortRangesData::new(range, vpcd);
                 self.trie.insert(prefix, prefix_data);
             }
         }
@@ -570,7 +570,7 @@ impl DstConnectionData {
                 "Trying to update default remote with an existing default remote".to_string(),
             ));
         }
-        self.default_remote = Some(RemotePrefixPortData::AllPorts(vpcd));
+        self.default_remote = Some(RemotePortRangesData::AllPorts(vpcd));
         Ok(())
     }
 }
