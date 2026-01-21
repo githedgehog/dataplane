@@ -251,6 +251,12 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.is_l2bcast() {
         write!(f, " bcast")?;
     }
+    if meta.requires_stateful_nat() {
+        write!(f, " req-stateful-nat")?;
+    }
+    if meta.requires_stateless_nat() {
+        write!(f, " req-stateless-nat")?;
+    }
     if meta.is_natted() {
         write!(f, " natted")?;
     }
