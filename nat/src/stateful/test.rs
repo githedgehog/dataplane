@@ -608,15 +608,6 @@ mod tests {
         assert_eq!(return_output_src_port, 443);
         assert_eq!(return_output_dst_port, 9998);
         assert_eq!(done_reason, None);
-
-        // NAT: expose211 <-> expose121 (no source NAT - no NAT happens, packet will be dropped at routing stage)
-        let (orig_src, orig_dst) = ("5.0.0.5", "2.2.0.2");
-        let (target_src, target_dst) = ("5.0.0.5", "2.2.0.2");
-        let (output_src, output_dst, _, _, done_reason) =
-            check_packet(&mut nat, vni(200), vni(100), orig_src, orig_dst, 9090, 8080);
-        assert_eq!(output_src, addr_v4(target_src));
-        assert_eq!(output_dst, addr_v4(target_dst));
-        assert_eq!(done_reason, None);
     }
 
     fn build_overlay_2vpcs_no_nat() -> Overlay {
@@ -651,65 +642,10 @@ mod tests {
         config.validate().unwrap();
 
         // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        let (_, mut allocator) = StatefulNat::new_with_defaults();
         allocator
             .update_allocator(&config.external.overlay.vpc_table)
             .unwrap();
-
-        // No NAT, and no exposed IPs
-        let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("8.8.8.8", "9.9.9.9", 9998, 443);
-        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) = check_packet(
-            &mut nat,
-            vni(100),
-            vni(200),
-            orig_src,
-            orig_dst,
-            orig_src_port,
-            orig_dst_port,
-        );
-        assert_eq!(output_src, addr_v4(orig_src));
-        assert_eq!(output_dst, addr_v4(orig_dst));
-        assert_eq!(output_src_port, orig_src_port);
-        assert_eq!(output_dst_port, orig_dst_port);
-        assert_eq!(done_reason, Some(DoneReason::Filtered));
-
-        // No NAT, with valid exposed IPs
-        let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.1.2.3", "2.2.4.5", 9998, 443);
-        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) = check_packet(
-            &mut nat,
-            vni(100),
-            vni(200),
-            orig_src,
-            orig_dst,
-            orig_src_port,
-            orig_dst_port,
-        );
-        assert_eq!(output_src, addr_v4(orig_src));
-        assert_eq!(output_dst, addr_v4(orig_dst));
-        assert_eq!(output_src_port, orig_src_port);
-        assert_eq!(output_dst_port, orig_dst_port);
-        assert_eq!(done_reason, None);
-        // Reverse path
-        let (
-            return_output_src,
-            return_output_dst,
-            return_output_src_port,
-            return_output_dst_port,
-            done_reason,
-        ) = check_packet(
-            &mut nat,
-            vni(200),
-            vni(100),
-            orig_dst,
-            orig_src,
-            output_dst_port,
-            output_src_port,
-        );
-        assert_eq!(return_output_src, addr_v4(orig_dst));
-        assert_eq!(return_output_dst, addr_v4(orig_src));
-        assert_eq!(return_output_src_port, orig_dst_port);
-        assert_eq!(return_output_dst_port, orig_src_port);
-        assert_eq!(done_reason, None);
     }
 
     fn check_packet_icmp_echo(

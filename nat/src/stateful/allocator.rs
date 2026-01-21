@@ -108,8 +108,6 @@ where
     fn new() -> Self;
     fn allocate_v4(&self, flow_key: &FlowKey) -> Result<AllocationResult<T>, AllocatorError>;
     fn allocate_v6(&self, flow_key: &FlowKey) -> Result<AllocationResult<U>, AllocatorError>;
-    fn is_exempt_v4(&self, flow_key: &FlowKey) -> Result<bool, AllocatorError>;
-    fn is_exempt_v6(&self, flow_key: &FlowKey) -> Result<bool, AllocatorError>;
 
     // TODO: Should the method for building the allocator from a VpcTable be part of this trait?
 }

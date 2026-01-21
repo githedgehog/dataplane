@@ -3,7 +3,7 @@
 
 use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
-use super::{ExemptTable, ExemptTableKey, NatDefaultAllocator, PoolTable, PoolTableKey};
+use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::{NatAllocator, NatIp};
@@ -38,11 +38,7 @@ impl NatDefaultAllocator {
         let mut allocator = NatDefaultAllocator::new();
         for peering_data in config.iter() {
             allocator
-                .add_peering_addresses(
-                    &peering_data.peering,
-                    peering_data.src_vpc_id,
-                    peering_data.dst_vpc_id,
-                )
+                .add_peering_addresses(&peering_data.peering, peering_data.dst_vpc_id)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
         Ok(allocator)
@@ -51,43 +47,18 @@ impl NatDefaultAllocator {
     fn add_peering_addresses(
         &mut self,
         peering: &Peering,
-        src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
         let new_peering = collapse_prefixes_peering(peering)
             .map_err(|e| AllocatorError::InternalIssue(e.to_string()))?;
 
         // Update tables for source NAT
-        self.build_exempt_pool_for_expose(&new_peering, src_vpc_id, dst_vpc_id)?;
         self.build_src_nat_pool_for_expose(&new_peering, dst_vpc_id)?;
 
         // Update table for destination NAT
         self.build_dst_nat_pool_for_expose(&new_peering, dst_vpc_id)?;
 
         Ok(())
-    }
-
-    fn build_exempt_pool_for_expose(
-        &mut self,
-        peering: &Peering,
-        src_vpc_id: VpcDiscriminant,
-        dst_vpc_id: VpcDiscriminant,
-    ) -> Result<(), AllocatorError> {
-        build_exempt_table_generic(
-            &peering.local,
-            src_vpc_id,
-            dst_vpc_id,
-            VpcManifest::no_stateful_nat_exposes_v4,
-            &mut self.exempt4,
-        )?;
-
-        build_exempt_table_generic(
-            &peering.local,
-            src_vpc_id,
-            dst_vpc_id,
-            VpcManifest::no_stateful_nat_exposes_v6,
-            &mut self.exempt6,
-        )
     }
 
     fn build_src_nat_pool_for_expose(
@@ -276,48 +247,6 @@ fn pool_table_tcp_key_for_expose<I: NatIp>(
     let (addr, addr_range_end) = prefix_bounds(prefix)?;
     Ok(PoolTableKey::new(
         NextHeader::TCP,
-        dst_vpc_id,
-        addr,
-        addr_range_end,
-    ))
-}
-
-fn build_exempt_table_generic<'a, I: NatIpWithBitmap, F, Iter>(
-    manifest: &'a VpcManifest,
-    src_vpc_id: VpcDiscriminant,
-    dst_vpc_id: VpcDiscriminant,
-    // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
-    exposes_filter: F,
-    table: &mut ExemptTable<I>,
-) -> Result<(), AllocatorError>
-where
-    F: FnOnce(&'a VpcManifest) -> Iter,
-    Iter: Iterator<Item = &'a VpcExpose>,
-{
-    exposes_filter(manifest)
-        .try_for_each(|expose| add_exempt_entries(table, &expose.ips, src_vpc_id, dst_vpc_id))
-}
-
-fn add_exempt_entries<I: NatIpWithBitmap>(
-    table: &mut ExemptTable<I>,
-    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
-    src_vpc_id: VpcDiscriminant,
-    dst_vpc_id: VpcDiscriminant,
-) -> Result<(), AllocatorError> {
-    for prefix in prefixes {
-        table.add(exempt_table_key_for_expose(prefix, src_vpc_id, dst_vpc_id)?);
-    }
-    Ok(())
-}
-
-fn exempt_table_key_for_expose<I: NatIp>(
-    prefix: &PrefixWithOptionalPorts,
-    src_vpc_id: VpcDiscriminant,
-    dst_vpc_id: VpcDiscriminant,
-) -> Result<ExemptTableKey<I>, AllocatorError> {
-    let (addr, addr_range_end) = prefix_bounds(prefix)?;
-    Ok(ExemptTableKey::new(
-        src_vpc_id,
         dst_vpc_id,
         addr,
         addr_range_end,
