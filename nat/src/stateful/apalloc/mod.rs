@@ -77,6 +77,7 @@ use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use tracing::error;
 
 mod alloc;
 mod natip_with_bitmap;
@@ -250,6 +251,11 @@ impl NatDefaultAllocator {
         // do not want to create a new session, even if destination NAT for that packet were valid:
         // we need to drop the packet instead.
         if pool_src_opt.is_none() {
+            // Given that we mark packets that require NAT, this case should never happen. Log an error.
+            error!(
+                "No address pool found for source address {}. Did we hit a bug when building the stateful NAT allocator?",
+                flow_key.data().src_ip()
+            );
             return Err(AllocatorError::Denied);
         }
 
