@@ -717,7 +717,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done() && packet.meta().is_overlay() && !packet.meta().is_natted() {
+            if !packet.is_done()
+                && packet.meta().requires_stateful_nat()
+                && !packet.meta().is_natted()
+            {
                 self.process_packet(&mut packet);
             }
             packet.enforce()

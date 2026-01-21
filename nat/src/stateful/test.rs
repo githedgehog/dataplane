@@ -312,6 +312,7 @@ mod tests {
             dport,
         );
         packet.meta_mut().set_overlay(true);
+        packet.meta_mut().set_stateful_nat(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
@@ -723,6 +724,7 @@ mod tests {
         let mut packet: Packet<TestBuffer> =
             build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
         packet.meta_mut().set_overlay(true);
+        packet.meta_mut().set_stateful_nat(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
@@ -949,6 +951,7 @@ mod tests {
         )
         .unwrap();
         packet.meta_mut().set_overlay(true);
+        packet.meta_mut().set_stateful_nat(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
