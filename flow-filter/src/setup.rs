@@ -36,29 +36,32 @@ impl FlowFilterTable {
     ) -> Result<(), ConfigError> {
         let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
-        let local_prefixes = peering.local.exposes.iter().flat_map(|expose| &expose.ips);
 
-        for remote in &peering.remote.exposes {
-            if remote.default {
-                for local_prefix in local_prefixes.clone() {
-                    self.insert_default_remote(
-                        dst_vpcd,
-                        local_vpcd,
-                        local_prefix.prefix(),
-                        local_prefix.ports(),
-                    )?;
-                }
-            } else {
-                for local_prefix in local_prefixes.clone() {
-                    for remote_prefix in remote.public_ips() {
-                        self.insert(
-                            local_vpcd,
+        for remote_expose in &peering.remote.exposes {
+            if remote_expose.default {
+                for local_expose in &peering.local.exposes {
+                    for local_prefix in &local_expose.ips {
+                        self.insert_default_remote(
                             dst_vpcd,
+                            local_vpcd,
                             local_prefix.prefix(),
                             local_prefix.ports(),
-                            remote_prefix.prefix(),
-                            remote_prefix.ports(),
                         )?;
+                    }
+                }
+            } else {
+                for local_expose in &peering.local.exposes {
+                    for local_prefix in &local_expose.ips {
+                        for remote_prefix in remote_expose.public_ips() {
+                            self.insert(
+                                local_vpcd,
+                                dst_vpcd,
+                                local_prefix.prefix(),
+                                local_prefix.ports(),
+                                remote_prefix.prefix(),
+                                remote_prefix.ports(),
+                            )?;
+                        }
                     }
                 }
             }
