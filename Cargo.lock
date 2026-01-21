@@ -1441,7 +1441,6 @@ dependencies = [
  "rustls",
  "schemars 1.2.0",
  "serde",
- "serde-duration-ext",
  "serde_json",
  "serde_yaml_ng",
  "thiserror 2.0.18",
@@ -4849,17 +4848,6 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
-]
-
-[[package]]
-name = "serde-duration-ext"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae1c28acf9dcffda85429f05e9a6855759639670e737f76ac9df473a7236dd98"
-dependencies = [
- "lazy_static",
- "regex",
- "serde",
 ]
 
 [[package]]
