@@ -2,10 +2,11 @@
 // Copyright Open Network Fabric Authors
 
 use crate::FlowFilterTable;
-use crate::tables::RemoteData;
+use crate::tables::{NatRequirement, RemoteData};
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
+use config::external::overlay::vpcpeering::{VpcExpose, VpcExposeNat};
 use config::internal::interfaces::interface::InterfaceConfigTable;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
 use net::packet::VpcDiscriminant;
@@ -37,11 +38,11 @@ impl FlowFilterTable {
     ) -> Result<(), ConfigError> {
         let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
-        let dst_data = RemoteData::new(dst_vpcd);
 
         for remote_expose in &peering.remote.exposes {
             if remote_expose.default {
                 for local_expose in &peering.local.exposes {
+                    let dst_data = build_dst_data(dst_vpcd, local_expose, remote_expose);
                     if local_expose.default {
                         // Both the local and remote expose are default exposes
                         self.insert_default_source_to_default_remote(local_vpcd, dst_data.clone())?;
@@ -59,6 +60,7 @@ impl FlowFilterTable {
                 }
             } else {
                 for local_expose in &peering.local.exposes {
+                    let dst_data = build_dst_data(dst_vpcd, local_expose, remote_expose);
                     if local_expose.default {
                         // Only the local expose is a default expose
                         for remote_prefix in remote_expose.public_ips() {
@@ -120,6 +122,33 @@ fn clone_skipping_peerings(vpc: &Vpc) -> Vpc {
     }
 }
 
+fn build_dst_data(
+    dst_vpcd: VpcDiscriminant,
+    local_expose: &VpcExpose,
+    remote_expose: &VpcExpose,
+) -> RemoteData {
+    RemoteData::new(
+        dst_vpcd,
+        get_nat_requirement(&local_expose.nat),
+        get_nat_requirement(&remote_expose.nat),
+    )
+}
+
+fn get_nat_requirement(nat: &Option<VpcExposeNat>) -> NatRequirement {
+    match nat {
+        Some(nat) => {
+            if nat.is_stateful() {
+                NatRequirement::StatefulNatRequired
+            } else if nat.is_stateless() {
+                NatRequirement::StatelessNatRequired
+            } else {
+                unreachable!("Unknown NAT mode")
+            }
+        }
+        None => NatRequirement::NoNat,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,7 +200,14 @@ mod tests {
         let dst_addr = "20.0.0.5".parse().unwrap();
 
         let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(dst_data, Some(&RemoteData::new(VpcDiscriminant::VNI(vni2))));
+        assert_eq!(
+            dst_data,
+            Some(&RemoteData::new(
+                VpcDiscriminant::VNI(vni2),
+                NatRequirement::NoNat,
+                NatRequirement::NoNat,
+            ))
+        );
     }
 
     #[test]
@@ -247,6 +283,13 @@ mod tests {
         let dst_addr = "20.0.0.5".parse().unwrap();
 
         let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(dst_data, Some(&RemoteData::new(VpcDiscriminant::VNI(vni2))));
+        assert_eq!(
+            dst_data,
+            Some(&RemoteData::new(
+                VpcDiscriminant::VNI(vni2),
+                NatRequirement::NoNat,
+                NatRequirement::NoNat,
+            ))
+        );
     }
 }

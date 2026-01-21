@@ -155,7 +155,7 @@ impl std::fmt::Display for FlowTuple {
 mod tests {
     use super::*;
     use crate::filter_rw::FlowFilterTableWriter;
-    use crate::tables::RemoteData;
+    use crate::tables::{NatRequirement, RemoteData};
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -236,7 +236,7 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_data = RemoteData::new(vpcd(200));
+        let dst_data = RemoteData::new(vpcd(200), NatRequirement::NoNat, NatRequirement::NoNat);
 
         table
             .insert(
@@ -275,7 +275,11 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_data = RemoteData::new(vpcd(200));
+        let dst_data = RemoteData::new(
+            vpcd(200),
+            NatRequirement::StatefulNatRequired,
+            NatRequirement::NoNat,
+        );
 
         table
             .insert(
@@ -336,7 +340,7 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_data = RemoteData::new(vpcd(200));
+        let dst_data = RemoteData::new(vpcd(200), NatRequirement::NoNat, NatRequirement::NoNat);
 
         table
             .insert(
@@ -374,7 +378,11 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_data = RemoteData::new(vpcd(200));
+        let dst_data = RemoteData::new(
+            vpcd(200),
+            NatRequirement::StatelessNatRequired,
+            NatRequirement::StatelessNatRequired,
+        );
 
         table
             .insert(
@@ -413,7 +421,11 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_data = RemoteData::new(vpcd(200));
+        let dst_data = RemoteData::new(
+            vpcd(200),
+            NatRequirement::StatefulNatRequired,
+            NatRequirement::NoNat,
+        );
 
         table
             .insert(
@@ -452,7 +464,7 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_data = RemoteData::new(vpcd(200));
+        let dst_data = RemoteData::new(vpcd(200), NatRequirement::NoNat, NatRequirement::NoNat);
 
         table
             .insert(
@@ -751,7 +763,11 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_data = RemoteData::new(vpcd(200));
+        let dst_data = RemoteData::new(
+            vpcd(200),
+            NatRequirement::StatefulNatRequired,
+            NatRequirement::NoNat,
+        );
 
         table
             .insert(

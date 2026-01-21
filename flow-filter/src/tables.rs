@@ -455,13 +455,30 @@ impl ValueWithAssociatedRanges for SrcConnectionData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NatRequirement {
+    StatelessNatRequired,
+    StatefulNatRequired,
+    NoNat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteData {
     pub(crate) vpcd: VpcDiscriminant,
+    pub(crate) src_nat_req: NatRequirement,
+    pub(crate) dst_nat_req: NatRequirement,
 }
 
 impl RemoteData {
-    pub(crate) fn new(vpcd: VpcDiscriminant) -> Self {
-        Self { vpcd }
+    pub(crate) fn new(
+        vpcd: VpcDiscriminant,
+        src_nat_req: NatRequirement,
+        dst_nat_req: NatRequirement,
+    ) -> Self {
+        Self {
+            vpcd,
+            src_nat_req,
+            dst_nat_req,
+        }
     }
 }
 
@@ -609,7 +626,7 @@ mod tests {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd);
+        let dst_data = RemoteData::new(dst_vpcd, NatRequirement::NoNat, NatRequirement::NoNat);
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -647,7 +664,11 @@ mod tests {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd);
+        let dst_data = RemoteData::new(
+            dst_vpcd,
+            NatRequirement::StatefulNatRequired,
+            NatRequirement::NoNat,
+        );
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -691,8 +712,12 @@ mod tests {
         let src_vpcd = vpcd(100);
         let dst_vpcd1 = vpcd(200);
         let dst_vpcd2 = vpcd(300);
-        let dst_data1 = RemoteData::new(dst_vpcd1);
-        let dst_data2 = RemoteData::new(dst_vpcd2);
+        let dst_data1 = RemoteData::new(dst_vpcd1, NatRequirement::NoNat, NatRequirement::NoNat);
+        let dst_data2 = RemoteData::new(
+            dst_vpcd2,
+            NatRequirement::StatelessNatRequired,
+            NatRequirement::StatelessNatRequired,
+        );
 
         // Add two entries for different destination prefixes
         table
@@ -732,7 +757,11 @@ mod tests {
     fn test_vpc_connections_table_lookup() {
         let mut table = VpcConnectionsTable::new();
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd);
+        let dst_data = RemoteData::new(
+            dst_vpcd,
+            NatRequirement::StatefulNatRequired,
+            NatRequirement::NoNat,
+        );
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -756,7 +785,7 @@ mod tests {
     fn test_vpc_connections_table_with_ports() {
         let mut table = VpcConnectionsTable::new();
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd);
+        let dst_data = RemoteData::new(dst_vpcd, NatRequirement::NoNat, NatRequirement::NoNat);
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -787,7 +816,11 @@ mod tests {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd);
+        let dst_data = RemoteData::new(
+            dst_vpcd,
+            NatRequirement::StatefulNatRequired,
+            NatRequirement::NoNat,
+        );
 
         let src_prefix = Prefix::from("2001:db8::/32");
         let dst_prefix = Prefix::from("2001:db9::/32");
@@ -815,8 +848,16 @@ mod tests {
         let src_vpcd = vpcd(100);
         let dst_vpcd1 = vpcd(200);
         let dst_vpcd2 = vpcd(300);
-        let dst_data1 = RemoteData::new(dst_vpcd1);
-        let dst_data2 = RemoteData::new(dst_vpcd2);
+        let dst_data1 = RemoteData::new(
+            dst_vpcd1,
+            NatRequirement::StatelessNatRequired,
+            NatRequirement::StatelessNatRequired,
+        );
+        let dst_data2 = RemoteData::new(
+            dst_vpcd2,
+            NatRequirement::StatefulNatRequired,
+            NatRequirement::NoNat,
+        );
 
         // Insert broader prefix
         table
