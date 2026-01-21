@@ -33,11 +33,6 @@ pub trait NatIpWithBitmap: NatIp {
         allocator: Arc<A>,
         flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError>;
-
-    fn is_exempt<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
-        allocator: Arc<A>,
-        flow_key: &FlowKey,
-    ) -> Result<bool, AllocatorError>;
 }
 
 impl NatIpWithBitmap for Ipv4Addr {
@@ -60,13 +55,6 @@ impl NatIpWithBitmap for Ipv4Addr {
         flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
         allocator.allocate_v4(flow_key)
-    }
-
-    fn is_exempt<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
-        allocator: Arc<A>,
-        flow_key: &FlowKey,
-    ) -> Result<bool, AllocatorError> {
-        allocator.is_exempt_v4(flow_key)
     }
 }
 
@@ -96,12 +84,5 @@ impl NatIpWithBitmap for Ipv6Addr {
         flow_key: &FlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
         allocator.allocate_v6(flow_key)
-    }
-
-    fn is_exempt<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
-        allocator: Arc<A>,
-        flow_key: &FlowKey,
-    ) -> Result<bool, AllocatorError> {
-        allocator.is_exempt_v6(flow_key)
     }
 }

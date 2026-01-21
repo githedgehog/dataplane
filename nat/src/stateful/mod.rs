@@ -569,14 +569,6 @@ impl StatefulNat {
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
 
-        if I::is_exempt(allocator.clone(), &flow_key)
-            .map_err(StatefulNatError::AllocationFailure)?
-        {
-            // Packet is allowed to go through without NAT, leave it unchanged
-            debug!("{}: Packet exempt from NAT", self.name());
-            return Ok(false);
-        }
-
         match self.deal_with_icmp_error_msg::<Buf, I>(packet, &flow_key) {
             Err(e) => return Err(e),     // Something wrong happened
             Ok(true) => return Ok(true), // ICMP Error message, and we completed translation
