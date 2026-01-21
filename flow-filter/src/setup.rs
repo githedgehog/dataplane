@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::FlowFilterTable;
+use crate::tables::RemoteData;
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
@@ -36,19 +37,20 @@ impl FlowFilterTable {
     ) -> Result<(), ConfigError> {
         let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
+        let dst_data = RemoteData::new(dst_vpcd);
 
         for remote_expose in &peering.remote.exposes {
             if remote_expose.default {
                 for local_expose in &peering.local.exposes {
                     if local_expose.default {
                         // Both the local and remote expose are default exposes
-                        self.insert_default_source_to_default_remote(local_vpcd, dst_vpcd)?;
+                        self.insert_default_source_to_default_remote(local_vpcd, dst_data.clone())?;
                     } else {
                         // Only the remote expose is a default expose
                         for local_prefix in &local_expose.ips {
                             self.insert_default_remote(
                                 local_vpcd,
-                                dst_vpcd,
+                                dst_data.clone(),
                                 local_prefix.prefix(),
                                 local_prefix.ports(),
                             )?;
@@ -62,7 +64,7 @@ impl FlowFilterTable {
                         for remote_prefix in remote_expose.public_ips() {
                             self.insert_default_source(
                                 local_vpcd,
-                                dst_vpcd,
+                                dst_data.clone(),
                                 remote_prefix.prefix(),
                                 remote_prefix.ports(),
                             )?;
@@ -73,7 +75,7 @@ impl FlowFilterTable {
                             for remote_prefix in remote_expose.public_ips() {
                                 self.insert(
                                     local_vpcd,
-                                    dst_vpcd,
+                                    dst_data.clone(),
                                     local_prefix.prefix(),
                                     local_prefix.ports(),
                                     remote_prefix.prefix(),
@@ -168,8 +170,8 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap();
 
-        let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(dst_vpcd, Some(VpcDiscriminant::VNI(vni2)));
+        let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        assert_eq!(dst_data, Some(&RemoteData::new(VpcDiscriminant::VNI(vni2))));
     }
 
     #[test]
@@ -244,7 +246,7 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap();
 
-        let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(dst_vpcd, Some(VpcDiscriminant::VNI(vni2)));
+        let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        assert_eq!(dst_data, Some(&RemoteData::new(VpcDiscriminant::VNI(vni2))));
     }
 }

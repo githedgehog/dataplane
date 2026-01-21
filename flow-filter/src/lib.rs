@@ -78,9 +78,12 @@ impl FlowFilter {
         // For Display
         let tuple = FlowTuple::new(src_ip, dst_ip, ports);
 
-        if let Some(dst_vpcd) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
-            debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}",);
-            packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+        if let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
+            debug!(
+                "{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {}",
+                dst_data.vpcd
+            );
+            packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
         } else {
             debug!("{nfi}: Flow {tuple} is NOT allowed, dropping packet",);
             packet.done(DoneReason::Filtered);
@@ -152,6 +155,7 @@ impl std::fmt::Display for FlowTuple {
 mod tests {
     use super::*;
     use crate::filter_rw::FlowFilterTableWriter;
+    use crate::tables::RemoteData;
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -232,12 +236,12 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = vpcd(200);
+        let dst_data = RemoteData::new(vpcd(200));
 
         table
             .insert(
                 src_vpcd,
-                dst_vpcd,
+                dst_data.clone(),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -263,7 +267,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
     }
 
     #[test]
@@ -271,12 +275,12 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = vpcd(200);
+        let dst_data = RemoteData::new(vpcd(200));
 
         table
             .insert(
                 src_vpcd,
-                dst_vpcd,
+                dst_data,
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -332,12 +336,12 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = vpcd(200);
+        let dst_data = RemoteData::new(vpcd(200));
 
         table
             .insert(
                 src_vpcd,
-                dst_vpcd,
+                dst_data,
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -370,12 +374,12 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = vpcd(200);
+        let dst_data = RemoteData::new(vpcd(200));
 
         table
             .insert(
                 src_vpcd,
-                dst_vpcd,
+                dst_data.clone(),
                 Prefix::from("2001:db8::/32"),
                 None,
                 Prefix::from("2001:db9::/32"),
@@ -401,7 +405,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
     }
 
     #[test]
@@ -409,12 +413,12 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = vpcd(200);
+        let dst_data = RemoteData::new(vpcd(200));
 
         table
             .insert(
                 src_vpcd,
-                dst_vpcd,
+                dst_data.clone(),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -440,7 +444,7 @@ mod tests {
 
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
     }
 
     #[test]
@@ -448,12 +452,12 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = vpcd(200);
+        let dst_data = RemoteData::new(vpcd(200));
 
         table
             .insert(
                 src_vpcd,
-                dst_vpcd,
+                dst_data,
                 Prefix::from("10.0.0.0/24"),
                 Some(PortRange::new(1025, 1999).unwrap()),
                 Prefix::from("20.0.0.0/24"),
@@ -747,12 +751,12 @@ mod tests {
         // Setup table
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
-        let dst_vpcd = vpcd(200);
+        let dst_data = RemoteData::new(vpcd(200));
 
         table
             .insert(
                 src_vpcd,
-                dst_vpcd,
+                dst_data.clone(),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -788,10 +792,10 @@ mod tests {
 
         assert_eq!(packets.len(), 3);
         assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
         assert_eq!(packets[1].get_done(), Some(DoneReason::Filtered));
         assert!(!packets[2].is_done());
-        assert_eq!(packets[2].meta().dst_vpcd, Some(dst_vpcd));
+        assert_eq!(packets[2].meta().dst_vpcd, Some(dst_data.vpcd));
     }
 
     #[test]
