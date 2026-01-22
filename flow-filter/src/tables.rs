@@ -99,9 +99,7 @@ impl FlowFilterTable {
         let (src_port, dst_port) = ports.unzip();
         // Look for valid connections information in the table that matches the source address and port.
         // If nothing matches, use the default source entry, if any.
-        let src_connection_data = table
-            .lookup(src_addr, src_port)
-            .or(table.default_source_opt.as_ref())?;
+        let src_connection_data = table.lookup(src_addr, src_port)?;
         debug!("Found src_connection_data: {src_connection_data:?}");
 
         // We have a src_connection_data object for our source VPC and source IP, and source port
@@ -224,7 +222,7 @@ impl VpcConnectionsTable {
 
     fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<&SrcConnectionData> {
         let (_, data) = self.trie.lookup(addr, port).unzip();
-        data
+        data.or(self.default_source_opt.as_ref())
     }
 
     #[cfg(test)]
