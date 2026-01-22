@@ -74,13 +74,15 @@ impl FlowFilter {
                 .map(NonZero::get)
                 .zip(t.dst_port().map(NonZero::get))
         });
-        let log_str = format_packet_addrs_ports(&src_ip, &dst_ip, ports);
+
+        // For Display
+        let tuple = FlowTuple::new(src_ip, dst_ip, ports);
 
         if let Some(dst_vpcd) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
-            debug!("{nfi}: Flow allowed: {log_str}, setting packet dst_vpcd to {dst_vpcd}");
+            debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}",);
             packet.meta_mut().dst_vpcd = Some(dst_vpcd);
         } else {
-            debug!("{nfi}: Flow not allowed, dropping packet: {log_str}");
+            debug!("{nfi}: Flow {tuple} is NOT allowed, dropping packet",);
             packet.done(DoneReason::Filtered);
         }
     }
@@ -105,16 +107,45 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
     }
 }
 
-fn format_packet_addrs_ports(
-    src_addr: &IpAddr,
-    dst_addr: &IpAddr,
-    ports: Option<(u16, u16)>,
-) -> String {
-    format!(
-        "src={src_addr}{}, dst={dst_addr}{}",
-        ports.map_or(String::new(), |p| format!(":{}", p.0)),
-        ports.map_or(String::new(), |p| format!(":{}", p.1))
-    )
+// Only used for Display
+struct OptPort(Option<u16>);
+impl std::fmt::Display for OptPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(port) = self.0 {
+            write!(f, ":{port}")?;
+        }
+        Ok(())
+    }
+}
+
+// Only used for Display
+struct FlowTuple {
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+    src_port: OptPort,
+    dst_port: OptPort,
+}
+
+impl FlowTuple {
+    fn new(src_addr: IpAddr, dst_addr: IpAddr, ports: Option<(u16, u16)>) -> Self {
+        let ports = ports.unzip();
+        Self {
+            src_addr,
+            dst_addr,
+            src_port: OptPort(ports.0),
+            dst_port: OptPort(ports.1),
+        }
+    }
+}
+
+impl std::fmt::Display for FlowTuple {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "src={}{}, dst={}{}",
+            self.src_addr, self.src_port, self.dst_addr, self.dst_port
+        )
+    }
 }
 
 #[cfg(test)]
@@ -768,10 +799,10 @@ mod tests {
         let src_addr = "10.0.0.1".parse().unwrap();
         let dst_addr = "20.0.0.2".parse().unwrap();
 
-        let result = format_packet_addrs_ports(&src_addr, &dst_addr, Some((8080, 443)));
-        assert_eq!(result, "src=10.0.0.1:8080, dst=20.0.0.2:443");
+        let result = FlowTuple::new(src_addr, dst_addr, Some((8080, 443)));
+        assert_eq!(result.to_string(), "src=10.0.0.1:8080, dst=20.0.0.2:443");
 
-        let result_no_ports = format_packet_addrs_ports(&src_addr, &dst_addr, None);
-        assert_eq!(result_no_ports, "src=10.0.0.1, dst=20.0.0.2");
+        let result_no_ports = FlowTuple::new(src_addr, dst_addr, None);
+        assert_eq!(result_no_ports.to_string(), "src=10.0.0.1, dst=20.0.0.2");
     }
 }
