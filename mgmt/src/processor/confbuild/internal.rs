@@ -15,6 +15,7 @@ use config::{ConfigError, ConfigResult};
 
 use lpm::prefix::Prefix;
 use net::route::RouteTableId;
+use net::vxlan::Vni;
 use std::net::Ipv4Addr;
 
 use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
@@ -238,14 +239,25 @@ fn vpc_vrf_config(vpc: &Vpc) -> Result<VrfConfig, ConfigError> {
         .set_vpc_id(vpc.id.clone())
         .set_description(&vpc.name);
 
-    /* set table-id: table ids should be unique per VRF. We should track them and pick unused ones.
-    Setting this to the VNI is not too bad atm, except that we should avoid picking reserved values
-    which may cause internal failures. FIXME: fredi */
-    if vpc.vni.as_u32() == 254_u32 {
-        error!("Invalid configuration: Vni 254 is reserved");
-        return Err(ConfigError::InvalidVpcVni(vpc.vni.as_u32()));
-    }
-    let table_id = RouteTableId::try_from(vpc.vni.as_u32()).unwrap_or_else(|_| unreachable!());
+    // Here we set the table-id for the VRF. This is the table-id that will be used to create a VRF net device.
+    // Table ids should be unique per VRF. We could track them and pick unused ones. Alternatively, we need
+    // a 1:1 mapping to VNIs which are guaranteed to be unique. The easiest is to let table ids match the Vni,
+    // except for Vnis that could match reserved table ids such as 253-255
+    let table_id = match vpc.vni.as_u32() {
+        253_u32 => Vni::MAX + 1, // local
+        254_u32 => Vni::MAX + 2, // main
+        255_u32 => Vni::MAX + 3, // default
+        _ => vpc.vni.as_u32(),
+    };
+    let table_id = RouteTableId::try_from(table_id).map_err(|_| {
+        let emsg = format!(
+            "Could not create RouteTableId from {table_id} for VPC {}",
+            vpc.name
+        );
+        error!(emsg);
+        ConfigError::InternalFailure(emsg)
+    })?;
+
     vrf_cfg = vrf_cfg.set_table_id(table_id);
     Ok(vrf_cfg)
 }
