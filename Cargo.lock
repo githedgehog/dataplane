@@ -1260,7 +1260,6 @@ dependencies = [
  "pretty_assertions",
  "thiserror 2.0.18",
  "tracing",
- "tracing-test",
 ]
 
 [[package]]
@@ -1304,14 +1303,11 @@ dependencies = [
  "bolero",
  "dashmap",
  "dataplane-concurrency",
- "dataplane-config",
  "dataplane-flow-info",
- "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
  "etherparse",
- "left-right",
  "linkme",
  "priority-queue",
  "shuttle",
@@ -1342,11 +1338,8 @@ version = "0.10.0"
 dependencies = [
  "atomic-instant-full",
  "dataplane-concurrency",
- "dataplane-tracectl",
  "downcast-rs",
- "linkme",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -1355,7 +1348,6 @@ version = "0.10.0"
 dependencies = [
  "bolero",
  "bytecheck",
- "capctl",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-id",
  "dataplane-sysfs",
@@ -1410,7 +1402,6 @@ dependencies = [
  "bolero",
  "dataplane-net",
  "dataplane-rekon",
- "dataplane-tracectl",
  "derive_builder 0.20.2",
  "futures",
  "libc 1.0.0-alpha.2",
@@ -1478,9 +1469,7 @@ version = "0.10.0"
 dependencies = [
  "bnum",
  "bolero",
- "dataplane-tracectl",
  "ipnet",
- "linkme",
  "num-traits",
  "prefix-trie",
  "serde",
@@ -1493,7 +1482,6 @@ dependencies = [
 name = "dataplane-mgmt"
 version = "0.10.0"
 dependencies = [
- "async-trait",
  "bolero",
  "bytes",
  "caps",
@@ -1528,7 +1516,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "tracing",
  "tracing-test",
 ]
@@ -1574,13 +1561,10 @@ dependencies = [
  "dataplane-concurrency",
  "dataplane-flow-info",
  "dataplane-id",
- "dataplane-tracectl",
  "derive_builder 0.20.2",
  "etherparse",
- "linkme",
  "linux-raw-sys 0.12.1",
  "multi_index_map",
- "ordermap",
  "rapidhash",
  "rkyv",
  "serde",
@@ -1641,7 +1625,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "tracing",
  "tracing-test",
@@ -1677,15 +1660,11 @@ name = "dataplane-sysfs"
 version = "0.10.0"
 dependencies = [
  "dataplane-dpdk-sysroot-helper",
- "dataplane-id",
  "n-vm",
  "nix 0.31.1",
  "procfs",
- "strum",
- "strum_macros",
  "thiserror 2.0.18",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

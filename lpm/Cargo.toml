@@ -12,15 +12,12 @@ testing = ["dep:bolero"]
 bnum = { workspace = true }
 bolero = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["serde"] }
-linkme = { workspace = true }
 num-traits = { workspace = true }
 prefix-trie = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
 serde_yaml_ng = { workspace = true }
-

@@ -14,7 +14,6 @@ bolero = ["dep:bolero", "netdevsim", "net/test_buffer", "net/serde", "net/bolero
 # internal
 net = { workspace = true, features = [] }
 rekon = { workspace = true }
-tracectl = { workspace = true }
 
 # external
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }

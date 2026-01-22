@@ -22,7 +22,6 @@ multi_index_map = { workspace = true, features = ["serde"] }
 ordermap = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
-tracing-test = { workspace = true }
 
 [dev-dependencies]
 # internal
@@ -31,10 +30,8 @@ lpm = { workspace = true, features = ["testing"] }
 hardware = { workspace = true, features = ["bolero"] }
 k8s-intf = { workspace = true, features = ["bolero"] }
 
-
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 caps = { workspace = true }
 ipnet = { workspace = true }
 pretty_assertions = { workspace = true, features = ["std"] }
-tracing-test = { workspace = true, features = [] }
