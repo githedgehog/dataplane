@@ -101,7 +101,6 @@ impl FlowFilterTable {
         // If nothing matches, use the default source entry, if any.
         let src_connection_data = table
             .lookup(src_addr, src_port)
-            .map(|(_, data)| data)
             .or(table.default_source_opt.as_ref())?;
         debug!("Found src_connection_data: {src_connection_data:?}");
 
@@ -223,7 +222,17 @@ impl VpcConnectionsTable {
         }
     }
 
-    fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<(Prefix, &SrcConnectionData)> {
+    fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<&SrcConnectionData> {
+        let (_, data) = self.trie.lookup(addr, port).unzip();
+        data
+    }
+
+    #[cfg(test)]
+    fn lookup_with_prefix(
+        &self,
+        addr: &IpAddr,
+        port: Option<u16>,
+    ) -> Option<(Prefix, &SrcConnectionData)> {
         self.trie.lookup(addr, port)
     }
 
@@ -705,13 +714,13 @@ mod tests {
             .unwrap();
 
         // Lookup should succeed
-        let result = table.lookup(&"10.0.0.5".parse().unwrap(), None);
+        let result = table.lookup_with_prefix(&"10.0.0.5".parse().unwrap(), None);
         assert!(result.is_some());
         let (prefix, _) = result.unwrap();
         assert_eq!(prefix, src_prefix);
 
         // Lookup for non-matching address should fail
-        let result = table.lookup(&"11.0.0.5".parse().unwrap(), None);
+        let result = table.lookup_with_prefix(&"11.0.0.5".parse().unwrap(), None);
         assert!(result.is_none());
     }
 
@@ -736,11 +745,11 @@ mod tests {
             .unwrap();
 
         // Lookup with matching port
-        let result = table.lookup(&"10.0.0.5".parse().unwrap(), Some(8085));
+        let result = table.lookup_with_prefix(&"10.0.0.5".parse().unwrap(), Some(8085));
         assert!(result.is_some());
 
         // Lookup with non-matching port
-        let result = table.lookup(&"10.0.0.5".parse().unwrap(), Some(9000));
+        let result = table.lookup_with_prefix(&"10.0.0.5".parse().unwrap(), Some(9000));
         assert!(result.is_none());
     }
 
