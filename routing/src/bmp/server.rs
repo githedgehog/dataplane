@@ -47,6 +47,7 @@ pub struct BmpServer<H: BmpHandler> {
 }
 
 impl<H: BmpHandler> BmpServer<H> {
+    #[must_use]
     pub fn new(cfg: BmpServerConfig, handler: H) -> Self {
         Self {
             cfg,

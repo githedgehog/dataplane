@@ -25,9 +25,10 @@ use tracectl::{custom_target, get_trace_ctl, trace_target};
 
 use tracing::{error, info, level_filters::LevelFilter};
 
-use concurrency::sync::{Arc, RwLock};
+use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
 use config::internal::status::DataplaneStatus;
+use tokio::sync::RwLock;
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
 custom_target!("Pyroscope", LevelFilter::INFO, &[]);

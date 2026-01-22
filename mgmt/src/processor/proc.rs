@@ -3,8 +3,9 @@
 
 //! Configuration processor
 
-use concurrency::sync::{Arc, RwLock};
+use concurrency::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::RwLock;
 
 use tokio::spawn;
 use tokio::sync::mpsc;
@@ -17,7 +18,7 @@ use config::{ConfigError, ConfigResult, stringify};
 use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConfig};
 
-use crate::processor::confbuild::internal::build_internal_config_with_bmp;
+use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
 use nat::stateful::NatAllocatorWriter;
@@ -129,8 +130,7 @@ impl ConfigProcessor {
         config.validate()?;
 
         // BMP-aware internal builder
-        let internal =
-            build_internal_config_with_bmp(&config, self.proc_params.bmp_options.clone())?;
+        let internal = build_internal_config(&config, self.proc_params.bmp_options.clone())?;
         config.set_internal_config(internal);
 
         let e = match self.apply(config).await {
@@ -150,8 +150,7 @@ impl ConfigProcessor {
     async fn apply_blank_config(&mut self) -> ConfigResult {
         let mut blank = GwConfig::blank();
         // BMP-aware internal builder (even for blank, so FRR reflects BMP if needed)
-        let internal =
-            build_internal_config_with_bmp(&blank, self.proc_params.bmp_options.clone())?;
+        let internal = build_internal_config(&blank, self.proc_params.bmp_options.clone())?;
         blank.set_internal_config(internal);
         self.apply(blank).await
     }
@@ -207,11 +206,7 @@ impl ConfigProcessor {
     /// RPC handler: get dataplane status
     async fn handle_get_dataplane_status(&mut self) -> ConfigResponse {
         let mut status: DataplaneStatus = {
-            let guard = self
-                .proc_params
-                .dp_status_r
-                .read()
-                .expect("dp_status RwLock poisoned");
+            let guard = self.proc_params.dp_status_r.read().await;
             guard.clone()
         };
 
@@ -557,7 +552,7 @@ impl ConfigProcessor {
 
         /* build internal config if it hasn't been built */
         if config.internal.is_none() {
-            let internal = build_internal_config_with_bmp(config, bmp_options)?;
+            let internal = build_internal_config(config, bmp_options)?;
             config.set_internal_config(internal);
         }
         let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());

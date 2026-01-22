@@ -35,8 +35,9 @@ use args::DEFAULT_DP_UX_PATH_CLI;
 use args::DEFAULT_FRR_AGENT_PATH;
 
 // mandatory dataplane status handle
-use concurrency::sync::{Arc, RwLock};
+use concurrency::sync::Arc;
 use config::internal::status::DataplaneStatus;
+use tokio::sync::RwLock;
 
 #[derive(Clone, Debug)]
 pub struct BmpServerParams {

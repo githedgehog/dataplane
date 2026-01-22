@@ -44,7 +44,7 @@ pub mod test {
 
     use routing::Render;
 
-    use crate::processor::confbuild::internal::build_internal_config_with_bmp;
+    use crate::processor::confbuild::internal::build_internal_config;
     use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
     use routing::{Router, RouterParamsBuilder};
     use tracing::debug;
@@ -53,8 +53,9 @@ pub mod test {
     use stats::VpcStatsStore;
     use vpcmap::map::VpcMapWriter;
 
-    use concurrency::sync::{Arc, RwLock};
+    use concurrency::sync::Arc;
     use config::internal::status::DataplaneStatus;
+    use tokio::sync::RwLock;
 
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
@@ -381,7 +382,7 @@ pub mod test {
             println!("\n{vpc_table}\n{peering_table}");
         }
         let bmp_config = None;
-        let internal = build_internal_config_with_bmp(&config, bmp_config).expect("Should succeed");
+        let internal = build_internal_config(&config, bmp_config).expect("Should succeed");
         let rendered = internal.render(&config.genid());
         println!("{rendered}");
     }
