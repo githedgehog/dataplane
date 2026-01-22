@@ -124,9 +124,10 @@ pub mod tests {
     use super::fake_frr_agent::*;
     use crate::config::RouterConfig;
     use crate::{Router, RouterParamsBuilder};
-    use concurrency::sync::{Arc, RwLock};
+    use concurrency::sync::Arc;
     use config::internal::status::DataplaneStatus;
     use std::time::Duration;
+    use tokio::sync::RwLock;
     use tracing_test::traced_test;
 
     #[traced_test]

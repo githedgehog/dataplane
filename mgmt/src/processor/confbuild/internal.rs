@@ -325,7 +325,7 @@ fn build_internal_overlay_config(
 }
 
 /// Public entry — build with BMP (global options injected into default VRF and import views)
-pub fn build_internal_config_with_bmp(
+pub fn build_internal_config(
     config: &GwConfig,
     bmp: Option<BmpOptions>,
 ) -> Result<InternalConfig, ConfigError> {
