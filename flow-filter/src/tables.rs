@@ -110,13 +110,13 @@ impl FlowFilterTable {
 
         // We have a dst_connection_data object for our source VPC, IP, port. From this object, we
         // need to retrieve the prefix information associated to our destination IP and port.
-        let Some(remote_prefix_data) = dst_connection_data.lookup(dst_addr, dst_port) else {
-            let default_remote_opt = dst_connection_data.default_remote;
+        let remote_prefix_data = dst_connection_data.lookup(dst_addr, dst_port).or_else(|| {
+            let default_remote_opt = dst_connection_data.default_remote.as_ref();
             debug!(
                 "No remote prefix information found, looking for default remote: {default_remote_opt:?}"
             );
-            return default_remote_opt;
-        };
+            default_remote_opt
+        })?;
         debug!("Found remote_prefix_data: {remote_prefix_data:?}");
 
         // We have a remote_prefix_data object for our destination address, and the port ranges
@@ -501,7 +501,7 @@ impl ValueWithAssociatedRanges for RemotePrefixPortData {
 #[derive(Debug, Clone)]
 pub(crate) struct DstConnectionData {
     trie: IpPortPrefixTrie<RemotePrefixPortData>,
-    default_remote: Option<VpcDiscriminant>,
+    default_remote: Option<RemotePrefixPortData>,
 }
 
 impl DstConnectionData {
@@ -521,7 +521,7 @@ impl DstConnectionData {
     fn new_for_default_remote(vpcd: VpcDiscriminant) -> Self {
         Self {
             trie: IpPortPrefixTrie::new(),
-            default_remote: Some(vpcd),
+            default_remote: Some(RemotePrefixPortData::AllPorts(vpcd)),
         }
     }
 
@@ -560,7 +560,7 @@ impl DstConnectionData {
                 "Trying to update default remote with an existing default remote".to_string(),
             ));
         }
-        self.default_remote = Some(vpcd);
+        self.default_remote = Some(RemotePrefixPortData::AllPorts(vpcd));
         Ok(())
     }
 }
