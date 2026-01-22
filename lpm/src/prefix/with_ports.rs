@@ -594,21 +594,16 @@ impl Display for PortRange {
 
 impl Display for PrefixWithPorts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} <{}>", self.prefix, self.ports)
+        write!(f, "{}:[{}]", self.prefix, self.ports)
     }
 }
 
 impl Display for PrefixWithOptionalPorts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PrefixWithOptionalPorts::Prefix(prefix) => write!(f, "({prefix} </>)"),
+            PrefixWithOptionalPorts::Prefix(prefix) => write!(f, "{prefix}:[all]"),
             PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
-                write!(
-                    f,
-                    "({} <{}>)",
-                    prefix_with_ports.prefix(),
-                    prefix_with_ports.ports()
-                )
+                write!(f, "{prefix_with_ports}")
             }
         }
     }
