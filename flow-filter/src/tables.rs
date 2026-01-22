@@ -110,13 +110,7 @@ impl FlowFilterTable {
 
         // We have a dst_connection_data object for our source VPC, IP, port. From this object, we
         // need to retrieve the prefix information associated to our destination IP and port.
-        let remote_prefix_data = dst_connection_data.lookup(dst_addr, dst_port).or_else(|| {
-            let default_remote_opt = dst_connection_data.default_remote.as_ref();
-            debug!(
-                "No remote prefix information found, looking for default remote: {default_remote_opt:?}"
-            );
-            default_remote_opt
-        })?;
+        let remote_prefix_data = dst_connection_data.lookup(dst_addr, dst_port)?;
         debug!("Found remote_prefix_data: {remote_prefix_data:?}");
 
         // We have a remote_prefix_data object for our destination address, and the port ranges
@@ -526,7 +520,10 @@ impl DstConnectionData {
     }
 
     fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<&RemotePrefixPortData> {
-        self.trie.lookup(addr, port).map(|(_, data)| data)
+        self.trie
+            .lookup(addr, port)
+            .map(|(_, data)| data)
+            .or(self.default_remote.as_ref())
     }
 
     fn update(
