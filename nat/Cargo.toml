@@ -15,7 +15,6 @@ bnum = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
 flow-entry = { workspace = true }
-flow-filter = { workspace = true }
 flow-info = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
@@ -32,6 +31,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 # internal
 fixin = { workspace = true }
+flow-filter = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }

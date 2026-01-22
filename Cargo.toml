@@ -98,14 +98,11 @@ bnum = { version = "0.13.0", default-features = false, features = [] }
 bolero = { version = "0.13.4", default-features = false, features = [] }
 bytecheck = { version = "0.8.2", default-features = false, features = [] }
 bytes = { version = "1.11.0", default-features = false, features = [] }
-capctl = { version = "0.2.4", default-features = false, features = [] }
 caps = { version = "0.5.6", default-features = false, features = [] }
 chrono = { version = "0.4.43", default-features = false, features = [] }
 clap = { version = "4.5.54", default-features = true, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
 colored = { version = "3.1.1", default-features = false, features = [] }
-command-fds = { version = "0.3.2", default-features = false, features = [] }
-crossbeam-channel = { version = "0.5.15", default-features = false, features = [] }
 ctrlc = { version = "3.5.1", default-features = false, features = [] }
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = [] }
@@ -133,7 +130,6 @@ linkme = { version = "0.3.35", default-features = false, features = [] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = [] }
 log = { version = "0.4.29", default-features = false, features = [] } # TODO: try to remove this
 loom = { version = "0.7.2", default-features = false, features = [] }
-mac_address = { version = "1.1.8", default-features = false, features = [] }
 memmap2 = { version = "0.9.9", default-features = false, features = [] }
 metrics = { version = "0.24.3", default-features = false, features = [] }
 metrics-exporter-prometheus = { version = "0.18.1", default-features = false, features = [] }
@@ -151,7 +147,6 @@ once_cell = { version = "1.21.3", default-features = false, features = [] }
 ordermap = { version = "1.1.0", default-features = false, features = [] }
 parking_lot = { version = "0.12.5", default-features = false, features = [] }
 pci-ids = { version = "0.2.6", default-features = false, features = [] }
-pci-info = { version = "0.3.4", default-features = false, features = [] }
 prefix-trie = { version = "0.8.1", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = [] }
 priority-queue = { version = "2.7.0", default-features = false, features = [] }
@@ -182,7 +177,6 @@ syn = { version = "2.0.114", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
 tokio = { version = "1.49.0", default-features = false, features = ["rt-multi-thread"] }
-tokio-stream = { version = "0.1.18", default-features = false, features = [] }
 tracing = { version = "0.1.44", default-features = false, features = [] }
 tokio-util = { version = "0.7.13", default-features = false, features = ["codec"] }
 tonic = { version = "0.14.2", default-features = false, features = [] }

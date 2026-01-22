@@ -7,16 +7,12 @@ version.workspace = true
 
 [dependencies]
 # internal
-id = { workspace = true }
 
 # external
 nix = { workspace = true, features = ["mount", "fs"] }
 procfs = { workspace = true, features = [] }
-strum = { workspace = true, features = ["derive"] }
-strum_macros = { workspace = true, features = [] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
-tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [dev-dependencies]
 # internal

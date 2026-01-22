@@ -14,13 +14,10 @@ bolero = ["dep:bolero", "net/bolero"]
 [dependencies]
 ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, optional = true }
-lpm = { workspace = true }
 concurrency = { workspace = true }
-config = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
 etherparse = { workspace = true }
 flow-info = { workspace = true }
-left-right = { workspace = true }
 linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
@@ -30,10 +27,8 @@ thread_local = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 
-
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
-lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
 tracing-test = { workspace = true, features = [] }
 shuttle = { workspace = true }

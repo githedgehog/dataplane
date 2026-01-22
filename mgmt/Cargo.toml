@@ -34,9 +34,7 @@ stats = { workspace = true }
 tracectl = { workspace = true }
 vpcmap = { workspace = true }
 
-
 # external
-async-trait = { workspace = true }
 bolero = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 bytes = { workspace = true }
 caps = { workspace = true, default-features = false, features = [] }
@@ -50,7 +48,6 @@ rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["rc", "derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-tokio-stream = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-test = { workspace = true }
 
@@ -67,7 +64,5 @@ test-utils = { workspace = true }
 
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
-caps = { workspace = true }
 ipnet = { workspace = true }
 pretty_assertions = { workspace = true, features = ["std"] }
-tracing-test = { workspace = true, features = [] }

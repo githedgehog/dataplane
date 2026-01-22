@@ -13,9 +13,4 @@ testing = []
 atomic-instant-full = { workspace = true }
 concurrency = { workspace = true }
 downcast-rs = { workspace = true, features = ["sync"] }
-linkme = { workspace = true }
 thiserror = { workspace = true }
-tracectl = { workspace = true }
-tracing = { workspace = true }
-
-[dev-dependencies]
