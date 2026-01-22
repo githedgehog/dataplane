@@ -94,23 +94,36 @@ impl FlowFilterTable {
         ports: Option<(u16, u16)>,
     ) -> Option<VpcDiscriminant> {
         // Get the table related to the source VPC for the packet
-        let table = self.get_table(src_vpcd)?;
+        let Some(table) = self.get_table(src_vpcd) else {
+            debug!("Could not find connections table for VPC {src_vpcd}");
+            return None;
+        };
 
         let (src_port, dst_port) = ports.unzip();
         // Look for valid connections information in the table that matches the source address and port.
         // If nothing matches, use the default source entry, if any.
-        let src_connection_data = table.lookup(src_addr, src_port)?;
+        let Some(src_connection_data) = table.lookup(src_addr, src_port) else {
+            debug!("Could not find src connection data for src:{src_addr}, src_port:{src_port:?}");
+            return None;
+        };
         debug!("Found src_connection_data: {src_connection_data:?}");
 
         // We have a src_connection_data object for our source VPC and source IP, and source port
         // ranges associated to this IP: we may need to find the right item for this entry based on
         // the source port
-        let dst_connection_data = src_connection_data.get_remote_prefixes_data(src_port)?;
+        let Some(dst_connection_data) = src_connection_data.get_remote_prefixes_data(src_port)
+        else {
+            debug!("Could not find dst connection data for src:{src_addr}, src_port:{src_port:?}");
+            return None;
+        };
         debug!("Found dst_connection_data: {dst_connection_data:?}");
 
         // We have a dst_connection_data object for our source VPC, IP, port. From this object, we
         // need to retrieve the prefix information associated to our destination IP and port.
-        let remote_prefix_data = dst_connection_data.lookup(dst_addr, dst_port)?;
+        let Some(remote_prefix_data) = dst_connection_data.lookup(dst_addr, dst_port) else {
+            debug!("Could not find remote prefix data for dst:{dst_addr}, dst_port:{dst_port:?}");
+            return None;
+        };
         debug!("Found remote_prefix_data: {remote_prefix_data:?}");
 
         // We have a remote_prefix_data object for our destination address, and the port ranges
