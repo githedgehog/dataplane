@@ -803,6 +803,38 @@ pub mod test {
                 PrefixWithPortsSize::from(256u32 * 1000),
             ))
         );
+
+        // Incorrect: stateful NAT ips() with ports
+        let expose = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new("2.0.0.0/24".into(), None));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::Forbidden(
+                "Port ranges are not supported with stateful NAT",
+            ))
+        );
+
+        // Incorrect: stateful NAT as_range() with ports
+        let expose = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new("10.0.0.0/16".into(), None))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/24".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::Forbidden(
+                "Port ranges are not supported with stateful NAT",
+            ))
+        );
     }
 
     #[test]

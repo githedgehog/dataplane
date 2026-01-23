@@ -459,7 +459,17 @@ impl VpcExpose {
             ));
         }
 
-        // 6. Forbid empty ips list if not is non-empty.
+        // 6. For stateful NAT, we don't support port ranges
+        if self.has_stateful_nat()
+            && (self.ips.iter().any(|p| p.ports().is_some())
+                || self.as_range_or_empty().iter().any(|p| p.ports().is_some()))
+        {
+            return Err(ConfigError::Forbidden(
+                "Port ranges are not supported with stateful NAT",
+            ));
+        }
+
+        // 7. Forbid empty ips list if not is non-empty.
         //    Forbid empty as_range list if not_as is non-empty.
         //    These configurations are allowed by the user API, but we don't currently support them,
         //    so we reject them during validation.
