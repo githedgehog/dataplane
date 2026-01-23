@@ -134,18 +134,16 @@ fn build_dst_data(
     )
 }
 
-fn get_nat_requirement(nat: &Option<VpcExposeNat>) -> NatRequirement {
-    match nat {
-        Some(nat) => {
-            if nat.is_stateful() {
-                NatRequirement::StatefulNatRequired
-            } else if nat.is_stateless() {
-                NatRequirement::StatelessNatRequired
-            } else {
-                unreachable!("Unknown NAT mode")
-            }
-        }
-        None => NatRequirement::NoNat,
+fn get_nat_requirement(nat_opt: &Option<VpcExposeNat>) -> Option<NatRequirement> {
+    let nat = nat_opt.as_ref()?;
+    debug_assert!(!(nat.is_stateful() && nat.is_stateless())); // Only one NAT mode allowed
+
+    if nat.is_stateful() {
+        Some(NatRequirement::Stateful)
+    } else if nat.is_stateless() {
+        Some(NatRequirement::Stateless)
+    } else {
+        unreachable!("Unknown NAT mode")
     }
 }
 
@@ -202,11 +200,7 @@ mod tests {
         let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
         assert_eq!(
             dst_data,
-            Some(&RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
-                NatRequirement::NoNat,
-                NatRequirement::NoNat,
-            ))
+            Some(&RemoteData::new(VpcDiscriminant::VNI(vni2), None, None,))
         );
     }
 
@@ -285,11 +279,7 @@ mod tests {
         let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
         assert_eq!(
             dst_data,
-            Some(&RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
-                NatRequirement::NoNat,
-                NatRequirement::NoNat,
-            ))
+            Some(&RemoteData::new(VpcDiscriminant::VNI(vni2), None, None,))
         );
     }
 }
