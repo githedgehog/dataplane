@@ -221,6 +221,7 @@ fn create_natpool<J: NatIpWithBitmap>(
     let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(
         &prefixes
             .iter()
+            // FIXME: Add port range, too
             .map(PrefixWithOptionalPorts::prefix)
             .collect::<BTreeSet<Prefix>>(),
     )?;
