@@ -713,6 +713,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
                 && packet.meta().requires_stateful_nat()
                 && !packet.meta().is_natted()
             {
+                // Packet should never be marked for NAT and reach this point if it is not overlay
+                debug_assert!(packet.meta().is_overlay());
+
                 self.process_packet(&mut packet);
             }
             packet.enforce()
