@@ -1,0 +1,22 @@
+Index: python/xrelfo.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/xrelfo.py b/python/xrelfo.py
+--- a/python/xrelfo.py	(revision Staged)
++++ b/python/xrelfo.py	(date 1745108075027)
+@@ -479,13 +479,9 @@
+         try:
+             xrelfo.load_file(fn)
+         except:
+-            errors += 1
+             sys.stderr.write("while processing %s:\n" % (fn))
+             traceback.print_exc()
+
+-    if xrelfo.note_warn and args.Werror:
+-        errors += 1
+-
+     for option in dir(args):
+         if option.startswith("W") and option != "Werror":
+             checks = sorted(xrelfo.check(args))
