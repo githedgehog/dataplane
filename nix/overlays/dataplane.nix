@@ -193,7 +193,13 @@ in
   # Also, while this library has a respectable security track record, this is also a very strong candidate for
   # cfi, safe-stack, and cf-protection.
   fancy.dpdk = dataplane-dep (
-    final.callPackage ../pkgs/dpdk (final.fancy // { src = sources.dpdk; })
+    final.callPackage ../pkgs/dpdk (
+      final.fancy
+      // {
+        inherit platform profile;
+        src = sources.dpdk;
+      }
+    )
   );
 
   # DPDK is largely composed of static-inline functions.
