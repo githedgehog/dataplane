@@ -28,6 +28,8 @@ use tracing::{error, info, level_filters::LevelFilter};
 use concurrency::sync::Arc;
 use config::internal::routing::bmp::BmpOptions;
 use config::internal::status::DataplaneStatus;
+use net::tcp::TcpPort;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 trace_target!("dataplane", LevelFilter::DEBUG, &[]);
@@ -89,27 +91,24 @@ fn process_tracing_cmds(args: &CmdArgs) {
 fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptions>) {
     if args.bmp_enabled() {
         let bind = args.bmp_address();
-        let interval_ms = args.bmp_interval_ms();
+        let interval: Duration = args.bmp_interval();
 
-        info!(
-            "BMP: enabled, listening on {bind}, interval={}ms",
-            interval_ms
-        );
+        info!("BMP: enabled, listening on {bind}, interval={:?}", interval);
 
         // BMP server (for routing crate)
         let server = BmpServerParams {
             bind_addr: bind,
-            stats_interval_ms: interval_ms,
-            min_retry_ms: None,
-            max_retry_ms: None,
+            stats_interval: interval,
+            min_retry: None,
+            max_retry: None,
         };
 
         // BMP options for FRR (for internal config)
         let host = bind.ip().to_string();
-        let port = bind.port();
+        let port = TcpPort::try_from(bind.port()).expect("Invalid BMP port");
         let client = BmpOptions::new("bmp1", host, port)
-            .set_retry_ms(interval_ms, interval_ms.saturating_mul(4))
-            .set_stats_interval_ms(interval_ms)
+            .set_retry(interval, interval.saturating_mul(4u32))
+            .set_stats_interval(interval)
             .monitor_ipv4(true, true);
 
         (Some(server), Some(client))

@@ -63,6 +63,8 @@ use std::net::SocketAddr;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::str::FromStr;
 
+use std::time::Duration;
+
 #[derive(
     Debug, PartialEq, Eq, Clone, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
@@ -560,7 +562,7 @@ pub struct BmpConfigSection {
     /// Bind address for the BMP server (IP:PORT)
     pub address: SocketAddr,
     /// Periodic housekeeping/flush interval in milliseconds
-    pub interval_ms: u64,
+    pub interval: Duration,
 }
 
 /// Complete dataplane launch configuration.
@@ -1151,7 +1153,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             bmp: if value.bmp_enabled() {
                 Some(BmpConfigSection {
                     address: value.bmp_address(),
-                    interval_ms: value.bmp_interval_ms(),
+                    interval: value.bmp_interval(),
                 })
             } else {
                 None
@@ -1295,7 +1297,7 @@ elsewhere and copy it in the configuration directory. This mode is meant mostly 
         default_value_t = 10_000,
         help = "BMP periodic interval for housekeeping/flush (ms)"
     )]
-    bmp_interval_ms: u64,
+    bmp_interval: u64,
 }
 
 impl CmdArgs {
@@ -1454,8 +1456,8 @@ impl CmdArgs {
         self.bmp_address
     }
     #[must_use]
-    pub fn bmp_interval_ms(&self) -> u64 {
-        self.bmp_interval_ms
+    pub fn bmp_interval(&self) -> Duration {
+        Duration::from_millis(self.bmp_interval)
     }
 
     /// Get the configuration directory.
