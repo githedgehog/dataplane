@@ -32,11 +32,27 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
         };
 
         let device = DeviceConfig::try_from(ga)?;
-        let underlay = Underlay::try_from(ga.spec.gateway.as_ref().ok_or(
+
+        let mut underlay = Underlay::try_from(ga.spec.gateway.as_ref().ok_or(
             FromK8sConversionError::MissingData(format!(
                 "gateway section not found in spec for {name}"
             )),
         )?)?;
+
+        // fabricBFD variable check: enable BFD on fabric-facing BGP neighbors
+        let fabric_bfd_enabled = ga
+            .spec
+            .config
+            .as_ref()
+            .and_then(|c| c.fabric_bfd)
+            .unwrap_or(false);
+
+        if fabric_bfd_enabled && let Some(bgp) = underlay.vrf.bgp.as_mut() {
+            for neigh in &mut bgp.neighbors {
+                neigh.bfd = true;
+            }
+        }
+
         let overlay = Overlay::try_from(&ga.spec)?;
         let gwgroup_table = GwGroupTable::try_from(&ga.spec)?;
         let comtable = PriorityCommunityTable::try_from(&ga.spec)?;

@@ -20,6 +20,7 @@ use std::net::Ipv4Addr;
 
 use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
 
+use config::internal::routing::bfd::peers_from_bgp_neighbors;
 use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
 use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
 use config::internal::routing::prefixlist::{
@@ -332,6 +333,11 @@ pub fn build_internal_config(config: &GwConfig) -> Result<InternalConfig, Config
     let mut internal = InternalConfig::new(&config.gwname, external.device.clone());
     internal.add_vrf_config(external.underlay.vrf.clone())?;
     internal.set_vtep(external.underlay.vtep.clone());
+
+    // Build BFD peers from underlay BGP neighbors
+    if let Some(bgp) = &external.underlay.vrf.bgp {
+        internal.set_bfd_peers(peers_from_bgp_neighbors(&bgp.neighbors));
+    }
 
     /* Build overlay config */
     if let Some(bgp) = &external.underlay.vrf.bgp {

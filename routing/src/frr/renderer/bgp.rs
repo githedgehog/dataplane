@@ -219,6 +219,11 @@ fn bgp_neigh_bool_switches(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
     if neigh.default_originate {
         cfg += format!(" {prefix} default-originate");
     }
+
+    /* bfd */
+    if neigh.bfd {
+        cfg += format!(" {prefix} bfd");
+    }
     cfg
 }
 fn bgp_neigh_capabilities(capa: &BgpNeighCapabilities, prefix: &str) -> ConfigBuilder {

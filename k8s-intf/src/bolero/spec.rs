@@ -80,6 +80,7 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
 
         Some(LegalValue(GatewayAgentSpec {
             agent_version: None,
+            config: None,
             groups: Some(groups),
             communities: Some(communities),
             gateway: Some(d.produce::<LegalValue<GatewayAgentGateway>>()?.take()),

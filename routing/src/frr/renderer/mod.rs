@@ -3,6 +3,7 @@
 
 //! FRR driver for frr-reload.py
 
+pub mod bfd;
 pub mod bgp;
 pub mod builder;
 pub mod frr;
@@ -38,6 +39,9 @@ impl Render for InternalConfig {
 
         /* frr profile */
         cfg += self.frr.render(&());
+
+        /* BFD peers */
+        cfg += self.bfd_peers.render(&());
 
         /* prefix lists */
         cfg += self.plist_table.render(&());
