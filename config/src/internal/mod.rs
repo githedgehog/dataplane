@@ -19,6 +19,7 @@ use super::ConfigResult;
 use crate::external::GenId;
 use crate::internal::device::DeviceConfig;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use crate::internal::routing::bfd::BfdPeer;
 use crate::internal::routing::evpn::VtepConfig;
 use crate::internal::routing::frr::Frr;
 use crate::internal::routing::prefixlist::{PrefixList, PrefixListTable};
@@ -34,6 +35,7 @@ pub struct InternalConfig {
     pub vrfs: VrfConfigTable,
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
+    pub bfd_peers: Vec<BfdPeer>,
 }
 
 impl InternalConfig {
@@ -48,6 +50,7 @@ impl InternalConfig {
             vrfs: VrfConfigTable::new(),
             plist_table: PrefixListTable::new(),
             rmap_table: RouteMapTable::new(),
+            bfd_peers: vec![],
         }
     }
     pub fn set_vtep(&mut self, vtep: Option<VtepConfig>) {
@@ -68,5 +71,14 @@ impl InternalConfig {
     }
     pub fn add_route_map(&mut self, rmap: RouteMap) {
         self.rmap_table.add_route_map(rmap);
+    }
+
+    pub fn set_bfd_peers(&mut self, peers: Vec<BfdPeer>) {
+        self.bfd_peers = peers;
+    }
+
+    #[must_use]
+    pub fn get_bfd_peers(&self) -> &Vec<BfdPeer> {
+        &self.bfd_peers
     }
 }

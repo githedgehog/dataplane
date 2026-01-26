@@ -127,6 +127,7 @@ pub struct BgpNeighbor {
     pub remove_private_as: bool,
     pub rr_client: bool,
     pub default_originate: bool,
+    pub bfd: bool,
 
     /* Address families */
     pub ipv4_unicast: bool,
@@ -511,6 +512,11 @@ impl BgpNeighbor {
     #[must_use]
     pub fn set_default_originate(mut self, value: bool) -> Self {
         self.default_originate = value;
+        self
+    }
+    #[must_use]
+    pub fn set_bfd(mut self, value: bool) -> Self {
+        self.bfd = value;
         self
     }
 
