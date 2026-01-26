@@ -39,16 +39,18 @@ use concurrency::sync::Arc;
 use config::internal::status::DataplaneStatus;
 use tokio::sync::RwLock;
 
+use std::time::Duration;
+
 #[derive(Clone, Debug)]
 pub struct BmpServerParams {
     /// TCP bind address for the BMP listener
     pub bind_addr: SocketAddr,
     /// Periodic stats emit interval (milliseconds)
-    pub stats_interval_ms: u64,
+    pub stats_interval: Duration,
     /// Optional reconnect/backoff lower bound (milliseconds)
-    pub min_retry_ms: Option<u64>,
+    pub min_retry: Option<Duration>,
     /// Optional reconnect/backoff upper bound (milliseconds)
-    pub max_retry_ms: Option<u64>,
+    pub max_retry: Option<Duration>,
 }
 
 /// Struct to configure router object. N.B we derive a builder type `RouterConfig`
@@ -150,8 +152,8 @@ impl Router {
         // Start BMP server in background if configured, always with mandatory dp_status
         let bmp_handle = if let Some(bmp_params) = &params.bmp {
             debug!(
-                "{name}: Starting BMP server on {} (interval={}ms)",
-                bmp_params.bind_addr, bmp_params.stats_interval_ms
+                "{name}: Starting BMP server on {} (interval={:?})",
+                bmp_params.bind_addr, bmp_params.stats_interval
             );
             Some(bmp::spawn_background(
                 bmp_params.bind_addr,

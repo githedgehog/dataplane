@@ -6,6 +6,18 @@
 #![allow(unused)]
 
 use std::net::IpAddr;
+use std::time::Duration;
+
+use net::tcp::TcpPort;
+
+#[must_use]
+fn default_bmp_port() -> TcpPort {
+    match TcpPort::new_checked(5000) {
+        Ok(p) => p,
+        #[allow(clippy::panic)]
+        Err(e) => panic!("default BMP port must be valid: {e}"),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum BmpSource {
@@ -20,14 +32,14 @@ pub struct BmpOptions {
     /// Collector host/IP in `bmp connect`
     pub connect_host: String,
     /// Collector TCP port
-    pub port: u16,
+    pub port: TcpPort,
     /// Optional local source (address or interface)
     pub source: Option<BmpSource>,
-    /// Optional reconnect backoff (ms)
-    pub min_retry_ms: Option<u64>,
-    pub max_retry_ms: Option<u64>,
-    /// `bmp stats interval` (ms)
-    pub stats_interval_ms: u64,
+    /// Optional reconnect backoff
+    pub min_retry: Option<Duration>,
+    pub max_retry: Option<Duration>,
+    /// `bmp stats interval`
+    pub stats_interval: Duration,
     /// Monitoring toggles
     pub monitor_ipv4_pre: bool,
     pub monitor_ipv4_post: bool,
@@ -44,11 +56,11 @@ impl Default for BmpOptions {
         Self {
             target_name: "bmp1".to_string(),
             connect_host: "127.0.0.1".to_string(),
-            port: 5000,
+            port: default_bmp_port(),
             source: None,
-            min_retry_ms: Some(1_000),
-            max_retry_ms: Some(20_000),
-            stats_interval_ms: 60_000,
+            min_retry: Some(Duration::from_millis(1_000)),
+            max_retry: Some(Duration::from_millis(20_000)),
+            stats_interval: Duration::from_millis(60_000),
             monitor_ipv4_pre: true,
             monitor_ipv4_post: true,
             monitor_ipv6_pre: false,
@@ -63,7 +75,7 @@ impl BmpOptions {
     pub fn new<T: Into<String>, H: Into<String>>(
         target_name: T,
         connect_host: H,
-        port: u16,
+        port: TcpPort,
     ) -> Self {
         Self {
             target_name: target_name.into(),
@@ -86,15 +98,15 @@ impl BmpOptions {
     }
 
     #[must_use]
-    pub fn set_retry_ms(mut self, min_ms: u64, max_ms: u64) -> Self {
-        self.min_retry_ms = Some(min_ms);
-        self.max_retry_ms = Some(max_ms);
+    pub fn set_retry(mut self, min: Duration, max: Duration) -> Self {
+        self.min_retry = Some(min);
+        self.max_retry = Some(max);
         self
     }
 
     #[must_use]
-    pub fn set_stats_interval_ms(mut self, ms: u64) -> Self {
-        self.stats_interval_ms = ms;
+    pub fn set_stats_interval(mut self, interval: Duration) -> Self {
+        self.stats_interval = interval;
         self
     }
 

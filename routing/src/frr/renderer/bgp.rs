@@ -66,9 +66,17 @@ impl Render for BmpOptions {
         cfg += format!("bmp targets {}", self.target_name);
 
         // connect line (FRR: `bmp connect HOST port <PORT> [min-retry ... max-retry ...] [source-interface IFNAME]`)
-        let mut connect = format!(" bmp connect {} port {}", self.connect_host, self.port);
-        if let (Some(minr), Some(maxr)) = (self.min_retry_ms, self.max_retry_ms) {
-            connect.push_str(&format!(" min-retry {minr} max-retry {maxr}"));
+        let mut connect = format!(
+            " bmp connect {} port {}",
+            self.connect_host,
+            self.port.as_u16()
+        );
+        if let (Some(minr), Some(maxr)) = (self.min_retry, self.max_retry) {
+            connect.push_str(&format!(
+                " min-retry {} max-retry {}",
+                minr.as_millis(),
+                maxr.as_millis()
+            ));
         }
         if let Some(BmpSource::Interface(ifn)) = &self.source {
             connect.push_str(&format!(" source-interface {ifn} "));
@@ -90,7 +98,7 @@ impl Render for BmpOptions {
         }
 
         // stats (FRR: `bmp stats interval <ms>`)
-        cfg += format!(" bmp stats interval {}", self.stats_interval_ms);
+        cfg += format!(" bmp stats interval {}", self.stats_interval.as_millis());
 
         // import-vrf-view lines (rendered only under default VRF)
         for vrf in &self.import_vrf_views {
@@ -565,8 +573,10 @@ pub mod tests {
     };
     use config::internal::routing::bmp::{BmpOptions, BmpSource};
     use lpm::prefix::Prefix;
+    use net::tcp::TcpPort;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
+    use std::time::Duration;
 
     #[test]
     #[allow(clippy::too_many_lines)]
@@ -586,11 +596,15 @@ pub mod tests {
 
         bgp.set_bgp_options(options);
 
-        let bmp = BmpOptions::new("bmp1", "127.0.0.1", 5000)
-            .set_retry_ms(1_000, 20_000)
-            .set_stats_interval_ms(60_000)
-            .monitor_ipv4(true, true)
-            .monitor_ipv6(false, false);
+        let bmp = BmpOptions::new(
+            "bmp1",
+            "127.0.0.1",
+            TcpPort::try_from(5000).expect("Bad port"),
+        )
+        .set_retry(Duration::from_millis(1_000), Duration::from_millis(20_000))
+        .set_stats_interval(Duration::from_millis(60_000))
+        .monitor_ipv4(true, true)
+        .monitor_ipv6(false, false);
         let bmp = BmpOptions {
             source: Some(BmpSource::Interface("lo".to_string())),
             ..bmp
