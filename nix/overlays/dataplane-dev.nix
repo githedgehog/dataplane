@@ -7,7 +7,7 @@
 final: prev:
 let
   override-packages = {
-    stdenv = final.llvmPackages.stdenv;
+    stdenv = final.llvmPackages'.stdenv;
     rustPlatform = final.rustPlatform'-dev;
   };
 in
