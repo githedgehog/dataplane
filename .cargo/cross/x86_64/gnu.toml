@@ -1,0 +1,8 @@
+[env]
+CC = { value = "x86_64-unknown-linux-gnu-clang", relative = false, force = true }
+
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["--cfg=tokio_unstable", "-Clinker=x86_64-unknown-linux-gnu-clang", "-Clink-arg=-fuse-ld=lld"]

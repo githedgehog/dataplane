@@ -1,0 +1,108 @@
+# TODO: add fields for suggested actions / mitigations
+
+CVE-2025-1153:
+    package: binutils
+    description: |
+        A vulnerability classified as problematic was found in GNU Binutils 2.43/2.44. Affected by this vulnerability is
+        the function bfd_set_format of the file format.c. The manipulation leads to memory corruption. The attack can be
+        launched remotely. The complexity of an attack is rather high. The exploitation appears to be difficult.
+        Upgrading to version 2.45 is able to address this issue. The identifier of the patch is
+        8d97c1a53f3dc9fd8e1ccdb039b8a33d50133150. It is recommended to upgrade the affected component.
+    note: &we-do-not-ship-binutils |
+        We do not ship binutils in the Hedgehog Dataplane at this time. This vulnerability is only picked up by the
+        scanner because binutils is a build dependency. We will upgrade to 2.45 when nixpkgs does.
+
+CVE-2025-3198:
+    package: binutils
+    description: |
+        A vulnerability has been found in GNU Binutils 2.43/2.44 and classified as problematic. Affected by this
+        vulnerability is the function display_info of the file binutils/bucomm.c of the component objdump. The
+        manipulation leads to memory leak. An attack has to be approached locally. The exploit has been disclosed to the
+        public and may be used. The patch is named ba6ad3a18cb26b79e0e3b84c39f707535bbc344d. It is recommended to apply
+        a patch to fix this issue.
+    note: *we-do-not-ship-binutils
+
+CVE-2025-8224:
+    package: binutils
+    description: |
+        A vulnerability has been found in GNU Binutils 2.44 and classified as problematic. This vulnerability affects
+        the function bfd_elf_get_str_section of the file bfd/elf.c of the component BFD Library. The manipulation leads
+        to null pointer dereference. Local access is required to approach this attack. The exploit has been disclosed to
+        the public and may be used. The name of the patch is db856d41004301b3a56438efd957ef5cabb91530. It is recommended
+        to apply a patch to fix this issue.
+    note: *we-do-not-ship-binutils
+
+CVE-2025-8225:
+    package: binutils
+    description: |
+        A vulnerability was found in GNU Binutils 2.44 and classified as problematic. This issue affects the function
+        process_debug_info of the file binutils/dwarf.c of the component DWARF Section Handler. The manipulation leads
+        to memory leak. Attacking locally is a requirement. The identifier of the patch is
+        e51fdff7d2e538c0e5accdd65649ac68e6e0ddd4. It is recommended to apply a patch to fix this issue.
+    note: *we-do-not-ship-binutils
+
+CVE-2023-4039:
+    package: gcc
+    description: |
+        **DISPUTED**
+
+        A failure in the -fstack-protector feature in GCC-based toolchains
+        that target AArch64 allows an attacker to exploit an existing buffer
+        overflow in dynamically-sized local variables in your application
+        without this being detected. This stack-protector failure only applies
+        to C99-style dynamically-sized local variables or those created using
+        alloca(). The stack-protector operates as intended for statically-sized
+        local variables.
+
+        The default behavior when the stack-protector
+        detects an overflow is to terminate your application, resulting in
+        controlled loss of availability. An attacker who can exploit a buffer
+        overflow without triggering the stack-protector might be able to change
+        program flow control to cause an uncontrolled loss of availability or to
+        go further and affect confidentiality or integrity.
+
+        NOTE: The GCC project argues that this is a missed hardening bug and not a vulnerability by itself.
+    note: |
+        This vulnerability does not affect the Hedgehog Dataplane because we do not use gcc to build anything we ship
+        (save glibc).  All dependencies (save glibc) are compiled with LLVM.
+
+        Further, I agree with the GCC project's position that this is a missed hardening opportunity.
+        We will update to a version of glibc compiled by a fixed version of GCC when both are available in nixpkgs.
+        No action can or should be taken for now regarding this CVE.
+
+CVE-2025-5702:
+    package: glibc
+    description: |
+        The strcmp implementation optimized for the Power10 processor in the GNU C Library version 2.39 and later writes
+        to vector registers v20 to v31 without saving contents from the caller (those registers are defined as
+        non-volatile registers by the powerpc64le ABI), resulting in overwriting of its contents and potentially
+        altering control flow of the caller, or leaking the input strings to the function to other parts of the program.
+    note: &we-do-not-support-power-10 |
+        We don't currently support Power10 so this CVE simply does not apply to the Hedgehog Dataplane.
+
+CVE-2025-5745:
+    package: glibc
+    description: |
+        The strncmp implementation optimized for the Power10 processor in the GNU C Library version 2.40 and later
+        writes to vector registers v20 to v31 without saving contents from the caller (those registers are defined as
+        non-volatile registers by the powerpc64le ABI), resulting in overwriting of its contents and potentially
+        altering control flow of the caller, or leaking the input strings to the function to other parts of the program.
+    note: *we-do-not-support-power-10
+
+CVE-2023-6992:
+    package: zlib
+    description: |
+        Cloudflare version of zlib library was found to be vulnerable to memory corruption issues affecting the
+        deflation algorithm implementation (deflate.c). The issues resulted from improper input validation and
+        heap-based buffer overflow. A local attacker could exploit the problem during compression using a crafted
+        malicious file potentially leading to denial of service of the software.
+
+        Patches: The issue has been patched in commit  8352d10
+        https://github.com/cloudflare/zlib/commit/8352d108c05db1bdc5ac3bdf834dad641694c13c .
+
+        The upstream repository is not affected.
+    note: |
+        This vulnerability does not apply to the Hedgehog Dataplane.
+
+        While do depend on zlib we do not reference Cloudflare's zlib fork in any way.
+        This CVE is spuriously detected by the scanner (which is conservative by design).
