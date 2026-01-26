@@ -54,6 +54,15 @@ let
         overlays.dataplane
       ];
     }).pkgsCross.${platform'.info.nixarch};
+  frr-pkgs =
+    (import sources.nixpkgs {
+      overlays = [
+        overlays.rust
+        overlays.llvm
+        overlays.dataplane
+        overlays.frr
+      ];
+    }).pkgsCross.${platform'.info.nixarch};
   sysroot = pkgs.pkgsHostHost.symlinkJoin {
     name = "sysroot";
     paths = with pkgs.pkgsHostHost; [
