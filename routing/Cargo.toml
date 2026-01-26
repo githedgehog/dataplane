@@ -51,4 +51,5 @@ concurrency = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["test_buffer"] }
 rand = { workspace = true, default-features = false, features = ["thread_rng"] }
+tokio = { workspace = true, features = ["full"] }
 tracing-test = { workspace = true, features = [] }
