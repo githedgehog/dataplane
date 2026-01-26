@@ -246,7 +246,5 @@ in
       });
 
   # This isn't directly required by dataplane,
-  fancy.perftest = dataplane-dep (
-    final.callPackage ../pkgs/perftest final.fancy // { src = sources.perftest; }
-  );
+  fancy.perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 }
