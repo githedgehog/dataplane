@@ -220,7 +220,7 @@ in
     }
   );
 
-  fancy.libunwind = (dataplane-dep final.llvmPackages.libunwind).override { enableShared = false; };
+  fancy.libunwind = (dataplane-dep final.llvmPackages'.libunwind).override { enableShared = false; };
 
   # TODO: consistent packages, min deps
   fancy.hwloc =
