@@ -3,6 +3,8 @@
 {
   sources,
   sanitizers,
+  platform,
+  profile,
   ...
 }:
 final: prev:
