@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #![doc = include_str!("README.md")]
-#![allow(clippy::doc_markdown)] // abbreviations were trigging spurious backtick lints
+#![allow(clippy::doc_markdown)] // abbreviations were triggering spurious backtick lints
 
 /// Type of operating system device.
 ///
