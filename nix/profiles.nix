@@ -50,8 +50,6 @@ let
   ];
   optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
     "-Wl,--lto-whole-program-visibility"
-    "-Wl,--gc-sections"
-    "-Wl,--as-needed"
   ];
   optimize-for.performance.RUSTFLAGS = [
     "-Clinker-plugin-lto"
