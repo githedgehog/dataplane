@@ -1,6 +1,6 @@
 [toolchain]
 # NOTE: you can and should manually update this on new rust releases
-channel = "1.92.0"
+channel = "1.93.0"
 
 components = [
   "rustc",
