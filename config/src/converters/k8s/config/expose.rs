@@ -18,10 +18,11 @@ fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversio
         // Split port ranges for prefix on ','
         .split(',')
         .map(|port_range_str| {
-            port_range_str
-                .trim()
-                .parse::<PortRange>()
-                .map_err(|e| FromK8sConversionError::ParseError(format!("Invalid port range: {e}")))
+            port_range_str.trim().parse::<PortRange>().map_err(|e| {
+                FromK8sConversionError::ParseError(format!(
+                    "Invalid port range {port_range_str}: {e}"
+                ))
+            })
         })
         .collect()
 }
