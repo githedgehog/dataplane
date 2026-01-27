@@ -21,7 +21,7 @@ pub struct K8sInput {
 /// Validate the metadata of a `GatewayAgent`.
 /// # Errors
 /// Returns `FromK8sConversionError` in case data is missing or is invalid
-pub fn validate_metadata(ga: &GatewayAgent) -> Result<K8sInput, FromK8sConversionError> {
+fn validate_metadata(ga: &GatewayAgent) -> Result<K8sInput, FromK8sConversionError> {
     let genid = ga
         .metadata
         .generation
