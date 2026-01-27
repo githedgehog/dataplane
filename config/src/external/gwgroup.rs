@@ -80,7 +80,7 @@ impl GwGroup {
             return Err(ConfigError::DuplicateMember(member.name.clone()));
         }
         if self.get_member_by_addr(member.ipaddress).is_some() {
-            return Err(ConfigError::DuplicateMember(member.ipaddress.to_string()));
+            return Err(ConfigError::DuplicateMemberAddress(member.ipaddress));
         }
         self.members.push(member);
         Ok(())
@@ -198,7 +198,7 @@ mod test {
         let r = group.add_member(GwGroupMember::new("gw1", 99, IpAddr::from_str("172.128.0.4").unwrap()));
         assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateMember(_))));
         let r = group.add_member(GwGroupMember::new("gw4", 99, IpAddr::from_str("172.128.0.1").unwrap()));
-        assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateMember(_))));
+        assert!(r.is_err_and(|e| matches!(e, ConfigError::DuplicateMemberAddress(_))));
         gwtable.add_group(group).unwrap();
 
         // err on duplicate group
