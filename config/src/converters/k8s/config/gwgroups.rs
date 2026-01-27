@@ -34,12 +34,14 @@ impl TryFrom<&GatewayAgentSpec> for GwGroupTable {
             Some(map) => {
                 for (name, gagroups) in map {
                     let mut group = GwGroup::new(name);
-                    let members = gagroups.members.as_ref().ok_or_else(|| {
-                        Self::Error::MissingData(format!("Gateway group members for group {name}"))
-                    })?;
-                    for m in members {
-                        let member = GwGroupMember::try_from(m)?;
-                        group.add_member(member)?;
+                    if let Some(members) = gagroups.members.as_ref() {
+                        for m in members {
+                            let member = GwGroupMember::try_from(m)?;
+                            group.add_member(member)?;
+                        }
+                    } else {
+                        // we don't complain on empty groups, which are shared resources
+                        // we may want to complain later if a peering refers to an empty group
                     }
                     group_table.add_group(group)?;
                 }
