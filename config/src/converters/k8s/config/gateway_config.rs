@@ -27,17 +27,20 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
 
         let Some(gen_id) = ga.metadata.generation else {
             return Err(FromK8sConversionError::K8sInfra(format!(
-                "metadata.generation not found for {name}"
+                "metadata.generation not found for gateway {name}"
             )));
         };
 
-        let device = DeviceConfig::try_from(ga)?;
+        let ga_spec_gw = ga
+            .spec
+            .gateway
+            .as_ref()
+            .ok_or(FromK8sConversionError::K8sInfra(format!(
+                "gateway section not found in spec for gateway {name}"
+            )))?;
 
-        let mut underlay = Underlay::try_from(ga.spec.gateway.as_ref().ok_or(
-            FromK8sConversionError::K8sInfra(format!(
-                "gateway section not found in spec for {name}"
-            )),
-        )?)?;
+        let device = DeviceConfig::try_from(ga_spec_gw)?;
+        let mut underlay = Underlay::try_from(ga_spec_gw)?;
 
         // fabricBFD variable check: enable BFD on fabric-facing BGP neighbors
         let fabric_bfd_enabled = ga
