@@ -540,9 +540,8 @@ impl VpcManifest {
         }
         Ok(())
     }
-    pub fn add_expose(&mut self, expose: VpcExpose) -> ConfigResult {
+    pub fn add_expose(&mut self, expose: VpcExpose) {
         self.exposes.push(expose);
-        Ok(())
     }
     pub fn validate(&self) -> ConfigResult {
         if self.name.is_empty() {

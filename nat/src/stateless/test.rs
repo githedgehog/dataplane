@@ -362,7 +362,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn build_sample_config() -> GwConfig {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();
@@ -755,7 +755,7 @@ mod tests {
         exposes_right: Vec<VpcExpose>,
     ) -> GwConfig {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();

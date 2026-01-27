@@ -150,8 +150,8 @@ mod tests {
             .as_range("4.0.0.0/16".into());
 
         let mut manifest1 = VpcManifest::new("VPC-1");
-        manifest1.add_expose(expose1).expect("Failed to add expose");
-        manifest1.add_expose(expose2).expect("Failed to add expose");
+        manifest1.add_expose(expose1);
+        manifest1.add_expose(expose2);
 
         let expose3 = VpcExpose::empty()
             .ip("1::/64".into())
@@ -165,8 +165,8 @@ mod tests {
             .not_as("2:4::/128".into());
 
         let mut manifest2 = VpcManifest::new("VPC-2");
-        manifest2.add_expose(expose3).expect("Failed to add expose");
-        manifest2.add_expose(expose4).expect("Failed to add expose");
+        manifest2.add_expose(expose3);
+        manifest2.add_expose(expose4);
 
         let peering: Peering = Peering {
             name: "test_peering".into(),
