@@ -1,43 +1,96 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use k8s_intf::gateway_agent_crd::GatewayAgent;
+use k8s_intf::gateway_agent_crd::{GatewayAgent, GatewayAgentSpec};
 
-use crate::DeviceConfig;
 use crate::converters::k8s::FromK8sConversionError;
 use crate::external::communities::PriorityCommunityTable;
 use crate::external::gwgroup::GwGroupTable;
 use crate::external::overlay::Overlay;
 use crate::external::underlay::Underlay;
 use crate::external::{ExternalConfig, ExternalConfigBuilder};
+use crate::{DeviceConfig, GenId};
+
+/// A struct synthesizing the data we get from k8s
+pub struct K8sInput {
+    pub gwname: String,
+    pub genid: GenId,
+    pub spec: GatewayAgentSpec,
+}
+
+/// Validate the metadata of a `GatewayAgent`.
+/// # Errors
+/// Returns `FromK8sConversionError` in case data is missing or is invalid
+pub fn validate_metadata(ga: &GatewayAgent) -> Result<K8sInput, FromK8sConversionError> {
+    let genid = ga
+        .metadata
+        .generation
+        .ok_or(FromK8sConversionError::K8sInfra(
+            "Missing metadata generation Id".to_string(),
+        ))?;
+
+    if genid == 0 {
+        return Err(FromK8sConversionError::K8sInfra(
+            "Invalid metadata generation Id".to_string(),
+        ));
+    }
+
+    let gwname = ga
+        .metadata
+        .name
+        .as_ref()
+        .ok_or(FromK8sConversionError::K8sInfra(
+            "Missing metadata gateway name".to_string(),
+        ))?;
+
+    if gwname.is_empty() {
+        return Err(FromK8sConversionError::K8sInfra(
+            "Empty gateway name".to_string(),
+        ));
+    }
+    let namespace = ga
+        .metadata
+        .namespace
+        .as_ref()
+        .ok_or(FromK8sConversionError::K8sInfra(
+            "Missing namespace".to_string(),
+        ))?;
+
+    if namespace.as_str() != "fab" {
+        return Err(FromK8sConversionError::K8sInfra(format!(
+            "Invalid namespace {namespace}"
+        )));
+    }
+
+    let _ = ga
+        .spec
+        .gateway
+        .as_ref()
+        .ok_or(FromK8sConversionError::K8sInfra(format!(
+            "Missing gateway section in spec for gateway {gwname}"
+        )))?;
+
+    let spec = K8sInput {
+        gwname: gwname.clone(),
+        genid,
+        spec: ga.spec.clone(),
+    };
+
+    Ok(spec)
+}
 
 /// Convert from `GatewayAgent` (k8s CRD) to `ExternalConfig` with default values
 impl TryFrom<&GatewayAgent> for ExternalConfig {
     type Error = FromK8sConversionError;
 
     fn try_from(ga: &GatewayAgent) -> Result<Self, Self::Error> {
-        let name = ga
-            .metadata
-            .name
-            .as_ref()
-            .ok_or(FromK8sConversionError::K8sInfra(
-                "metadata.name not found".to_string(),
-            ))?
-            .as_str();
+        let input = validate_metadata(ga)?;
 
-        let Some(gen_id) = ga.metadata.generation else {
-            return Err(FromK8sConversionError::K8sInfra(format!(
-                "metadata.generation not found for gateway {name}"
-            )));
-        };
-
-        let ga_spec_gw = ga
+        let ga_spec_gw = input
             .spec
             .gateway
             .as_ref()
-            .ok_or(FromK8sConversionError::K8sInfra(format!(
-                "gateway section not found in spec for gateway {name}"
-            )))?;
+            .unwrap_or_else(|| unreachable!());
 
         let device = DeviceConfig::try_from(ga_spec_gw)?;
         let mut underlay = Underlay::try_from(ga_spec_gw)?;
@@ -61,7 +114,7 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
         let comtable = PriorityCommunityTable::try_from(&ga.spec)?;
 
         let external_config = ExternalConfigBuilder::default()
-            .genid(gen_id)
+            .genid(input.genid)
             .device(device)
             .underlay(underlay)
             .overlay(overlay)
@@ -70,7 +123,8 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
             .build()
             .map_err(|e| {
                 FromK8sConversionError::InternalError(format!(
-                    "Failed to build ExternalConfig for {name}: {e}"
+                    "Failed to translate configuration for gateway {}: {e}",
+                    input.gwname
                 ))
             })?;
         Ok(external_config)
