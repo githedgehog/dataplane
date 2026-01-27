@@ -28,9 +28,7 @@ impl TryFrom<(&str, &GatewayAgentGatewayInterfaces)> for InterfaceConfig {
         if let Some(ips) = iface.ips.as_ref() {
             for ip in ips {
                 let ifaddr = ip.parse::<InterfaceAddress>().map_err(|e| {
-                    FromK8sConversionError::ParseError(format!(
-                        "Invalid interface address {ip}: {e}"
-                    ))
+                    FromK8sConversionError::InvalidData(format!("interface address {ip}: {e}"))
                 })?;
                 interface_config = interface_config.add_address(ifaddr.address, ifaddr.mask_len);
             }
@@ -38,14 +36,14 @@ impl TryFrom<(&str, &GatewayAgentGatewayInterfaces)> for InterfaceConfig {
 
         if let Some(iface_mtu) = iface.mtu {
             let mtu = Mtu::try_from(iface_mtu).map_err(|e| {
-                FromK8sConversionError::ParseError(format!("Invalid MTU {iface_mtu}: {e}"))
+                FromK8sConversionError::InvalidData(format!("MTU {iface_mtu}: {e}"))
             })?;
             interface_config = interface_config.set_mtu(mtu);
         }
 
         if let Some(pci) = &iface.pci {
             let pci = PciAddress::try_from(pci.as_str()).map_err(|e| {
-                FromK8sConversionError::ParseError(format!("Invalid PCI address {pci}: {e}"))
+                FromK8sConversionError::InvalidData(format!("PCI address {pci}: {e}"))
             })?;
             interface_config = interface_config.set_pci(pci);
         }

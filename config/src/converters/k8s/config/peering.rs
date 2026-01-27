@@ -50,8 +50,8 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
 
             Ok(VpcPeering::new(peering_name, left, right, gwgroup))
         } else {
-            Err(FromK8sConversionError::Invalid(
-                "Missing peering".to_string(),
+            Err(FromK8sConversionError::MissingData(
+                "Vpc reference in peering".to_string(),
             ))
         }
     }
