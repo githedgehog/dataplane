@@ -19,9 +19,7 @@ fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversio
         .split(',')
         .map(|port_range_str| {
             port_range_str.trim().parse::<PortRange>().map_err(|e| {
-                FromK8sConversionError::ParseError(format!(
-                    "Invalid port range {port_range_str}: {e}"
-                ))
+                FromK8sConversionError::InvalidData(format!("port range {port_range_str}: {e}"))
             })
         })
         .collect()
@@ -57,29 +55,29 @@ fn process_ip_block(
             ));
         }
         (Some(_), None, Some(_)) => {
-            return Err(FromK8sConversionError::Invalid(
+            return Err(FromK8sConversionError::NotAllowed(
                 "Expose ip block must specify either cidr or not, not both".to_string(),
             ));
         }
         (None, Some(_), Some(_)) => {
-            return Err(FromK8sConversionError::Invalid(
+            return Err(FromK8sConversionError::NotAllowed(
                 "Expose ip block must specify either subnet or not, not both".to_string(),
             ));
         }
         (Some(_), Some(_), None) => {
-            return Err(FromK8sConversionError::Invalid(
+            return Err(FromK8sConversionError::NotAllowed(
                 "Expose ip block must specify either subnet or cidr, not both".to_string(),
             ));
         }
         (Some(_), Some(_), Some(_)) => {
-            return Err(FromK8sConversionError::Invalid(
+            return Err(FromK8sConversionError::NotAllowed(
                 "Expose ip block must specify either subnet, cidr, or not, not all three"
                     .to_string(),
             ));
         }
         (None, Some(subnet_name), None) => {
             let prefix = subnets.get(subnet_name.as_str()).ok_or_else(|| {
-                FromK8sConversionError::Invalid(format!(
+                FromK8sConversionError::NotAllowed(format!(
                     "Expose references unknown VPC subnet {subnet_name}"
                 ))
             })?;
@@ -89,7 +87,7 @@ fn process_ip_block(
         }
         (Some(cidr), None, None) => {
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
-                FromK8sConversionError::ParseError(format!("Invalid CIDR format: {cidr}: {e}"))
+                FromK8sConversionError::InvalidData(format!("CIDR format: {cidr}: {e}"))
             })?;
             for prefix in map_ports(prefix, ip.ports.as_deref())? {
                 vpc_expose = vpc_expose.ip(prefix);
@@ -97,7 +95,7 @@ fn process_ip_block(
         }
         (None, None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
-                FromK8sConversionError::Invalid(format!("Invalid CIDR format: {not}: {e}"))
+                FromK8sConversionError::InvalidData(format!("CIDR format: {not}: {e}"))
             })?;
             for prefix in map_ports(prefix, ip.ports.as_deref())? {
                 vpc_expose = vpc_expose.not(prefix);
@@ -118,13 +116,13 @@ fn process_as_block(
             ));
         }
         (Some(_), Some(_)) => {
-            return Err(FromK8sConversionError::Invalid(
+            return Err(FromK8sConversionError::NotAllowed(
                 "Expose as block must specify either cidr or not, not both".to_string(),
             ));
         }
         (Some(cidr), None) => {
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
-                FromK8sConversionError::ParseError(format!("Invalid CIDR format: {cidr}: {e}"))
+                FromK8sConversionError::InvalidData(format!("CIDR format: {cidr}: {e}"))
             })?;
             for prefix in map_ports(prefix, ip.ports.as_deref())? {
                 vpc_expose = vpc_expose.as_range(prefix);
@@ -132,7 +130,7 @@ fn process_as_block(
         }
         (None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
-                FromK8sConversionError::Invalid(format!("Invalid CIDR format: {not}: {e}"))
+                FromK8sConversionError::InvalidData(format!("CIDR format: {not}: {e}"))
             })?;
             for prefix in map_ports(prefix, ip.ports.as_deref())? {
                 vpc_expose = vpc_expose.not_as(prefix);
@@ -148,7 +146,7 @@ fn process_nat_block(
 ) -> Result<VpcExpose, FromK8sConversionError> {
     match nat {
         Some(nat) => match (&nat.stateful, &nat.stateless) {
-            (Some(_), Some(_)) => Err(FromK8sConversionError::Invalid(
+            (Some(_), Some(_)) => Err(FromK8sConversionError::NotAllowed(
                 "Cannot have both stateful and stateless nat configured on the same expose block"
                     .to_string(),
             )),
@@ -156,11 +154,11 @@ fn process_nat_block(
                 let idle_timeout = stateful.idle_timeout.map(std::time::Duration::from);
                 vpc_expose
                     .make_stateful_nat(idle_timeout)
-                    .map_err(|e| FromK8sConversionError::Invalid(e.to_string()))
+                    .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
             }
             (None, Some(_)) => vpc_expose
                 .make_stateless_nat()
-                .map_err(|e| FromK8sConversionError::Invalid(e.to_string())),
+                .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string())),
             (None, None) => Ok(vpc_expose), // Rely on default behavior for NAT
         },
         None => Ok(vpc_expose),
@@ -178,12 +176,12 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
         vpc_expose.default = expose.default.unwrap_or(false);
         if vpc_expose.default {
             if expose.ips.as_ref().is_some_and(|ips| !ips.is_empty()) {
-                return Err(FromK8sConversionError::Invalid(
+                return Err(FromK8sConversionError::NotAllowed(
                     "A Default expose can't contain prefixes".to_string(),
                 ));
             }
             if expose.r#as.as_ref().is_some_and(|r#as| !r#as.is_empty()) {
-                return Err(FromK8sConversionError::Invalid(
+                return Err(FromK8sConversionError::NotAllowed(
                     "A Default expose can't contain 'as' prefixes".to_string(),
                 ));
             }
@@ -300,7 +298,10 @@ mod test {
         let result = map_ports(prefix, Some("80,invalid,443"));
 
         assert!(result.is_err());
-        assert!(matches!(result, Err(FromK8sConversionError::ParseError(_))));
+        assert!(matches!(
+            result,
+            Err(FromK8sConversionError::InvalidData(_))
+        ));
     }
 
     #[test]

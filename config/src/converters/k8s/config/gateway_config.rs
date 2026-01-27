@@ -20,13 +20,13 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
             .metadata
             .name
             .as_ref()
-            .ok_or(FromK8sConversionError::MissingData(
+            .ok_or(FromK8sConversionError::K8sInfra(
                 "metadata.name not found".to_string(),
             ))?
             .as_str();
 
         let Some(gen_id) = ga.metadata.generation else {
-            return Err(FromK8sConversionError::Invalid(format!(
+            return Err(FromK8sConversionError::K8sInfra(format!(
                 "metadata.generation not found for {name}"
             )));
         };
@@ -34,7 +34,7 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
         let device = DeviceConfig::try_from(ga)?;
 
         let mut underlay = Underlay::try_from(ga.spec.gateway.as_ref().ok_or(
-            FromK8sConversionError::MissingData(format!(
+            FromK8sConversionError::K8sInfra(format!(
                 "gateway section not found in spec for {name}"
             )),
         )?)?;

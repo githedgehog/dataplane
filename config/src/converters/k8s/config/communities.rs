@@ -16,7 +16,7 @@ impl TryFrom<&GatewayAgentSpec> for PriorityCommunityTable {
             Some(map) => {
                 for (prio, community) in map {
                     let priority: u32 = prio.parse().map_err(|e| {
-                        Self::Error::ParseError(format!("Community priority {prio}: {e}"))
+                        Self::Error::InvalidData(format!("community priority {prio}: {e}"))
                     })?;
                     comtable.insert(priority, community)?;
                 }

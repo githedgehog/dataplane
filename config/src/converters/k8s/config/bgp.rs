@@ -16,7 +16,7 @@ impl TryFrom<&GatewayAgentGatewayNeighbors> for BgpNeighbor {
     fn try_from(neighbor: &GatewayAgentGatewayNeighbors) -> Result<Self, Self::Error> {
         let neighbor_addr = match neighbor.ip.as_ref() {
             Some(ip) => ip.parse::<IpAddr>().map_err(|e| {
-                FromK8sConversionError::ParseError(format!("Invalid neighbor address {ip}: {e}"))
+                FromK8sConversionError::InvalidData(format!("neighbor address {ip}: {e}"))
             })?,
             None => {
                 return Err(FromK8sConversionError::MissingData(format!(

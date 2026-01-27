@@ -28,9 +28,9 @@ fn add_hardcoded_interfaces(
         .ok_or(FromK8sConversionError::MissingData(
             "Gateway VTEP IP not specified".to_string(),
         ))?;
-    let vtep_ip = vtep_ip_raw.parse::<InterfaceAddress>().map_err(|e| {
-        FromK8sConversionError::ParseError(format!("Invalid VTEP IP {vtep_ip_raw}: {e}"))
-    })?;
+    let vtep_ip = vtep_ip_raw
+        .parse::<InterfaceAddress>()
+        .map_err(|e| FromK8sConversionError::InvalidData(format!("VTEP IP {vtep_ip_raw}: {e}")))?;
 
     // Loopback
     let mut lo = InterfaceConfig::new("lo", InterfaceType::Loopback, false);
@@ -40,7 +40,7 @@ fn add_hardcoded_interfaces(
     // VTEP
     let vtep_mac = if let Some(vtep_mac_raw) = gateway.vtep_mac.as_ref() {
         let vtep_mac = vtep_mac_raw.parse::<SourceMac>().map_err(|e| {
-            FromK8sConversionError::ParseError(format!("Invalid VTEP MAC {vtep_mac_raw}: {e}"))
+            FromK8sConversionError::InvalidData(format!("VTEP MAC {vtep_mac_raw}: {e}"))
         })?;
         Some(vtep_mac)
     } else {
@@ -50,7 +50,7 @@ fn add_hardcoded_interfaces(
     let vtep_ipv4 = match vtep_ip.address {
         IpAddr::V4(v4) => v4,
         IpAddr::V6(v6) => {
-            return Err(FromK8sConversionError::Invalid(format!(
+            return Err(FromK8sConversionError::InvalidData(format!(
                 "VTEP IP {v6} is not IPv4"
             )));
         }
@@ -99,7 +99,7 @@ fn add_bgp_config(
         ))?;
 
     let router_id = parse_address_v4(protocol_ip).map_err(|e| {
-        FromK8sConversionError::ParseError(format!("Invalid IPv4 protocol IP {protocol_ip}: {e}"))
+        FromK8sConversionError::InvalidData(format!("IPv4 protocol IP {protocol_ip}: {e}"))
     })?;
 
     let vtep_ip_raw = gateway
@@ -109,12 +109,11 @@ fn add_bgp_config(
             "Gateway VTEP IP not specified".to_string(),
         ))?;
 
-    let vtep_prefix = Prefix::try_from(PrefixString(vtep_ip_raw)).map_err(|e| {
-        FromK8sConversionError::ParseError(format!("Invalid VTEP IP {vtep_ip_raw}: {e}"))
-    })?;
+    let vtep_prefix = Prefix::try_from(PrefixString(vtep_ip_raw))
+        .map_err(|e| FromK8sConversionError::InvalidData(format!("VTEP IP {vtep_ip_raw}: {e}")))?;
     if !vtep_prefix.is_ipv4() {
-        return Err(FromK8sConversionError::Invalid(format!(
-            "Invalid VTEP IP {vtep_ip_raw}: not an IPv4 prefix"
+        return Err(FromK8sConversionError::InvalidData(format!(
+            "VTEP IP {vtep_ip_raw}: not an IPv4 prefix"
         )));
     }
 

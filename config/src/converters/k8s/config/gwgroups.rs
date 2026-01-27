@@ -13,7 +13,7 @@ impl TryFrom<&GatewayAgentGroupsMembers> for GwGroupMember {
     fn try_from(value: &GatewayAgentGroupsMembers) -> Result<Self, Self::Error> {
         let address = value.vtep_ip.as_str();
         let ipaddress = parse_address(address)
-            .map_err(|e| Self::Error::ParseError(format!("Invalid ip address {address}: {e}")))?;
+            .map_err(|e| Self::Error::InvalidData(format!("ip address {address}: {e}")))?;
 
         Ok(Self {
             name: value.name.clone(),
