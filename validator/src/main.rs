@@ -124,12 +124,13 @@ fn deserialize(ga_input: &str) -> Result<GatewayAgent, ValidateError> {
 /// Main validation function
 fn validate(gwagent_json: &str) -> Result<(), ValidateError> {
     let crd = deserialize(gwagent_json)?;
-    let input = validate_metadata(&crd).map_err(|e| ValidateError::MetadataError(e.to_string()))?;
+    let _input =
+        validate_metadata(&crd).map_err(|e| ValidateError::MetadataError(e.to_string()))?;
 
     let external = ExternalConfig::try_from(&crd)
         .map_err(|e| ValidateError::ConversionError(e.to_string()))?;
 
-    let mut gwconfig = GwConfig::new(input.gwname.as_str(), external);
+    let mut gwconfig = GwConfig::new(external);
     gwconfig.validate().map_err(|e| {
         let mut config = ConfigErrors::default();
         config.errors.push(e.to_string());

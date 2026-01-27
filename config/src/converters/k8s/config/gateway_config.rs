@@ -114,6 +114,7 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
         let comtable = PriorityCommunityTable::try_from(&ga.spec)?;
 
         let external_config = ExternalConfigBuilder::default()
+            .gwname(input.gwname.clone())
             .genid(input.genid)
             .device(device)
             .underlay(underlay)

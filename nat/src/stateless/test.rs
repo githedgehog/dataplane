@@ -555,6 +555,7 @@ mod tests {
         };
 
         let mut external_builder = ExternalConfigBuilder::default();
+        external_builder.gwname("test-gw".to_string());
         external_builder.genid(1);
         external_builder.device(device_config);
         external_builder.underlay(underlay);
@@ -565,7 +566,7 @@ mod tests {
             .build()
             .expect("Failed to build external config");
 
-        GwConfig::new("test-gw", external_config)
+        GwConfig::new(external_config)
     }
 
     fn check_packet(
