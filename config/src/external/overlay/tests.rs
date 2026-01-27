@@ -30,7 +30,7 @@ pub mod test {
             .as_range(Prefix::expect_from(("100.64.1.0", 24)).into())
             .not_as(Prefix::expect_from(("100.64.1.13", 32)).into())
             .not_as(Prefix::expect_from(("100.64.1.14", 32)).into());
-        m1.add_expose(expose).expect("Should succeed");
+        m1.add_expose(expose);
         m1
     }
     fn build_manifest_vpc2() -> VpcManifest {
@@ -39,7 +39,7 @@ pub mod test {
             .ip(Prefix::expect_from(("10.0.0.0", 24)).into())
             .as_range(Prefix::expect_from(("100.64.2.0", 24)).into());
 
-        m2.add_expose(expose).expect("Should succeed");
+        m2.add_expose(expose);
         m2
     }
 
@@ -244,15 +244,14 @@ pub mod test {
             .ip("3.0.3.0/24".into()); // overlaps with expose1.ips (even without as_range)
 
         let mut manifest = VpcManifest::new("VPC-1");
-        manifest.add_expose(expose1).expect("Should succeed");
-        manifest.add_expose(expose2).expect("Should succeed");
+        manifest.add_expose(expose1);
+        manifest.add_expose(expose2);
         assert_eq!(manifest.validate(), Ok(()));
 
         // Overlap between a manifest's exposes prefixes is not allowed
         let mut invalid_manifest = manifest.clone();
-        invalid_manifest
-            .add_expose(expose3)
-            .expect("Should succeed");
+        invalid_manifest.add_expose(expose3);
+
         assert_eq!(
             invalid_manifest.validate(),
             Err(ConfigError::OverlappingPrefixes(
@@ -263,9 +262,8 @@ pub mod test {
 
         // Overlap between a manifest's exposes prefixes is not allowed (ips / as_range collision)
         let mut invalid_manifest = manifest.clone();
-        invalid_manifest
-            .add_expose(expose4)
-            .expect("Should succeed");
+        invalid_manifest.add_expose(expose4);
+
         assert_eq!(
             invalid_manifest.validate(),
             Err(ConfigError::OverlappingPrefixes(
@@ -276,9 +274,8 @@ pub mod test {
 
         // Overlap between a manifest's exposes prefixes is not allowed (ips / ips collision)
         let mut invalid_manifest = manifest.clone();
-        invalid_manifest
-            .add_expose(expose5)
-            .expect("Should succeed");
+        invalid_manifest.add_expose(expose5);
+
         assert_eq!(
             invalid_manifest.validate(),
             Err(ConfigError::OverlappingPrefixes(
@@ -510,7 +507,7 @@ pub mod test {
             let expose = VpcExpose::empty()
                 .ip(Prefix::expect_from(("192.168.50.0", 24)).into())
                 .not(Prefix::expect_from(("192.168.50.13", 32)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
                 .ip(Prefix::expect_from(("192.168.111.0", 24)).into())
@@ -518,37 +515,37 @@ pub mod test {
                 .not(Prefix::expect_from(("192.168.111.254", 32)).into())
                 .as_range(Prefix::expect_from(("100.64.200.0", 24)).into())
                 .not_as(Prefix::expect_from(("100.64.200.12", 31)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
             m1
         }
         fn man_vpc1_with_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-1");
             let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.60.0", 24)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
             m1
         }
         fn man_vpc1_with_vpc4() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-1");
             let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.60.0", 24)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
             m1
         }
         fn man_vpc2() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
             let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.80.0", 24)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
             m1
         }
         fn man_vpc2_with_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-2");
             let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.80.0", 24)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
             m1
         }
         fn man_vpc3() -> VpcManifest {
             let mut m1 = VpcManifest::new("VPC-3");
             let expose = VpcExpose::empty().ip(Prefix::expect_from(("192.168.128.0", 27)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
             m1
         }
         fn man_vpc4() -> VpcManifest {
@@ -557,17 +554,17 @@ pub mod test {
                 .ip(Prefix::expect_from(("192.168.201.1", 32)).into())
                 .ip(Prefix::expect_from(("192.168.202.2", 32)).into())
                 .ip(Prefix::expect_from(("192.168.203.3", 32)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
                 .ip(Prefix::expect_from(("192.168.204.4", 32)).into())
                 .as_range(Prefix::expect_from(("100.64.204.4", 32)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
                 .ip(Prefix::expect_from(("192.168.210.0", 29)).into())
                 .not(Prefix::expect_from(("192.168.210.1", 32)).into());
-            m1.add_expose(expose).expect("Should succeed");
+            m1.add_expose(expose);
 
             m1
         }

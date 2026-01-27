@@ -245,7 +245,7 @@ mod tests {
             .not("2.0.2.128/25".into())
             .not("3.0.128.0/17".into());
         let mut manifest = VpcManifest::new("VPC-1");
-        manifest.add_expose(expose).expect("Failed to add expose");
+        manifest.add_expose(expose);
         let manifest_empty = VpcManifest::new("VPC-2");
         let peering = Peering {
             name: "test_peering".into(),
