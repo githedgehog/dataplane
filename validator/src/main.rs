@@ -10,6 +10,7 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::field_reassign_with_default)]
 
+use config::converters::k8s::config::gateway_config::validate_metadata;
 use config::{ExternalConfig, GwConfig};
 use k8s_intf::generated::gateway_agent_crd::GatewayAgent;
 use serde::{Deserialize, Serialize};
@@ -120,53 +121,15 @@ fn deserialize(ga_input: &str) -> Result<GatewayAgent, ValidateError> {
     Ok(crd)
 }
 
-/// Validate metadata
-fn validate_metadata(crd: &GatewayAgent) -> Result<&str, ValidateError> {
-    let genid = crd.metadata.generation.ok_or(ValidateError::MetadataError(
-        "Missing generation Id".to_string(),
-    ))?;
-    if genid == 0 {
-        return Err(ValidateError::MetadataError(
-            "Invalid generation Id".to_string(),
-        ));
-    }
-    let gwname = crd
-        .metadata
-        .name
-        .as_ref()
-        .ok_or(ValidateError::MetadataError(
-            "Missing gateway name".to_string(),
-        ))?;
-    if gwname.is_empty() {
-        return Err(ValidateError::MetadataError(
-            "Invalid gateway name".to_string(),
-        ));
-    }
-    let namespace = crd
-        .metadata
-        .namespace
-        .as_ref()
-        .ok_or(ValidateError::MetadataError(
-            "Missing namespace".to_string(),
-        ))?;
-    if namespace.as_str() != "fab" {
-        return Err(ValidateError::MetadataError(format!(
-            "Invalid namespace {namespace}"
-        )));
-    }
-
-    Ok(gwname.as_str())
-}
-
 /// Main validation function
 fn validate(gwagent_json: &str) -> Result<(), ValidateError> {
     let crd = deserialize(gwagent_json)?;
-    let gwname = validate_metadata(&crd)?;
+    let input = validate_metadata(&crd).map_err(|e| ValidateError::MetadataError(e.to_string()))?;
 
     let external = ExternalConfig::try_from(&crd)
         .map_err(|e| ValidateError::ConversionError(e.to_string()))?;
 
-    let mut gwconfig = GwConfig::new(gwname, external);
+    let mut gwconfig = GwConfig::new(input.gwname.as_str(), external);
     gwconfig.validate().map_err(|e| {
         let mut config = ConfigErrors::default();
         config.errors.push(e.to_string());
