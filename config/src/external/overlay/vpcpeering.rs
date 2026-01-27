@@ -587,24 +587,19 @@ impl VpcManifest {
 
 #[derive(Clone, Debug)]
 pub struct VpcPeering {
-    pub name: String,             /* name of peering (key in table) */
-    pub left: VpcManifest,        /* manifest for one side of the peering */
-    pub right: VpcManifest,       /* manifest for the other side */
-    pub gw_group: Option<String>, /* name of gateway group */
+    pub name: String,            /* name of peering (key in table) */
+    pub left: VpcManifest,       /* manifest for one side of the peering */
+    pub right: VpcManifest,      /* manifest for the other side */
+    pub gwgroup: Option<String>, /* name of gateway group */
 }
 impl VpcPeering {
     #[must_use]
-    pub fn new(
-        name: &str,
-        left: VpcManifest,
-        right: VpcManifest,
-        gw_group: Option<String>,
-    ) -> Self {
+    pub fn new(name: &str, left: VpcManifest, right: VpcManifest, gwgroup: Option<String>) -> Self {
         Self {
             name: name.to_owned(),
             left,
             right,
-            gw_group,
+            gwgroup,
         }
     }
     #[cfg(test)]
