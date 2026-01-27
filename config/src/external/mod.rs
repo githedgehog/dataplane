@@ -23,6 +23,7 @@ pub type GenId = i64;
 /// The configuration object as seen by the gRPC server
 #[derive(Builder, Clone, Debug)]
 pub struct ExternalConfig {
+    pub gwname: String,                      /* name of gateway */
     pub genid: GenId,                        /* configuration generation id (version) */
     pub device: DeviceConfig,                /* goes as-is into the internal config */
     pub underlay: Underlay,                  /* goes as-is into the internal config */
@@ -35,8 +36,9 @@ impl ExternalConfig {
 
     #[allow(clippy::new_without_default)]
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(gwname: &str) -> Self {
         Self {
+            gwname: gwname.to_owned(),
             genid: Self::BLANK_GENID,
             device: DeviceConfig::new(),
             underlay: Underlay::default(),
@@ -90,7 +92,8 @@ impl ExternalConfig {
         }
     }
 
-    fn validate_peering_gw_groups(&mut self, gwname: &str) -> ConfigResult {
+    fn validate_peering_gw_groups(&mut self) -> ConfigResult {
+        let gwname = &self.gwname;
         let gwgroups = &self.gwgroups;
         let comtable = &self.communities;
         for vpc in self.overlay.vpc_table.values_mut() {
@@ -114,11 +117,11 @@ impl ExternalConfig {
         }
         Ok(())
     }
-    pub fn validate(&mut self, gwname: &str) -> ConfigResult {
+    pub fn validate(&mut self) -> ConfigResult {
         self.device.validate()?;
         self.underlay.validate()?;
         self.overlay.validate()?;
-        self.validate_peering_gw_groups(gwname)?;
+        self.validate_peering_gw_groups()?;
 
         // if there are vpcs configured, there MUST be a vtep configured
         if !self.overlay.vpc_table.is_empty() && self.underlay.vtep.is_none() {
