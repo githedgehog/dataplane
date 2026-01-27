@@ -10,8 +10,7 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::field_reassign_with_default)]
 
-use config::converters::k8s::config::gateway_config::validate_metadata;
-use config::{ExternalConfig, GwConfig};
+use config::{ExternalConfig, GwConfig, converters::k8s::FromK8sConversionError};
 use k8s_intf::generated::gateway_agent_crd::GatewayAgent;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -124,11 +123,10 @@ fn deserialize(ga_input: &str) -> Result<GatewayAgent, ValidateError> {
 /// Main validation function
 fn validate(gwagent_json: &str) -> Result<(), ValidateError> {
     let crd = deserialize(gwagent_json)?;
-    let _input =
-        validate_metadata(&crd).map_err(|e| ValidateError::MetadataError(e.to_string()))?;
-
-    let external = ExternalConfig::try_from(&crd)
-        .map_err(|e| ValidateError::ConversionError(e.to_string()))?;
+    let external = ExternalConfig::try_from(&crd).map_err(|e| match e {
+        FromK8sConversionError::K8sInfra(e) => ValidateError::MetadataError(e.to_string()),
+        _ => ValidateError::ConversionError(e.to_string()),
+    })?;
 
     let mut gwconfig = GwConfig::new(external);
     gwconfig.validate().map_err(|e| {
