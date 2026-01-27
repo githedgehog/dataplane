@@ -359,6 +359,7 @@ pub mod test {
 
         /* assemble external config */
         ExternalConfigBuilder::default()
+            .gwname("test-gw".to_string())
             .genid(1)
             .device(device_cfg)
             .underlay(underlay)
@@ -374,7 +375,7 @@ pub mod test {
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
-        let mut config = GwConfig::new("test-gw", external);
+        let mut config = GwConfig::new(external);
         config.validate().expect("Config validation failed");
         if false {
             let vpc_table = &config.external.overlay.vpc_table;
@@ -399,7 +400,7 @@ pub mod test {
         println!("External config is:\n{external:#?}");
 
         /* build a gw config from a sample external config */
-        let config = GwConfig::new("test-gw", external);
+        let config = GwConfig::new(external);
 
         let dp_status_r: Arc<RwLock<DataplaneStatus>> =
             Arc::new(RwLock::new(DataplaneStatus::new()));
