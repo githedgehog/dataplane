@@ -15,8 +15,8 @@ fn levelstring_to_levelfilter(value: Option<&str>) -> Result<LevelFilter, FromK8
         Some("info") => Ok(LevelFilter::INFO),
         Some("debug") => Ok(LevelFilter::DEBUG),
         Some("trace") => Ok(LevelFilter::TRACE),
-        Some(val) => Err(FromK8sConversionError::ParseError(format!(
-            "Invalid log level value: {val}"
+        Some(val) => Err(FromK8sConversionError::InvalidData(format!(
+            "log-level value: {val}"
         ))),
     }
 }

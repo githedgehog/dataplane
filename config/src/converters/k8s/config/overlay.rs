@@ -23,8 +23,8 @@ fn extract_subnets(
                 continue;
             };
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
-                FromK8sConversionError::Invalid(format!(
-                    "Invalid vpc subnet CIDR {cidr} for vpc {vpc_name}: {e}"
+                FromK8sConversionError::InvalidData(format!(
+                    "vpc subnet CIDR {cidr} for vpc {vpc_name}: {e}"
                 ))
             })?;
             subnets.insert(subnet_name.clone(), prefix);
@@ -41,7 +41,7 @@ fn make_vpc_table(
     for (vpc_name, k8s_vpc) in vpcs {
         let vpc = Vpc::try_from((vpc_name.as_str(), k8s_vpc))?;
         vpc_table.add(vpc).map_err(|e| {
-            FromK8sConversionError::Invalid(format!("Cannot add vpc {vpc_name}: {e}"))
+            FromK8sConversionError::InternalError(format!("Cannot add vpc {vpc_name}: {e}"))
         })?;
     }
     Ok(vpc_table)
@@ -55,7 +55,7 @@ fn make_peering_table(
     for (peering_name, k8s_peering) in peerings {
         let peering = VpcPeering::try_from((vpc_subnets, peering_name.as_str(), k8s_peering))?;
         peering_table.add(peering).map_err(|e| {
-            FromK8sConversionError::Invalid(format!("Cannot add peering {peering_name}: {e}"))
+            FromK8sConversionError::InternalError(format!("Cannot add peering {peering_name}: {e}"))
         })?;
     }
     Ok(peering_table)
@@ -67,7 +67,7 @@ impl TryFrom<&GatewayAgentSpec> for Overlay {
     fn try_from(spec: &GatewayAgentSpec) -> Result<Self, Self::Error> {
         match (spec.vpcs.as_ref(), spec.peerings.as_ref()) {
             (None, None) => Ok(Overlay::new(VpcTable::new(), VpcPeeringTable::new())),
-            (None, Some(peerings)) => Err(FromK8sConversionError::Invalid(format!(
+            (None, Some(peerings)) => Err(FromK8sConversionError::NotAllowed(format!(
                 "Found 0 vpcs but {} peerings",
                 peerings.len()
             ))),

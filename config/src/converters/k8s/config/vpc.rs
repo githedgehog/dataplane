@@ -28,8 +28,9 @@ impl TryFrom<(&str, &GatewayAgentVpcs)> for Vpc {
             ))?;
 
         // Create a new VPC with name and VNI
-        Vpc::new(vpc_name, internal_id, *vni)
-            .map_err(|e| FromK8sConversionError::Invalid(format!("Could not create VPC: {e}")))
+        Vpc::new(vpc_name, internal_id, *vni).map_err(|e| {
+            FromK8sConversionError::InternalError(format!("Could not create VPC: {e}"))
+        })
     }
 }
 
