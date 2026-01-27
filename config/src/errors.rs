@@ -28,10 +28,12 @@ pub enum ConfigError {
     DuplicateVpcPeeringId(String),
     #[error("Peering '{0}' refers to a VPC for which a peering already exists")]
     DuplicateVpcPeerings(String),
-    #[error("Duplicated gateway group '{0}'")]
+    #[error("Duplicated gateway group {0}")]
     DuplicateGroup(String),
-    #[error("Duplicated gateway group member '{0}'")]
+    #[error("Duplicated gateway group member {0}")]
     DuplicateMember(String),
+    #[error("Duplicated gateway group member address {0}")]
+    DuplicateMemberAddress(IpAddr),
     #[error("A VPC peering object refers to non-existent VPC '{0}'")]
     NoSuchVpc(String),
     #[error("A VPC peering object refers to non-existent group '{0}'")]
