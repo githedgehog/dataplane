@@ -75,6 +75,10 @@ pub enum ConfigError {
     // NAT-specific
     #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
     MismatchedPrefixSizes(PrefixWithPortsSize, PrefixWithPortsSize),
+    #[error(
+        "Stateful NAT is only supported on one side of a peering, but peering {0} has stateful NAT enabled on both sides"
+    )]
+    StatefulNatOnBothSides(String),
 
     // Interface addresses
     #[error("Invalid interface address format: {0}")]
