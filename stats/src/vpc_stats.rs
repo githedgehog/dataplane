@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 use vpcmap::VpcDiscriminant;
 
+use std::collections::HashSet;
+
 pub type VpcId = VpcDiscriminant;
 pub type VpcPairKey = (VpcId, VpcId);
 
@@ -149,6 +151,24 @@ impl VpcStatsStore {
         e.ctr.bytes = e.ctr.bytes.saturating_add(add_bytes);
         e.rate.pps = pps;
         e.rate.bps = bps;
+    }
+
+    pub async fn prune_to_vpcs(&self, alive: &HashSet<VpcId>) {
+        {
+            let mut pairs = self.pair_stats.write().await;
+            pairs.retain(|(src, dst), _| alive.contains(src) && alive.contains(dst));
+        }
+        {
+            let mut vpcs = self.vpc_stats.write().await;
+            vpcs.retain(|vpc, _| alive.contains(vpc));
+        }
+        {
+            let mut names = self
+                .vpc_names
+                .write()
+                .expect("vpc_names write lock poisoned");
+            names.retain(|vpc, _| alive.contains(vpc));
+        }
     }
 
     // ---------- Snapshots ----------

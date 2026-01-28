@@ -10,7 +10,7 @@ use pipeline::NetworkFunction;
 
 use concurrency::sync::Arc;
 use kanal::ReceiveError;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use vpcmap::VpcDiscriminant;
 use vpcmap::map::VpcMapReader;
@@ -82,6 +82,7 @@ pub struct StatsCollector {
     updates: PacketStatsReader,
     /// Shared store for snapshots/rates usable by gRPC, CLI, etc.
     vpc_store: Arc<VpcStatsStore>,
+    alive_vpcs: HashSet<VpcDiscriminant>,
 }
 
 impl StatsCollector {
@@ -128,6 +129,9 @@ impl StatsCollector {
         let name_pairs = snapshot_vpc_pairs(&vpcmap_r);
         vpc_store.set_many_vpc_names_sync(name_pairs);
 
+        let alive_vpcs: HashSet<VpcDiscriminant> =
+            vpc_data.iter().map(|(disc, _, _)| *disc).collect();
+
         let metrics = VpcMetricsSpec::new(vpc_data)
             .into_iter()
             .map(|(disc, spec)| (disc, spec.build()))
@@ -150,6 +154,7 @@ impl StatsCollector {
             vpcmap_r,
             updates,
             vpc_store,
+            alive_vpcs,
         };
         let writer = PacketStatsWriter(s);
         (stats, writer, store_clone)
@@ -170,6 +175,17 @@ impl StatsCollector {
         VpcMetricsSpec::new(vpc_data)
             .into_iter()
             .map(|(disc, spec)| (disc, spec.build()))
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn refresh_vpc_store(&mut self) {
+        let pairs = snapshot_vpc_pairs(&self.vpcmap_r);
+        self.vpc_store.set_many_vpc_names_sync(pairs.clone());
+
+        self.alive_vpcs = pairs.iter().map(|(d, _)| *d).collect();
+
+        // prune any removed VPCs / pairs so they do not show up in snapshots/status
+        self.vpc_store.prune_to_vpcs(&self.alive_vpcs).await;
     }
 
     /// Run the collector (async).  Does not return if awaited.
@@ -210,6 +226,7 @@ impl StatsCollector {
     /// Calculate updated stats and submit any expired entries to the SG filter.
     #[tracing::instrument(level = "trace")]
     async fn update(&mut self, update: Option<MetricsUpdate>) {
+        self.refresh_vpc_store().await;
         if let Some(update) = update {
             // Refresh Prometheus registrations based on the current VPC snapshot.
             self.metrics = self.refresh().collect();
@@ -385,10 +402,19 @@ impl StatsCollector {
 
         // Mirror counters into the store (monotonic)
         for (&src, tx_summary) in &concluded.vpc {
+            if !self.alive_vpcs.contains(&src) {
+                debug!("skipping stats for removed VPC {src}");
+                continue;
+            }
+
             let mut total_pkts = 0u64;
             let mut total_bytes = 0u64;
 
             for (&dst, &stats) in tx_summary.dst.iter() {
+                if !self.alive_vpcs.contains(&dst) {
+                    debug!("skipping stats for removed VPC {dst}");
+                    continue;
+                }
                 self.vpc_store
                     .add_pair_counts(src, dst, stats.packets, stats.bytes)
                     .await;
@@ -422,6 +448,10 @@ impl StatsCollector {
         if let Ok(smoothed_by_src) = filters_by_src.smooth() {
             // drive zeros for any (src,dst) that didn't appear in the smoothed window.
             for (&src, metrics) in self.metrics.iter() {
+                if !self.alive_vpcs.contains(&src) {
+                    debug!("skipping rate stats for removed VPC {src}");
+                    continue;
+                }
                 let mut total_pps = 0.0f64;
                 let mut total_bps = 0.0f64;
 
@@ -430,6 +460,10 @@ impl StatsCollector {
 
                 // For every known dst under this src, either set smoothed rate or zero.
                 for (&dst, action) in metrics.peering.iter() {
+                    if !self.alive_vpcs.contains(&dst) {
+                        debug!("skipping rate stats for removed VPC {dst}");
+                        continue;
+                    }
                     let (pps, bps) = if let Some(tx_summary) = maybe_tx {
                         if let Some(rate) = tx_summary.dst.get(&dst) {
                             (rate.packets, rate.bytes)
