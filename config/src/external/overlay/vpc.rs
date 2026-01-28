@@ -45,6 +45,29 @@ impl Peering {
             // not needed will be validated when validating the remote vpc
             self.remote.validate()?;
         }
+
+        self.validate_nat_combinations()
+    }
+
+    fn validate_nat_combinations(&self) -> ConfigResult {
+        // We do not support stateful NAT on both sides of a peering
+        let mut local_has_stateful_nat = false;
+        for expose in &self.local.exposes {
+            if expose.has_stateful_nat() {
+                local_has_stateful_nat = true;
+                break;
+            }
+        }
+
+        if !local_has_stateful_nat {
+            return Ok(());
+        }
+
+        for expose in &self.remote.exposes {
+            if expose.has_stateful_nat() {
+                return Err(ConfigError::StatefulNatOnBothSides(self.name.clone()));
+            }
+        }
         Ok(())
     }
 }
