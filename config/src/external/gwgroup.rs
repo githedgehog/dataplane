@@ -33,14 +33,10 @@ impl Ord for GwGroupMember {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let ord_prio = self.priority.cmp(&other.priority);
         let ord_ip = self.ipaddress.cmp(&other.ipaddress);
-        let ord_name = self.name.cmp(&other.name);
 
         if ord_prio == Ordering::Equal {
-            if ord_ip == Ordering::Equal {
-                ord_name
-            } else {
-                ord_ip
-            }
+            assert_ne!(ord_ip, Ordering::Equal);
+            ord_ip
         } else {
             ord_prio
         }
@@ -234,6 +230,29 @@ mod test {
         for m in group.iter() {
             assert!(m.priority <= prio);
             prio = m.priority;
+        }
+
+        let mut gwtable = GwGroupTable::new();
+        gwtable.add_group(group).unwrap();
+        println!("{gwtable}");
+    }
+
+
+    #[test]
+    fn test_gw_group_ordering_fallback_ip() {
+        let mut group = GwGroup::new("gw-group-1");
+        group.add_member(GwGroupMember::new("gw1", 100, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw2", 100, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
+        group.add_member(GwGroupMember::new("gw3", 100, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+        group.sort_members();
+
+        let mut prio = group.members[0].priority;
+        let mut ipaddress = group.members[0].ipaddress;
+        for m in group.iter() {
+            assert!(m.priority <= prio);
+            assert!(m.ipaddress <= ipaddress);
+            prio = m.priority;
+            ipaddress = m.ipaddress;
         }
 
         let mut gwtable = GwGroupTable::new();
