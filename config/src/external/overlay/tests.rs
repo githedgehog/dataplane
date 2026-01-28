@@ -289,6 +289,53 @@ pub mod test {
     }
 
     #[test]
+    fn test_peering_nat_both_sides() {
+        // Build VPCs and VPC table
+        let vpc1 = Vpc::new("VPC-1", "VPC01", 1).unwrap();
+        let vpc2 = Vpc::new("VPC-2", "VPC02", 2).unwrap();
+        let mut vpc_table = VpcTable::new();
+        vpc_table.add(vpc1).unwrap();
+        vpc_table.add(vpc2).unwrap();
+
+        // Build peering with stateful NAT on both sides
+        let peering = VpcPeering::new(
+            "Peering-1",
+            VpcManifest {
+                name: "VPC-1".to_owned(),
+                exposes: vec![
+                    VpcExpose::empty()
+                        .make_stateful_nat(None)
+                        .unwrap()
+                        .ip("1.0.0.0/8".into())
+                        .as_range("2.0.0.0/8".into()),
+                ],
+            },
+            VpcManifest {
+                name: "VPC-2".to_owned(),
+                exposes: vec![
+                    VpcExpose::empty()
+                        .make_stateful_nat(None)
+                        .unwrap()
+                        .ip("3.0.0.0/8".into())
+                        .as_range("4.0.0.0/8".into()),
+                ],
+            },
+            None,
+        );
+
+        // Build VPC pering table and add peering
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table.add(peering).unwrap();
+
+        // Build overlay object and validate it
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        assert_eq!(
+            overlay.validate(),
+            Err(ConfigError::StatefulNatOnBothSides("Peering-1".to_owned()))
+        );
+    }
+
+    #[test]
     fn test_overlay_missing_vpc() {
         /* build VPCs */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
