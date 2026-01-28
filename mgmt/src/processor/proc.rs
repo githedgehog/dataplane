@@ -210,6 +210,11 @@ impl ConfigProcessor {
             guard.clone()
         };
 
+        //flush old VPC stats
+        status.vpcs.clear();
+        status.vpc_peering_counters.clear();
+        status.vpc_counters.clear();
+
         let stats_store = &self.proc_params.vpc_stats_store;
 
         let names = stats_store.snapshot_names().await;
