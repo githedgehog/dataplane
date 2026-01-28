@@ -97,7 +97,7 @@ impl K8sLess {
                     };
                     info!("Current configuration is {applied_genid}");
 
-                    let gwconfig = GwConfig::new(&k8sless.name, external_config);
+                    let gwconfig = GwConfig::new(external_config);
 
                     // request the config processor to apply the config and update status on success
                     match k8sless.client.apply_config(gwconfig).await {

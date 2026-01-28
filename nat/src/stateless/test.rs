@@ -362,7 +362,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn build_sample_config() -> GwConfig {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();
@@ -555,6 +555,7 @@ mod tests {
         };
 
         let mut external_builder = ExternalConfigBuilder::default();
+        external_builder.gwname("test-gw".to_string());
         external_builder.genid(1);
         external_builder.device(device_config);
         external_builder.underlay(underlay);
@@ -565,7 +566,7 @@ mod tests {
             .build()
             .expect("Failed to build external config");
 
-        GwConfig::new("test-gw", external_config)
+        GwConfig::new(external_config)
     }
 
     fn check_packet(
@@ -755,7 +756,7 @@ mod tests {
         exposes_right: Vec<VpcExpose>,
     ) -> GwConfig {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();

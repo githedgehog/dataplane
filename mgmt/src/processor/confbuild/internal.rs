@@ -347,7 +347,7 @@ pub fn build_internal_config(
     }
 
     /* Build internal config: device and underlay configs are copied as received (with adjusted default_vrf) */
-    let mut internal = InternalConfig::new(&config.gwname, external.device.clone());
+    let mut internal = InternalConfig::new(&external.gwname, external.device.clone());
     internal.add_vrf_config(default_vrf)?;
     internal.set_vtep(external.underlay.vtep.clone());
 

@@ -79,6 +79,7 @@ mod tests {
         };
 
         let mut external_builder = ExternalConfigBuilder::default();
+        external_builder.gwname("test-gw".to_string());
         external_builder.genid(1);
         external_builder.device(device_config);
         external_builder.underlay(underlay);
@@ -90,13 +91,13 @@ mod tests {
             .build()
             .expect("Failed to build external config");
 
-        GwConfig::new("test-gw", external_config)
+        GwConfig::new(external_config)
     }
 
     #[allow(clippy::too_many_lines)]
     fn build_overlay_4vpcs() -> Overlay {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();
@@ -263,7 +264,7 @@ mod tests {
 
     fn build_overlay_2vpcs() -> Overlay {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();
@@ -530,7 +531,7 @@ mod tests {
 
     fn build_overlay_2vpcs_unidirectional_nat() -> Overlay {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();
@@ -612,7 +613,7 @@ mod tests {
 
     fn build_overlay_2vpcs_no_nat() -> Overlay {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();
@@ -1051,7 +1052,7 @@ mod tests {
 
     fn build_overlay_2vpcs_with_default() -> Overlay {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
+            manifest.add_expose(expose);
         }
 
         let mut vpc_table = VpcTable::new();
