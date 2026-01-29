@@ -63,15 +63,22 @@ impl Overlay {
         debug!("Validating overlay configuration...");
 
         self.validate_peerings()?;
-        let id_map = self.vpcid_map();
 
         // collect peerings for every vpc.
-        self.vpc_table
-            .collect_peerings(&self.peering_table, &id_map);
+        self.collect_peerings();
 
         self.vpc_table.validate()?;
 
         debug!("Overlay configuration is VALID:\n{self}");
         Ok(())
+    }
+
+    /// Collect peerings from the peering table for every VPC.
+    ///
+    /// Should only be called in `validate`, or in tests.
+    pub fn collect_peerings(&mut self) {
+        let id_map = self.vpcid_map();
+        self.vpc_table
+            .collect_peerings(&self.peering_table, &id_map);
     }
 }
