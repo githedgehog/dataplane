@@ -43,7 +43,6 @@ mod tests {
     use std::time::Duration;
     use tracing_test::traced_test;
 
-    const FIVE_MINUTES: Duration = Duration::from_secs(5 * 60);
     const ONE_MINUTE: Duration = Duration::from_secs(60);
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
@@ -115,7 +114,7 @@ mod tests {
 
         // VPC1 <-> VPC2
         let expose121 = VpcExpose::empty()
-            .make_stateful_nat(Some(FIVE_MINUTES))
+            .make_stateful_nat(Some(ONE_MINUTE))
             .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("10.12.0.0/16".into());
@@ -130,26 +129,10 @@ mod tests {
             .unwrap()
             .ip("1.3.0.0/24".into())
             .as_range("10.100.0.0/24".into());
-        let expose211 = VpcExpose::empty()
-            .make_stateful_nat(Some(ONE_MINUTE))
-            .unwrap()
-            .ip("1.2.2.0/24".into())
-            .as_range("10.201.201.0/24".into());
-        let expose212 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("1.2.3.0/24".into())
-            .as_range("10.201.202.0/24".into());
-        let expose213 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("2.0.0.0/24".into())
-            .as_range("10.201.203.0/24".into());
-        let expose214 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("2.0.1.0/28".into())
-            .as_range("10.201.204.192/28".into());
+        let expose211 = VpcExpose::empty().ip("10.201.201.0/24".into());
+        let expose212 = VpcExpose::empty().ip("10.201.202.0/24".into());
+        let expose213 = VpcExpose::empty().ip("10.201.203.0/24".into());
+        let expose214 = VpcExpose::empty().ip("10.201.204.192/28".into());
 
         // VPC1 <-> VPC3
         let expose131 = VpcExpose::empty()
@@ -164,11 +147,7 @@ mod tests {
             .as_range("3.1.0.0/16".into())
             .not_as("3.1.128.0/17".into())
             .as_range("3.2.0.0/17".into());
-        let expose311 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("192.168.128.0/24".into())
-            .as_range("3.3.3.0/24".into());
+        let expose311 = VpcExpose::empty().ip("3.3.3.0/24".into());
 
         // VPC1 <-> VPC4
         let expose141 = VpcExpose::empty()
@@ -176,11 +155,7 @@ mod tests {
             .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("4.4.0.0/16".into());
-        let expose411 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("1.1.0.0/16".into())
-            .as_range("4.5.0.0/16".into());
+        let expose411 = VpcExpose::empty().ip("4.5.0.0/16".into());
 
         // VPC2 <-> VPC4
         let expose241 = VpcExpose::empty()
@@ -191,12 +166,8 @@ mod tests {
             .as_range("44.0.0.0/16".into())
             .not_as("44.0.200.0/24".into());
         let expose421 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("4.4.0.0/16".into())
-            .not("4.4.128.0/18".into())
-            .as_range("44.4.0.0/16".into())
-            .not_as("44.4.64.0/18".into());
+            .ip("44.4.0.0/16".into())
+            .not("44.4.64.0/18".into());
 
         // VPC3 <-> VPC4
         let expose341 = VpcExpose::empty()
@@ -204,10 +175,7 @@ mod tests {
             .unwrap()
             .ip("192.168.100.0/24".into())
             .as_range("34.34.34.0/24".into());
-        let expose431 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("4.4.0.0/24".into());
+        let expose431 = VpcExpose::empty().ip("4.4.0.0/24".into());
 
         // VPC1 <-> VPC2
         let mut manifest12 = VpcManifest::new("VPC-1");
@@ -275,11 +243,7 @@ mod tests {
             .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("2.2.0.0/16".into());
-        let expose211 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("1.2.2.0/24".into())
-            .as_range("3.3.3.0/24".into());
+        let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
 
         let mut manifest12 = VpcManifest::new("VPC-1");
         add_expose(&mut manifest12, expose121);
@@ -368,13 +332,13 @@ mod tests {
 
         // NAT: expose121 <-> expose211
         let (orig_src, orig_dst) = ("1.1.2.3", "10.201.201.18");
-        let (target_src, target_dst) = ("10.12.0.0", "1.2.2.0");
+        let target_src = "10.12.0.0";
         let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
         assert_eq!(done_reason, None);
 
         assert_eq!(output_src, addr_v4(target_src));
-        assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(output_dst, addr_v4(orig_dst));
         // Reverse path
         let (
             return_output_src,
@@ -386,7 +350,7 @@ mod tests {
             &mut nat,
             vni(200),
             vni(100),
-            target_dst,
+            orig_dst,
             target_src,
             output_dst_port,
             output_src_port,
@@ -410,12 +374,11 @@ mod tests {
         ) else {
             unreachable!()
         };
-        // We expect to find the minimum (non-empty) value between the two VPCs involved
         assert_eq!(idle_timeout, ONE_MINUTE);
         // Reverse path
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
             VpcDiscriminant::VNI(vni(200)),
-            IpAddr::from_str(target_dst).unwrap(),
+            IpAddr::from_str(orig_dst).unwrap(),
             VpcDiscriminant::VNI(vni(100)),
             IpAddr::from_str(target_src).unwrap(),
             IpProtoKey::Udp(UdpProtoKey {
@@ -438,11 +401,11 @@ mod tests {
         // TODO: We should drop this connection after updating the allocator in the future, as a
         // result these steps should fail
         let (orig_src, orig_dst) = ("1.1.2.3", "10.201.201.18");
-        let (target_src, target_dst) = ("10.12.0.0", "1.2.2.0");
+        let target_src = "10.12.0.0";
         let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
         assert_eq!(output_src, addr_v4(target_src));
-        assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(output_dst, addr_v4(orig_dst));
         assert_eq!(done_reason, None);
         // Reverse path
         let (
@@ -455,7 +418,7 @@ mod tests {
             &mut nat,
             vni(200),
             vni(100),
-            target_dst,
+            orig_dst,
             target_src,
             output_dst_port,
             output_src_port,
@@ -466,14 +429,13 @@ mod tests {
         assert_eq!(return_output_dst_port, 9998);
         assert_eq!(done_reason, None);
 
-        // Check new connection: valid source NAT but invalid destination NAT
-        let (orig_src, orig_dst) = ("1.1.2.3", "10.201.201.17");
+        // Check new valid connection
+        let (orig_src, orig_dst) = ("1.1.2.3", "3.3.3.3");
         let target_src = "2.2.0.0";
         let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 80);
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(orig_dst));
-        assert_eq!(output_dst_port, 80);
         assert_eq!(done_reason, None);
         // Reverse path
         let (
@@ -494,118 +456,6 @@ mod tests {
         assert_eq!(return_output_src, addr_v4(orig_dst));
         assert_eq!(return_output_dst, addr_v4(orig_src));
         assert_eq!(return_output_src_port, 80);
-        assert_eq!(return_output_dst_port, 9998);
-        assert_eq!(done_reason, None);
-
-        // Check new valid connection
-        let (orig_src, orig_dst) = ("1.1.2.3", "3.3.3.3");
-        let (target_src, target_dst) = ("2.2.0.0", "1.2.2.0");
-        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
-            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 80);
-        assert_eq!(output_src, addr_v4(target_src));
-        assert_eq!(output_dst, addr_v4(target_dst));
-        assert_eq!(done_reason, None);
-        // Reverse path
-        let (
-            return_output_src,
-            return_output_dst,
-            return_output_src_port,
-            return_output_dst_port,
-            done_reason,
-        ) = check_packet(
-            &mut nat,
-            vni(200),
-            vni(100),
-            target_dst,
-            target_src,
-            output_dst_port,
-            output_src_port,
-        );
-        assert_eq!(return_output_src, addr_v4(orig_dst));
-        assert_eq!(return_output_dst, addr_v4(orig_src));
-        assert_eq!(return_output_src_port, 80);
-        assert_eq!(return_output_dst_port, 9998);
-        assert_eq!(done_reason, None);
-    }
-
-    fn build_overlay_2vpcs_unidirectional_nat() -> Overlay {
-        fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-            manifest.add_expose(expose).expect("Failed to add expose");
-        }
-
-        let mut vpc_table = VpcTable::new();
-        let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
-        let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
-
-        let expose121 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("1.1.0.0/16".into())
-            .as_range("2.2.0.0/16".into());
-        let expose211 = VpcExpose::empty().ip("5.0.0.0/8".into());
-
-        let mut manifest12 = VpcManifest::new("VPC-1");
-        add_expose(&mut manifest12, expose121);
-        let mut manifest21 = VpcManifest::new("VPC-2");
-        add_expose(&mut manifest21, expose211);
-
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
-
-        let mut peering_table = VpcPeeringTable::new();
-        peering_table.add(peering12).expect("Failed to add peering");
-
-        Overlay::new(vpc_table, peering_table)
-    }
-
-    #[test]
-    #[traced_test]
-    fn test_full_config_unidirectional_nat() {
-        let mut config = build_sample_config(build_overlay_2vpcs_unidirectional_nat());
-        config.validate().unwrap();
-
-        // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-        allocator
-            .update_allocator(&config.external.overlay.vpc_table)
-            .unwrap();
-
-        // No NAT
-        let (orig_src, orig_dst) = ("8.8.8.8", "9.9.9.9");
-        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
-            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
-        assert_eq!(output_src, addr_v4(orig_src));
-        assert_eq!(output_dst, addr_v4(orig_dst));
-        assert_eq!(output_src_port, 9998);
-        assert_eq!(output_dst_port, 443);
-        assert_eq!(done_reason, Some(DoneReason::Filtered));
-
-        // NAT: expose121 <-> expose211 (valid source NAT, no destination NAT)
-        let (orig_src, orig_dst) = ("1.1.2.3", "5.0.0.5");
-        let (target_src, target_dst) = ("2.2.0.0", "5.0.0.5");
-        let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
-            check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 443);
-        assert_eq!(output_src, addr_v4(target_src));
-        assert_eq!(output_dst, addr_v4(target_dst));
-        assert_eq!(done_reason, None);
-        // Reverse path
-        let (
-            return_output_src,
-            return_output_dst,
-            return_output_src_port,
-            return_output_dst_port,
-            done_reason,
-        ) = check_packet(
-            &mut nat,
-            vni(200),
-            vni(100),
-            target_dst,
-            target_src,
-            output_dst_port,
-            output_src_port,
-        );
-        assert_eq!(return_output_src, addr_v4(orig_dst));
-        assert_eq!(return_output_dst, addr_v4(orig_src));
-        assert_eq!(return_output_src_port, 443);
         assert_eq!(return_output_dst_port, 9998);
         assert_eq!(done_reason, None);
     }
@@ -709,7 +559,7 @@ mod tests {
 
         // NAT: expose121 <-> expose211
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 1337);
-        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
+        let target_src = addr_v4("2.2.0.0");
         let (output_src, output_dst, output_identifier_1, done_reason) = check_packet_icmp_echo(
             &mut nat,
             vni(100),
@@ -720,7 +570,7 @@ mod tests {
             orig_identifier,
         );
         assert_eq!(output_src, target_src);
-        assert_eq!(output_dst, target_dst);
+        assert_eq!(output_dst, orig_dst);
         assert!(output_identifier_1.is_multiple_of(256)); // First port of a 256-port "port block" from allocator
         assert_eq!(done_reason, None);
 
@@ -730,7 +580,7 @@ mod tests {
                 &mut nat,
                 vni(200),
                 vni(100),
-                target_dst,
+                orig_dst,
                 target_src,
                 IcmpEchoDirection::Reply,
                 output_identifier_1,
@@ -742,7 +592,7 @@ mod tests {
 
         // Second request with same identifier: no reallocation
         let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"));
-        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
+        let target_src = addr_v4("2.2.0.0");
         let (output_src, output_dst, output_identifier_2, done_reason) = check_packet_icmp_echo(
             &mut nat,
             vni(100),
@@ -753,13 +603,13 @@ mod tests {
             orig_identifier,
         );
         assert_eq!(output_src, target_src);
-        assert_eq!(output_dst, target_dst);
+        assert_eq!(output_dst, orig_dst);
         assert_eq!(output_identifier_2, output_identifier_1); // Same identifier as before
         assert_eq!(done_reason, None);
 
         // NAT: expose121 <-> expose211 again, but with identifier 0 (corner case)
         let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("3.3.3.3"), 0);
-        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("1.2.2.0"));
+        let target_src = addr_v4("2.2.0.0");
         let (output_src, output_dst, output_identifier_3, done_reason) = check_packet_icmp_echo(
             &mut nat,
             vni(100),
@@ -771,87 +621,8 @@ mod tests {
         );
 
         assert_eq!(output_src, target_src);
-        assert_eq!(output_dst, target_dst);
-        assert_eq!(output_identifier_3, output_identifier_1 + 1); // Second port of the same 256-port "port block" from allocator
-        assert_eq!(done_reason, None);
-    }
-
-    #[test]
-    #[traced_test]
-    fn test_icmp_echo_unidirectional_nat() {
-        let mut config = build_sample_config(build_overlay_2vpcs_unidirectional_nat());
-        config.validate().unwrap();
-
-        // Check that we can validate the allocator
-        let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-        allocator
-            .update_allocator(&config.external.overlay.vpc_table)
-            .unwrap();
-
-        // No NAT
-        let (orig_src, orig_dst, orig_identifier) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"), 1337);
-        let (output_src, output_dst, output_identifier, done_reason) = check_packet_icmp_echo(
-            &mut nat,
-            vni(100),
-            vni(200),
-            orig_src,
-            orig_dst,
-            IcmpEchoDirection::Request,
-            orig_identifier,
-        );
-        assert_eq!(output_src, orig_src);
         assert_eq!(output_dst, orig_dst);
-        assert_eq!(output_identifier, orig_identifier);
-        assert_eq!(done_reason, Some(DoneReason::Filtered));
-
-        // NAT: expose121 <-> expose211
-        let (orig_src, orig_dst, orig_identifier) = (addr_v4("1.1.2.3"), addr_v4("5.0.0.5"), 1337);
-        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("5.0.0.5"));
-        let (output_src, output_dst, output_identifier_1, done_reason) = check_packet_icmp_echo(
-            &mut nat,
-            vni(100),
-            vni(200),
-            orig_src,
-            orig_dst,
-            IcmpEchoDirection::Request,
-            orig_identifier,
-        );
-        assert_eq!(output_src, target_src);
-        assert_eq!(output_dst, target_dst);
-        assert!(output_identifier_1.is_multiple_of(256)); // First port of a 256-port "port block" from allocator
-        assert_eq!(done_reason, None);
-
-        // Reverse path
-        let (return_output_src, return_output_dst, return_output_identifier, done_reason) =
-            check_packet_icmp_echo(
-                &mut nat,
-                vni(200),
-                vni(100),
-                target_dst,
-                target_src,
-                IcmpEchoDirection::Reply,
-                output_identifier_1,
-            );
-        assert_eq!(return_output_src, orig_dst);
-        assert_eq!(return_output_dst, orig_src);
-        assert_eq!(return_output_identifier, orig_identifier);
-        assert_eq!(done_reason, None);
-
-        // Second request with same identifier: no reallocation
-        let (orig_src, orig_dst) = (addr_v4("1.1.2.3"), addr_v4("5.0.0.5"));
-        let (target_src, target_dst) = (addr_v4("2.2.0.0"), addr_v4("5.0.0.5"));
-        let (output_src, output_dst, output_identifier_2, done_reason) = check_packet_icmp_echo(
-            &mut nat,
-            vni(100),
-            vni(200),
-            orig_src,
-            orig_dst,
-            IcmpEchoDirection::Request,
-            orig_identifier,
-        );
-        assert_eq!(output_src, target_src);
-        assert_eq!(output_dst, target_dst);
-        assert_eq!(output_identifier_2, output_identifier_1); // Same identifier as before
+        assert_eq!(output_identifier_3, output_identifier_1 + 1); // Second port of the same 256-port "port block" from allocator
         assert_eq!(done_reason, None);
     }
 
@@ -947,13 +718,13 @@ mod tests {
             orig_echo_seq_number,
         ) = (
             // Host 1.1.2.3 in VPC1 sent imaginary ICMP Echo packet to 3.3.3.3 in VPC2,
-            // which imaginarily got translated as 2.2.0.0 -> 1.2.2.0.
+            // which imaginarily got translated as 2.2.0.0 -> 3.3.3.3.
             // Router 1.2.2.18 from VPC2 returns Destination Unreachable to 2.2.0.0 with initial
             // datagram embedded in it
             addr_v4("1.2.2.18"),
             addr_v4("2.2.0.0"),
             addr_v4("2.2.0.0"),
-            addr_v4("1.2.2.0"),
+            addr_v4("3.3.3.3"),
             1337,
             0,
         );
@@ -990,7 +761,7 @@ mod tests {
             addr_v4("1.1.2.3"),
             addr_v4("3.3.3.3"),
             addr_v4("2.2.0.0"),
-            addr_v4("1.2.2.0"),
+            addr_v4("3.3.3.3"),
         );
         let (output_echo_src, output_echo_dst, output_echo_identifier, done_reason) =
             check_packet_icmp_echo(
@@ -1063,11 +834,7 @@ mod tests {
             .unwrap()
             .ip("1.1.0.0/16".into())
             .as_range("2.2.0.0/16".into());
-        let expose211 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("1.2.2.0/24".into())
-            .as_range("3.3.3.0/24".into());
+        let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
         let expose212 = VpcExpose::empty().set_default();
 
         let mut manifest12 = VpcManifest::new("VPC-1");
@@ -1097,7 +864,7 @@ mod tests {
 
         // Using the expose with a prefix
         let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.1.0.1", "3.3.3.3", 9999, 443);
-        let (target_src, target_dst) = ("2.2.0.0", "1.2.2.0");
+        let target_src = "2.2.0.0";
         let (output_src, output_dst, output_src_port, output_dst_port, done_reason) = check_packet(
             &mut nat,
             vni(100),
@@ -1110,7 +877,7 @@ mod tests {
         assert_eq!(done_reason, None);
 
         assert_eq!(output_src, addr_v4(target_src));
-        assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(output_dst, addr_v4(orig_dst));
         // Reverse path
         let (
             return_output_src,
@@ -1122,7 +889,7 @@ mod tests {
             &mut nat,
             vni(200),
             vni(100),
-            target_dst,
+            orig_dst,
             target_src,
             output_dst_port,
             output_src_port,
@@ -1136,7 +903,7 @@ mod tests {
         // Using the default expose
         let (orig_src, orig_dst, orig_src_port, orig_dst_port) =
             ("1.1.0.1", "10.11.12.13", 9999, 443);
-        let (target_src, target_dst) = ("2.2.0.0", "10.11.12.13");
+        let target_src = "2.2.0.0";
         let (output_src, output_dst, output_src_port, output_dst_port, done_reason) = check_packet(
             &mut nat,
             vni(100),
@@ -1149,7 +916,7 @@ mod tests {
         assert_eq!(done_reason, None);
 
         assert_eq!(output_src, addr_v4(target_src));
-        assert_eq!(output_dst, addr_v4(target_dst));
+        assert_eq!(output_dst, addr_v4(orig_dst));
         // Reverse path
         let (
             return_output_src,
@@ -1161,7 +928,7 @@ mod tests {
             &mut nat,
             vni(200),
             vni(100),
-            target_dst,
+            orig_dst,
             target_src,
             output_dst_port,
             output_src_port,
