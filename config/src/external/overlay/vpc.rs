@@ -50,22 +50,30 @@ impl Peering {
     }
 
     fn validate_nat_combinations(&self) -> ConfigResult {
-        // We do not support stateful NAT on both sides of a peering
+        // If stateful NAT is set up on one side of the peering, we don't support NAT (stateless or
+        // stateful) on the other side.
+        let mut local_has_nat = false;
         let mut local_has_stateful_nat = false;
         for expose in &self.local.exposes {
             if expose.has_stateful_nat() {
                 local_has_stateful_nat = true;
+                local_has_nat = true;
                 break;
+            } else if expose.has_stateless_nat() {
+                local_has_nat = true;
             }
         }
 
-        if !local_has_stateful_nat {
+        if !local_has_nat {
             return Ok(());
         }
 
         for expose in &self.remote.exposes {
             if expose.has_stateful_nat() {
                 return Err(ConfigError::StatefulNatOnBothSides(self.name.clone()));
+            }
+            if expose.has_stateless_nat() && local_has_stateful_nat {
+                return Err(ConfigError::StatefulPlusStatelessNat(self.name.clone()));
             }
         }
         Ok(())

@@ -79,6 +79,10 @@ pub enum ConfigError {
         "Stateful NAT is only supported on one side of a peering, but peering {0} has stateful NAT enabled on both sides"
     )]
     StatefulNatOnBothSides(String),
+    #[error(
+        "Stateful NAT is not compatible with stateless NAT at the other side of a peering, but peering {0} has stateful and stateless NAT enabled on different sides"
+    )]
+    StatefulPlusStatelessNat(String),
 
     // Interface addresses
     #[error("Invalid interface address format: {0}")]
