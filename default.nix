@@ -54,6 +54,15 @@ let
         overlays.dataplane
       ];
     }).pkgsCross.${platform'.info.nixarch};
+  frr-pkgs =
+    (import sources.nixpkgs {
+      overlays = [
+        overlays.rust
+        overlays.llvm
+        overlays.dataplane
+        overlays.frr
+      ];
+    }).pkgsCross.${platform'.info.nixarch};
   sysroot = pkgs.pkgsHostHost.symlinkJoin {
     name = "sysroot";
     paths = with pkgs.pkgsHostHost; [
@@ -323,50 +332,63 @@ let
       pname ? null,
       cargoArtifacts ? null,
     }:
+    let
+      pname' = if pname == null then "workspace" else pname;
+    in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       args = {
-        inherit pname cargoArtifacts;
+        inherit cargoArtifacts;
+        pname = pname';
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "mkdir -p $out;"
             "cargo"
             "nextest"
             "archive"
-            "--archive-file"
-            "$out/${pname}.tar.zst"
             "--cargo-profile=${cargo-profile}"
-            "--package=${pname}"
           ]
           ++ cargo-cmd-prefix
+          ++ (if pname == null then [ ] else [ "--package=${pname'}" ])
+          ++ [
+            "--archive-file"
+            "$out/${pname'}.tar.zst"
+          ]
         );
       };
     };
 
-  tests = builtins.mapAttrs (
-    dir: pname:
-    test-builder {
-      inherit pname;
-    }
-  ) package-list;
+  tests =
+    (builtins.mapAttrs (
+      dir: pname:
+      test-builder {
+        inherit pname;
+      }
+    ) package-list)
+    // {
+      workspace = test-builder { };
+    };
 
   clippy-builder =
     {
       pname ? null,
     }:
+    let
+      pname' = if pname == null then "workspace" else pname;
+    in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       args = {
-        inherit pname;
+        pname = pname';
         cargoArtifacts = null;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
           [
             "cargo"
             "clippy"
             "--profile=${cargo-profile}"
-            "--package=${pname}"
           ]
           ++ cargo-cmd-prefix
+          ++ (if pname == null then [ ] else [ "--package=${pname}" ])
           ++ [
             "--"
             "-D warnings"
@@ -375,12 +397,16 @@ let
       };
     };
 
-  clippy = builtins.mapAttrs (
-    dir: pname:
-    clippy-builder {
-      inherit pname;
-    }
-  ) package-list;
+  clippy =
+    (builtins.mapAttrs (
+      dir: pname:
+      clippy-builder {
+        inherit pname;
+      }
+    ) package-list)
+    // {
+      workspace = clippy-builder { };
+    };
 
   dataplane-tar = pkgs.stdenv'.mkDerivation {
     pname = "dataplane-tar";
@@ -462,20 +488,111 @@ let
           --file "$out" \
           \
           . \
-          ${pkgs.pkgsHostHost.libc.out} \
+          ${libc.out} \
           ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.glibc.libgcc or "" else ""} \
       '';
 
   };
+
+  gdbserver-tar = dev-pkgs.stdenv'.mkDerivation {
+    pname = "gdbserver-tar";
+    inherit version;
+    dontUnpack = true;
+    src = null;
+    buildPhase =
+      let
+        gdb = dev-pkgs.gdb';
+      in
+      ''
+        tmp="$(mktemp -d)"
+        mkdir -p "$tmp/bin"
+        cp --dereference ${gdb}/bin/gdbserver "$tmp/bin"
+        cd "$tmp"
+        # we take some care to make the tar file reproducible here
+        tar \
+          --create \
+          \
+          --sort=name \
+          \
+          --clamp-mtime \
+          --mtime=0 \
+          \
+          --format=posix \
+          --numeric-owner \
+          --owner=0 \
+          --group=0 \
+          \
+          `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
+          `# More, we expressly forbid setuid / setgid anything.  May as well toss in the sticky bit as well.` \
+          --mode='u-sw,go=' \
+          \
+          `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
+          --no-acls \
+          --no-xattrs \
+          --no-selinux \
+          \
+          --verbose \
+          --file "$out" \
+          \
+          .
+      '';
+
+  };
+
+  containers.dataplane-debugger =
+    let
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+        "/lib/debug"
+        "/lib/debug/.build-id"
+      ];
+    in
+
+    pkgs.dockerTools.buildImage {
+      name = "dataplane-debugger";
+      tag = "latest";
+      fromImage = pkgs.dockerTools.buildLayeredImage {
+        name = "dataplane-debugger-base";
+        tag = "latest";
+        contents = pkgs.buildEnv {
+          name = "dataplane-debugger-env";
+          inherit pathsToLink;
+          paths = [
+            dev-pkgs.bashInteractive
+            dev-pkgs.coreutils
+            dev-pkgs.pkgsBuildHost.gdb
+            dev-pkgs.pkgsBuildHost.python3Minimal
+            dev-pkgs.pkgsBuildHost.rr
+
+            pkgs.pkgsHostHost.libc.debug
+            pkgs.pkgsHostHost.libc.out
+          ];
+        };
+      };
+      copyToRoot = pkgs.buildEnv {
+        name = "dataplane-debugger-env";
+        inherit pathsToLink;
+        paths = [
+          workspace.cli.debug
+          workspace.dataplane.debug
+          workspace.init.debug
+        ];
+      };
+    };
 
 in
 {
   inherit
     clippy
     dataplane-tar
+    containers
     dev-pkgs
-    devroot
     devenv
+    devroot
+    gdbserver-tar
     package-list
     pkgs
     sources
@@ -483,6 +600,7 @@ in
     tests
     workspace
     ;
+  frr = frr-pkgs;
   profile = profile';
   platform = platform';
 }

@@ -3,6 +3,8 @@
 {
   sources,
   sanitizers,
+  platform,
+  profile,
   ...
 }:
 final: prev:
@@ -193,7 +195,13 @@ in
   # Also, while this library has a respectable security track record, this is also a very strong candidate for
   # cfi, safe-stack, and cf-protection.
   fancy.dpdk = dataplane-dep (
-    final.callPackage ../pkgs/dpdk (final.fancy // { src = sources.dpdk; })
+    final.callPackage ../pkgs/dpdk (
+      final.fancy
+      // {
+        inherit platform profile;
+        src = sources.dpdk;
+      }
+    )
   );
 
   # DPDK is largely composed of static-inline functions.
@@ -212,7 +220,7 @@ in
     }
   );
 
-  fancy.libunwind = (dataplane-dep final.llvmPackages.libunwind).override { enableShared = false; };
+  fancy.libunwind = (dataplane-dep final.llvmPackages'.libunwind).override { enableShared = false; };
 
   # TODO: consistent packages, min deps
   fancy.hwloc =
@@ -238,7 +246,5 @@ in
       });
 
   # This isn't directly required by dataplane,
-  fancy.perftest = dataplane-dep (
-    final.callPackage ../pkgs/perftest final.fancy // { src = sources.perftest; }
-  );
+  fancy.perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 }
