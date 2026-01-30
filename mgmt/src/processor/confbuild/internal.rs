@@ -350,6 +350,8 @@ pub fn build_internal_config(
     let mut internal = InternalConfig::new(&external.gwname, external.device.clone());
     internal.add_vrf_config(default_vrf)?;
     internal.set_vtep(external.underlay.vtep.clone());
+    internal.gwgrouptable = external.gwgroups.sorted();
+    internal.commtable = external.communities.clone();
 
     // Build BFD peers from underlay BGP neighbors
     if let Some(bgp) = &external.underlay.vrf.bgp {

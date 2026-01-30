@@ -146,6 +146,15 @@ impl GwGroupTable {
         self.get_group(group)
             .map(|group| group.get_member_pos(name))?
     }
+    #[must_use]
+    pub fn sorted(&self) -> Self {
+        let inner: HashMap<String, GwGroup> = self
+            .0
+            .iter()
+            .map(|(name, group)| (name.clone(), group.sorted()))
+            .collect();
+        Self(inner)
+    }
 }
 
 macro_rules! GW_GROUP_MEMBER_FMT {
