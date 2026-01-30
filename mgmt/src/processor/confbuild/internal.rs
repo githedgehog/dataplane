@@ -8,6 +8,8 @@ use tracing::{debug, error, warn};
 
 const IMPORT_VRFS: bool = false;
 
+use config::external::communities::PriorityCommunityTable;
+use config::external::gwgroup::GwGroupTable;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
 use config::external::overlay::vpcpeering::VpcManifest;
@@ -147,7 +149,12 @@ impl VpcRoutingConfigIpv4 {
             sroutes: vec![],
         }
     }
-    fn build_routing_config_peer(&mut self, vpc: &Vpc, peer: &Peering) -> ConfigResult {
+    fn build_routing_config_peer(
+        &mut self,
+        vpc: &Vpc,
+        peer: &Peering,
+        community: Community,
+    ) -> ConfigResult {
         /* remote manifest */
         let rmanifest = &peer.remote;
 
@@ -194,30 +201,33 @@ impl VpcRoutingConfigIpv4 {
         }
         self.adv_plist.push(adv_plist);
 
-        /* collect communities for this peering */
-        let communities: Vec<_> = peer
-            .adv_communities
-            .iter()
-            .map(|c| Community::String(c.clone()))
-            .collect();
-
-        /* create adv route-map entry matching prefixes and adding communities if needed */
+        /* create adv route-map entry matching prefixes and adding communities */
         let mut adv_rmape = RouteMapEntry::new(MatchingPolicy::Permit);
-        adv_rmape = adv_rmape.add_match(RouteMapMatch::Ipv4AddressPrefixList(
-            vpc.adv_plist(&rmanifest.name),
-        ));
-        if !communities.is_empty() {
-            adv_rmape = adv_rmape.add_action(RouteMapSetAction::Community(communities, true));
-        }
+        adv_rmape = adv_rmape
+            .add_match(RouteMapMatch::Ipv4AddressPrefixList(
+                vpc.adv_plist(&rmanifest.name),
+            ))
+            .add_action(RouteMapSetAction::Community(vec![community], true));
 
         /* add entry */
         self.adv_rmap.add_entry(None, adv_rmape)?;
         Ok(())
     }
 
-    fn build_routing_config(&mut self, vpc: &Vpc) -> ConfigResult {
+    fn build_routing_config(
+        &mut self,
+        gwname: &str,
+        vpc: &Vpc,
+        grouptable: &GwGroupTable,
+        commtable: &PriorityCommunityTable,
+    ) -> ConfigResult {
         for peer in vpc.peerings.iter() {
-            self.build_routing_config_peer(vpc, peer)?;
+            if let Some(group) = &peer.gwgroup
+                && let Some(rank) = grouptable.get_group_member_rank(group, gwname)
+                && let Some(comm) = commtable.get_community(rank)
+            {
+                self.build_routing_config_peer(vpc, peer, Community::String(comm.clone()))?;
+            }
         }
         Ok(())
     }
@@ -289,7 +299,12 @@ fn build_vpc_internal_config(
 
     if vpc.num_peerings() > 0 {
         let mut vpc_rconfig = VpcRoutingConfigIpv4::new(vpc); // fixme build from scratch / no mut
-        vpc_rconfig.build_routing_config(vpc)?;
+        vpc_rconfig.build_routing_config(
+            &internal.gwname,
+            vpc,
+            &internal.gwgrouptable,
+            &internal.commtable,
+        )?;
         bgp.set_af_ipv4unicast(vpc_bgp_af_ipv4_unicast(&vpc_rconfig));
         bgp.set_af_l2vpn_evpn(vpc_bgp_af_l2vpn_evpn(vpc));
 
@@ -346,7 +361,7 @@ pub fn build_internal_config(
         bgp_default.set_bmp_options(bmp_opts);
     }
 
-    /* Build internal config: device and underlay configs are copied as received (with adjusted default_vrf) */
+    // Build internal config: device and underlay configs are copied as received (with adjusted default_vrf)
     let mut internal = InternalConfig::new(&external.gwname, external.device.clone());
     internal.add_vrf_config(default_vrf)?;
     internal.set_vtep(external.underlay.vtep.clone());
@@ -358,7 +373,7 @@ pub fn build_internal_config(
         internal.set_bfd_peers(peers_from_bgp_neighbors(&bgp.neighbors));
     }
 
-    /* Build overlay config */
+    // Build overlay config
     if let Some(bgp) = &external.underlay.vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
@@ -370,7 +385,7 @@ pub fn build_internal_config(
     } else if config.genid() != ExternalConfig::BLANK_GENID {
         warn!("Config has no BGP configuration");
     }
-    /* done */
+
     debug!("Successfully built internal config for genid {genid}");
     if genid != ExternalConfig::BLANK_GENID {
         debug!("Internal config is:\n{internal:#?}");
