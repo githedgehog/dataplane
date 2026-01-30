@@ -26,12 +26,11 @@ use crate::external::overlay::vpcpeering::VpcPeering;
 /// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Peering {
-    pub name: String,                 /* name of peering */
-    pub local: VpcManifest,           /* local manifest */
-    pub remote: VpcManifest,          /* remote manifest */
-    pub remote_id: VpcId,             /* Id of peer */
-    pub gwgroup: Option<String>,      /* gateway group serving this peering */
-    pub adv_communities: Vec<String>, /* communities with which to advertise prefixes in this peering */
+    pub name: String,            /* name of peering */
+    pub local: VpcManifest,      /* local manifest */
+    pub remote: VpcManifest,     /* remote manifest */
+    pub remote_id: VpcId,        /* Id of peer */
+    pub gwgroup: Option<String>, /* gateway group serving this peering */
 }
 
 impl Peering {
@@ -149,7 +148,6 @@ impl Vpc {
                     remote: remote.clone(),
                     remote_id: remote_id.clone(),
                     gwgroup: p.gwgroup.clone(),
-                    adv_communities: vec![],
                 }
             })
             .collect();
