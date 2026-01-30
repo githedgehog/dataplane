@@ -14,7 +14,7 @@ use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
 use overlay::Overlay;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use underlay::Underlay;
 
 /// Alias for a config generation number
@@ -58,7 +58,6 @@ impl ExternalConfig {
     ) -> Result<Option<String>, ConfigError> {
         debug!("Peering {peering_name} is mapped to gateway group '{gwgroup}'",);
 
-        // lookup group referred by peering: it must exist
         let group = gwgroups
             .get_group(gwgroup)
             .ok_or_else(|| ConfigError::NoSuchGroup(gwgroup.to_owned()))?;
@@ -70,26 +69,31 @@ impl ExternalConfig {
         // lookup ourselves in the group; we care about our position (ranking) in the
         // group and not about the priority whose absolute value is meaningless.
         let Some(pos) = group.get_member_pos(gwname) else {
-            info!("Gateway {gwname} is NOT part of group {}", group.name());
+            info!(
+                "Gateway {gwname} is NOT part of group {} to which peering {peering_name} is mapped",
+                group.name()
+            );
             return Ok(None);
         };
-        // need conversion to u32 as that is the key for the community table
-        let pos = u32::try_from(pos).map_err(|e| ConfigError::InternalFailure(e.to_string()))?;
-
-        // We should be serving this peering.
-        debug!("Gateway {gwname} is at position {pos} of {}", group.name());
-
-        // Get the community corresponding to the position/ordering of this gateway in the group.
-        // If no community exist for that position, we should fail, although we don't now since
-        // the community table may not be populated.
-        // To guarantee that we can always tag with a community in the set of |C| communities,
-        // the size of a group |G| must be no larger than |C|.
-        if let Ok(community) = comtable.get_community(pos) {
-            Ok(Some(community.clone()))
+        if pos == 0 {
+            info!("This gateway ({gwname}) gateway will serve peering {peering_name}");
         } else {
-            warn!("No community found for preference {pos}");
-            Ok(None)
+            info!(
+                "This gateway will serve peering {peering_name} if gateway {} fails",
+                group
+                    .get_member_at(pos - 1)
+                    .unwrap_or_else(|| unreachable!())
+            );
         }
+        let community = comtable
+            .get_community(pos)
+            .ok_or(ConfigError::NoCommunityAvailable(peering_name.to_string()))?;
+        debug!(
+            "Will advertise prefixes for peering {} with community {}",
+            peering_name, community
+        );
+
+        Ok(Some(community.clone()))
     }
 
     fn validate_peering_gw_groups(&mut self) -> ConfigResult {
