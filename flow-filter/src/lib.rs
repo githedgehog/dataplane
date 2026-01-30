@@ -521,7 +521,7 @@ mod tests {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -534,12 +534,11 @@ mod tests {
                         VpcExpose::empty().set_default(),
                     ],
                 },
-                None,
             ))
             .unwrap();
 
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -552,7 +551,6 @@ mod tests {
                     name: "vpc3".to_string(),
                     exposes: vec![VpcExpose::empty().ip("6.0.0.0/24".into())],
                 },
-                None,
             ))
             .unwrap();
 
@@ -663,7 +661,7 @@ mod tests {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -673,7 +671,6 @@ mod tests {
                     name: "vpc2".to_string(),
                     exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())],
                 },
-                None,
             ))
             .unwrap();
 
@@ -721,7 +718,7 @@ mod tests {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -731,7 +728,6 @@ mod tests {
                     name: "vpc2".to_string(),
                     exposes: vec![VpcExpose::empty().set_default()],
                 },
-                None,
             ))
             .unwrap();
 
@@ -779,7 +775,7 @@ mod tests {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -815,7 +811,6 @@ mod tests {
                         VpcExpose::empty().set_default(),           // Default (no NAT)
                     ],
                 },
-                None,
             ))
             .unwrap();
 
