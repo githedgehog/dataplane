@@ -141,7 +141,6 @@ mod context {
             remote: manifest2.clone(),
             remote_id: "12345".try_into().unwrap(),
             gwgroup: None,
-            adv_communities: vec![],
         };
         let peering2 = Peering {
             name: "test_peering2".into(),
@@ -149,7 +148,6 @@ mod context {
             remote: manifest1,
             remote_id: "67890".try_into().unwrap(),
             gwgroup: None,
-            adv_communities: vec![],
         };
 
         // VPC-1

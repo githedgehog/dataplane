@@ -115,7 +115,6 @@ impl ExternalConfig {
                     "Assigned community {community} to peering {}",
                     &peering.name
                 );
-                peering.adv_communities.push(community.clone());
             }
         }
         Ok(())

@@ -219,7 +219,6 @@ mod tests {
             remote: manifest2.clone(),
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
             gwgroup: None,
-            adv_communities: vec![],
         };
         let peering2 = Peering {
             name: "test_peering2".into(),
@@ -227,7 +226,6 @@ mod tests {
             remote: manifest1,
             remote_id: "67890".try_into().expect("Failed to create VPC ID"),
             gwgroup: None,
-            adv_communities: vec![],
         };
 
         // This code is extremely convoluted
