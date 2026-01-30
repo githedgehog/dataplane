@@ -49,7 +49,7 @@ pub mod test {
         let m1 = build_manifest_vpc1();
         let m2 = build_manifest_vpc2();
         // build vpc peering with the manifests
-        VpcPeering::new("VPC-1--VPC-2", m1, m2, None)
+        VpcPeering::with_default_group("VPC-1--VPC-2", m1, m2)
     }
 
     #[test]
@@ -295,7 +295,7 @@ pub mod test {
         vpc_table.add(vpc2).unwrap();
 
         // Build peering with stateful NAT on both sides
-        let peering = VpcPeering::new(
+        let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest {
                 name: "VPC-1".to_owned(),
@@ -317,7 +317,6 @@ pub mod test {
                         .as_range("4.0.0.0/8".into()),
                 ],
             },
-            None,
         );
 
         // Build VPC pering table and add peering
@@ -342,7 +341,7 @@ pub mod test {
         vpc_table.add(vpc2).unwrap();
 
         // Build peering with stateful NAT on one side and stateless NAT on the other side
-        let peering = VpcPeering::new(
+        let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest {
                 name: "VPC-1".to_owned(),
@@ -364,7 +363,6 @@ pub mod test {
                         .as_range("4.0.0.0/8".into()),
                 ],
             },
-            None,
         );
 
         // Build VPC pering table and add peering
@@ -470,22 +468,22 @@ pub mod test {
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-2");
-        let peering = VpcPeering::new("Peering-1", m1, m2, None);
+        let peering = VpcPeering::with_default_group("Peering-1", m1, m2);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-3");
-        let peering = VpcPeering::new("Peering-2", m1, m2, None);
+        let peering = VpcPeering::with_default_group("Peering-2", m1, m2);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-2");
         let m2 = VpcManifest::new("VPC-4");
-        let peering = VpcPeering::new("Peering-3", m1, m2, None);
+        let peering = VpcPeering::with_default_group("Peering-3", m1, m2);
         peering_table.add(peering).unwrap();
 
         let m1 = VpcManifest::new("VPC-1");
         let m2 = VpcManifest::new("VPC-4");
-        let peering = VpcPeering::new("Peering-4", m1, m2, None);
+        let peering = VpcPeering::with_default_group("Peering-4", m1, m2);
         peering_table.add(peering).unwrap();
 
         // all peerings of VPC-1
@@ -579,45 +577,42 @@ pub mod test {
         /* build peering table with 4 peerings */
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
                 man_vpc2(),
-                None,
             ))
             .expect("Should succeed");
 
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
                 man_vpc3(),
-                None,
             ))
             .expect("Should succeed");
 
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "VPC-1--VPC-4",
                 man_vpc1_with_vpc4(),
                 man_vpc4(),
-                None,
             ))
             .expect("Should succeed");
 
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "VPC-2--VPC-3",
                 man_vpc2_with_vpc3(),
                 man_vpc3(),
-                None,
             ))
             .expect("Should succeed");
 
         assert_eq!(peering_table.len(), 4);
 
         /* peering with empty name cannot be added to the table */
-        let peering_empty_name = VpcPeering::new("", man_vpc1_with_vpc2(), man_vpc2(), None);
+        let peering_empty_name =
+            VpcPeering::with_default_group("", man_vpc1_with_vpc2(), man_vpc2());
         assert_eq!(
             peering_table.add(peering_empty_name),
             Err(ConfigError::MissingIdentifier("Peering name"))
@@ -626,7 +621,7 @@ pub mod test {
 
         /* peering with duplicate name cannot be added to the table */
         let peering_duplicate_name =
-            VpcPeering::new("VPC-1--VPC-2", man_vpc1_with_vpc2(), man_vpc2(), None);
+            VpcPeering::with_default_group("VPC-1--VPC-2", man_vpc1_with_vpc2(), man_vpc2());
         assert_eq!(
             peering_table.add(peering_duplicate_name),
             Err(ConfigError::DuplicateVpcPeeringId(
@@ -945,7 +940,7 @@ pub mod test {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -961,11 +956,10 @@ pub mod test {
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
                 },
-                None,
             ))
             .unwrap();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -981,7 +975,6 @@ pub mod test {
                         Some(PortRange::new(5001, 7000).unwrap()),
                     ))],
                 },
-                None,
             ))
             .unwrap();
 
@@ -1016,7 +1009,7 @@ pub mod test {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -1032,11 +1025,11 @@ pub mod test {
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
                 },
-                None,
             ))
             .unwrap();
+
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -1049,7 +1042,6 @@ pub mod test {
                     name: "vpc3".to_string(),
                     exposes: vec![VpcExpose::empty().set_default()],
                 },
-                None,
             ))
             .unwrap();
 
@@ -1072,7 +1064,7 @@ pub mod test {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -1085,11 +1077,10 @@ pub mod test {
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
                 },
-                None,
             ))
             .unwrap();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -1102,7 +1093,6 @@ pub mod test {
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
                 },
-                None,
             ))
             .unwrap();
 
@@ -1125,7 +1115,7 @@ pub mod test {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -1138,11 +1128,10 @@ pub mod test {
                     name: "vpc2".to_string(),
                     exposes: vec![VpcExpose::empty().set_default()],
                 },
-                None,
             ))
             .unwrap();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -1155,7 +1144,6 @@ pub mod test {
                     name: "vpc3".to_string(),
                     exposes: vec![VpcExpose::empty().set_default()],
                 },
-                None,
             ))
             .unwrap();
 
@@ -1180,7 +1168,7 @@ pub mod test {
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table
-            .add(VpcPeering::new(
+            .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
                 VpcManifest {
                     name: "vpc1".to_string(),
@@ -1205,7 +1193,6 @@ pub mod test {
                         VpcExpose::empty().set_default(),
                     ],
                 },
-                None,
             ))
             .unwrap();
 
