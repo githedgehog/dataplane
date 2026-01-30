@@ -105,6 +105,11 @@ impl GwGroup {
     pub fn get_member_pos(&self, name: &str) -> Option<usize> {
         self.members.iter().position(|m| m.name.as_str() == name)
     }
+
+    #[must_use]
+    pub fn get_member_at(&self, index: usize) -> Option<&GwGroupMember> {
+        self.members.get(index)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -128,10 +133,18 @@ impl GwGroupTable {
     pub fn iter(&self) -> impl Iterator<Item = &GwGroup> {
         self.0.values()
     }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut GwGroup> {
+        self.0.values_mut()
+    }
     #[must_use]
     pub fn get_group_member(&self, group: &str, name: &str) -> Option<&GwGroupMember> {
         self.get_group(group)
             .map(|group| group.get_member_by_name(name))?
+    }
+    #[must_use]
+    pub fn get_group_member_rank(&self, group: &str, name: &str) -> Option<usize> {
+        self.get_group(group)
+            .map(|group| group.get_member_pos(name))?
     }
 }
 
@@ -292,22 +305,23 @@ mod test {
 
     #[test]
     fn test_bgp_community_setup() {
-        let gwtable = build_sample_gw_groups();
         let comtable = sample_community_table();
+        let mut gwtable = build_sample_gw_groups();
+        gwtable.iter_mut().for_each(|group| group.sort_members());
 
         println!("{gwtable}");
         println!("{comtable}");
 
-        let member = gwtable.get_group_member("gw-group-1", "gw1").unwrap();
-        let com = comtable.get_community(member.priority).unwrap();
-        assert_eq!(com, "65000:801");
-
-        let member = gwtable.get_group_member("gw-group-2", "gw1").unwrap();
-        let com = comtable.get_community(member.priority).unwrap();
+        let rank = gwtable.get_group_member_rank("gw-group-1", "gw1").unwrap();
+        let com = comtable.get_community(rank).unwrap();
         assert_eq!(com, "65000:802");
 
-        let member = gwtable.get_group_member("gw-group-3", "gw1").unwrap();
-        let com = comtable.get_community(member.priority).unwrap();
-        assert_eq!(com, "65000:803");
+        let rank = gwtable.get_group_member_rank("gw-group-2", "gw1").unwrap();
+        let com = comtable.get_community(rank).unwrap();
+        assert_eq!(com, "65000:801");
+
+        let rank =  gwtable.get_group_member_rank("gw-group-3", "gw1").unwrap();
+        let com = comtable.get_community(rank).unwrap();
+        assert_eq!(com, "65000:800");
     }
 }
