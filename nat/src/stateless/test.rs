@@ -4,11 +4,11 @@
 //! NAT configuration tests .. and actual NAT function
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use config::GwConfig;
     use config::external::ExternalConfigBuilder;
     use config::external::communities::PriorityCommunityTable;
-    use config::external::gwgroup::GwGroupTable;
+    use config::external::gwgroup::{GwGroup, GwGroupTable};
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
@@ -509,11 +509,11 @@ mod tests {
         let mut manifest43 = VpcManifest::new("VPC-4");
         add_expose(&mut manifest43, expose431);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
-        let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13, None);
-        let peering14 = VpcPeering::new("VPC-1--VPC-4", manifest14, manifest41, None);
-        let peering24 = VpcPeering::new("VPC-2--VPC-4", manifest24, manifest42, None);
-        let peering34 = VpcPeering::new("VPC-3--VPC-4", manifest34, manifest43, None);
+        let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
+        let peering31 = VpcPeering::with_default_group("VPC-3--VPC-1", manifest31, manifest13);
+        let peering14 = VpcPeering::with_default_group("VPC-1--VPC-4", manifest14, manifest41);
+        let peering24 = VpcPeering::with_default_group("VPC-2--VPC-4", manifest24, manifest42);
+        let peering34 = VpcPeering::with_default_group("VPC-3--VPC-4", manifest34, manifest43);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -530,7 +530,7 @@ mod tests {
     // Use the provided overlay with some default configuration to build a valid GwConfig. This
     // configuration is not really relevant to our tests, we just want a valid GwConfig object to
     // work with.
-    fn build_gwconfig_from_overlay(overlay: Overlay) -> GwConfig {
+    pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> GwConfig {
         let device_config = DeviceConfig::new();
 
         let vtep = InterfaceConfig::new(
@@ -552,13 +552,16 @@ mod tests {
             vtep: None,
         };
 
+        let mut group_table = GwGroupTable::new();
+        group_table.add_group(GwGroup::new("default")).unwrap();
+
         let mut external_builder = ExternalConfigBuilder::default();
         external_builder.gwname("test-gw".to_string());
         external_builder.genid(1);
         external_builder.device(device_config);
         external_builder.underlay(underlay);
         external_builder.overlay(overlay);
-        external_builder.gwgroups(GwGroupTable::new());
+        external_builder.gwgroups(group_table);
         external_builder.communities(PriorityCommunityTable::new());
         let external_config = external_builder
             .build()
@@ -770,7 +773,7 @@ mod tests {
             add_expose(&mut manifest21, expose);
         }
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
+        let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
