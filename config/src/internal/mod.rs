@@ -17,6 +17,8 @@ use derive_builder::Builder;
 
 use super::ConfigResult;
 use crate::external::GenId;
+use crate::external::communities::PriorityCommunityTable;
+use crate::external::gwgroup::GwGroupTable;
 use crate::internal::device::DeviceConfig;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 use crate::internal::routing::bfd::BfdPeer;
@@ -36,6 +38,8 @@ pub struct InternalConfig {
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
     pub bfd_peers: Vec<BfdPeer>,
+    pub commtable: PriorityCommunityTable,
+    pub gwgrouptable: GwGroupTable,
 }
 
 impl InternalConfig {
@@ -51,6 +55,8 @@ impl InternalConfig {
             plist_table: PrefixListTable::new(),
             rmap_table: RouteMapTable::new(),
             bfd_peers: vec![],
+            commtable: PriorityCommunityTable::new(),
+            gwgrouptable: GwGroupTable::new(),
         }
     }
     pub fn set_vtep(&mut self, vtep: Option<VtepConfig>) {
