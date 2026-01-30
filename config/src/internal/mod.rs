@@ -31,6 +31,7 @@ use crate::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 #[derive(Clone, Debug)]
 /* Main internal GW configuration */
 pub struct InternalConfig {
+    pub gwname: String,
     pub dev_cfg: DeviceConfig,
     pub frr: Frr,
     pub vtep: Option<VtepConfig>, // As a network interface
@@ -48,6 +49,7 @@ impl InternalConfig {
         // Frr profile is not configurable for the time being
         let frr = Frr::new(routing::frr::FrrProfile::Datacenter, gwname);
         Self {
+            gwname: gwname.to_string(),
             dev_cfg,
             frr,
             vtep: None,
