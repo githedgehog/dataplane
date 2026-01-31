@@ -10,6 +10,7 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 
+use crate::flow_table::flow_key;
 use crate::flow_table::{FlowKey, FlowTable};
 
 use tracectl::trace_target;
@@ -36,20 +37,21 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             if !packet.is_done() && packet.meta().is_overlay() {
-                let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).ok();
-                if let Some(flow_key) = flow_key
-                    && let Some(flow_info) = self.flow_table.lookup(&flow_key)
-                {
-                    debug!(
-                        "{}: Tagging packet with flow info for flow key {:?}",
-                        self.name, flow_key
-                    );
-                    packet.meta_mut().flow_info = Some(flow_info);
+                if let Ok(flow_key) = FlowKey::try_from(flow_key::Uni(&packet)) {
+                    if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
+                        debug!(
+                            "{}: Tagging packet with flow info for flow key {:?}",
+                            self.name, flow_key
+                        );
+                        packet.meta_mut().flow_info = Some(flow_info);
+                    } else {
+                        debug!(
+                            "{}: No flow info found for flow key {:?}",
+                            self.name, flow_key
+                        );
+                    }
                 } else {
-                    debug!(
-                        "{}: No flow info found for flow key {:?}",
-                        self.name, flow_key
-                    );
+                    debug!("{}: can't build flow key for packet", self.name);
                 }
             }
             packet.enforce()
