@@ -164,7 +164,7 @@ impl K8sClient {
                         return;
                     }
 
-                    let gwconfig = GwConfig::new(&k8s_client.hostname, external_config);
+                    let gwconfig = GwConfig::new(external_config);
 
                     // request the config processor to apply the config and update status on success
                     match k8s_client.client.apply_config(gwconfig).await {

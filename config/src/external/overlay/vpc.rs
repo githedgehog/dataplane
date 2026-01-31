@@ -148,7 +148,7 @@ impl Vpc {
                     local: local.clone(),
                     remote: remote.clone(),
                     remote_id: remote_id.clone(),
-                    gwgroup: p.gw_group.clone(),
+                    gwgroup: p.gwgroup.clone(),
                     adv_communities: vec![],
                 }
             })

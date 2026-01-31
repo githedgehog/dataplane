@@ -58,7 +58,6 @@ impl GwConfigMeta {
 
 #[derive(Clone, Debug)]
 pub struct GwConfig {
-    pub gwname: String,                   /* name of gateway */
     pub meta: GwConfigMeta,               /* config metadata */
     pub external: ExternalConfig,         /* external config: received */
     pub internal: Option<InternalConfig>, /* internal config: built by gw from internal */
@@ -69,9 +68,8 @@ impl GwConfig {
     /// Create a [`GwConfig`] object with a given [`ExternalConfig`].
     //////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new(gwname: &str, external: ExternalConfig) -> Self {
+    pub fn new(external: ExternalConfig) -> Self {
         Self {
-            gwname: gwname.to_owned(),
             meta: GwConfigMeta::new(external.genid),
             external,
             internal: None,
@@ -84,7 +82,7 @@ impl GwConfig {
     //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn blank() -> Self {
-        Self::new("", ExternalConfig::new())
+        Self::new(ExternalConfig::new(""))
     }
 
     //////////////////////////////////////////////////////////////////
@@ -107,6 +105,6 @@ impl GwConfig {
     //////////////////////////////////////////////////////////////////
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating external config with genid {} ..", self.genid());
-        self.external.validate(&self.gwname)
+        self.external.validate()
     }
 }

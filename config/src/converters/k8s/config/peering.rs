@@ -15,11 +15,7 @@ impl TryFrom<(&SubnetMap, &str, &GatewayAgentPeeringsPeering)> for VpcManifest {
     ) -> Result<Self, Self::Error> {
         let mut manifest = VpcManifest::new(vpc_name);
         for expose in peering.expose.as_ref().unwrap_or(&vec![]) {
-            manifest
-                .add_expose(VpcExpose::try_from((subnets, expose))?)
-                .map_err(|e| {
-                    FromK8sConversionError::Invalid(format!("Failed to add expose: {e}"))
-                })?;
+            manifest.add_expose(VpcExpose::try_from((subnets, expose))?);
         }
         Ok(manifest)
     }
@@ -54,8 +50,8 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
 
             Ok(VpcPeering::new(peering_name, left, right, gwgroup))
         } else {
-            Err(FromK8sConversionError::Invalid(
-                "Missing peering".to_string(),
+            Err(FromK8sConversionError::MissingData(
+                "Vpc reference in peering".to_string(),
             ))
         }
     }
