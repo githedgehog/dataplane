@@ -4,21 +4,11 @@
 #[cfg(test)]
 mod tests {
     use crate::StatefulNat;
-    use config::external::ExternalConfigBuilder;
-    use config::external::communities::PriorityCommunityTable;
-    use config::external::gwgroup::GwGroupTable;
     use config::external::overlay::Overlay;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
-    use config::external::underlay::Underlay;
-    use config::internal::device::DeviceConfig;
-
-    use config::GwConfig;
-    use config::internal::interfaces::interface::{IfVtepConfig, InterfaceConfig, InterfaceType};
-    use config::internal::routing::bgp::BgpConfig;
-    use config::internal::routing::vrf::VrfConfig;
     use etherparse::Icmpv4Type;
     use flow_entry::flow_table::flow_key::Uni;
     use flow_entry::flow_table::{FlowKey, FlowTable, IpProtoKey, UdpProtoKey};
@@ -44,6 +34,7 @@ mod tests {
     use tracing_test::traced_test;
 
     const ONE_MINUTE: Duration = Duration::from_secs(60);
+    use crate::stateless::test::tests::build_gwconfig_from_overlay;
 
     fn addr_v4(addr: &str) -> Ipv4Addr {
         Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
@@ -51,46 +42,6 @@ mod tests {
 
     fn vni(vni: u32) -> Vni {
         Vni::new_checked(vni).expect("Failed to create VNI")
-    }
-
-    // Use a default configuration to build a valid GwConfig, the details are not really relevant to
-    // our tests
-    fn build_sample_config(overlay: Overlay) -> GwConfig {
-        let device_config = DeviceConfig::new();
-
-        let vtep = InterfaceConfig::new(
-            "vtep",
-            InterfaceType::Vtep(IfVtepConfig {
-                mac: Some(Mac::from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x01])),
-                local: Ipv4Addr::from_str("127.0.0.1").expect("Failed to create local address"),
-                ttl: None,
-                vni: None,
-            }),
-            false,
-        );
-        let mut vrf_config = VrfConfig::new("default", None, true);
-        vrf_config.add_interface_config(vtep);
-        let bgp = BgpConfig::new(1);
-        vrf_config.set_bgp(bgp);
-        let underlay = Underlay {
-            vrf: vrf_config,
-            vtep: None,
-        };
-
-        let mut external_builder = ExternalConfigBuilder::default();
-        external_builder.gwname("test-gw".to_string());
-        external_builder.genid(1);
-        external_builder.device(device_config);
-        external_builder.underlay(underlay);
-        external_builder.overlay(overlay);
-        external_builder.gwgroups(GwGroupTable::new());
-        external_builder.communities(PriorityCommunityTable::new());
-
-        let external_config = external_builder
-            .build()
-            .expect("Failed to build external config");
-
-        GwConfig::new(external_config)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -214,11 +165,11 @@ mod tests {
         let mut manifest43 = VpcManifest::new("VPC-4");
         add_expose(&mut manifest43, expose431);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
-        let peering31 = VpcPeering::new("VPC-3--VPC-1", manifest31, manifest13, None);
-        let peering14 = VpcPeering::new("VPC-1--VPC-4", manifest14, manifest41, None);
-        let peering24 = VpcPeering::new("VPC-2--VPC-4", manifest24, manifest42, None);
-        let peering34 = VpcPeering::new("VPC-3--VPC-4", manifest34, manifest43, None);
+        let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
+        let peering31 = VpcPeering::with_default_group("VPC-3--VPC-1", manifest31, manifest13);
+        let peering14 = VpcPeering::with_default_group("VPC-1--VPC-4", manifest14, manifest41);
+        let peering24 = VpcPeering::with_default_group("VPC-2--VPC-4", manifest24, manifest42);
+        let peering34 = VpcPeering::with_default_group("VPC-3--VPC-4", manifest34, manifest43);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -251,7 +202,7 @@ mod tests {
         let mut manifest21 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest21, expose211);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
+        let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -312,7 +263,7 @@ mod tests {
     #[traced_test]
     #[allow(clippy::too_many_lines)]
     fn test_full_config() {
-        let mut config = build_sample_config(build_overlay_4vpcs());
+        let mut config = build_gwconfig_from_overlay(build_overlay_4vpcs());
         config.validate().unwrap();
 
         // Check that we can validate the allocator
@@ -392,7 +343,7 @@ mod tests {
         assert_eq!(idle_timeout, ONE_MINUTE);
 
         // Update config and allocator
-        let mut new_config = build_sample_config(build_overlay_2vpcs());
+        let mut new_config = build_gwconfig_from_overlay(build_overlay_2vpcs());
         new_config.validate().unwrap();
         allocator
             .update_allocator(&new_config.external.overlay.vpc_table)
@@ -478,7 +429,7 @@ mod tests {
         let mut manifest21 = VpcManifest::new("VPC-2");
         add_expose(&mut manifest21, expose211);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
+        let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -489,7 +440,7 @@ mod tests {
     #[test]
     #[traced_test]
     fn test_full_config_no_nat() {
-        let mut config = build_sample_config(build_overlay_2vpcs_no_nat());
+        let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs_no_nat());
         config.validate().unwrap();
 
         // Check that we can validate the allocator
@@ -533,7 +484,7 @@ mod tests {
     #[test]
     #[traced_test]
     fn test_icmp_echo_nat() {
-        let mut config = build_sample_config(build_overlay_2vpcs());
+        let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs());
         config.validate().unwrap();
 
         // Check that we can validate the allocator
@@ -700,7 +651,7 @@ mod tests {
     #[test]
     #[traced_test]
     fn test_icmp_error_nat() {
-        let mut config = build_sample_config(build_overlay_2vpcs());
+        let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs());
         config.validate().unwrap();
 
         // Check that we can validate the allocator
@@ -844,7 +795,7 @@ mod tests {
         add_expose(&mut manifest21, expose211);
         add_expose(&mut manifest21, expose212);
 
-        let peering12 = VpcPeering::new("VPC-1--VPC-2", manifest12, manifest21, None);
+        let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering12).expect("Failed to add peering");
@@ -854,7 +805,7 @@ mod tests {
 
     #[test]
     fn test_default_expose() {
-        let mut config = build_sample_config(build_overlay_2vpcs_with_default());
+        let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs_with_default());
         config.validate().unwrap();
 
         // Check that we can validate the allocator

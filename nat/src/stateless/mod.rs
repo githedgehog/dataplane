@@ -5,7 +5,7 @@
 
 pub mod natrw;
 pub mod setup;
-mod test;
+pub(crate) mod test;
 
 use crate::icmp_error_msg::{
     IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,

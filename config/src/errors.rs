@@ -58,6 +58,8 @@ pub enum ConfigError {
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
     MissingParameter(&'static str),
+    #[error("Incomplete: {0}")]
+    Incomplete(String),
     #[error("Multiple instances of {0} found, expected {1}")]
     TooManyInstances(&'static str, usize),
     #[error("Internal error: {0}")]
@@ -101,9 +103,10 @@ pub enum ConfigError {
     Tracing(#[from] tracectl::TraceCtlError),
 
     // Community mappings
-    #[error("Priority {0} has no community mapping")]
-    UnmappedPriority(u32),
-    #[error("Communiity {0} is mapped from distinct priorities")]
+    #[error("Could not assign BGP community to VPC peering {0}")]
+    NoCommunityAvailable(String),
+
+    #[error("Community {0} is mapped from distinct priorities")]
     DuplicateCommunity(String),
 }
 

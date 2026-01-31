@@ -14,7 +14,8 @@ use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
 use overlay::Overlay;
-use tracing::{debug, warn};
+use overlay::vpc::Peering;
+use tracing::debug;
 use underlay::Underlay;
 
 /// Alias for a config generation number
@@ -49,71 +50,46 @@ impl ExternalConfig {
     }
 
     /// Check the gateway group for a peering
-    fn check_peering_gwgroup(
-        gwname: &str,
-        gwgroup: &str,
-        peering_name: &str,
-        gwgroups: &GwGroupTable,
-        comtable: &PriorityCommunityTable,
-    ) -> Result<Option<String>, ConfigError> {
-        debug!("Peering {peering_name} is to be handled by gateway group '{gwgroup}'",);
-
-        // lookup group referred by peering: it must exist
-        let group = gwgroups
-            .get_group(gwgroup)
-            .ok_or_else(|| ConfigError::NoSuchGroup(gwgroup.to_owned()))?;
-
-        // sort out the group. Can't do in place because we don't want to modify the
-        // external config received
-        let group = group.sorted();
-
-        // lookup ourselves in the group; we care about our position (ranking) in the
-        // group and not about the priority whose absolute value is meaningless.
-        let Some(pos) = group.get_member_pos(gwname) else {
-            warn!("Gateway {gwname} is NOT part of group {}", group.name());
-            return Ok(None);
-        };
-        // need conversion to u32 as that is the key for the community table
-        let pos = u32::try_from(pos).map_err(|e| ConfigError::InternalFailure(e.to_string()))?;
-
-        // We should be serving this peering.
-        debug!("Gateway {gwname} is at position {pos} of {}", group.name());
-
-        // Get the community corresponding to the position/ordering of this gateway in the group.
-        // If no community exist for that position, we should fail, although we don't now since
-        // the community table may not be populated.
-        // To guarantee that we can always tag with a community in the set of |C| communities,
-        // the size of a group |G| must be no larger than |C|.
-        if let Ok(community) = comtable.get_community(pos) {
-            Ok(Some(community.clone()))
-        } else {
-            warn!("No community found for preference {pos}");
-            Ok(None)
-        }
-    }
-
-    fn validate_peering_gw_groups(&mut self) -> ConfigResult {
+    fn check_peering_gwgroup(&self, peering: &Peering) -> ConfigResult {
         let gwname = &self.gwname;
+        let peering_name = &peering.name;
         let gwgroups = &self.gwgroups;
         let comtable = &self.communities;
-        for vpc in self.overlay.vpc_table.values_mut() {
-            for peering in &mut vpc.peerings {
-                if let Some(gwgroup) = &peering.gwgroup
-                    && let Some(community) = Self::check_peering_gwgroup(
-                        gwname,
-                        gwgroup,
-                        &peering.name,
-                        gwgroups,
-                        comtable,
-                    )?
-                {
-                    debug!(
-                        "Assigned community {community} to peering {}",
-                        &peering.name
-                    );
-                    peering.adv_communities.push(community.clone());
-                }
-            }
+
+        // check that peering refers to a group
+        let group_name = peering
+            .gwgroup
+            .as_ref()
+            .ok_or(ConfigError::Incomplete(format!(
+                "Peering {} is not mapped to any gateway group",
+                peering.name
+            )))?;
+
+        // check that such a group exists
+        let group = gwgroups
+            .get_group(group_name)
+            .ok_or_else(|| ConfigError::NoSuchGroup(group_name.to_owned()))?;
+
+        // sort out members
+        let group = group.sorted();
+
+        // lookup ourselves in the group
+        let Some(rank) = group.get_member_pos(gwname) else {
+            // We may not be part of the group serving a peering, which is fine
+            return Ok(());
+        };
+
+        // we're part of the group. What's our community?
+        comtable
+            .get_community(rank)
+            .ok_or(ConfigError::NoCommunityAvailable(peering_name.clone()))?;
+
+        Ok(())
+    }
+
+    fn validate_peering_gw_groups(&self) -> ConfigResult {
+        for peering in self.overlay.vpc_table.peerings() {
+            self.check_peering_gwgroup(peering)?;
         }
         Ok(())
     }

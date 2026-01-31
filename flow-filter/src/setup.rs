@@ -177,7 +177,6 @@ mod tests {
             },
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
-            adv_communities: vec![],
         });
 
         vpc_table.add(vpc1.clone()).unwrap();
@@ -220,7 +219,6 @@ mod tests {
             },
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
-            adv_communities: vec![],
         });
 
         let vpcs = vec![&vpc];
@@ -256,7 +254,6 @@ mod tests {
             },
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
-            adv_communities: vec![],
         });
 
         vpc_table.add(vpc1).unwrap();

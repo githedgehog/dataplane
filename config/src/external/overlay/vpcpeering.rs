@@ -601,6 +601,19 @@ impl VpcPeering {
             gwgroup,
         }
     }
+
+    /// Create a VpcPeering mapped to a group called "default".
+    /// This should only be used for tests
+    #[must_use]
+    pub fn with_default_group(name: &str, left: VpcManifest, right: VpcManifest) -> Self {
+        Self {
+            name: name.to_owned(),
+            left,
+            right,
+            gwgroup: Some("default".to_string()),
+        }
+    }
+
     #[cfg(test)]
     /// Validate A VpcPeering. Only used in tests. Dataplane validates `Peerings`
     pub fn validate(&self) -> ConfigResult {

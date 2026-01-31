@@ -17,6 +17,8 @@ use derive_builder::Builder;
 
 use super::ConfigResult;
 use crate::external::GenId;
+use crate::external::communities::PriorityCommunityTable;
+use crate::external::gwgroup::GwGroupTable;
 use crate::internal::device::DeviceConfig;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 use crate::internal::routing::bfd::BfdPeer;
@@ -29,6 +31,7 @@ use crate::internal::routing::vrf::{VrfConfig, VrfConfigTable};
 #[derive(Clone, Debug)]
 /* Main internal GW configuration */
 pub struct InternalConfig {
+    pub gwname: String,
     pub dev_cfg: DeviceConfig,
     pub frr: Frr,
     pub vtep: Option<VtepConfig>, // As a network interface
@@ -36,6 +39,8 @@ pub struct InternalConfig {
     pub plist_table: PrefixListTable,
     pub rmap_table: RouteMapTable,
     pub bfd_peers: Vec<BfdPeer>,
+    pub commtable: PriorityCommunityTable,
+    pub gwgrouptable: GwGroupTable,
 }
 
 impl InternalConfig {
@@ -44,6 +49,7 @@ impl InternalConfig {
         // Frr profile is not configurable for the time being
         let frr = Frr::new(routing::frr::FrrProfile::Datacenter, gwname);
         Self {
+            gwname: gwname.to_string(),
             dev_cfg,
             frr,
             vtep: None,
@@ -51,6 +57,8 @@ impl InternalConfig {
             plist_table: PrefixListTable::new(),
             rmap_table: RouteMapTable::new(),
             bfd_peers: vec![],
+            commtable: PriorityCommunityTable::new(),
+            gwgrouptable: GwGroupTable::new(),
         }
     }
     pub fn set_vtep(&mut self, vtep: Option<VtepConfig>) {
