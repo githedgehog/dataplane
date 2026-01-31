@@ -15,12 +15,7 @@ impl PriorityCommunityTable {
     pub fn new() -> Self {
         Self::default()
     }
-    #[must_use]
-    /// Get a reference to the inner map
-    pub fn inner(&self) -> &HashMap<usize, String> {
-        &self.0
-    }
-    /// Insert a priority-to-community mapping
+    /// Insert a community
     pub fn insert(&mut self, prio: usize, community: &str) -> Result<(), ConfigError> {
         if self.0.iter().any(|(_, comm)| comm == community) {
             return Err(ConfigError::DuplicateCommunity(community.to_string()));
@@ -45,7 +40,7 @@ impl Display for PriorityCommunityTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  ━━━━━━━ Community mappings ━━━━━━━")?;
         writeln!(f, "{}", COMMUNITY_MAPPING_FMT!("rank", "community"))?;
-        for (rank, comm) in self.inner() {
+        for (rank, comm) in &self.0 {
             writeln!(f, "{}", COMMUNITY_MAPPING_FMT!(rank, comm))?;
         }
         Ok(())
