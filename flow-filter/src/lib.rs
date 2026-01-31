@@ -16,7 +16,7 @@
 use crate::tables::RemoteData;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTransport};
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 use std::num::NonZero;
@@ -77,7 +77,7 @@ impl FlowFilter {
         });
 
         // For Display
-        let tuple = FlowTuple::new(src_ip, dst_ip, ports);
+        let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
 
         if let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
             debug!(
@@ -125,6 +125,7 @@ impl std::fmt::Display for OptPort {
 
 // Only used for Display
 struct FlowTuple {
+    src_vpcd: VpcDiscriminant,
     src_addr: IpAddr,
     dst_addr: IpAddr,
     src_port: OptPort,
@@ -132,9 +133,15 @@ struct FlowTuple {
 }
 
 impl FlowTuple {
-    fn new(src_addr: IpAddr, dst_addr: IpAddr, ports: Option<(u16, u16)>) -> Self {
+    fn new(
+        src_vpcd: VpcDiscriminant,
+        src_addr: IpAddr,
+        dst_addr: IpAddr,
+        ports: Option<(u16, u16)>,
+    ) -> Self {
         let ports = ports.unzip();
         Self {
+            src_vpcd,
             src_addr,
             dst_addr,
             src_port: OptPort(ports.0),
@@ -147,8 +154,8 @@ impl std::fmt::Display for FlowTuple {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "src={}{}, dst={}{}",
-            self.src_addr, self.src_port, self.dst_addr, self.dst_port
+            "srcVpc={} src={}{} dst={}{}",
+            self.src_vpcd, self.src_addr, self.src_port, self.dst_addr, self.dst_port
         )
     }
 }
@@ -953,13 +960,20 @@ mod tests {
 
     #[test]
     fn test_format_packet_addrs_ports() {
+        let src_vpcd = VpcDiscriminant::VNI(3000.try_into().unwrap());
         let src_addr = "10.0.0.1".parse().unwrap();
         let dst_addr = "20.0.0.2".parse().unwrap();
 
-        let result = FlowTuple::new(src_addr, dst_addr, Some((8080, 443)));
-        assert_eq!(result.to_string(), "src=10.0.0.1:8080, dst=20.0.0.2:443");
+        let result = FlowTuple::new(src_vpcd, src_addr, dst_addr, Some((8080, 443)));
+        assert_eq!(
+            result.to_string(),
+            "srcVpc=VNI(3000) src=10.0.0.1:8080 dst=20.0.0.2:443"
+        );
 
-        let result_no_ports = FlowTuple::new(src_addr, dst_addr, None);
-        assert_eq!(result_no_ports.to_string(), "src=10.0.0.1, dst=20.0.0.2");
+        let result_no_ports = FlowTuple::new(src_vpcd, src_addr, dst_addr, None);
+        assert_eq!(
+            result_no_ports.to_string(),
+            "srcVpc=VNI(3000) src=10.0.0.1 dst=20.0.0.2"
+        );
     }
 }
