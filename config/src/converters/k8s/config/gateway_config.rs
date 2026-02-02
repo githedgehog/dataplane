@@ -56,7 +56,7 @@ fn validate_metadata(ga: &GatewayAgent) -> Result<K8sInput, FromK8sConversionErr
             "Missing namespace".to_string(),
         ))?;
 
-    if namespace.as_str() != "fab" {
+    if namespace.as_str() != "default" {
         return Err(FromK8sConversionError::K8sInfra(format!(
             "Invalid namespace {namespace}"
         )));
