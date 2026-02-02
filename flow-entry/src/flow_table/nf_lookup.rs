@@ -16,12 +16,12 @@ use crate::flow_table::{FlowKey, FlowTable};
 use tracectl::trace_target;
 trace_target!("flow-lookup", LevelFilter::INFO, &["pipeline"]);
 
-pub struct LookupNF {
+pub struct FlowLookup {
     name: String,
     flow_table: Arc<FlowTable>,
 }
 
-impl LookupNF {
+impl FlowLookup {
     pub fn new(name: &str, flow_table: Arc<FlowTable>) -> Self {
         Self {
             name: name.to_string(),
@@ -30,7 +30,7 @@ impl LookupNF {
     }
 }
 
-impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
@@ -83,12 +83,12 @@ mod test {
     use crate::flow_table::ExpirationsNF;
     use crate::flow_table::FlowKey;
     use crate::flow_table::FlowTable;
-    use crate::flow_table::nf_lookup::LookupNF;
+    use crate::flow_table::nf_lookup::FlowLookup;
 
     #[test]
     fn test_lookup_nf() {
         let flow_table = Arc::new(FlowTable::default());
-        let mut lookup_nf = LookupNF::new("test_lookup_nf", flow_table.clone());
+        let mut lookup_nf = FlowLookup::new("test_lookup_nf", flow_table.clone());
         let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
         let src_ip = "1.2.3.4".parse::<UnicastIpAddr>().unwrap();
         let dst_ip = "5.6.7.8".parse::<IpAddr>().unwrap();
@@ -147,7 +147,7 @@ mod test {
     #[test]
     fn test_lookup_nf_with_expiration_nf() {
         let flow_table = Arc::new(FlowTable::default());
-        let lookup_nf = LookupNF::new("lookup_nf", flow_table.clone());
+        let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
         let flowinfo_creator = FlowInfoCreator::new(flow_table.clone(), Duration::from_secs(1));
         let expirations_nf = ExpirationsNF::new(flow_table.clone());
         let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
@@ -184,7 +184,7 @@ mod test {
     #[test]
     fn test_lookups_with_related_flows() {
         let flow_table = Arc::new(FlowTable::default());
-        let lookup_nf = LookupNF::new("lookup_nf", flow_table.clone());
+        let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
         let expirations_nf = ExpirationsNF::new(flow_table.clone());
         let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
             .add_stage(lookup_nf)
