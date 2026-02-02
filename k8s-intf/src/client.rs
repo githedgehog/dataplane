@@ -40,8 +40,8 @@ pub async fn watch_gateway_agent_crd(
     callback: impl AsyncFn(&GatewayAgent),
 ) -> Result<(), WatchError> {
     let client = Client::try_default().await?;
-    // Relevant gateway agent objects are in the "fab" namespace
-    let gws: Api<GatewayAgent> = Api::namespaced(client.clone(), "fab");
+    // Relevant gateway agent objects are in the "default" namespace
+    let gws: Api<GatewayAgent> = Api::namespaced(client.clone(), "default");
 
     info!(
         "Starting K8s GatewayAgent watcher. GW_API_VERSION = {}",
@@ -89,7 +89,7 @@ pub async fn replace_gateway_status(
     status: &GatewayAgentStatus,
 ) -> Result<(), ReplaceStatusError> {
     let client = Client::try_default().await?;
-    let api: Api<GatewayAgent> = Api::namespaced(client.clone(), "fab");
+    let api: Api<GatewayAgent> = Api::namespaced(client.clone(), "default");
 
     for attempt_num in 0..NUM_CONFLICT_RETRIES {
         let mut status_obj = api.get_status(gateway_object_name).await?;

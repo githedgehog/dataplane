@@ -33,7 +33,7 @@ impl TypeGenerator for LegalValue<GatewayAgent> {
             metadata: ObjectMeta {
                 name: Some(simple_hostname(d)?),
                 generation: Some(d.gen_i64(Bound::Excluded(&0), Bound::Unbounded)?),
-                namespace: Some("fab".to_string()),
+                namespace: Some("default".to_string()),
                 ..Default::default()
             },
             spec: d.produce::<LegalValue<GatewayAgentSpec>>()?.take(),
