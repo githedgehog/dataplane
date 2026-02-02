@@ -163,11 +163,10 @@ type AllocationMapping<I> = (Option<AllocatedIpPort<I>>, Option<AllocatedIpPort<
 
 impl<I: NatIpWithBitmap> Display for AllocatedIpPort<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (port_str, icmp_data_str) = match self.port() {
-            NatPort::Port(port) => (format!(":{}", port.get()), String::new()),
-            NatPort::Identifier(id) => (String::new(), format!("<id:{id}>")),
-        };
-        write!(f, "{}{}{}", self.ip(), port_str, icmp_data_str)
+        match self.port() {
+            NatPort::Port(port) => write!(f, "{}:{}", self.ip(), port.get()),
+            NatPort::Identifier(id) => write!(f, "{}<id:{id}>", self.ip()),
+        }
     }
 }
 
