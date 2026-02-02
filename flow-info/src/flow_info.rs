@@ -30,6 +30,16 @@ pub enum FlowStatus {
     Removed = 2,
 }
 
+impl Display for FlowStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Expired => write!(f, "expired"),
+            Self::Removed => write!(f, "removed"),
+        }
+    }
+}
+
 impl TryFrom<u8> for FlowStatus {
     type Error = FlowInfoError;
 
