@@ -17,7 +17,7 @@ pub use table::FlowTable;
 pub use ::flow_info::atomic_instant::AtomicInstant;
 pub use ::flow_info::*;
 pub use nf_expirations::ExpirationsNF;
-pub use nf_lookup::LookupNF;
+pub use nf_lookup::FlowLookup;
 
 use tracectl::trace_target;
 trace_target!("flow-table", LevelFilter::INFO, &["pipeline"]);

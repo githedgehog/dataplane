@@ -12,7 +12,7 @@ use super::packet_processor::ipforward::IpForwarder;
 
 use concurrency::sync::Arc;
 
-use flow_entry::flow_table::{ExpirationsNF, FlowTable, LookupNF};
+use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterTableWriter};
 
 use nat::stateful::NatAllocatorWriter;
@@ -85,7 +85,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", writer.clone());
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
-        let flow_lookup_nf = LookupNF::new("flow-lookup", flow_table.clone());
+        let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
@@ -93,7 +93,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         DynPipeline::new()
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
-            .add_stage(flow_lookup_nf)
+            .add_stage(flow_lookup)
             .add_stage(flow_filter)
             .add_stage(stateless_nat)
             .add_stage(stateful_nat)
