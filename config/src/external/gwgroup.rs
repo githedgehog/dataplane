@@ -32,13 +32,18 @@ impl GwGroupMember {
 impl Ord for GwGroupMember {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let ord_prio = self.priority.cmp(&other.priority);
-        let ord = if ord_prio == Ordering::Equal {
-            self.ipaddress.cmp(&other.ipaddress)
+        let ord_name = other.name.cmp(&self.name);
+        if ord_prio == Ordering::Equal {
+            if ord_name == Ordering::Equal {
+                // we won't see this since GwGroupMembers have distinct
+                // name. Keeping for completeness of the Ord implementation.
+                self.ipaddress.cmp(&other.ipaddress)
+            } else {
+                ord_name
+            }
         } else {
             ord_prio
-        };
-        debug_assert_ne!(ord, Ordering::Equal);
-        ord
+        }
     }
 }
 impl PartialOrd for GwGroupMember {
@@ -64,10 +69,12 @@ impl GwGroup {
     #[must_use]
     pub fn sorted(&self) -> GwGroup {
         let mut clone = self.clone();
+        //N.B. we reverse the operands since want the most preferred first
         clone.members.sort_by(|m1, m2| m2.cmp(m1));
         clone
     }
     pub fn sort_members(&mut self) {
+        //N.B. we reverse the operands since want the most preferred first
         self.members.sort_by(|m1, m2| m2.cmp(m1));
     }
     pub fn add_member(&mut self, member: GwGroupMember) -> Result<(), ConfigError> {
@@ -258,27 +265,36 @@ mod test {
         println!("{gwtable}");
     }
 
-
     #[test]
-    fn test_gw_group_ordering_fallback_ip() {
-        let mut group = GwGroup::new("gw-group-1");
-        group.add_member(GwGroupMember::new("gw1", 100, IpAddr::from_str("172.128.0.1").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw2", 100, IpAddr::from_str("172.128.0.2").unwrap())).unwrap();
-        group.add_member(GwGroupMember::new("gw3", 100, IpAddr::from_str("172.128.0.3").unwrap())).unwrap();
+    fn test_gw_group_member_ord() {
+        let m1 = GwGroupMember::new("gw1", 10, IpAddr::from_str("172.128.0.1").unwrap());
+        let m2 = GwGroupMember::new("gw2", 1, IpAddr::from_str("172.128.1.2").unwrap());
+        let m3 = GwGroupMember::new("gw3", 1, IpAddr::from_str("172.128.1.3").unwrap());
+        let m4 = GwGroupMember::new("gw4", 20, IpAddr::from_str("172.128.0.4").unwrap());
+        let m5 = GwGroupMember::new("gw5", 20, IpAddr::from_str("172.128.0.5").unwrap());
+
+        assert!(m1 > m2);
+        assert!(m2 > m3);
+        assert!(m1 > m3);
+        assert!(m4 > m1);
+        assert!(m4 > m5);
+
+        let mut group = GwGroup::new("test");
+        group.add_member(m1).unwrap();
+        group.add_member(m2).unwrap();
+        group.add_member(m3).unwrap();
+        group.add_member(m4).unwrap();
+        group.add_member(m5).unwrap();
         group.sort_members();
 
         let mut prio = group.members[0].priority;
-        let mut ipaddress = group.members[0].ipaddress;
+        let mut name = &group.members[0].name;
         for m in group.iter() {
-            assert!(m.priority <= prio);
-            assert!(m.ipaddress <= ipaddress);
+            assert!(m.priority <= prio || m.name <= *name);
             prio = m.priority;
-            ipaddress = m.ipaddress;
+            name = &m.name;
         }
-
-        let mut gwtable = GwGroupTable::new();
-        gwtable.add_group(group).unwrap();
-        println!("{gwtable}");
+        println!("{group}");
     }
 
     fn build_sample_gw_groups() -> GwGroupTable {
