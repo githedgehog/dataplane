@@ -14,6 +14,8 @@
 //!   peerings, get dropped.
 
 use crate::tables::RemoteData;
+use flow_info::FlowStatus;
+use flow_info::flow_info_item::ExtractRef;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -45,6 +47,44 @@ impl FlowFilter {
         Self {
             name: name.to_string(),
             tablesr,
+        }
+    }
+
+    /// Attempt to determine destination vpc from packet's flow-info
+    fn check_packet_flow_info<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+    ) -> Option<VpcDiscriminant> {
+        let nfi = &self.name;
+
+        let Some(flow_info) = &packet.meta().flow_info else {
+            debug!("{nfi}: Packet does not contain any flow-info");
+            return None;
+        };
+
+        let Ok(locked_info) = flow_info.locked.read() else {
+            debug!("{nfi}: Warning! failed to lock flow-info for packet");
+            packet.done(DoneReason::InternalFailure);
+            return None;
+        };
+
+        let vpcd = locked_info
+            .dst_vpcd
+            .as_ref()
+            .and_then(|d| d.extract_ref::<VpcDiscriminant>());
+
+        if let Some(dst_vpcd) = vpcd {
+            let status = flow_info.status();
+            if status == FlowStatus::Active {
+                debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
+                Some(*dst_vpcd)
+            } else {
+                debug!("{nfi}: Found flow-info with dst_vpcd {dst_vpcd} but status {status}");
+                None
+            }
+        } else {
+            debug!("{nfi}: No Vpc discriminant found. Will drop packet");
+            None
         }
     }
 
@@ -81,14 +121,21 @@ impl FlowFilter {
 
         if let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
             debug!(
-                "{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {}",
+                "{nfi}: Flow {tuple} is allowed, dst_vpcd is {}",
                 dst_data.vpcd
             );
             packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
             set_nat_requirements(packet, dst_data);
         } else {
-            debug!("{nfi}: Flow {tuple} is NOT allowed, dropping packet",);
-            packet.done(DoneReason::Filtered);
+            debug!("{nfi}: Did not find config for flow {tuple}. Checking flow-info ...");
+
+            if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
+                // FIXME: with the latest changes, we should
+                // probably set the nat requirements here ?
+                packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+            } else {
+                packet.done(DoneReason::Filtered);
+            }
         }
     }
 }
