@@ -1345,6 +1345,7 @@ name = "dataplane-flow-filter"
 version = "0.12.0"
 dependencies = [
  "dataplane-config",
+ "dataplane-flow-info",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
