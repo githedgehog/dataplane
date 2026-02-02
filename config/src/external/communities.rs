@@ -16,11 +16,11 @@ impl PriorityCommunityTable {
         Self::default()
     }
     /// Insert a community
-    pub fn insert(&mut self, prio: usize, community: &str) -> Result<(), ConfigError> {
+    pub fn insert(&mut self, order: usize, community: &str) -> Result<(), ConfigError> {
         if self.0.iter().any(|(_, comm)| comm == community) {
             return Err(ConfigError::DuplicateCommunity(community.to_string()));
         }
-        self.0.insert(prio, community.to_owned());
+        self.0.insert(order, community.to_owned());
         Ok(())
     }
     #[must_use]
