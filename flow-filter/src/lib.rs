@@ -13,7 +13,7 @@
 //!   IP, port corresponding to existing, valid connections between the prefixes in exposed lists of
 //!   peerings, get dropped.
 
-use crate::tables::RemoteData;
+use crate::tables::{RemoteData, VpcdLookupResult};
 use flow_info::FlowStatus;
 use flow_info::flow_info_item::ExtractRef;
 use net::buffer::PacketBufferMut;
@@ -119,13 +119,15 @@ impl FlowFilter {
         // For Display
         let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
 
-        if let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
+        if let Some(VpcdLookupResult::Single(dst_data)) =
+            tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports)
+        {
             debug!(
                 "{nfi}: Flow {tuple} is allowed, dst_vpcd is {}",
                 dst_data.vpcd
             );
             packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
-            set_nat_requirements(packet, dst_data);
+            set_nat_requirements(packet, &dst_data);
         } else
         /* FIXME: only do this if no explicit reject */
         {
@@ -307,7 +309,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -346,7 +348,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data,
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -407,7 +409,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data,
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -449,7 +451,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("2001:db8::/32"),
                 None,
                 Prefix::from("2001:db9::/32"),
@@ -488,7 +490,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -527,7 +529,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data,
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 Some(PortRange::new(1025, 1999).unwrap()),
                 Prefix::from("20.0.0.0/24"),
@@ -964,7 +966,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
