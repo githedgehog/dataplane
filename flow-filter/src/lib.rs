@@ -126,13 +126,14 @@ impl FlowFilter {
             );
             packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
             set_nat_requirements(packet, dst_data);
-        } else {
+        } else
+        /* FIXME: only do this if no explicit reject */
+        {
             debug!("{nfi}: Did not find config for flow {tuple}. Checking flow-info ...");
 
             if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
-                // FIXME: with the latest changes, we should
-                // probably set the nat requirements here ?
                 packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+                packet.meta_mut().set_stateful_nat(true);
             } else {
                 packet.done(DoneReason::Filtered);
             }

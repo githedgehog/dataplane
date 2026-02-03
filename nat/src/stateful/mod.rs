@@ -190,6 +190,7 @@ impl StatefulNat {
         flow_key: &FlowKey,
         state: NatFlowState<I>,
         idle_timeout: Duration,
+        dst_vpcd: Option<VpcDiscriminant>,
     ) {
         debug!(
             "{}: Creating new flow session entry: {} -> {}",
@@ -201,6 +202,7 @@ impl StatefulNat {
         let flow_info = FlowInfo::new(Self::session_timeout_time(idle_timeout));
         if let Ok(mut write_guard) = flow_info.locked.write() {
             write_guard.nat_state = Some(Box::new(state));
+            write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
         } else {
             // flow info is just locally created
             unreachable!()
@@ -594,8 +596,13 @@ impl StatefulNat {
             Self::new_reverse_session(&flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
 
-        self.create_session(&flow_key, forward_state, idle_timeout);
-        self.create_session(&reverse_flow_key, reverse_state.clone(), idle_timeout);
+        self.create_session(&flow_key, forward_state, idle_timeout, None);
+        self.create_session(
+            &reverse_flow_key,
+            reverse_state.clone(),
+            idle_timeout,
+            Some(dst_vpc_id),
+        );
 
         Self::stateful_translate::<Buf>(self.name(), packet, &translation_data).and(Ok(true))
     }
