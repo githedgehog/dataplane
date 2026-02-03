@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::FlowFilterTable;
-use crate::tables::{NatRequirement, RemoteData};
+use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
@@ -45,13 +45,16 @@ impl FlowFilterTable {
                     let dst_data = build_dst_data(dst_vpcd, local_expose, remote_expose);
                     if local_expose.default {
                         // Both the local and remote expose are default exposes
-                        self.insert_default_source_to_default_remote(local_vpcd, dst_data.clone())?;
+                        self.insert_default_source_to_default_remote(
+                            local_vpcd,
+                            VpcdLookupResult::Single(dst_data),
+                        )?;
                     } else {
                         // Only the remote expose is a default expose
                         for local_prefix in &local_expose.ips {
                             self.insert_default_remote(
                                 local_vpcd,
-                                dst_data.clone(),
+                                VpcdLookupResult::Single(dst_data),
                                 local_prefix.prefix(),
                                 local_prefix.ports(),
                             )?;
@@ -66,7 +69,7 @@ impl FlowFilterTable {
                         for remote_prefix in remote_expose.public_ips() {
                             self.insert_default_source(
                                 local_vpcd,
-                                dst_data.clone(),
+                                VpcdLookupResult::Single(dst_data),
                                 remote_prefix.prefix(),
                                 remote_prefix.ports(),
                             )?;
@@ -77,7 +80,7 @@ impl FlowFilterTable {
                             for remote_prefix in remote_expose.public_ips() {
                                 self.insert(
                                     local_vpcd,
-                                    dst_data.clone(),
+                                    VpcdLookupResult::Single(dst_data),
                                     local_prefix.prefix(),
                                     local_prefix.ports(),
                                     remote_prefix.prefix(),
@@ -149,6 +152,8 @@ fn get_nat_requirement(nat_opt: &Option<VpcExposeNat>) -> Option<NatRequirement>
 
 #[cfg(test)]
 mod tests {
+    use crate::tables::VpcdLookupResult;
+
     use super::*;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeeringTable};
@@ -199,7 +204,11 @@ mod tests {
         let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
         assert_eq!(
             dst_data,
-            Some(&RemoteData::new(VpcDiscriminant::VNI(vni2), None, None,))
+            Some(VpcdLookupResult::Single(RemoteData::new(
+                VpcDiscriminant::VNI(vni2),
+                None,
+                None
+            )))
         );
     }
 
@@ -276,7 +285,11 @@ mod tests {
         let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
         assert_eq!(
             dst_data,
-            Some(&RemoteData::new(VpcDiscriminant::VNI(vni2), None, None,))
+            Some(VpcdLookupResult::Single(RemoteData::new(
+                VpcDiscriminant::VNI(vni2),
+                None,
+                None
+            )))
         );
     }
 }
