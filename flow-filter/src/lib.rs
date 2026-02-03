@@ -119,27 +119,37 @@ impl FlowFilter {
         // For Display
         let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
 
-        if let Some(VpcdLookupResult::Single(dst_data)) =
-            tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports)
-        {
-            debug!(
-                "{nfi}: Flow {tuple} is allowed, dst_vpcd is {}",
-                dst_data.vpcd
-            );
-            packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
-            set_nat_requirements(packet, &dst_data);
-        } else
-        /* FIXME: only do this if no explicit reject */
-        {
-            debug!("{nfi}: Did not find config for flow {tuple}. Checking flow-info ...");
+        let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) else {
+            debug!("{nfi}: No valid destination VPC found for flow {tuple}, dropping packet");
+            packet.done(DoneReason::Filtered);
+            return;
+        };
 
-            if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
-                packet.meta_mut().dst_vpcd = Some(dst_vpcd);
-                packet.meta_mut().set_stateful_nat(true);
-            } else {
-                packet.done(DoneReason::Filtered);
+        let dst_vpcd = match dst_data {
+            VpcdLookupResult::Single(dst_data) => {
+                set_nat_requirements(packet, &dst_data);
+                dst_data.vpcd
             }
-        }
+            VpcdLookupResult::MultipleMatches => {
+                debug!(
+                    "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
+                );
+
+                if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
+                    packet.meta_mut().set_stateful_nat(true);
+                    dst_vpcd
+                } else {
+                    debug!(
+                        "{nfi}: No flow table entry found for flow {tuple}, unable to decide what destination VPC to use, dropping packet"
+                    );
+                    packet.done(DoneReason::Filtered);
+                    return;
+                }
+            }
+        };
+
+        debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
+        packet.meta_mut().dst_vpcd = Some(dst_vpcd);
     }
 }
 

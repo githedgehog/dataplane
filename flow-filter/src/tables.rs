@@ -22,6 +22,11 @@ trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 pub(crate) enum VpcdLookupResult {
     /// A single, unambiguous matching connection information object was found.
     Single(RemoteData),
+
+    #[allow(dead_code)]
+    /// Multiple matching connection information object match the packet, we cannot tell which is
+    /// the right one for this packet.
+    MultipleMatches,
 }
 
 /// Stores allowed flows between VPCs and answers: given a packet's 5-tuple
