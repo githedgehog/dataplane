@@ -97,7 +97,7 @@ bitflags = { version = "2.10.0", default-features = false, features = [] }
 bnum = { version = "0.13.0", default-features = false, features = [] }
 bolero = { version = "0.13.4", default-features = false, features = [] }
 bytecheck = { version = "0.8.2", default-features = false, features = [] }
-bytes = { version = "1.11.0", default-features = false, features = [] }
+bytes = { version = "1.11.1", default-features = false, features = [] }
 caps = { version = "0.5.6", default-features = false, features = [] }
 chrono = { version = "0.4.43", default-features = false, features = [] }
 clap = { version = "4.5.56", default-features = true, features = [] }
