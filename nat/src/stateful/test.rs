@@ -44,6 +44,10 @@ mod tests {
         Vni::new_checked(vni).expect("Failed to create VNI")
     }
 
+    fn vpcd(vni_id: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(vni(vni_id))
+    }
+
     #[allow(clippy::too_many_lines)]
     fn build_overlay_4vpcs() -> Overlay {
         fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
@@ -250,7 +254,15 @@ mod tests {
 
     fn flow_lookup<Buf: PacketBufferMut>(flow_table: &FlowTable, packet: &mut Packet<Buf>) {
         fn get_flow_key<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> FlowKey {
-            FlowKey::try_from(Uni(packet)).unwrap()
+            let packet_flowkey = FlowKey::try_from(Uni(packet)).unwrap();
+            // We need the same, but without the dst_vpcd set, to emulate how the flow table is queried
+            FlowKey::uni(
+                packet_flowkey.data().src_vpcd(),
+                *packet_flowkey.data().src_ip(),
+                None,
+                *packet_flowkey.data().dst_ip(),
+                *packet_flowkey.data().proto_key_info(),
+            )
         }
 
         let flow_key = get_flow_key(packet);
@@ -315,9 +327,9 @@ mod tests {
 
         // Get corresponding session table entries and check idle timeout
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
-            VpcDiscriminant::VNI(vni(100)),
+            Some(vpcd(100)),
             IpAddr::from_str(orig_src).unwrap(),
-            VpcDiscriminant::VNI(vni(200)),
+            None,
             IpAddr::from_str(orig_dst).unwrap(),
             IpProtoKey::Udp(UdpProtoKey {
                 src_port: UdpPort::new_checked(9998).unwrap(),
@@ -329,9 +341,9 @@ mod tests {
         assert_eq!(idle_timeout, ONE_MINUTE);
         // Reverse path
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
-            VpcDiscriminant::VNI(vni(200)),
+            Some(vpcd(200)),
             IpAddr::from_str(orig_dst).unwrap(),
-            VpcDiscriminant::VNI(vni(100)),
+            None,
             IpAddr::from_str(target_src).unwrap(),
             IpProtoKey::Udp(UdpProtoKey {
                 src_port: UdpPort::new_checked(output_dst_port).unwrap(),
