@@ -243,39 +243,13 @@ impl VpcConnectionsTable {
         Ok(())
     }
 
-    fn create_default_source(
-        &mut self,
-        dst_data: RemoteData,
-        dst_prefix: Prefix,
-        dst_port_range: Option<PortRange>,
-    ) -> Result<(), ConfigError> {
+    fn set_default_source(&mut self, data: SrcConnectionData) -> Result<(), ConfigError> {
         if self.default_source_opt.is_some() {
             return Err(ConfigError::InternalFailure(
                 "Trying to override existing default source".to_string(),
             ));
-        } else {
-            self.default_source_opt = Some(PortRangeMap::AllPorts(DstConnectionData::new(
-                dst_data,
-                dst_prefix,
-                dst_port_range,
-            )))
         }
-        Ok(())
-    }
-
-    fn create_default_source_to_default_remote(
-        &mut self,
-        dst_data: RemoteData,
-    ) -> Result<(), ConfigError> {
-        if self.default_source_opt.is_some() {
-            return Err(ConfigError::InternalFailure(
-                "Trying to override existing default source".to_string(),
-            ));
-        } else {
-            self.default_source_opt = Some(PortRangeMap::AllPorts(
-                DstConnectionData::new_for_default_remote(dst_data),
-            ))
-        }
+        self.default_source_opt = Some(data);
         Ok(())
     }
 
@@ -288,7 +262,12 @@ impl VpcConnectionsTable {
         if let Some(src_connection_data) = &mut self.default_source_opt {
             src_connection_data.update(None, dst_data, dst_prefix, dst_port_range)
         } else {
-            self.create_default_source(dst_data, dst_prefix, dst_port_range)
+            let data = PortRangeMap::AllPorts(DstConnectionData::new(
+                dst_data,
+                dst_prefix,
+                dst_port_range,
+            ));
+            self.set_default_source(data)
         }
     }
 
@@ -299,7 +278,8 @@ impl VpcConnectionsTable {
         if let Some(src_connection_data) = &mut self.default_source_opt {
             src_connection_data.update_for_default(dst_data, None)
         } else {
-            self.create_default_source_to_default_remote(dst_data)
+            let data = PortRangeMap::AllPorts(DstConnectionData::new_for_default_remote(dst_data));
+            self.set_default_source(data)
         }
     }
 }
