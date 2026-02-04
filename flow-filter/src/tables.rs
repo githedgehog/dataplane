@@ -17,54 +17,31 @@ use tracectl::trace_target;
 use tracing::debug;
 trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 
-/// A structure to store information about allowed flows between VPCs.
-/// It contains one table per source VPC discriminant.
+/// Stores allowed flows between VPCs and answers: given a packet's 5-tuple
+/// (src_vpc, src_ip, src_port, dst_ip, dst_port), what is the destination VPC?
 //
-// The structure looks like this:
+// Lookup proceeds through nested structures, narrowing at each level:
 //
-// FlowFilterTable
-//   -> HashMap<VpcDiscriminant, VpcConnectionsTable>
-//      (one table per source VPC discriminant)
+//   src_vpc --> src_ip --> src_port --> dst_ip --> dst_port --> VpcdLookupResult
+//       |          |           |           |           |
+//       v          v           v           v           v
+//   HashMap    LPM trie   PortRangeMap  LPM trie  PortRangeMap
 //
-//   VpcConnectionsTable
-//     -> IpPortPrefixTrie<SrcConnectionData>
-//        Key: source IP prefix
-//        Value: SrcConnectionData
+// More precisely, here's what we try to do at each level:
 //
-//    SrcConnectionData (enum)
-//      -> AllPorts(DstConnectionData): applies to all source ports
-//      -> Ranges(DisjointRangesBTreeMap<PortRange, DstConnectionData>):
-//         associates one or more source port ranges, for the IpPortPrefixTrie lookup, to
-//         destination connection data
+//   1. src_vpc:  get all flow rules for the source VPC
+//   2. src_ip:   get "what destinations can this source IP reach"
+//   3. src_port: narrow down to specific destination rules, based on source port
+//   4. dst_ip:   get the VPCs mapping for the destination IP
+//   5. dst_port: get the final VPC result, based on destination port
 //
-//      DstConnectionData
-//        -> IpPortPrefixTrie<RemotePortRangesData>
-//           LPM trie containing destination IP prefixes and associated port/VPC information
+// Types:
 //
-//        RemotePortRangesData (enum)
-//          -> AllPorts(VpcDiscriminant): destination VPC for all ports (no port range specified)
-//          -> Ranges(DisjointRangesBTreeMap<PortRange, VpcDiscriminant>):
-//             associates destination port ranges to destination VPC discriminants
-//
-// How this works:
-//
-// 1. From the FlowFilterTable, find the VpcConnectionsTable for the packet's source VPC
-//
-// 2. Based on source IP and port, look up the SrcConnectionData in the VpcConnectionsTable
-//    (LPM trie). This retrieves the destination connection information for the given
-//    source VPC, source IP, and all associated port ranges.
-//
-// 3. From the SrcConnectionData, extract the DstConnectionData that matches the source port
-//    (if port ranges are specified).
-//
-// 4. Using the destination IP and port, look up in the DstConnectionData's trie to find the
-//    RemotePortRangesData that matches the destination IP prefix.
-//
-// 5. From the RemotePortRangesData, extract the VpcDiscriminant that matches the destination
-//    port (if port ranges are specified).
-//
-// 6. If we found a match, then the connection is valid; we return the VpcDiscriminant which
-//    contains either a single destination VPC discriminant or indicates multiple matches.
+//   FlowFilterTable:      HashMap<VpcDiscriminant, VpcConnectionsTable>
+//   VpcConnectionsTable:  IpPortPrefixTrie<SrcConnectionData>
+//   SrcConnectionData:    PortRangeMap<DstConnectionData>   (by src port)
+//   DstConnectionData:    IpPortPrefixTrie<RemotePortRangesData>
+//   RemotePortRangesData: PortRangeMap<VpcdLookupResult>    (by dst port)
 #[derive(Debug, Clone)]
 pub struct FlowFilterTable(HashMap<VpcDiscriminant, VpcConnectionsTable>);
 
