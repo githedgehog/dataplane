@@ -74,16 +74,10 @@ impl FlowFilterTable {
         Self(HashMap::new())
     }
 
-    fn insert_table(&mut self, src_vpcd: VpcDiscriminant, table: VpcConnectionsTable) {
-        self.0.insert(src_vpcd, table);
-    }
-
-    fn get_table(&self, src_vpcd: VpcDiscriminant) -> Option<&VpcConnectionsTable> {
-        self.0.get(&src_vpcd)
-    }
-
-    fn get_table_mut(&mut self, src_vpcd: VpcDiscriminant) -> Option<&mut VpcConnectionsTable> {
-        self.0.get_mut(&src_vpcd)
+    fn get_or_create_table(&mut self, src_vpcd: VpcDiscriminant) -> &mut VpcConnectionsTable {
+        self.0
+            .entry(src_vpcd)
+            .or_insert_with(VpcConnectionsTable::new)
     }
 
     pub(crate) fn lookup(
@@ -94,7 +88,7 @@ impl FlowFilterTable {
         ports: Option<(u16, u16)>,
     ) -> Option<&RemoteData> {
         // Get the table related to the source VPC for the packet
-        let Some(table) = self.get_table(src_vpcd) else {
+        let Some(table) = self.0.get(&src_vpcd) else {
             debug!("Could not find connections table for VPC {src_vpcd}");
             return None;
         };
@@ -140,26 +134,13 @@ impl FlowFilterTable {
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.insert(
-                dst_data,
-                src_prefix,
-                src_port_range,
-                dst_prefix,
-                dst_port_range,
-            )?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.insert(
-                dst_data,
-                src_prefix,
-                src_port_range,
-                dst_prefix,
-                dst_port_range,
-            )?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd).insert(
+            dst_data,
+            src_prefix,
+            src_port_range,
+            dst_prefix,
+            dst_port_range,
+        )
     }
 
     pub(crate) fn insert_default_remote(
@@ -169,14 +150,8 @@ impl FlowFilterTable {
         src_prefix: Prefix,
         src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.insert_default(dst_data, src_prefix, src_port_range)?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.insert_default(dst_data, src_prefix, src_port_range)?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd)
+            .insert_default(dst_data, src_prefix, src_port_range)
     }
 
     pub(crate) fn insert_default_source(
@@ -186,14 +161,11 @@ impl FlowFilterTable {
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.update_default_source(dst_data, dst_prefix, dst_port_range)?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.create_default_source(dst_data, dst_prefix, dst_port_range)?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd).update_default_source(
+            dst_data,
+            dst_prefix,
+            dst_port_range,
+        )
     }
 
     pub(crate) fn insert_default_source_to_default_remote(
@@ -201,14 +173,8 @@ impl FlowFilterTable {
         src_vpcd: VpcDiscriminant,
         dst_data: RemoteData,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.update_default_source_to_default_remote(dst_data)?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.create_default_source_to_default_remote(dst_data)?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd)
+            .update_default_source_to_default_remote(dst_data)
     }
 }
 
