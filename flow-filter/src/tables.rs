@@ -458,6 +458,7 @@ impl ValueWithAssociatedRanges for SrcConnectionData {
 pub(crate) enum NatRequirement {
     Stateless,
     Stateful,
+    PortForwarding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -488,6 +489,11 @@ impl RemoteData {
     pub(crate) fn requires_stateless_nat(&self) -> bool {
         self.src_nat_req == Some(NatRequirement::Stateless)
             || self.dst_nat_req == Some(NatRequirement::Stateless)
+    }
+    pub(crate) fn requires_port_forwarding(&self) -> bool {
+        // This is temporary: do we want to reuse dst_nat_req
+        // or have a separate field?
+        self.dst_nat_req == Some(NatRequirement::PortForwarding)
     }
 }
 
