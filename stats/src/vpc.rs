@@ -33,7 +33,7 @@ impl CountAndRateSpec {
 
 #[derive(Debug, Serialize)]
 pub struct RegisteredCountAndRate {
-    pub count: Registered<metrics::Counter>,
+    pub count: Registered<metrics::Gauge>,
     pub rate: Registered<metrics::Gauge>,
 }
 
