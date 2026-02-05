@@ -210,7 +210,7 @@ impl VpcExpose {
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
-        self.ips.iter().filter(|p| p.prefix().is_host()).count() > 0
+        self.ips.iter().any(|p| p.prefix().is_host())
     }
 
     /// The prefixes of an expose to be advertised to a remote peer
@@ -503,11 +503,7 @@ impl VpcManifest {
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_host_prefixes())
-            .count()
-            > 0
+        self.exposes.iter().any(|expose| expose.has_host_prefixes())
     }
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes
