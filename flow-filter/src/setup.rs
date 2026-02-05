@@ -44,19 +44,21 @@ impl FlowFilterTable {
             get_manifests_overlap(vpc, peering);
 
         // Get list of local prefixes, splitting to account for overlapping, if necessary
-        let local_prefixes = get_prefixes_for_manifest(
+        let overlap_trie = consolidate_overlap_list(local_manifests_overlap);
+        let local_prefixes = get_split_prefixes_for_manifest(
             &peering.local,
             &dst_vpcd,
             |expose| &expose.ips,
-            local_manifests_overlap,
+            overlap_trie,
         );
 
         // Get list of remote prefixes, splitting to account for overlapping, if necessary
-        let remote_prefixes = get_prefixes_for_manifest(
+        let overlap_trie = consolidate_overlap_list(remote_manifests_overlap);
+        let remote_prefixes = get_split_prefixes_for_manifest(
             &peering.remote,
             &dst_vpcd,
             |expose| expose.public_ips(),
-            remote_manifests_overlap,
+            overlap_trie,
         );
 
         // Handle local default expose (for all remote prefixes)
@@ -268,8 +270,43 @@ fn get_manifest_ips_overlap(
     overlap
 }
 
-// Return all exposed prefixes for a manifest
-fn get_prefixes_for_manifest(
+// Consolidate overlapping prefixes, by merging adjacent prefixes when possible
+// This is to avoid splitting prefixes for a peering more than necessary
+fn consolidate_overlap_list(
+    mut overlap: BTreeSet<PrefixWithOptionalPorts>,
+) -> BTreeSet<PrefixWithOptionalPorts> {
+    let mut consolidated_overlap = BTreeSet::new();
+    while let Some(first_prefix) = overlap.pop_first() {
+        let Some(&second_prefix) = overlap.first() else {
+            // We've reached the end of the list, just insert the last item we popped
+            consolidated_overlap.insert(first_prefix);
+            break;
+        };
+        if let Some(merged_prefix) = first_prefix.merge(&second_prefix) {
+            overlap.remove(&second_prefix);
+            overlap.insert(merged_prefix);
+            continue;
+        }
+        consolidated_overlap.insert(first_prefix);
+    }
+    consolidated_overlap
+}
+
+// Return all exposed prefixes for a manifest, split such that there is no partial overlapping with
+// manifests for other peerings.
+//
+// For example:
+//
+// - VPC A is peered with VPC B and C
+// - VPC B exposes 10.0.0.0/24
+// - VPC C exposes 10.0.0.0/25
+//
+// Then the prefixes in the remote manifests for VPC A's peerings will be:
+//
+// - For VPC B: [10.0.0.0/25, 10.0.0.128/25] (split so that 10.0.0.0/24 does not overlap partially
+//   with VPC C's 10.0.0.0/25)
+// - For VPC C: [10.0.0.0/25]
+fn get_split_prefixes_for_manifest(
     manifest: &VpcManifest,
     vpcd: &VpcDiscriminant,
     get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
@@ -284,12 +321,31 @@ fn get_prefixes_for_manifest(
         let nat_req = get_nat_requirement(expose);
         'next_prefix: for prefix in get_ips(expose) {
             for overlap_prefix in overlaps.iter() {
-                if overlap_prefix == prefix {
-                    prefixes_with_vpcd.push((
-                        *prefix,
-                        VpcdLookupResult::MultipleMatches,
-                        nat_req,
-                    ));
+                if overlap_prefix.covers(prefix) {
+                    prefixes_with_vpcd.push((*prefix, VpcdLookupResult::MultipleMatches, nat_req));
+                    continue 'next_prefix;
+                } else if prefix.covers(overlap_prefix) {
+                    // The current prefix partially overlaps with some other prefixes (of which
+                    // overlap_prefix is the union of all intersections with the current prefix), so
+                    // we need to split the current prefix into parts that don't have partial
+                    // overlap with the other prefixes
+                    prefixes_with_vpcd.extend(
+                        split_overlapping(prefix, overlap_prefix)
+                            .into_iter()
+                            .map(|p| {
+                                (
+                                    p,
+                                    if p == *overlap_prefix {
+                                        // Multiple destination VPC matches for the overlapping section
+                                        VpcdLookupResult::MultipleMatches
+                                    } else {
+                                        // Single destination VPC match for the other sections
+                                        VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None))
+                                    },
+                                    nat_req,
+                                )
+                            }),
+                    );
                     continue 'next_prefix;
                 }
             }
@@ -302,6 +358,22 @@ fn get_prefixes_for_manifest(
         }
     }
     prefixes_with_vpcd
+}
+
+// Split a prefix into the given subprefix, and the difference
+fn split_overlapping(
+    prefix_to_split: &PrefixWithOptionalPorts,
+    mask_prefix: &PrefixWithOptionalPorts,
+) -> Vec<PrefixWithOptionalPorts> {
+    debug_assert!(prefix_to_split.overlaps(mask_prefix) && !mask_prefix.covers(prefix_to_split));
+    let mut split_prefixes = prefix_to_split.subtract(mask_prefix);
+    split_prefixes.push(
+        prefix_to_split
+            .intersection(mask_prefix)
+            // Intersection non-empty given that prefixes overlap
+            .unwrap_or_else(|| unreachable!()),
+    );
+    split_prefixes
 }
 
 fn get_nat_requirement(expose: &VpcExpose) -> Option<NatRequirement> {
