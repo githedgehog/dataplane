@@ -578,6 +578,19 @@ impl VpcManifest {
             .filter(|expose| !expose.has_stateful_nat())
             .filter(|expose| expose.is_v6())
     }
+    pub fn default_expose(&self) -> Result<Option<&VpcExpose>, ConfigError> {
+        let default_exposes: Vec<&VpcExpose> = self
+            .exposes
+            .iter()
+            .filter(|expose| expose.default)
+            .collect();
+        if default_exposes.len() > 1 {
+            return Err(ConfigError::InternalFailure(
+                "Multiple default exposes found".to_string(),
+            ));
+        }
+        Ok(default_exposes.first().copied())
+    }
 }
 
 #[derive(Clone, Debug)]
