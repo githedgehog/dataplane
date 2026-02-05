@@ -6,10 +6,12 @@ use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
-use config::external::overlay::vpcpeering::{VpcExpose, VpcExposeNat};
+use config::external::overlay::vpcpeering::{VpcExpose, VpcExposeNat, VpcManifest};
 use config::internal::interfaces::interface::InterfaceConfigTable;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
+use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts};
 use net::packet::VpcDiscriminant;
+use std::collections::BTreeSet;
 
 use tracectl::trace_target;
 use tracing::debug;
@@ -38,6 +40,8 @@ impl FlowFilterTable {
     ) -> Result<(), ConfigError> {
         let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
+        let (local_manifests_overlap, remote_manifests_overlap) =
+            get_manifests_overlap(vpc, peering);
 
         for remote_expose in &peering.remote.exposes {
             if remote_expose.default {
@@ -78,9 +82,19 @@ impl FlowFilterTable {
                         // No default expose
                         for local_prefix in &local_expose.ips {
                             for remote_prefix in remote_expose.public_ips() {
+                                // Check if there are overlapping manifests
+                                let dst_data_result = if local_manifests_overlap
+                                    .contains(local_prefix)
+                                    || remote_manifests_overlap.contains(remote_prefix)
+                                {
+                                    VpcdLookupResult::MultipleMatches
+                                } else {
+                                    VpcdLookupResult::Single(dst_data)
+                                };
+
                                 self.insert(
                                     local_vpcd,
-                                    VpcdLookupResult::Single(dst_data),
+                                    dst_data_result,
                                     local_prefix.prefix(),
                                     local_prefix.ports(),
                                     remote_prefix.prefix(),
@@ -123,6 +137,84 @@ fn clone_skipping_peerings(vpc: &Vpc) -> Vpc {
         interfaces: InterfaceConfigTable::default(),
         peerings: vec![],
     }
+}
+
+// Compute lists of overlapping prefixes:
+// - between prefixes from remote manifest and prefixes from remote manifests for other peerings
+// - between prefixes from local manifest and prefixes from local manifests for other peerings
+fn get_manifests_overlap(
+    vpc: &Vpc,
+    peering: &Peering,
+) -> (
+    BTreeSet<PrefixWithOptionalPorts>,
+    BTreeSet<PrefixWithOptionalPorts>,
+) {
+    let mut local_manifests_overlap = BTreeSet::new();
+    let mut remote_manifests_overlap = BTreeSet::new();
+    for other_peering in &vpc.peerings {
+        if other_peering.name == peering.name {
+            // Don't compare peering with itself
+            continue;
+        }
+        // Get overlap for prefixes related to source address
+        let local_overlap =
+            get_manifest_ips_overlap(&peering.local, &other_peering.local, |expose| &expose.ips);
+        // Get overlap for prefixes related to destination address
+        let remote_overlap =
+            get_manifest_ips_overlap(&peering.remote, &other_peering.remote, |expose| {
+                expose.public_ips()
+            });
+
+        if local_overlap.is_empty() || remote_overlap.is_empty() {
+            // If either side has no overlap, we'll be able to tell which is the destination VPC
+            // by looking at both the source and destination prefixes for the packet, so there's
+            // no need to account for any overlap
+            continue;
+        }
+
+        // If there's overlap for both source and destination, we'll need to split prefixes to
+        // separate the overlapping sections, so we can determine the destination VPC for
+        // non-overlapping sections
+        local_manifests_overlap.extend(local_overlap);
+        remote_manifests_overlap.extend(remote_overlap);
+    }
+    (local_manifests_overlap, remote_manifests_overlap)
+}
+
+// Return the list of overlapping prefix sections between the sets of exposed prefixes of two
+// manifests
+//
+// For example:
+//
+// - first manifest exposes 1.0.0.0/24 and 2.0.0.128/25
+// - second manifest exposes 1.0.0.0/23, 2.0.0.0/24, and 3.0.0.0/8
+// - the function returns [1.0.0.0/24, 2.0.0.128/25]
+//
+// Exclude the "default"-destination expose blocks from overlap calculation.
+fn get_manifest_ips_overlap(
+    manifest_left: &VpcManifest,
+    manifest_right: &VpcManifest,
+    get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
+) -> BTreeSet<PrefixWithOptionalPorts> {
+    let mut overlap = BTreeSet::new();
+    for prefix_left in manifest_left
+        .exposes
+        .iter()
+        .filter(|expose| !expose.default)
+        .flat_map(|expose| get_ips(expose).iter())
+    {
+        for prefix_right in manifest_right
+            .exposes
+            .iter()
+            .filter(|expose| !expose.default)
+            .flat_map(|expose| get_ips(expose).iter())
+        {
+            if let Some(intersection) = prefix_left.intersection(prefix_right) {
+                overlap.insert(intersection);
+            }
+        }
+    }
+    overlap
 }
 
 fn build_dst_data(
