@@ -23,7 +23,6 @@ pub(crate) enum VpcdLookupResult {
     /// A single, unambiguous matching connection information object was found.
     Single(RemoteData),
 
-    #[allow(dead_code)]
     /// Multiple matching connection information object match the packet, we cannot tell which is
     /// the right one for this packet.
     MultipleMatches,
