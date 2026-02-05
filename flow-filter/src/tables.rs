@@ -454,6 +454,16 @@ impl DstConnectionData {
             .or(self.default_remote_data.as_ref())
     }
 
+    // Update the remote data for a given prefix and port range.
+    //
+    // We can have multiple matches for the same prefix and port range. In this case, we should have
+    // determined this prior to updated the remote data, so we should only attempt to overwrite a
+    // value if both are MultipleMatches variants.
+    //
+    // We do not support partial overlap of prefixes and port ranges here. This method assumes that
+    // prefixes (including associated port ranges) have been split accordingly, and that to a given
+    // prefix with port range, there can be no entry with partial-only overlap in the data structure
+    // (except for the "default" case, handled separately).
     fn update(
         &mut self,
         result: VpcdLookupResult,
@@ -462,11 +472,37 @@ impl DstConnectionData {
     ) -> Result<(), ConfigError> {
         match (self.trie.get_mut(prefix), port_range) {
             (Some(PortRangeMap::Ranges(existing_range_map)), Some(range)) => {
-                existing_range_map.insert(range, result);
+                let existing_result = existing_range_map.insert(range, result);
+
+                // The only case we had an existing value is when we have multiple matches. Let's do
+                // a sanity check.
+                if existing_result.is_some_and(|r| {
+                    r != VpcdLookupResult::MultipleMatches
+                        || result != VpcdLookupResult::MultipleMatches
+                }) {
+                    return Err(ConfigError::InternalFailure(
+                        "Trying to insert conflicting values for remote port range information"
+                            .to_string(),
+                    ));
+                }
+            }
+            (Some(PortRangeMap::AllPorts(existing_data)), port_range)
+                if port_range.is_none_or(|r| r.is_max_range()) =>
+            {
+                // We should only hit this case if we already inserted an entry with the same
+                // destination VPC.
+                if !(*existing_data == VpcdLookupResult::MultipleMatches
+                    && result == VpcdLookupResult::MultipleMatches)
+                {
+                    return Err(ConfigError::InternalFailure(
+                        "Trying to insert conflicting values for remote information".to_string(),
+                    ));
+                }
+                // We already know we have multiple matches, no need to update
             }
             (Some(_), _) => {
-                // At least one of the entries, the existing or the new, covers all ports, so we
-                // can't add a new one or we'll have overlap
+                // One of the entries, the existing or the new, covers all ports, so we can't add a
+                // new one or we'll have partial overlap
                 return Err(ConfigError::InternalFailure(
                     "Trying to update (remote) port ranges map with overlapping ranges".to_string(),
                 ));
