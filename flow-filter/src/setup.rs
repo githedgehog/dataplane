@@ -6,7 +6,7 @@ use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
-use config::external::overlay::vpcpeering::{VpcExpose, VpcExposeNat, VpcManifest};
+use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::internal::interfaces::interface::InterfaceConfigTable;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
 use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts};
@@ -43,67 +43,118 @@ impl FlowFilterTable {
         let (local_manifests_overlap, remote_manifests_overlap) =
             get_manifests_overlap(vpc, peering);
 
-        for remote_expose in &peering.remote.exposes {
-            if remote_expose.default {
-                for local_expose in &peering.local.exposes {
-                    let dst_data = build_dst_data(dst_vpcd, local_expose, remote_expose);
-                    if local_expose.default {
-                        // Both the local and remote expose are default exposes
-                        self.insert_default_source_to_default_remote(
-                            local_vpcd,
-                            VpcdLookupResult::Single(dst_data),
-                        )?;
-                    } else {
-                        // Only the remote expose is a default expose
-                        for local_prefix in &local_expose.ips {
-                            self.insert_default_remote(
-                                local_vpcd,
-                                VpcdLookupResult::Single(dst_data),
-                                local_prefix.prefix(),
-                                local_prefix.ports(),
-                            )?;
-                        }
-                    }
-                }
-            } else {
-                for local_expose in &peering.local.exposes {
-                    let dst_data = build_dst_data(dst_vpcd, local_expose, remote_expose);
-                    if local_expose.default {
-                        // Only the local expose is a default expose
-                        for remote_prefix in remote_expose.public_ips() {
-                            self.insert_default_source(
-                                local_vpcd,
-                                VpcdLookupResult::Single(dst_data),
-                                remote_prefix.prefix(),
-                                remote_prefix.ports(),
-                            )?;
-                        }
-                    } else {
-                        // No default expose
-                        for local_prefix in &local_expose.ips {
-                            for remote_prefix in remote_expose.public_ips() {
-                                // Check if there are overlapping manifests
-                                let dst_data_result = if local_manifests_overlap
-                                    .contains(local_prefix)
-                                    || remote_manifests_overlap.contains(remote_prefix)
-                                {
-                                    VpcdLookupResult::MultipleMatches
-                                } else {
-                                    VpcdLookupResult::Single(dst_data)
-                                };
+        // Get list of local prefixes, splitting to account for overlapping, if necessary
+        let local_prefixes = get_prefixes_for_manifest(
+            &peering.local,
+            &dst_vpcd,
+            |expose| &expose.ips,
+            local_manifests_overlap,
+        );
 
-                                self.insert(
-                                    local_vpcd,
-                                    dst_data_result,
-                                    local_prefix.prefix(),
-                                    local_prefix.ports(),
-                                    remote_prefix.prefix(),
-                                    remote_prefix.ports(),
-                                )?;
-                            }
-                        }
+        // Get list of remote prefixes, splitting to account for overlapping, if necessary
+        let remote_prefixes = get_prefixes_for_manifest(
+            &peering.remote,
+            &dst_vpcd,
+            |expose| expose.public_ips(),
+            remote_manifests_overlap,
+        );
+
+        // Handle local default expose (for all remote prefixes)
+        if let Some(local_default_expose) = peering.local.default_expose()? {
+            for (remote_prefix, remote_vpcd_result, remote_nat_req) in &remote_prefixes {
+                let dst_data_result = match remote_vpcd_result {
+                    VpcdLookupResult::Single(dst_data) => {
+                        VpcdLookupResult::Single(RemoteData::new(
+                            dst_data.vpcd,
+                            get_nat_requirement(local_default_expose),
+                            *remote_nat_req,
+                        ))
                     }
-                }
+                    VpcdLookupResult::MultipleMatches => {
+                        return Err(ConfigError::InternalFailure(
+                            "Unexpected multiple matches for destination VPC when handling local default expose".to_string(),
+                        ));
+                    }
+                };
+                self.insert_default_source(
+                    local_vpcd,
+                    dst_data_result,
+                    remote_prefix.prefix(),
+                    remote_prefix.ports(),
+                )?;
+            }
+        }
+
+        // Handle remote default expose (for all local prefixes)
+        if let Some(remote_default_expose) = peering.remote.default_expose()? {
+            for (local_prefix, local_vpcd_result, local_nat_req) in &local_prefixes {
+                let dst_data_result = match local_vpcd_result {
+                    VpcdLookupResult::Single(dst_data) => {
+                        VpcdLookupResult::Single(RemoteData::new(
+                            dst_data.vpcd,
+                            *local_nat_req,
+                            get_nat_requirement(remote_default_expose),
+                        ))
+                    }
+                    VpcdLookupResult::MultipleMatches => {
+                        return Err(ConfigError::InternalFailure(
+                            "Unexpected multiple matches for destination VPC when handling remote default expose".to_string(),
+                        ));
+                    }
+                };
+                self.insert_default_remote(
+                    local_vpcd,
+                    dst_data_result,
+                    local_prefix.prefix(),
+                    local_prefix.ports(),
+                )?;
+            }
+        }
+
+        // Handle the case when we have both local and remote default exposes
+        if let Some(local_default_expose) = peering.local.default_expose()?
+            && let Some(remote_default_expose) = peering.remote.default_expose()?
+        {
+            let dst_data = RemoteData::new(
+                dst_vpcd,
+                get_nat_requirement(local_default_expose),
+                get_nat_requirement(remote_default_expose),
+            );
+            self.insert_default_source_to_default_remote(
+                local_vpcd,
+                VpcdLookupResult::Single(dst_data),
+            )?;
+        }
+
+        // Now, handle all the other, regular prefixes
+        for (local_prefix, local_vpcd_result, local_nat_req) in &local_prefixes {
+            for (remote_prefix, remote_vpcd_result, remote_nat_req) in &remote_prefixes {
+                let remote_vpcd_to_use = match (remote_vpcd_result, local_vpcd_result) {
+                    (VpcdLookupResult::MultipleMatches, VpcdLookupResult::MultipleMatches) => {
+                        VpcdLookupResult::MultipleMatches
+                    }
+                    (VpcdLookupResult::MultipleMatches, VpcdLookupResult::Single(dst_data)) => {
+                        // If the remote prefix is ambiguous but we are able to tell what
+                        // destination VPC to use based on the local prefix in use, do so
+                        VpcdLookupResult::Single(RemoteData::new(
+                            dst_data.vpcd,
+                            *local_nat_req,
+                            *remote_nat_req,
+                        ))
+                    }
+                    (VpcdLookupResult::Single(dst_data), _) => VpcdLookupResult::Single(
+                        RemoteData::new(dst_data.vpcd, *local_nat_req, *remote_nat_req),
+                    ),
+                };
+
+                self.insert(
+                    local_vpcd,
+                    remote_vpcd_to_use,
+                    local_prefix.prefix(),
+                    local_prefix.ports(),
+                    remote_prefix.prefix(),
+                    remote_prefix.ports(),
+                )?;
             }
         }
         Ok(())
@@ -217,20 +268,44 @@ fn get_manifest_ips_overlap(
     overlap
 }
 
-fn build_dst_data(
-    dst_vpcd: VpcDiscriminant,
-    local_expose: &VpcExpose,
-    remote_expose: &VpcExpose,
-) -> RemoteData {
-    RemoteData::new(
-        dst_vpcd,
-        get_nat_requirement(&local_expose.nat),
-        get_nat_requirement(&remote_expose.nat),
-    )
+// Return all exposed prefixes for a manifest
+fn get_prefixes_for_manifest(
+    manifest: &VpcManifest,
+    vpcd: &VpcDiscriminant,
+    get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
+    overlaps: BTreeSet<PrefixWithOptionalPorts>,
+) -> Vec<(
+    PrefixWithOptionalPorts,
+    VpcdLookupResult,
+    Option<NatRequirement>,
+)> {
+    let mut prefixes_with_vpcd = Vec::new();
+    for expose in &manifest.exposes {
+        let nat_req = get_nat_requirement(expose);
+        'next_prefix: for prefix in get_ips(expose) {
+            for overlap_prefix in overlaps.iter() {
+                if overlap_prefix == prefix {
+                    prefixes_with_vpcd.push((
+                        *prefix,
+                        VpcdLookupResult::MultipleMatches,
+                        nat_req,
+                    ));
+                    continue 'next_prefix;
+                }
+            }
+            // We found no overlap, just add the prefix with the single associated destination VPC
+            prefixes_with_vpcd.push((
+                *prefix,
+                VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None)),
+                nat_req,
+            ));
+        }
+    }
+    prefixes_with_vpcd
 }
 
-fn get_nat_requirement(nat_opt: &Option<VpcExposeNat>) -> Option<NatRequirement> {
-    let nat = nat_opt.as_ref()?;
+fn get_nat_requirement(expose: &VpcExpose) -> Option<NatRequirement> {
+    let nat = expose.nat.as_ref()?;
     debug_assert!(!(nat.is_stateful() && nat.is_stateless())); // Only one NAT mode allowed
 
     if nat.is_stateful() {
