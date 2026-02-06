@@ -269,6 +269,9 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.requires_stateless_nat() {
         write!(f, " req-stateless-nat")?;
     }
+    if meta.requires_port_forwarding() {
+        write!(f, " req-port-forwarding")?;
+    }
     if meta.is_natted() {
         write!(f, " natted")?;
     }
