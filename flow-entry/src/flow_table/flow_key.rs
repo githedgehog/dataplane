@@ -16,8 +16,8 @@ use net::icmp4::{Icmp4, TruncatedIcmp4};
 use net::icmp6::{Icmp6, TruncatedIcmp6};
 use net::packet::Packet;
 use net::packet::VpcDiscriminant;
-use net::tcp::TcpPort;
-use net::udp::UdpPort;
+use net::tcp::{TcpPort, TcpPortError};
+use net::udp::{UdpPort, UdpPortError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowKeyError {
@@ -66,6 +66,24 @@ pub struct TcpProtoKey {
     pub dst_port: TcpPort,
 }
 
+impl TryFrom<(u16, u16)> for TcpProtoKey {
+    type Error = TcpPortError;
+    fn try_from(value: (u16, u16)) -> Result<Self, Self::Error> {
+        Ok(Self {
+            src_port: TcpPort::new_checked(value.0)?,
+            dst_port: TcpPort::new_checked(value.1)?,
+        })
+    }
+}
+impl From<(TcpPort, TcpPort)> for TcpProtoKey {
+    fn from(value: (TcpPort, TcpPort)) -> Self {
+        Self {
+            src_port: value.0,
+            dst_port: value.1,
+        }
+    }
+}
+
 impl TcpProtoKey {
     #[must_use]
     pub fn reverse(&self) -> Self {
@@ -95,6 +113,24 @@ impl PartialEq for TcpProtoKey {
 pub struct UdpProtoKey {
     pub src_port: UdpPort,
     pub dst_port: UdpPort,
+}
+
+impl TryFrom<(u16, u16)> for UdpProtoKey {
+    type Error = UdpPortError;
+    fn try_from(value: (u16, u16)) -> Result<Self, Self::Error> {
+        Ok(Self {
+            src_port: UdpPort::new_checked(value.0)?,
+            dst_port: UdpPort::new_checked(value.1)?,
+        })
+    }
+}
+impl From<(UdpPort, UdpPort)> for UdpProtoKey {
+    fn from(value: (UdpPort, UdpPort)) -> Self {
+        Self {
+            src_port: value.0,
+            dst_port: value.1,
+        }
+    }
 }
 
 impl UdpProtoKey {
