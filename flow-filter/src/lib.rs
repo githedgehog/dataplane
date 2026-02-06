@@ -227,6 +227,10 @@ fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &R
     if data.requires_stateless_nat() {
         packet.meta_mut().set_stateless_nat(true);
     }
+    if data.requires_port_forwarding() {
+        packet.meta_mut().set_port_forwarding(true);
+    }
+    // FIXME: we should forbid/(warn about) combos that we don't support
 }
 
 #[cfg(test)]
