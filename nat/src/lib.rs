@@ -23,6 +23,7 @@
 
 mod icmp_error_msg;
 mod port;
+pub mod portfw;
 pub mod stateful;
 pub mod stateless;
 
