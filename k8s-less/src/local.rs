@@ -102,7 +102,7 @@ pub async fn kubeless_watch_gateway_agent_crd(
                         Ok(crd_spec) => {
                             let mut crd = GatewayAgent::new(gwname, crd_spec);
                             crd.metadata.generation = Some(generation);
-                            crd.metadata.namespace = Some("fab".to_string());
+                            crd.metadata.namespace = Some("default".to_string());
                             generation += 1;
                             callback(&crd).await;
                         }
