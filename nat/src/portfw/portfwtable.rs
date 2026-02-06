@@ -205,3 +205,71 @@ impl PortFwTableRw {
     }
 }
 
+// Display implementations
+macro_rules! PORTFW_KEY {
+    ($vpc:expr, $proto:expr, $dstip:expr, $dstport:expr) => {
+        format_args!(" {:>6} {:>16}:{:<} {:>5}", $vpc, $dstip, $dstport, $proto)
+    };
+}
+macro_rules! PORTFW_ENTRY {
+    ($dstip:expr, $dstport:expr, $vpc:expr) => {
+        format_args!(" {:}:{:<} at {}", $dstip, $dstport, $vpc)
+    };
+}
+impl Display for PortFwKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            PORTFW_KEY!(self.src_vpcd, self.proto, self.dst_ip, self.dst_port.get()),
+        )
+    }
+}
+impl Display for PortFwEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            PORTFW_ENTRY!(self.dst_ip, self.dst_port.get(), self.dst_vpcd)
+        )
+    }
+}
+impl Display for PortFwGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for e in &self.0 {
+            write!(f, "{e}")?;
+        }
+        writeln!(f)
+    }
+}
+fn fmt_port_fw_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        " ━━━━━━━━━━━━━━━━━━━━━━ Port forwarding table ━━━━━━━━━━━━━━━━━━━━━━"
+    )
+}
+
+impl Display for PortFwTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_port_fw_table_heading(f)?;
+        if self.0.is_empty() {
+            return writeln!(f, " (empty)");
+        }
+        for (key, group) in &self.0 {
+            write!(f, "{key} -> {group}")?;
+        }
+        Ok(())
+    }
+}
+impl Display for PortFwTableRw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let g = self.load();
+        if let Some(table) = g.as_ref() {
+            table.fmt(f)
+        } else {
+            fmt_port_fw_table_heading(f)?;
+            writeln!(f, " (not configured) ")
+        }
+    }
+}
+
