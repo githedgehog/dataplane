@@ -161,19 +161,13 @@ impl StatefulNat {
     #[cfg(test)]
     pub(crate) fn get_session<I: NatIpWithBitmap>(
         &self,
-        src_vpcd: VpcDiscriminant,
+        src_vpcd: Option<VpcDiscriminant>,
         src_ip: IpAddr,
-        dst_vpcd: VpcDiscriminant,
+        dst_vpcd: Option<VpcDiscriminant>,
         dst_ip: IpAddr,
         proto_key_info: IpProtoKey,
     ) -> Option<(NatTranslationData, Duration)> {
-        let flow_key = FlowKey::uni(
-            Some(src_vpcd),
-            src_ip,
-            Some(dst_vpcd),
-            dst_ip,
-            proto_key_info,
-        );
+        let flow_key = FlowKey::uni(src_vpcd, src_ip, dst_vpcd, dst_ip, proto_key_info);
         let flow_info = self.sessions.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
@@ -189,13 +183,21 @@ impl StatefulNat {
         &self,
         flow_key: &FlowKey,
         state: NatFlowState<I>,
+        dst_vpcd: VpcDiscriminant,
         idle_timeout: Duration,
-        dst_vpcd: Option<VpcDiscriminant>,
     ) {
+        // Clear the destination VPC so we can make lookups without knowing it
+        let new_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
+            flow_key.data().src_vpcd(),
+            *flow_key.data().src_ip(),
+            None,
+            *flow_key.data().dst_ip(),
+            *flow_key.data().proto_key_info(),
+        ));
         debug!(
             "{}: Creating new flow session entry: {} -> {}",
             self.name(),
-            flow_key.data(),
+            new_flow_key.data(),
             state
         );
 
@@ -207,7 +209,7 @@ impl StatefulNat {
             // flow info is just locally created
             unreachable!()
         }
-        self.sessions.insert(*flow_key, flow_info);
+        self.sessions.insert(new_flow_key, flow_info);
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -446,7 +448,7 @@ impl StatefulNat {
         let inner_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
             flow_key.data().src_vpcd(),     // Source VPC discriminant
             *embedded_packet_data.dst_ip(), // Source IP address: embedded destination IP address
-            flow_key.data().dst_vpcd(),     // Destination VPC discriminant
+            None, // Destination VPC discriminant: we don't store it in the key for NAT
             *embedded_packet_data.src_ip(), // Destination IP address: embedded source IP address
             (*embedded_packet_data.proto_key_info()).into(),
         ));
@@ -596,12 +598,12 @@ impl StatefulNat {
             Self::new_reverse_session(&flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
 
-        self.create_session(&flow_key, forward_state, idle_timeout, None);
+        self.create_session(&flow_key, forward_state, dst_vpc_id, idle_timeout);
         self.create_session(
             &reverse_flow_key,
             reverse_state.clone(),
+            src_vpc_id,
             idle_timeout,
-            Some(dst_vpc_id),
         );
 
         Self::stateful_translate::<Buf>(self.name(), packet, &translation_data).and(Ok(true))
