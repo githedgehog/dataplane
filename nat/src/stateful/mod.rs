@@ -552,8 +552,6 @@ impl StatefulNat {
     fn translate_packet<Buf: PacketBufferMut, I: NatIpWithBitmap>(
         &self,
         packet: &mut Packet<Buf>,
-        src_vpc_id: VpcDiscriminant,
-        dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
         // Hot path: if we have a session, directly translate the address already
         if let Some(translate) = Self::lookup_session::<I, Buf>(packet) {
@@ -592,6 +590,9 @@ impl StatefulNat {
 
         let translation_data = Self::get_translation_data(&alloc.src, &alloc.dst);
 
+        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
+        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+
         let reverse_flow_key =
             Self::new_reverse_session(&flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
@@ -610,8 +611,6 @@ impl StatefulNat {
     fn nat_packet<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        src_vpc_id: VpcDiscriminant,
-        dst_vpc_id: VpcDiscriminant,
     ) -> Result<bool, StatefulNatError> {
         let nfi = self.name();
 
@@ -620,35 +619,36 @@ impl StatefulNat {
             return Err(StatefulNatError::BadIpHeader);
         };
         match net {
-            Net::Ipv4(_) => self.translate_packet::<Buf, Ipv4Addr>(packet, src_vpc_id, dst_vpc_id),
-            Net::Ipv6(_) => self.translate_packet::<Buf, Ipv6Addr>(packet, src_vpc_id, dst_vpc_id),
+            Net::Ipv4(_) => self.translate_packet::<Buf, Ipv4Addr>(packet),
+            Net::Ipv6(_) => self.translate_packet::<Buf, Ipv6Addr>(packet),
         }
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`StatefulNat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
-        let Some(src_vpc_id) = Self::get_src_vpc_id(packet) else {
-            warn!(
-                "{}: Packet has no source VPC discriminant!. Will drop...",
-                self.name()
-            );
+        // In order to NAT a packet for which a session does not exist, we
+        // need (and expect) the packet to be annotated with both src & dst discriminants.
+        // A packet without those should have never made it here.
+        if Self::get_src_vpc_id(packet).is_none() {
+            let emsg = "Packet has no source VPC discriminant!. This is a bug. Will drop...";
+            warn!(emsg);
+            debug_assert!(false, "{emsg}");
             packet.done(DoneReason::Unroutable);
             return;
-        };
-        let Some(dst_vpc_id) = Self::get_dst_vpc_id(packet) else {
-            warn!(
-                "{}: Packet has no destination VPC discriminant!. Will drop...",
-                self.name()
-            );
+        }
+        if Self::get_dst_vpc_id(packet).is_none() {
+            let emsg = "Packet has no destination VPC discriminant!. This is a bug. Will drop...";
+            warn!(emsg);
+            debug_assert!(false, "{emsg}");
             packet.done(DoneReason::Unroutable);
             return;
-        };
+        }
 
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        match self.nat_packet(packet, src_vpc_id, dst_vpc_id) {
+        match self.nat_packet(packet) {
             Err(error) => {
                 packet.done(translate_error(&error));
                 error!("{}: Error processing packet: {error}", self.name());
