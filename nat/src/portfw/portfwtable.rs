@@ -273,3 +273,181 @@ impl Display for PortFwTableRw {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};
+    use crate::portfw::portfwtable::PortFwTableError;
+    use net::ip::NextHeader;
+    use net::packet::VpcDiscriminant;
+    use std::net::IpAddr;
+    use std::num::NonZero;
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    // build a sample port forwarding table
+    fn build_sample_port_forwarding_table() -> Arc<PortFwTable> {
+        let mut fwtable = PortFwTable::new();
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            proto: NextHeader::TCP,
+            dst_port: NonZero::new(3022).unwrap(),
+        };
+        let entry = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("192.168.1.1").unwrap(),
+            dst_port: NonZero::new(22).unwrap(),
+        };
+        fwtable.add_entry(key, entry).unwrap();
+
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            proto: NextHeader::TCP,
+            dst_port: NonZero::new(4022).unwrap(),
+        };
+        let entry = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(4000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("192.168.1.1").unwrap(),
+            dst_port: NonZero::new(22).unwrap(),
+        };
+        fwtable.add_entry(key, entry).unwrap();
+
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            proto: NextHeader::TCP,
+            dst_port: NonZero::new(3080).unwrap(),
+        };
+        let entry = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("192.168.1.1").unwrap(),
+            dst_port: NonZero::new(80).unwrap(),
+        };
+        fwtable.add_entry(key, entry).unwrap();
+
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            proto: NextHeader::UDP,
+            dst_port: NonZero::new(3053).unwrap(),
+        };
+        let entry = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("192.168.1.2").unwrap(),
+            dst_port: NonZero::new(53).unwrap(),
+        };
+        fwtable.add_entry(key, entry).unwrap();
+
+        Arc::new(fwtable)
+    }
+
+    #[test]
+    fn test_port_forwarding_table_build() {
+        let mut fwtable = build_sample_port_forwarding_table();
+        let fwtablerw = PortFwTableRw::new();
+        println!("{fwtablerw}");
+        fwtablerw.update(fwtable);
+        println!("{fwtablerw}");
+
+        let guard = fwtablerw.load();
+        if let Some(table) = guard.as_ref() {
+            let key = PortFwKey {
+                src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+                dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+                proto: NextHeader::TCP,
+                dst_port: NonZero::new(3022).unwrap(),
+            };
+            let e = table.lookup_rule(&key).unwrap();
+            assert_eq!(e.dst_ip, IpAddr::from_str("192.168.1.1").unwrap());
+            assert_eq!(e.dst_port.get(), 22);
+            assert_eq!(e.dst_vpcd, VpcDiscriminant::VNI(3000.try_into().unwrap()));
+        }
+    }
+
+    #[test]
+    fn test_port_forwarding_reject_dup_key() {
+        let mut fwtable = PortFwTable::new();
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            proto: NextHeader::TCP,
+            dst_port: NonZero::new(3022).unwrap(),
+        };
+        let entry1 = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("192.168.1.1").unwrap(),
+            dst_port: NonZero::new(22).unwrap(),
+        };
+        fwtable.add_entry(key, entry1).unwrap();
+        assert_eq!(fwtable.0.len(), 1);
+        assert_eq!(fwtable.get_group(&key).unwrap().0.len(), 1);
+
+        // idempotence -- nothing gets added
+        fwtable.add_entry(key, entry1).unwrap();
+        assert_eq!(fwtable.0.len(), 1);
+        assert_eq!(fwtable.get_group(&key).unwrap().0.len(), 1);
+
+        let entry2 = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(4000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("192.168.1.2").unwrap(),
+            dst_port: NonZero::new(23).unwrap(),
+        };
+        let r = fwtable.add_entry(key, entry2);
+        assert!(r.is_err_and(|e| e == PortFwTableError::DuplicateKey(key)));
+    }
+
+    #[test]
+    fn test_port_forwarding_reject_distinct_ip_ver() {
+        let mut fwtable = PortFwTable::new();
+        let key1 = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            proto: NextHeader::TCP,
+            dst_port: NonZero::new(3022).unwrap(),
+        };
+        let entry1 = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("2002:a:b:c::1").unwrap(),
+            dst_port: NonZero::new(22).unwrap(),
+        };
+        let r = fwtable.add_entry(key1, entry1);
+        assert!(r.is_err_and(|e| matches!(e, PortFwTableError::Unsupported(_))));
+    }
+
+    #[test]
+    fn test_port_forwarding_reject_unsupported_addresses() {
+        let mut fwtable = PortFwTable::new();
+        let key1 = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("224.0.0.1").unwrap(),
+            proto: NextHeader::TCP,
+            dst_port: NonZero::new(3022).unwrap(),
+        };
+        let entry1 = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            dst_port: NonZero::new(22).unwrap(),
+        };
+        let r = fwtable.add_entry(key1, entry1);
+        assert!(r.is_err_and(|e| matches!(e, PortFwTableError::Unsupported(_))));
+    }
+
+    #[test]
+    fn test_port_forwarding_reject_common_vpcd() {
+        let mut fwtable = PortFwTable::new();
+        let key1 = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("192.168.1.1").unwrap(),
+            proto: NextHeader::UDP,
+            dst_port: NonZero::new(3022).unwrap(),
+        };
+        let entry1 = PortFwEntry {
+            dst_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: IpAddr::from_str("70.71.72.73").unwrap(),
+            dst_port: NonZero::new(22).unwrap(),
+        };
+        let r = fwtable.add_entry(key1, entry1);
+        assert!(r.is_err_and(|e| matches!(e, PortFwTableError::Unsupported(_))));
+    }
+}
