@@ -2,10 +2,23 @@
 // Copyright Open Network Fabric Authors
 
 use super::flow_key::IcmpProtoKey;
-use super::{FlowKeyData, IpProtoKey};
-use net::packet::VpcDiscriminant;
+use super::{FlowKey, FlowKeyData, FlowTable, IpProtoKey};
+use std::fmt::Display;
 
-impl std::fmt::Display for FlowKeyData {
+// Copied from crates "config" and "routing"
+// TODO: Move to a shared location
+struct Heading(String);
+const LINE_WIDTH: usize = 81;
+impl Display for Heading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = (LINE_WIDTH - (self.0.len() + 2)) / 2;
+        write!(f, " {0:─<width$}", "─", width = len)?;
+        write!(f, " {} ", self.0)?;
+        writeln!(f, " {0:─<width$}", "─", width = len)
+    }
+}
+
+impl Display for FlowKeyData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (protocol, source, destination, icmp_data) = match self.proto_key_info() {
             IpProtoKey::Tcp(key) => (
@@ -35,19 +48,46 @@ impl std::fmt::Display for FlowKeyData {
             }
         };
 
-        write!(
-            f,
-            "{{ VPCs({}->{}) [proto: {}] ({}, {}){} }}",
-            self.src_vpcd()
-                .as_ref()
-                .map_or(String::new(), VpcDiscriminant::to_string),
-            self.dst_vpcd()
-                .as_ref()
-                .map_or(String::new(), VpcDiscriminant::to_string),
-            protocol,
-            source,
-            destination,
-            icmp_data,
-        )
+        match self.src_vpcd() {
+            Some(vpcd) => write!(f, "{{ VPCs({vpcd}->"),
+            None => write!(f, "{{ VPCs(None->"),
+        }?;
+        match self.dst_vpcd() {
+            Some(vpcd) => write!(f, "{vpcd})"),
+            None => write!(f, "None)"),
+        }?;
+        write!(f, " {protocol} ({source}, {destination}){icmp_data} }}")
+    }
+}
+
+impl Display for FlowKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FlowKey::Unidirectional(data) | FlowKey::Bidirectional(data) => write!(f, "{data}"),
+        }
+    }
+}
+
+impl Display for FlowTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let table = self.table.read().unwrap();
+        Heading(format!("Flow Table ({})", table.len())).fmt(f)?;
+        for entry in table.iter() {
+            if let Some(value) = entry.value().upgrade() {
+                let value = value.locked.read().unwrap();
+                let nat_state = value.nat_state.as_ref();
+                let dst_vpcd = value.dst_vpcd.as_ref();
+                write!(f, "{} -> ", entry.key())?;
+                match nat_state {
+                    Some(state) => write!(f, "{{ {state}, "),
+                    None => write!(f, "{{ None, "),
+                }?;
+                match dst_vpcd {
+                    Some(vpcd) => writeln!(f, "dst_vpcd: {vpcd} }}"),
+                    None => writeln!(f, "dst_vpcd: None }}"),
+                }?;
+            }
+        }
+        Ok(())
     }
 }
