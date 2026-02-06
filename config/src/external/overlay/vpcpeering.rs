@@ -210,7 +210,7 @@ impl VpcExpose {
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
-        self.ips.iter().filter(|p| p.prefix().is_host()).count() > 0
+        self.ips.iter().any(|p| p.prefix().is_host())
     }
 
     /// The prefixes of an expose to be advertised to a remote peer
@@ -503,11 +503,7 @@ impl VpcManifest {
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_host_prefixes())
-            .count()
-            > 0
+        self.exposes.iter().any(|expose| expose.has_host_prefixes())
     }
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes
@@ -581,6 +577,19 @@ impl VpcManifest {
             .iter()
             .filter(|expose| !expose.has_stateful_nat())
             .filter(|expose| expose.is_v6())
+    }
+    pub fn default_expose(&self) -> Result<Option<&VpcExpose>, ConfigError> {
+        let default_exposes: Vec<&VpcExpose> = self
+            .exposes
+            .iter()
+            .filter(|expose| expose.default)
+            .collect();
+        if default_exposes.len() > 1 {
+            return Err(ConfigError::InternalFailure(
+                "Multiple default exposes found".to_string(),
+            ));
+        }
+        Ok(default_exposes.first().copied())
     }
 }
 

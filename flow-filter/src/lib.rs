@@ -13,7 +13,7 @@
 //!   IP, port corresponding to existing, valid connections between the prefixes in exposed lists of
 //!   peerings, get dropped.
 
-use crate::tables::RemoteData;
+use crate::tables::{RemoteData, VpcdLookupResult};
 use flow_info::FlowStatus;
 use flow_info::flow_info_item::ExtractRef;
 use net::buffer::PacketBufferMut;
@@ -119,25 +119,37 @@ impl FlowFilter {
         // For Display
         let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
 
-        if let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
-            debug!(
-                "{nfi}: Flow {tuple} is allowed, dst_vpcd is {}",
-                dst_data.vpcd
-            );
-            packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
-            set_nat_requirements(packet, dst_data);
-        } else
-        /* FIXME: only do this if no explicit reject */
-        {
-            debug!("{nfi}: Did not find config for flow {tuple}. Checking flow-info ...");
+        let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) else {
+            debug!("{nfi}: No valid destination VPC found for flow {tuple}, dropping packet");
+            packet.done(DoneReason::Filtered);
+            return;
+        };
 
-            if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
-                packet.meta_mut().dst_vpcd = Some(dst_vpcd);
-                packet.meta_mut().set_stateful_nat(true);
-            } else {
-                packet.done(DoneReason::Filtered);
+        let dst_vpcd = match dst_data {
+            VpcdLookupResult::Single(dst_data) => {
+                set_nat_requirements(packet, &dst_data);
+                dst_data.vpcd
             }
-        }
+            VpcdLookupResult::MultipleMatches => {
+                debug!(
+                    "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
+                );
+
+                if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
+                    packet.meta_mut().set_stateful_nat(true);
+                    dst_vpcd
+                } else {
+                    debug!(
+                        "{nfi}: No flow table entry found for flow {tuple}, unable to decide what destination VPC to use, dropping packet"
+                    );
+                    packet.done(DoneReason::Filtered);
+                    return;
+                }
+            }
+        };
+
+        debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
+        packet.meta_mut().dst_vpcd = Some(dst_vpcd);
     }
 }
 
@@ -307,7 +319,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -346,7 +358,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data,
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -407,7 +419,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data,
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -436,6 +448,220 @@ mod tests {
     }
 
     #[test]
+    fn test_flow_filter_multiple_matches_no_dst_vpcd() {
+        // Setup table with overlapping destination prefixes from different VPCs
+        let mut table = FlowFilterTable::new();
+        let src_vpcd = vpcd(100);
+
+        // Manually set up a scenario where dst_vpcd lookup returns MultipleMatches
+        // This happens when the same destination can be reached from multiple VPCs
+        table
+            .insert(
+                src_vpcd,
+                VpcdLookupResult::MultipleMatches,
+                Prefix::from("10.0.0.0/24"),
+                None,
+                Prefix::from("20.0.0.0/24"),
+                None,
+            )
+            .unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Create test packet
+        let packet = create_test_packet(
+            Some(vpcd(100)),
+            "10.0.0.5".parse().unwrap(),
+            "20.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        // Without table flow lookup we can't find the right dst_vpcd, so we should drop the packet
+        assert!(packets[0].is_done());
+        assert!(packets[0].meta().dst_vpcd.is_none());
+    }
+
+    #[test]
+    fn test_flow_filter_table_overlap_cases() {
+        let vni1 = Vni::new_checked(100).unwrap();
+        let vni2 = Vni::new_checked(200).unwrap();
+        let vni3 = Vni::new_checked(300).unwrap();
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
+            .unwrap();
+
+        // - vpc1-to-vpc2:
+        //     VPC01:
+        //       prefixes:
+        //       - 1.0.0.0/24
+        //     VPC02:
+        //       prefixes:
+        //       - 5.0.0.0/24
+        //
+        // - vpc2-to-vpc3:
+        //     VPC02:
+        //       prefixes:
+        //       - 5.0.0.0/24
+        //       - 6.0.0.0/24
+        //     VPC03:
+        //       prefixes:
+        //       - 1.0.0.64/26    // 1.0.0.64 to 1.0.0.127
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::new(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("1.0.0.0/24".into())],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())],
+                },
+                None,
+            ))
+            .unwrap();
+
+        peering_table
+            .add(VpcPeering::new(
+                "vpc2-to-vpc3",
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty().ip("5.0.0.0/24".into()),
+                        VpcExpose::empty().ip("6.0.0.0/24".into()),
+                    ],
+                },
+                VpcManifest {
+                    name: "vpc3".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("1.0.0.64/26".into())],
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        // Build overlay.vpc_table's peerings from peering_table, with no validation.
+        // We don't validate because overlapping prefixes actually make the config invalid; but it
+        // doesn't matter for the test.
+        overlay.collect_peerings();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with packets
+
+        // VPC-1 -> VPC-2: No ambiguity
+        let packet = create_test_packet(
+            Some(vpcd(100)),
+            "1.0.0.5".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+
+        // VPC-3 -> VPC-2: No ambiguity
+        let packet = create_test_packet(
+            Some(vpcd(300)),
+            "1.0.0.70".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+
+        // VPC-2 -> VPC-1 using lower non-overlapping destination prefix section
+        let packet = create_test_packet(
+            Some(vpcd(200)),
+            "5.0.0.10".parse().unwrap(),
+            "1.0.0.5".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
+
+        // VPC-2 -> VPC-1 using upper non-overlapping destination prefix section
+        let packet = create_test_packet(
+            Some(vpcd(200)),
+            "5.0.0.10".parse().unwrap(),
+            "1.0.0.205".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
+
+        // VPC-2 -> VPC-3 using non-overlapping source prefix
+        let packet = create_test_packet(
+            Some(vpcd(200)),
+            "6.0.0.11".parse().unwrap(),
+            "1.0.0.70".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
+
+        // VPC-2 -> VPC-??? using overlapping prefix sections: multiple matches
+        let packet = create_test_packet(
+            Some(vpcd(200)),
+            "5.0.0.10".parse().unwrap(),
+            "1.0.0.70".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, None)
+    }
+
+    #[test]
     fn test_flow_filter_ipv6() {
         // Setup table
         let mut table = FlowFilterTable::new();
@@ -449,7 +675,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("2001:db8::/32"),
                 None,
                 Prefix::from("2001:db9::/32"),
@@ -488,7 +714,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -527,7 +753,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data,
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 Some(PortRange::new(1025, 1999).unwrap()),
                 Prefix::from("20.0.0.0/24"),
@@ -964,7 +1190,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                VpcdLookupResult::Single(dst_data),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),

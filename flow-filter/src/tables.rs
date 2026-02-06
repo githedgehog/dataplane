@@ -17,54 +17,42 @@ use tracectl::trace_target;
 use tracing::debug;
 trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 
-/// A structure to store information about allowed flows between VPCs.
-/// It contains one table per source VPC discriminant.
+/// The result of a remote information lookup in the flow filter table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VpcdLookupResult {
+    /// A single, unambiguous matching connection information object was found.
+    Single(RemoteData),
+
+    /// Multiple matching connection information object match the packet, we cannot tell which is
+    /// the right one for this packet.
+    MultipleMatches,
+}
+
+/// Stores allowed flows between VPCs and answers: given a packet's 5-tuple
+/// (src_vpc, src_ip, src_port, dst_ip, dst_port), what is the destination VPC?
 //
-// The structure looks like this:
+// Lookup proceeds through nested structures, narrowing at each level:
 //
-// FlowFilterTable
-//   -> HashMap<VpcDiscriminant, VpcConnectionsTable>
-//      (one table per source VPC discriminant)
+//   src_vpc --> src_ip --> src_port --> dst_ip --> dst_port --> VpcdLookupResult
+//       |          |           |           |           |
+//       v          v           v           v           v
+//   HashMap    LPM trie   PortRangeMap  LPM trie  PortRangeMap
 //
-//   VpcConnectionsTable
-//     -> IpPortPrefixTrie<SrcConnectionData>
-//        Key: source IP prefix
-//        Value: SrcConnectionData
+// More precisely, here's what we try to do at each level:
 //
-//    SrcConnectionData (enum)
-//      -> AllPorts(DstConnectionData): applies to all source ports
-//      -> Ranges(DisjointRangesBTreeMap<PortRange, DstConnectionData>):
-//         associates one or more source port ranges, for the IpPortPrefixTrie lookup, to
-//         destination connection data
+//   1. src_vpc:  get all flow rules for the source VPC
+//   2. src_ip:   get "what destinations can this source IP reach"
+//   3. src_port: narrow down to specific destination rules, based on source port
+//   4. dst_ip:   get the VPCs mapping for the destination IP
+//   5. dst_port: get the final VPC result, based on destination port
 //
-//      DstConnectionData
-//        -> IpPortPrefixTrie<RemotePortRangesData>
-//           LPM trie containing destination IP prefixes and associated port/VPC information
+// Types:
 //
-//        RemotePortRangesData (enum)
-//          -> AllPorts(VpcDiscriminant): destination VPC for all ports (no port range specified)
-//          -> Ranges(DisjointRangesBTreeMap<PortRange, VpcDiscriminant>):
-//             associates destination port ranges to destination VPC discriminants
-//
-// How this works:
-//
-// 1. From the FlowFilterTable, find the VpcConnectionsTable for the packet's source VPC
-//
-// 2. Based on source IP and port, look up the SrcConnectionData in the VpcConnectionsTable
-//    (LPM trie). This retrieves the destination connection information for the given
-//    source VPC, source IP, and all associated port ranges.
-//
-// 3. From the SrcConnectionData, extract the DstConnectionData that matches the source port
-//    (if port ranges are specified).
-//
-// 4. Using the destination IP and port, look up in the DstConnectionData's trie to find the
-//    RemotePortRangesData that matches the destination IP prefix.
-//
-// 5. From the RemotePortRangesData, extract the VpcDiscriminant that matches the destination
-//    port (if port ranges are specified).
-//
-// 6. If we found a match, then the connection is valid; we return the VpcDiscriminant which
-//    contains either a single destination VPC discriminant or indicates multiple matches.
+//   FlowFilterTable:      HashMap<VpcDiscriminant, VpcConnectionsTable>
+//   VpcConnectionsTable:  IpPortPrefixTrie<SrcConnectionData>
+//   SrcConnectionData:    PortRangeMap<DstConnectionData>   (by src port)
+//   DstConnectionData:    IpPortPrefixTrie<RemotePortRangesData>
+//   RemotePortRangesData: PortRangeMap<VpcdLookupResult>    (by dst port)
 #[derive(Debug, Clone)]
 pub struct FlowFilterTable(HashMap<VpcDiscriminant, VpcConnectionsTable>);
 
@@ -74,16 +62,10 @@ impl FlowFilterTable {
         Self(HashMap::new())
     }
 
-    fn insert_table(&mut self, src_vpcd: VpcDiscriminant, table: VpcConnectionsTable) {
-        self.0.insert(src_vpcd, table);
-    }
-
-    fn get_table(&self, src_vpcd: VpcDiscriminant) -> Option<&VpcConnectionsTable> {
-        self.0.get(&src_vpcd)
-    }
-
-    fn get_table_mut(&mut self, src_vpcd: VpcDiscriminant) -> Option<&mut VpcConnectionsTable> {
-        self.0.get_mut(&src_vpcd)
+    fn get_or_create_table(&mut self, src_vpcd: VpcDiscriminant) -> &mut VpcConnectionsTable {
+        self.0
+            .entry(src_vpcd)
+            .or_insert_with(VpcConnectionsTable::new)
     }
 
     pub(crate) fn lookup(
@@ -92,9 +74,9 @@ impl FlowFilterTable {
         src_addr: &IpAddr,
         dst_addr: &IpAddr,
         ports: Option<(u16, u16)>,
-    ) -> Option<&RemoteData> {
+    ) -> Option<VpcdLookupResult> {
         // Get the table related to the source VPC for the packet
-        let Some(table) = self.get_table(src_vpcd) else {
+        let Some(table) = self.0.get(&src_vpcd) else {
             debug!("Could not find connections table for VPC {src_vpcd}");
             return None;
         };
@@ -111,8 +93,7 @@ impl FlowFilterTable {
         // We have a src_connection_data object for our source VPC and source IP, and source port
         // ranges associated to this IP: we may need to find the right item for this entry based on
         // the source port
-        let Some(dst_connection_data) = src_connection_data.get_remote_prefixes_data(src_port)
-        else {
+        let Some(dst_connection_data) = src_connection_data.get(src_port) else {
             debug!("Could not find dst connection data for src:{src_addr}, src_port:{src_port:?}");
             return None;
         };
@@ -129,107 +110,82 @@ impl FlowFilterTable {
         // We have a remote_prefix_data object for our destination address, and the port ranges
         // associated to this IP: we may need to find the right item for this entry based on the
         // destination port
-        remote_prefix_data.get_remote_data(dst_port)
+        remote_prefix_data.get(dst_port).copied()
     }
 
     pub(crate) fn insert(
         &mut self,
         src_vpcd: VpcDiscriminant,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
         src_prefix: Prefix,
         src_port_range: Option<PortRange>,
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.insert(
-                dst_data,
-                src_prefix,
-                src_port_range,
-                dst_prefix,
-                dst_port_range,
-            )?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.insert(
-                dst_data,
-                src_prefix,
-                src_port_range,
-                dst_prefix,
-                dst_port_range,
-            )?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd).insert(
+            dst_data_result,
+            src_prefix,
+            src_port_range,
+            dst_prefix,
+            dst_port_range,
+        )
     }
 
     pub(crate) fn insert_default_remote(
         &mut self,
         src_vpcd: VpcDiscriminant,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
         src_prefix: Prefix,
         src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.insert_default(dst_data, src_prefix, src_port_range)?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.insert_default(dst_data, src_prefix, src_port_range)?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd).insert_default(
+            dst_data_result,
+            src_prefix,
+            src_port_range,
+        )
     }
 
     pub(crate) fn insert_default_source(
         &mut self,
         src_vpcd: VpcDiscriminant,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.update_default_source(dst_data, dst_prefix, dst_port_range)?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.create_default_source(dst_data, dst_prefix, dst_port_range)?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd).update_default_source(
+            dst_data_result,
+            dst_prefix,
+            dst_port_range,
+        )
     }
 
     pub(crate) fn insert_default_source_to_default_remote(
         &mut self,
         src_vpcd: VpcDiscriminant,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
     ) -> Result<(), ConfigError> {
-        if let Some(table) = self.get_table_mut(src_vpcd) {
-            table.update_default_source_to_default_remote(dst_data)?;
-        } else {
-            let mut table = VpcConnectionsTable::new();
-            table.create_default_source_to_default_remote(dst_data)?;
-            self.insert_table(src_vpcd, table);
-        }
-        Ok(())
+        self.get_or_create_table(src_vpcd)
+            .update_default_source_to_default_remote(dst_data_result)
     }
 }
 
 #[derive(Debug, Clone)]
 struct VpcConnectionsTable {
     trie: IpPortPrefixTrie<SrcConnectionData>,
-    default_source_opt: Option<SrcConnectionData>,
+    default_source: Option<SrcConnectionData>,
 }
 
 impl VpcConnectionsTable {
     fn new() -> Self {
         Self {
             trie: IpPortPrefixTrie::new(),
-            default_source_opt: None,
+            default_source: None,
         }
     }
 
     fn lookup(&self, addr: &IpAddr, port: Option<u16>) -> Option<&SrcConnectionData> {
         let (_, data) = self.trie.lookup(addr, port).unzip();
-        data.or(self.default_source_opt.as_ref())
+        data.or(self.default_source.as_ref())
     }
 
     #[cfg(test)]
@@ -243,17 +199,21 @@ impl VpcConnectionsTable {
 
     fn insert(
         &mut self,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
         src_prefix: Prefix,
         src_port_range: Option<PortRange>,
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         if let Some(value) = self.trie.get_mut(src_prefix) {
-            value.update(src_port_range, dst_data, dst_prefix, dst_port_range)?;
+            value.update(src_port_range, dst_data_result, dst_prefix, dst_port_range)?;
         } else {
-            let value =
-                SrcConnectionData::new(src_port_range, dst_data, dst_prefix, dst_port_range);
+            let value = SrcConnectionData::with_destination(
+                src_port_range,
+                dst_data_result,
+                dst_prefix,
+                dst_port_range,
+            );
             self.trie.insert(src_prefix, value);
         }
         Ok(())
@@ -261,206 +221,180 @@ impl VpcConnectionsTable {
 
     fn insert_default(
         &mut self,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
         src_prefix: Prefix,
         src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         if let Some(value) = self.trie.get_mut(src_prefix) {
-            value.update_for_default(dst_data, src_port_range)?;
+            value.update_for_default(dst_data_result, src_port_range)?;
         } else {
-            let value = SrcConnectionData::new_for_default_remote(src_port_range, dst_data);
+            let value =
+                SrcConnectionData::with_default_destination(src_port_range, dst_data_result);
             self.trie.insert(src_prefix, value);
         }
         Ok(())
     }
 
-    fn create_default_source(
-        &mut self,
-        dst_data: RemoteData,
-        dst_prefix: Prefix,
-        dst_port_range: Option<PortRange>,
-    ) -> Result<(), ConfigError> {
-        if self.default_source_opt.is_some() {
+    fn set_default_source(&mut self, data: SrcConnectionData) -> Result<(), ConfigError> {
+        if self.default_source.is_some() {
             return Err(ConfigError::InternalFailure(
                 "Trying to override existing default source".to_string(),
             ));
-        } else {
-            self.default_source_opt = Some(SrcConnectionData::AllPorts(DstConnectionData::new(
-                dst_data,
-                dst_prefix,
-                dst_port_range,
-            )))
         }
-        Ok(())
-    }
-
-    fn create_default_source_to_default_remote(
-        &mut self,
-        dst_data: RemoteData,
-    ) -> Result<(), ConfigError> {
-        if self.default_source_opt.is_some() {
-            return Err(ConfigError::InternalFailure(
-                "Trying to override existing default source".to_string(),
-            ));
-        } else {
-            self.default_source_opt = Some(SrcConnectionData::AllPorts(
-                DstConnectionData::new_for_default_remote(dst_data),
-            ))
-        }
+        self.default_source = Some(data);
         Ok(())
     }
 
     fn update_default_source(
         &mut self,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        if let Some(src_connection_data) = &mut self.default_source_opt {
-            src_connection_data.update(None, dst_data, dst_prefix, dst_port_range)
+        if let Some(src_connection_data) = &mut self.default_source {
+            src_connection_data.update(None, dst_data_result, dst_prefix, dst_port_range)
         } else {
-            self.create_default_source(dst_data, dst_prefix, dst_port_range)
+            let data = PortRangeMap::AllPorts(DstConnectionData::new(
+                dst_data_result,
+                dst_prefix,
+                dst_port_range,
+            ));
+            self.set_default_source(data)
         }
     }
 
     fn update_default_source_to_default_remote(
         &mut self,
-        dst_data: RemoteData,
+        dst_data_result: VpcdLookupResult,
     ) -> Result<(), ConfigError> {
-        if let Some(src_connection_data) = &mut self.default_source_opt {
-            src_connection_data.update_for_default(dst_data, None)
+        if let Some(src_connection_data) = &mut self.default_source {
+            src_connection_data.update_for_default(dst_data_result, None)
         } else {
-            self.create_default_source_to_default_remote(dst_data)
+            let data =
+                PortRangeMap::AllPorts(DstConnectionData::new_for_default_remote(dst_data_result));
+            self.set_default_source(data)
         }
     }
 }
 
+/// A map that associates port ranges to values of type `T`.
+///
+/// When no port range is specified, the value applies to all ports (`AllPorts`).
+/// Otherwise, one or more port ranges are mapped to their respective values (`Ranges`).
 #[derive(Debug, Clone)]
-pub(crate) enum SrcConnectionData {
-    // No port range associated with the IP prefix, the value applies to all ports.
-    AllPorts(DstConnectionData),
-    // One or several port ranges associated to the IP prefix used as the key for the table entry.
-    Ranges(DisjointRangesBTreeMap<PortRange, DstConnectionData>),
+pub(crate) enum PortRangeMap<T> {
+    AllPorts(T),
+    Ranges(DisjointRangesBTreeMap<PortRange, T>),
 }
 
-impl SrcConnectionData {
-    fn new(
-        src_port_range: Option<PortRange>,
-        dst_data: RemoteData,
-        dst_prefix: Prefix,
-        dst_port_range: Option<PortRange>,
-    ) -> Self {
-        let connection_data = DstConnectionData::new(dst_data, dst_prefix, dst_port_range);
-        Self::new_from_dst_connection_data(src_port_range, connection_data)
-    }
-
-    fn new_for_default_remote(src_port_range: Option<PortRange>, dst_data: RemoteData) -> Self {
-        let connection_data = DstConnectionData::new_for_default_remote(dst_data);
-        Self::new_from_dst_connection_data(src_port_range, connection_data)
-    }
-
-    fn new_from_dst_connection_data(
-        src_port_range: Option<PortRange>,
-        connection_data: DstConnectionData,
-    ) -> Self {
-        match src_port_range {
-            None => SrcConnectionData::AllPorts(connection_data),
-            Some(port_range) => {
-                let map = DisjointRangesBTreeMap::from_iter([(port_range, connection_data)]);
-                SrcConnectionData::Ranges(map)
+impl<T> PortRangeMap<T> {
+    /// Creates a new `PortRangeMap` from an optional port range and a value.
+    fn new(port_range: Option<PortRange>, value: T) -> Self {
+        match port_range {
+            None => PortRangeMap::AllPorts(value),
+            Some(range) => {
+                PortRangeMap::Ranges(DisjointRangesBTreeMap::from_iter([(range, value)]))
             }
         }
     }
 
-    fn get_remote_prefixes_data(&self, src_port: Option<u16>) -> Option<&DstConnectionData> {
+    /// Returns a reference to the value for the given port, if any.
+    fn get(&self, port: Option<u16>) -> Option<&T> {
         match self {
-            SrcConnectionData::AllPorts(remote_prefixes_data) => Some(remote_prefixes_data),
-            SrcConnectionData::Ranges(ranges) => {
-                // If we don't have a source port, we can't hope to find a matching port range
-                let src_port = src_port?;
-                // connection_data contains data for the various port ranges associated to the
-                // prefix retrieved from table.lookup(), find the remote prefixes data related to
-                // the right port range for our source port
-                ranges
-                    .lookup(&src_port)
-                    .map(|(_, remote_prefixes_data)| remote_prefixes_data)
-            }
-        }
-    }
-
-    fn update(
-        &mut self,
-        src_port_range: Option<PortRange>,
-        dst_data: RemoteData,
-        dst_prefix: Prefix,
-        dst_port_range: Option<PortRange>,
-    ) -> Result<(), ConfigError> {
-        self.get_dst_connection_data_mut(src_port_range)?.update(
-            dst_data,
-            dst_prefix,
-            dst_port_range,
-        )
-    }
-
-    fn update_for_default(
-        &mut self,
-        dst_data: RemoteData,
-        src_port_range: Option<PortRange>,
-    ) -> Result<(), ConfigError> {
-        self.get_dst_connection_data_mut(src_port_range)?
-            .update_for_default(dst_data)
-    }
-
-    fn get_dst_connection_data_mut(
-        &mut self,
-        src_port_range_opt: Option<PortRange>,
-    ) -> Result<&mut DstConnectionData, ConfigError> {
-        match self {
-            SrcConnectionData::AllPorts(remote_prefixes_data) => Ok(remote_prefixes_data),
-            SrcConnectionData::Ranges(map) => {
-                let src_port_range = src_port_range_opt.ok_or(ConfigError::InternalFailure(
-                    "Trying to update (local) port ranges map with overlapping ranges".to_string(),
-                ))?;
-                map.get_mut(&src_port_range)
-                    // We found an entry for this port range, we should have the port range in the map
-                    .ok_or(ConfigError::InternalFailure(
-                        "Cannot find entry to update in port ranges map".to_string(),
-                    ))
+            PortRangeMap::AllPorts(value) => Some(value),
+            PortRangeMap::Ranges(ranges) => {
+                let port = port?;
+                ranges.lookup(&port).map(|(_, value)| value)
             }
         }
     }
 }
 
-impl ValueWithAssociatedRanges for SrcConnectionData {
+impl<T: Clone> ValueWithAssociatedRanges for PortRangeMap<T> {
     fn covers_all_ports(&self) -> bool {
         match self {
-            SrcConnectionData::AllPorts(_) => true,
-            SrcConnectionData::Ranges(connection_data) => {
-                connection_data
-                    .keys()
-                    .fold(0, |sum, range| sum + range.len())
-                    == PortRange::MAX_LENGTH
+            PortRangeMap::AllPorts(_) => true,
+            PortRangeMap::Ranges(ranges) => {
+                ranges.keys().fold(0, |sum, range| sum + range.len()) == PortRange::MAX_LENGTH
             }
         }
     }
 
     fn covers_port(&self, port: u16) -> bool {
         match self {
-            SrcConnectionData::AllPorts(_) => true,
-            SrcConnectionData::Ranges(ranges) => {
-                ranges.iter().any(|(range, _)| range.contains(&port))
+            PortRangeMap::AllPorts(_) => true,
+            PortRangeMap::Ranges(ranges) => ranges.iter().any(|(range, _)| range.contains(&port)),
+        }
+    }
+}
+
+pub(crate) type SrcConnectionData = PortRangeMap<DstConnectionData>;
+pub(crate) type RemotePortRangesData = PortRangeMap<VpcdLookupResult>;
+
+impl PortRangeMap<DstConnectionData> {
+    fn with_destination(
+        src_port_range: Option<PortRange>,
+        dst_data_result: VpcdLookupResult,
+        dst_prefix: Prefix,
+        dst_port_range: Option<PortRange>,
+    ) -> Self {
+        let connection_data = DstConnectionData::new(dst_data_result, dst_prefix, dst_port_range);
+        Self::new(src_port_range, connection_data)
+    }
+
+    fn with_default_destination(
+        src_port_range: Option<PortRange>,
+        dst_data_result: VpcdLookupResult,
+    ) -> Self {
+        let connection_data = DstConnectionData::new_for_default_remote(dst_data_result);
+        Self::new(src_port_range, connection_data)
+    }
+
+    fn update(
+        &mut self,
+        src_port_range: Option<PortRange>,
+        dst_data_result: VpcdLookupResult,
+        dst_prefix: Prefix,
+        dst_port_range: Option<PortRange>,
+    ) -> Result<(), ConfigError> {
+        self.get_mut(src_port_range)?
+            .update(dst_data_result, dst_prefix, dst_port_range)
+    }
+
+    fn update_for_default(
+        &mut self,
+        dst_data_result: VpcdLookupResult,
+        src_port_range: Option<PortRange>,
+    ) -> Result<(), ConfigError> {
+        self.get_mut(src_port_range)?
+            .update_for_default(dst_data_result)
+    }
+
+    fn get_mut(
+        &mut self,
+        port_range: Option<PortRange>,
+    ) -> Result<&mut DstConnectionData, ConfigError> {
+        match self {
+            PortRangeMap::AllPorts(data) => Ok(data),
+            PortRangeMap::Ranges(map) => {
+                let port_range = port_range.ok_or(ConfigError::InternalFailure(
+                    "Trying to update (local) port ranges map with overlapping ranges".to_string(),
+                ))?;
+                map.get_mut(&port_range).ok_or(ConfigError::InternalFailure(
+                    "Cannot find entry to update in port ranges map".to_string(),
+                ))
             }
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NatRequirement {
     Stateless,
     Stateful,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RemoteData {
     pub(crate) vpcd: VpcDiscriminant,
     pub(crate) src_nat_req: Option<NatRequirement>,
@@ -492,77 +426,23 @@ impl RemoteData {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum RemotePortRangesData {
-    AllPorts(RemoteData),
-    Ranges(DisjointRangesBTreeMap<PortRange, RemoteData>),
-}
-
-impl RemotePortRangesData {
-    fn new(port_range: Option<PortRange>, data: RemoteData) -> Self {
-        match port_range {
-            None => RemotePortRangesData::AllPorts(data),
-            Some(range) => {
-                RemotePortRangesData::Ranges(DisjointRangesBTreeMap::from_iter([(range, data)]))
-            }
-        }
-    }
-
-    fn get_remote_data(&self, dst_port: Option<u16>) -> Option<&RemoteData> {
-        match self {
-            RemotePortRangesData::AllPorts(data) => Some(data),
-            RemotePortRangesData::Ranges(ranges) => {
-                // If we don't have a destination port, we can't hope to find a matching port range
-                let dst_port = dst_port?;
-                ranges.lookup(&dst_port).map(|(_, data)| data)
-            }
-        }
-    }
-}
-
-impl ValueWithAssociatedRanges for RemotePortRangesData {
-    fn covers_all_ports(&self) -> bool {
-        match self {
-            RemotePortRangesData::AllPorts(_) => true,
-            RemotePortRangesData::Ranges(ranges) => {
-                ranges.iter().fold(0, |sum, (range, _)| sum + range.len()) == PortRange::MAX_LENGTH
-            }
-        }
-    }
-
-    fn covers_port(&self, port: u16) -> bool {
-        match self {
-            RemotePortRangesData::AllPorts(_) => true,
-            RemotePortRangesData::Ranges(ranges) => {
-                ranges.iter().any(|(range, _)| range.contains(&port))
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct DstConnectionData {
     trie: IpPortPrefixTrie<RemotePortRangesData>,
     default_remote_data: Option<RemotePortRangesData>,
 }
 
 impl DstConnectionData {
-    fn new(data: RemoteData, prefix: Prefix, port_range: Option<PortRange>) -> Self {
-        let remote_data = match port_range {
-            None => RemotePortRangesData::AllPorts(data),
-            Some(range) => {
-                RemotePortRangesData::Ranges(DisjointRangesBTreeMap::from_iter([(range, data)]))
-            }
-        };
+    fn new(result: VpcdLookupResult, prefix: Prefix, port_range: Option<PortRange>) -> Self {
         Self {
-            trie: IpPortPrefixTrie::from(prefix, remote_data),
+            trie: IpPortPrefixTrie::from(prefix, PortRangeMap::new(port_range, result)),
             default_remote_data: None,
         }
     }
 
-    fn new_for_default_remote(data: RemoteData) -> Self {
+    fn new_for_default_remote(result: VpcdLookupResult) -> Self {
         Self {
             trie: IpPortPrefixTrie::new(),
-            default_remote_data: Some(RemotePortRangesData::AllPorts(data)),
+            default_remote_data: Some(PortRangeMap::AllPorts(result)),
         }
     }
 
@@ -573,38 +453,73 @@ impl DstConnectionData {
             .or(self.default_remote_data.as_ref())
     }
 
+    // Update the remote data for a given prefix and port range.
+    //
+    // We can have multiple matches for the same prefix and port range. In this case, we should have
+    // determined this prior to updated the remote data, so we should only attempt to overwrite a
+    // value if both are MultipleMatches variants.
+    //
+    // We do not support partial overlap of prefixes and port ranges here. This method assumes that
+    // prefixes (including associated port ranges) have been split accordingly, and that to a given
+    // prefix with port range, there can be no entry with partial-only overlap in the data structure
+    // (except for the "default" case, handled separately).
     fn update(
         &mut self,
-        data: RemoteData,
+        result: VpcdLookupResult,
         prefix: Prefix,
         port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         match (self.trie.get_mut(prefix), port_range) {
-            (Some(RemotePortRangesData::Ranges(existing_range_map)), Some(range)) => {
-                existing_range_map.insert(range, data);
+            (Some(PortRangeMap::Ranges(existing_range_map)), Some(range)) => {
+                let existing_result = existing_range_map.insert(range, result);
+
+                // The only case we had an existing value is when we have multiple matches. Let's do
+                // a sanity check.
+                if existing_result.is_some_and(|r| {
+                    r != VpcdLookupResult::MultipleMatches
+                        || result != VpcdLookupResult::MultipleMatches
+                }) {
+                    return Err(ConfigError::InternalFailure(
+                        "Trying to insert conflicting values for remote port range information"
+                            .to_string(),
+                    ));
+                }
+            }
+            (Some(PortRangeMap::AllPorts(existing_data)), port_range)
+                if port_range.is_none_or(|r| r.is_max_range()) =>
+            {
+                // We should only hit this case if we already inserted an entry with the same
+                // destination VPC.
+                if !(*existing_data == VpcdLookupResult::MultipleMatches
+                    && result == VpcdLookupResult::MultipleMatches)
+                {
+                    return Err(ConfigError::InternalFailure(
+                        "Trying to insert conflicting values for remote information".to_string(),
+                    ));
+                }
+                // We already know we have multiple matches, no need to update
             }
             (Some(_), _) => {
-                // At least one of the entries, the existing or the new, covers all ports, so we
-                // can't add a new one or we'll have overlap
+                // One of the entries, the existing or the new, covers all ports, so we can't add a
+                // new one or we'll have partial overlap
                 return Err(ConfigError::InternalFailure(
                     "Trying to update (remote) port ranges map with overlapping ranges".to_string(),
                 ));
             }
             (None, range) => {
-                let prefix_data = RemotePortRangesData::new(range, data);
-                self.trie.insert(prefix, prefix_data);
+                self.trie.insert(prefix, PortRangeMap::new(range, result));
             }
         }
         Ok(())
     }
 
-    fn update_for_default(&mut self, data: RemoteData) -> Result<(), ConfigError> {
+    fn update_for_default(&mut self, result: VpcdLookupResult) -> Result<(), ConfigError> {
         if self.default_remote_data.is_some() {
             return Err(ConfigError::InternalFailure(
                 "Trying to update default remote with an existing default remote".to_string(),
             ));
         }
-        self.default_remote_data = Some(RemotePortRangesData::AllPorts(data));
+        self.default_remote_data = Some(PortRangeMap::AllPorts(result));
         Ok(())
     }
 }
@@ -635,7 +550,7 @@ mod tests {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd, None, None);
+        let dst_data_result = VpcdLookupResult::Single(RemoteData::new(dst_vpcd, None, None));
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -643,7 +558,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                dst_data_result,
                 src_prefix,
                 None,
                 dst_prefix,
@@ -655,7 +570,7 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.10".parse().unwrap();
         let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(vpcd_result, Some(&dst_data));
+        assert_eq!(vpcd_result, Some(dst_data_result));
 
         // Should not allow traffic from different src
         let wrong_src_addr = "10.1.0.5".parse().unwrap();
@@ -673,7 +588,11 @@ mod tests {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd, Some(NatRequirement::Stateful), None);
+        let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
+            dst_vpcd,
+            Some(NatRequirement::Stateful),
+            None,
+        ));
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -683,7 +602,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                dst_data_result,
                 src_prefix,
                 src_port_range,
                 dst_prefix,
@@ -696,7 +615,7 @@ mod tests {
 
         // Should allow with matching ports
         let result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((1500, 80)));
-        assert_eq!(result, Some(&dst_data));
+        assert_eq!(result, Some(dst_data_result));
 
         // Should not allow with non-matching src port
         let result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((500, 80)));
@@ -717,18 +636,18 @@ mod tests {
         let src_vpcd = vpcd(100);
         let dst_vpcd1 = vpcd(200);
         let dst_vpcd2 = vpcd(300);
-        let dst_data1 = RemoteData::new(dst_vpcd1, None, None);
-        let dst_data2 = RemoteData::new(
+        let dst_data_result1 = VpcdLookupResult::Single(RemoteData::new(dst_vpcd1, None, None));
+        let dst_data_result2 = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd2,
             Some(NatRequirement::Stateless),
             Some(NatRequirement::Stateless),
-        );
+        ));
 
         // Add two entries for different destination prefixes
         table
             .insert(
                 src_vpcd,
-                dst_data1.clone(),
+                dst_data_result1,
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -739,7 +658,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data2.clone(),
+                dst_data_result2,
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("30.0.0.0/24"),
@@ -751,24 +670,28 @@ mod tests {
 
         // Should route to dst_vpcd1
         let result = table.lookup(src_vpcd, &src_addr, &"20.0.0.10".parse().unwrap(), None);
-        assert_eq!(result, Some(&dst_data1));
+        assert_eq!(result, Some(dst_data_result1));
 
         // Should route to dst_vpcd2
         let vpcd_result = table.lookup(src_vpcd, &src_addr, &"30.0.0.10".parse().unwrap(), None);
-        assert_eq!(vpcd_result, Some(&dst_data2));
+        assert_eq!(vpcd_result, Some(dst_data_result2));
     }
 
     #[test]
     fn test_vpc_connections_table_lookup() {
         let mut table = VpcConnectionsTable::new();
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd, Some(NatRequirement::Stateful), None);
+        let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
+            dst_vpcd,
+            Some(NatRequirement::Stateful),
+            None,
+        ));
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
 
         table
-            .insert(dst_data, src_prefix, None, dst_prefix, None)
+            .insert(dst_data_result, src_prefix, None, dst_prefix, None)
             .unwrap();
 
         // Lookup should succeed
@@ -786,7 +709,7 @@ mod tests {
     fn test_vpc_connections_table_with_ports() {
         let mut table = VpcConnectionsTable::new();
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd, None, None);
+        let dst_data_result = VpcdLookupResult::Single(RemoteData::new(dst_vpcd, None, None));
 
         let src_prefix = Prefix::from("10.0.0.0/24");
         let dst_prefix = Prefix::from("20.0.0.0/24");
@@ -795,7 +718,7 @@ mod tests {
 
         table
             .insert(
-                dst_data,
+                dst_data_result,
                 src_prefix,
                 src_port_range,
                 dst_prefix,
@@ -817,7 +740,11 @@ mod tests {
         let mut table = FlowFilterTable::new();
         let src_vpcd = vpcd(100);
         let dst_vpcd = vpcd(200);
-        let dst_data = RemoteData::new(dst_vpcd, Some(NatRequirement::Stateful), None);
+        let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
+            dst_vpcd,
+            Some(NatRequirement::Stateful),
+            None,
+        ));
 
         let src_prefix = Prefix::from("2001:db8::/32");
         let dst_prefix = Prefix::from("2001:db9::/32");
@@ -825,7 +752,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data.clone(),
+                dst_data_result,
                 src_prefix,
                 None,
                 dst_prefix,
@@ -836,7 +763,7 @@ mod tests {
         let src_addr = "2001:db8::1".parse().unwrap();
         let dst_addr = "2001:db9::1".parse().unwrap();
         let result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(result, Some(&dst_data));
+        assert_eq!(result, Some(dst_data_result));
     }
 
     #[test]
@@ -845,18 +772,22 @@ mod tests {
         let src_vpcd = vpcd(100);
         let dst_vpcd1 = vpcd(200);
         let dst_vpcd2 = vpcd(300);
-        let dst_data1 = RemoteData::new(
+        let dst_data_result1 = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd1,
             Some(NatRequirement::Stateless),
             Some(NatRequirement::Stateless),
-        );
-        let dst_data2 = RemoteData::new(dst_vpcd2, Some(NatRequirement::Stateful), None);
+        ));
+        let dst_data_result2 = VpcdLookupResult::Single(RemoteData::new(
+            dst_vpcd2,
+            Some(NatRequirement::Stateful),
+            None,
+        ));
 
         // Insert broader prefix
         table
             .insert(
                 src_vpcd,
-                dst_data1.clone(),
+                dst_data_result1,
                 Prefix::from("10.0.0.0/16"),
                 None,
                 Prefix::from("20.0.0.0/16"),
@@ -868,7 +799,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data2.clone(),
+                dst_data_result2,
                 Prefix::from("10.0.1.0/24"),
                 None,
                 Prefix::from("20.0.1.0/24"),
@@ -883,7 +814,7 @@ mod tests {
             &"20.0.1.10".parse().unwrap(),
             None,
         );
-        assert_eq!(result, Some(&dst_data2));
+        assert_eq!(result, Some(dst_data_result2));
 
         // Should match the broader prefix for source
         let result = table.lookup(
@@ -892,7 +823,7 @@ mod tests {
             &"20.0.2.10".parse().unwrap(),
             None,
         );
-        assert_eq!(result, Some(&dst_data1));
+        assert_eq!(result, Some(dst_data_result1));
     }
 
     #[test]

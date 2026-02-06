@@ -2,29 +2,29 @@
 // Copyright Open Network Fabric Authors
 
 use downcast_rs::{DowncastSync, impl_downcast};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
-pub trait FlowInfoItem: DowncastSync + Debug {}
+pub trait FlowInfoItem: DowncastSync + Debug + Display {}
 impl_downcast!(sync FlowInfoItem);
 
-impl<T> FlowInfoItem for T where T: Debug + Send + Sync + 'static {}
+impl<T> FlowInfoItem for T where T: Debug + Send + Sync + 'static + Display {}
 
 pub trait ExtractRef {
     fn extract_ref<T>(&self) -> Option<&T>
     where
-        T: Debug + Send + Sync + 'static;
+        T: Debug + Display + Send + Sync + 'static;
 }
 
 pub trait ExtractMut {
     fn extract_mut<T>(&mut self) -> Option<&mut T>
     where
-        T: Debug + Send + Sync + 'static;
+        T: Debug + Display + Send + Sync + 'static;
 }
 
 impl ExtractRef for Option<Box<dyn FlowInfoItem>> {
     fn extract_ref<T>(&self) -> Option<&T>
     where
-        T: Debug + Send + Sync + 'static,
+        T: Debug + Display + Send + Sync + 'static,
     {
         match self.as_ref() {
             Some(v) => v.extract_ref::<T>(),
@@ -36,7 +36,7 @@ impl ExtractRef for Option<Box<dyn FlowInfoItem>> {
 impl ExtractMut for Option<Box<dyn FlowInfoItem>> {
     fn extract_mut<T>(&mut self) -> Option<&mut T>
     where
-        T: Debug + Send + Sync + 'static,
+        T: Debug + Display + Send + Sync + 'static,
     {
         match self.as_mut() {
             Some(v) => v.extract_mut::<T>(),
@@ -48,7 +48,7 @@ impl ExtractMut for Option<Box<dyn FlowInfoItem>> {
 impl ExtractRef for Option<&Box<dyn FlowInfoItem>> {
     fn extract_ref<T>(&self) -> Option<&T>
     where
-        T: Debug + Send + Sync + 'static,
+        T: Debug + Display + Send + Sync + 'static,
     {
         match self {
             Some(v) => v.extract_ref::<T>(),
@@ -60,7 +60,7 @@ impl ExtractRef for Option<&Box<dyn FlowInfoItem>> {
 impl ExtractMut for Option<&mut Box<dyn FlowInfoItem>> {
     fn extract_mut<T>(&mut self) -> Option<&mut T>
     where
-        T: Debug + Send + Sync + 'static,
+        T: Debug + Display + Send + Sync + 'static,
     {
         match self {
             Some(v) => v.extract_mut::<T>(),
@@ -72,7 +72,7 @@ impl ExtractMut for Option<&mut Box<dyn FlowInfoItem>> {
 impl ExtractRef for Box<dyn FlowInfoItem> {
     fn extract_ref<T>(&self) -> Option<&T>
     where
-        T: Debug + Send + Sync + 'static,
+        T: Debug + Display + Send + Sync + 'static,
     {
         self.downcast_ref::<T>()
     }
@@ -81,7 +81,7 @@ impl ExtractRef for Box<dyn FlowInfoItem> {
 impl ExtractMut for Box<dyn FlowInfoItem> {
     fn extract_mut<T>(&mut self) -> Option<&mut T>
     where
-        T: Debug + Send + Sync + 'static,
+        T: Debug + Display + Send + Sync + 'static,
     {
         self.downcast_mut::<T>()
     }

@@ -185,7 +185,12 @@ impl Vpc {
         Ok(())
     }
 
-    /// Check that prefixes exposed to a given VPC do not overlap (except with default expose).
+    /// Check that prefixes exposed to a given VPC do not overlap. Exceptions:
+    ///
+    /// - overlap is allowed between a prefix and a default expose (it overlaps by design)
+    /// - overlap is allowed between prefixes from different exposes if both their exposes use
+    ///   stateful NAT (we can fall back to the flow table to disambiguate the destination VPC)
+    ///
     /// Also check that at most one default expose is exposed to the VPC.
     fn check_overlap_and_default(&self) -> ConfigResult {
         let mut found_default = false;
@@ -212,6 +217,10 @@ impl Vpc {
             for other_peering in &self.peerings[i + 1..] {
                 for current_expose in &current_peering.remote.exposes {
                     for other_expose in &other_peering.remote.exposes {
+                        if current_expose.has_stateful_nat() && other_expose.has_stateful_nat() {
+                            // Overlap is allowed if both expose blocks use stateful NAT
+                            continue;
+                        }
                         match (current_expose.default, other_expose.default) {
                             (true, true) => {
                                 // We support at most one default destination exposed to any VPC
