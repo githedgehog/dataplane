@@ -70,17 +70,15 @@ struct NatFlowState<I: NatIpWithBitmap> {
 
 impl<I: NatIpWithBitmap> Display for NatFlowState<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "({} {})[{}s]",
-            self.src_alloc
-                .as_ref()
-                .map_or(String::new(), |a| a.ip().to_string()),
-            self.dst_alloc
-                .as_ref()
-                .map_or(String::new(), |a| a.ip().to_string()),
-            self.idle_timeout.as_secs()
-        )
+        match self.src_alloc.as_ref() {
+            Some(a) => write!(f, "({}:{}, ", a.ip(), a.port().as_u16()),
+            None => write!(f, "(unchanged, "),
+        }?;
+        match self.dst_alloc.as_ref() {
+            Some(a) => write!(f, "{}:{})", a.ip(), a.port().as_u16()),
+            None => write!(f, "unchanged)"),
+        }?;
+        write!(f, "[{}s]", self.idle_timeout.as_secs())
     }
 }
 
