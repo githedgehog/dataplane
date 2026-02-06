@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use concurrency::sync::RwLock;
 use std::fmt::{Debug, Display};
 use std::time::{Duration, Instant};
-
-use concurrency::sync::RwLock;
 
 use crate::{AtomicInstant, FlowInfoItem};
 
@@ -24,6 +23,16 @@ pub enum FlowStatus {
     Active = 0,
     Expired = 1,
     Removed = 2,
+}
+
+impl Display for FlowStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Expired => write!(f, "expired"),
+            Self::Removed => write!(f, "removed"),
+        }
+    }
 }
 
 impl TryFrom<u8> for FlowStatus {
@@ -107,7 +116,10 @@ impl From<FlowStatus> for AtomicFlowStatus {
 pub struct FlowInfoLocked {
     // We need this to use downcast to avoid circular dependencies between crates.
 
-    // State information for stateful NAT
+    // VpcDiscriminant
+    pub dst_vpcd: Option<Box<dyn FlowInfoItem>>,
+
+    // State information for stateful NAT, (see NatFlowState)
     pub nat_state: Option<Box<dyn FlowInfoItem>>,
 }
 

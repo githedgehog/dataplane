@@ -14,9 +14,11 @@
 //!   peerings, get dropped.
 
 use crate::tables::RemoteData;
+use flow_info::FlowStatus;
+use flow_info::flow_info_item::ExtractRef;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTransport};
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use std::net::IpAddr;
 use std::num::NonZero;
@@ -45,6 +47,44 @@ impl FlowFilter {
         Self {
             name: name.to_string(),
             tablesr,
+        }
+    }
+
+    /// Attempt to determine destination vpc from packet's flow-info
+    fn check_packet_flow_info<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+    ) -> Option<VpcDiscriminant> {
+        let nfi = &self.name;
+
+        let Some(flow_info) = &packet.meta().flow_info else {
+            debug!("{nfi}: Packet does not contain any flow-info");
+            return None;
+        };
+
+        let Ok(locked_info) = flow_info.locked.read() else {
+            debug!("{nfi}: Warning! failed to lock flow-info for packet");
+            packet.done(DoneReason::InternalFailure);
+            return None;
+        };
+
+        let vpcd = locked_info
+            .dst_vpcd
+            .as_ref()
+            .and_then(|d| d.extract_ref::<VpcDiscriminant>());
+
+        if let Some(dst_vpcd) = vpcd {
+            let status = flow_info.status();
+            if status == FlowStatus::Active {
+                debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
+                Some(*dst_vpcd)
+            } else {
+                debug!("{nfi}: Found flow-info with dst_vpcd {dst_vpcd} but status {status}");
+                None
+            }
+        } else {
+            debug!("{nfi}: No Vpc discriminant found. Will drop packet");
+            None
         }
     }
 
@@ -77,18 +117,26 @@ impl FlowFilter {
         });
 
         // For Display
-        let tuple = FlowTuple::new(src_ip, dst_ip, ports);
+        let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
 
         if let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
             debug!(
-                "{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {}",
+                "{nfi}: Flow {tuple} is allowed, dst_vpcd is {}",
                 dst_data.vpcd
             );
             packet.meta_mut().dst_vpcd = Some(dst_data.vpcd);
             set_nat_requirements(packet, dst_data);
-        } else {
-            debug!("{nfi}: Flow {tuple} is NOT allowed, dropping packet",);
-            packet.done(DoneReason::Filtered);
+        } else
+        /* FIXME: only do this if no explicit reject */
+        {
+            debug!("{nfi}: Did not find config for flow {tuple}. Checking flow-info ...");
+
+            if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
+                packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+                packet.meta_mut().set_stateful_nat(true);
+            } else {
+                packet.done(DoneReason::Filtered);
+            }
         }
     }
 }
@@ -125,6 +173,7 @@ impl std::fmt::Display for OptPort {
 
 // Only used for Display
 struct FlowTuple {
+    src_vpcd: VpcDiscriminant,
     src_addr: IpAddr,
     dst_addr: IpAddr,
     src_port: OptPort,
@@ -132,9 +181,15 @@ struct FlowTuple {
 }
 
 impl FlowTuple {
-    fn new(src_addr: IpAddr, dst_addr: IpAddr, ports: Option<(u16, u16)>) -> Self {
+    fn new(
+        src_vpcd: VpcDiscriminant,
+        src_addr: IpAddr,
+        dst_addr: IpAddr,
+        ports: Option<(u16, u16)>,
+    ) -> Self {
         let ports = ports.unzip();
         Self {
+            src_vpcd,
             src_addr,
             dst_addr,
             src_port: OptPort(ports.0),
@@ -147,8 +202,8 @@ impl std::fmt::Display for FlowTuple {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "src={}{}, dst={}{}",
-            self.src_addr, self.src_port, self.dst_addr, self.dst_port
+            "srcVpc={} src={}{} dst={}{}",
+            self.src_vpcd, self.src_addr, self.src_port, self.dst_addr, self.dst_port
         )
     }
 }
@@ -953,13 +1008,20 @@ mod tests {
 
     #[test]
     fn test_format_packet_addrs_ports() {
+        let src_vpcd = VpcDiscriminant::VNI(3000.try_into().unwrap());
         let src_addr = "10.0.0.1".parse().unwrap();
         let dst_addr = "20.0.0.2".parse().unwrap();
 
-        let result = FlowTuple::new(src_addr, dst_addr, Some((8080, 443)));
-        assert_eq!(result.to_string(), "src=10.0.0.1:8080, dst=20.0.0.2:443");
+        let result = FlowTuple::new(src_vpcd, src_addr, dst_addr, Some((8080, 443)));
+        assert_eq!(
+            result.to_string(),
+            "srcVpc=VNI(3000) src=10.0.0.1:8080 dst=20.0.0.2:443"
+        );
 
-        let result_no_ports = FlowTuple::new(src_addr, dst_addr, None);
-        assert_eq!(result_no_ports.to_string(), "src=10.0.0.1, dst=20.0.0.2");
+        let result_no_ports = FlowTuple::new(src_vpcd, src_addr, dst_addr, None);
+        assert_eq!(
+            result_no_ports.to_string(),
+            "srcVpc=VNI(3000) src=10.0.0.1 dst=20.0.0.2"
+        );
     }
 }

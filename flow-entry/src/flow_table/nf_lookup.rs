@@ -10,17 +10,18 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::NetworkFunction;
 
+use crate::flow_table::flow_key;
 use crate::flow_table::{FlowKey, FlowTable};
 
 use tracectl::trace_target;
 trace_target!("flow-lookup", LevelFilter::INFO, &["pipeline"]);
 
-pub struct LookupNF {
+pub struct FlowLookup {
     name: String,
     flow_table: Arc<FlowTable>,
 }
 
-impl LookupNF {
+impl FlowLookup {
     pub fn new(name: &str, flow_table: Arc<FlowTable>) -> Self {
         Self {
             name: name.to_string(),
@@ -29,27 +30,28 @@ impl LookupNF {
     }
 }
 
-impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             if !packet.is_done() && packet.meta().is_overlay() {
-                let flow_key = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).ok();
-                if let Some(flow_key) = flow_key
-                    && let Some(flow_info) = self.flow_table.lookup(&flow_key)
-                {
-                    debug!(
-                        "{}: Tagging packet with flow info for flow key {:?}",
-                        self.name, flow_key
-                    );
-                    packet.meta_mut().flow_info = Some(flow_info);
+                if let Ok(flow_key) = FlowKey::try_from(flow_key::Uni(&packet)) {
+                    if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
+                        debug!(
+                            "{}: Tagging packet with flow info for flow key {:?}",
+                            self.name, flow_key
+                        );
+                        packet.meta_mut().flow_info = Some(flow_info);
+                    } else {
+                        debug!(
+                            "{}: No flow info found for flow key {:?}",
+                            self.name, flow_key
+                        );
+                    }
                 } else {
-                    debug!(
-                        "{}: No flow info found for flow key {:?}",
-                        self.name, flow_key
-                    );
+                    debug!("{}: can't build flow key for packet", self.name);
                 }
             }
             packet.enforce()
@@ -73,12 +75,12 @@ mod test {
 
     use crate::flow_table::FlowKey;
     use crate::flow_table::FlowTable;
-    use crate::flow_table::nf_lookup::LookupNF;
+    use crate::flow_table::nf_lookup::FlowLookup;
 
     #[test]
     fn test_lookup_nf() {
         let flow_table = Arc::new(FlowTable::default());
-        let mut lookup_nf = LookupNF::new("test_lookup_nf", flow_table.clone());
+        let mut lookup_nf = FlowLookup::new("test_lookup_nf", flow_table.clone());
         let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
         let src_ip = "1.2.3.4".parse::<UnicastIpAddr>().unwrap();
         let dst_ip = "5.6.7.8".parse::<IpAddr>().unwrap();
