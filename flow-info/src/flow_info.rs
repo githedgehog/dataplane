@@ -126,6 +126,9 @@ pub struct FlowInfoLocked {
 
     // State information for stateful NAT, (see NatFlowState)
     pub nat_state: Option<Box<dyn FlowInfoItem>>,
+
+    // State information for port forwarding
+    pub port_fw_state: Option<Box<dyn FlowInfoItem>>,
 }
 
 #[derive(Debug)]
