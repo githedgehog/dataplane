@@ -4,7 +4,10 @@
 #![allow(missing_docs)] // TODO
 
 use crate::interface::InterfaceIndex;
+use crate::ipv4::dscp::Dscp;
+use crate::ipv4::ecn::Ecn;
 use crate::vxlan::Vni;
+
 use bitflags::bitflags;
 use concurrency::sync::Arc;
 use flow_info::FlowInfo;
@@ -131,6 +134,8 @@ pub struct PacketMeta {
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
     pub flow_info: Option<Arc<FlowInfo>>, /* flow specific information that can be looked up in the flow table */
+    pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
+    pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
 }
 impl PacketMeta {
     #[must_use]

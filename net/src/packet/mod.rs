@@ -24,6 +24,9 @@ use crate::headers::{
 use crate::parse::{DeParse, Parse, ParseError};
 use crate::udp::{Udp, UdpChecksum};
 
+use crate::ipv4::dscp::Dscp;
+use crate::ipv4::ecn::Ecn;
+
 use crate::checksum::Checksum;
 use crate::vxlan::{Vxlan, VxlanEncap};
 #[allow(unused_imports)] // re-export
@@ -152,21 +155,31 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         match self.headers.try_vxlan() {
             None => None,
             Some(vxlan) => {
+                // Preserve underlay QoS markings before stripping the outer headers.
+                //
+                // We intentionally preserve *outer* DSCP/ECN (fabric-visible) rather than anything
+                // inner. This enables decap -> re-encap paths to keep spine/underlay QoS consistent.
+                if let Some(crate::headers::Net::Ipv4(ipv4)) = &self.headers.net {
+                    self.meta.dscp = Some(Dscp::from(ipv4.dscp()));
+                    self.meta.ecn = Some(Ecn::from(ipv4.ecn()));
+                } else {
+                    // Not IPv4 underlay - unsupported now
+                    self.meta.dscp = None;
+                    self.meta.ecn = None;
+                }
+
                 match Headers::parse(self.payload.as_ref()) {
-                    Ok((headers, consumed)) => {
-                        match self.payload.trim_from_start(consumed.get()) {
-                            Ok(_) => {
-                                let vxlan = *vxlan;
-                                self.headers = headers;
-                                Some(Ok(vxlan))
-                            }
-                            Err(programmer_err) => {
-                                // This most likely indicates a broken implementation of
-                                // `PacketBufferMut`
-                                unreachable!("{programmer_err:?}", programmer_err = programmer_err);
-                            }
+                    Ok((headers, consumed)) => match self.payload.trim_from_start(consumed.get()) {
+                        Ok(_) => {
+                            let vxlan = *vxlan;
+                            self.headers = headers;
+                            Some(Ok(vxlan))
                         }
-                    }
+                        Err(programmer_err) => {
+                            // This most likely indicates a broken implementation of `PacketBufferMut`
+                            unreachable!("{programmer_err:?}", programmer_err = programmer_err);
+                        }
+                    },
                     Err(error) => Some(Err(error)),
                 }
             }
@@ -233,13 +246,22 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 
         let mut headers = params.headers().clone();
         headers.transport = Some(Transport::Udp(udp));
+
         match headers.try_ip_mut() {
             None => unreachable!(),
             Some(Net::Ipv6(ipv6)) => {
-                // TODO: include net_ext headers in length if included
+                // IPv6 fabric not supported yet: do not preserve/apply DSCP/ECN.
                 ipv6.set_payload_length(udp_len.get());
             }
             Some(Net::Ipv4(ipv4)) => {
+                // Preserve underlay QoS markings (IPv4 only).
+                if let Some(dscp) = self.meta.dscp {
+                    ipv4.set_dscp(dscp);
+                }
+                if let Some(ecn) = self.meta.ecn {
+                    ipv4.set_ecn(ecn);
+                }
+
                 ipv4.set_payload_len(udp_len.get())
                     .unwrap_or_else(|e| unreachable!("{:?}", e));
                 ipv4.update_checksum(&())
