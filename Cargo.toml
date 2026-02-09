@@ -156,7 +156,7 @@ pyroscope = { version = "0.5.8", default-features = false, features = [] }
 pyroscope_pprofrs = { version = "0.2.10", default-features = false, features = [] }
 quote = { version = "1.0.44", default-features = false, features = [] }
 rand = { version = "0.10.0", default-features = false, features = [] }
-rapidhash = { version = "4.2.1", default-features = false, features = [] }
+rapidhash = { version = "4.3.0", default-features = false, features = [] }
 rkyv = { version = "0.8.14", default-features = false, features = [] }
 roaring = { version = "0.11.3", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
