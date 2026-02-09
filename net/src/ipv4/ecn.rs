@@ -24,10 +24,30 @@ impl Ecn {
     /// # Errors
     ///
     /// Will return an [`InvalidEcnError`] if the supplied value is larger than two bits
+    #[allow(dead_code)]
     pub fn new(raw: u8) -> Result<Ecn, InvalidEcnError> {
         Ok(Ecn(
             IpEcn::try_new(raw).map_err(|e| InvalidEcnError::TooLarge(e.actual))?
         ))
+    }
+    /// Return the underlying 2-bit ECN value as a `u8`.
+    ///
+    /// This returns only the ECN portion (0..=3). It does **not** include DSCP bits.
+    #[must_use]
+    pub fn value(self) -> u8 {
+        self.0.value()
+    }
+}
+
+impl From<IpEcn> for Ecn {
+    fn from(v: IpEcn) -> Self {
+        Ecn(v)
+    }
+}
+
+impl From<Ecn> for IpEcn {
+    fn from(v: Ecn) -> Self {
+        v.0
     }
 }
 

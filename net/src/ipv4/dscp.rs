@@ -40,6 +40,25 @@ impl Dscp {
             IpDscp::try_new(raw).map_err(|e| InvalidDscpError::TooBig(e.actual))?,
         ))
     }
+    /// Return the underlying 6-bit DSCP value as a `u8`.
+    ///
+    /// This returns only the DSCP portion (0..=63). It does **not** include ECN bits.
+    #[must_use]
+    pub fn value(self) -> u8 {
+        self.0.value()
+    }
+}
+
+impl From<IpDscp> for Dscp {
+    fn from(v: IpDscp) -> Self {
+        Dscp(v)
+    }
+}
+
+impl From<Dscp> for IpDscp {
+    fn from(v: Dscp) -> Self {
+        v.0
+    }
 }
 
 #[cfg(any(test, feature = "bolero"))]
