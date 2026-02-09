@@ -183,7 +183,7 @@ tonic = { version = "0.14.3", default-features = false, features = [] }
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.22", default-features = false, features = [] }
 tracing-test = { version = "0.2.6", default-features = false, features = [] }
-ureq = { version = "3.1.4", default-features = false, features = [] }
+ureq = { version = "3.2.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.20.0", default-features = false, features = [] }
 
