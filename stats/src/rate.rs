@@ -984,7 +984,7 @@ mod test {
 
     #[test]
     fn smoothing_random_is_finite_and_reasonable() {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
         for _ in 0..100 {
             let mut f = SavitzkyGolayFilter::new(Duration::from_millis(1000));

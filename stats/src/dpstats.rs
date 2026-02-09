@@ -20,7 +20,7 @@ use crate::{MetricSpec, Register, RegisteredVpcMetrics, Specification, VpcMetric
 use metrics::Unit;
 use net::buffer::PacketBufferMut;
 use net::packet::DoneReason;
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use small_map::SmallMap;
 use tracing::{debug, info};
