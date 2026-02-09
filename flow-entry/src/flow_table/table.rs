@@ -7,7 +7,7 @@ use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::time::Instant;
-use tracing::{debug, error};
+use tracing::debug;
 
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
@@ -252,14 +252,8 @@ impl FlowTable {
     // and we get ownership of the value here
     #[allow(clippy::needless_pass_by_value)]
     fn do_reap(k: &FlowKey, v: Arc<FlowInfo>) {
-        match v.update_status(FlowStatus::Expired) {
-            Ok(()) => {
-                debug!("do_reap: Updated flow status for {k:?} to expired");
-            }
-            Err(e) => {
-                error!("do_reap: Failed to update flow status for {k:?}: {e:?}",);
-            }
-        }
+        v.update_status(FlowStatus::Expired);
+        debug!("do_reap: Updated flow status for {k:?} to expired");
     }
 
     /// Remove all of the flow entries for the provided `FlowKey`s, returning the number of

@@ -280,15 +280,9 @@ impl FlowInfo {
     /// # Thread Safety
     ///
     /// This method is thread-safe.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the status transition is invalid.
-    ///
-    pub fn update_status(&self, status: FlowStatus) -> Result<(), FlowInfoError> {
+    pub fn update_status(&self, status: FlowStatus) {
         self.status
             .store(status, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
     }
 }
 
