@@ -24,7 +24,7 @@ mod tests {
 
     use lpm::prefix::{IpAddr, Prefix};
 
-    use rand::Rng;
+    use rand::RngExt;
     use rand::rngs::ThreadRng;
     use std::str::FromStr;
     use std::sync::Arc;
