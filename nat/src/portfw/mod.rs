@@ -7,6 +7,7 @@ mod flow_state;
 mod nf;
 mod packet;
 mod portfwtable;
+mod test;
 
 pub use flow_state::PortFwState;
 pub use nf::PortForwarder;
