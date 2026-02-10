@@ -327,7 +327,7 @@ pub mod test {
         let mut overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(
             overlay.validate(),
-            Err(ConfigError::StatefulNatOnBothSides("Peering-1".to_owned()))
+            Err(ConfigError::IncompatibleNatModes("Peering-1".to_owned()))
         );
     }
 
@@ -373,9 +373,7 @@ pub mod test {
         let mut overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(
             overlay.validate(),
-            Err(ConfigError::StatefulPlusStatelessNat(
-                "Peering-1".to_owned()
-            ))
+            Err(ConfigError::IncompatibleNatModes("Peering-1".to_owned()))
         );
     }
 
