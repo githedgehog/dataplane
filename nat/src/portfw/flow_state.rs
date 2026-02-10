@@ -15,20 +15,43 @@ use flow_entry::flow_table::flow_key::Uni;
 use flow_entry::flow_table::{FlowInfo, FlowKey, FlowTable};
 use flow_info::{ExtractRef, FlowStatus};
 
-use crate::portfw::PortFwKey;
+use crate::portfw::{PortFwEntry, PortFwKey};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone, Copy)]
+pub enum PortFwAction {
+    DstNat,
+    SrcNat,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct PortFwState {
+    action: PortFwAction,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
 }
 impl PortFwState {
     #[must_use]
-    pub fn new(use_ip: UnicastIpAddr, use_port: NonZero<u16>) -> Self {
-        Self { use_ip, use_port }
+    pub fn new_snat(use_ip: UnicastIpAddr, use_port: NonZero<u16>) -> Self {
+        Self {
+            action: PortFwAction::SrcNat,
+            use_ip,
+            use_port,
+        }
+    }
+    #[must_use]
+    pub fn new_dnat(use_ip: UnicastIpAddr, use_port: NonZero<u16>) -> Self {
+        Self {
+            action: PortFwAction::DstNat,
+            use_ip,
+            use_port,
+        }
+    }
+    #[must_use]
+    pub fn action(&self) -> PortFwAction {
+        self.action
     }
     #[must_use]
     pub fn use_ip(&self) -> UnicastIpAddr {
@@ -39,9 +62,24 @@ impl PortFwState {
         self.use_port
     }
 }
+
+impl Display for PortFwAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortFwAction::DstNat => write!(f, "dnat"),
+            PortFwAction::SrcNat => write!(f, "snat"),
+        }
+    }
+}
+
 impl Display for PortFwState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, " src-ip:{} src-port:{}", self.use_ip, self.use_port)
+        write!(f, " {}", self.action)?;
+        let dir = match self.action {
+            PortFwAction::DstNat => "to",
+            PortFwAction::SrcNat => "from",
+        };
+        write!(f, " {dir} ip:{} port:{}", self.use_ip, self.use_port)
     }
 }
 
@@ -66,7 +104,7 @@ fn create_update_flow_entry(
             error!("Failed to lock flow-info!");
             return;
         }
-        flow_info.reset_expiry_unchecked(timeout);
+        let _ = flow_info.reset_expiry_unchecked(timeout);
         flow_info.update_status(FlowStatus::Active);
         let seconds = timeout.as_secs();
         debug!("Extended flow entry with port-forwarding data and lifetime by {seconds} seconds");
@@ -78,12 +116,12 @@ fn create_update_flow_entry(
         } else {
             unreachable!()
         }
-        debug!("Created flow entry with port-forwarding state; key={flow_key} info={flow_info}");
+        debug!("Created flow entry with port-forwarding state;\nkey={flow_key}\ninfo={flow_info}");
         flow_table.insert(*flow_key, flow_info);
     }
 }
 
-pub(crate) fn create_reverse_portfw_flow_entry<Buf: PacketBufferMut>(
+pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
     flow_table: &Arc<FlowTable>,
     timeout: Duration,
     packet: &mut Packet<Buf>,
@@ -99,9 +137,22 @@ pub(crate) fn create_reverse_portfw_flow_entry<Buf: PacketBufferMut>(
         .strip_dst_vpcd();
 
     // create dynamic port-forwarding state for the reverse path
-    let port_fw_state = PortFwState::new(key.dst_ip(), key.dst_port());
+    let port_fw_state = PortFwState::new_snat(key.dst_ip(), key.dst_port());
+    create_update_flow_entry(flow_table, &flow_key, timeout, dst_vpcd, port_fw_state);
+}
 
-    // create (or update) a flow entry for the flow in the the reverse direction
+pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
+    flow_table: &Arc<FlowTable>,
+    timeout: Duration,
+    packet: &mut Packet<Buf>,
+    entry: &PortFwEntry,
+) {
+    let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
+    let flow_key = FlowKey::try_from(Uni(&*packet))
+        .unwrap_or_else(|_| unreachable!())
+        .strip_dst_vpcd();
+
+    let port_fw_state = PortFwState::new_dnat(entry.dst_ip, entry.dst_port);
     create_update_flow_entry(flow_table, &flow_key, timeout, dst_vpcd, port_fw_state);
 }
 

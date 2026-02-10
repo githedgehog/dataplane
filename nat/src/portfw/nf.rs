@@ -15,8 +15,10 @@ use pipeline::NetworkFunction;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::portfw::flow_state::{check_packet_port_fw_state, create_reverse_portfw_flow_entry};
-use crate::portfw::packet::{dnat_packet, snat_packet};
+use crate::portfw::flow_state::{
+    check_packet_port_fw_state, create_port_fw_forward_entry, create_port_fw_reverse_entry,
+};
+use crate::portfw::packet::{dnat_packet, nat_packet};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -95,13 +97,18 @@ impl PortForwarder {
         entry: &PortFwEntry,
     ) {
         debug!("performing port-forwarding with rule {key} -> {entry}");
+
+        // create flow entry for subsequent packets
+        create_port_fw_forward_entry(&self.flow_table, self.initial_timeout, packet, entry);
+
         // translate destination according to port-forwarding entry
         if !dnat_packet(packet, entry.dst_ip.inner(), entry.dst_port) {
             packet.done(DoneReason::InternalFailure);
             return;
         }
+
         // crate a flow entry for the reverse traffic
-        create_reverse_portfw_flow_entry(&self.flow_table, self.initial_timeout, packet, key);
+        create_port_fw_reverse_entry(&self.flow_table, self.initial_timeout, packet, key);
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(
@@ -128,17 +135,15 @@ impl PortForwarder {
         pfwtable: &PortFwTable,
     ) {
         if let Some(pfw_state) = check_packet_port_fw_state(packet) {
-            let new_src_ip = pfw_state.use_ip();
-            let new_src_port = pfw_state.use_port();
-            debug!("Packet hit port-forwarding state: use ip:{new_src_ip} port:{new_src_port}");
-            if !snat_packet(packet, new_src_ip, new_src_port) {
-                error!("Failed to source-nat reverse port-forwarded packet");
+            debug!("Packet hit port-forwarding state: {pfw_state}");
+            if !nat_packet(packet, &pfw_state) {
+                error!("Failed to nat port-forwarded packet");
                 packet.done(DoneReason::InternalFailure);
                 return;
             }
             // refresh the flow entry hit by the packet
             if let Some(flow_info) = packet.meta_mut().flow_info.as_mut() {
-                flow_info.reset_expiry_unchecked(self.refresh_timeout);
+                let _ = flow_info.reset_expiry_unchecked(self.refresh_timeout);
                 let seconds = self.refresh_timeout.as_secs();
                 debug!("Extended flow entry timeout by {seconds} seconds");
             }
