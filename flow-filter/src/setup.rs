@@ -377,16 +377,7 @@ fn split_overlapping(
 }
 
 fn get_nat_requirement(expose: &VpcExpose) -> Option<NatRequirement> {
-    let nat = expose.nat.as_ref()?;
-    debug_assert!(!(nat.is_stateful() && nat.is_stateless())); // Only one NAT mode allowed
-
-    if nat.is_stateful() {
-        Some(NatRequirement::Stateful)
-    } else if nat.is_stateless() {
-        Some(NatRequirement::Stateless)
-    } else {
-        unreachable!("Unknown NAT mode")
-    }
+    expose.nat_config().map(NatRequirement::from)
 }
 
 #[cfg(test)]
