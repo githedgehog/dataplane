@@ -25,6 +25,7 @@ use crate::ipv6::Ipv6;
 use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
+use crate::tcp::port::TcpPort;
 use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
 use crate::udp::port::UdpPort;
 use crate::udp::{TruncatedUdp, Udp, UdpChecksum, UdpChecksumPayload, UdpEncap};
@@ -182,6 +183,41 @@ pub fn build_test_udp_ipv4_packet(
         sport,
         dport,
     )
+}
+
+#[must_use]
+#[allow(unsafe_code)]
+/// Builds a UDP/IPv4/Eth frame
+pub fn build_test_tcp_ipv4_packet(
+    src_ip: &str,
+    dst_ip: &str,
+    sport: u16,
+    dport: u16,
+) -> Packet<TestBuffer> {
+    use crate::ip::UnicastIpAddr;
+    use std::net::IpAddr;
+
+    let mut packet = build_test_ipv4_packet_with_transport(255, Some(NextHeader::TCP)).unwrap();
+    packet
+        .set_eth_source(Mac([0x2, 0, 0, 0, 0, 1]))
+        .expect("Could not set src mac");
+    packet
+        .set_eth_destination(Mac([0x2, 0, 0, 0, 0, 1]))
+        .expect("Could not set dst mac");
+    packet
+        .set_ip_source(src_ip.parse::<UnicastIpAddr>().expect("Bad src ip"))
+        .expect("Could not set src ip");
+    packet
+        .set_ip_destination(dst_ip.parse::<IpAddr>().expect("Bad dst ip"))
+        .expect("Could not set dst ip");
+    packet
+        .set_tcp_source_port(TcpPort::new_checked(sport).expect("Bad src port"))
+        .expect("Could not set src port");
+    packet
+        .set_tcp_destination_port(TcpPort::new_checked(dport).expect("Bad dst port"))
+        .expect("Could not set dst port");
+
+    packet
 }
 
 #[must_use]
