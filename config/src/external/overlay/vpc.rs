@@ -15,6 +15,7 @@ use tracing::{debug, error, warn};
 use crate::converters::k8s::config::peering;
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
+use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 use crate::{ConfigError, ConfigResult};
 
@@ -51,29 +52,55 @@ impl Peering {
     fn validate_nat_combinations(&self) -> ConfigResult {
         // If stateful NAT is set up on one side of the peering, we don't support NAT (stateless or
         // stateful) on the other side.
-        let mut local_has_nat = false;
+        let mut local_has_stateless_nat = false;
         let mut local_has_stateful_nat = false;
+        let mut local_has_port_forwarding = false;
         for expose in &self.local.exposes {
-            if expose.has_stateful_nat() {
-                local_has_stateful_nat = true;
-                local_has_nat = true;
-                break;
-            } else if expose.has_stateless_nat() {
-                local_has_nat = true;
+            match expose.nat_config() {
+                Some(VpcExposeNatConfig::Stateful { .. }) => {
+                    local_has_stateful_nat = true;
+                }
+                Some(VpcExposeNatConfig::Stateless { .. }) => {
+                    local_has_stateless_nat = true;
+                }
+                Some(VpcExposeNatConfig::PortForwarding { .. }) => {
+                    local_has_port_forwarding = true;
+                }
+                None => {}
             }
         }
+        let local_has_nat =
+            local_has_stateless_nat || local_has_stateful_nat || local_has_port_forwarding;
 
         if !local_has_nat {
             return Ok(());
         }
 
-        for expose in &self.remote.exposes {
-            if expose.has_stateful_nat() {
-                return Err(ConfigError::StatefulNatOnBothSides(self.name.clone()));
+        let local_has_stateless_nat_only =
+            local_has_stateless_nat && !local_has_stateful_nat && !local_has_port_forwarding;
+
+        // Allowed:
+        //
+        // - no NAT ------------ *
+        // - stateless NAT ----- stateless NAT
+        //
+        // Disallowed (some of them may be supported in the future):
+        //
+        // - stateful NAT ------ stateless NAT
+        // - stateful NAT ------ stateful NAT
+        // - stateful NAT ------ port forwarding
+        // - port forwarding --- port forwarding
+        // - port forwarding --- stateless NAT
+
+        for remote_expose in &self.remote.exposes {
+            if !remote_expose.has_nat() {
+                continue;
             }
-            if expose.has_stateless_nat() && local_has_stateful_nat {
-                return Err(ConfigError::StatefulPlusStatelessNat(self.name.clone()));
+            if local_has_stateless_nat_only && remote_expose.has_stateless_nat() {
+                continue;
             }
+            // Other combinations are rejected
+            return Err(ConfigError::IncompatibleNatModes(self.name.clone()));
         }
         Ok(())
     }
