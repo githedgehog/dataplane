@@ -8,7 +8,7 @@ use crate::portfw::{PortFwEntry, PortFwKey, PortFwTable};
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
-use net::headers::{TryIp, TryTransport};
+use net::headers::{TryIp, TryTcp, TryTransport};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
@@ -73,6 +73,13 @@ impl PortForwarder {
             packet.done(DoneReason::InternalFailure);
             return None;
         };
+        if let Some(tcp) = packet.try_tcp()
+            && (!tcp.syn() || tcp.ack())
+        {
+            debug!("Ignoring TCP segment without SYN flag");
+            packet.done(DoneReason::Filtered);
+            return None;
+        }
         let Some(dst_port) = transport.dst_port() else {
             error!("can't get dst port from {proto} header: will drop");
             packet.done(DoneReason::InternalFailure);
