@@ -78,9 +78,8 @@ fn create_update_flow_entry(
         } else {
             unreachable!()
         }
+        debug!("Created flow entry with port-forwarding state; key={flow_key} info={flow_info}");
         flow_table.insert(*flow_key, flow_info);
-        let seconds = timeout.as_secs();
-        debug!("Created flow entry with port forwarding state. Initial timeout: {seconds} seconds");
     }
 }
 
@@ -91,13 +90,13 @@ pub(crate) fn create_reverse_portfw_flow_entry<Buf: PacketBufferMut>(
     key: &PortFwKey,
 ) {
     // create a flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
-    // We take the src vpcd since we will reverse the key and want the dst_vpcd not to be set.
-    let src_vpcd = packet.meta_mut().src_vpcd.take();
+    // We derive the key for the reverse flow from the packet that we  port-forward, which has src/dst vpc discriminants.
+    // We strip the dst vpcd from the
+    let dst_vpcd = packet.meta_mut().src_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
         .unwrap_or_else(|_| unreachable!())
-        .reverse();
-    packet.meta_mut().src_vpcd = src_vpcd;
-    let dst_vpcd = src_vpcd.unwrap_or_else(|| unreachable!());
+        .reverse()
+        .strip_dst_vpcd();
 
     // create dynamic port-forwarding state for the reverse path
     let port_fw_state = PortFwState::new(key.dst_ip(), key.dst_port());
