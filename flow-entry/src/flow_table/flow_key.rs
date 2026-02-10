@@ -572,6 +572,24 @@ impl FlowKey {
             FlowKey::Bidirectional(data) | FlowKey::Unidirectional(data) => data,
         }
     }
+    #[must_use]
+    fn data_mut(&mut self) -> &mut FlowKeyData {
+        match self {
+            FlowKey::Bidirectional(data) | FlowKey::Unidirectional(data) => data,
+        }
+    }
+
+    #[must_use]
+    pub fn strip_dst_vpcd(mut self) -> Self {
+        self.data_mut().dst_vpcd = None;
+        self
+    }
+
+    #[must_use]
+    pub fn strip_src_vpcd(mut self) -> Self {
+        self.data_mut().src_vpcd = None;
+        self
+    }
 
     /// Create a unidirectional flow key
     ///
