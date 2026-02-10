@@ -24,10 +24,14 @@ impl Default for VpcExposeStatefulNat {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VpcExposePortForwarding;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum VpcExposeNatConfig {
     Stateful(VpcExposeStatefulNat),
     Stateless(VpcExposeStatelessNat),
+    PortForwarding(VpcExposePortForwarding),
 }
 
 impl Default for VpcExposeNatConfig {
@@ -53,6 +57,11 @@ impl VpcExposeNat {
     #[must_use]
     pub fn is_stateless(&self) -> bool {
         matches!(self.config, VpcExposeNatConfig::Stateless(_))
+    }
+
+    #[must_use]
+    pub fn is_port_forwarding(&self) -> bool {
+        matches!(self.config, VpcExposeNatConfig::PortForwarding(_))
     }
 }
 
@@ -83,12 +92,12 @@ impl VpcExpose {
     //
     // # Errors
     //
-    // Returns an error if the [`VpcExpose`] is in stateful mode.
+    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
     pub fn make_stateless_nat(mut self) -> Result<Self, ConfigError> {
         match self.nat.as_mut() {
             Some(nat) if nat.is_stateless() => Ok(self),
             Some(_) => Err(ConfigError::Invalid(format!(
-                "refusing to overwrite stateful NAT mode with stateless NAT mode for VpcExpose {self}"
+                "refusing to overwrite previous NAT mode with stateless NAT mode for VpcExpose {self}"
             ))),
             None => {
                 self.nat = Some(VpcExposeNat {
@@ -105,7 +114,7 @@ impl VpcExpose {
     //
     // # Errors
     //
-    // Returns an error if the [`VpcExpose`] is in stateless mode.
+    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
     pub fn make_stateful_nat(
         mut self,
         idle_timeout: Option<Duration>,
@@ -119,12 +128,33 @@ impl VpcExpose {
                 Ok(self)
             }
             Some(_) => Err(ConfigError::Invalid(format!(
-                "refusing to overwrite stateless NAT mode with stateful NAT mode for VpcExpose {self}"
+                "refusing to overwrite previous NAT mode with stateful NAT mode for VpcExpose {self}"
             ))),
 
             None => {
                 self.nat = Some(VpcExposeNat {
                     config: VpcExposeNatConfig::Stateful(options),
+                    ..VpcExposeNat::default()
+                });
+                Ok(self)
+            }
+        }
+    }
+
+    // Make the [`VpcExpose`] use port forwarding.
+    //
+    // # Errors
+    //
+    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
+    pub fn make_port_forwarding(mut self) -> Result<Self, ConfigError> {
+        match self.nat.as_mut() {
+            Some(nat) if nat.is_port_forwarding() => Ok(self),
+            Some(_) => Err(ConfigError::Invalid(format!(
+                "refusing to overwrite previous NAT mode with port forwarding for VpcExpose {self}"
+            ))),
+            None => {
+                self.nat = Some(VpcExposeNat {
+                    config: VpcExposeNatConfig::PortForwarding(VpcExposePortForwarding {}),
                     ..VpcExposeNat::default()
                 });
                 Ok(self)
@@ -310,6 +340,12 @@ impl VpcExpose {
 
     pub fn has_stateless_nat(&self) -> bool {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
+    }
+
+    pub fn has_port_forwarding(&self) -> bool {
+        self.nat
+            .as_ref()
+            .is_some_and(VpcExposeNat::is_port_forwarding)
     }
 
     #[must_use]
