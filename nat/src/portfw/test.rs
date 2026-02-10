@@ -70,7 +70,8 @@ mod nf_test {
             build_test_udp_ipv4_packet("192.168.1.2", "10.0.0.1", 53, 9876);
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
-        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
+        //packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
+        //N.B: we assume dst_vpcd is not known atm
         packet
     }
 
