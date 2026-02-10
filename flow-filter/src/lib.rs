@@ -321,7 +321,6 @@ fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &R
     if data.requires_port_forwarding() {
         packet.meta_mut().set_port_forwarding(true);
     }
-    // FIXME: we should forbid/(warn about) combos that we don't support
 }
 
 fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
