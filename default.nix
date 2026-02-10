@@ -135,6 +135,7 @@ let
     inputsFrom = [ sysroot ];
     shellHook = ''
       export RUSTC_BOOTSTRAP=1
+      export PS1="⟪\$PWD⟫\\n⟪dataplane⟫ "
     '';
   };
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
@@ -329,9 +330,12 @@ let
 
   test-builder =
     {
-      pname ? null,
+      package ? null,
       cargoArtifacts ? null,
     }:
+    let
+      pname = if package != null then package else "all";
+    in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       args = {
@@ -345,19 +349,22 @@ let
             "--archive-file"
             "$out/${pname}.tar.zst"
             "--cargo-profile=${cargo-profile}"
-            "--package=${pname}"
           ]
+          ++ (if package != null then [ "--package=${pname}" ] else [ ])
           ++ cargo-cmd-prefix
         );
       };
     };
 
-  tests = builtins.mapAttrs (
-    dir: pname:
-    test-builder {
-      inherit pname;
-    }
-  ) package-list;
+  tests = {
+    all = test-builder { };
+    pkg = builtins.mapAttrs (
+      dir: package:
+      test-builder {
+        inherit package;
+      }
+    ) package-list;
+  };
 
   clippy-builder =
     {

@@ -230,7 +230,7 @@ in
       cudaPackages = null;
       enableCuda = false;
       expat = null;
-      libX11 = null;
+      libx11 = null;
       ncurses = null;
       x11Support = false;
     }).overrideAttrs
