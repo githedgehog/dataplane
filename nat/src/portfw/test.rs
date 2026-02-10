@@ -54,8 +54,8 @@ mod nf_test {
         Arc::new(fwtable)
     }
 
-    // build a packet to be port forwarded according to the port-forwarding table
-    fn packet_to_port_forward() -> Packet<TestBuffer> {
+    // build a UDP packet to be port forwarded according to the port-forwarding table
+    fn udp_packet_to_port_forward() -> Packet<TestBuffer> {
         let mut packet: Packet<TestBuffer> =
             build_test_udp_ipv4_packet("10.0.0.1", "70.71.72.73", 9876, 3053);
         packet.meta_mut().set_overlay(true);
@@ -65,7 +65,7 @@ mod nf_test {
     }
 
     // build reply packet to the port forwarded packet
-    fn packet_port_forward_reply() -> Packet<TestBuffer> {
+    fn udp_packet_reverse_reply() -> Packet<TestBuffer> {
         let mut packet: Packet<TestBuffer> =
             build_test_udp_ipv4_packet("192.168.1.2", "10.0.0.1", 53, 9876);
         packet.meta_mut().set_overlay(true);
@@ -103,19 +103,39 @@ mod nf_test {
         println!("{fwtablerw}");
 
         // process an overlay packet matching a port-forwarding rule
-        let output = process_packet(&mut pipeline, packet_to_port_forward());
+        let output = process_packet(&mut pipeline, udp_packet_to_port_forward());
         assert_eq!(output.ip_source().unwrap().to_string(), "10.0.0.1");
         assert_eq!(output.ip_destination().unwrap().to_string(), "192.168.1.2");
         assert_eq!(output.udp_source_port().unwrap().as_u16(), 9876);
         assert_eq!(output.udp_destination_port().unwrap().as_u16(), 53);
+        assert!(output.meta().flow_info.is_none());
 
         // process a packet in the reverse direction
-        let output = process_packet(&mut pipeline, packet_port_forward_reply());
+        let output = process_packet(&mut pipeline, udp_packet_reverse_reply());
         assert_eq!(output.ip_source().unwrap().to_string(), "70.71.72.73");
         assert_eq!(output.ip_destination().unwrap().to_string(), "10.0.0.1");
         assert_eq!(output.udp_source_port().unwrap().as_u16(), 3053);
         assert_eq!(output.udp_destination_port().unwrap().as_u16(), 9876);
 
+        let flow_info = output.meta().flow_info.as_ref().unwrap();
+        assert_eq!(flow_info.status(), FlowStatus::Active);
+        let expires_in = flow_info
+            .expires_at()
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs();
+        assert!(expires_in > PortForwarder::REFRESH_TIMEOUT.as_secs() - 5);
+
+        // process original packet again. It should be fast-natted
+        let mut repeated = udp_packet_to_port_forward();
+        // this is a hack needed until the flow lookup gets fixed.
+        repeated.meta_mut().dst_vpcd.take();
+        let output = process_packet(&mut pipeline, repeated);
+        assert_eq!(output.ip_source().unwrap().to_string(), "10.0.0.1");
+        assert_eq!(output.ip_destination().unwrap().to_string(), "192.168.1.2");
+        assert_eq!(output.udp_source_port().unwrap().as_u16(), 9876);
+        assert_eq!(output.udp_destination_port().unwrap().as_u16(), 53);
+
+        // flow entry should be there
         let flow_info = output.meta().flow_info.as_ref().unwrap();
         assert_eq!(flow_info.status(), FlowStatus::Active);
         let expires_in = flow_info

@@ -11,13 +11,15 @@ use net::ip::UnicastIpAddr;
 use net::packet::Packet;
 use std::net::IpAddr;
 use std::num::NonZero;
-
 use tracing::error;
+
+use crate::portfw::PortFwState;
+use crate::portfw::flow_state::PortFwAction;
 
 #[inline]
 #[must_use]
 /// Perform source-nat/pat for a packet. Returns true if the packet could be source-natted and false otherwise
-pub(crate) fn snat_packet<Buf: PacketBufferMut>(
+fn snat_packet<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     new_src_ip: UnicastIpAddr,
     new_src_port: NonZero<u16>,
@@ -90,4 +92,15 @@ pub(crate) fn dnat_packet<Buf: PacketBufferMut>(
         packet.meta_mut().set_checksum_refresh(true);
     }
     true
+}
+
+/// Perform src or dst nat for a packet, depending on the action indicated in state
+pub(crate) fn nat_packet<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    state: &PortFwState,
+) -> bool {
+    match state.action() {
+        PortFwAction::DstNat => dnat_packet(packet, state.use_ip().inner(), state.use_port()),
+        PortFwAction::SrcNat => snat_packet(packet, state.use_ip(), state.use_port()),
+    }
 }
