@@ -4,6 +4,7 @@
 //! A module implementing a structure to back the flow filter lookups.
 
 use config::ConfigError;
+use config::external::overlay::vpcpeering::VpcExposeNatConfig;
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use lpm::prefix::{PortRange, Prefix};
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
@@ -393,6 +394,16 @@ pub(crate) enum NatRequirement {
     Stateless,
     Stateful,
     PortForwarding,
+}
+
+impl From<&VpcExposeNatConfig> for NatRequirement {
+    fn from(config: &VpcExposeNatConfig) -> NatRequirement {
+        match config {
+            VpcExposeNatConfig::Stateful(_) => NatRequirement::Stateful,
+            VpcExposeNatConfig::Stateless(_) => NatRequirement::Stateless,
+            VpcExposeNatConfig::PortForwarding(_) => NatRequirement::PortForwarding,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
