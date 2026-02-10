@@ -507,6 +507,9 @@ mod test {
                             assert_eq!(config.idle_timeout, std::time::Duration::new(2 * 60, 0));
                         }
                     },
+                    (Some(VpcExposeNatConfig::PortForwarding(_)), Some(_)) => {
+                        todo!()
+                    }
                     (Some(VpcExposeNatConfig::Stateless(_)), Some(k8s_nat)) => {
                         assert!(k8s_nat.r#static.is_some(), "Stateless NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
                     },
