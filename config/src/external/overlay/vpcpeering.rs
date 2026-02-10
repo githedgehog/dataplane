@@ -485,12 +485,12 @@ impl VpcExpose {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
 
-        // 5. For static NAT, ensure that, if the list of publicly-exposed addresses is not empty,
-        //    then we have the same number of addresses on each side.
+        // 5. For static NAT and port-forwarding, ensure that, if the list of publicly-exposed
+        //    addresses is not empty, then we have the same number of addresses on each side.
         //
         //    Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
         //    size was smaller than allowed prefixes size already.
-        if self.has_stateless_nat()
+        if (self.has_stateless_nat() || self.has_port_forwarding())
             && as_range_sizes > zero_size
             && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes
         {
