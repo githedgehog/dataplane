@@ -561,27 +561,62 @@ impl VpcManifest {
         for (index, expose_left) in self.exposes.iter().enumerate() {
             // Loop over the remaining exposes in the list
             for expose_right in self.exposes.iter().skip(index + 1) {
-                // Always check for overlap for the lists of private IPs - these are not allowed to
-                // overlap inside of a given expose.
-                validate_overlapping(
-                    &expose_left.ips,
-                    &expose_left.nots,
-                    &expose_right.ips,
-                    &expose_right.nots,
-                )?;
-                // If any of the expose requires NAT, then check for overlap for the lists of
-                // public prefixes. Depending on the case, this can be:
-                // - expose_left.as_range / expose_right.as_range
-                // - expose_left.ips      / expose_right.as_range
-                // - expose_left.as_range / expose_right.ips
-                // (along with the respective exclusion prefixes).
-                if expose_left.has_nat() || expose_right.has_nat() {
-                    validate_overlapping(
-                        expose_left.public_ips(),
-                        expose_left.public_excludes(),
-                        expose_right.public_ips(),
-                        expose_right.public_excludes(),
-                    )?;
+                #[allow(clippy::unnested_or_patterns)]
+                match (&expose_left.nat_config(), &expose_right.nat_config()) {
+                    // Overlap allowed
+
+                    // Port forwarding plus stateful NAT can be used in combination. This is because
+                    // both imply a unique direction for opening a connection, so we can use port
+                    // forwarding when the request is in the associated direction, and stateful NAT
+                    // otherwise.
+                    (
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                    )
+                    | (
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                    ) => {}
+
+                    // Overlap denied
+
+                    // If using no NAT at all, private prefixes (which are also publicly exposed)
+                    // cannot overlap. Compared to the cases with NAT below, checking private and
+                    // public prefixes is the same operation, so we only need to do it once.
+                    (None, None) => {
+                        check_private_prefixes_dont_overlap(expose_left, expose_right)?;
+                    }
+
+                    // We do not support stateless NAT in combination with another mode.
+                    (Some(VpcExposeNatConfig::Stateless { .. }), _)
+                    | (_, Some(VpcExposeNatConfig::Stateless { .. }))
+                    // Two exposes using port forwarding must use distinct internal prefixes, or we
+                    // don't know which to use.
+                    | (
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                    )
+                    // Two exposes using stateful NAT must use distinct internal prefixes, or we
+                    // don't know which to use.
+                    | (
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                    )
+                    // Stateful NAT cannot be used in combination with no NAT, or we don't know
+                    // which prefix to use. Similar to port forwarding plus no NAT, here we could
+                    // figure out something based on the direction for stateful NAT (which only
+                    // works for source NAT), but this is not supported at the moment, and stateful
+                    // NAT might work in both directions in the future anyway.
+                    | (Some(VpcExposeNatConfig::Stateful { .. }), None)
+                    | (None, Some(VpcExposeNatConfig::Stateful { .. }))
+                    // Port forwarding cannot be used in combination with no NAT, because no NAT is
+                    // stateless and the flow entry for port forwarding would "mask" the prefix for
+                    // use with no NAT
+                    | (Some(VpcExposeNatConfig::PortForwarding { .. }), None)
+                    | (None, Some(VpcExposeNatConfig::PortForwarding { .. })) => {
+                        check_private_prefixes_dont_overlap(expose_left, expose_right)?;
+                        check_public_prefixes_dont_overlap(expose_left, expose_right)?;
+                    }
                 }
             }
         }
@@ -745,8 +780,39 @@ impl VpcPeeringTable {
     }
 }
 
+fn check_private_prefixes_dont_overlap(
+    expose_left: &VpcExpose,
+    expose_right: &VpcExpose,
+) -> Result<(), ConfigError> {
+    check_prefixes_dont_overlap(
+        &expose_left.ips,
+        &expose_left.nots,
+        &expose_right.ips,
+        &expose_right.nots,
+    )
+}
+
+// Check for overlap for the lists of public prefixes.
+// Depending on whether exposes require NAT, this can be:
+// - expose_left.as_range / expose_right.as_range
+// - expose_left.ips      / expose_right.as_range
+// - expose_left.as_range / expose_right.ips
+// - expose_left.ips      / expose_right.ips
+// (along with the respective exclusion prefixes applied).
+fn check_public_prefixes_dont_overlap(
+    expose_left: &VpcExpose,
+    expose_right: &VpcExpose,
+) -> Result<(), ConfigError> {
+    check_prefixes_dont_overlap(
+        expose_left.public_ips(),
+        expose_left.public_excludes(),
+        expose_right.public_ips(),
+        expose_right.public_excludes(),
+    )
+}
+
 // Validate that two sets of prefixes, with their exclusion prefixes applied, don't overlap
-fn validate_overlapping(
+fn check_prefixes_dont_overlap(
     prefixes_left: &BTreeSet<PrefixWithOptionalPorts>,
     excludes_left: &BTreeSet<PrefixWithOptionalPorts>,
     prefixes_right: &BTreeSet<PrefixWithOptionalPorts>,
