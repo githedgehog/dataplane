@@ -13,10 +13,10 @@ use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::portfw::flow_state::{
     check_packet_port_fw_state, create_port_fw_forward_entry, create_port_fw_reverse_entry,
+    refresh_port_fw_entry,
 };
 use crate::portfw::packet::{dnat_packet, nat_packet};
 
@@ -30,23 +30,16 @@ trace_target!("port-forwarding", LevelFilter::INFO, &["nat", "pipeline"]);
 pub struct PortForwarder {
     name: String,
     flow_table: Arc<FlowTable>,
-    refresh_timeout: Duration,
-    initial_timeout: Duration,
     fwtable: PortFwTableRw,
 }
 
 impl PortForwarder {
-    pub const REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
-    pub const INITIAL_TIMEOUT: Duration = Duration::from_secs(2);
-
     /// Creates a new [`PortForwarder`]
     #[must_use]
     pub fn new(name: &str, fwtable: PortFwTableRw, flow_table: Arc<FlowTable>) -> Self {
         Self {
             name: name.to_string(),
             flow_table,
-            refresh_timeout: Self::REFRESH_TIMEOUT,
-            initial_timeout: Self::INITIAL_TIMEOUT,
             fwtable,
         }
     }
@@ -99,7 +92,7 @@ impl PortForwarder {
         debug!("performing port-forwarding with rule {key} -> {entry}");
 
         // create flow entry for subsequent packets
-        create_port_fw_forward_entry(&self.flow_table, self.initial_timeout, packet, entry);
+        create_port_fw_forward_entry(&self.flow_table, entry.init_timeout, packet, entry);
 
         // translate destination according to port-forwarding entry
         if !dnat_packet(packet, entry.dst_ip.inner(), entry.dst_port) {
@@ -108,7 +101,7 @@ impl PortForwarder {
         }
 
         // crate a flow entry for the reverse traffic
-        create_port_fw_reverse_entry(&self.flow_table, self.initial_timeout, packet, key);
+        create_port_fw_reverse_entry(&self.flow_table, entry.init_timeout, packet, key);
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(
@@ -142,11 +135,7 @@ impl PortForwarder {
                 return;
             }
             // refresh the flow entry hit by the packet
-            if let Some(flow_info) = packet.meta_mut().flow_info.as_mut() {
-                let _ = flow_info.reset_expiry_unchecked(self.refresh_timeout);
-                let seconds = self.refresh_timeout.as_secs();
-                debug!("Extended flow entry timeout by {seconds} seconds");
-            }
+            refresh_port_fw_entry(packet, &pfw_state);
         } else {
             // Packet did not hit any flow entry with port forwarding state.
             // Check if it can and needs to be port-forwarded.

@@ -178,10 +178,23 @@ pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
         .as_ref()
         .and_then(|s| s.extract_ref::<PortFwState>())
     else {
-        debug!("Packet flow-info does not contain port-forwarding state (or it can't be accessed)");
+        debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
     // packet hit a flow-entry with port-forwarding state. Such a state may have been
     // created by a packet that was port-forwarded in the opposite direction.
     Some(*port_forwarding)
+}
+
+pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    _pfw_state: &PortFwState, // N.B. this is a copy of hit state
+) {
+    let extend_by = PortFwEntry::ESTABLISHED_TIMEOUT; // this is temporary
+
+    if let Some(flow_info) = packet.meta_mut().flow_info.as_mut() {
+        flow_info.reset_expiry_unchecked(extend_by);
+        let seconds = extend_by.as_secs();
+        debug!("Extended flow entry timeout by {seconds} seconds");
+    }
 }
