@@ -33,6 +33,8 @@ mod nf_test {
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("192.168.1.1").unwrap(),
             22,
+            None,
+            None,
         )
         .unwrap();
         fwtable.add_entry(key, entry).unwrap();
@@ -47,6 +49,8 @@ mod nf_test {
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("192.168.1.2").unwrap(),
             53,
+            None,
+            None,
         )
         .unwrap();
         fwtable.add_entry(key, entry).unwrap();
@@ -123,7 +127,7 @@ mod nf_test {
             .expires_at()
             .saturating_duration_since(std::time::Instant::now())
             .as_secs();
-        assert!(expires_in > PortForwarder::REFRESH_TIMEOUT.as_secs() - 5);
+        assert!(expires_in > PortFwEntry::ESTABLISHED_TIMEOUT.as_secs() - 5);
 
         // process original packet again. It should be fast-natted
         let mut repeated = udp_packet_to_port_forward();
@@ -142,6 +146,6 @@ mod nf_test {
             .expires_at()
             .saturating_duration_since(std::time::Instant::now())
             .as_secs();
-        assert!(expires_in > PortForwarder::REFRESH_TIMEOUT.as_secs() - 5);
+        assert!(expires_in > PortFwEntry::ESTABLISHED_TIMEOUT.as_secs() - 5);
     }
 }
