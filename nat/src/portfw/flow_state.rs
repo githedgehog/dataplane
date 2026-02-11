@@ -206,6 +206,12 @@ pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
+    if port_forwarding.rule.upgrade().is_none() {
+        debug!("Packet flow-info contains port-forwarding state, but rule has been deleted");
+        let _ = flow_info.reset_expiry(Duration::from_secs(0));
+        flow_info.update_status(FlowStatus::Expired);
+        return None;
+    }
     // packet hit a flow-entry with port-forwarding state. Such a state may have been
     // created by a packet that was port-forwarded in the opposite direction.
     Some(port_forwarding.clone())
