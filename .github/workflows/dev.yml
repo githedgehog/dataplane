@@ -200,6 +200,7 @@ jobs:
             --argstr sanitize "${{matrix.build.sanitize}}" \
             --argstr instrumentation "${{matrix.build.instrument}}" \
             --out-link tests.all \
+            --print-build-logs \
             tests.all
 
       - name: "run tests"
