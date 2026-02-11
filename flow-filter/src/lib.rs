@@ -130,7 +130,7 @@ impl FlowFilter {
                 set_nat_requirements(packet, &dst_data);
                 dst_data.vpcd
             }
-            VpcdLookupResult::MultipleMatches => {
+            VpcdLookupResult::MultipleMatches(_) => {
                 debug!(
                     "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
                 );
@@ -253,6 +253,7 @@ mod tests {
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vxlan::Vni;
+    use std::collections::HashSet;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use tracing_test::traced_test;
@@ -462,7 +463,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                VpcdLookupResult::MultipleMatches,
+                VpcdLookupResult::MultipleMatches(HashSet::new()),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
