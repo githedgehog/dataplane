@@ -19,7 +19,7 @@ use tracing::debug;
 trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 
 /// The result of a remote information lookup in the flow filter table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VpcdLookupResult {
     /// A single, unambiguous matching connection information object was found.
     Single(RemoteData),
@@ -111,7 +111,7 @@ impl FlowFilterTable {
         // We have a remote_prefix_data object for our destination address, and the port ranges
         // associated to this IP: we may need to find the right item for this entry based on the
         // destination port
-        remote_prefix_data.get(dst_port).copied()
+        remote_prefix_data.get(dst_port).cloned()
     }
 
     pub(crate) fn insert(
@@ -488,7 +488,7 @@ impl DstConnectionData {
     ) -> Result<(), ConfigError> {
         match (self.trie.get_mut(prefix), port_range) {
             (Some(PortRangeMap::Ranges(existing_range_map)), Some(range)) => {
-                let existing_result = existing_range_map.insert(range, result);
+                let existing_result = existing_range_map.insert(range, result.clone());
 
                 // The only case we had an existing value is when we have multiple matches. Let's do
                 // a sanity check.
@@ -575,7 +575,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result,
+                dst_data_result.clone(),
                 src_prefix,
                 None,
                 dst_prefix,
@@ -619,7 +619,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result,
+                dst_data_result.clone(),
                 src_prefix,
                 src_port_range,
                 dst_prefix,
@@ -664,7 +664,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result1,
+                dst_data_result1.clone(),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -675,7 +675,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result2,
+                dst_data_result2.clone(),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("30.0.0.0/24"),
@@ -769,7 +769,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result,
+                dst_data_result.clone(),
                 src_prefix,
                 None,
                 dst_prefix,
@@ -804,7 +804,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result1,
+                dst_data_result1.clone(),
                 Prefix::from("10.0.0.0/16"),
                 None,
                 Prefix::from("20.0.0.0/16"),
@@ -816,7 +816,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result2,
+                dst_data_result2.clone(),
                 Prefix::from("10.0.1.0/24"),
                 None,
                 Prefix::from("20.0.1.0/24"),
