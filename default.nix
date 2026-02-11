@@ -29,6 +29,7 @@ let
     {
       "debug" = "dev";
       "release" = "release";
+      "fuzz" = "fuzz";
     }
     .${profile};
   overlays = import ./nix/overlays {
