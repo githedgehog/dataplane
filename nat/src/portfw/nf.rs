@@ -86,13 +86,15 @@ impl PortForwarder {
     fn do_port_forwarding<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        key: &PortFwKey,
-        entry: &PortFwEntry,
+        entry: &Arc<PortFwEntry>,
     ) {
-        debug!("performing port-forwarding with rule {key} -> {entry}");
+        debug!(
+            "performing port-forwarding with rule {} -> {entry}",
+            entry.key
+        );
 
-        // create flow entry for subsequent packets
-        create_port_fw_forward_entry(&self.flow_table, entry.init_timeout, packet, entry);
+        // create flow entry for subsequent packets in the forward path
+        create_port_fw_forward_entry(&self.flow_table, packet, entry);
 
         // translate destination according to port-forwarding entry
         if !dnat_packet(packet, entry.dst_ip.inner(), entry.dst_port) {
@@ -100,8 +102,8 @@ impl PortForwarder {
             return;
         }
 
-        // crate a flow entry for the reverse traffic
-        create_port_fw_reverse_entry(&self.flow_table, entry.init_timeout, packet, key);
+        // crate a flow entry for the reverse path
+        create_port_fw_reverse_entry(&self.flow_table, packet, entry);
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(
@@ -111,14 +113,18 @@ impl PortForwarder {
     ) {
         let nfi = &self.name;
         let Some(key) = Self::can_be_port_forwarded(packet) else {
-            debug!("{nfi}: packet cannot be port-forwarded. Ignoring...");
+            if let Some(reason) = packet.get_done() {
+                debug!("{nfi}: packet cannot be port-forwarded. Dropping it (reason:{reason})");
+            } else {
+                debug!("{nfi}: packet cannot be port-forwarded. Releasing it.");
+            }
             return;
         };
         let Some(pfw_entry) = pfwtable.lookup_rule(&key) else {
-            debug!("{nfi}: no rule found for port-forwarding key {key}. Ignoring...");
+            debug!("{nfi}: no rule found for port-forwarding key {key}. Releasing packet...");
             return;
         };
-        self.do_port_forwarding(packet, &key, pfw_entry);
+        self.do_port_forwarding(packet, pfw_entry);
     }
 
     /// Do port forwarding for the given packet, if it is eligible and there's a rule

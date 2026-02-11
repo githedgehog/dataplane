@@ -8,14 +8,14 @@ use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use std::fmt::Display;
 use std::num::NonZero;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use flow_entry::flow_table::flow_key::Uni;
 use flow_entry::flow_table::{FlowInfo, FlowKey, FlowTable};
 use flow_info::{ExtractRef, FlowStatus};
 
-use crate::portfw::{PortFwEntry, PortFwKey};
+use crate::portfw::PortFwEntry;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -26,27 +26,38 @@ pub enum PortFwAction {
     SrcNat,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PortFwState {
     action: PortFwAction,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
+    rule: Weak<PortFwEntry>,
 }
 impl PortFwState {
     #[must_use]
-    pub fn new_snat(use_ip: UnicastIpAddr, use_port: NonZero<u16>) -> Self {
+    pub fn new_snat(
+        use_ip: UnicastIpAddr,
+        use_port: NonZero<u16>,
+        rule: Weak<PortFwEntry>,
+    ) -> Self {
         Self {
             action: PortFwAction::SrcNat,
             use_ip,
             use_port,
+            rule,
         }
     }
     #[must_use]
-    pub fn new_dnat(use_ip: UnicastIpAddr, use_port: NonZero<u16>) -> Self {
+    pub fn new_dnat(
+        use_ip: UnicastIpAddr,
+        use_port: NonZero<u16>,
+        rule: Weak<PortFwEntry>,
+    ) -> Self {
         Self {
             action: PortFwAction::DstNat,
             use_ip,
             use_port,
+            rule,
         }
     }
     #[must_use]
@@ -123,9 +134,8 @@ fn create_update_flow_entry(
 
 pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
     flow_table: &Arc<FlowTable>,
-    timeout: Duration,
     packet: &mut Packet<Buf>,
-    key: &PortFwKey,
+    entry: &Arc<PortFwEntry>,
 ) {
     // create a flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
     // We derive the key for the reverse flow from the packet that we  port-forward, which has src/dst vpc discriminants.
@@ -137,23 +147,38 @@ pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
         .strip_dst_vpcd();
 
     // create dynamic port-forwarding state for the reverse path
-    let port_fw_state = PortFwState::new_snat(key.dst_ip(), key.dst_port());
-    create_update_flow_entry(flow_table, &flow_key, timeout, dst_vpcd, port_fw_state);
+    let port_fw_state = PortFwState::new_snat(
+        entry.key.dst_ip(),
+        entry.key.dst_port(),
+        Arc::downgrade(entry),
+    );
+    create_update_flow_entry(
+        flow_table,
+        &flow_key,
+        entry.init_timeout,
+        dst_vpcd,
+        port_fw_state,
+    );
 }
 
 pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
     flow_table: &Arc<FlowTable>,
-    timeout: Duration,
     packet: &mut Packet<Buf>,
-    entry: &PortFwEntry,
+    entry: &Arc<PortFwEntry>,
 ) {
     let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
         .unwrap_or_else(|_| unreachable!())
         .strip_dst_vpcd();
 
-    let port_fw_state = PortFwState::new_dnat(entry.dst_ip, entry.dst_port);
-    create_update_flow_entry(flow_table, &flow_key, timeout, dst_vpcd, port_fw_state);
+    let port_fw_state = PortFwState::new_dnat(entry.dst_ip, entry.dst_port, Arc::downgrade(entry));
+    create_update_flow_entry(
+        flow_table,
+        &flow_key,
+        entry.init_timeout,
+        dst_vpcd,
+        port_fw_state,
+    );
 }
 
 pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
@@ -183,7 +208,7 @@ pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
     };
     // packet hit a flow-entry with port-forwarding state. Such a state may have been
     // created by a packet that was port-forwarded in the opposite direction.
-    Some(*port_forwarding)
+    Some(port_forwarding.clone())
 }
 
 pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
