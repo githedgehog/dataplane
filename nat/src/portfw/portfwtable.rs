@@ -192,7 +192,7 @@ impl PortFwTable {
             }
             return Err(PortFwTableError::DuplicateKey(key));
         }
-        debug!("Adding port-forwarding rule: {key} -> {entry}");
+        debug!("Adding port-forwarding rule: {entry}");
         if let Some(group) = self.0.get_mut(&key) {
             group.0.push(Arc::new(entry));
         } else {
@@ -203,7 +203,7 @@ impl PortFwTable {
 
     pub fn remove_entry_for_key(&mut self, key: &PortFwKey) {
         if let Some(entry) = self.0.remove(key) {
-            debug!("Removed port-forwarding rule: {key} -> {entry}");
+            debug!("Removed port-forwarding rule: {entry}");
         }
     }
 
@@ -263,12 +263,15 @@ impl PortFwTableRw {
 // Display implementations
 macro_rules! PORTFW_KEY {
     ($vpc:expr, $proto:expr, $dstip:expr, $dstport:expr) => {
-        format_args!(" {:>6} {:>16}:{:<} {:>5}", $vpc, $dstip, $dstport, $proto)
+        format_args!("{:>} {:}:{:<} {:>}", $vpc, $dstip, $dstport, $proto)
     };
 }
 macro_rules! PORTFW_ENTRY {
-    ($dstip:expr, $dstport:expr, $vpc:expr) => {
-        format_args!(" {:}:{:<} at {}", $dstip, $dstport, $vpc)
+    ($dstip:expr, $dstport:expr, $vpc:expr, $initial:expr, $estab:expr) => {
+        format_args!(
+            "{:}:{:<} at {} timers:[init:{}s estab:{}s]",
+            $dstip, $dstport, $vpc, $initial, $estab
+        )
     };
 }
 impl Display for PortFwKey {
@@ -284,8 +287,15 @@ impl Display for PortFwEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}",
-            PORTFW_ENTRY!(self.dst_ip, self.dst_port.get(), self.dst_vpcd)
+            "{} -> {}",
+            self.key,
+            PORTFW_ENTRY!(
+                self.dst_ip,
+                self.dst_port.get(),
+                self.dst_vpcd,
+                self.init_timeout.as_secs(),
+                self.estab_timeout.as_secs()
+            )
         )
     }
 }
@@ -300,7 +310,7 @@ impl Display for PortFwGroup {
 fn fmt_port_fw_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     writeln!(
         f,
-        " ━━━━━━━━━━━━━━━━━━━━━━ Port forwarding table ━━━━━━━━━━━━━━━━━━━━━━"
+        " ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Port forwarding table ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
 }
 
@@ -310,8 +320,8 @@ impl Display for PortFwTable {
         if self.0.is_empty() {
             return writeln!(f, " (empty)");
         }
-        for (key, group) in &self.0 {
-            write!(f, "{key} -> {group}")?;
+        for entry in self.0.values() {
+            write!(f, "{entry}")?;
         }
         Ok(())
     }
