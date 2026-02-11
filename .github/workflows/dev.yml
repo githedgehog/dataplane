@@ -77,7 +77,7 @@ jobs:
         with:
           filters: |
             devfiles:
-              - '!(README.md|LICENSE|.gitattributes|.gitignore|.github/**)'
+              - '!(README.md|LICENSE|NOTICE|.zed/**|.vscode/**|CLAUDE.md|.rules|development/**|testing.md|workspace-deps.svg|codebook.toml|.markdownlint.json|.gitattributes|.gitignore|.github/**)'
               - '.github/workflows/dev.yml'
 
   version:
