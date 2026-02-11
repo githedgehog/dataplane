@@ -133,11 +133,6 @@ jobs:
             profile: "fuzz"
             sanitize: ""
             instrument: "coverage"
-          # TODO: enable address sanitizer when lld stops seg faulting on the address sanitizer build
-          # - name: "fuzz/address"
-          #   profile: "fuzz"
-          #   sanitize: "address"
-          #   instrument: "coverage"
           - name: "fuzz/thread"
             profile: "fuzz"
             sanitize: "thread"
