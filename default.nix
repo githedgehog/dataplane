@@ -539,6 +539,56 @@ let
 
   };
 
+  # WASM validator build
+  wasm-pkgs = import sources.nixpkgs {
+    overlays = [
+      overlays.rust
+      overlays.wasm32
+    ];
+  };
+  wasm-crane = import sources.crane { pkgs = wasm-pkgs; };
+  wasm-craneLib = wasm-crane.craneLib.overrideToolchain wasm-pkgs.wasm32.rust-toolchain;
+  wasm-cargoVendorDir = wasm-craneLib.vendorMultipleCargoDeps {
+    cargoLockList = [
+      ./Cargo.lock
+    ];
+  };
+  wasm-validator = wasm-craneLib.buildPackage {
+    inherit src version;
+    pname = "dataplane-validator";
+    cargoVendorDir = wasm-cargoVendorDir;
+
+    doCheck = false;
+    strictDeps = true;
+
+    nativeBuildInputs = [
+      dev-pkgs.kopium
+    ];
+
+    buildPhaseCargoCommand = builtins.concatStringsSep " " [
+      "cargoBuildLog=$(mktemp cargoBuildLogXXXX.json);"
+      "cargo"
+      "build"
+      "--package=dataplane-validator"
+      "--profile=${cargo-profile}"
+      "--target=wasm32-wasip1"
+      "--message-format json-render-diagnostics > $cargoBuildLog"
+    ];
+
+    installPhaseCommand = ''
+      mkdir -p $out/bin
+      cp target/wasm32-wasip1/${profile}/validator.wasm $out/bin/
+    '';
+
+    env = {
+      CARGO_BUILD_TARGET = "wasm32-wasip1";
+      CARGO_PROFILE = cargo-profile;
+      GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+      DATAPLANE_SYSROOT = "${src}";
+      RUSTC_BOOTSTRAP = "1";
+    };
+  };
+
   containers.dataplane-debugger =
     let
       pathsToLink = [
@@ -598,6 +648,7 @@ in
     sources
     sysroot
     tests
+    wasm-validator
     workspace
     ;
   frr = frr-pkgs;
