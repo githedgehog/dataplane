@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use k8s_intf::gateway_agent_crd::GatewayAgent;
+use k8s_types::gateway_agent_crd::GatewayAgent;
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::internal::device::DeviceConfig;

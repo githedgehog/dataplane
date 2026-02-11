@@ -11,7 +11,7 @@ hardware = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }
 tracectl = { workspace = true }
-k8s-intf = { workspace = true }
+k8s-types = { workspace = true }
 
 # external
 chrono = { workspace = true, features = ["alloc"] }

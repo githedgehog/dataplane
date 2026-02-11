@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use k8s_intf::gateway_agent_crd::GatewayAgentStatusStateVpcs;
+use k8s_types::gateway_agent_crd::GatewayAgentStatusStateVpcs;
 
 use crate::converters::k8s::ToK8sConversionError;
 use crate::internal::status::VpcCounters;

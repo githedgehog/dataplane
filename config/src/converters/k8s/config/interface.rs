@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use hardware::pci::address::PciAddress;
-use k8s_intf::gateway_agent_crd::GatewayAgentGatewayInterfaces;
+use k8s_types::gateway_agent_crd::GatewayAgentGatewayInterfaces;
 use net::interface::Mtu;
 
 use crate::converters::k8s::{FromK8sConversionError, ToK8sConversionError};

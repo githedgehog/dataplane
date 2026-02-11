@@ -3,7 +3,7 @@
 
 use tracectl::LevelFilter;
 
-use k8s_intf::gateway_agent_crd::GatewayAgentGatewayLogs;
+use k8s_types::gateway_agent_crd::GatewayAgentGatewayLogs;
 
 use crate::{converters::k8s::FromK8sConversionError, internal::device::tracecfg::TracingConfig};
 

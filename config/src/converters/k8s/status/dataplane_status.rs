@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
-use k8s_intf::gateway_agent_crd::{
+use k8s_types::gateway_agent_crd::{
     GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateBgp,
     GatewayAgentStatusStateDataplane, GatewayAgentStatusStateFrr, GatewayAgentStatusStatePeerings,
     GatewayAgentStatusStateVpcs,

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use k8s_intf::gateway_agent_crd::{
+use k8s_types::gateway_agent_crd::{
     GatewayAgentStatusStateBgp, GatewayAgentStatusStateBgpVrfs,
     GatewayAgentStatusStateBgpVrfsNeighbors,
     GatewayAgentStatusStateBgpVrfsNeighborsIpv4UnicastPrefixes,

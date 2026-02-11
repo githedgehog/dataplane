@@ -3,7 +3,7 @@
 
 use std::convert::TryFrom;
 
-use k8s_intf::gateway_agent_crd::{
+use k8s_types::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
 };

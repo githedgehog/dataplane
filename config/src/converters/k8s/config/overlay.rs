@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use k8s_intf::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentSpec, GatewayAgentVpcs};
+use k8s_types::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentSpec, GatewayAgentVpcs};
 use lpm::prefix::Prefix;
 
 use crate::converters::k8s::FromK8sConversionError;

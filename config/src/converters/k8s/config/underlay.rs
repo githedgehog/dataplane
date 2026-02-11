@@ -4,7 +4,7 @@
 use crate::converters::strings::parse_address_v4;
 use std::net::IpAddr;
 
-use k8s_intf::gateway_agent_crd::GatewayAgentGateway;
+use k8s_types::gateway_agent_crd::GatewayAgentGateway;
 use lpm::prefix::{Prefix, PrefixString};
 use net::eth::mac::SourceMac;
 
@@ -168,7 +168,7 @@ mod test {
     use ipnet::IpNet;
 
     use k8s_intf::bolero::{LegalValue, Normalize};
-    use k8s_intf::gateway_agent_crd::{
+    use k8s_types::gateway_agent_crd::{
         GatewayAgentGatewayInterfaces, GatewayAgentGatewayNeighbors,
     };
 

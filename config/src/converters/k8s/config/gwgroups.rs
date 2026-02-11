@@ -3,7 +3,7 @@
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::strings::parse_address;
-use k8s_intf::gateway_agent_crd::{GatewayAgentGroupsMembers, GatewayAgentSpec};
+use k8s_types::gateway_agent_crd::{GatewayAgentGroupsMembers, GatewayAgentSpec};
 
 use crate::external::gwgroup::{GwGroup, GwGroupMember, GwGroupTable};
 

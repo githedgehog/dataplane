@@ -1247,6 +1247,7 @@ dependencies = [
  "chrono",
  "dataplane-hardware",
  "dataplane-k8s-intf",
+ "dataplane-k8s-types",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
@@ -1419,8 +1420,8 @@ name = "dataplane-k8s-intf"
 version = "0.10.0"
 dependencies = [
  "bolero",
- "dataplane-dpdk-sysroot-helper",
  "dataplane-hardware",
+ "dataplane-k8s-types",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-tracectl",
@@ -1449,6 +1450,18 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-test",
+]
+
+[[package]]
+name = "dataplane-k8s-types"
+version = "0.10.0"
+dependencies = [
+ "k8s-openapi",
+ "kube",
+ "kube-core",
+ "schemars 1.2.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1694,7 +1707,7 @@ name = "dataplane-validator"
 version = "0.10.0"
 dependencies = [
  "dataplane-config",
- "dataplane-k8s-intf",
+ "dataplane-k8s-types",
  "serde",
  "serde_yaml_ng",
 ]

@@ -3,7 +3,7 @@
 
 use std::convert::TryFrom;
 
-use k8s_intf::gateway_agent_crd::GatewayAgentVpcs;
+use k8s_types::gateway_agent_crd::GatewayAgentVpcs;
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::external::overlay::vpc::Vpc;

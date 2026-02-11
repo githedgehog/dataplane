@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::converters::k8s::FromK8sConversionError;
-use k8s_intf::gateway_agent_crd::GatewayAgentSpec;
+use k8s_types::gateway_agent_crd::GatewayAgentSpec;
 
 use crate::external::communities::PriorityCommunityTable;
 

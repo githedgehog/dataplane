@@ -121,11 +121,13 @@ fn main() {
     fs::write(&output_file, agent_generated_code)
         .expect("Failed to write generated agent CRD code");
 
-    let sysroot = dpdk_sysroot_helper::get_sysroot();
-
-    let rerun_if_changed = ["build.rs", sysroot.as_str()];
+    let rerun_if_changed = ["build.rs"];
     for file in rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");
+    }
+
+    if let Ok(gw_crd_path) = std::env::var("GW_CRD_PATH") {
+        println!("cargo:rerun-if-changed={gw_crd_path}");
     }
 
     println!(

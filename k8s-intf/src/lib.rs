@@ -8,11 +8,11 @@
 #[cfg(any(test, feature = "bolero"))]
 pub mod bolero;
 pub mod client;
-pub mod generated;
+pub use k8s_types::generated;
 pub mod utils;
 
 pub mod gateway_agent_crd {
-    pub use crate::generated::gateway_agent_crd::*;
+    pub use k8s_types::gateway_agent_crd::*;
 }
 
 pub use client::watch_gateway_agent_crd;

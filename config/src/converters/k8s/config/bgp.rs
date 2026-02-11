@@ -3,7 +3,7 @@
 
 use std::net::IpAddr;
 
-use k8s_intf::gateway_agent_crd::GatewayAgentGatewayNeighbors;
+use k8s_types::gateway_agent_crd::GatewayAgentGatewayNeighbors;
 
 use crate::converters::k8s::{FromK8sConversionError, ToK8sConversionError};
 use crate::internal::routing::bgp::{
