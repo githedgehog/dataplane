@@ -3,6 +3,7 @@
 
 //! Dataplane configuration model: vpc peering
 
+use crate::utils::collapse_prefix_lists;
 use lpm::prefix::{IpRangeWithPorts, Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
@@ -563,7 +564,7 @@ impl VpcManifest {
             for expose_right in self.exposes.iter().skip(index + 1) {
                 #[allow(clippy::unnested_or_patterns)]
                 match (&expose_left.nat_config(), &expose_right.nat_config()) {
-                    // Overlap allowed
+                    // Overlap allowed (with conditions)
 
                     // Port forwarding plus stateful NAT can be used in combination. This is because
                     // both imply a unique direction for opening a connection, so we can use port
@@ -572,11 +573,15 @@ impl VpcManifest {
                     (
                         Some(VpcExposeNatConfig::Stateful { .. }),
                         Some(VpcExposeNatConfig::PortForwarding { .. }),
-                    )
-                    | (
+                    ) => {
+                        check_no_overlap_or_left_contains_right(expose_left, expose_right)?;
+                    }
+                    (
                         Some(VpcExposeNatConfig::PortForwarding { .. }),
                         Some(VpcExposeNatConfig::Stateful { .. }),
-                    ) => {}
+                    ) => {
+                        check_no_overlap_or_left_contains_right(expose_right, expose_left)?;
+                    }
 
                     // Overlap denied
 
@@ -901,6 +906,48 @@ fn check_prefixes_dont_overlap(
             // all exclusion prefixes, in other words, they are available from both prefixes. This
             // is an error.
             return Err(ConfigError::OverlappingPrefixes(prefix_left, prefix_right));
+        }
+    }
+    Ok(())
+}
+
+// Check that private prefixes in expose_left and expose_right overlap if and only if the set of
+// prefixes in expose_left fully covers the one in expose_right; and then check the same for public
+// prefixes of expose_left and expose_right.
+fn check_no_overlap_or_left_contains_right(
+    expose_left: &VpcExpose,
+    expose_right: &VpcExpose,
+) -> Result<(), ConfigError> {
+    check_prefix_lists_no_overlap_or_left_contains_right(
+        &expose_left.ips,
+        &expose_left.nots,
+        &expose_right.ips,
+        &expose_right.nots,
+    )?;
+    check_prefix_lists_no_overlap_or_left_contains_right(
+        expose_left.public_ips(),
+        expose_left.public_excludes(),
+        expose_right.public_ips(),
+        expose_right.public_excludes(),
+    )
+}
+
+fn check_prefix_lists_no_overlap_or_left_contains_right(
+    prefixes_left: &BTreeSet<PrefixWithOptionalPorts>,
+    excludes_left: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes_right: &BTreeSet<PrefixWithOptionalPorts>,
+    excludes_right: &BTreeSet<PrefixWithOptionalPorts>,
+) -> Result<(), ConfigError> {
+    let collapsed_prefixes_left = collapse_prefix_lists(prefixes_left, excludes_left);
+    let collapsed_prefixes_right = collapse_prefix_lists(prefixes_right, excludes_right);
+    for prefix_left in &collapsed_prefixes_left {
+        for prefix_right in &collapsed_prefixes_right {
+            if prefix_left.overlaps(prefix_right) && !prefix_left.covers(prefix_right) {
+                return Err(ConfigError::OverlappingPrefixes(
+                    *prefix_left,
+                    *prefix_right,
+                ));
+            }
         }
     }
     Ok(())
