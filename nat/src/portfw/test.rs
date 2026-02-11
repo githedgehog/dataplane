@@ -30,6 +30,7 @@ mod nf_test {
             NonZero::new(3022).unwrap(),
         );
         let entry = PortFwEntry::new(
+            key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("192.168.1.1").unwrap(),
             22,
@@ -46,6 +47,7 @@ mod nf_test {
             NonZero::new(3053).unwrap(),
         );
         let entry = PortFwEntry::new(
+            key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("192.168.1.2").unwrap(),
             53,
