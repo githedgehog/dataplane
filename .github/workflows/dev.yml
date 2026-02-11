@@ -129,12 +129,12 @@ jobs:
             profile: "release"
             sanitize: "" # TODO: enable safe-stack,cfi when possible
             instrument: "none"
-          - name: "fuzz/thread"
+          - name: "thread-sanitizer"
             profile: "fuzz"
             sanitize: "thread"
             instrument: "coverage"
           ## TODO: enable address sanitizer when lld stops segfaulting on the address sanitizer build
-          - name: "fuzz/address"
+          - name: "address-sanitizer"
             profile: "fuzz"
             sanitize: "address"
             instrument: "coverage"
