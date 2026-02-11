@@ -77,7 +77,7 @@ jobs:
         with:
           filters: |
             devfiles:
-              - '!(README.md|LICENSE|NOTICE|.zed/**|.vscode/**|CLAUDE.md|.rules|development/**|testing.md|workspace-deps.svg|codebook.toml|.markdownlint.json|.gitattributes|.gitignore|.github/**)'
+              - '!(README.md|LICENSE|.gitattributes|.gitignore|.github/**)'
               - '.github/workflows/dev.yml'
 
   version:
@@ -108,9 +108,10 @@ jobs:
     env:
       CACHE_REGISTRY: "run.h.hhdev.io:30000"
       UPSTREAM_REGISTRY: "ghcr.io"
-      USER: "runner"
     needs:
+      - check_changes
       - version
+    if: "${{ needs.check_changes.outputs.devfiles == 'true' || (startsWith(github.event.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/v')) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}"
     permissions:
       checks: "write"
       pull-requests: "write"
@@ -120,31 +121,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build:
+        profile:
           - name: "debug"
-            profile: "debug"
-            sanitize: ""
-            instrument: "none"
+            sterile: ""
+          - name: "debug"
+            sterile: "sterile"
           - name: "release"
-            profile: "release"
-            sanitize: "" # TODO: enable safe-stack,cfi when possible
-            instrument: "none"
+            sterile: "sterile"
           - name: "fuzz"
-            profile: "fuzz"
-            sanitize: ""
-            instrument: "coverage"
-          # TODO: enable address sanitizer when lld stops seg faulting on the address sanitizer build
-          # - name: "fuzz/address"
-          #   profile: "fuzz"
-          #   sanitize: "address"
-          #   instrument: "coverage"
-          - name: "fuzz/thread"
-            profile: "fuzz"
-            sanitize: "thread"
-            instrument: "coverage"
+            sterile: "sterile"
+          #- name: "release"
+          #  sterile: ""
+          #- name: "fuzz"
+          #  sterile: ""
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
-    name: "${{matrix.build.name}}"
+    name: "${{matrix.profile.name}} ${{matrix.profile.sterile}}"
     runs-on: "lab"
     timeout-minutes: 45
     steps:
@@ -175,11 +167,12 @@ jobs:
           persist-credentials: "false"
           fetch-depth: "0"
 
-      - name: "Install nix"
-        uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_path: nixpkgs=channel:nixpkgs-unstable
+      - name: "install just"
+        run: |
+          # this keeps our GH actions logs from getting messed up with color codes
+          echo 'deb [trusted=yes] https://apt.gabe565.com /' | sudo tee /etc/apt/sources.list.d/gabe565.list
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends just
 
       - name: "set up build environment"
         run: |
@@ -189,26 +182,219 @@ jobs:
           docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
           docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
           docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
+          just --yes \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            refresh-compile-env
+          just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
-      - uses: "cachix/cachix-action@v14"
+      - name: "cargo deny check"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            ${{matrix.profile.sterile}} cargo deny check
+
+      - name: "push container"
+        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            dpdp_sys_registry="${{env.UPSTREAM_REGISTRY}}" \
+            target=x86_64-unknown-linux-gnu \
+            version=${{ needs.version.outputs.version }}-${{ matrix.profile.name }} \
+            oci_repo="ghcr.io" \
+            push
+
+      - name: "print container image name"
+        if: ${{ matrix.profile.sterile == 'sterile' && (matrix.profile.name == 'release' || matrix.profile.name == 'debug') }}
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            version=${{ needs.version.outputs.version }}-${{ matrix.profile.name }} \
+            oci_repo="ghcr.io" \
+            print-container-tags
+
+      - name: "Check for uncommitted changes"
+        run: |
+          git diff --exit-code
+          if [ $? -ne 0 ]; then
+            echo "::error::Uncommitted changes detected:"
+            git diff
+            exit 1
+          fi
+          echo "No uncommitted changes found"
+
+      - name: "Check for untracked files"
+        run: |
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "::error::Untracked files detected:"
+            git ls-files --others --exclude-standard
+            exit 1
+          fi
+          echo "No untracked files found"
+
+      - id: "test"
+        name: "test"
+        run: |
+          set -euo pipefail
+          mkdir --parent ./target/nextest
+          # Run tests. The resulting results.json is not a full JSON object but
+          # a list of JSON objects, one per line.
+          if [ ${{ matrix.profile.name }} = "fuzz" ]; then
+            echo "::notice::Running fuzz tests"
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              ${{matrix.profile.sterile}} coverage \
+                --status-level=none \
+                --final-status-level=skip \
+                --message-format=libtest-json-plus > ./results.json
+          else
+            echo "::notice::Running regular tests"
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              ${{matrix.profile.sterile}} cargo nextest run \
+                --cargo-profile=${{matrix.profile.name}} \
+                --status-level=none \
+                --final-status-level=skip \
+                --message-format=libtest-json-plus \
+                > ./results.json
+            echo "::notice::Running Shuttle tests"
+            # We need to rebuild using the shuttle feature. To avoid running
+            # all tests a second time, we filter to run only tests with pattern
+            # "shuttle" in their name (test function name, file name, or module
+            # name).
+            #
+            # IF YOUR SHUTTLE TESTS DO NOT HAVE "shuttle" IN THEIR NAME, THEY
+            # WILL NOT RUN.
+            just \
+              debug_justfile="${{matrix.debug_justfile}}" \
+              profile=${{matrix.profile.name}} \
+              target=x86_64-unknown-linux-gnu \
+              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              ${{matrix.profile.sterile}} cargo nextest run \
+                --cargo-profile=${{matrix.profile.name}} \
+                --status-level=none \
+                --final-status-level=none \
+                --message-format=libtest-json-plus \
+                --features shuttle \
+                shuttle \
+                >> ./results.json
+          fi
+          # look for any flakes (flakes have a #\\d+ match in their name field)
+          jq \
+            --raw-output \
+            --slurp '.[] | select(.type == "test" and (.name | test(".*#\\d+"))) | ( .name | split("#") ) |
+                     [.[0], (.[1] | tonumber)] | @csv
+          ' ./results.json > ./target/nextest/flakes.csv
+          if [ -s ./target/nextest/flakes.csv ]; then
+            {
+              echo "FLAKY_TESTS<<EOF"
+              echo -e "### :warning: Flaky tests (${{matrix.profile.name}} - ${{matrix.profile.sterile}})\n";
+              echo "| test | retries |"
+              echo "|------|---------|"
+              just cargo csview --style=markdown --no-headers --body-align=left ./target/nextest/flakes.csv;
+              echo "EOF"
+            } >> "${GITHUB_ENV}"
+          fi
+          rm results.json
+
+      - name: "upload test results to codecov"
+        if: ${{ always() }}
+        uses: "codecov/codecov-action@v5"
         with:
-          name: "githedgehog"
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          fail_ci_if_error: true
+          files: ./target/nextest/default/junit.xml
+          report_type: "test_results"
+          disable_search: "true"
+          use_oidc: "true"
+          verbose: true
+          flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
 
-      - name: "build tests"
-        run: |
-          nix build \
-            --file default.nix \
-            --argstr profile "${{matrix.build.profile}}" \
-            --argstr sanitize "${{matrix.build.sanitize}}" \
-            --argstr instrumentation "${{matrix.build.instrument}}" \
-            --out-link tests.all \
-            tests.all
+      - name: "upload codecov analysis"
+        if: ${{ matrix.profile.name == 'fuzz' }}
+        uses: "codecov/codecov-action@v5"
+        with:
+          fail_ci_if_error: true
+          files: ./target/nextest/coverage/codecov.json
+          report_type: "coverage"
+          disable_search: "true"
+          use_oidc: "true"
+          verbose: true
+          flags: "${{matrix.profile.name}}-${{ matrix.profile.sterile || 'developer' }}"
 
-      - name: "run tests"
+      - name: "clean up coverage data"
         run: |
-          nix-shell --run "cargo nextest run --archive-file tests.all/all.tar.zst --workspace-remap $(pwd)"
+          rm -f codecov codecov.SHA256SUM codecov.SHA256SUM.sig
+
+      - uses: "marocchino/sticky-pull-request-comment@v2"
+        if: ${{ always() }}
+        with:
+          header: "flakes_${{matrix.profile.name}}_${{matrix.profile.sterile}}"
+          ignore_empty: "true"
+          message: |
+            ${{ env.FLAKY_TESTS }}
+
+      - name: "publish test report"
+        uses: "mikepenz/action-junit-report@v6"
+        if: "${{ always() }}"
+        with:
+          annotate_notice: "false"
+          annotate_only: "false"
+          check_annotations: "true"
+          check_retries: "false"
+          comment: "false"
+          detailed_summary: "true"
+          fail_on_failure: "false"
+          fail_on_parse_error: "true"
+          flaky_summary: "true"
+          include_empty_in_summary: "true"
+          include_passed: "true"
+          include_time_in_summary: "true"
+          report_paths: "target/nextest/default/*junit.xml"
+          require_passed_tests: "true"
+          require_tests: "true"
+          simplified_summary: "true"
+          truncate_stack_traces: "false"
+          group_reports: "true"
+          check_name: "test-report-${{matrix.profile.name}}-sterile:${{matrix.profile.sterile == 'sterile'}}"
+          skip_success_summary: "false"
+          job_summary: "true"
+          verbose_summary: "false"
+
+      - id: "clippy"
+        name: "run clippy"
+        run: |
+          just debug_justfile="${{matrix.debug_justfile}}" profile=${{matrix.profile.name}} \
+            ${{matrix.profile.sterile}} cargo clippy --all-targets --all-features -- -D warnings
+
+      - id: "docs"
+        name: "run rustdoc"
+        run: |
+          RUSTDOCFLAGS="-D warnings" just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            ${{matrix.profile.sterile}} cargo doc --no-deps
+
+      - name: "run doctests"
+        run: |
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile=${{matrix.profile.name}} \
+            target=x86_64-unknown-linux-gnu \
+            ${{matrix.profile.sterile}} cargo test --doc
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
@@ -228,7 +414,7 @@ jobs:
     uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
     with:
       # ci:+hlab is required to enable hybrid lab tests on PR
-      # ci:+vlab is required to enable virtual lab tests on PR
+      # ci:-vlab disables virtual lab tests on PR
       # ci:-upgrade disables upgrade tests on PR
       # hlab is disabled for main and merge_queue till we have gateway tests for it
       skip: >-
@@ -236,7 +422,7 @@ jobs:
           github.event_name == 'pull_request'
           && (
             matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+hlab')
-            || !matrix.hybrid && !contains(github.event.pull_request.labels.*.name, 'ci:+vlab')
+            || !matrix.hybrid && contains(github.event.pull_request.labels.*.name, 'ci:-vlab')
             || matrix.upgradefrom != '' && contains(github.event.pull_request.labels.*.name, 'ci:-upgrade')
           )
 
@@ -373,7 +559,7 @@ jobs:
           docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
-            profile=${{matrix.profile}} \
+            profile=${{matrix.profile.name}} \
             dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
             refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
