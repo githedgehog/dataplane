@@ -3,7 +3,9 @@
 
 #[cfg(test)]
 mod nf_test {
+    use crate::portfw::flow_state::{PortFwFlowStatus, get_portfw_state_flow_status};
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};
+
     use flow_entry::flow_table::FlowLookup;
     use flow_entry::flow_table::FlowTable;
     use flow_info::FlowStatus;
@@ -122,6 +124,10 @@ mod nf_test {
         assert_eq!(output.ip_destination().unwrap().to_string(), "10.0.0.1");
         assert_eq!(output.udp_source_port().unwrap().as_u16(), 3053);
         assert_eq!(output.udp_destination_port().unwrap().as_u16(), 9876);
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::TwoWay)
+        );
 
         let flow_info = output.meta().flow_info.as_ref().unwrap();
         assert_eq!(flow_info.status(), FlowStatus::Active);
