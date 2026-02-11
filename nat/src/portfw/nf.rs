@@ -88,10 +88,7 @@ impl PortForwarder {
         packet: &mut Packet<Buf>,
         entry: &Arc<PortFwEntry>,
     ) {
-        debug!(
-            "performing port-forwarding with rule {} -> {entry}",
-            entry.key
-        );
+        debug!("performing port-forwarding with rule: {entry}");
 
         // create flow entry for subsequent packets in the forward path
         create_port_fw_forward_entry(&self.flow_table, packet, entry);
