@@ -50,7 +50,6 @@ let
   ];
   optimize-for.performance.NIX_CFLAGS_LINK = optimize-for.performance.NIX_CXXFLAGS_COMPILE ++ [
     "-Wl,--lto-whole-program-visibility"
-    "-Wl,--thinlto-jobs=3"
   ];
   optimize-for.performance.RUSTFLAGS = [
     "-Clinker-plugin-lto"
@@ -204,7 +203,9 @@ let
     "-fcoverage-mapping"
   ];
   instrument.coverage.NIX_CXXFLAGS_COMPILE = instrument.coverage.NIX_CFLAGS_COMPILE;
-  instrument.coverage.NIX_CFLAGS_LINK = instrument.coverage.NIX_CFLAGS_COMPILE;
+  instrument.coverage.NIX_CFLAGS_LINK = instrument.coverage.NIX_CFLAGS_COMPILE ++ [
+    "-Wl,--thinlto-jobs=1" # coverage spikes LTO memory usage so we limit parlallel jobs
+  ];
   instrument.coverage.RUSTFLAGS = [
     "-Cinstrument-coverage"
   ]

@@ -132,12 +132,11 @@ jobs:
           - name: "thread-sanitizer"
             profile: "fuzz"
             sanitize: "thread"
-            instrument: "coverage"
-          ## TODO: enable address sanitizer when lld stops segfaulting on the address sanitizer build
+            instrument: "none" # TODO: should be coverage
           - name: "address-sanitizer"
             profile: "fuzz"
             sanitize: "address"
-            instrument: "coverage"
+            instrument: "none" # TODO: should be coverage
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     name: "${{matrix.build.name}}"
