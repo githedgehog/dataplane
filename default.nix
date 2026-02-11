@@ -179,18 +179,9 @@ let
   cargo-cmd-prefix = [
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
     "--target=${target}"
-  ]
-  ++ (
-    if builtins.elem "thread" sanitizers then
-      [
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
-      ]
-    else
-      [
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
-      ]
-  );
+  ];
   invoke =
     {
       builder,
