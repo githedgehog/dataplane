@@ -6,13 +6,14 @@ mod nf_test {
     use crate::portfw::flow_state::{PortFwFlowStatus, get_portfw_state_flow_status};
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};
 
-    use flow_entry::flow_table::FlowLookup;
-    use flow_entry::flow_table::FlowTable;
+    use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};
     use flow_info::FlowStatus;
     use net::buffer::TestBuffer;
+    use net::headers::TryTcpMut;
     use net::ip::NextHeader;
     use net::ip::UnicastIpAddr;
-    use net::packet::test_utils::build_test_udp_ipv4_packet;
+    use net::packet::DoneReason;
+    use net::packet::test_utils::{build_test_tcp_ipv4_packet, build_test_udp_ipv4_packet};
     use net::packet::{Packet, VpcDiscriminant};
     use std::net::IpAddr;
 
@@ -83,6 +84,22 @@ mod nf_test {
         packet
     }
 
+    fn tcp_packet_to_port_forward() -> Packet<TestBuffer> {
+        let mut packet = build_test_tcp_ipv4_packet("10.0.0.2", "70.71.72.73", 7777, 3022);
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
+        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
+        packet
+    }
+
+    fn tcp_packet_reverse_reply() -> Packet<TestBuffer> {
+        let mut packet = build_test_tcp_ipv4_packet("192.168.1.1", "10.0.0.2", 22, 7777);
+        packet.meta_mut().set_overlay(true);
+        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
+        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
+        packet
+    }
+
     // packet-dumping wrapper
     fn process_packet(
         pipeline: &mut DynPipeline<TestBuffer>,
@@ -95,20 +112,30 @@ mod nf_test {
         output.clone()
     }
 
-    #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding() {
+    /// sets up a port-forwarding pipeline with a sample configuration
+    fn setup_pipeline() -> (Arc<FlowTable>, DynPipeline<TestBuffer>) {
         // build a pipeline with flow lookup + port forwarder
         let fwtablerw = PortFwTableRw::new();
         let flow_table = Arc::new(FlowTable::new(1024));
         let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
         let nf = PortForwarder::new("port-forwarder", fwtablerw.clone(), flow_table.clone());
-        let mut pipeline: DynPipeline<TestBuffer> =
-            DynPipeline::new().add_stage(flow_lookup_nf).add_stage(nf);
+        let flow_expirations = ExpirationsNF::new(flow_table.clone());
+        let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+            .add_stage(flow_lookup_nf)
+            .add_stage(nf)
+            .add_stage(flow_expirations);
 
         // set port-forwarding rules
         fwtablerw.update(build_test_port_forwarding_table());
         println!("{fwtablerw}");
+        (flow_table, pipeline)
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding() {
+        // build a pipeline with flow lookup + port forwarder
+        let (_flow_table, mut pipeline) = setup_pipeline();
 
         // process an overlay packet matching a port-forwarding rule
         let output = process_packet(&mut pipeline, udp_packet_to_port_forward());
@@ -155,5 +182,117 @@ mod nf_test {
             .saturating_duration_since(std::time::Instant::now())
             .as_secs();
         assert!(expires_in > PortFwEntry::ESTABLISHED_TIMEOUT.as_secs() - 5);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_tcp_filtered() {
+        // build a pipeline with flow lookup + port forwarder
+        let (_, mut pipeline) = setup_pipeline();
+
+        // process packet with TCP segment without SYN: no entry should be created and packet be dropped
+        let mut packet = tcp_packet_to_port_forward();
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_syn(false);
+        let output = process_packet(&mut pipeline, packet);
+        assert_eq!(output.get_done(), Some(DoneReason::Filtered));
+
+        // process packet in reverse direction: no flow info should have been found
+        let packet = tcp_packet_reverse_reply();
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_none());
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_tcp_success() {
+        // build a pipeline with flow lookup + port forwarder
+        let (flow_table, mut pipeline) = setup_pipeline();
+
+        // process TCP SYN packet: entries should be created in both directions
+        let mut packet = tcp_packet_to_port_forward();
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_syn(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(!output.is_done());
+
+        // process TCP SYN|ACK packet in reverse direction: flow entry should be found. State should become 2way
+        let mut packet = tcp_packet_reverse_reply();
+        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_syn(true);
+        tcp.set_ack(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::TwoWay)
+        );
+
+        // process TCP ACK packet in forward direction
+        let mut packet = tcp_packet_to_port_forward();
+        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_ack(true);
+        tcp.set_syn(false);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(!output.is_done());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::Established)
+        );
+
+        // process TCP FIN in reverse direction: flow entry should be found. State should become Closing
+        let mut packet = tcp_packet_reverse_reply();
+        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_fin(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::Closing)
+        );
+
+        // process TCP FIN ACK packet in forward direction
+        let mut packet = tcp_packet_to_port_forward();
+        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_ack(true);
+        tcp.set_fin(false);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(!output.is_done());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::Closing)
+        );
+
+        // process TCP ACK in reverse direction: flow entry should be found. State should become Closing
+        let mut packet = tcp_packet_reverse_reply();
+        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_ack(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::Closing)
+        );
+
+        // process TCP RST packet in forward direction. This would normally not
+        // be processed, but we we'll let it through
+        let mut packet = tcp_packet_to_port_forward();
+        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
+        let tcp = packet.try_tcp_mut().unwrap();
+        tcp.set_rst(true);
+        tcp.set_syn(false);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(!output.is_done());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::Reset)
+        );
+
+        println!("{flow_table}");
     }
 }
