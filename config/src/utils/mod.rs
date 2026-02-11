@@ -5,7 +5,7 @@ use lpm::prefix::Prefix;
 
 mod collapse;
 
-pub use collapse::collapse_prefixes_peering;
+pub use collapse::{collapse_prefix_lists, collapse_prefixes_peering};
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ConfigUtilError {

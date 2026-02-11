@@ -42,7 +42,8 @@ pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, ConfigUti
 // Collapse prefixes (first set) and exclusion prefixes (second set), by "applying" exclusion
 // prefixes to the allowed prefixes and split them into smaller allowed segments, to express the
 // same IP ranges without any exclusion prefixes.
-fn collapse_prefix_lists(
+#[must_use]
+pub fn collapse_prefix_lists(
     prefixes: &BTreeSet<PrefixWithOptionalPorts>,
     excludes: &BTreeSet<PrefixWithOptionalPorts>,
 ) -> BTreeSet<PrefixWithOptionalPorts> {
