@@ -15,7 +15,7 @@ use pipeline::NetworkFunction;
 use std::sync::Arc;
 
 use crate::portfw::flow_state::{
-    check_packet_port_fw_state, create_port_fw_forward_entry, create_port_fw_reverse_entry,
+    create_port_fw_forward_entry, create_port_fw_reverse_entry, get_packet_port_fw_state,
     refresh_port_fw_entry,
 };
 use crate::portfw::packet::{dnat_packet, nat_packet};
@@ -137,18 +137,14 @@ impl PortForwarder {
         packet: &mut Packet<Buf>,
         pfwtable: &PortFwTable,
     ) {
-        if let Some(pfw_state) = check_packet_port_fw_state(packet) {
-            debug!("Packet hit port-forwarding state: {pfw_state}");
+        if let Some(pfw_state) = get_packet_port_fw_state(packet) {
             if !nat_packet(packet, &pfw_state) {
                 error!("Failed to nat port-forwarded packet");
                 packet.done(DoneReason::InternalFailure);
                 return;
             }
-            // refresh the flow entry hit by the packet
             refresh_port_fw_entry(packet, &pfw_state);
         } else {
-            // Packet did not hit any flow entry with port forwarding state.
-            // Check if it can and needs to be port-forwarded.
             self.try_port_forwarding(packet, pfwtable);
         }
     }
