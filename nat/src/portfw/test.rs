@@ -129,7 +129,7 @@ mod nf_test {
             .expires_at()
             .saturating_duration_since(std::time::Instant::now())
             .as_secs();
-        assert!(expires_in > PortFwEntry::ESTABLISHED_TIMEOUT.as_secs() - 5);
+        assert!(expires_in > PortFwEntry::INITIAL_TIMEOUT.as_secs() - 2);
 
         // process original packet again. It should be fast-natted
         let mut repeated = udp_packet_to_port_forward();
