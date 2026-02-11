@@ -10,6 +10,7 @@ use lpm::prefix::{PortRange, Prefix};
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::net::IpAddr;
 use std::ops::RangeBounds;
@@ -26,7 +27,7 @@ pub(crate) enum VpcdLookupResult {
 
     /// Multiple matching connection information object match the packet, we cannot tell which is
     /// the right one for this packet.
-    MultipleMatches,
+    MultipleMatches(HashSet<RemoteData>),
 }
 
 /// Stores allowed flows between VPCs and answers: given a packet's 5-tuple
@@ -389,7 +390,7 @@ impl PortRangeMap<DstConnectionData> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NatRequirement {
     Stateless,
     Stateful,
@@ -406,7 +407,7 @@ impl From<&VpcExposeNatConfig> for NatRequirement {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RemoteData {
     pub(crate) vpcd: VpcDiscriminant,
     pub(crate) src_nat_req: Option<NatRequirement>,
@@ -493,8 +494,8 @@ impl DstConnectionData {
                 // The only case we had an existing value is when we have multiple matches. Let's do
                 // a sanity check.
                 if existing_result.is_some_and(|r| {
-                    r != VpcdLookupResult::MultipleMatches
-                        || result != VpcdLookupResult::MultipleMatches
+                    !(matches!(r, VpcdLookupResult::MultipleMatches(_))
+                        && matches!(result, VpcdLookupResult::MultipleMatches(_)))
                 }) {
                     return Err(ConfigError::InternalFailure(
                         "Trying to insert conflicting values for remote port range information"
@@ -507,8 +508,8 @@ impl DstConnectionData {
             {
                 // We should only hit this case if we already inserted an entry with the same
                 // destination VPC.
-                if !(*existing_data == VpcdLookupResult::MultipleMatches
-                    && result == VpcdLookupResult::MultipleMatches)
+                if !(matches!(*existing_data, VpcdLookupResult::MultipleMatches(_))
+                    && matches!(result, VpcdLookupResult::MultipleMatches(_)))
                 {
                     return Err(ConfigError::InternalFailure(
                         "Trying to insert conflicting values for remote information".to_string(),
