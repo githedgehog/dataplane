@@ -6,7 +6,7 @@
 use net::buffer::PacketBufferMut;
 use net::headers::TryTcp;
 use net::ip::UnicastIpAddr;
-use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::packet::{Packet, VpcDiscriminant};
 use net::tcp::Tcp;
 use std::fmt::Display;
 use std::num::NonZero;
@@ -126,6 +126,10 @@ impl PortFwState {
     #[must_use]
     pub fn use_port(&self) -> NonZero<u16> {
         self.use_port
+    }
+    #[must_use]
+    pub fn rule(&self) -> &Weak<PortFwEntry> {
+        &self.rule
     }
 }
 
@@ -266,10 +270,10 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
 
 /// Check if the flow entry that a packet was annotated with contains any _VALID_
 /// port-forwarding state. If so, provide a clone of it.
-pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
+pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
 ) -> Option<PortFwState> {
-    let Some(flow_info) = packet.meta_mut().flow_info.as_mut() else {
+    let Some(flow_info) = packet.meta().flow_info.as_ref() else {
         debug!("Packet has no flow-info associated");
         return None;
     };
@@ -280,10 +284,9 @@ pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
     }
     let Ok(flow_info_locked) = flow_info.locked.read() else {
         error!("Packet has flow-info but it could not be locked");
-        packet.done(DoneReason::InternalFailure);
-        return None;
+        unreachable!();
     };
-    let Some(port_forwarding) = flow_info_locked
+    let Some(state) = flow_info_locked
         .port_fw_state
         .as_ref()
         .and_then(|s| s.extract_ref::<PortFwState>())
@@ -291,15 +294,21 @@ pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
-    if port_forwarding.rule.upgrade().is_none() {
+    if state.rule.upgrade().is_none() {
         debug!("Packet flow-info contains port-forwarding state, but rule has been deleted");
-        let _ = flow_info.reset_expiry(Duration::from_secs(0));
+        flow_info.reset_expiry_unchecked(Duration::from_secs(0));
         flow_info.update_status(FlowStatus::Expired);
         return None;
     }
-    // packet hit a flow-entry with port-forwarding state. Such a state may have been
-    // created by a packet that was port-forwarded in the opposite direction.
-    Some(port_forwarding.clone())
+    debug!("Packet hit entry with port-forwarding state: {flow_info}");
+    Some(state.clone())
+}
+
+#[allow(unused)]
+pub(crate) fn get_portfw_state_flow_status<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+) -> Option<PortFwFlowStatus> {
+    get_packet_port_fw_state(packet).map(|state| state.status.load())
 }
 
 fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus {
@@ -332,6 +341,7 @@ fn next_flow_status_non_tcp(pfw_state: &PortFwState) -> PortFwFlowStatus {
         },
     }
 }
+
 /// Compute the next `PortFwFlowStatus` of a flow, given the current, the received packet and
 /// the direction, which is implicit in the `PortFwAction`:
 ///     `DstNat` is the forward path and
