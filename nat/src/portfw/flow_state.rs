@@ -90,7 +90,11 @@ impl Display for PortFwState {
             PortFwAction::DstNat => "to",
             PortFwAction::SrcNat => "from",
         };
-        write!(f, " {dir} ip:{} port:{}", self.use_ip, self.use_port)
+        write!(f, " {dir} ip:{} port:{}", self.use_ip, self.use_port)?;
+        match self.rule.upgrade() {
+            Some(entry) => write!(f, " because of rule: {entry}"),
+            None => write!(f, "because of rule: removed"),
+        }
     }
 }
 
