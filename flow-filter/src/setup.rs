@@ -11,7 +11,7 @@ use config::internal::interfaces::interface::InterfaceConfigTable;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
 use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts};
 use net::packet::VpcDiscriminant;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use tracectl::trace_target;
 use tracing::debug;
@@ -72,7 +72,7 @@ impl FlowFilterTable {
                             *remote_nat_req,
                         ))
                     }
-                    VpcdLookupResult::MultipleMatches => {
+                    VpcdLookupResult::MultipleMatches(_) => {
                         return Err(ConfigError::InternalFailure(
                             "Unexpected multiple matches for destination VPC when handling local default expose".to_string(),
                         ));
@@ -98,7 +98,7 @@ impl FlowFilterTable {
                             get_nat_requirement(remote_default_expose),
                         ))
                     }
-                    VpcdLookupResult::MultipleMatches => {
+                    VpcdLookupResult::MultipleMatches(_) => {
                         return Err(ConfigError::InternalFailure(
                             "Unexpected multiple matches for destination VPC when handling remote default expose".to_string(),
                         ));
@@ -132,10 +132,11 @@ impl FlowFilterTable {
         for (local_prefix, local_vpcd_result, local_nat_req) in &local_prefixes {
             for (remote_prefix, remote_vpcd_result, remote_nat_req) in &remote_prefixes {
                 let remote_vpcd_to_use = match (remote_vpcd_result, local_vpcd_result) {
-                    (VpcdLookupResult::MultipleMatches, VpcdLookupResult::MultipleMatches) => {
-                        VpcdLookupResult::MultipleMatches
-                    }
-                    (VpcdLookupResult::MultipleMatches, VpcdLookupResult::Single(dst_data)) => {
+                    (
+                        VpcdLookupResult::MultipleMatches(dst_data),
+                        VpcdLookupResult::MultipleMatches(_),
+                    ) => VpcdLookupResult::MultipleMatches(dst_data.clone()),
+                    (VpcdLookupResult::MultipleMatches(_), VpcdLookupResult::Single(dst_data)) => {
                         // If the remote prefix is ambiguous but we are able to tell what
                         // destination VPC to use based on the local prefix in use, do so
                         VpcdLookupResult::Single(RemoteData::new(
@@ -322,7 +323,11 @@ fn get_split_prefixes_for_manifest(
         'next_prefix: for prefix in get_ips(expose) {
             for overlap_prefix in overlaps.iter() {
                 if overlap_prefix.covers(prefix) {
-                    prefixes_with_vpcd.push((*prefix, VpcdLookupResult::MultipleMatches, nat_req));
+                    prefixes_with_vpcd.push((
+                        *prefix,
+                        VpcdLookupResult::MultipleMatches(HashSet::new()),
+                        nat_req,
+                    ));
                     continue 'next_prefix;
                 } else if prefix.covers(overlap_prefix) {
                     // The current prefix partially overlaps with some other prefixes (of which
@@ -337,7 +342,7 @@ fn get_split_prefixes_for_manifest(
                                     p,
                                     if p == *overlap_prefix {
                                         // Multiple destination VPC matches for the overlapping section
-                                        VpcdLookupResult::MultipleMatches
+                                        VpcdLookupResult::MultipleMatches(HashSet::new())
                                     } else {
                                         // Single destination VPC match for the other sections
                                         VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None))
@@ -677,7 +682,7 @@ mod tests {
             result[0].0,
             PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None)
         );
-        assert_eq!(result[0].1, VpcdLookupResult::MultipleMatches);
+        assert!(matches!(result[0].1, VpcdLookupResult::MultipleMatches(_)));
         assert_eq!(
             result[1].0,
             PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None)
@@ -800,7 +805,10 @@ mod tests {
         let dst_addr = "20.0.0.5".parse().unwrap(); // In overlapping segment
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(dst_vpcd, Some(VpcdLookupResult::MultipleMatches));
+        assert!(matches!(
+            dst_vpcd,
+            Some(VpcdLookupResult::MultipleMatches(_))
+        ));
 
         let src_vpcd = VpcDiscriminant::VNI(vni1);
         let src_addr = "10.0.0.5".parse().unwrap();
