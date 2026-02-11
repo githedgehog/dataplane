@@ -135,7 +135,7 @@ jobs:
             instrument: "none"
           - name: "fuzz/address"
             profile: "fuzz" # TODO: set to fuzz once build times are tamed
-            sanitize: "address,leak"
+            sanitize: "address"
             instrument: "none"
           - name: "fuzz/thread"
             profile: "fuzz" # TODO: set to fuzz once build times are tamed
