@@ -14,21 +14,70 @@ use std::time::{Duration, Instant};
 use flow_entry::flow_table::flow_key::Uni;
 use flow_entry::flow_table::{FlowInfo, FlowKey, FlowTable};
 use flow_info::{ExtractRef, FlowStatus};
+use std::sync::atomic::AtomicU8;
 
 use crate::portfw::PortFwEntry;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PortFwAction {
     DstNat,
     SrcNat,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PortFwFlowStatus {
+    OneWay = 0,
+    TwoWay = 1,
+    Established = 2,
+    Reset = 3,
+    Closing = 4,
+}
+
+impl From<u8> for PortFwFlowStatus {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => PortFwFlowStatus::OneWay,
+            1 => PortFwFlowStatus::TwoWay,
+            2 => PortFwFlowStatus::Established,
+            3 => PortFwFlowStatus::Reset,
+            4 => PortFwFlowStatus::Closing,
+            _ => unreachable!(),
+        }
+    }
+}
+impl From<PortFwFlowStatus> for u8 {
+    fn from(value: PortFwFlowStatus) -> Self {
+        value as u8
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AtomicPortFwFlowStatus(Arc<AtomicU8>);
+impl AtomicPortFwFlowStatus {
+    #[must_use]
+    pub fn new() -> Self {
+        AtomicPortFwFlowStatus(Arc::new(AtomicU8::new(PortFwFlowStatus::OneWay.into())))
+    }
+
+    #[must_use]
+    pub fn load(&self) -> PortFwFlowStatus {
+        self.0.load(std::sync::atomic::Ordering::Relaxed).into()
+    }
+
+    pub fn store(&self, status: PortFwFlowStatus) {
+        self.0
+            .store(status.into(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PortFwState {
     action: PortFwAction,
+    status: AtomicPortFwFlowStatus,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
     rule: Weak<PortFwEntry>,
@@ -39,9 +88,11 @@ impl PortFwState {
         use_ip: UnicastIpAddr,
         use_port: NonZero<u16>,
         rule: Weak<PortFwEntry>,
+        status: AtomicPortFwFlowStatus,
     ) -> Self {
         Self {
             action: PortFwAction::SrcNat,
+            status,
             use_ip,
             use_port,
             rule,
@@ -52,9 +103,11 @@ impl PortFwState {
         use_ip: UnicastIpAddr,
         use_port: NonZero<u16>,
         rule: Weak<PortFwEntry>,
+        status: AtomicPortFwFlowStatus,
     ) -> Self {
         Self {
             action: PortFwAction::DstNat,
+            status,
             use_ip,
             use_port,
             rule,
@@ -83,17 +136,30 @@ impl Display for PortFwAction {
     }
 }
 
+impl Display for PortFwFlowStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortFwFlowStatus::OneWay => write!(f, "oneway"),
+            PortFwFlowStatus::TwoWay => write!(f, "twoway"),
+            PortFwFlowStatus::Established => write!(f, "established"),
+            PortFwFlowStatus::Reset => write!(f, "reset"),
+            PortFwFlowStatus::Closing => write!(f, "closing"),
+        }
+    }
+}
+
 impl Display for PortFwState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, " {}", self.action)?;
         let dir = match self.action {
             PortFwAction::DstNat => "to",
             PortFwAction::SrcNat => "from",
         };
-        write!(f, " {dir} ip:{} port:{}", self.use_ip, self.use_port)?;
+        write!(f, "\n        {}", self.action)?;
+        writeln!(f, " {dir} ip:{} port:{}", self.use_ip, self.use_port)?;
+        writeln!(f, "        status: {}", self.status.load())?;
         match self.rule.upgrade() {
-            Some(entry) => write!(f, " because of rule: {entry}"),
-            None => write!(f, "because of rule: removed"),
+            Some(entry) => write!(f, "        rule: {entry}"),
+            None => write!(f, "        rule: removed"),
         }
     }
 }
@@ -140,6 +206,7 @@ pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
     flow_table: &Arc<FlowTable>,
     packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
+    status: AtomicPortFwFlowStatus,
 ) {
     // create a flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
     // We derive the key for the reverse flow from the packet that we  port-forward, which has src/dst vpc discriminants.
@@ -155,7 +222,9 @@ pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
         entry.key.dst_ip(),
         entry.key.dst_port(),
         Arc::downgrade(entry),
+        status,
     );
+
     create_update_flow_entry(
         flow_table,
         &flow_key,
@@ -169,13 +238,20 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
     flow_table: &Arc<FlowTable>,
     packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
-) {
+) -> AtomicPortFwFlowStatus {
     let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
         .unwrap_or_else(|_| unreachable!())
         .strip_dst_vpcd();
 
-    let port_fw_state = PortFwState::new_dnat(entry.dst_ip, entry.dst_port, Arc::downgrade(entry));
+    let status = AtomicPortFwFlowStatus::new();
+    let port_fw_state = PortFwState::new_dnat(
+        entry.dst_ip,
+        entry.dst_port,
+        Arc::downgrade(entry),
+        status.clone(),
+    );
+
     create_update_flow_entry(
         flow_table,
         &flow_key,
@@ -183,6 +259,7 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
         dst_vpcd,
         port_fw_state,
     );
+    status
 }
 
 pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(

@@ -98,7 +98,7 @@ impl PortForwarder {
         debug!("performing port-forwarding with rule: {entry}");
 
         // create flow entry for subsequent packets in the forward path
-        create_port_fw_forward_entry(&self.flow_table, packet, entry);
+        let status = create_port_fw_forward_entry(&self.flow_table, packet, entry);
 
         // translate destination according to port-forwarding entry
         if !dnat_packet(packet, entry.dst_ip.inner(), entry.dst_port) {
@@ -107,7 +107,7 @@ impl PortForwarder {
         }
 
         // crate a flow entry for the reverse path
-        create_port_fw_reverse_entry(&self.flow_table, packet, entry);
+        create_port_fw_reverse_entry(&self.flow_table, packet, entry, status);
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(
