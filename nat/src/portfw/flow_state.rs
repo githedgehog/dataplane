@@ -4,8 +4,10 @@
 //! Port forwarding flow state
 
 use net::buffer::PacketBufferMut;
+use net::headers::TryTcp;
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::tcp::Tcp;
 use std::fmt::Display;
 use std::num::NonZero;
 use std::sync::{Arc, Weak};
@@ -262,6 +264,8 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
     status
 }
 
+/// Check if the flow entry that a packet was annotated with contains any _VALID_
+/// port-forwarding state. If so, provide a clone of it.
 pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
 ) -> Option<PortFwState> {
@@ -298,12 +302,104 @@ pub(crate) fn check_packet_port_fw_state<Buf: PacketBufferMut>(
     Some(port_forwarding.clone())
 }
 
+fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus {
+    let status = pfw_state.status.load();
+    match pfw_state.action {
+        PortFwAction::DstNat => match status {
+            PortFwFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => PortFwFlowStatus::Established,
+            other if tcp.rst() => PortFwFlowStatus::Reset,
+            other if tcp.fin() => PortFwFlowStatus::Closing,
+            other => other,
+        },
+        PortFwAction::SrcNat => match status {
+            PortFwFlowStatus::OneWay if tcp.syn() && tcp.ack() => PortFwFlowStatus::TwoWay,
+            other if tcp.rst() => PortFwFlowStatus::Reset,
+            other if tcp.fin() => PortFwFlowStatus::Closing,
+            other => other,
+        },
+    }
+}
+fn next_flow_status_non_tcp(pfw_state: &PortFwState) -> PortFwFlowStatus {
+    let status = pfw_state.status.load();
+    match pfw_state.action {
+        PortFwAction::DstNat => match status {
+            PortFwFlowStatus::TwoWay => PortFwFlowStatus::Established,
+            other => other,
+        },
+        PortFwAction::SrcNat => match status {
+            PortFwFlowStatus::OneWay => PortFwFlowStatus::TwoWay,
+            other => other,
+        },
+    }
+}
+/// Compute the next `PortFwFlowStatus` of a flow, given the current, the received packet and
+/// the direction, which is implicit in the `PortFwAction`:
+///     `DstNat` is the forward path and
+///     `SrcNat` the reverse path.
+fn next_flow_status<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    pfw_state: &PortFwState,
+) -> PortFwFlowStatus {
+    if let Some(tcp) = packet.try_tcp() {
+        next_flow_status_tcp(pfw_state, tcp)
+    } else {
+        next_flow_status_non_tcp(pfw_state)
+    }
+}
+
+/// Get the initial timeout to refresh a flow entry with port-forwarding state.
+/// If the port-forwarding entry cannot be accessible (rule was removed),
+/// use zero seconds.
+fn fetch_rule_initial_timeout(pfw_state: &PortFwState) -> Duration {
+    pfw_state
+        .rule
+        .upgrade()
+        .map_or(Duration::from_secs(0), |entry| entry.init_timeout)
+}
+
+/// Get the established timeout to refresh a flow entry with port-forwarding state
+/// If the port-forwarding entry cannot be accessible (rule was removed),
+/// use zero seconds.
+fn fetch_rule_established_timeout(pfw_state: &PortFwState) -> Duration {
+    pfw_state
+        .rule
+        .upgrade()
+        .map_or(Duration::from_secs(0), |entry| entry.estab_timeout)
+}
+
+/// Update the port-forwarding state of a flow entry after processing a packet.
+/// This updates the flow status shared by flow entries' port-forwarding state.
+/// We use the status of the flow to determine the extent to which the lifetime
+/// of a flow entry will be extended. Entries in status established get
+/// extended by a large period. In other states, the entries are kept alive with
+/// the initial timeout just to give enough time to transition to the next status.
+///
+/// Note: currently, in the case of TCP, we don't penalize (with the timer) entries
+/// for which packets are unexpectedly received. This will be done later.
 pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
-    _pfw_state: &PortFwState, // N.B. this is a copy of hit state
+    state: &PortFwState, // (*)
 ) {
-    let extend_by = PortFwEntry::ESTABLISHED_TIMEOUT; // this is temporary
+    //(*) Note: atm, this is a clone of the state found by the packet
+    // That's fine for updating the status since it's an arc'ed atomic
 
+    // update the status depending on the packet and the current status
+    let new_status = next_flow_status(packet, state);
+    let current_status = state.status.load();
+    if new_status != current_status {
+        debug!("State transition from {current_status} -> {new_status}");
+        state.status.store(new_status);
+    }
+
+    // compute the extent to which the lifetime of the flow entry should be extended
+    // depending on the associated port-forwarding rule and the new state of the flow.
+    let extend_by = match new_status {
+        PortFwFlowStatus::Established => fetch_rule_established_timeout(state),
+        PortFwFlowStatus::Reset => Duration::from_secs(0),
+        _ => fetch_rule_initial_timeout(state),
+    };
+
+    // refresh the entry
     if let Some(flow_info) = packet.meta_mut().flow_info.as_mut() {
         flow_info.reset_expiry_unchecked(extend_by);
         let seconds = extend_by.as_secs();
