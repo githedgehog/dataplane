@@ -213,7 +213,7 @@ let
     builtins.foldl' (
       acc: element: acc // (builtins.mapAttrs (var: val: (acc.${var} or [ ]) ++ val) element)
     ) { } features;
-  profile-map = {
+  profile-map = rec {
     debug = combine-profiles [
       common
       optimize-for.debug
@@ -223,6 +223,7 @@ let
       optimize-for.performance
       secure
     ];
+    fuzz = release;
   };
 in
 combine-profiles (
