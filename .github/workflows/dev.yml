@@ -195,7 +195,7 @@ jobs:
             --print-build-logs \
             ${{matrix.nix-target}}
            if [ "${{matrix.nix-target}}" = "test" ]; then
-             nix-shell --run "cargo nextest run --archive-file "${{matrix.nix-target}}"/*.tar.zst --workspace-remap $(pwd)"
+             nix-shell --run "cargo nextest run --archive-file ${{matrix.nix-target}}/*.tar.zst --workspace-remap $(pwd)"
            elif [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
              image="$(docker import dataplane-tar)"
              nix-shell --run "skopeo copy --src-daemon-host=unix:///run/docker/docker.sock docker-daemon:${image} oci-archive:image.tar"
