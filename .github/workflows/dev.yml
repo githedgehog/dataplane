@@ -198,7 +198,8 @@ jobs:
              nix-shell --run "cargo nextest run --archive-file "${{matrix.nix-target}}"/*.tar.zst --workspace-remap $(pwd)"
            fi
            if [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
-             nix-shell --run "sko"
+             image="$(docker import dataplane-tar)"
+             skopeo copy docker-daemon:"${image}" oci-archive:image.tar
            fi
 
       - name: "Setup tmate session for debug"
