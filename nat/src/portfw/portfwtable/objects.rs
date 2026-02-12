@@ -20,19 +20,30 @@ use std::num::NonZero;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Weak;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, error};
 
 /// A `PortFwEntry` contains the essential data required to perform port forwarding
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct PortFwEntry {
     pub(crate) key: PortFwKey,
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) dst_ip: UnicastIpAddr,
     pub(crate) dst_port: NonZero<u16>,
-    pub(crate) init_timeout: Duration,
-    pub(crate) estab_timeout: Duration,
+    pub(crate) init_timeout: Arc<AtomicU64>,
+    pub(crate) estab_timeout: Arc<AtomicU64>,
 }
+
+impl PartialEq for PortFwEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.matches(other)
+            && self.estab_timeout() == other.estab_timeout()
+            && self.init_timeout() == other.init_timeout()
+    }
+}
+
 impl PortFwEntry {
     pub const ESTABLISHED_TIMEOUT: Duration = Duration::from_mins(3);
     pub const INITIAL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -51,11 +62,42 @@ impl PortFwEntry {
             dst_ip: UnicastIpAddr::try_from(dst_ip).map_err(PortFwTableError::InvalidAddress)?,
             dst_port: NonZero::try_from(dst_port)
                 .map_err(|_| PortFwTableError::InvalidPort(dst_port))?,
-            init_timeout: init_timeout.unwrap_or(PortFwEntry::INITIAL_TIMEOUT),
-            estab_timeout: estab_timeout.unwrap_or(PortFwEntry::ESTABLISHED_TIMEOUT),
+            init_timeout: Arc::from(AtomicU64::new(
+                init_timeout
+                    .unwrap_or(PortFwEntry::INITIAL_TIMEOUT)
+                    .as_secs(),
+            )),
+            estab_timeout: Arc::from(AtomicU64::new(
+                estab_timeout
+                    .unwrap_or(PortFwEntry::ESTABLISHED_TIMEOUT)
+                    .as_secs(),
+            )),
         };
         entry.is_valid()?;
         Ok(entry)
+    }
+
+    #[must_use]
+    pub fn init_timeout(&self) -> Duration {
+        Duration::from_secs(self.init_timeout.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[must_use]
+    pub fn estab_timeout(&self) -> Duration {
+        Duration::from_secs(
+            self.estab_timeout
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    pub fn set_init_timeout(&self, duration: Duration) {
+        self.init_timeout
+            .store(duration.as_secs(), Ordering::Relaxed);
+    }
+
+    pub fn set_estab_timeout(&self, duration: Duration) {
+        self.estab_timeout
+            .store(duration.as_secs(), Ordering::Relaxed);
     }
 
     fn is_valid(&self) -> Result<(), PortFwTableError> {
@@ -84,7 +126,7 @@ impl PortFwEntry {
 
     /// Tell if one entry is equivalent to the other one, except for the timeouts
     /// We need this to be able to treat those as identical, even if they aren't
-    fn matches(&self, other: &Self) -> bool {
+    pub(crate) fn matches(&self, other: &Self) -> bool {
         self.key == other.key
             && self.dst_ip == other.dst_ip
             && self.dst_port == other.dst_port
@@ -115,6 +157,17 @@ impl PortFwKey {
             dst_port,
         }
     }
+
+    #[must_use]
+    pub fn proto(&self) -> NextHeader {
+        self.proto
+    }
+
+    #[must_use]
+    pub fn src_vpcd(&self) -> VpcDiscriminant {
+        self.src_vpcd
+    }
+
     #[must_use]
     pub fn dst_ip(&self) -> UnicastIpAddr {
         self.dst_ip
@@ -152,23 +205,23 @@ impl PortFwGroup {
     /// equivalent to the provided one, except for the values of the timeouts. Equivalence is dealt with by
     /// `PortFwEntry::matches()` method.
     fn add_update(&mut self, entry: PortFwEntry) -> Result<(), PortFwTableError> {
-        match self.0.iter().position(|e| e.matches(&entry)) {
-            Some(index) => {
-                let mut exist = self.0.swap_remove(index);
-                if let Some(old) = Arc::get_mut(&mut exist) {
-                    *old = entry;
-                    self.0.push(exist);
-                } else {
-                    // If there exist flow entries referencing this rule, they will lose their
-                    // weak reference to it, since we'll be replacing the Arc. This is bad.
-                    // One way to fix this is to keep Arc<RWlock|Mutex> or keep the timers
-                    // separately; neither of which is ideal.
-                    self.0.push(Arc::from(entry));
-                }
-                Ok(())
-            }
-            None => Err(PortFwTableError::DuplicateKey(entry.key)),
+        if let Some(index) = self.0.iter().position(|e| e.matches(&entry)) {
+            let exist = self.0.get(index).unwrap_or_else(|| unreachable!());
+            exist.set_init_timeout(entry.init_timeout());
+            exist.set_estab_timeout(entry.estab_timeout());
+            debug!("Updated port-forwarding rule: {entry}");
+            Ok(())
+        } else if self.is_empty() {
+            self.0.push(Arc::new(entry));
+            Ok(())
+        } else {
+            Err(PortFwTableError::DuplicateKey(entry.key))
         }
+    }
+
+    #[allow(unused)]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     #[allow(unused)]
@@ -206,7 +259,6 @@ impl PortFwTable {
     }
 
     pub fn add_entry(&mut self, entry: PortFwEntry) -> Result<(), PortFwTableError> {
-        debug!("Adding port-forwarding rule: {entry}");
         let key = &entry.key;
         if let Some(group) = self.0.get_mut(key) {
             group.add_update(entry)
@@ -218,16 +270,15 @@ impl PortFwTable {
 
     #[allow(unused)]
     pub(crate) fn remove_entry_by_key(&mut self, key: &PortFwKey) {
-        if let Some(group) = self.0.remove(key) {
-            debug!("Removed port-forwarding group: {group}");
-        }
+        self.0.remove(key);
     }
 
     #[allow(unused)]
     pub(crate) fn remove_entry(&mut self, entry: &PortFwEntry) {
-        if let Some(group) = self.0.get_mut(&entry.key)
-            && let Some(index) = group.0.iter().position(|e| e.as_ref() == entry)
-        {
+        let Some(group) = self.0.get_mut(&entry.key) else {
+            return;
+        };
+        if let Some(index) = group.0.iter().position(|e| e.matches(entry)) {
             group.0.swap_remove(index);
         }
     }
@@ -266,6 +317,31 @@ impl PortFwTable {
         self.0
             .values()
             .flat_map(|v| v.0.iter().map(std::convert::AsRef::as_ref))
+    }
+
+    #[allow(unused)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn rule_can_be_deleted(entry: &PortFwEntry, ruleset: &[PortFwEntry]) -> bool {
+        ruleset.iter().any(|e| e.matches(entry))
+    }
+    pub(crate) fn update(&mut self, ruleset: &[PortFwEntry]) {
+        let mut delete: Vec<PortFwEntry> = vec![];
+        for entry in self.values() {
+            if !Self::rule_can_be_deleted(entry, ruleset) {
+                delete.push(entry.clone());
+            }
+        }
+        for e in &delete {
+            self.remove_entry(e);
+        }
+        for entry in ruleset {
+            if let Err(e) = self.add_entry(entry.clone()) {
+                error!("Failed to remove rule {entry}: {e}");
+            }
+        }
     }
 }
 
@@ -334,8 +410,8 @@ impl Display for PortFwEntry {
                 self.dst_ip,
                 self.dst_port.get(),
                 self.dst_vpcd,
-                self.init_timeout.as_secs(),
-                self.estab_timeout.as_secs()
+                self.init_timeout().as_secs(),
+                self.estab_timeout().as_secs()
             )
         )
     }
@@ -389,7 +465,7 @@ mod test {
     use std::num::NonZero;
     use std::str::FromStr;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::atomic::AtomicU64;
     use tracing_test::traced_test;
 
     // build a sample port forwarding table
@@ -635,20 +711,20 @@ mod test {
         )
         .unwrap();
 
+        // add rule and check it exists in table
         fwtable.add_entry(entry.clone()).unwrap();
-
-        // check that entry exists
         assert!(fwtable.contains_rule(&entry));
 
-        // lookup + weak ref
+        // get a weak reference to the rule
         let weak = fwtable.lookup_rule_ref(&key).unwrap();
         assert_eq!(weak.upgrade().unwrap().as_ref(), &entry);
-        drop(weak);
 
-        // modify entry and add it.
-        entry.init_timeout = Duration::from_secs(13);
-        let _r = fwtable.add_entry(entry);
+        // add same rule but with modified timeouts
+        entry.init_timeout = Arc::from(AtomicU64::new(13));
+        entry.estab_timeout = Arc::from(AtomicU64::new(99));
+        let _r = fwtable.add_entry(entry.clone());
 
-        // FIXIME: check that no ref was lost + entry was updated
+        // check that the weak reference is still valid and that entry was updated
+        assert_eq!(weak.upgrade().unwrap().as_ref(), &entry);
     }
 }

@@ -234,7 +234,7 @@ pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
     create_update_flow_entry(
         flow_table,
         &flow_key,
-        entry.init_timeout,
+        entry.init_timeout(),
         dst_vpcd,
         port_fw_state,
     );
@@ -261,7 +261,7 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
     create_update_flow_entry(
         flow_table,
         &flow_key,
-        entry.init_timeout,
+        entry.init_timeout(),
         dst_vpcd,
         port_fw_state,
     );
@@ -364,7 +364,7 @@ fn fetch_rule_initial_timeout(pfw_state: &PortFwState) -> Duration {
     pfw_state
         .rule
         .upgrade()
-        .map_or(Duration::from_secs(0), |entry| entry.init_timeout)
+        .map_or(Duration::from_secs(0), |entry| entry.init_timeout())
 }
 
 /// Get the established timeout to refresh a flow entry with port-forwarding state
@@ -374,7 +374,7 @@ fn fetch_rule_established_timeout(pfw_state: &PortFwState) -> Duration {
     pfw_state
         .rule
         .upgrade()
-        .map_or(Duration::from_secs(0), |entry| entry.estab_timeout)
+        .map_or(Duration::from_secs(0), |entry| entry.estab_timeout())
 }
 
 /// Update the port-forwarding state of a flow entry after processing a packet.
