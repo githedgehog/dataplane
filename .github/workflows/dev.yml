@@ -199,6 +199,7 @@ jobs:
            fi
            if [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
              image="$(docker import dataplane-tar)"
+             export DOCKER_HOST="/run/docker/docker.sock"
              skopeo copy docker-daemon:"${image}" oci-archive:image.tar
            fi
 
