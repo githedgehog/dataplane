@@ -104,6 +104,94 @@ jobs:
           echo "version=v0-${commit_sha::9}" >> "$GITHUB_OUTPUT"
           echo "ref=${commit_sha}" >> "$GITHUB_OUTPUT"
 
+  build:
+    runs-on: lab
+    needs:
+      - version
+    permissions:
+      checks: "write"
+      pull-requests: "write"
+      contents: "read"
+      packages: "write"
+      id-token: "write"
+    env:
+      CACHE_REGISTRY: "run.h.hhdev.io:30000"
+      UPSTREAM_REGISTRY: "ghcr.io"
+      USER: "runner"
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - name: "debug"
+            profile: "debug"
+            sanitize: ""
+            instrument: "none"
+          - name: "release"
+            profile: "release"
+            sanitize: "" # TODO: enable safe-stack,cfi when possible
+            instrument: "none"
+          - name: "sanitize/address"
+            profile: "debug" # TODO: should be fuzz, but build time explodes for unknown reasons
+            sanitize: "address"
+            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
+          - name: "sanitize/thread"
+            profile: "fuzz"
+            sanitize: "thread"
+            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
+        debug_justfile:
+          - "${{ inputs.debug_justfile || false }}"
+    steps:
+      - name: "login to ghcr.io"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.UPSTREAM_REGISTRY }}"
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "login to image cache"
+        uses: "docker/login-action@v3"
+        with:
+          registry: "${{ env.CACHE_REGISTRY }}"
+          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
+          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+
+      # it's temporarily needed to install skopeo
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+
+      - name: "Checkout"
+        uses: "actions/checkout@v6"
+        with:
+          persist-credentials: "false"
+          fetch-depth: "0"
+
+      - name: "Install nix"
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+
+      - uses: "cachix/cachix-action@v14"
+        with:
+          name: "githedgehog"
+          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      - name: "build packages"
+        run: |
+          nix build \
+            --file default.nix \
+            --argstr profile "${{matrix.build.profile}}" \
+            --argstr sanitize "${{matrix.build.sanitize}}" \
+            --argstr instrumentation "${{matrix.build.instrument}}" \
+            --out-link dataplane-tar \
+            --print-build-logs \
+            dataplane-tar
+
+
   check:
     env:
       CACHE_REGISTRY: "run.h.hhdev.io:30000"
@@ -129,13 +217,13 @@ jobs:
             profile: "release"
             sanitize: "" # TODO: enable safe-stack,cfi when possible
             instrument: "none"
-          - name: "thread-sanitizer"
-            profile: "fuzz"
-            sanitize: "thread"
-            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
-          - name: "address-sanitizer"
+          - name: "sanitize/address"
             profile: "debug" # TODO: should be fuzz, but build time explodes for unknown reasons
             sanitize: "address"
+            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
+          - name: "sanitize/thread"
+            profile: "fuzz"
+            sanitize: "thread"
             instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
