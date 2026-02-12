@@ -17,12 +17,14 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::net::IpAddr;
 use std::num::NonZero;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Weak;
 use std::time::Duration;
 use tracing::debug;
 
 /// A `PortFwEntry` contains the essential data required to perform port forwarding
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PortFwEntry {
     pub(crate) key: PortFwKey,
     pub(crate) dst_vpcd: VpcDiscriminant,
@@ -78,6 +80,15 @@ impl PortFwEntry {
             ));
         }
         Ok(())
+    }
+
+    /// Tell if one entry is equivalent to the other one, except for the timeouts
+    /// We need this to be able to treat those as identical, even if they aren't
+    fn matches(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.dst_ip == other.dst_ip
+            && self.dst_port == other.dst_port
+            && self.dst_vpcd == other.dst_vpcd
     }
 }
 
@@ -136,6 +147,34 @@ impl PortFwGroup {
     fn new_with_entry(entry: PortFwEntry) -> Self {
         Self(vec![Arc::new(entry)])
     }
+    /// Add a `PortFwEntry`  to a `PortFwGroup`. At the moment we don't allow more than ONE entry per group.
+    /// We allow adding the same rule multiple times (idempotence) or updating an existing entry if it is
+    /// equivalent to the provided one, except for the values of the timeouts. Equivalence is dealt with by
+    /// `PortFwEntry::matches()` method.
+    fn add_update(&mut self, entry: PortFwEntry) -> Result<(), PortFwTableError> {
+        match self.0.iter().position(|e| e.matches(&entry)) {
+            Some(index) => {
+                let mut exist = self.0.swap_remove(index);
+                if let Some(old) = Arc::get_mut(&mut exist) {
+                    *old = entry;
+                    self.0.push(exist);
+                } else {
+                    // If there exist flow entries referencing this rule, they will lose their
+                    // weak reference to it, since we'll be replacing the Arc. This is bad.
+                    // One way to fix this is to keep Arc<RWlock|Mutex> or keep the timers
+                    // separately; neither of which is ideal.
+                    self.0.push(Arc::from(entry));
+                }
+                Ok(())
+            }
+            None => Err(PortFwTableError::DuplicateKey(entry.key)),
+        }
+    }
+
+    #[allow(unused)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -156,7 +195,7 @@ pub enum PortFwTableError {
 
 /// Port Forwarding table.
 ///
-/// This table tells data-path how to perform port forwarding; which
+/// This table tells the data-path NF how to perform port forwarding; which
 /// IP addresses and ports to re-write and among which VPCs, when that
 /// cannot determined from the flow table.
 pub struct PortFwTable(HashMap<PortFwKey, PortFwGroup, RandomState>);
@@ -167,33 +206,24 @@ impl PortFwTable {
     }
 
     pub fn add_entry(&mut self, entry: PortFwEntry) -> Result<(), PortFwTableError> {
-        let key = &entry.key;
-        // At the moment we don't allow more than one entry per group.
-        // We allow adding the same rule multiple times (idempotence).
-        if let Some(group) = self.0.get(key) {
-            if let Some(exist) = group.0.first()
-                && exist.as_ref() == &entry
-            {
-                return Ok(());
-            }
-            return Err(PortFwTableError::DuplicateKey(*key));
-        }
         debug!("Adding port-forwarding rule: {entry}");
+        let key = &entry.key;
         if let Some(group) = self.0.get_mut(key) {
-            group.0.push(Arc::new(entry));
+            group.add_update(entry)
         } else {
             self.0.insert(*key, PortFwGroup::new_with_entry(entry));
+            Ok(())
         }
-        Ok(())
     }
 
     #[allow(unused)]
     pub(crate) fn remove_entry_by_key(&mut self, key: &PortFwKey) {
         if let Some(group) = self.0.remove(key) {
-            debug!("Removed port-forwarding rule: {group}");
+            debug!("Removed port-forwarding group: {group}");
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn remove_entry(&mut self, entry: &PortFwEntry) {
         if let Some(group) = self.0.get_mut(&entry.key)
             && let Some(index) = group.0.iter().position(|e| e.as_ref() == entry)
@@ -204,28 +234,38 @@ impl PortFwTable {
 
     #[must_use]
     #[allow(unused)]
+    #[cfg(test)]
     fn get_group(&self, key: &PortFwKey) -> Option<&PortFwGroup> {
         self.0.get(key)
     }
 
     #[must_use]
-    pub fn lookup_rule(&self, key: &PortFwKey) -> Option<&Arc<PortFwEntry>> {
+    pub(crate) fn lookup_rule(&self, key: &PortFwKey) -> Option<&Arc<PortFwEntry>> {
         self.0.get(key).and_then(|group| group.0.first())
     }
 
     #[must_use]
-    pub fn lookup_rule_ref(&self, key: &PortFwKey) -> Option<Weak<PortFwEntry>> {
+    #[cfg(test)]
+    pub(crate) fn lookup_rule_ref(&self, key: &PortFwKey) -> Option<Weak<PortFwEntry>> {
         self.0
             .get(key)
             .map(|group| group.0.first().map(Arc::downgrade))?
     }
 
     #[must_use]
-    pub fn contains_rule(&self, entry: &PortFwEntry) -> bool {
+    #[cfg(test)]
+    pub(crate) fn contains_rule(&self, entry: &PortFwEntry) -> bool {
         match self.lookup_rule(&entry.key) {
             None => false,
             Some(e) => e.as_ref() == entry,
         }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn values(&self) -> impl Iterator<Item = &PortFwEntry> {
+        self.0
+            .values()
+            .flat_map(|v| v.0.iter().map(std::convert::AsRef::as_ref))
     }
 }
 
@@ -349,6 +389,7 @@ mod test {
     use std::num::NonZero;
     use std::str::FromStr;
     use std::sync::Arc;
+    use std::time::Duration;
     use tracing_test::traced_test;
 
     // build a sample port forwarding table
@@ -370,7 +411,7 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(entry).unwrap();
+        fwtable.add_entry(entry.clone()).unwrap();
         assert!(fwtable.contains_rule(&entry));
 
         let key = PortFwKey {
@@ -389,7 +430,7 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(entry).unwrap();
+        fwtable.add_entry(entry.clone()).unwrap();
         assert!(fwtable.contains_rule(&entry));
 
         let key = PortFwKey {
@@ -408,7 +449,7 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(entry).unwrap();
+        fwtable.add_entry(entry.clone()).unwrap();
         assert!(fwtable.contains_rule(&entry));
 
         let key = PortFwKey {
@@ -473,14 +514,14 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(entry1).unwrap();
+        fwtable.add_entry(entry1.clone()).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(&key).unwrap().0.len(), 1);
+        assert_eq!(fwtable.get_group(&key).unwrap().len(), 1);
 
         // idempotence -- nothing gets added
         fwtable.add_entry(entry1).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(&key).unwrap().0.len(), 1);
+        assert_eq!(fwtable.get_group(&key).unwrap().len(), 1);
 
         let entry2 = PortFwEntry::new(
             key,
@@ -497,48 +538,40 @@ mod test {
     }
 
     #[test]
-    fn test_port_forwarding_table_reject_distinct_ip_ver() {
-        let mut fwtable = PortFwTable::new();
+    fn test_port_forwarding_entry_reject_distinct_ip_ver() {
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
             dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
             dst_port: NonZero::new(3022).unwrap(),
         };
-        let entry = PortFwEntry::new(
+        let r = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("2002:a:b:c::1").unwrap(),
             22,
             None,
             None,
-        )
-        .unwrap();
-
-        let r = fwtable.add_entry(entry);
+        );
         assert!(r.is_err_and(|e| matches!(e, PortFwTableError::Unsupported(_))));
     }
 
     #[test]
-    fn test_port_forwarding_table_reject_common_vpcd() {
-        let mut fwtable = PortFwTable::new();
+    fn test_port_forwarding_entry_reject_common_vpcd() {
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
             dst_ip: UnicastIpAddr::from_str("192.168.1.1").unwrap(),
             proto: NextHeader::UDP,
             dst_port: NonZero::new(3022).unwrap(),
         };
-        let entry = PortFwEntry::new(
+        let r = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
             IpAddr::from_str("70.71.72.73").unwrap(),
             22,
             None,
             None,
-        )
-        .unwrap();
-
-        let r = fwtable.add_entry(entry);
+        );
         assert!(r.is_err_and(|e| matches!(e, PortFwTableError::Unsupported(_))));
     }
 
@@ -580,5 +613,42 @@ mod test {
         assert!(!fwtable.contains_rule(&entry));
         assert!(fwtable.lookup_rule(&key).is_none());
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_port_forwarding_table_updates() {
+        let mut fwtable = PortFwTable::new();
+        let key = PortFwKey {
+            src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
+            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
+            proto: NextHeader::TCP,
+            dst_port: NonZero::new(3022).unwrap(),
+        };
+        let mut entry = PortFwEntry::new(
+            key,
+            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            IpAddr::from_str("192.168.1.1").unwrap(),
+            22,
+            None,
+            None,
+        )
+        .unwrap();
+
+        fwtable.add_entry(entry.clone()).unwrap();
+
+        // check that entry exists
+        assert!(fwtable.contains_rule(&entry));
+
+        // lookup + weak ref
+        let weak = fwtable.lookup_rule_ref(&key).unwrap();
+        assert_eq!(weak.upgrade().unwrap().as_ref(), &entry);
+        drop(weak);
+
+        // modify entry and add it.
+        entry.init_timeout = Duration::from_secs(13);
+        let _r = fwtable.add_entry(entry);
+
+        // FIXIME: check that no ref was lost + entry was updated
     }
 }
