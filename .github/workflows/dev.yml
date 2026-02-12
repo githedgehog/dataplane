@@ -132,11 +132,11 @@ jobs:
           - name: "thread-sanitizer"
             profile: "fuzz"
             sanitize: "thread"
-            instrument: "none" # TODO: should be coverage
+            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
           - name: "address-sanitizer"
-            profile: "fuzz"
+            profile: "debug" # TODO: should be fuzz, but build time explodes for unknown reasons
             sanitize: "address"
-            instrument: "none" # TODO: should be coverage
+            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     name: "${{matrix.build.name}}"
