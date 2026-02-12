@@ -7,6 +7,8 @@ use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp6::{Icmp6, TruncatedIcmp6};
 use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
+use crate::ip::dscp::Dscp;
+use crate::ip::ecn::Ecn;
 use crate::ip_auth::IpAuth;
 pub use crate::ipv6::addr::UnicastIpv6Addr;
 use crate::ipv6::flow_label::FlowLabel;
@@ -16,7 +18,7 @@ use crate::parse::{
 };
 use crate::tcp::{Tcp, TruncatedTcp};
 use crate::udp::{TruncatedUdp, Udp};
-use etherparse::{IpNumber, Ipv6Extensions, Ipv6Header};
+use etherparse::{IpDscp, IpEcn, IpNumber, Ipv6Extensions, Ipv6Header};
 use std::net::Ipv6Addr;
 use std::num::NonZero;
 use tracing::{debug, trace};
@@ -78,6 +80,24 @@ impl Ipv6 {
     #[must_use]
     pub fn traffic_class(&self) -> u8 {
         self.0.traffic_class
+    }
+
+    // TODO: wrapper type (low priority)
+    /// Get the header's [differentiated services code point].
+    ///
+    /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
+    #[must_use]
+    pub fn dscp(&self) -> IpDscp {
+        self.0.dscp()
+    }
+
+    // TODO: wrapper type (low priority)
+    /// Get the header's [explicit congestion notification]
+    ///
+    /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
+    #[must_use]
+    pub fn ecn(&self) -> IpEcn {
+        self.0.ecn()
     }
 
     // TODO: proper wrapper type (low priority)
@@ -162,6 +182,22 @@ impl Ipv6 {
     /// [traffic class]: https://datatracker.ietf.org/doc/html/rfc8200#section-7
     pub fn set_traffic_class(&mut self, traffic_class: u8) -> &mut Self {
         self.0.traffic_class = traffic_class;
+        self
+    }
+
+    /// Set the header's [explicit congestion notification]
+    ///
+    /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
+    pub fn set_ecn(&mut self, ecn: Ecn) -> &mut Self {
+        self.0.set_ecn(ecn.into());
+        self
+    }
+
+    /// Set the header's [differentiated services code point].
+    ///
+    /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
+    pub fn set_dscp(&mut self, dscp: Dscp) -> &mut Self {
+        self.0.set_dscp(dscp.into());
         self
     }
 
@@ -577,15 +613,23 @@ mod contract {
 
         fn generate<D: Driver>(&self, u: &mut D) -> Option<Ipv6> {
             let mut header = Ipv6(Ipv6Header::default());
+
+            let src = u.produce()?;
+            let dst = Ipv6Addr::from(u.produce::<u128>()?);
+            let payload_len = u.produce()?;
+            let hop_limit = u.produce()?;
+            let flow_label = u.produce()?;
+            let traffic_class = u.produce()?;
+
             header
-                .set_source(u.produce()?)
-                .set_destination(Ipv6Addr::from(u.produce::<u128>()?))
+                .set_source(src)
+                .set_destination(dst)
                 .set_next_header(self.0)
-                .set_payload_length(u.produce()?)
-                .set_hop_limit(u.produce()?)
-                .set_flow_label(u.produce()?)
-                .set_traffic_class(u.produce()?)
-                .set_hop_limit(u.produce()?);
+                .set_payload_length(payload_len)
+                .set_hop_limit(hop_limit)
+                .set_flow_label(flow_label)
+                .set_traffic_class(traffic_class);
+
             Some(header)
         }
     }

@@ -10,6 +10,9 @@ use std::fmt::{Debug, Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
+pub mod dscp;
+pub mod ecn;
+
 /// Thin wrapper around [`IpNumber`]
 ///
 /// This exists to allow us to implement `TypeGenerator` without violating rust's orphan rules.

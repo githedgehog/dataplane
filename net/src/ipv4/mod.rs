@@ -7,10 +7,10 @@ use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::{Icmp4, TruncatedIcmp4};
 use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
+use crate::ip::dscp::Dscp;
+use crate::ip::ecn::Ecn;
 use crate::ip_auth::IpAuth;
 pub use crate::ipv4::addr::UnicastIpv4Addr;
-use crate::ipv4::dscp::Dscp;
-use crate::ipv4::ecn::Ecn;
 use crate::ipv4::frag_offset::FragOffset;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader, Reader,
@@ -23,9 +23,6 @@ use std::num::NonZero;
 use tracing::trace;
 
 pub mod addr;
-pub mod dscp;
-
-pub mod ecn;
 
 mod checksum;
 pub mod frag_offset;
