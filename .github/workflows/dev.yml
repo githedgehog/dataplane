@@ -280,15 +280,12 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: "build tests"
-        run: |
-          nix build \
-            --file default.nix \
-            --argstr profile "${{matrix.build.profile}}" \
-            --argstr sanitize "${{matrix.build.sanitize}}" \
-            --argstr instrumentation "${{matrix.build.instrument}}" \
-            --out-link tests.all \
-            --print-build-logs \
-            tests.all
+        uses: ./.github/workflows/sub/nix.yml
+        with:
+            nix-target: tests.all
+            profile: ${{matrix.build.profile}}
+            sanitize: ${{matrix.build.sanitize}}
+            instrument: ${{matrix.build.instrument}}
 
       - name: "run tests"
         run: |
