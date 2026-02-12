@@ -289,7 +289,7 @@ jobs:
     name: "Summary"
     runs-on: "ubuntu-latest"
     needs:
-      - check
+      - build
       - vlab
     # Run always, except when the "check" job was skipped.
     #
