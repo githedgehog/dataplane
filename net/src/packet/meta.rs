@@ -4,8 +4,8 @@
 #![allow(missing_docs)] // TODO
 
 use crate::interface::InterfaceIndex;
-use crate::ipv4::dscp::Dscp;
-use crate::ipv4::ecn::Ecn;
+use crate::ip::dscp::Dscp;
+use crate::ip::ecn::Ecn;
 use crate::vxlan::Vni;
 
 use bitflags::bitflags;

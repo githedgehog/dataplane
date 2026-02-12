@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! ECN type and contract
+//! IP ECN type and contract
+//!
+//! ECN is a 2-bit value carried alongside DSCP (IPv4 DS field / IPv6 Traffic Class).
 
+// IpEcn is a wrapper over ipv4/ipv6 ECN values, no need to have explicitly separate types for each version of IP.
+// This also allows us to implement `TypeGenerator` for `Ecn` without violating orphan rules,
+// which is useful for testing and fuzzing.
 use etherparse::IpEcn;
 
 /// Explicit congestion notification value
@@ -30,6 +35,7 @@ impl Ecn {
             IpEcn::try_new(raw).map_err(|e| InvalidEcnError::TooLarge(e.actual))?
         ))
     }
+
     /// Return the underlying 2-bit ECN value as a `u8`.
     ///
     /// This returns only the ECN portion (0..=3). It does **not** include DSCP bits.
@@ -53,7 +59,7 @@ impl From<Ecn> for IpEcn {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use crate::ipv4::ecn::Ecn;
+    use super::Ecn;
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for Ecn {

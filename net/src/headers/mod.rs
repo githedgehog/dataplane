@@ -1543,8 +1543,8 @@ mod test {
         use crate::icmp4::Icmp4;
         use crate::icmp6::Icmp6;
         use crate::ip::NextHeader;
-        use crate::ipv4::dscp::Dscp;
-        use crate::ipv4::ecn::Ecn;
+        use crate::ip::dscp::Dscp;
+        use crate::ip::ecn::Ecn;
         use crate::ipv4::{Ipv4, UnicastIpv4Addr};
         use crate::ipv6::{Ipv6, UnicastIpv6Addr};
         use crate::parse::DeParse;

@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Ipv4 [DSCP] (Differentiated Services Code Point)
+//! IP [DSCP] (Differentiated Services Code Point)
 //!
-//! [DSCP]: https://en.wikipedia.org/wiki/Type_of_service
+//! DSCP is a 6-bit value carried in the IPv4 DS field (formerly TOS) and in the IPv6 Traffic Class.
+//!
+//! [DSCP]: https://en.wikipedia.org/wiki/Differentiated_services
 
+// IpDscp is a wrapper over ipv4/ipv6 DSCP values, no need to have explicitly separate
+// types for each version of IP.
 use etherparse::IpDscp;
 
-/// [`Ipv4`] [DSCP] (Differentiated Services Code Point)
-///
-/// [`Ipv4`]: crate::ipv4::Ipv4
-/// [DSCP]: https://en.wikipedia.org/wiki/Type_of_service
+/// IP DSCP (Differentiated Services Code Point)
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Dscp(pub(crate) IpDscp);
 
@@ -40,6 +41,7 @@ impl Dscp {
             IpDscp::try_new(raw).map_err(|e| InvalidDscpError::TooBig(e.actual))?,
         ))
     }
+
     /// Return the underlying 6-bit DSCP value as a `u8`.
     ///
     /// This returns only the DSCP portion (0..=63). It does **not** include ECN bits.
@@ -63,7 +65,7 @@ impl From<Dscp> for IpDscp {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use crate::ipv4::dscp::Dscp;
+    use super::Dscp;
     use bolero::{Driver, TypeGenerator};
     use etherparse::IpDscp;
 
