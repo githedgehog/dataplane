@@ -402,6 +402,13 @@ mod tests {
     use std::collections::BTreeSet;
     use std::ops::Bound;
 
+    fn vni(id: u32) -> Vni {
+        Vni::new_checked(id).unwrap()
+    }
+    fn vpcd(id: u32) -> VpcDiscriminant {
+        VpcDiscriminant::VNI(vni(id))
+    }
+
     #[test]
     fn test_split_overlapping_basic() {
         // Test splitting 10.0.0.0/16 with mask 10.0.1.0/24
@@ -636,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_get_split_prefixes_for_manifest_no_overlap() {
-        let vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+        let vpcd = vpcd(100);
 
         let manifest = VpcManifest {
             name: "manifest".to_string(),
@@ -662,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_get_split_prefixes_for_manifest_with_overlap() {
-        let vpcd1 = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+        let vpcd = vpcd(100);
 
         let manifest = VpcManifest {
             name: "manifest".to_string(),
@@ -677,7 +684,7 @@ mod tests {
         ));
 
         let mut result =
-            get_split_prefixes_for_manifest(&manifest, &vpcd1, |expose| &expose.ips, overlaps);
+            get_split_prefixes_for_manifest(&manifest, &vpcd, |expose| &expose.ips, overlaps);
         result.sort_by_key(|(prefix, _, _)| *prefix);
 
         // Should split into multiple prefixes
@@ -693,7 +700,7 @@ mod tests {
         );
         assert_eq!(
             result[1].1,
-            VpcdLookupResult::Single(RemoteData::new(vpcd1, None, None))
+            VpcdLookupResult::Single(RemoteData::new(vpcd, None, None))
         );
     }
 
@@ -701,8 +708,8 @@ mod tests {
     fn test_add_peering_no_overlap() {
         let mut vpc_table = VpcTable::new();
 
-        let vni1 = Vni::new_checked(100).unwrap();
-        let vni2 = Vni::new_checked(200).unwrap();
+        let vni1 = vni(100);
+        let vni2 = vni(200);
 
         let mut vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
         let vpc2 = Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap();
@@ -734,7 +741,7 @@ mod tests {
             .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
             .unwrap();
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap();
 
@@ -742,7 +749,7 @@ mod tests {
         assert_eq!(
             dst_data,
             Some(VpcdLookupResult::Single(RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
+                vni2.into(),
                 None,
                 None
             )))
@@ -753,9 +760,9 @@ mod tests {
     fn test_process_peering_with_overlap() {
         let mut vpc_table = VpcTable::new();
 
-        let vni1 = Vni::new_checked(100).unwrap();
-        let vni2 = Vni::new_checked(200).unwrap();
-        let vni3 = Vni::new_checked(300).unwrap();
+        let vni1 = vni(100);
+        let vni2 = vni(200);
+        let vni3 = vni(300);
 
         let mut vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
         let vpc2 = Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap();
@@ -804,14 +811,14 @@ mod tests {
             .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
             .unwrap();
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap(); // In overlapping segment
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
         assert_eq!(dst_vpcd, Some(VpcdLookupResult::MultipleMatches));
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.129".parse().unwrap(); // Not in overlapping segment
 
@@ -819,7 +826,7 @@ mod tests {
         assert_eq!(
             dst_vpcd,
             Some(VpcdLookupResult::Single(RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
+                vni2.into(),
                 None,
                 None
             )))
