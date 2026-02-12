@@ -318,7 +318,7 @@ jobs:
     runs-on: lab
     if: startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push'
     needs:
-      - check
+      - build
       - vlab
 
     permissions:
