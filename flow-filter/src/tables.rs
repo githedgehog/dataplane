@@ -359,8 +359,25 @@ impl PortRangeMap<DstConnectionData> {
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        self.get_mut(src_port_range)?
-            .update(dst_data_result, dst_prefix, dst_port_range)
+        match self {
+            PortRangeMap::AllPorts(data) => {
+                data.update(dst_data_result, dst_prefix, dst_port_range)
+            }
+            PortRangeMap::Ranges(map) => {
+                let port_range = src_port_range.ok_or(ConfigError::InternalFailure(
+                    "Trying to update (local) port ranges map with overlapping ranges".to_string(),
+                ))?;
+                if let Some(data) = map.get_mut(&port_range) {
+                    data.update(dst_data_result, dst_prefix, dst_port_range)
+                } else {
+                    map.insert(
+                        port_range,
+                        DstConnectionData::new(dst_data_result, dst_prefix, dst_port_range),
+                    );
+                    Ok(())
+                }
+            }
+        }
     }
 
     fn update_for_default(
@@ -368,23 +385,17 @@ impl PortRangeMap<DstConnectionData> {
         dst_data_result: VpcdLookupResult,
         src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        self.get_mut(src_port_range)?
-            .update_for_default(dst_data_result)
-    }
-
-    fn get_mut(
-        &mut self,
-        port_range: Option<PortRange>,
-    ) -> Result<&mut DstConnectionData, ConfigError> {
         match self {
-            PortRangeMap::AllPorts(data) => Ok(data),
+            PortRangeMap::AllPorts(data) => data.update_for_default(dst_data_result),
             PortRangeMap::Ranges(map) => {
-                let port_range = port_range.ok_or(ConfigError::InternalFailure(
+                let port_range = src_port_range.ok_or(ConfigError::InternalFailure(
                     "Trying to update (local) port ranges map with overlapping ranges".to_string(),
                 ))?;
-                map.get_mut(&port_range).ok_or(ConfigError::InternalFailure(
-                    "Cannot find entry to update in port ranges map".to_string(),
-                ))
+                map.get_mut(&port_range)
+                    .ok_or(ConfigError::InternalFailure(
+                        "Cannot find entry to update in port ranges map".to_string(),
+                    ))
+                    .and_then(|data| data.update_for_default(dst_data_result))
             }
         }
     }
@@ -491,31 +502,42 @@ impl DstConnectionData {
             (Some(PortRangeMap::Ranges(existing_range_map)), Some(range)) => {
                 let existing_result = existing_range_map.insert(range, result.clone());
 
-                // The only case we had an existing value is when we have multiple matches. Let's do
-                // a sanity check.
-                if existing_result.is_some_and(|r| {
-                    !(matches!(r, VpcdLookupResult::MultipleMatches(_))
-                        && matches!(result, VpcdLookupResult::MultipleMatches(_)))
-                }) {
-                    return Err(ConfigError::InternalFailure(
-                        "Trying to insert conflicting values for remote port range information"
-                            .to_string(),
-                    ));
+                if let Some(actual_existing_result) = existing_result {
+                    // The only case we had an existing value is when we have multiple matches.
+                    // Let's do a sanity check.
+                    if let VpcdLookupResult::MultipleMatches(existing_data_set) =
+                        actual_existing_result
+                        && let VpcdLookupResult::MultipleMatches(_) = result
+                    {
+                        // Fetch the data set we just inserted and merge the previous data set in
+                        let Some(VpcdLookupResult::MultipleMatches(data_set)) =
+                            existing_range_map.get_mut(&range)
+                        else {
+                            unreachable!() // We just added the entry
+                        };
+                        data_set.extend(existing_data_set);
+                    } else {
+                        return Err(ConfigError::InternalFailure(
+                            "Trying to insert conflicting values for remote port range information"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
-            (Some(PortRangeMap::AllPorts(existing_data)), port_range)
+            (Some(PortRangeMap::AllPorts(existing_result)), port_range)
                 if port_range.is_none_or(|r| r.is_max_range()) =>
             {
                 // We should only hit this case if we already inserted an entry with the same
                 // destination VPC.
-                if !(matches!(*existing_data, VpcdLookupResult::MultipleMatches(_))
-                    && matches!(result, VpcdLookupResult::MultipleMatches(_)))
+                if let VpcdLookupResult::MultipleMatches(existing_data_set) = existing_result
+                    && let VpcdLookupResult::MultipleMatches(new_data_set) = result
                 {
+                    existing_data_set.extend(new_data_set);
+                } else {
                     return Err(ConfigError::InternalFailure(
                         "Trying to insert conflicting values for remote information".to_string(),
                     ));
                 }
-                // We already know we have multiple matches, no need to update
             }
             (Some(_), _) => {
                 // One of the entries, the existing or the new, covers all ports, so we can't add a
