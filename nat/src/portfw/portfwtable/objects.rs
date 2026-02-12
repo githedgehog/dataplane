@@ -43,7 +43,7 @@ impl PortFwEntry {
         init_timeout: Option<Duration>,
         estab_timeout: Option<Duration>,
     ) -> Result<Self, PortFwTableError> {
-        Ok(Self {
+        let entry = Self {
             key,
             dst_vpcd,
             dst_ip: UnicastIpAddr::try_from(dst_ip).map_err(PortFwTableError::InvalidAddress)?,
@@ -51,7 +51,33 @@ impl PortFwEntry {
                 .map_err(|_| PortFwTableError::InvalidPort(dst_port))?,
             init_timeout: init_timeout.unwrap_or(PortFwEntry::INITIAL_TIMEOUT),
             estab_timeout: estab_timeout.unwrap_or(PortFwEntry::ESTABLISHED_TIMEOUT),
-        })
+        };
+        entry.is_valid()?;
+        Ok(entry)
+    }
+
+    fn is_valid(&self) -> Result<(), PortFwTableError> {
+        let key = &self.key;
+
+        if key.dst_ip.inner().is_unspecified() {
+            return Err(PortFwTableError::InvalidAddress(key.dst_ip.inner()));
+        }
+        if self.dst_ip.inner().is_unspecified() {
+            return Err(PortFwTableError::InvalidAddress(self.dst_ip.inner()));
+        }
+        if key.dst_ip.is_ipv4() && !self.dst_ip.is_ipv4()
+            || key.dst_ip.is_ipv6() && !self.dst_ip.is_ipv6()
+        {
+            return Err(PortFwTableError::Unsupported(
+                "Can't do port-forwarding between distinct IP versions".to_string(),
+            ));
+        }
+        if key.src_vpcd == self.dst_vpcd {
+            return Err(PortFwTableError::Unsupported(
+                "Can't do port-forwarding within the same VPC".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -137,73 +163,42 @@ pub struct PortFwTable(HashMap<PortFwKey, PortFwGroup, RandomState>);
 impl PortFwTable {
     #[must_use]
     pub fn new() -> Self {
-        Self(HashMap::with_hasher(RandomState::with_seed(0)))
+        Self::default()
     }
 
-    fn check_rule(key: PortFwKey, entry: PortFwEntry) -> Result<(), PortFwTableError> {
-        if key.dst_ip.inner().is_unspecified() {
-            return Err(PortFwTableError::InvalidAddress(key.dst_ip.inner()));
-        }
-        if entry.dst_ip.inner().is_unspecified() {
-            return Err(PortFwTableError::InvalidAddress(entry.dst_ip.inner()));
-        }
-        if key.dst_ip.is_ipv4() && !entry.dst_ip.is_ipv4()
-            || key.dst_ip.is_ipv6() && !entry.dst_ip.is_ipv6()
-        {
-            return Err(PortFwTableError::Unsupported(
-                "Can't do port-forwarding between distinct IP versions".to_string(),
-            ));
-        }
-
-        // N.B: we allow
-        //   1) forwarding to distinct ip and port (NAT+PAT)
-        //   2) forwarding to the same address (PAT)
-        //   3) forwarding to the same port (NAT)
-        //   4) forwarding to the same port and address (no translation at all)
-        //      FIXME: decide if we complain for 4). If we don't packets
-        //      may be admitted. If we complain, it's somebody else's responsibility.
-        //
-        // Also, we don't allow port forwarding within the same vpc atm. This may be
-        // a legitimate case in some circumstances. However, we'd need to define a
-        // peering between the same VPC, which we can't currently do.
-
-        if key.src_vpcd == entry.dst_vpcd {
-            return Err(PortFwTableError::Unsupported(
-                "Can't do port-forwarding within the same VPC".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn add_entry(
-        &mut self,
-        key: PortFwKey,
-        entry: PortFwEntry,
-    ) -> Result<(), PortFwTableError> {
-        Self::check_rule(key, entry)?;
-
+    pub fn add_entry(&mut self, entry: PortFwEntry) -> Result<(), PortFwTableError> {
+        let key = &entry.key;
         // At the moment we don't allow more than one entry per group.
         // We allow adding the same rule multiple times (idempotence).
-        if let Some(group) = self.0.get(&key) {
+        if let Some(group) = self.0.get(key) {
             if let Some(exist) = group.0.first()
                 && exist.as_ref() == &entry
             {
                 return Ok(());
             }
-            return Err(PortFwTableError::DuplicateKey(key));
+            return Err(PortFwTableError::DuplicateKey(*key));
         }
         debug!("Adding port-forwarding rule: {entry}");
-        if let Some(group) = self.0.get_mut(&key) {
+        if let Some(group) = self.0.get_mut(key) {
             group.0.push(Arc::new(entry));
         } else {
-            self.0.insert(key, PortFwGroup::new_with_entry(entry));
+            self.0.insert(*key, PortFwGroup::new_with_entry(entry));
         }
         Ok(())
     }
 
-    pub fn remove_entry_for_key(&mut self, key: &PortFwKey) {
-        if let Some(entry) = self.0.remove(key) {
-            debug!("Removed port-forwarding rule: {entry}");
+    #[allow(unused)]
+    pub(crate) fn remove_entry_by_key(&mut self, key: &PortFwKey) {
+        if let Some(group) = self.0.remove(key) {
+            debug!("Removed port-forwarding rule: {group}");
+        }
+    }
+
+    pub(crate) fn remove_entry(&mut self, entry: &PortFwEntry) {
+        if let Some(group) = self.0.get_mut(&entry.key)
+            && let Some(index) = group.0.iter().position(|e| e.as_ref() == entry)
+        {
+            group.0.swap_remove(index);
         }
     }
 
@@ -231,6 +226,12 @@ impl PortFwTable {
             None => false,
             Some(e) => e.as_ref() == entry,
         }
+    }
+}
+
+impl Default for PortFwTable {
+    fn default() -> Self {
+        Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
 }
 
@@ -369,7 +370,7 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(key, entry).unwrap();
+        fwtable.add_entry(entry).unwrap();
         assert!(fwtable.contains_rule(&entry));
 
         let key = PortFwKey {
@@ -388,7 +389,7 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(key, entry).unwrap();
+        fwtable.add_entry(entry).unwrap();
         assert!(fwtable.contains_rule(&entry));
 
         let key = PortFwKey {
@@ -407,7 +408,7 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(key, entry).unwrap();
+        fwtable.add_entry(entry).unwrap();
         assert!(fwtable.contains_rule(&entry));
 
         let key = PortFwKey {
@@ -425,7 +426,7 @@ mod test {
             None,
         )
         .unwrap();
-        fwtable.add_entry(key, entry).unwrap();
+        fwtable.add_entry(entry).unwrap();
 
         Arc::new(fwtable)
     }
@@ -472,12 +473,12 @@ mod test {
         )
         .unwrap();
 
-        fwtable.add_entry(key, entry1).unwrap();
+        fwtable.add_entry(entry1).unwrap();
         assert_eq!(fwtable.0.len(), 1);
         assert_eq!(fwtable.get_group(&key).unwrap().0.len(), 1);
 
         // idempotence -- nothing gets added
-        fwtable.add_entry(key, entry1).unwrap();
+        fwtable.add_entry(entry1).unwrap();
         assert_eq!(fwtable.0.len(), 1);
         assert_eq!(fwtable.get_group(&key).unwrap().0.len(), 1);
 
@@ -491,7 +492,7 @@ mod test {
         )
         .unwrap();
 
-        let r = fwtable.add_entry(key, entry2);
+        let r = fwtable.add_entry(entry2);
         assert!(r.is_err_and(|e| e == PortFwTableError::DuplicateKey(key)));
     }
 
@@ -514,7 +515,7 @@ mod test {
         )
         .unwrap();
 
-        let r = fwtable.add_entry(key, entry);
+        let r = fwtable.add_entry(entry);
         assert!(r.is_err_and(|e| matches!(e, PortFwTableError::Unsupported(_))));
     }
 
@@ -537,7 +538,7 @@ mod test {
         )
         .unwrap();
 
-        let r = fwtable.add_entry(key, entry);
+        let r = fwtable.add_entry(entry);
         assert!(r.is_err_and(|e| matches!(e, PortFwTableError::Unsupported(_))));
     }
 
@@ -575,7 +576,7 @@ mod test {
         assert_eq!(weak.upgrade().unwrap().as_ref(), &entry);
 
         // remove
-        fwtable.remove_entry_for_key(&key);
+        fwtable.remove_entry_by_key(&key);
         assert!(!fwtable.contains_rule(&entry));
         assert!(fwtable.lookup_rule(&key).is_none());
         assert!(weak.upgrade().is_none());
