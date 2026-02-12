@@ -448,8 +448,11 @@ impl RemoteData {
             || self.dst_nat_req == Some(NatRequirement::Stateless)
     }
     pub(crate) fn requires_port_forwarding(&self) -> bool {
-        // This is temporary: do we want to reuse dst_nat_req
-        // or have a separate field?
+        // The only case when we need port forwarding for the source is when we reply to an
+        // established port forwarding session. In that case, we set the NAT requirements from the
+        // flow table entry associated to the flow, and we do not call this function. So we should
+        // never have self.src_nat_req set as PortForwarding in this function.
+        debug_assert!(self.src_nat_req != Some(NatRequirement::PortForwarding));
         self.dst_nat_req == Some(NatRequirement::PortForwarding)
     }
 }
