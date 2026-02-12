@@ -128,6 +128,7 @@ let
       npins
       pkg-config
       rust-toolchain
+      skopeo
     ]);
   };
   devenv = pkgs.mkShell {
