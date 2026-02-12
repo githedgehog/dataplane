@@ -448,9 +448,8 @@ impl RemoteData {
             || self.dst_nat_req == Some(NatRequirement::Stateless)
     }
     pub(crate) fn requires_port_forwarding(&self) -> bool {
-        // This is temporary: do we want to reuse dst_nat_req
-        // or have a separate field?
-        self.dst_nat_req == Some(NatRequirement::PortForwarding)
+        self.src_nat_req == Some(NatRequirement::PortForwarding)
+            || self.dst_nat_req == Some(NatRequirement::PortForwarding)
     }
 }
 
