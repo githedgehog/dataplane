@@ -197,6 +197,9 @@ jobs:
            if [ "${{matrix.nix-target}}" = "test" ]; then
              nix-shell --run "cargo nextest run --archive-file "${{matrix.nix-target}}"/*.tar.zst --workspace-remap $(pwd)"
            fi
+           if [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
+             nix-shell --run "sko"
+           fi
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}

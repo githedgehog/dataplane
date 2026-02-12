@@ -158,7 +158,7 @@ let
   };
   target = pkgs.stdenv'.targetPlatform.rust.rustcTarget;
   is-cross-compile = dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
-  cc = if is-cross-compile then "${target}-clang" else "clang";
+  cxx = if is-cross-compile then "${target}-clang++" else "clang++";
   strip = if is-cross-compile then "${target}-strip" else "strip";
   objcopy = if is-cross-compile then "${target}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
@@ -234,8 +234,9 @@ let
           RUSTFLAGS = builtins.concatStringsSep " " (
             profile'.RUSTFLAGS
             ++ [
-              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}"
+              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
               "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
+              "-Clink-arg=-Wl,--as-needed,--gc-sections"
               "-Clink-arg=-L${sysroot}/lib"
               # NOTE: this is basically a trick to make our source code available to debuggers.
               # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
@@ -250,15 +251,6 @@ let
               # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
               "--remap-path-prefix==${src}"
             ]
-            ++ (
-              if ((builtins.elem "thread" sanitizers) || (builtins.elem "safe-stack" sanitizers)) then
-                [
-                  # "-Zexternal-clangrt"
-                  # "-Clink-arg=--rtlib=compiler-rt"
-                ]
-              else
-                [ ]
-            )
           );
         };
       }
@@ -471,7 +463,7 @@ let
           \
           . \
           ${pkgs.pkgsHostHost.libc.out} \
-          ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.glibc.libgcc or "" else ""} \
+          ${pkgs.pkgsHostHost.glibc.libgcc} \
       '';
 
   };

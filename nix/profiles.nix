@@ -27,6 +27,7 @@ let
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
+    "-Clink-arg=-Wl,--as-needed,--gc-sections" # FRR builds don't like this, but rust does fine
   ]
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
@@ -101,7 +102,6 @@ let
   sanitize.address.NIX_CXXFLAGS_COMPILE = sanitize.address.NIX_CFLAGS_COMPILE;
   sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
     "-static-libasan"
-    "-Wl,--thinlto-jobs=1" # address sanitizer spikes LTO memory usage so we limit parlallel jobs
   ];
   sanitize.address.RUSTFLAGS = [
     "-Zsanitizer=address"
@@ -204,9 +204,7 @@ let
     "-fcoverage-mapping"
   ];
   instrument.coverage.NIX_CXXFLAGS_COMPILE = instrument.coverage.NIX_CFLAGS_COMPILE;
-  instrument.coverage.NIX_CFLAGS_LINK = instrument.coverage.NIX_CFLAGS_COMPILE ++ [
-    "-Wl,--thinlto-jobs=1" # coverage spikes LTO memory usage so we limit parlallel jobs
-  ];
+  instrument.coverage.NIX_CFLAGS_LINK = instrument.coverage.NIX_CFLAGS_COMPILE;
   instrument.coverage.RUSTFLAGS = [
     "-Cinstrument-coverage"
   ]
