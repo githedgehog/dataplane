@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Port forwarding table and lookups
+//! Port forwarding objects
 
 #![allow(clippy::struct_field_names)]
 #![allow(clippy::new_without_default)]
@@ -340,8 +340,7 @@ impl Display for PortFwTableRw {
 
 #[cfg(test)]
 mod test {
-    use super::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};
-    use crate::portfw::portfwtable::PortFwTableError;
+    use super::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableError, PortFwTableRw};
     use net::ip::NextHeader;
     use net::ip::UnicastIpAddr;
     use net::packet::VpcDiscriminant;
