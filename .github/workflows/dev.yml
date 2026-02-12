@@ -122,7 +122,7 @@ jobs:
       fail-fast: false
       matrix:
         nix-target:
-          - test
+          - tests.all
           - dataplane-tar
         build:
           - name: "debug"
