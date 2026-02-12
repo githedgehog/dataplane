@@ -11,4 +11,4 @@ mod test;
 
 pub use flow_state::PortFwState;
 pub use nf::PortForwarder;
-pub use portfwtable::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};
+pub use portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};

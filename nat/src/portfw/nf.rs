@@ -3,7 +3,7 @@
 
 //! Port forwarding stage
 
-use crate::portfw::portfwtable::PortFwTableRw;
+use crate::portfw::PortFwTableRw;
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwTable};
 
 use flow_entry::flow_table::FlowTable;
