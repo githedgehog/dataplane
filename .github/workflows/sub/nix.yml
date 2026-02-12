@@ -1,0 +1,29 @@
+name: sub/nix.yml
+on:
+    workflow-call:
+        inputs:
+            nix-target:
+                type: string
+                required: true
+            profile:
+                type: string
+                required: true
+            sanitize:
+                type: string
+                required: true
+            instrument:
+                type: string
+                required: true
+
+jobs:
+    build:
+        runs-on: lab
+        run: |
+            nix build \
+              --file default.nix \
+              --argstr profile "${{inputs.profile}}" \
+              --argstr sanitize "${{inputs.sanitize}}" \
+              --argstr instrumentation "${{inputs.instrument}}" \
+              --out-link ${{inputs.nix-target}} \
+              --print-build-logs \
+              ${{inputs.nix-target}}
