@@ -13,13 +13,14 @@
 //!   IP, port corresponding to existing, valid connections between the prefixes in exposed lists of
 //!   peerings, get dropped.
 
-use crate::tables::{RemoteData, VpcdLookupResult};
+use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use flow_info::FlowStatus;
 use flow_info::flow_info_item::ExtractRef;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::num::NonZero;
 use tracing::{debug, error};
@@ -54,18 +55,17 @@ impl FlowFilter {
     fn check_packet_flow_info<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-    ) -> Option<VpcDiscriminant> {
+    ) -> Result<Option<VpcDiscriminant>, DoneReason> {
         let nfi = &self.name;
 
         let Some(flow_info) = &packet.meta().flow_info else {
             debug!("{nfi}: Packet does not contain any flow-info");
-            return None;
+            return Ok(None);
         };
 
         let Ok(locked_info) = flow_info.locked.read() else {
-            debug!("{nfi}: Warning! failed to lock flow-info for packet");
-            packet.done(DoneReason::InternalFailure);
-            return None;
+            debug!("{nfi}: Warning! failed to lock flow-info for packet, dropping packet");
+            return Err(DoneReason::InternalFailure);
         };
 
         let vpcd = locked_info
@@ -73,19 +73,21 @@ impl FlowFilter {
             .as_ref()
             .and_then(|d| d.extract_ref::<VpcDiscriminant>());
 
-        if let Some(dst_vpcd) = vpcd {
-            let status = flow_info.status();
-            if status == FlowStatus::Active {
-                debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
-                Some(*dst_vpcd)
-            } else {
-                debug!("{nfi}: Found flow-info with dst_vpcd {dst_vpcd} but status {status}");
-                None
-            }
-        } else {
-            debug!("{nfi}: No Vpc discriminant found. Will drop packet");
-            None
+        let Some(dst_vpcd) = vpcd else {
+            debug!("{nfi}: No VPC discriminant found, dropping packet");
+            return Err(DoneReason::Unroutable);
+        };
+
+        let status = flow_info.status();
+        if status != FlowStatus::Active {
+            debug!(
+                "{nfi}: Found flow-info with dst_vpcd {dst_vpcd} but status {status}, dropping packet"
+            );
+            return Err(DoneReason::Unroutable);
         }
+
+        debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
+        Ok(Some(*dst_vpcd))
     }
 
     /// Process a packet.
@@ -130,20 +132,39 @@ impl FlowFilter {
                 set_nat_requirements(packet, &dst_data);
                 dst_data.vpcd
             }
-            VpcdLookupResult::MultipleMatches(_) => {
+            VpcdLookupResult::MultipleMatches(data_set) => {
                 debug!(
                     "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
                 );
 
-                if let Some(dst_vpcd) = self.check_packet_flow_info(packet) {
-                    packet.meta_mut().set_stateful_nat(true);
-                    dst_vpcd
-                } else {
-                    debug!(
-                        "{nfi}: No flow table entry found for flow {tuple}, unable to decide what destination VPC to use, dropping packet"
-                    );
-                    packet.done(DoneReason::Filtered);
-                    return;
+                match self.check_packet_flow_info(packet) {
+                    Ok(Some(dst_vpcd)) => {
+                        if set_nat_requirements_from_flow_info(packet).is_err() {
+                            debug!(
+                                "{nfi}: Failed to set NAT requirements from flow info, dropping packet"
+                            );
+                            packet.done(DoneReason::Filtered);
+                            return;
+                        }
+                        dst_vpcd
+                    }
+                    Ok(None) => {
+                        debug!(
+                            "{nfi}: No flow table entry found for flow {tuple}, trying to figure out destination VPC anyway"
+                        );
+                        if let Some(dst_vpcd) =
+                            deal_with_multiple_matches(packet, &data_set, nfi, &tuple)
+                        {
+                            dst_vpcd
+                        } else {
+                            packet.done(DoneReason::Filtered);
+                            return;
+                        }
+                    }
+                    Err(reason) => {
+                        packet.done(reason);
+                        return;
+                    }
                 }
             }
         };
@@ -151,6 +172,76 @@ impl FlowFilter {
         debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
     }
+}
+
+fn deal_with_multiple_matches<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    data_set: &HashSet<RemoteData>,
+    nfi: &str,
+    tuple: &FlowTuple,
+) -> Option<VpcDiscriminant> {
+    // Do all matches have the same destination VPC?
+    let Some(first_vpcd) = data_set.iter().next().map(|d| d.vpcd) else {
+        debug!("{nfi}: Missing destination VPC information for flow {tuple}, dropping packet");
+        return None;
+    };
+    if data_set.iter().any(|d| d.vpcd != first_vpcd) {
+        debug!(
+            "{nfi}: Unable to decide what destination VPC to use for flow {tuple}, dropping packet"
+        );
+        return None;
+    };
+
+    // Can we do something sensible from the NAT requirements? At the moment we
+    // allow prefix overlap only when port forwarding is used in conjunction
+    // with stateful NAT, so if we reach this case this is what we should have.
+
+    // Note: if data_set.len() == 1 we can trivially figure out the destination
+    // VPC and NAT requirement, but this should never happen because it would
+    // mean we have overlapping prefixes with identical NAT requirements on the
+    // same end of a peering, which is not generally supported (except in tests,
+    // where we occasionally use invalid peerings).
+    #[cfg(test)]
+    if data_set.len() == 1 {
+        let dst_data = data_set.iter().next().unwrap_or_else(|| unreachable!());
+        set_nat_requirements(packet, dst_data);
+        return Some(first_vpcd);
+    }
+
+    if data_set.len() > 2 {
+        debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
+        return None;
+    }
+
+    // If we have stateful NAT and port masquerading on the source side, given
+    // that we haven't found a valid NAT entry, stateful NAT should take
+    // precedence so the packet can come out..
+    if let Some(dst_data) = data_set
+        .iter()
+        .find(|d| d.src_nat_req == Some(NatRequirement::Stateful))
+        && data_set
+            .iter()
+            .any(|d| d.src_nat_req == Some(NatRequirement::PortForwarding))
+    {
+        set_nat_requirements(packet, dst_data);
+        return Some(first_vpcd);
+    }
+    // If we have stateful NAT and port masquerading on the destination side,
+    // given that we haven't found a valid NAT entry, port forwarding should
+    // take precedence.
+    if let Some(dst_data) = data_set
+        .iter()
+        .find(|d| d.dst_nat_req == Some(NatRequirement::PortForwarding))
+        && data_set
+            .iter()
+            .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
+    {
+        set_nat_requirements(packet, dst_data);
+        return Some(first_vpcd);
+    }
+
+    debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
+    None
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
@@ -231,6 +322,34 @@ fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &R
         packet.meta_mut().set_port_forwarding(true);
     }
     // FIXME: we should forbid/(warn about) combos that we don't support
+}
+
+fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+) -> Result<(), ()> {
+    let locked_info = packet
+        .meta()
+        .flow_info
+        .as_ref()
+        .ok_or(())?
+        .locked
+        .read()
+        .map_err(|_| ())?;
+    let needs_stateful_nat = locked_info.nat_state.is_some();
+    let needs_port_forwarding = locked_info.port_fw_state.is_some();
+    drop(locked_info);
+
+    match (needs_stateful_nat, needs_port_forwarding) {
+        (true, false) => {
+            packet.meta_mut().set_stateful_nat(true);
+            Ok(())
+        }
+        (false, true) => {
+            packet.meta_mut().set_port_forwarding(true);
+            Ok(())
+        }
+        _ => Err(()),
+    }
 }
 
 #[cfg(test)]
