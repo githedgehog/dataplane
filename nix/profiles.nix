@@ -101,7 +101,7 @@ let
   sanitize.address.NIX_CXXFLAGS_COMPILE = sanitize.address.NIX_CFLAGS_COMPILE;
   sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
     "-static-libasan"
-    "-Wl,--thinlto-jobs=1" # coverage spikes LTO memory usage so we limit parlallel jobs
+    "-Wl,--thinlto-jobs=1" # address sanitizer spikes LTO memory usage so we limit parlallel jobs
   ];
   sanitize.address.RUSTFLAGS = [
     "-Zsanitizer=address"
