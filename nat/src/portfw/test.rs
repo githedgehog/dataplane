@@ -41,7 +41,7 @@ mod nf_test {
             None,
         )
         .unwrap();
-        fwtable.add_entry(key, entry).unwrap();
+        fwtable.add_entry(entry).unwrap();
 
         let key = PortFwKey::new(
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
@@ -58,7 +58,7 @@ mod nf_test {
             None,
         )
         .unwrap();
-        fwtable.add_entry(key, entry).unwrap();
+        fwtable.add_entry(entry).unwrap();
 
         Arc::new(fwtable)
     }
