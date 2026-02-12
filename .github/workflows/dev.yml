@@ -105,6 +105,7 @@ jobs:
           echo "ref=${commit_sha}" >> "$GITHUB_OUTPUT"
 
   build:
+    name: "${{matrix.nix-target}}/${{matrix.name}}"
     runs-on: lab
     needs:
       - version
