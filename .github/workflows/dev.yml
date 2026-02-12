@@ -199,7 +199,7 @@ jobs:
            fi
            if [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
              image="$(docker import dataplane-tar)"
-             nix-shell --run 'skopeo copy --src-daemon-host=unix:///run/docker/docker.sock docker-daemon:"${image}" oci-archive:image.tar'
+             nix-shell --run "skopeo copy --src-daemon-host=unix:///run/docker/docker.sock docker-daemon:${image} oci-archive:image.tar"
            fi
 
       - name: "Setup tmate session for debug"
