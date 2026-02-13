@@ -7,14 +7,11 @@
 #![allow(clippy::new_without_default)]
 
 use ahash::RandomState;
-use arc_swap::ArcSwapOption;
-use arc_swap::Guard;
 use net::ip::NextHeader;
 use net::ip::UnicastIpAddr;
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::fmt::Display;
 use std::net::IpAddr;
 use std::num::NonZero;
 use std::sync::Arc;
@@ -348,46 +345,9 @@ impl Default for PortFwTable {
     }
 }
 
-/// An object to read from or write to a `PortFwTable`.
-/// The use of two types -one for reads and one for both- is not needed.
-#[derive(Clone)]
-pub struct PortFwTableRw(Arc<ArcSwapOption<PortFwTable>>);
-
-impl PortFwTableRw {
-    #[must_use]
-    pub fn new() -> Self {
-        PortFwTableRw(Arc::new(ArcSwapOption::empty()))
-    }
-    /// Set a `PortFwTable`
-    pub fn update(&self, fwtable: Arc<PortFwTable>) {
-        self.0.store(Some(fwtable));
-    }
-    #[must_use]
-    /// Get a temporary access to the inner `PortFwTable`
-    pub fn load(&self) -> Guard<Option<Arc<PortFwTable>>> {
-        self.0.load()
-    }
-    #[must_use]
-    /// Tell if the inner `PortFwTable` has been configured
-    pub fn is_configured(&self) -> bool {
-        self.0.load().is_some()
-    }
-}
-
-impl Display for PortFwTableRw {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let g = self.load();
-        if let Some(table) = g.as_ref() {
-            table.fmt(f)
-        } else {
-            writeln!(f, " (not configured) ")
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use super::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableError, PortFwTableRw};
+    use super::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableError};
     use net::ip::NextHeader;
     use net::ip::UnicastIpAddr;
     use net::packet::VpcDiscriminant;
@@ -479,29 +439,6 @@ mod test {
         fwtable.add_entry(Arc::from(entry)).unwrap();
 
         Arc::new(fwtable)
-    }
-
-    #[test]
-    fn test_port_forwarding_table_build() {
-        let fwtable = build_sample_port_forwarding_table();
-        let fwtablerw = PortFwTableRw::new();
-        println!("{fwtablerw}");
-        fwtablerw.update(fwtable);
-        println!("{fwtablerw}");
-
-        let guard = fwtablerw.load();
-        if let Some(table) = guard.as_ref() {
-            let key = PortFwKey {
-                src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-                dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
-                proto: NextHeader::TCP,
-                dst_port: NonZero::new(3022).unwrap(),
-            };
-            let e = table.lookup_rule(&key).unwrap();
-            assert_eq!(e.dst_ip, UnicastIpAddr::from_str("192.168.1.1").unwrap());
-            assert_eq!(e.dst_port.get(), 22);
-            assert_eq!(e.dst_vpcd, VpcDiscriminant::VNI(3000.try_into().unwrap()));
-        }
     }
 
     #[test]

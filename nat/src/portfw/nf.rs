@@ -3,9 +3,7 @@
 
 //! Port forwarding stage
 
-use crate::portfw::PortFwTableRw;
-use crate::portfw::{PortFwEntry, PortFwKey, PortFwTable};
-
+use crate::portfw::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableReader};
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTcp, TryTransport};
@@ -30,13 +28,13 @@ trace_target!("port-forwarding", LevelFilter::INFO, &["nat", "pipeline"]);
 pub struct PortForwarder {
     name: String,
     flow_table: Arc<FlowTable>,
-    fwtable: PortFwTableRw,
+    fwtable: PortFwTableReader,
 }
 
 impl PortForwarder {
     /// Creates a new [`PortForwarder`]
     #[must_use]
-    pub fn new(name: &str, fwtable: PortFwTableRw, flow_table: Arc<FlowTable>) -> Self {
+    pub fn new(name: &str, fwtable: PortFwTableReader, flow_table: Arc<FlowTable>) -> Self {
         Self {
             name: name.to_string(),
             flow_table,
@@ -155,15 +153,14 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        let guard = self.fwtable.load();
         input.filter_map(move |mut packet| {
             // FIXME: here we'll attempt to process all packets
             // If flow-filter can identify if packets have to be port-forwarded
             // here we can filter out with packet.meta().requires_port_forwarding().
             #[allow(clippy::collapsible_if)]
             if !packet.is_done() {
-                if let Some(pfwtable) = guard.as_ref() {
-                    self.process_packet(&mut packet, pfwtable);
+                if let Some(pfwtable) = self.fwtable.enter() {
+                    self.process_packet(&mut packet, pfwtable.as_ref());
                 }
             }
             packet.enforce()

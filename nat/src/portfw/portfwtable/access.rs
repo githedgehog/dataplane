@@ -44,6 +44,10 @@ impl PortFwTableWriter {
         PortFwTableWriter(write)
     }
     #[must_use]
+    pub fn enter(&self) -> Option<ReadGuard<'_, PortFwTable>> {
+        self.0.enter()
+    }
+    #[must_use]
     pub fn reader(&self) -> PortFwTableReader {
         PortFwTableReader(self.0.clone())
     }

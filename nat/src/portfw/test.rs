@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod nf_test {
     use crate::portfw::flow_state::{PortFwFlowStatus, get_portfw_state_flow_status};
-    use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};
+    use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwTableWriter};
 
     use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};
     use flow_info::FlowStatus;
@@ -24,8 +24,8 @@ mod nf_test {
     use tracing_test::traced_test;
 
     // build a sample port forwarding table
-    fn build_test_port_forwarding_table() -> Arc<PortFwTable> {
-        let mut fwtable = PortFwTable::new();
+    fn build_test_port_forwarding_table() -> Vec<PortFwEntry> {
+        let mut ruleset = vec![];
         let key = PortFwKey::new(
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
             UnicastIpAddr::from_str("70.71.72.73").unwrap(),
@@ -40,9 +40,8 @@ mod nf_test {
             None,
             None,
         )
-        .unwrap()
-        .arced();
-        fwtable.add_entry(entry).unwrap();
+        .unwrap();
+        ruleset.push(entry);
 
         let key = PortFwKey::new(
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
@@ -58,11 +57,9 @@ mod nf_test {
             None,
             None,
         )
-        .unwrap()
-        .arced();
-        fwtable.add_entry(entry).unwrap();
-
-        Arc::new(fwtable)
+        .unwrap();
+        ruleset.push(entry);
+        ruleset
     }
 
     // build a UDP packet to be port forwarded according to the port-forwarding table
@@ -115,12 +112,12 @@ mod nf_test {
     }
 
     /// sets up a port-forwarding pipeline with a sample configuration
-    fn setup_pipeline() -> (Arc<FlowTable>, DynPipeline<TestBuffer>) {
+    fn setup_pipeline() -> (Arc<FlowTable>, DynPipeline<TestBuffer>, PortFwTableWriter) {
         // build a pipeline with flow lookup + port forwarder
-        let fwtablerw = PortFwTableRw::new();
+        let mut writer = PortFwTableWriter::new();
         let flow_table = Arc::new(FlowTable::new(1024));
         let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
-        let nf = PortForwarder::new("port-forwarder", fwtablerw.clone(), flow_table.clone());
+        let nf = PortForwarder::new("port-forwarder", writer.reader(), flow_table.clone());
         let flow_expirations = ExpirationsNF::new(flow_table.clone());
         let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
             .add_stage(flow_lookup_nf)
@@ -128,16 +125,20 @@ mod nf_test {
             .add_stage(flow_expirations);
 
         // set port-forwarding rules
-        fwtablerw.update(build_test_port_forwarding_table());
-        println!("{fwtablerw}");
-        (flow_table, pipeline)
+        writer
+            .update_table(build_test_port_forwarding_table().as_slice())
+            .unwrap();
+        if let Some(table) = writer.enter() {
+            println!("{}", table.as_ref());
+        }
+        (flow_table, pipeline, writer)
     }
 
     #[traced_test]
     #[test]
     fn test_nf_port_forwarding() {
         // build a pipeline with flow lookup + port forwarder
-        let (_flow_table, mut pipeline) = setup_pipeline();
+        let (_flow_table, mut pipeline, _writer) = setup_pipeline();
 
         // process an overlay packet matching a port-forwarding rule
         let output = process_packet(&mut pipeline, udp_packet_to_port_forward());
@@ -190,7 +191,7 @@ mod nf_test {
     #[test]
     fn test_nf_port_forwarding_tcp_filtered() {
         // build a pipeline with flow lookup + port forwarder
-        let (_, mut pipeline) = setup_pipeline();
+        let (_, mut pipeline, _writer) = setup_pipeline();
 
         // process packet with TCP segment without SYN: no entry should be created and packet be dropped
         let mut packet = tcp_packet_to_port_forward();
@@ -209,7 +210,7 @@ mod nf_test {
     #[test]
     fn test_nf_port_forwarding_tcp_success() {
         // build a pipeline with flow lookup + port forwarder
-        let (flow_table, mut pipeline) = setup_pipeline();
+        let (flow_table, mut pipeline, _writer) = setup_pipeline();
 
         // process TCP SYN packet: entries should be created in both directions
         let mut packet = tcp_packet_to_port_forward();
