@@ -4,6 +4,7 @@
 //! Port forwarding table and lookups
 
 pub mod access;
+mod display;
 pub mod objects;
 pub mod portrange;
 

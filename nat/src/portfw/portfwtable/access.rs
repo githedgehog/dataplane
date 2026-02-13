@@ -48,6 +48,7 @@ impl PortFwTableWriter {
         PortFwTableReader(self.0.clone())
     }
     pub fn update_table(&mut self, ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
+        validate_ruleset(ruleset)?;
         self.0.append(PortFwTableChange::Update(ruleset.to_vec()));
         self.0.publish();
         self.0.publish(); // intended
