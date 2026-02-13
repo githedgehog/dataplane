@@ -9,6 +9,8 @@ mod packet;
 mod portfwtable;
 mod test;
 
+// re-exports
 pub use flow_state::PortFwState;
 pub use nf::PortForwarder;
+pub use portfwtable::PortFwTableError;
 pub use portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableRw};
