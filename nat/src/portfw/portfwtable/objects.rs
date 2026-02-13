@@ -23,7 +23,6 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tracing::{debug, error};
 
 use super::PortFwTableError;
 
@@ -196,7 +195,7 @@ impl Debug for PortFwKey {
 /// which is just a vector of them in order to support load-balancing in the future
 /// (at least within a VPC).
 #[derive(Clone, Default)]
-struct PortFwGroup(Vec<Arc<PortFwEntry>>);
+pub(crate) struct PortFwGroup(Vec<Arc<PortFwEntry>>);
 impl PortFwGroup {
     #[must_use]
     #[allow(unused)]
@@ -216,7 +215,6 @@ impl PortFwGroup {
             let exist = self.0.get(index).unwrap_or_else(|| unreachable!());
             exist.set_init_timeout(entry.init_timeout());
             exist.set_estab_timeout(entry.estab_timeout());
-            debug!("Updated port-forwarding rule: {entry}");
             Ok(())
         } else if self.is_empty() {
             self.0.push(entry);
@@ -224,6 +222,10 @@ impl PortFwGroup {
         } else {
             Err(PortFwTableError::DuplicateKey(entry.key))
         }
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<PortFwEntry>> {
+        self.0.iter()
     }
 
     #[allow(unused)]
@@ -245,11 +247,12 @@ impl PortFwGroup {
 pub struct PortFwTable(HashMap<PortFwKey, PortFwGroup, RandomState>);
 impl PortFwTable {
     #[must_use]
-    pub fn new() -> Self {
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn add_entry(&mut self, entry: Arc<PortFwEntry>) -> Result<(), PortFwTableError> {
+    pub(crate) fn add_entry(&mut self, entry: Arc<PortFwEntry>) -> Result<(), PortFwTableError> {
         let key = &entry.key;
         if let Some(group) = self.0.get_mut(key) {
             group.add_mod_rule(entry)
@@ -259,7 +262,7 @@ impl PortFwTable {
         }
     }
 
-    #[allow(unused)]
+    #[cfg(test)]
     pub(crate) fn remove_entry_by_key(&mut self, key: &PortFwKey) {
         self.0.remove(key);
     }
@@ -270,7 +273,7 @@ impl PortFwTable {
             return;
         };
         if let Some(index) = group.0.iter().position(|e| e.matches(entry)) {
-            group.0.swap_remove(index);
+            group.0.remove(index);
         }
     }
 
@@ -310,11 +313,6 @@ impl PortFwTable {
             .flat_map(|v| v.0.iter().map(std::convert::AsRef::as_ref))
     }
 
-    #[allow(unused)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     fn rule_can_be_deleted(entry: &PortFwEntry, ruleset: &[PortFwEntry]) -> bool {
         ruleset.iter().any(|e| e.matches(entry))
     }
@@ -333,9 +331,14 @@ impl PortFwTable {
         let mut ruleset = ruleset.to_vec();
         while let Some(rule) = ruleset.pop().map(Arc::from) {
             if let Err(e) = self.add_entry(rule.clone()) {
-                error!("Failed to add port-forwarding rule {rule}: {e}");
+                // FIXME(fredi): these should never fail with the validation
+                unreachable!()
             }
         }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -371,79 +374,12 @@ impl PortFwTableRw {
     }
 }
 
-// Display implementations
-macro_rules! PORTFW_KEY {
-    ($vpc:expr, $proto:expr, $dstip:expr, $dstport:expr) => {
-        format_args!("{:>} {:}:{:<} {:>}", $vpc, $dstip, $dstport, $proto)
-    };
-}
-macro_rules! PORTFW_ENTRY {
-    ($dstip:expr, $dstport:expr, $vpc:expr, $initial:expr, $estab:expr) => {
-        format_args!(
-            "{:}:{:<} at {} timers:[init:{}s estab:{}s]",
-            $dstip, $dstport, $vpc, $initial, $estab
-        )
-    };
-}
-impl Display for PortFwKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            PORTFW_KEY!(self.src_vpcd, self.proto, self.dst_ip, self.dst_port.get()),
-        )
-    }
-}
-impl Display for PortFwEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} -> {}",
-            self.key,
-            PORTFW_ENTRY!(
-                self.dst_ip,
-                self.dst_port.get(),
-                self.dst_vpcd,
-                self.init_timeout().as_secs(),
-                self.estab_timeout().as_secs()
-            )
-        )
-    }
-}
-impl Display for PortFwGroup {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for e in &self.0 {
-            write!(f, "{e}")?;
-        }
-        writeln!(f)
-    }
-}
-fn fmt_port_fw_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    writeln!(
-        f,
-        " ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Port forwarding table ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-}
-
-impl Display for PortFwTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_port_fw_table_heading(f)?;
-        if self.0.is_empty() {
-            return writeln!(f, " (empty)");
-        }
-        for entry in self.0.values() {
-            write!(f, "{entry}")?;
-        }
-        Ok(())
-    }
-}
 impl Display for PortFwTableRw {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let g = self.load();
         if let Some(table) = g.as_ref() {
             table.fmt(f)
         } else {
-            fmt_port_fw_table_heading(f)?;
             writeln!(f, " (not configured) ")
         }
     }
