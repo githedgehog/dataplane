@@ -40,7 +40,8 @@ mod nf_test {
             None,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .arced();
         fwtable.add_entry(entry).unwrap();
 
         let key = PortFwKey::new(
@@ -57,7 +58,8 @@ mod nf_test {
             None,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .arced();
         fwtable.add_entry(entry).unwrap();
 
         Arc::new(fwtable)
