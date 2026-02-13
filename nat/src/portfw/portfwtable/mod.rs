@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod objects;
+pub mod portrange;
 
 use objects::PortFwKey;
 use std::net::IpAddr;
@@ -19,6 +20,8 @@ pub enum PortFwTableError {
     InvalidAddress(IpAddr),
     #[error("Invalid port: {0}")]
     InvalidPort(u16),
+    #[error("Invalid port range: [{0}-{1}]")]
+    InvalidPortRange(u16, u16),
     #[error("Invalid initial timeout: the minimum allowed is 1 second")]
     InvalidInitialTimeout,
     #[error("Invalid established timeout: the minimum allowed is 3 seconds")]
