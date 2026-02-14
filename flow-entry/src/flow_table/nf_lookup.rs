@@ -60,17 +60,25 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for LookupNF {
 #[cfg(test)]
 mod test {
     use flow_info::FlowInfo;
+    use net::buffer::PacketBufferMut;
+    use net::buffer::TestBuffer;
     use net::ip::NextHeader;
     use net::ip::UnicastIpAddr;
+    use net::packet::Packet;
     use net::packet::VpcDiscriminant;
-    use net::packet::test_utils::build_test_ipv4_packet_with_transport;
+    use net::packet::test_utils::{
+        build_test_ipv4_packet_with_transport, build_test_udp_ipv4_packet,
+    };
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
+    use pipeline::DynPipeline;
     use pipeline::NetworkFunction;
     use std::net::IpAddr;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use tracing_test::traced_test;
 
+    use crate::flow_table::ExpirationsNF;
     use crate::flow_table::FlowKey;
     use crate::flow_table::FlowTable;
     use crate::flow_table::nf_lookup::LookupNF;
@@ -103,5 +111,70 @@ mod test {
         let mut output_iter = lookup_nf.process(std::iter::once(packet));
         let output = output_iter.next().unwrap();
         assert!(output.meta().flow_info.is_some());
+    }
+
+    // A dummy NF that creates a flow entry for each packet, with a lifetime of 2 seconds
+    struct FlowInfoCreator(Arc<FlowTable>);
+    impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowInfoCreator {
+        fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+            &'a mut self,
+            input: Input,
+        ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+            input.filter_map(move |packet| {
+                let flow_key =
+                    FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).unwrap();
+                let flow_info = FlowInfo::new(Instant::now() + Duration::from_secs(1));
+                self.0.insert(flow_key, flow_info);
+                packet.enforce()
+            })
+        }
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_lookup_nf_with_expiration_nf() {
+        let flow_table = Arc::new(FlowTable::default());
+        let lookup_nf = LookupNF::new("lookup_nf", flow_table.clone());
+        let flowinfo_creator = FlowInfoCreator(flow_table.clone());
+        let expirations_nf = ExpirationsNF::new(flow_table.clone());
+        let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+            .add_stage(lookup_nf)
+            .add_stage(flowinfo_creator)
+            .add_stage(expirations_nf);
+
+        const NUM_PACKETS: u16 = 1000;
+
+        // create NUM_PACKETS, each with a distinct port from in [1, NUM_PACKETS]
+        let dst_ports = 1..=NUM_PACKETS;
+        let packets_in = dst_ports
+            .into_iter()
+            .map(|port| build_test_udp_ipv4_packet("10.0.0.1", "20.0.0.1", 80, port));
+
+        // process the NUM_PACKETS
+        let packets_out = pipeline.process(packets_in.clone());
+        assert_eq!(packets_out.count(), NUM_PACKETS as usize);
+        let num_entries = flow_table.len().unwrap();
+        assert_eq!(num_entries, NUM_PACKETS as usize);
+
+        // wait twice as much as entry lifetimes. All flow entries should be gone after this.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        pipeline
+            .process(std::iter::empty::<Packet<TestBuffer>>())
+            .count();
+
+        // Entries are NOT gone. This is the case to fix.
+        let num_entries = flow_table.len().unwrap();
+        assert_eq!(num_entries, NUM_PACKETS as usize);
+
+        // query the table
+        let flow_keys = packets_in
+            .map(|packet| FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).unwrap());
+        flow_keys
+            .into_iter()
+            .for_each(|flow_key| assert!(flow_table.lookup(&flow_key).is_none()));
+
+        // check number of entries in table. All entries are gone now, because we looked up each of the keys
+        let num_entries = flow_table.len().unwrap();
+        assert_eq!(num_entries, 0);
     }
 }
