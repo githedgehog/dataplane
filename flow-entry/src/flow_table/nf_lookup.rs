@@ -162,7 +162,18 @@ mod test {
             .process(std::iter::empty::<Packet<TestBuffer>>())
             .count();
 
-        // Entries are all gone
+        // Entries are NOT gone. This is the case to fix.
+        let num_entries = flow_table.len().unwrap();
+        assert_eq!(num_entries, NUM_PACKETS as usize);
+
+        // query the table
+        let flow_keys = packets_in
+            .map(|packet| FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).unwrap());
+        flow_keys
+            .into_iter()
+            .for_each(|flow_key| assert!(flow_table.lookup(&flow_key).is_none()));
+
+        // check number of entries in table. All entries are gone now, because we looked up each of the keys
         let num_entries = flow_table.len().unwrap();
         assert_eq!(num_entries, 0);
     }

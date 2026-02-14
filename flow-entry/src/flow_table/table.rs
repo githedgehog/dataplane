@@ -303,6 +303,12 @@ impl FlowTable {
         let table = self.table.try_read().ok()?;
         Some(table.len())
     }
+
+    #[cfg(test)]
+    pub fn len(&self) -> Option<usize> {
+        let table = self.table.try_read().ok()?;
+        Some(table.len())
+    }
 }
 
 #[cfg(test)]
