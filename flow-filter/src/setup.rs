@@ -658,13 +658,64 @@ mod tests {
             exposes: vec![VpcExpose::empty().ip("10.0.0.0/25".into())],
         };
 
-        let overlap =
-            get_manifest_ips_overlap(&manifest1, &manifest2, vpcd1, vpcd2, |expose| &expose.ips);
+        let overlap = get_manifest_ips_overlap(
+            &manifest1,
+            &manifest2,
+            vpcd1,
+            vpcd2,
+            |expose| &expose.ips,
+            false,
+        );
 
         // Should have one overlap: 10.0.0.0/25 (intersection of /24 and /25)
         assert_eq!(overlap.len(), 1);
         let expected_prefix = PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None);
-        assert!(overlap.contains_key(&expected_prefix));
+        assert!(overlap.get(&expected_prefix).is_some_and(|set| {
+            set.len() == 2
+                && set.contains(&RemoteData::new(vpcd1, None, None))
+                && set.contains(&RemoteData::new(vpcd2, None, None))
+        }));
+    }
+
+    #[test]
+    fn test_get_manifest_ips_overlap_with_overlap_and_ports() {
+        let vpcd1 = vpcd(100);
+        let vpcd2 = vpcd(200);
+
+        let manifest1 = VpcManifest {
+            name: "manifest1".to_string(),
+            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        };
+
+        let manifest2 = VpcManifest {
+            name: "manifest2".to_string(),
+            exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/25".into(),
+                Some(PortRange::new(100, 200).unwrap()),
+            ))],
+        };
+
+        let overlap = get_manifest_ips_overlap(
+            &manifest1,
+            &manifest2,
+            vpcd1,
+            vpcd2,
+            |expose| &expose.ips,
+            false,
+        );
+
+        // Should have one overlap: 10.0.0.0/25 with ports 100-200 (intersection of /24 and /25 and
+        // port ranges)
+        assert_eq!(overlap.len(), 1);
+        let expected_prefix = PrefixWithOptionalPorts::new(
+            Prefix::from("10.0.0.0/25"),
+            Some(PortRange::new(100, 200).unwrap()),
+        );
+        assert!(overlap.get(&expected_prefix).is_some_and(|set| {
+            set.len() == 2
+                && set.contains(&RemoteData::new(vpcd1, None, None))
+                && set.contains(&RemoteData::new(vpcd2, None, None))
+        }));
     }
 
     #[test]
@@ -684,7 +735,10 @@ mod tests {
         let manifest2 = VpcManifest {
             name: "manifest2".to_string(),
             exposes: vec![
-                VpcExpose::empty().ip("10.0.0.0/25".into()),
+                VpcExpose::empty()
+                    .make_stateful_nat(None)
+                    .unwrap()
+                    .ip("10.0.0.0/25".into()),
                 VpcExpose::empty().ip("20.0.0.0/24".into()),
             ],
         };
@@ -704,8 +758,30 @@ mod tests {
         let prefix1 = PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None);
         let prefix2 = PrefixWithOptionalPorts::new(Prefix::from("20.0.0.128/25"), None);
 
-        assert!(overlap.contains_key(&prefix1));
-        assert!(overlap.contains_key(&prefix2));
+        assert!(
+            overlap.get(&prefix1).is_some_and(|set| {
+                set.len() == 2
+                    // Sending to 10.0.0.0/25 via manifest 1 requires no NAT
+                    && set.contains(&RemoteData::new(vpcd1, None, None))
+                    // Replying to 10.0.0.0/25 via manifest 2 requires stateful (destination) NAT
+                    && set.contains(&RemoteData::new(
+                        vpcd2,
+                        None,
+                        Some(NatRequirement::Stateful),
+                    ))
+            }),
+            "{overlap:#?}"
+        );
+
+        assert!(
+            overlap.get(&prefix2).is_some_and(|set| {
+                // Sending to 20.0.0.128/25 requires no NAT
+                set.len() == 2
+                    && set.contains(&RemoteData::new(vpcd1, None, None))
+                    && set.contains(&RemoteData::new(vpcd2, None, None))
+            }),
+            "{overlap:#?}"
+        );
     }
 
     #[test]
@@ -745,6 +821,50 @@ mod tests {
         assert_eq!(result.len(), 1);
         let expected_prefix = PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/24"), None);
         assert!(result.contains_key(&expected_prefix));
+    }
+
+    #[test]
+    fn test_consolidate_overlap_list_differing_dst_vpcd() {
+        let mut overlap = BTreeMap::new();
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None),
+            HashSet::from([RemoteData::new(vpcd(100), None, None)]),
+        );
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None),
+            HashSet::from([RemoteData::new(vpcd(200), None, None)]),
+        );
+
+        let result = consolidate_overlap_list(overlap);
+
+        // Should have two separate prefixes (no merging possible)
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_consolidate_overlap_list_differing_nat_requirements() {
+        let mut overlap = BTreeMap::new();
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None),
+            HashSet::from([RemoteData::new(
+                vpcd(200),
+                None,
+                Some(NatRequirement::Stateful),
+            )]),
+        );
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None),
+            HashSet::from([RemoteData::new(
+                vpcd(200),
+                None,
+                Some(NatRequirement::PortForwarding),
+            )]),
+        );
+
+        let result = consolidate_overlap_list(overlap);
+
+        // Should have two separate prefixes (no merging possible)
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
@@ -922,10 +1042,13 @@ mod tests {
         let dst_addr = "20.0.0.5".parse().unwrap(); // In overlapping segment
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert!(matches!(
+        assert_eq!(
             dst_vpcd,
-            Some(VpcdLookupResult::MultipleMatches(_))
-        ));
+            Some(VpcdLookupResult::MultipleMatches(HashSet::from([
+                RemoteData::new(vni2.into(), None, None),
+                RemoteData::new(vni3.into(), None, None),
+            ])))
+        );
 
         let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
