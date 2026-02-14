@@ -42,10 +42,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for ExpirationsNF {
 #[cfg(test)]
 mod test {
     use flow_info::FlowInfo;
-    use net::ip::NextHeader;
+    use net::buffer::TestBuffer;
     use net::ip::UnicastIpAddr;
+    use net::packet::Packet;
     use net::packet::VpcDiscriminant;
-    use net::packet::test_utils::build_test_ipv4_packet_with_transport;
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
     use pipeline::NetworkFunction;
@@ -76,16 +76,13 @@ mod test {
             IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
         );
 
-        // Create a dummy packet
-        let packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
-
-        // Insert expired flow entry
+        // Insert an already expired flow entry and check that entry is there by looking it up
         let flow_info = FlowInfo::new(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
         flow_table.insert(flow_key, flow_info);
+        assert!(flow_table.lookup(&flow_key).is_some());
 
-        let output_iter = expirations_nf.process(std::iter::once(packet));
-        assert_eq!(output_iter.count(), 1);
-
+        // call process() on the NF (no packet is actually needed). NF should expire entry
+        let _output_iter = expirations_nf.process(std::iter::empty::<Packet<TestBuffer>>());
         assert!(flow_table.lookup(&flow_key).is_none());
     }
 }

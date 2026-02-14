@@ -268,6 +268,13 @@ impl FlowTable {
         self.priority_queue
             .reap_all_expired_with_time(time, Self::decide_expiry, Self::do_reap)
     }
+
+    #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> Option<usize> {
+        let table = self.table.try_read().ok()?;
+        Some(table.len())
+    }
 }
 
 #[cfg(test)]
