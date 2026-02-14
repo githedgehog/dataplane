@@ -361,23 +361,31 @@ mod tests {
     use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
-    use lpm::prefix::{PortRange, Prefix};
+    use flow_info::FlowInfo;
+    use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts};
     use net::buffer::TestBuffer;
     use net::headers::{Net, TryHeadersMut, TryIpMut};
+    use net::ip::NextHeader;
     use net::ipv4::addr::UnicastIpv4Addr;
     use net::ipv6::addr::UnicastIpv6Addr;
     use net::packet::test_utils::{
-        IcmpEchoDirection, build_test_icmp4_echo, build_test_ipv4_packet, build_test_ipv6_packet,
+        IcmpEchoDirection, build_test_icmp4_echo, build_test_ipv4_packet,
+        build_test_ipv4_packet_with_transport, build_test_ipv6_packet,
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
+    use std::sync::Arc;
     use tracing_test::traced_test;
 
-    fn vpcd(vni: u32) -> VpcDiscriminant {
-        VpcDiscriminant::from_vni(Vni::new_checked(vni).unwrap())
+    fn vni(id: u32) -> Vni {
+        Vni::new_checked(id).unwrap()
+    }
+
+    fn vpcd(id: u32) -> VpcDiscriminant {
+        VpcDiscriminant::from_vni(vni(id))
     }
 
     fn set_src_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
@@ -416,6 +424,28 @@ mod tests {
         packet.meta_mut().set_overlay(true);
         set_src_addr(&mut packet, src_addr);
         set_dst_addr(&mut packet, dst_addr);
+        packet.meta_mut().src_vpcd = src_vpcd;
+        packet
+    }
+
+    fn create_test_ipv4_packet_with_ports(
+        src_vpcd: Option<VpcDiscriminant>,
+        src_addr: Ipv4Addr,
+        dst_addr: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+    ) -> Packet<TestBuffer> {
+        let mut packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::UDP)).unwrap();
+
+        packet.meta_mut().set_overlay(true);
+        set_src_addr(&mut packet, src_addr.into());
+        set_dst_addr(&mut packet, dst_addr.into());
+        packet
+            .set_udp_source_port(src_port.try_into().unwrap())
+            .unwrap();
+        packet
+            .set_udp_destination_port(dst_port.try_into().unwrap())
+            .unwrap();
         packet.meta_mut().src_vpcd = src_vpcd;
         packet
     }
@@ -1301,6 +1331,236 @@ mod tests {
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
         assert!(packets[0].meta().requires_stateful_nat());
         assert!(!packets[0].meta().requires_stateless_nat());
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
+        let vni1 = vni(100);
+        let vni2 = vni(200);
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::with_default_group(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty()
+                            .make_stateful_nat(None)
+                            .unwrap()
+                            .ip("1.0.0.0/24".into())
+                            .as_range("100.0.0.0/24".into()), // Stateful NAT
+                        VpcExpose::empty()
+                            .make_port_forwarding()
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "1.0.0.27/32".into(),
+                                Some(PortRange::new(2000, 2001).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "100.0.0.27/32".into(),
+                                Some(PortRange::new(3000, 3001).unwrap()),
+                            )), // Port forwarding
+                    ],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())], // No NAT
+                },
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        overlay.validate().unwrap();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with packets
+
+        // VPC 1 to VPC 2, outside of port forwarding IP range: stateful NAT
+        let packet = create_test_ipv4_packet_with_ports(
+            Some(vni1.into()),
+            "1.0.0.4".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+            2000,
+            456,
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC 1 to VPC 2, outside of port forwarding port range: stateful NAT
+        let packet = create_test_ipv4_packet_with_ports(
+            Some(vni1.into()),
+            "1.0.0.27".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+            123,
+            456,
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC 1 to VPC 2, inside of port forwarding range: still stateful NAT (no existing port
+        // forwarding entry in the flow table)
+        let packet = create_test_ipv4_packet_with_ports(
+            Some(vni1.into()),
+            "1.0.0.27".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+            2000,
+            456,
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC 2 to VPC 1, outside of port forwarding IP range: reverse stateful NAT
+        let packet = create_test_ipv4_packet_with_ports(
+            Some(vni2.into()),
+            "5.0.0.10".parse().unwrap(),
+            "100.0.0.4".parse().unwrap(),
+            456,
+            2000,
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC 2 to VPC 1, outside of port forwarding port range: reverse stateful NAT
+        let packet = create_test_ipv4_packet_with_ports(
+            Some(vni2.into()),
+            "5.0.0.10".parse().unwrap(),
+            "100.0.0.27".parse().unwrap(),
+            456,
+            123,
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC 2 to VPC 1, inside of port forwarding range: port forwarding
+        let packet = create_test_ipv4_packet_with_ports(
+            Some(vni2.into()),
+            "5.0.0.10".parse().unwrap(),
+            "100.0.0.27".parse().unwrap(),
+            456,
+            3000,
+        );
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
+        assert!(!packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(packets[0].meta().requires_port_forwarding());
+
+        // Back to VPC 1 to VPC 2, inside of port forwarding range, with flow_info attached for
+        // stateful NAT: stateful NAT
+        let mut packet = create_test_ipv4_packet_with_ports(
+            Some(vni1.into()),
+            "1.0.0.27".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+            2000,
+            456,
+        );
+        // Create flow_info with dst_vpcd and stateful NAT info and attach it to the packet
+        let flow_info =
+            FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        let mut binding = flow_info.locked.write().unwrap();
+        binding.dst_vpcd = Some(Box::new(VpcDiscriminant::from(vni2)));
+        // Content should be a NatFlowState object but we can't include it in this crate without
+        // introducing a circular dependency; just use a bool, as we don't attempt to downcast it
+        // anyway.
+        binding.nat_state = Some(Box::new(true));
+        drop(binding);
+        packet.meta_mut().flow_info = Some(Arc::new(flow_info));
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC 1 to VPC 2, inside of port forwarding range, this time with flow_info attached for
+        // port forwarding: port forwarding
+        let mut packet = create_test_ipv4_packet_with_ports(
+            Some(vni1.into()),
+            "1.0.0.27".parse().unwrap(),
+            "5.0.0.10".parse().unwrap(),
+            2000,
+            456,
+        );
+        // Create flow_info with dst_vpcd and port forwarding info and attach it to the packet
+        let flow_info =
+            FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        let mut binding = flow_info.locked.write().unwrap();
+        binding.dst_vpcd = Some(Box::new(VpcDiscriminant::from(vni2)));
+        // Content should be a PortFwState object but we can't include it in this crate without
+        // introducing a circular dependency; just use a bool, as we don't attempt to downcast it
+        // anyway.
+        binding.port_fw_state = Some(Box::new(true));
+        drop(binding);
+        packet.meta_mut().flow_info = Some(Arc::new(flow_info));
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+        assert!(!packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(packets[0].meta().requires_port_forwarding());
     }
 
     #[test]
