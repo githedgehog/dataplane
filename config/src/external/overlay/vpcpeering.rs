@@ -312,6 +312,11 @@ impl VpcExpose {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
     }
 
+    #[must_use]
+    pub fn nat_config(&self) -> Option<&VpcExposeNatConfig> {
+        self.nat.as_ref().map(|nat| &nat.config)
+    }
+
     fn validate_default_expose(&self) -> ConfigResult {
         if self.default {
             if !self.ips.is_empty() || !self.nots.is_empty() || self.nat.is_some() {
