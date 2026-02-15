@@ -140,11 +140,11 @@ where
     pub fn reap_expired(
         &self,
         on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
-        on_reaped: impl Fn(K, V),
-    ) -> usize {
+        on_reaped: impl Fn(&K, V),
+    ) -> Vec<K> {
         let pql = self.get_pq_lock();
         let mut pq = pql.write().unwrap();
-        Self::reap_expired_locked(&mut pq, &on_expired, &on_reaped)
+        Self::reap_expired_locked_with_time(&mut pq, &Instant::now(), on_expired, on_reaped)
     }
 
     /// Reap expired entries from all priority queues (regardless of current thread)
@@ -160,8 +160,8 @@ where
     pub fn reap_all_expired(
         &self,
         on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
-        on_reaped: impl Fn(K, V),
-    ) -> usize {
+        on_reaped: impl Fn(&K, V),
+    ) -> Vec<K> {
         self.reap_all_expired_with_time_internal(&Instant::now(), &on_expired, &on_reaped)
     }
 
@@ -171,8 +171,8 @@ where
         &self,
         now: &Instant,
         on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
-        on_reaped: impl Fn(K, V),
-    ) -> usize {
+        on_reaped: impl Fn(&K, V),
+    ) -> Vec<K> {
         self.reap_all_expired_with_time_internal(now, &on_expired, &on_reaped)
     }
 
@@ -180,25 +180,17 @@ where
         &self,
         now: &Instant,
         on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
-        on_reaped: impl Fn(K, V),
-    ) -> usize {
+        on_reaped: impl Fn(&K, V),
+    ) -> Vec<K> {
         let pqs = self.pqs.iter();
-        let mut count = 0;
+        let mut all_reaped = vec![];
         for pq in pqs {
             let mut pq = pq.write().unwrap();
-            count += Self::reap_expired_locked_with_time(&mut pq, now, &on_expired, &on_reaped);
+            let mut reaped =
+                Self::reap_expired_locked_with_time(&mut pq, now, &on_expired, &on_reaped);
+            all_reaped.append(&mut reaped);
         }
-        count
-    }
-
-    fn reap_expired_locked(
-        pq: &mut concurrency::sync::RwLockWriteGuard<
-            PriorityQueue<Entry<K, V>, Priority, RandomState>,
-        >,
-        on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
-        on_reaped: impl Fn(K, V),
-    ) -> usize {
-        Self::reap_expired_locked_with_time(pq, &Instant::now(), on_expired, on_reaped)
+        all_reaped
     }
 
     fn reap_expired_locked_with_time(
@@ -207,8 +199,8 @@ where
         >,
         now: &Instant,
         on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
-        on_reaped: impl Fn(K, V),
-    ) -> usize {
+        on_reaped: impl Fn(&K, V),
+    ) -> Vec<K> {
         let mut expired = Vec::new();
         debug!(
             "Reaping expired flows at {:?}, queue size {}",
@@ -240,20 +232,23 @@ where
             now,
             pq.len()
         );
-        let mut count = 0;
+
+        let mut reaped = vec![];
         for (entry, _) in expired {
             match on_expired(now, &entry.key, &entry.value) {
                 PQAction::Reap => {
-                    on_reaped(entry.key, entry.value);
-                    count += 1;
+                    // entry.value is consumed here, but the key is kept so that
+                    // the corresponding flow-entry, pointing to a dropped flow-info
+                    // can be removed from the flow-table.
+                    on_reaped(&entry.key, entry.value);
+                    reaped.push(entry.key);
                 }
                 PQAction::Update(new_expires_at) => {
                     pq.push(entry, Priority(new_expires_at));
                 }
             }
         }
-
-        count
+        reaped
     }
 }
 
