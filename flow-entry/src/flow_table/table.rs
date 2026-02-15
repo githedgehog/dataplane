@@ -232,7 +232,7 @@ impl FlowTable {
     // Pass by value here since the PQ doesn't know the value is an Arc
     // and we get ownership of the value here
     #[allow(clippy::needless_pass_by_value)]
-    fn do_reap(k: FlowKey, v: Arc<FlowInfo>) {
+    fn do_reap(k: &FlowKey, v: Arc<FlowInfo>) {
         match v.update_status(FlowStatus::Expired) {
             Ok(()) => {
                 debug!("do_reap: Updated flow status for {k:?} to expired");
@@ -241,6 +241,26 @@ impl FlowTable {
                 error!("do_reap: Failed to update flow status for {k:?}: {e:?}",);
             }
         }
+    }
+
+    /// Remove all of the flow entries for the provided `FlowKey`s, returning the number of
+    /// entries removed
+    ///
+    /// # Panics
+    ///
+    /// Panics if this thread already holds the read lock on the table or
+    /// if the table lock is poisoned.
+    fn remove_flow_entries(&self, reaped_keys: &Vec<FlowKey>) -> usize {
+        let num_keys = reaped_keys.len();
+        let mut removed = 0;
+        let table = self.table.read().unwrap();
+        for flow_key in reaped_keys {
+            if let Some((_key, _flow_info)) = table.remove(flow_key) {
+                removed += 1;
+            }
+        }
+        debug!("Removed {removed} flow-entries out of {num_keys} keys");
+        num_keys
     }
 
     /// Reap expired entries from the priority queue for the current thread.
@@ -254,22 +274,31 @@ impl FlowTable {
     ///
     /// Panics if any lock acquired by this method is poisoned.
     pub fn reap_expired(&self) -> usize {
-        self.priority_queue
-            .reap_expired(Self::decide_expiry, Self::do_reap)
+        let reaped_keys = self
+            .priority_queue
+            .reap_expired(Self::decide_expiry, Self::do_reap);
+        self.remove_flow_entries(&reaped_keys)
     }
 
     pub fn reap_all_expired(&self) -> usize {
-        self.priority_queue
-            .reap_all_expired(Self::decide_expiry, Self::do_reap)
+        let reaped_keys = self
+            .priority_queue
+            .reap_all_expired(Self::decide_expiry, Self::do_reap);
+        self.remove_flow_entries(&reaped_keys)
     }
 
     #[cfg(all(test, feature = "shuttle"))]
     pub fn reap_all_expired_with_time(&self, time: &Instant) -> usize {
-        self.priority_queue
-            .reap_all_expired_with_time(time, Self::decide_expiry, Self::do_reap)
+        let reaped_keys = self.priority_queue.reap_all_expired_with_time(
+            time,
+            Self::decide_expiry,
+            Self::do_reap,
+        );
+        self.remove_flow_entries(&reaped_keys)
     }
 
     #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> Option<usize> {
         let table = self.table.try_read().ok()?;
         Some(table.len())
