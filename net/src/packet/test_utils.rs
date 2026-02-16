@@ -27,12 +27,16 @@ use crate::packet::{InvalidPacket, Packet};
 use crate::parse::DeParse;
 use crate::tcp::{Tcp, TcpChecksumPayload, TruncatedTcp};
 use crate::udp::port::UdpPort;
-use crate::udp::{TruncatedUdp, Udp, UdpChecksumPayload};
+use crate::udp::{TruncatedUdp, Udp, UdpChecksum, UdpChecksumPayload, UdpEncap};
 use etherparse::icmpv4::DestUnreachableHeader;
 use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type};
 use std::default::Default;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
+
+use crate::ip::dscp::Dscp;
+use crate::ip::ecn::Ecn;
+use crate::vxlan::{Vni, Vxlan};
 
 #[must_use]
 /// Builds a test ipv4 packet with the given TTL value and transport type.
@@ -401,4 +405,138 @@ pub fn build_test_icmp4_echo(
     let mut buffer: TestBuffer = TestBuffer::new();
     headers.deparse(buffer.as_mut()).unwrap();
     Packet::new(buffer)
+}
+
+#[must_use]
+/// Builds a VXLAN packet (underlay IPv4) whose outer IP header carries the given DSCP/ECN.
+///
+/// The payload is a minimal valid inner Ethernet frame (an IPv4 packet with empty payload).
+pub fn build_test_vxlan_ipv4_packet_with_outer_qos(
+    dscp: Dscp,
+    ecn: Ecn,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    // Inner ethernet frame bytes
+    let inner = build_test_ipv4_packet(64).unwrap();
+    let inner_buf = inner.serialize().unwrap();
+    let inner_bytes = inner_buf.as_ref();
+
+    // VXLAN header bytes
+    let vni = Vni::new_checked(100).unwrap();
+    let vxlan = Vxlan::new(vni);
+    let vxlan_len = Vxlan::MIN_LENGTH.get() as usize;
+
+    // UDP payload = VXLAN header + inner frame
+    let udp_payload_len = vxlan_len + inner_bytes.len();
+    let udp_total_len = (Udp::MIN_LENGTH.get() as usize) + udp_payload_len;
+    let udp_len_u16: u16 = udp_total_len.try_into().unwrap();
+
+    // Outer headers
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(Eth::new(
+        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
+        EthType::IPV4,
+    )));
+
+    let mut ipv4 = Ipv4::default();
+    ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
+    ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
+    ipv4.set_ttl(64);
+    ipv4.set_dscp(dscp);
+    ipv4.set_ecn(ecn);
+    ipv4.set_next_header(NextHeader::UDP);
+    ipv4.set_payload_len(udp_len_u16).unwrap();
+    ipv4.update_checksum(&()).unwrap();
+    let net = Net::Ipv4(ipv4);
+
+    let mut udp = Udp::new(123.try_into().unwrap(), Vxlan::PORT);
+    // VXLAN spec says that the checksum SHOULD be zero.
+    udp.set_checksum(UdpChecksum::ZERO)
+        .unwrap_or_else(|()| unreachable!());
+
+    headers.net(Some(net));
+    headers.transport(Some(Transport::Udp(udp)));
+    headers.udp_encap(Some(UdpEncap::Vxlan(vxlan)));
+    let headers = headers.build().unwrap();
+
+    // Buffer: outer headers + vxlan bytes + inner bytes
+    let total_len = headers.size().get() as usize + udp_payload_len;
+    let mut data = vec![0u8; total_len];
+
+    headers.deparse(data.as_mut()).unwrap();
+
+    let hdr_off = headers.size().get() as usize;
+    vxlan
+        .deparse(&mut data[hdr_off..hdr_off + vxlan_len])
+        .unwrap();
+
+    let inner_off = hdr_off + vxlan_len;
+    data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(inner_bytes);
+
+    Packet::new(TestBuffer::from_raw_data(&data))
+}
+
+#[must_use]
+/// Builds a VXLAN packet (underlay IPv6) whose outer IPv6 header carries the given DSCP/ECN.
+///
+/// The payload is a minimal valid inner Ethernet frame (an IPv4 packet with empty payload).
+pub fn build_test_vxlan_ipv6_packet_with_outer_qos(
+    dscp: Dscp,
+    ecn: Ecn,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    // Inner ethernet frame bytes
+    let inner = build_test_ipv4_packet(64).unwrap();
+    let inner_buf = inner.serialize().unwrap();
+    let inner_bytes = inner_buf.as_ref();
+
+    // VXLAN header bytes
+    let vni = Vni::new_checked(100).unwrap();
+    let vxlan = Vxlan::new(vni);
+    let vxlan_len = Vxlan::MIN_LENGTH.get() as usize;
+
+    // UDP payload = VXLAN header + inner frame
+    let udp_payload_len = vxlan_len + inner_bytes.len();
+    let udp_total_len = (Udp::MIN_LENGTH.get() as usize) + udp_payload_len;
+    let udp_len_u16: u16 = udp_total_len.try_into().unwrap();
+
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(Eth::new(
+        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
+        EthType::IPV6,
+    )));
+
+    let mut ipv6 = Ipv6::default();
+    ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
+    ipv6.set_destination("::5.6.7.8".parse::<Ipv6Addr>().unwrap());
+    ipv6.set_hop_limit(64);
+    ipv6.set_next_header(NextHeader::UDP);
+    ipv6.set_dscp(dscp);
+    ipv6.set_ecn(ecn);
+    ipv6.set_payload_length(udp_len_u16);
+    let net = Net::Ipv6(ipv6);
+
+    let mut udp = Udp::new(123.try_into().unwrap(), Vxlan::PORT);
+    udp.set_checksum(UdpChecksum::ZERO)
+        .unwrap_or_else(|()| unreachable!());
+
+    headers.net(Some(net));
+    headers.transport(Some(Transport::Udp(udp)));
+    headers.udp_encap(Some(UdpEncap::Vxlan(vxlan)));
+    let headers = headers.build().unwrap();
+
+    let total_len = headers.size().get() as usize + udp_payload_len;
+    let mut data = vec![0u8; total_len];
+
+    headers.deparse(data.as_mut()).unwrap();
+
+    let hdr_off = headers.size().get() as usize;
+    vxlan
+        .deparse(&mut data[hdr_off..hdr_off + vxlan_len])
+        .unwrap();
+
+    let inner_off = hdr_off + vxlan_len;
+    data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(inner_bytes);
+
+    Packet::new(TestBuffer::from_raw_data(&data))
 }
