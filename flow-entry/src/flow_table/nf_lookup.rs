@@ -177,4 +177,95 @@ mod test {
         let num_entries = flow_table.len().unwrap();
         assert_eq!(num_entries, 0);
     }
+
+    //#[traced_test]
+    #[test]
+    fn test_lookups_with_related_flows() {
+        let flow_table = Arc::new(FlowTable::default());
+        let lookup_nf = LookupNF::new("lookup_nf", flow_table.clone());
+        let expirations_nf = ExpirationsNF::new(flow_table.clone());
+        let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+            .add_stage(lookup_nf)
+            .add_stage(expirations_nf);
+
+        {
+            let mut packet_1 = build_test_udp_ipv4_packet("10.0.0.1", "20.0.0.1", 80, 500);
+            let mut packet_2 = build_test_udp_ipv4_packet("192.168.1.1", "20.0.0.1", 500, 80);
+            packet_1.meta_mut().set_overlay(true);
+            packet_2.meta_mut().set_overlay(true);
+
+            // build keys for the packets
+            let key_1 = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet_1)).unwrap();
+            let key_2 = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet_2)).unwrap();
+
+            // create a pair of related flow entries; flow_2 will get a longer timeout
+            let (flow_1, flow_2) = FlowInfo::related_pair(Instant::now() + Duration::from_secs(2));
+            assert_eq!(Arc::weak_count(&flow_1), 1);
+            assert_eq!(Arc::weak_count(&flow_2), 1);
+            assert_eq!(Arc::strong_count(&flow_1), 1);
+            assert_eq!(Arc::strong_count(&flow_2), 1);
+
+            // extend flow2's timeout so that it does not expire
+            flow_2.extend_expiry_unchecked(Duration::from_secs(60));
+
+            // ... and insert the two flows in the flow table
+            flow_table.insert_from_arc(key_1, &flow_1);
+            flow_table.insert_from_arc(key_2, &flow_2);
+
+            // check that flows can be looked up
+            let _ = flow_table.lookup(&key_1).unwrap();
+            let _ = flow_table.lookup(&key_2).unwrap();
+
+            // process the packets and check that related flows are accessible
+            let input = vec![packet_1, packet_2];
+            let out: Vec<_> = pipeline.process(input.into_iter()).collect();
+            let packet_1 = &out[0];
+            let packet_2 = &out[1];
+
+            let flow_1_pkt = packet_1.meta().flow_info.as_ref().unwrap();
+            let flow_2_pkt = packet_2.meta().flow_info.as_ref().unwrap();
+            assert!(Arc::ptr_eq(flow_1_pkt, &flow_1));
+            assert!(Arc::ptr_eq(flow_2_pkt, &flow_2));
+
+            let related_1 = flow_1.related.as_ref().unwrap().upgrade().unwrap();
+            let related_2 = flow_2.related.as_ref().unwrap().upgrade().unwrap();
+            assert!(Arc::ptr_eq(&related_1, &flow_2));
+            assert!(Arc::ptr_eq(&related_1, flow_2_pkt));
+            assert!(Arc::ptr_eq(&related_2, &flow_1));
+            assert!(Arc::ptr_eq(&related_2, flow_1_pkt));
+            assert_eq!(flow_table.len().unwrap(), 2);
+        }
+
+        // wait 3 secs. Flow 1 should have been removed
+        std::thread::sleep(Duration::from_secs(3));
+        pipeline
+            .process(std::iter::empty::<Packet<TestBuffer>>())
+            .count();
+
+        assert_eq!(flow_table.len().unwrap(), 1);
+
+        // build identical packets and process them again
+        let mut packet_1 = build_test_udp_ipv4_packet("10.0.0.1", "20.0.0.1", 80, 500);
+        let mut packet_2 = build_test_udp_ipv4_packet("192.168.1.1", "20.0.0.1", 500, 80);
+        packet_1.meta_mut().set_overlay(true);
+        packet_2.meta_mut().set_overlay(true);
+        let key_1 = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet_1)).unwrap();
+        let key_2 = FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet_2)).unwrap();
+        let input = vec![packet_1, packet_2];
+        let out: Vec<_> = pipeline.process(input.into_iter()).collect();
+        let packet_1 = &out[0];
+        let packet_2 = &out[1];
+
+        // flow 1 should have expired and packet packet_1 no longer refer to it
+        assert!(packet_1.meta().flow_info.is_none());
+        assert!(flow_table.lookup(&key_1).is_none());
+
+        // flow 2 should remain and packet_2 refer to it
+        assert!(flow_table.lookup(&key_2).is_some());
+        let flow_info_2 = packet_2.meta().flow_info.as_ref().unwrap();
+
+        // the flow 2's reference to flow 1 should exist but be invalid
+        let related = flow_info_2.related.as_ref().unwrap();
+        assert!(related.upgrade().is_none());
+    }
 }
