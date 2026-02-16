@@ -15,3 +15,4 @@ pub use nf::PortForwarder;
 pub use portfwtable::PortFwTableError;
 pub use portfwtable::access::{PortFwTableReader, PortFwTableReaderFactory, PortFwTableWriter};
 pub use portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable};
+pub use portfwtable::setup::build_port_forwarding_configuration;
