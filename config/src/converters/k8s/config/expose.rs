@@ -13,6 +13,7 @@ use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::SubnetMap;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
+#[allow(dead_code)] // We'll need this code again for port forwarding support
 fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversionError> {
     ports_str
         // Split port ranges for prefix on ','
@@ -25,6 +26,7 @@ fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversio
         .collect()
 }
 
+#[allow(dead_code)] // We'll need this code again for port forwarding support
 fn map_ports(
     prefix: Prefix,
     ports_opt: Option<&str>,
@@ -81,25 +83,19 @@ fn process_ip_block(
                     "Expose references unknown VPC subnet {subnet_name}"
                 ))
             })?;
-            for prefix in map_ports(*prefix, ip.ports.as_deref())? {
-                vpc_expose = vpc_expose.ip(prefix);
-            }
+            vpc_expose = vpc_expose.ip(PrefixWithOptionalPorts::from(*prefix));
         }
         (Some(cidr), None, None) => {
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
                 FromK8sConversionError::InvalidData(format!("CIDR format: {cidr}: {e}"))
             })?;
-            for prefix in map_ports(prefix, ip.ports.as_deref())? {
-                vpc_expose = vpc_expose.ip(prefix);
-            }
+            vpc_expose = vpc_expose.ip(PrefixWithOptionalPorts::from(prefix));
         }
         (None, None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
                 FromK8sConversionError::InvalidData(format!("CIDR format: {not}: {e}"))
             })?;
-            for prefix in map_ports(prefix, ip.ports.as_deref())? {
-                vpc_expose = vpc_expose.not(prefix);
-            }
+            vpc_expose = vpc_expose.not(PrefixWithOptionalPorts::from(prefix));
         }
     }
     Ok(vpc_expose)
@@ -124,17 +120,13 @@ fn process_as_block(
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
                 FromK8sConversionError::InvalidData(format!("CIDR format: {cidr}: {e}"))
             })?;
-            for prefix in map_ports(prefix, ip.ports.as_deref())? {
-                vpc_expose = vpc_expose.as_range(prefix);
-            }
+            vpc_expose = vpc_expose.as_range(PrefixWithOptionalPorts::from(prefix));
         }
         (None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
                 FromK8sConversionError::InvalidData(format!("CIDR format: {not}: {e}"))
             })?;
-            for prefix in map_ports(prefix, ip.ports.as_deref())? {
-                vpc_expose = vpc_expose.not_as(prefix);
-            }
+            vpc_expose = vpc_expose.not_as(PrefixWithOptionalPorts::from(prefix));
         }
     }
     Ok(vpc_expose)
@@ -144,24 +136,34 @@ fn process_nat_block(
     vpc_expose: VpcExpose,
     nat: Option<&GatewayAgentPeeringsPeeringExposeNat>,
 ) -> Result<VpcExpose, FromK8sConversionError> {
-    match nat {
-        Some(nat) => match (&nat.stateful, &nat.stateless) {
-            (Some(_), Some(_)) => Err(FromK8sConversionError::NotAllowed(
-                "Cannot have both stateful and stateless nat configured on the same expose block"
-                    .to_string(),
-            )),
-            (Some(stateful), None) => {
-                let idle_timeout = stateful.idle_timeout.map(std::time::Duration::from);
-                vpc_expose
-                    .make_stateful_nat(idle_timeout)
-                    .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
-            }
-            (None, Some(_)) => vpc_expose
-                .make_stateless_nat()
-                .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string())),
-            (None, None) => Ok(vpc_expose), // Rely on default behavior for NAT
-        },
-        None => Ok(vpc_expose),
+    let Some(nat) = nat else {
+        return Ok(vpc_expose);
+    };
+    match (&nat.masquerade, &nat.port_forward, &nat.r#static) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
+            Err(FromK8sConversionError::NotAllowed(
+                "Cannot have multiple NAT modes configured on the same expose block".to_string(),
+            ))
+        }
+        (Some(masquerade), None, None) => {
+            let idle_timeout = masquerade.idle_timeout.map(std::time::Duration::from);
+            vpc_expose
+                .make_stateful_nat(idle_timeout)
+                .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
+        }
+        (None, Some(_port_forward), None) => {
+            // TODO: port forwarding support
+            // Don't forget to also update the TypeGenerator in k8s-intf/src/bolero/expose.rs
+            Err(FromK8sConversionError::NotAllowed(
+                "Port forwarding is not yet supported".to_string(),
+            ))
+        }
+        (None, None, Some(_)) => vpc_expose
+            .make_stateless_nat()
+            .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string())),
+        (None, None, None) => Err(FromK8sConversionError::NotAllowed(
+            "NAT config block must specify one NAT mode".to_string(),
+        )),
     }
 }
 impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
@@ -393,23 +395,13 @@ mod test {
                 let mut ips = expose
                     .ips
                     .iter()
-                    .map(|p| {
-                        (
-                            p.prefix().to_string(),
-                            p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
-                        )
-                    })
+                    .map(|p| p.prefix().to_string())
                     .collect::<Vec<_>>();
                 ips.sort();
                 let mut nots = expose
                     .nots
                     .iter()
-                    .map(|p| {
-                        (
-                            p.prefix().to_string(),
-                            p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
-                        )
-                    })
+                    .map(|p| p.prefix().to_string())
                     .collect::<Vec<_>>();
                 nots.sort();
 
@@ -417,12 +409,7 @@ mod test {
                     let mut ret = nat
                         .as_range
                         .iter()
-                        .map(|p| {
-                            (
-                                p.prefix().to_string(),
-                                p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
-                            )
-                        })
+                        .map(|p| p.prefix().to_string())
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
@@ -431,12 +418,7 @@ mod test {
                     let mut ret = nat
                         .not_as
                         .iter()
-                        .map(|p| {
-                            (
-                                p.prefix().to_string(),
-                                p.ports().map(|pr| pr.to_string()).unwrap_or_default(),
-                            )
-                        })
+                        .map(|p| p.prefix().to_string())
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
@@ -448,12 +430,7 @@ mod test {
                     .map(|ips| {
                         ips.iter()
                             .filter(|ip| ip.cidr.is_some())
-                            .map(|ip| {
-                                (
-                                    ip.cidr.as_ref().unwrap().clone(),
-                                    ip.ports.clone().unwrap_or_default(),
-                                )
-                            })
+                            .map(|ip| ip.cidr.as_ref().unwrap().clone())
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or(vec![]);
@@ -463,12 +440,7 @@ mod test {
                     .map(|ips| {
                         ips.iter()
                             .filter(|ip| ip.not.is_some())
-                            .map(|ip| {
-                                (
-                                    ip.not.as_ref().unwrap().clone(),
-                                    ip.ports.clone().unwrap_or_default(),
-                                )
-                            })
+                            .map(|ip| ip.not.as_ref().unwrap().clone())
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or(vec![]);
@@ -480,13 +452,10 @@ mod test {
                         ips.iter()
                             .filter(|ip| ip.vpc_subnet.is_some())
                             .map(|ip| {
-                                (
-                                    subnets
-                                        .get(ip.vpc_subnet.as_ref().unwrap())
-                                        .unwrap()
-                                        .to_string(),
-                                    ip.ports.clone().unwrap_or_default(),
-                                )
+                                subnets
+                                    .get(ip.vpc_subnet.as_ref().unwrap())
+                                    .unwrap()
+                                    .to_string()
                             })
                             .collect::<Vec<_>>()
                     })
@@ -498,12 +467,7 @@ mod test {
                     let mut ret = r#as
                         .iter()
                         .filter(|r#as| r#as.cidr.is_some())
-                        .map(|r#as| {
-                            (
-                                r#as.cidr.as_ref().unwrap().clone(),
-                                r#as.ports.clone().unwrap_or_default(),
-                            )
-                        })
+                        .map(|r#as| r#as.cidr.as_ref().unwrap().clone())
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
@@ -513,12 +477,7 @@ mod test {
                     let mut ret = r#as
                         .iter()
                         .filter(|r#as| r#as.not.is_some())
-                        .map(|r#as| {
-                            (
-                                r#as.not.as_ref().unwrap().clone(),
-                                r#as.ports.clone().unwrap_or_default(),
-                            )
-                        })
+                        .map(|r#as| r#as.not.as_ref().unwrap().clone())
                         .collect::<Vec<_>>();
                     ret.sort();
                     ret
@@ -528,42 +487,29 @@ mod test {
                 assert_eq!(nots, k8s_nots);
                 assert_eq!(r#as, k8s_as);
                 assert_eq!(not_as, k8s_not_as);
-                match (expose.nat.as_ref(), k8s_expose.nat.as_ref()) {
-                    (Some(nat), None) => {
-                        assert!(
-                            k8s_expose.r#as.is_some(),
-                            "K8s does not have NAT set, but nat is configured: {expose}"
-                        );
-                        assert!(
-                            nat.is_stateless(),
-                            "Default NAT configured via 'as' by k8s, but nat is not stateless: {expose}"
-                        );
+                match (expose.nat_config(), k8s_expose.nat.as_ref()) {
+                    (None, None) => {
+                        assert!(k8s_expose.r#as.is_none());
+                    }
+                    (Some(_), None) => {
+                        panic!("Dataplane config has NAT configured, but K8s does not")
                     }
                     (None, Some(_)) => {
                         panic!("K8s has NAT configured, but dataplane config does not")
                     }
-                    (Some(nat), Some(k8s_nat)) => match &nat.config {
-                        VpcExposeNatConfig::Stateful(c) => {
-                            if let Some(k8s_stateful) = k8s_nat.stateful.as_ref() {
-                                if let Some(k8s_idle_timeout) = k8s_stateful.idle_timeout {
-                                    assert_eq!(c.idle_timeout, k8s_idle_timeout);
-                                } else {
-                                    assert_eq!(c.idle_timeout, std::time::Duration::new(2 * 60, 0));
-                                }
-                            } else {
-                                panic!("Stateful NAT configured but not by K8s");
-                            }
-                        }
-                        VpcExposeNatConfig::Stateless(_) => {
-                            assert!(k8s_nat.stateful.is_none(),"Stateless NAT configured but K8s configured stateful NAT: {expose:#?}\nk8s: {k8s_nat:#?}");
-                            if k8s_nat.stateless.is_none() {
-                                assert!(k8s_expose.r#as.is_some());
-                            }
+                    (Some(VpcExposeNatConfig::Stateful(config)), Some(k8s_nat)) => {
+                        let Some(k8s_masquerade) = k8s_nat.masquerade.as_ref() else {
+                            panic!("Stateful NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
+                        };
+                        if let Some(k8s_idle_timeout) = k8s_masquerade.idle_timeout {
+                            assert_eq!(config.idle_timeout, k8s_idle_timeout);
+                        } else {
+                            assert_eq!(config.idle_timeout, std::time::Duration::new(2 * 60, 0));
                         }
                     },
-                    (None, None) => {
-                        assert!(k8s_expose.r#as.is_none());
-                    }
+                    (Some(VpcExposeNatConfig::Stateless(_)), Some(k8s_nat)) => {
+                        assert!(k8s_nat.r#static.is_some(), "Stateless NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
+                    },
                 }
             });
     }

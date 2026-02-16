@@ -10,9 +10,8 @@ use crate::bolero::{LegalValue, SubnetMap};
 use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
-    GatewayAgentPeeringsPeeringExposeNatStateful, GatewayAgentPeeringsPeeringExposeNatStateless,
+    GatewayAgentPeeringsPeeringExposeNatMasquerade, GatewayAgentPeeringsPeeringExposeNatStatic,
 };
-use lpm::prefix::PortRange;
 
 /// Generate a legal value for `GatewayAgentPeeringsPeeringExpose`
 ///
@@ -54,24 +53,11 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
         let num_v4_not_as = d.gen_u16(Bound::Included(&0), Bound::Included(&num_as_not))?;
         let num_v6_not_as = num_as_not - num_v4_not_as;
 
-        let ports = if d.gen_bool(None)? {
-            let bound1 = d.gen_u16(Bound::Excluded(&0), Bound::Included(&u16::MAX))?;
-            let bound2 = d.gen_u16(Bound::Excluded(&0), Bound::Included(&u16::MAX))?;
-            Some(
-                PortRange::new(bound1.min(bound2), bound1.max(bound2))
-                    .unwrap()
-                    .to_string(),
-            )
-        } else {
-            None
-        };
-
         let ips = generate_prefixes(d, num_v4_ips, num_v6_ips)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: Some(p),
                 not: None,
-                ports: ports.clone(),
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
@@ -80,7 +66,6 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             .map(|p| GatewayAgentPeeringsPeeringExposeIps {
                 cidr: None,
                 not: Some(p),
-                ports: ports.clone(),
                 vpc_subnet: None,
             })
             .collect::<Vec<_>>();
@@ -89,14 +74,12 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: Some(p),
                 not: None,
-                ports: ports.clone(),
             });
         let not_as = generate_prefixes(d, num_v4_not_as, num_v6_not_as)?
             .into_iter()
             .map(|p| GatewayAgentPeeringsPeeringExposeAs {
                 cidr: None,
                 not: Some(p),
-                ports: ports.clone(),
             });
 
         let mut subnets = Vec::new();
@@ -108,7 +91,6 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             subnets.push(GatewayAgentPeeringsPeeringExposeIps {
                 cidr: None,
                 not: None,
-                ports: ports.clone(),
                 vpc_subnet: Some(name.clone()),
             });
         }
@@ -127,7 +109,7 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
             r#as: Some(final_as).filter(|f| !f.is_empty()),
             ips: Some(final_ips).filter(|f| !f.is_empty()),
             default: None,
-            nat: if has_as && d.produce::<bool>()? {
+            nat: if has_as {
                 Some(
                     d.produce::<LegalValue<GatewayAgentPeeringsPeeringExposeNat>>()?
                         .take(),
@@ -140,24 +122,36 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
 }
 
 // This is not exhaustive as it does not generate all possible time
-// strings, just 0 to 2*3600 seconds
+// strings, just 0 to 2*3600 seconds.
+//
+// FIXME: Add support for port forwarding
 impl TypeGenerator for LegalValue<GatewayAgentPeeringsPeeringExposeNat> {
     fn generate<D: Driver>(d: &mut D) -> Option<Self> {
-        let is_stateful = d.produce::<bool>()?;
-        if is_stateful {
-            let idle_timeout_secs = d.gen_u64(Bound::Included(&0), Bound::Included(&(2 * 3600)))?;
-            let idle_timeout = std::time::Duration::from_secs(idle_timeout_secs);
-            Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
-                stateless: None,
-                stateful: Some(GatewayAgentPeeringsPeeringExposeNatStateful {
-                    idle_timeout: Some(idle_timeout.into()),
-                }),
-            }))
-        } else {
-            Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
-                stateful: None,
-                stateless: Some(GatewayAgentPeeringsPeeringExposeNatStateless {}),
-            }))
+        let nat_mode = d.produce::<u16>()? % 2;
+        match nat_mode {
+            0 => {
+                let idle_timeout_secs =
+                    d.gen_u64(Bound::Included(&0), Bound::Included(&(2 * 3600)))?;
+                let idle_timeout = std::time::Duration::from_secs(idle_timeout_secs);
+                Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
+                    masquerade: Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
+                        idle_timeout: Some(idle_timeout.into()),
+                    }),
+                    port_forward: None,
+                    r#static: None,
+                }))
+            }
+            1 => Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
+                masquerade: None,
+                port_forward: None,
+                r#static: Some(GatewayAgentPeeringsPeeringExposeNatStatic {}),
+            })),
+            // 2 => Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
+            //     masquerade: None,
+            //     port_forward: Some(GatewayAgentPeeringsPeeringExposeNatPortForward {}),
+            //     r#static: None,
+            // })),
+            _ => unreachable!(),
         }
     }
 }
