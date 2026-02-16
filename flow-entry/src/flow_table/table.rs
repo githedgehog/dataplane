@@ -105,6 +105,25 @@ impl FlowTable {
         self.insert_common(flow_key, &val)
     }
 
+    /// Add a flow entry to the table from a `&Arc<FlowInfo>`
+    ///
+    /// # Returns
+    ///
+    /// Returns the old `Arc<FlowInfo>` associated with the flow key, if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this thread already holds the read lock on the table or
+    /// if the table lock is poisoned.
+    pub fn insert_from_arc(
+        &self,
+        flow_key: FlowKey,
+        flow_info: &Arc<FlowInfo>,
+    ) -> Option<Arc<FlowInfo>> {
+        debug!("insert: Inserting flow key {:?}", flow_key);
+        self.insert_common(flow_key, flow_info)
+    }
+
     /// Add a flow to the table via an Arc
     ///
     /// This is intended to re-add a flow to the flow table via the Arc returned from
