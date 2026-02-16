@@ -125,7 +125,7 @@ kanal = { version = "0.1.1", default-features = false, features = [] }
 kube = { version = "3.0.1", default-features = false, features = [] }
 kube-core = { version = "3.0.1", default-features = false, features = [] }
 left-right = { version = "0.11.7", default-features = false, features = [] }
-libc = { version = "1.0.0-alpha.2", default-features = false, features = [] }
+libc = { version = "1.0.0-alpha.3", default-features = false, features = [] }
 linkme = { version = "0.3.35", default-features = false, features = [] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = [] }
 log = { version = "0.4.29", default-features = false, features = [] } # TODO: try to remove this
