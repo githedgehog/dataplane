@@ -21,11 +21,9 @@ use crate::headers::{
     Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryHeaders, TryHeadersMut,
     TryIpMut, TryVxlan,
 };
+use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, Parse, ParseError};
 use crate::udp::{Udp, UdpChecksum};
-
-use crate::ip::dscp::Dscp;
-use crate::ip::ecn::Ecn;
 
 use crate::checksum::Checksum;
 use crate::vxlan::{Vxlan, VxlanEncap};
@@ -114,6 +112,43 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.payload_len() + self.header_len().get()
     }
 
+    #[inline]
+    fn underlay_qos_from_outer_headers(headers: &Headers) -> (Option<Dscp>, Option<Ecn>) {
+        match &headers.net {
+            Some(Net::Ipv4(ipv4)) => (Some(Dscp::from(ipv4.dscp())), Some(Ecn::from(ipv4.ecn()))),
+            Some(Net::Ipv6(ipv6)) => (Some(Dscp::from(ipv6.dscp())), Some(Ecn::from(ipv6.ecn()))),
+            None => (None, None),
+        }
+    }
+
+    #[inline]
+    fn apply_outer_qos_to_ip_headers(headers: &mut Headers, meta: &PacketMeta, udp_len: u16) {
+        match headers.try_ip_mut() {
+            None => unreachable!(),
+            Some(Net::Ipv6(ipv6)) => {
+                if let Some(dscp) = meta.dscp {
+                    ipv6.set_dscp(dscp);
+                }
+                if let Some(ecn) = meta.ecn {
+                    ipv6.set_ecn(ecn);
+                }
+                ipv6.set_payload_length(udp_len);
+            }
+            Some(Net::Ipv4(ipv4)) => {
+                if let Some(dscp) = meta.dscp {
+                    ipv4.set_dscp(dscp);
+                }
+                if let Some(ecn) = meta.ecn {
+                    ipv4.set_ecn(ecn);
+                }
+                ipv4.set_payload_len(udp_len)
+                    .unwrap_or_else(|e| unreachable!("{:?}", e));
+                ipv4.update_checksum(&())
+                    .unwrap_or_else(|()| unreachable!()); // updating IPv4 checksum never fails
+            }
+        }
+    }
+
     /// If the [`Packet`] is [`Vxlan`], then this method
     ///
     /// 1. strips the outer headers
@@ -159,30 +194,23 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
                 //
                 // We intentionally preserve *outer* DSCP/ECN (fabric-visible) rather than anything
                 // inner. This enables decap -> re-encap paths to keep spine/underlay QoS consistent.
-                match &self.headers.net {
-                    Some(crate::headers::Net::Ipv4(ipv4)) => {
-                        self.meta.dscp = Some(Dscp::from(ipv4.dscp()));
-                        self.meta.ecn = Some(Ecn::from(ipv4.ecn()));
-                    }
-                    Some(crate::headers::Net::Ipv6(ipv6)) => {
-                        self.meta.dscp = Some(Dscp::from(ipv6.dscp()));
-                        self.meta.ecn = Some(Ecn::from(ipv6.ecn()));
-                    }
-                    _ => {
-                        self.meta.dscp = None;
-                        self.meta.ecn = None;
-                    }
-                }
+                let (dscp, ecn) = Self::underlay_qos_from_outer_headers(&self.headers);
 
                 match Headers::parse(self.payload.as_ref()) {
                     Ok((headers, consumed)) => match self.payload.trim_from_start(consumed.get()) {
                         Ok(_) => {
                             let vxlan = *vxlan;
+
+                            // only if parse succeeds to mutate self
+                            self.meta.dscp = dscp;
+                            self.meta.ecn = ecn;
                             self.headers = headers;
+
                             Some(Ok(vxlan))
                         }
                         Err(programmer_err) => {
-                            // This most likely indicates a broken implementation of `PacketBufferMut`
+                            // This most likely indicates a broken implementation of
+                            // `PacketBufferMut`
                             unreachable!("{programmer_err:?}", programmer_err = programmer_err);
                         }
                     },
@@ -253,30 +281,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         let mut headers = params.headers().clone();
         headers.transport = Some(Transport::Udp(udp));
 
-        match headers.try_ip_mut() {
-            None => unreachable!(),
-            Some(Net::Ipv6(ipv6)) => {
-                if let Some(dscp) = self.meta.dscp {
-                    ipv6.set_dscp(dscp);
-                }
-                if let Some(ecn) = self.meta.ecn {
-                    ipv6.set_ecn(ecn);
-                }
-                ipv6.set_payload_length(udp_len.get());
-            }
-            Some(Net::Ipv4(ipv4)) => {
-                if let Some(dscp) = self.meta.dscp {
-                    ipv4.set_dscp(dscp);
-                }
-                if let Some(ecn) = self.meta.ecn {
-                    ipv4.set_ecn(ecn);
-                }
-                ipv4.set_payload_len(udp_len.get())
-                    .unwrap_or_else(|e| unreachable!("{:?}", e));
-                ipv4.update_checksum(&())
-                    .unwrap_or_else(|()| unreachable!()); // updating IPv4 checksum never fails
-            }
-        }
+        Self::apply_outer_qos_to_ip_headers(&mut headers, &self.meta, udp_len.get());
+
         self.headers = headers;
         Ok(())
     }
@@ -711,6 +717,105 @@ pub mod contract {
             }
 
             Packet::new(TestBuffer::from_raw_data(&data)).ok()
+        }
+    }
+}
+
+#[cfg(test)]
+mod qos_roundtrip_tests {
+    use crate::headers::{Headers, Net};
+    use crate::ip::dscp::Dscp;
+    use crate::ip::ecn::Ecn;
+    use crate::packet::test_utils::{
+        build_test_vxlan_ipv4_packet_with_outer_qos, build_test_vxlan_ipv6_packet_with_outer_qos,
+    };
+    use crate::udp::UdpEncap;
+    use crate::vxlan::{Vni, Vxlan, VxlanEncap};
+    use arrayvec::ArrayVec;
+
+    fn make_vxlan_encap_headers_ipv4() -> VxlanEncap {
+        let mut ip = crate::ipv4::Ipv4::default();
+        ip.set_source(
+            crate::ipv4::addr::UnicastIpv4Addr::new("10.0.0.1".parse().unwrap()).unwrap(),
+        );
+        ip.set_destination("10.0.0.2".parse().unwrap());
+        ip.set_ttl(64);
+        ip.set_next_header(crate::ip::NextHeader::UDP);
+
+        let headers = Headers {
+            eth: None,
+            vlan: ArrayVec::default(),
+            net: Some(Net::Ipv4(ip)),
+            net_ext: ArrayVec::default(),
+            transport: None,
+            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
+            embedded_ip: None,
+        };
+        VxlanEncap::new(headers).unwrap()
+    }
+
+    fn make_vxlan_encap_headers_ipv6() -> VxlanEncap {
+        let mut ip = crate::ipv6::Ipv6::default();
+        ip.set_source(
+            crate::ipv6::addr::UnicastIpv6Addr::new("2001:db8::1".parse().unwrap()).unwrap(),
+        );
+        ip.set_destination("2001:db8::2".parse().unwrap());
+        ip.set_hop_limit(64);
+        ip.set_next_header(crate::ip::NextHeader::UDP);
+
+        let headers = Headers {
+            eth: None,
+            vlan: ArrayVec::default(),
+            net: Some(Net::Ipv6(ip)),
+            net_ext: ArrayVec::default(),
+            transport: None,
+            udp_encap: Some(UdpEncap::Vxlan(Vxlan::new(Vni::new_checked(200).unwrap()))),
+            embedded_ip: None,
+        };
+        VxlanEncap::new(headers).unwrap()
+    }
+
+    #[test]
+    fn vxlan_decap_then_encap_preserves_outer_qos_ipv4_underlay() {
+        let in_dscp = Dscp::new(46).unwrap();
+        let in_ecn = Ecn::new(3).unwrap();
+
+        let mut p = build_test_vxlan_ipv4_packet_with_outer_qos(in_dscp, in_ecn).unwrap();
+
+        // decap stores outer qos in metadata (your implementation does this)
+        let _ = p.vxlan_decap().unwrap().unwrap();
+
+        // encap should apply outer qos from metadata to the new underlay header
+        let params = make_vxlan_encap_headers_ipv4();
+        p.vxlan_encap(&params).unwrap();
+
+        match &p.get_headers().net {
+            Some(Net::Ipv4(ipv4)) => {
+                assert_eq!(Dscp::from(ipv4.dscp()), in_dscp);
+                assert_eq!(Ecn::from(ipv4.ecn()), in_ecn);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn vxlan_decap_then_encap_preserves_outer_qos_ipv6_underlay() {
+        let in_dscp = Dscp::new(46).unwrap();
+        let in_ecn = Ecn::new(3).unwrap();
+
+        let mut p = build_test_vxlan_ipv6_packet_with_outer_qos(in_dscp, in_ecn).unwrap();
+
+        let _ = p.vxlan_decap().unwrap().unwrap();
+
+        let params = make_vxlan_encap_headers_ipv6();
+        p.vxlan_encap(&params).unwrap();
+
+        match &p.get_headers().net {
+            Some(Net::Ipv6(ipv6)) => {
+                assert_eq!(Dscp::from(ipv6.dscp()), in_dscp);
+                assert_eq!(Ecn::from(ipv6.ecn()), in_ecn);
+            }
+            _ => unreachable!(),
         }
     }
 }
