@@ -108,6 +108,9 @@ pub enum ConfigError {
 
     #[error("Community {0} is mapped from distinct priorities")]
     DuplicateCommunity(String),
+
+    #[error("Failed to apply port-forwarding configuration: {0}")]
+    PortForwarding(String),
 }
 
 /// Result-like type for configurations

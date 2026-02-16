@@ -4,7 +4,6 @@
 //! Configuration processor
 
 use concurrency::sync::Arc;
-use nat::portfw::PortFwTableWriter;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
@@ -22,6 +21,8 @@ use config::{external::overlay::Overlay, internal::device::tracecfg::TracingConf
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
+use nat::portfw::PortFwTableWriter;
+use nat::portfw::build_port_forwarding_configuration;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
@@ -526,6 +527,16 @@ fn apply_flow_filtering_config(
     Ok(())
 }
 
+fn apply_port_forwarding_config(
+    vpc_table: &VpcTable,
+    portfw_w: &mut PortFwTableWriter,
+) -> ConfigResult {
+    let ruleset = build_port_forwarding_configuration(vpc_table)?;
+    portfw_w
+        .update_table(&ruleset)
+        .map_err(|e| ConfigError::PortForwarding(e.to_string()))
+}
+
 fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
     // Apply tracing config if provided. Otherwise, apply an empty/default config.
     let default = TracingConfig::default();
@@ -558,6 +569,7 @@ impl ConfigProcessor {
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
         let bmp_options = self.proc_params.bmp_options.clone();
+        let portfw_w = &mut self.proc_params.portfw_w;
 
         /* build internal config if it hasn't been built */
         if config.internal.is_none() {
@@ -596,6 +608,9 @@ impl ConfigProcessor {
 
         /* apply flow filtering config */
         apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;
+
+        /* apply port-forwarding config */
+        apply_port_forwarding_config(&config.external.overlay.vpc_table, portfw_w)?;
 
         /* update stats mappings and seed names to the stats store */
         let _ = update_stats_vpc_mappings(config, vpcmapw);
