@@ -93,7 +93,7 @@ axum = { version = "0.8.8", default-features = false, features = [] }
 axum-server = { version = "0.8.0", default-features = false, features = [] }
 bincode2 = { version = "2.0.1", default-features = false, features = [] } # TODO: try to remove this
 bindgen = { version = "0.72.1", default-features = false, features = [] }
-bitflags = { version = "2.10.0", default-features = false, features = [] }
+bitflags = { version = "2.11.0", default-features = false, features = [] }
 bnum = { version = "0.13.0", default-features = false, features = [] }
 bolero = { version = "0.13.4", default-features = false, features = [] }
 bytecheck = { version = "0.8.2", default-features = false, features = [] }
