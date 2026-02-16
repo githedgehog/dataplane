@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::fmt::{Debug, Display};
-use std::time::{Duration, Instant};
-
+use concurrency::sync::Arc;
 use concurrency::sync::RwLock;
+use concurrency::sync::Weak;
+use std::fmt::{Debug, Display};
+use std::mem::MaybeUninit;
+use std::time::{Duration, Instant};
 
 use crate::{AtomicInstant, FlowInfoItem};
 
@@ -118,6 +120,7 @@ pub struct FlowInfo {
     expires_at: AtomicInstant,
     status: AtomicFlowStatus,
     pub locked: RwLock<FlowInfoLocked>,
+    pub related: Option<Weak<FlowInfo>>,
 }
 
 // TODO: We need a way to stuff an Arc<FlowInfo> into the packet
@@ -130,6 +133,57 @@ impl FlowInfo {
             expires_at: AtomicInstant::new(expires_at),
             status: AtomicFlowStatus::from(FlowStatus::Active),
             locked: RwLock::new(FlowInfoLocked::default()),
+            related: None,
+        }
+    }
+
+    /// We want to create a pair of `FlowInfo`s that are mutually related via a `Weak` references so that no lookup
+    /// is needed to find one from the other. This is tricky because the `FlowInfo`s are shared and we
+    /// need concurrent access to them. One option to build such relationships is to let those `Weak`
+    /// references live inside the `FlowInfoLocked`, which provides interior mutability. That approach is doable
+    /// but requires locking the objects to access the data, which we'd like to avoid.
+    ///
+    /// If such `Weak` references are to live outside the `FlowInfoLocked`, without using any `Mutex` or `RwLock`,
+    /// we need to relate the two objects when constructed, before they are inserted in the flow table. But, even
+    /// in that case, creating both is tricky because, to get a `Weak` reference to any of them them, we need to
+    /// `Arc` them and if we do that, we can't mutate them (unless we use a `Mutex` or the like).
+    /// So, there is a chicken-and-egg problem which cannot be solved with safe code.
+    ///
+    /// This associated function creates a pair of related `FlowInfo`s by construction. The intended usage is
+    /// to call this function when a couple of related flow entries are needed and later insert them in the
+    /// flow-table.
+    #[must_use]
+    pub fn related_pair(expires_at: Instant) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
+        let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
+        let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
+
+        // get mut pointers. Arc::get_mut() will always return Some() since the
+        // uninited Arcs have no strong or weak references here.
+        let one_p = Arc::get_mut(&mut one).unwrap().as_mut_ptr();
+        let two_p = Arc::get_mut(&mut two).unwrap().as_mut_ptr();
+
+        // create the weak refs for the still uninited containers
+        let one_weak = Arc::downgrade(&one);
+        let two_weak = Arc::downgrade(&two);
+
+        unsafe {
+            let one_weak = Weak::from_raw(Weak::into_raw(one_weak) as *const Self);
+            let two_weak = Weak::from_raw(Weak::into_raw(two_weak) as *const Self);
+            // overwrite the memory locations with the FlowInfo's
+            one_p.write(Self {
+                expires_at: AtomicInstant::new(expires_at),
+                status: AtomicFlowStatus::from(FlowStatus::Active),
+                locked: RwLock::new(FlowInfoLocked::default()),
+                related: Some(two_weak),
+            });
+            two_p.write(Self {
+                expires_at: AtomicInstant::new(expires_at),
+                status: AtomicFlowStatus::from(FlowStatus::Active),
+                locked: RwLock::new(FlowInfoLocked::default()),
+                related: Some(one_weak),
+            });
+            // turn back into Arc's
+            (one.assume_init(), two.assume_init())
         }
     }
 
