@@ -140,7 +140,7 @@ n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.9", defau
 netdev = { version = "0.40.0", default-features = false, features = [] }
 nix = { version = "0.31.1", default-features = false, features = [] }
 netgauze-bgp-pkt = { version = "0.9.3", features = [] } 
-netgauze-bmp-pkt = { version = "0.9.0", features = ["codec"] }
+netgauze-bmp-pkt = { version = "0.9.3", features = ["codec"] }
 num-derive = { version = "0.4.2", default-features = false, features = [] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
 once_cell = { version = "1.21.3", default-features = false, features = [] }
