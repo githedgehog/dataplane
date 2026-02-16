@@ -7,6 +7,7 @@ pub mod access;
 mod display;
 pub mod objects;
 pub mod portrange;
+pub mod setup;
 
 use objects::PortFwKey;
 use std::net::IpAddr;
