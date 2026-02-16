@@ -114,7 +114,18 @@ mod test {
     }
 
     // A dummy NF that creates a flow entry for each packet, with a lifetime of 2 seconds
-    struct FlowInfoCreator(Arc<FlowTable>);
+    struct FlowInfoCreator {
+        flow_table: Arc<FlowTable>,
+        timeout: Duration,
+    }
+    impl FlowInfoCreator {
+        fn new(flow_table: Arc<FlowTable>, timeout: Duration) -> Self {
+            Self {
+                flow_table,
+                timeout,
+            }
+        }
+    }
     impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowInfoCreator {
         fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
             &'a mut self,
@@ -123,8 +134,8 @@ mod test {
             input.filter_map(move |packet| {
                 let flow_key =
                     FlowKey::try_from(crate::flow_table::flow_key::Uni(&packet)).unwrap();
-                let flow_info = FlowInfo::new(Instant::now() + Duration::from_secs(2));
-                self.0.insert(flow_key, flow_info);
+                let flow_info = FlowInfo::new(Instant::now() + self.timeout);
+                self.flow_table.insert(flow_key, flow_info);
                 packet.enforce()
             })
         }
@@ -135,7 +146,7 @@ mod test {
     fn test_lookup_nf_with_expiration_nf() {
         let flow_table = Arc::new(FlowTable::default());
         let lookup_nf = LookupNF::new("lookup_nf", flow_table.clone());
-        let flowinfo_creator = FlowInfoCreator(flow_table.clone());
+        let flowinfo_creator = FlowInfoCreator::new(flow_table.clone(), Duration::from_secs(2));
         let expirations_nf = ExpirationsNF::new(flow_table.clone());
         let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
             .add_stage(lookup_nf)
