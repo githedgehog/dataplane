@@ -42,6 +42,7 @@ where
     pub flowfiltertablesw: FlowFilterTableWriter,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
+    pub portfw_w: PortFwTableWriter,
 }
 
 /// Start a router and provide the associated pipeline
@@ -122,5 +123,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         flowfiltertablesw,
         stats,
         vpc_stats_store,
+        portfw_w,
     })
 }

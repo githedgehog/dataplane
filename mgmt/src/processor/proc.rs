@@ -4,6 +4,7 @@
 //! Configuration processor
 
 use concurrency::sync::Arc;
+use nat::portfw::PortFwTableWriter;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
@@ -86,6 +87,9 @@ pub struct ConfigProcessorParams {
 
     // writer for flow filter table
     pub flowfilterw: FlowFilterTableWriter,
+
+    // writer for port forwarding table
+    pub portfw_w: PortFwTableWriter,
 
     // store for vpc stats
     pub vpc_stats_store: Arc<VpcStatsStore>,
