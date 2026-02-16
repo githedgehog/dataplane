@@ -16,6 +16,8 @@ pub enum FlowInfoError {
     FlowExpired(Instant),
     #[error("no such status")]
     NoSuchStatus(u8),
+    #[error("Timeout unchanged: would go backwards")]
+    TimeoutUnchanged,
 }
 
 #[repr(u8)]
@@ -162,16 +164,20 @@ impl FlowInfo {
 
     /// Reset the expiry of the flow if it is not expired.
     ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe.
+    ///
     /// # Errors
     ///
-    /// Returns `FlowInfoError::FlowExpired` if the flow is expired with the expiry `Instant`
+    /// Returns `FlowInfoError::FlowExpired` if the flow is expired with the expiry `Instant`.
+    /// Returns `FlowInfoError::TimeoutUnchanged` if the new timeout is smaller than the current.
     ///
     pub fn reset_expiry(&self, duration: Duration) -> Result<(), FlowInfoError> {
         if self.status.load(std::sync::atomic::Ordering::Relaxed) == FlowStatus::Expired {
             return Err(FlowInfoError::FlowExpired(self.expires_at()));
         }
-        self.reset_expiry_unchecked(duration);
-        Ok(())
+        self.reset_expiry_unchecked(duration)
     }
 
     /// Reset the expiry of the flow without checking if it is already expired.
@@ -180,11 +186,19 @@ impl FlowInfo {
     ///
     /// This method is thread-safe.
     ///
-    pub fn reset_expiry_unchecked(&self, duration: Duration) {
-        self.expires_at.store(
-            Instant::now() + duration,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+    /// # Errors
+    ///
+    /// Returns `FlowInfoError::TimeoutUnchanged` if the new timeout is smaller than the current.
+    ///
+    pub fn reset_expiry_unchecked(&self, duration: Duration) -> Result<(), FlowInfoError> {
+        let current = self.expires_at();
+        let new = Instant::now() + duration;
+        if new < current {
+            return Err(FlowInfoError::TimeoutUnchanged);
+        }
+        self.expires_at
+            .store(new, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn status(&self) -> FlowStatus {
