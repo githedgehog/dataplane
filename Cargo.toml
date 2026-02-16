@@ -130,7 +130,7 @@ linkme = { version = "0.3.35", default-features = false, features = [] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = [] }
 log = { version = "0.4.29", default-features = false, features = [] } # TODO: try to remove this
 loom = { version = "0.7.2", default-features = false, features = [] }
-memmap2 = { version = "0.9.9", default-features = false, features = [] }
+memmap2 = { version = "0.9.10", default-features = false, features = [] }
 metrics = { version = "0.24.3", default-features = false, features = [] }
 metrics-exporter-prometheus = { version = "0.18.1", default-features = false, features = [] }
 miette = { version = "7.6.0", default-features = false, features = [] }
