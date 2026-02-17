@@ -122,6 +122,7 @@ let
       cargo-nextest
       direnv
       gateway-crd
+      hwloc.dev
       just
       kopium
       llvmPackages'.clang # you need the host compiler in order to link proc macros
@@ -383,8 +384,8 @@ let
     }
   ) package-list;
 
-  dataplane-tar = pkgs.stdenv'.mkDerivation {
-    pname = "dataplane-tar";
+  min-tar = pkgs.stdenv'.mkDerivation {
+    pname = "min-tar";
     inherit version;
     dontUnpack = true;
     src = null;
@@ -394,12 +395,8 @@ let
       in
       ''
         tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns}
+        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home}
         ln -s /run "$tmp/var/run"
-        cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
-        cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
-        cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
-        ln -s cli "$tmp/bin/sh"
         for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
         done
@@ -419,8 +416,8 @@ let
           --group=0 \
           \
           `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
-          `# More, we expressly forbid setuid / setgid anything.  May as well toss in the sticky bit as well.` \
-          --mode='u-sw,go=' \
+          `# More, we expressly forbid setuid / setgid anything.` \
+          --mode='ugo-sw' \
           \
           `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
           --no-acls \
@@ -469,6 +466,70 @@ let
 
   };
 
+  dataplane-tar = pkgs.stdenv'.mkDerivation {
+    pname = "dataplane-tar";
+    inherit version;
+    dontUnpack = true;
+    src = null;
+    buildPhase =
+      ''
+        tmp="$(mktemp -d)"
+        tar xf "${min-tar}" -C "$tmp"
+        chown -R $(id -u):$(id -g) $tmp
+        chmod +w $tmp/bin
+        cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
+        cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
+        cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
+        ln -s cli "$tmp/bin/sh"
+        cd "$tmp"
+        # we take some care to make the tar file reproducible here
+        tar \
+          --create \
+          --file "$out" \
+          --sort=name \
+          --clamp-mtime \
+          --mtime=0 \
+          --format=posix \
+          --numeric-owner \
+          --owner=0 \
+          --group=0 \
+          --mode='ugo-sw' \
+          --no-acls \
+          --no-xattrs \
+          --no-selinux \
+          --verbose \
+          .
+      '';
+
+  };
+
+  containers.libc = pkgs.dockerTools.buildLayeredImage {
+    name = "dataplane-debugger";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "dataplane-debugger-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [
+        pkgs.pkgsBuildHost.gdb
+        pkgs.pkgsBuildHost.rr
+        pkgs.pkgsBuildHost.coreutils
+        pkgs.pkgsBuildHost.bashInteractive
+        pkgs.pkgsBuildHost.iproute2
+        pkgs.pkgsBuildHost.ethtool
+
+        pkgs.pkgsHostHost.libc.debug
+        workspace.cli.debug
+        workspace.dataplane.debug
+        workspace.init.debug
+      ];
+    };
+  };
+
   containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
     name = "dataplane-debugger";
     tag = "latest";
@@ -500,11 +561,12 @@ in
 {
   inherit
     clippy
-    dataplane-tar
     containers
+    dataplane-tar
     dev-pkgs
-    devroot
     devenv
+    devroot
+    min-tar
     package-list
     pkgs
     sources

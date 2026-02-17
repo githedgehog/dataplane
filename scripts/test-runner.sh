@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
@@ -177,7 +177,7 @@ docker run \
   --tmpfs "/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/var/run/netns:noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
   --tmpfs "/tmp:nodev,noexec,nosuid,uid=$(id -u),gid=$(id -g)" \
-  --user="$(id -u):$(id -g)" \
+  --user="0:0" \
   --group-add="$(getent group docker | cut -d: -f3)" \
   --env LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-""}" \
   --env CARGO_LLVM_COV="${CARGO_LLVM_COV:-0}" \
@@ -191,5 +191,5 @@ docker run \
   --cap-add SYS_ADMIN \
   --cap-add SYS_RAWIO \
   --read-only \
-  "ghcr.io/githedgehog/dpdk-sys/libc-env:${DPDK_SYS_COMMIT}.${LIBC_ENV_PROFILE:-release}" \
+  "min:release" \
   "${@}"
