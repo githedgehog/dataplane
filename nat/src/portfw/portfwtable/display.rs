@@ -8,8 +8,8 @@ use std::fmt::Display;
 use crate::portfw::portfwtable::objects::{PortFwEntry, PortFwGroup, PortFwKey, PortFwTable};
 
 macro_rules! PORTFW_KEY {
-    ($vpc:expr, $proto:expr, $dstip:expr, $dstport:expr) => {
-        format_args!("{:>} {:}:{:<} {:>}", $vpc, $dstip, $dstport, $proto)
+    ($vpc:expr, $proto:expr, $dstip:expr) => {
+        format_args!("{:>} {:<3} {:>}", $vpc, $proto, $dstip)
     };
 }
 macro_rules! PORTFW_ENTRY {
@@ -25,12 +25,7 @@ impl Display for PortFwKey {
         write!(
             f,
             "{}",
-            PORTFW_KEY!(
-                self.src_vpcd(),
-                self.proto(),
-                self.dst_ip(),
-                self.dst_port().get()
-            ),
+            PORTFW_KEY!(self.src_vpcd(), self.proto(), self.dst_ip()),
         )
     }
 }
@@ -38,11 +33,12 @@ impl Display for PortFwEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} -> {}",
+            "{}:{} -> {}",
             self.key,
+            self.ext_ports,
             PORTFW_ENTRY!(
                 self.dst_ip,
-                self.dst_port.get(),
+                self.dst_ports,
                 self.dst_vpcd,
                 self.init_timeout().as_secs(),
                 self.estab_timeout().as_secs()

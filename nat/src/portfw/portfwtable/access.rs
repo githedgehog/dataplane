@@ -88,7 +88,6 @@ mod test {
     use net::ip::UnicastIpAddr;
     use net::packet::VpcDiscriminant;
     use std::net::IpAddr;
-    use std::num::NonZero;
     use std::str::FromStr;
     use std::time::Duration;
     use tracing_test::traced_test;
@@ -98,13 +97,13 @@ mod test {
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
             UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             NextHeader::TCP,
-            NonZero::new(dst_port).unwrap(),
         );
         PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("192.168.1.1").unwrap(),
-            22,
+            (dst_port, dst_port),
+            (22, 22),
             None,
             None,
         )
@@ -126,7 +125,7 @@ mod test {
         if let Some(pfwtable) = reader.enter() {
             println!("{}", pfwtable.as_ref());
             assert!(pfwtable.contains_rule(&rule));
-            weak = pfwtable.lookup_rule_ref(&rule.key).unwrap();
+            weak = pfwtable.lookup_rule_ref(&rule).unwrap();
             assert!(weak.upgrade().is_some());
         } else {
             unreachable!()
@@ -156,7 +155,7 @@ mod test {
             .unwrap();
         if let Some(pfwtable) = reader.enter() {
             assert!(pfwtable.contains_rule(&rule));
-            weak = pfwtable.lookup_rule_ref(&rule.key).unwrap();
+            weak = pfwtable.lookup_rule_ref(&rule).unwrap();
             assert!(weak.upgrade().is_some());
         } else {
             unreachable!()
@@ -172,7 +171,7 @@ mod test {
             .unwrap();
         if let Some(pfwtable) = reader.enter() {
             assert!(pfwtable.contains_rule(&rule));
-            let stored = pfwtable.lookup_rule(&rule.key).unwrap().as_ref();
+            let stored = pfwtable.lookup_rule(&rule).unwrap().as_ref();
             assert_eq!(stored.init_timeout(), rule.init_timeout());
             assert_eq!(stored.estab_timeout(), rule.estab_timeout());
         }
@@ -186,11 +185,11 @@ mod test {
         let mut pfwt_w = PortFwTableWriter::new();
         let reader = pfwt_w.reader();
 
-        // build a sample ruleset with 3 rules
+        // build a sample ruleset with 3 rules. The rules map a single port to port 22
+        // all of them have the same key and will be stored within the same group.
         let r1 = build_sample_port_forwarding_rule(1);
         let r2 = build_sample_port_forwarding_rule(2);
         let r3 = build_sample_port_forwarding_rule(3);
-        let r4 = build_sample_port_forwarding_rule(4); // FIXME: test key collisions
 
         let w1;
         let w2;
@@ -204,30 +203,34 @@ mod test {
             assert!(pfwtable.contains_rule(&r1));
             assert!(pfwtable.contains_rule(&r2));
             assert!(pfwtable.contains_rule(&r3));
-            w1 = pfwtable.lookup_rule_ref(&r1.key).unwrap();
-            w2 = pfwtable.lookup_rule_ref(&r2.key).unwrap();
-            w3 = pfwtable.lookup_rule_ref(&r3.key).unwrap();
+            w1 = pfwtable.lookup_rule_ref(&r1).unwrap();
+            w2 = pfwtable.lookup_rule_ref(&r2).unwrap();
+            w3 = pfwtable.lookup_rule_ref(&r3).unwrap();
         } else {
             unreachable!()
         }
         drop(reader);
 
+        // create a fourth rule
+        let r4 = build_sample_port_forwarding_rule(4); // FIXME: test key collisions
+
+        // modify rule r2
         let r2mod = r2.clone();
         r2mod.set_init_timeout(Duration::from_mins(10));
         r2mod.set_estab_timeout(Duration::from_hours(2));
 
-        // update the table with [r2', r3, r4]
+        // update the table with [r2mod, r3, r4]
         pfwt_w
-            .update_table(&[r2.clone(), r3.clone(), r4.clone()])
+            .update_table(&[r2mod.clone(), r3.clone(), r4.clone()])
             .unwrap();
 
         let reader = pfwt_w.reader();
         if let Some(pfwtable) = reader.enter() {
             println!("{}", pfwtable.as_ref());
-            assert!(!pfwtable.contains_rule(&r1));
-            assert!(pfwtable.contains_rule(&r2));
-            assert!(pfwtable.contains_rule(&r3));
-            assert!(pfwtable.contains_rule(&r4));
+            assert!(!pfwtable.contains_rule(&r1), "Should be gone");
+            assert!(pfwtable.contains_rule(&r2mod), "Should remain");
+            assert!(pfwtable.contains_rule(&r3), "Should remain");
+            assert!(pfwtable.contains_rule(&r4), "Should remain");
 
             assert!(w1.upgrade().is_none());
             assert!(w2.upgrade().is_some());

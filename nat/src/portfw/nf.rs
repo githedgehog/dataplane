@@ -10,6 +10,7 @@ use net::headers::{TryIp, TryTcp, TryTransport};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
+use std::num::NonZero;
 use std::sync::Arc;
 
 use crate::portfw::flow_state::{
@@ -43,8 +44,11 @@ impl PortForwarder {
     }
 
     /// Tell if a packet can be port-forwarded. For that to happen, a packet must be
-    /// unicast Ipv4 or IPv6 and carry UDP/TCP payload.
-    fn can_be_port_forwarded<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Option<PortFwKey> {
+    /// unicast Ipv4 or IPv6 and carry UDP/TCP payload. If a packet can be port-forwarded,
+    /// a `PortFwKey` is returned, along with the destination port to translate.
+    fn can_be_port_forwarded<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+    ) -> Option<(PortFwKey, NonZero<u16>)> {
         debug!("checking packet for port-forwarding ...");
 
         let Some(src_vpcd) = packet.meta().src_vpcd else {
@@ -83,29 +87,31 @@ impl PortForwarder {
             packet.done(DoneReason::InternalFailure);
             return None;
         };
-        let key = PortFwKey::new(src_vpcd, dst_ip, proto, dst_port);
+        let key = PortFwKey::new(src_vpcd, dst_ip, proto);
         debug!("packet can be port-forwarded, key is {key}");
-        Some(key)
+        Some((key, dst_port))
     }
 
     fn do_port_forwarding<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
         entry: &Arc<PortFwEntry>,
+        orig_dst_port: NonZero<u16>,
+        new_dst_port: NonZero<u16>,
     ) {
-        debug!("performing port-forwarding with rule: {entry}");
+        debug!("Will map port {orig_dst_port} -> {new_dst_port} according to rule: {entry}");
 
         // create flow entry for subsequent packets in the forward path
-        let status = create_port_fw_forward_entry(&self.flow_table, packet, entry);
+        let status = create_port_fw_forward_entry(&self.flow_table, packet, entry, new_dst_port);
 
         // translate destination according to port-forwarding entry
-        if !dnat_packet(packet, entry.dst_ip.inner(), entry.dst_port) {
+        if !dnat_packet(packet, entry.dst_ip.inner(), new_dst_port) {
             packet.done(DoneReason::InternalFailure);
             return;
         }
 
         // crate a flow entry for the reverse path
-        create_port_fw_reverse_entry(&self.flow_table, packet, entry, status);
+        create_port_fw_reverse_entry(&self.flow_table, packet, entry, orig_dst_port, status);
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(
@@ -114,7 +120,7 @@ impl PortForwarder {
         pfwtable: &PortFwTable,
     ) {
         let nfi = &self.name;
-        let Some(key) = Self::can_be_port_forwarded(packet) else {
+        let Some((key, dst_port)) = Self::can_be_port_forwarded(packet) else {
             if let Some(reason) = packet.get_done() {
                 debug!("{nfi}: packet cannot be port-forwarded. Dropping it (reason:{reason})");
             } else {
@@ -122,11 +128,20 @@ impl PortForwarder {
             }
             return;
         };
-        let Some(pfw_entry) = pfwtable.lookup_rule(&key) else {
+
+        // lookup the port-forwarding rule with the given key that contains the given port
+        let Some(entry) = pfwtable.lookup_matching_rule(&key, dst_port) else {
             debug!("{nfi}: no rule found for port-forwarding key {key}. Releasing packet...");
             return;
         };
-        self.do_port_forwarding(packet, pfw_entry);
+
+        // map the destination port
+        let ext_ports = entry.ext_ports;
+        let Some(new_dst_port) = entry.ext_ports.map_port_to(dst_port, entry.dst_ports) else {
+            debug!("{nfi}: port {dst_port} is not in {ext_ports}. Releasing packet...",);
+            return;
+        };
+        self.do_port_forwarding(packet, entry, dst_port, new_dst_port);
     }
 
     /// Do port forwarding for the given packet, if it is eligible and there's a rule
