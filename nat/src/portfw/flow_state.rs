@@ -212,11 +212,12 @@ pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
     flow_table: &Arc<FlowTable>,
     packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
+    new_dst_port: NonZero<u16>,
     status: AtomicPortFwFlowStatus,
 ) {
     // create a flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
-    // We derive the key for the reverse flow from the packet that we  port-forward, which has src/dst vpc discriminants.
-    // We strip the dst vpcd from the
+    // We derive the key for the reverse flow from the packet that we port-forward, which has src/dst vpc discriminants.
+    // We strip the dst vpcd from the key.
     let dst_vpcd = packet.meta_mut().src_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
         .unwrap_or_else(|_| unreachable!())
@@ -226,7 +227,7 @@ pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
     // create dynamic port-forwarding state for the reverse path
     let port_fw_state = PortFwState::new_snat(
         entry.key.dst_ip(),
-        entry.key.dst_port(),
+        new_dst_port,
         Arc::downgrade(entry),
         status,
     );
@@ -244,6 +245,7 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
     flow_table: &Arc<FlowTable>,
     packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
+    new_dst_port: NonZero<u16>,
 ) -> AtomicPortFwFlowStatus {
     let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
@@ -253,7 +255,7 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
     let status = AtomicPortFwFlowStatus::new();
     let port_fw_state = PortFwState::new_dnat(
         entry.dst_ip,
-        entry.dst_port,
+        new_dst_port,
         Arc::downgrade(entry),
         status.clone(),
     );
@@ -296,7 +298,7 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
     };
     if state.rule.upgrade().is_none() {
         debug!("Packet flow-info contains port-forwarding state, but rule has been deleted");
-        flow_info.reset_expiry_unchecked(Duration::from_secs(0));
+        let _ = flow_info.reset_expiry_unchecked(Duration::from_secs(0));
         flow_info.update_status(FlowStatus::Expired);
         return None;
     }
@@ -411,7 +413,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
     // refresh the entry
     if let Some(flow_info) = packet.meta_mut().flow_info.as_mut() {
-        flow_info.reset_expiry_unchecked(extend_by);
+        let _ = flow_info.reset_expiry_unchecked(extend_by);
         let seconds = extend_by.as_secs();
         debug!("Extended flow entry timeout by {seconds} seconds");
     }
