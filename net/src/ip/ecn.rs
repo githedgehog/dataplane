@@ -8,6 +8,7 @@
 // IpEcn is a wrapper over ipv4/ipv6 ECN values, no need to have explicitly separate types for each version of IP.
 // This also allows us to implement `TypeGenerator` for `Ecn` without violating orphan rules,
 // which is useful for testing and fuzzing.
+use core::fmt::{Display, Formatter};
 use etherparse::IpEcn;
 
 /// Explicit congestion notification value
@@ -42,6 +43,13 @@ impl Ecn {
     #[must_use]
     pub fn value(self) -> u8 {
         self.0.value()
+    }
+}
+
+impl Display for Ecn {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        // Show the 2-bit ECN value (0..=3).
+        write!(f, "{}", self.value())
     }
 }
 
