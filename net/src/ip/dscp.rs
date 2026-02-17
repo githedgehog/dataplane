@@ -9,6 +9,7 @@
 
 // IpDscp is a wrapper over ipv4/ipv6 DSCP values, no need to have explicitly separate
 // types for each version of IP.
+use core::fmt::{Display, Formatter};
 use etherparse::IpDscp;
 
 /// IP DSCP (Differentiated Services Code Point)
@@ -48,6 +49,13 @@ impl Dscp {
     #[must_use]
     pub fn value(self) -> u8 {
         self.0.value()
+    }
+}
+
+impl Display for Dscp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        // Show the 6-bit DSCP value (0..=63).
+        write!(f, "{}", self.value())
     }
 }
 

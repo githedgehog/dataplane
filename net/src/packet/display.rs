@@ -71,15 +71,27 @@ impl Display for Ipv4 {
         )
     }
 }
+
 impl Display for Ipv6 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "  IPv6:")?;
-        writeln!(f, "    src ip: {:?}", self.source())?;
-        writeln!(f, "    dst ip: {:?}", self.destination())?;
-        /* Todo: complete */
-        Ok(())
+        writeln!(
+            f,
+            "  IPv6: {} -> {} next-hdr: {:?}",
+            self.source(),
+            self.destination(),
+            self.next_header()
+        )?;
+        writeln!(
+            f,
+            "        traffic-class: {} flow-label: {:?} hop-limit: {}",
+            self.traffic_class(),
+            self.flow_label(),
+            self.hop_limit()
+        )?;
+        writeln!(f, "        DSCP: {:?} ECN: {:?}", self.dscp(), self.ecn())
     }
 }
+
 impl Display for Net {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -283,6 +295,8 @@ impl Display for PacketMeta {
         fmt_opt(f, "    bd", self.bridge, true)?;
         fmt_opt(f, "    next-hop", self.nh_addr, true)?;
         fmt_opt(f, "    flowinfo", self.flow_info.as_ref(), true)?;
+        fmt_opt(f, "    dscp", self.dscp, false)?;
+        fmt_opt(f, "    ecn", self.ecn, true)?;
         fmt_opt(f, "    done", self.done, true)?;
         fmt_metadata_flags(self, f)
     }
