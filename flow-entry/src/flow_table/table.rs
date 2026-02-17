@@ -461,22 +461,16 @@ mod tests {
                 let entry = table
                     .get(&flow_key)
                     .expect("entry should exist after second insert");
-                // FIXME: We currently have a bug here! Overwriting the entry led to dropping the
-                // strong reference from the priority queue.
-                //
-                //let resolved = entry
-                //    .upgrade()
-                //    .expect("weak ref should resolve after second insert");
-                //assert_ne!(resolved.as_ref().expires_at(), first_expiry_time);
-                //assert_eq!(resolved.as_ref().expires_at(), second_expiry_time);
-                assert!(entry.upgrade().is_none());
+                let resolved = entry
+                    .upgrade()
+                    .expect("weak ref should resolve after second insert");
+                assert_ne!(resolved.as_ref().expires_at(), first_expiry_time);
+                assert_eq!(resolved.as_ref().expires_at(), second_expiry_time);
             }
 
-            // The strong reference from the priority queue for the first entry should have been
-            // dropped.
-            // But because of the bug, the old entry is still in the priority queue.
-            assert_eq!(Weak::strong_count(&weak_flow_info_reference), 1);
-            assert!(weak_flow_info_reference.upgrade().is_some());
+            // The strong reference from the priority queue for the first entry has been dropped.
+            assert_eq!(Weak::strong_count(&weak_flow_info_reference), 0);
+            assert!(weak_flow_info_reference.upgrade().is_none());
         }
 
         #[test]

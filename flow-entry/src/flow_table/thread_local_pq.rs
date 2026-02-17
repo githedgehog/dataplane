@@ -109,7 +109,8 @@ where
             .get_or(|| RwLock::new(PriorityQueue::with_default_hasher()))
     }
 
-    /// Insert an entry into the priority queue.
+    /// Insert an entry into the priority queue. If the queue already contains an entry with the
+    /// same key, the old entry is first removed from the queue, and then the new entry is inserted.
     ///
     /// # Thread Safety
     ///
@@ -119,12 +120,25 @@ where
     /// # Panics
     ///
     /// Panics if any lock acquired by this method is poisoned.
-    pub fn push(&self, key: K, value: V, expires_at: Instant) -> Option<Instant> {
+    pub fn push(&self, key: K, value: V, expires_at: Instant) {
+        let new_entry = Entry { key, value };
         let pq = self.get_pq_lock();
-        pq.write()
-            .unwrap()
-            .push(Entry { key, value }, Priority(expires_at))
-            .map(|expires_at| expires_at.0)
+        let mut pq_lock = pq.write().unwrap();
+
+        // Calling the PriorityQueue .push() does not ensure that the entry will be in the queue.
+        // Its documentation mentions:
+        //
+        //   "If an element equal to item is already in the queue, its priority is updated and the
+        //   old priority is returned in Some; otherwise, item is inserted with priority and None is
+        //   returned."
+        //
+        // But "equal to item" actually means "hashing to the same value", and in the case of a
+        // struct Entry, the hash function only hashes the key, not the value, so if we try to push
+        // a new entry with the same key but a different value, the old entry will be updated with
+        // the new priority but the value will not be updated. To avoid this, always remove any
+        // entry with a similar key (whatever the value) before trying to push the new one.
+        let _ = pq_lock.remove(&new_entry);
+        pq_lock.push(new_entry, Priority(expires_at));
     }
 
     /// Reap expired entries from the priority queue.
