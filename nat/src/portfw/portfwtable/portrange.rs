@@ -89,6 +89,12 @@ impl PortRange {
         let index = self.indexof(port)?;
         other.get_port_at(index)
     }
+
+    #[must_use]
+    /// Tell if this `PortRange` overlaps with another
+    pub fn overlaps_with(&self, other: Self) -> bool {
+        other.contains(self.first) || other.contains(self.last)
+    }
 }
 
 #[cfg(test)]

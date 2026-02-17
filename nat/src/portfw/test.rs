@@ -10,15 +10,12 @@ mod nf_test {
     use flow_info::FlowStatus;
     use net::buffer::TestBuffer;
     use net::headers::TryTcpMut;
-    use net::ip::NextHeader;
-    use net::ip::UnicastIpAddr;
-    use net::packet::DoneReason;
+    use net::ip::{NextHeader, UnicastIpAddr};
     use net::packet::test_utils::{build_test_tcp_ipv4_packet, build_test_udp_ipv4_packet};
-    use net::packet::{Packet, VpcDiscriminant};
+    use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use std::net::IpAddr;
 
     use pipeline::{DynPipeline, NetworkFunction};
-    use std::num::NonZero;
     use std::str::FromStr;
     use std::sync::Arc;
     use tracing_test::traced_test;
@@ -30,13 +27,13 @@ mod nf_test {
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
             UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             NextHeader::TCP,
-            NonZero::new(3022).unwrap(),
         );
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("192.168.1.1").unwrap(),
-            22,
+            (3022, 3022),
+            (22, 22),
             None,
             None,
         )
@@ -47,13 +44,13 @@ mod nf_test {
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
             UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             NextHeader::UDP,
-            NonZero::new(3053).unwrap(),
         );
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
             IpAddr::from_str("192.168.1.2").unwrap(),
-            53,
+            (3053, 3053),
+            (53, 53),
             None,
             None,
         )
@@ -136,7 +133,7 @@ mod nf_test {
 
     #[traced_test]
     #[test]
-    fn test_nf_port_forwarding() {
+    fn test_nf_port_forwarding_base() {
         // build a pipeline with flow lookup + port forwarder
         let (_flow_table, mut pipeline, _writer) = setup_pipeline();
 
