@@ -6,15 +6,15 @@
 use net::buffer::PacketBufferMut;
 use net::headers::TryTcp;
 use net::ip::UnicastIpAddr;
-use net::packet::{Packet, VpcDiscriminant};
+use net::packet::Packet;
 use net::tcp::Tcp;
 use std::fmt::Display;
 use std::num::NonZero;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use flow_entry::flow_table::flow_key::Uni;
-use flow_entry::flow_table::{FlowInfo, FlowKey, FlowTable};
+use flow_entry::flow_table::{FlowInfo, FlowKey};
 use flow_info::{ExtractRef, FlowStatus};
 use std::sync::atomic::AtomicU8;
 
@@ -170,88 +170,19 @@ impl Display for PortFwState {
     }
 }
 
-fn create_update_flow_entry(
-    flow_table: &Arc<FlowTable>,
-    flow_key: &FlowKey,
-    timeout: Duration,
-    dst_vpcd: VpcDiscriminant,
-    port_fw_state: PortFwState,
-) {
-    // lookup flow info for the given key in the flow table. If found, update the flow entry
-    // with port-forwarding information. This is a sanity. In principle, no such entry should
-    // exist. It might only exist if masquerading is enabled and an identical communication had
-    // been initiated from the "inside".
-    if let Some(flow_info) = flow_table.lookup(flow_key) {
-        if let Ok(mut write_guard) = flow_info.locked.write() {
-            if write_guard.port_fw_state.is_none() {
-                write_guard.port_fw_state = Some(Box::new(port_fw_state));
-            }
-            write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
-        } else {
-            error!("Failed to lock flow-info!");
-            return;
-        }
-        let _ = flow_info.reset_expiry_unchecked(timeout);
-        flow_info.update_status(FlowStatus::Active);
-        let seconds = timeout.as_secs();
-        debug!("Extended flow entry with port-forwarding data and lifetime by {seconds} seconds");
-    } else {
-        let flow_info = FlowInfo::new(Instant::now() + timeout);
-        if let Ok(mut write_guard) = flow_info.locked.write() {
-            write_guard.port_fw_state = Some(Box::new(port_fw_state));
-            write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
-        } else {
-            unreachable!()
-        }
-        debug!("Created flow entry with port-forwarding state;\nkey={flow_key}\ninfo={flow_info}");
-        flow_table.insert(*flow_key, flow_info);
-    }
-}
-
-pub(crate) fn create_port_fw_reverse_entry<Buf: PacketBufferMut>(
-    flow_table: &Arc<FlowTable>,
+pub(crate) fn setup_forward_flow<Buf: PacketBufferMut>(
+    forward_flow: &Arc<FlowInfo>,
     packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
     new_dst_port: NonZero<u16>,
-    status: AtomicPortFwFlowStatus,
-) {
-    // create a flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
-    // We derive the key for the reverse flow from the packet that we port-forward, which has src/dst vpc discriminants.
-    // We strip the dst vpcd from the key.
-    let dst_vpcd = packet.meta_mut().src_vpcd.unwrap_or_else(|| unreachable!());
-    let flow_key = FlowKey::try_from(Uni(&*packet))
-        .unwrap_or_else(|_| unreachable!())
-        .reverse()
-        .strip_dst_vpcd();
-
-    // create dynamic port-forwarding state for the reverse path
-    let port_fw_state = PortFwState::new_snat(
-        entry.key.dst_ip(),
-        new_dst_port,
-        Arc::downgrade(entry),
-        status,
-    );
-
-    create_update_flow_entry(
-        flow_table,
-        &flow_key,
-        entry.init_timeout(),
-        dst_vpcd,
-        port_fw_state,
-    );
-}
-
-pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
-    flow_table: &Arc<FlowTable>,
-    packet: &mut Packet<Buf>,
-    entry: &Arc<PortFwEntry>,
-    new_dst_port: NonZero<u16>,
-) -> AtomicPortFwFlowStatus {
+) -> (FlowKey, AtomicPortFwFlowStatus) {
+    // build flow key for the forward path from the original packet
     let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
         .unwrap_or_else(|_| unreachable!())
         .strip_dst_vpcd();
 
+    // build port forwarding state to the forward flow
     let status = AtomicPortFwFlowStatus::new();
     let port_fw_state = PortFwState::new_dnat(
         entry.dst_ip,
@@ -260,14 +191,50 @@ pub(crate) fn create_port_fw_forward_entry<Buf: PacketBufferMut>(
         status.clone(),
     );
 
-    create_update_flow_entry(
-        flow_table,
-        &flow_key,
-        entry.init_timeout(),
-        dst_vpcd,
-        port_fw_state,
-    );
-    status
+    // set the port forwarding state in the flow
+    if let Ok(mut write_guard) = forward_flow.locked.write() {
+        write_guard.port_fw_state = Some(Box::new(port_fw_state));
+        write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
+    } else {
+        unreachable!()
+    }
+
+    debug!("Set up flow for port-forwarding;\nkey={flow_key}\ninfo={forward_flow}");
+
+    (flow_key, status)
+}
+
+pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
+    reverse_flow: &Arc<FlowInfo>,
+    packet: &mut Packet<Buf>,
+    entry: &Arc<PortFwEntry>,
+    dst_port: NonZero<u16>,
+    status: AtomicPortFwFlowStatus,
+) -> FlowKey {
+    // create the flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
+    // We derive the key for the reverse flow from the packet that we port-forward, which has src/dst vpc discriminants.
+    // We strip the dst vpcd from the key.
+    let dst_vpcd = packet.meta_mut().src_vpcd.unwrap_or_else(|| unreachable!());
+    let flow_key = FlowKey::try_from(Uni(&*packet))
+        .unwrap_or_else(|_| unreachable!())
+        .reverse()
+        .strip_dst_vpcd();
+
+    // build port forwarding state to the reverse flow
+    let port_fw_state =
+        PortFwState::new_snat(entry.key.dst_ip(), dst_port, Arc::downgrade(entry), status);
+
+    // set the port forwarding state in the flow
+    if let Ok(mut write_guard) = reverse_flow.locked.write() {
+        write_guard.port_fw_state = Some(Box::new(port_fw_state));
+        write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
+    } else {
+        unreachable!()
+    }
+
+    debug!("Set up flow for port-forwarding (reverse);\nkey={flow_key}\ninfo={reverse_flow}");
+
+    flow_key
 }
 
 /// Check if the flow entry that a packet was annotated with contains any _VALID_

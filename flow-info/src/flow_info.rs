@@ -311,11 +311,19 @@ impl Display for FlowInfo {
         } else {
             write!(f, "could not lock!")?;
         }
+        let has_related = self
+            .related
+            .as_ref()
+            .and_then(|flow| flow.upgrade())
+            .map(|_| "yes")
+            .unwrap_or("no");
+
         writeln!(
             f,
-            "      status: {:?}, expires in {}s",
+            "      status: {:?}, expires in {}s, related: {}",
             self.status,
-            expires_in.as_secs()
+            expires_in.as_secs(),
+            has_related
         )
     }
 }

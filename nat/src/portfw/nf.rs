@@ -4,6 +4,7 @@
 //! Port forwarding stage
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableReader};
+use flow_entry::flow_table::FlowInfo;
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::headers::{TryIp, TryTcp, TryTransport};
@@ -12,11 +13,12 @@ use net::packet::{DoneReason, Packet};
 use pipeline::NetworkFunction;
 use std::num::NonZero;
 use std::sync::Arc;
+use std::time::Instant;
 
-use crate::portfw::flow_state::{
-    create_port_fw_forward_entry, create_port_fw_reverse_entry, get_packet_port_fw_state,
-    refresh_port_fw_entry,
-};
+use crate::portfw::flow_state::get_packet_port_fw_state;
+use crate::portfw::flow_state::refresh_port_fw_entry;
+use crate::portfw::flow_state::setup_forward_flow;
+use crate::portfw::flow_state::setup_reverse_flow;
 use crate::portfw::packet::{dnat_packet, nat_packet};
 
 #[allow(unused)]
@@ -101,17 +103,28 @@ impl PortForwarder {
     ) {
         debug!("Will map port {orig_dst_port} -> {new_dst_port} according to rule: {entry}");
 
-        // create flow entry for subsequent packets in the forward path
-        let status = create_port_fw_forward_entry(&self.flow_table, packet, entry, new_dst_port);
+        // crate a pair of related flow entries (outside the flow table). Timeout is set according to the rule
+        let (forward, reverse) = FlowInfo::related_pair(Instant::now() + entry.init_timeout());
 
-        // translate destination according to port-forwarding entry
+        // set up a flow in the forward direction for subsequent packets
+        let (key_fw, status) = setup_forward_flow(&forward, packet, entry, new_dst_port);
+
+        // translate destination according to the rule matched. If this fails, no state will be created
         if !dnat_packet(packet, entry.dst_ip.inner(), new_dst_port) {
             packet.done(DoneReason::InternalFailure);
             return;
         }
 
-        // crate a flow entry for the reverse path
-        create_port_fw_reverse_entry(&self.flow_table, packet, entry, orig_dst_port, status);
+        // set up a flow for the reverse path
+        let key_rev = setup_reverse_flow(&reverse, packet, entry, orig_dst_port, status);
+
+        // insert the two related flows
+        if let Some(prior) = self.flow_table.insert_from_arc(key_fw, &forward) {
+            debug!("Replaced flow entry: {prior}");
+        }
+        if let Some(prior) = self.flow_table.insert_from_arc(key_rev, &reverse) {
+            debug!("Replaced flow entry: {prior}");
+        }
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(
