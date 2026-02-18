@@ -497,7 +497,7 @@ impl FlowKey {
         }
     }
     #[must_use]
-    fn data_mut(&mut self) -> &mut FlowKeyData {
+    pub fn data_mut(&mut self) -> &mut FlowKeyData {
         match self {
             FlowKey::Unidirectional(data) => data,
         }
