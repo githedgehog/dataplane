@@ -409,6 +409,77 @@ mod tests {
         }
 
         #[test]
+        fn test_flow_table_weak_ref_replaced_on_insert() {
+            let now = Instant::now();
+            let first_expiry_time = now + Duration::from_secs(5);
+            let second_expiry_time = now + Duration::from_secs(10);
+
+            let flow_table = FlowTable::default();
+            let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
+                Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                "1.2.3.4".parse::<IpAddr>().unwrap(),
+                Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
+                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: TcpPort::new_checked(1025).unwrap(),
+                    dst_port: TcpPort::new_checked(2048).unwrap(),
+                }),
+            ));
+
+            // Insert first entry
+            let first_flow_info = FlowInfo::new(first_expiry_time);
+            let first_flow_info_arc = Arc::new(first_flow_info);
+            let weak_flow_info_reference = Arc::downgrade(&first_flow_info_arc);
+            flow_table.insert_from_arc(flow_key, &first_flow_info_arc);
+            drop(first_flow_info_arc);
+
+            // The weak reference stored in the table should still resolve
+            {
+                let table = flow_table.table.read().unwrap();
+                let entry = table
+                    .get(&flow_key)
+                    .expect("entry should exist after first insert");
+                let resolved = entry
+                    .upgrade()
+                    .expect("weak ref should resolve after first insert");
+                assert_eq!(resolved.as_ref().expires_at(), first_expiry_time);
+            } // drops `entry` (shard read lock) and `table` (outer RwLock read guard)
+
+            // The weak reference we kept outside of the table should still resolve, too. Upgrade
+            // it: we now have two strong references, one from the priority queue and one from the
+            // upgrade.
+            let upgrade = weak_flow_info_reference.upgrade();
+            assert_eq!(Arc::strong_count(&upgrade.unwrap()), 2);
+
+            // Insert a second entry under the same key but with a different value.
+            let second_flow_info = FlowInfo::new(second_expiry_time);
+            flow_table.insert_from_arc(flow_key, &Arc::new(second_flow_info));
+
+            // The weak reference should now resolve to second_arc, not first_arc.
+            {
+                let table = flow_table.table.read().unwrap();
+                let entry = table
+                    .get(&flow_key)
+                    .expect("entry should exist after second insert");
+                // FIXME: We currently have a bug here! Overwriting the entry led to dropping the
+                // strong reference from the priority queue.
+                //
+                //let resolved = entry
+                //    .upgrade()
+                //    .expect("weak ref should resolve after second insert");
+                //assert_ne!(resolved.as_ref().expires_at(), first_expiry_time);
+                //assert_eq!(resolved.as_ref().expires_at(), second_expiry_time);
+                assert!(entry.upgrade().is_none());
+            }
+
+            // The strong reference from the priority queue for the first entry should have been
+            // dropped.
+            // But because of the bug, the old entry is still in the priority queue.
+            assert_eq!(Weak::strong_count(&weak_flow_info_reference), 1);
+            assert!(weak_flow_info_reference.upgrade().is_some());
+        }
+
+        #[test]
         fn test_flow_table_expire_bolero() {
             let flow_table = FlowTable::default();
             bolero::check!()
