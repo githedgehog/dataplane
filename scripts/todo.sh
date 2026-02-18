@@ -11,10 +11,10 @@ npins verify
 # Step 2: build dataplane
 
 mkdir -p results
-nix build -f default.nix min-tar --out-link results/min.tar
+nix build -f default.nix min-tar --out-link results/min.tar –extra-experimental-features nix-command
 
 mkdir -p results
-nix build -f default.nix dataplane-tar --out-link results/dataplane.tar
+nix build -f default.nix dataplane-tar --out-link results/dataplane.tar –extra-experimental-features nix-command
 
 # Step 3: import dataplane
 
@@ -39,14 +39,14 @@ cargo test || true
 
 # Step 7: build test archive
 
-nix build -f default.nix tests.all --out-link results/tests.all
+nix build -f default.nix tests.all --out-link results/tests.all –extra-experimental-features nix-command
 # (one test is xfail)
 
 cargo nextest run --archive-file results/tests.all/*.tar.zst --workspace-remap "$(pwd)" || true
 
 # Step 8: build individual tests archive
 
-nix build -f default.nix tests.pkg --out-link results/tests.pkg --max-jobs 4
+nix build -f default.nix tests.pkg --out-link results/tests.pkg --max-jobs 4 –extra-experimental-features nix-command
 
 for pkg in results/tests.pkg/*/*.tar.zst; do
   # (one test is xfail)
