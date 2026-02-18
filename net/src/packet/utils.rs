@@ -193,6 +193,24 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.try_tcp().map(Tcp::destination)
     }
 
+    /// Get UDP or TCP source port
+    pub fn transport_src_port(&self) -> Option<NonZero<u16>> {
+        if let Some(port) = self.tcp_source_port().map(std::convert::Into::into) {
+            Some(port)
+        } else {
+            self.udp_source_port().map(std::convert::Into::into)
+        }
+    }
+
+    /// Get UDP or TCP destination port
+    pub fn transport_dst_port(&self) -> Option<NonZero<u16>> {
+        if let Some(port) = self.tcp_destination_port().map(std::convert::Into::into) {
+            Some(port)
+        } else {
+            self.udp_destination_port().map(std::convert::Into::into)
+        }
+    }
+
     /// Modify transport header
     ///
     /// # Errors
@@ -267,6 +285,41 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             udp.set_destination(port);
             Ok(())
         })
+    }
+
+    /// Set the source port for UDP or TCP
+    /// # Errors
+    ///
+    /// This method returns [`PacketUtilError::NoTransport`] if the packet does not have transport header
+    /// This method returns [`PacketUtilError::InvalidTransport`] if the transport is not UDP or TCP
+    pub fn set_source_port(&'_ mut self, port: NonZero<u16>) -> Result<(), PacketUtilError<'_>> {
+        if self.is_udp() {
+            self.set_udp_source_port(UdpPort::new(port))
+        } else if self.is_tcp() {
+            self.set_tcp_source_port(TcpPort::new(port))
+        } else {
+            let transport = self.try_transport().ok_or(PacketUtilError::NoTransport)?;
+            Err(PacketUtilError::InvalidTransport(transport))
+        }
+    }
+
+    /// Set the destination port for UDP or TCP
+    /// # Errors
+    ///
+    /// This method returns [`PacketUtilError::NoTransport`] if the packet does not have transport header
+    /// This method returns [`PacketUtilError::InvalidTransport`] if the transport is not UDP or TCP
+    pub fn set_destination_port(
+        &'_ mut self,
+        port: NonZero<u16>,
+    ) -> Result<(), PacketUtilError<'_>> {
+        if self.is_udp() {
+            self.set_udp_destination_port(UdpPort::new(port))
+        } else if self.is_tcp() {
+            self.set_tcp_destination_port(TcpPort::new(port))
+        } else {
+            let transport = self.try_transport().ok_or(PacketUtilError::NoTransport)?;
+            Err(PacketUtilError::InvalidTransport(transport))
+        }
     }
 
     /// Set identifier for ICMP Query message
