@@ -477,13 +477,8 @@ mod tests {
                     let flow_info_str = format!("{:?}", flow_table.lookup(flow_key).unwrap());
 
                     // We purposely keep the flow alive here to make sure lookup reaps it
-                    let flow_info = flow_table.lookup(flow_key).unwrap();
-                    if let FlowKey::Bidirectional(_) = flow_key {
-                        let reverse_info = flow_table.lookup(&flow_key.reverse()).unwrap();
-                        assert!(Arc::ptr_eq(&reverse_info, &flow_info));
-                    } else {
-                        assert!(flow_table.lookup(&flow_key.reverse()).is_none());
-                    }
+                    let _flow_info = flow_table.lookup(flow_key).unwrap();
+                    assert!(flow_table.lookup(&flow_key.reverse()).is_none());
 
                     thread::sleep(Duration::from_millis(100));
                     flow_table.reap_all_expired();
@@ -505,12 +500,7 @@ mod tests {
                 .for_each(|flow_key| {
                     flow_table.insert(*flow_key, FlowInfo::new(Instant::now()));
                     let flow_info = flow_table.lookup(flow_key).unwrap();
-                    if let FlowKey::Bidirectional(_) = flow_key {
-                        let reverse_info = flow_table.lookup(&flow_key.reverse()).unwrap();
-                        assert!(Arc::ptr_eq(&reverse_info, &flow_info));
-                    } else {
-                        assert!(flow_table.lookup(&flow_key.reverse()).is_none());
-                    }
+                    assert!(flow_table.lookup(&flow_key.reverse()).is_none());
 
                     let result = flow_table.remove(flow_key);
                     assert!(result.is_some());
