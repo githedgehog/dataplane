@@ -8,46 +8,41 @@ set -euxo pipefail
 
 npins verify
 
-# Step 2: build dataplane
+# Step 2: build sys and devroot
+
+nix --extra-experimental-features nix-command build -f default.nix devroot --out-link devroot --max-jobs 4
+nix --extra-experimental-features nix-command build -f default.nix sysroot --out-link sysroot --max-jobs 4
+
+# Step 3: build test env (min-tar)
 
 mkdir -p results
-nix build -f default.nix min-tar --out-link results/min.tar –extra-experimental-features nix-command
+nix --extra-experimental-features nix-command build -f default.nix min-tar --out-link results/min.tar
+# docker import results/min.tar min:release
 
-mkdir -p results
-nix build -f default.nix dataplane-tar --out-link results/dataplane.tar –extra-experimental-features nix-command
+# Step 4: build dataplane image
+nix --extra-experimental-features nix-command build -f default.nix dataplane-tar --out-link results/dataplane.tar
+# docker import results/dataplane.tar dataplane:debug
 
-# Step 3: import dataplane
-
-docker import results/min.tar min:release
-docker import results/dataplane.tar dataplane:debug
-
-# Step 4: cargo build
+# Step 5: cargo build
 
 cargo build
 
-# Step 5: cargo nextest run
+# Step 6: cargo nextest run
 
-# (one test is xfail)
+cargo nextest run
 
-cargo nextest run || true
+# Step 7: cargo test run
 
-# Step 6: cargo test run
+cargo test
 
-# (one test is xfail)
+# Step 7: build and run test archive
 
-cargo test || true
-
-# Step 7: build test archive
-
-nix build -f default.nix tests.all --out-link results/tests.all –extra-experimental-features nix-command
-# (one test is xfail)
-
+nix --extra-experimental-features nix-command build -f default.nix tests.all --out-link results/tests.all
 cargo nextest run --archive-file results/tests.all/*.tar.zst --workspace-remap "$(pwd)" || true
 
-# Step 8: build individual tests archive
+# Step 8: build individual tests archives
 
-nix build -f default.nix tests.pkg --out-link results/tests.pkg --max-jobs 4 –extra-experimental-features nix-command
-
+nix --extra-experimental-features nix-command build -f default.nix tests.pkg --out-link results/tests.pkg --max-jobs 4
 for pkg in results/tests.pkg/*/*.tar.zst; do
   # (one test is xfail)
   cargo nextest run --archive-file "${pkg}" --workspace-remap "$(pwd)" || true

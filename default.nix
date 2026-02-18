@@ -122,7 +122,6 @@ let
       cargo-nextest
       direnv
       gateway-crd
-      hwloc.dev
       just
       kopium
       llvmPackages'.clang # you need the host compiler in order to link proc macros
@@ -138,7 +137,7 @@ let
     inputsFrom = [ sysroot ];
     shellHook = ''
       export RUSTC_BOOTSTRAP=1
-      export PS1="⟪\$PWD⟫\\n⟪dataplane⟫ "
+      export PS1="\n⟪\$PWD⟫\\n⟪dataplane⟫ "
     '';
   };
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
@@ -471,35 +470,34 @@ let
     inherit version;
     dontUnpack = true;
     src = null;
-    buildPhase =
-      ''
-        tmp="$(mktemp -d)"
-        tar xf "${min-tar}" -C "$tmp"
-        chown -R $(id -u):$(id -g) $tmp
-        chmod +w $tmp/bin
-        cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
-        cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
-        cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
-        ln -s cli "$tmp/bin/sh"
-        cd "$tmp"
-        # we take some care to make the tar file reproducible here
-        tar \
-          --create \
-          --file "$out" \
-          --sort=name \
-          --clamp-mtime \
-          --mtime=0 \
-          --format=posix \
-          --numeric-owner \
-          --owner=0 \
-          --group=0 \
-          --mode='ugo-sw' \
-          --no-acls \
-          --no-xattrs \
-          --no-selinux \
-          --verbose \
-          .
-      '';
+    buildPhase = ''
+      tmp="$(mktemp -d)"
+      tar xf "${min-tar}" -C "$tmp"
+      chown -R $(id -u):$(id -g) $tmp
+      chmod +w $tmp/bin
+      cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
+      cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
+      cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
+      ln -s cli "$tmp/bin/sh"
+      cd "$tmp"
+      # we take some care to make the tar file reproducible here
+      tar \
+        --create \
+        --file "$out" \
+        --sort=name \
+        --clamp-mtime \
+        --mtime=0 \
+        --format=posix \
+        --numeric-owner \
+        --owner=0 \
+        --group=0 \
+        --mode='ugo-sw' \
+        --no-acls \
+        --no-xattrs \
+        --no-selinux \
+        --verbose \
+        .
+    '';
 
   };
 
