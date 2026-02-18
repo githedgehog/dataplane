@@ -310,8 +310,9 @@ impl FlowTable {
         self.remove_flow_entries(&reaped_keys)
     }
 
-    #[cfg(test)]
     #[allow(clippy::len_without_is_empty)]
+    /// Tell how many flows are in the table if it can be locked
+    /// This is mostly for testing
     pub fn len(&self) -> Option<usize> {
         let table = self.table.try_read().ok()?;
         Some(table.len())
