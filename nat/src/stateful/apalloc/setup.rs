@@ -4,6 +4,7 @@
 use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
+use crate::ranges::IpRange;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::{NatAllocator, NatIp};
@@ -11,7 +12,8 @@ use config::ConfigError;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::utils::collapse_prefixes_peering;
-use lpm::prefix::{IpPrefix, Prefix, PrefixWithOptionalPorts};
+use lpm::prefix::range_map::DisjointRangesBTreeMap;
+use lpm::prefix::{IpPrefix, IpRangeWithPorts, PortRange, Prefix, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,6 +72,7 @@ impl NatDefaultAllocator {
             &peering.local,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_44,
+            VpcManifest::port_forwarding_exposes_44,
             VpcExpose::as_range_or_empty,
             |expose| &expose.ips,
             &mut self.pools_src44,
@@ -80,6 +83,7 @@ impl NatDefaultAllocator {
             &peering.local,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_66,
+            VpcManifest::port_forwarding_exposes_66,
             VpcExpose::as_range_or_empty,
             |expose| &expose.ips,
             &mut self.pools_src66,
@@ -96,6 +100,7 @@ impl NatDefaultAllocator {
             &peering.remote,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_44,
+            VpcManifest::port_forwarding_exposes_44,
             |expose| &expose.ips,
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst44,
@@ -106,6 +111,7 @@ impl NatDefaultAllocator {
             &peering.remote,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_66,
+            VpcManifest::port_forwarding_exposes_66,
             |expose| &expose.ips,
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst66,
@@ -115,11 +121,13 @@ impl NatDefaultAllocator {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G, H>(
+fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, G, H, P, PIter>(
     manifest: &'a VpcManifest,
     dst_vpc_id: VpcDiscriminant,
     // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
     exposes_filter: F,
+    // A filter to select other exposes with port forwarding, for the relevant IP version
+    port_forwarding_exposes_filter: P,
     // A function to get the list of prefixes to translate into
     original_prefixes_from_expose: G,
     // A function to get the list of prefixes to translate from
@@ -128,17 +136,27 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G
     icmp_proto: NextHeader,
 ) -> Result<(), AllocatorError>
 where
-    F: FnOnce(&'a VpcManifest) -> Iter,
-    Iter: Iterator<Item = &'a VpcExpose>,
+    F: FnOnce(&'a VpcManifest) -> FIter,
+    FIter: Iterator<Item = &'a VpcExpose>,
+    P: FnOnce(&'a VpcManifest) -> PIter,
+    PIter: Iterator<Item = &'a VpcExpose>,
     G: Fn(&'a VpcExpose) -> &'a BTreeSet<PrefixWithOptionalPorts>,
     H: Fn(&'a VpcExpose) -> &'a BTreeSet<PrefixWithOptionalPorts>,
 {
+    let port_forwarding_exposes: Vec<&'a VpcExpose> =
+        port_forwarding_exposes_filter(manifest).collect();
     exposes_filter(manifest).try_for_each(|expose| {
+        let prefixes_and_ports_to_exclude_from_pools =
+            find_masquerade_portfw_overlap(&port_forwarding_exposes, expose);
+
         // We should always have an idle timeout if we process this expose for stateful NAT.
         let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
 
-        let tcp_ip_allocator =
-            ip_allocator_for_prefixes(original_prefixes_from_expose(expose), idle_timeout)?;
+        let tcp_ip_allocator = ip_allocator_for_prefixes(
+            original_prefixes_from_expose(expose),
+            idle_timeout,
+            &prefixes_and_ports_to_exclude_from_pools,
+        )?;
         let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
         let icmp_ip_allocator = tcp_ip_allocator.deep_clone()?;
 
@@ -152,6 +170,33 @@ where
             icmp_proto,
         )
     })
+}
+
+fn find_masquerade_portfw_overlap<'a>(
+    port_forwarding_exposes: &Vec<&'a VpcExpose>,
+    expose: &'a VpcExpose,
+) -> BTreeSet<PrefixWithOptionalPorts> {
+    port_forwarding_exposes
+        .iter()
+        .flat_map(|pf_expose| intersection_list_prefixes(&pf_expose.ips, &expose.ips))
+        .collect()
+}
+
+// Maybe we should wrap the list of prefixes for VpcExpose into some type and make this a method of
+// this type, one day
+fn intersection_list_prefixes(
+    list_left: &BTreeSet<PrefixWithOptionalPorts>,
+    list_right: &BTreeSet<PrefixWithOptionalPorts>,
+) -> BTreeSet<PrefixWithOptionalPorts> {
+    let mut result = BTreeSet::new();
+    for prefix_left in list_left {
+        for prefix_right in list_right {
+            if let Some(intersection) = prefix_left.intersection(prefix_right) {
+                result.insert(intersection);
+            }
+        }
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -207,14 +252,20 @@ fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
     prefixes: &BTreeSet<PrefixWithOptionalPorts>,
     idle_timeout: Duration,
+    prefixes_and_ports_to_exclude_from_pools: &BTreeSet<PrefixWithOptionalPorts>,
 ) -> Result<IpAllocator<J>, AllocatorError> {
-    let pool = create_natpool(prefixes, idle_timeout)?;
+    let pool = create_natpool(
+        prefixes,
+        prefixes_and_ports_to_exclude_from_pools,
+        idle_timeout,
+    )?;
     let allocator = IpAllocator::new(pool);
     Ok(allocator)
 }
 
 fn create_natpool<J: NatIpWithBitmap>(
     prefixes: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes_and_ports_to_exclude_from_pools: &BTreeSet<PrefixWithOptionalPorts>,
     idle_timeout: Duration,
 ) -> Result<NatPool<J>, AllocatorError> {
     // Build mappings for IPv6 <-> u32 bitmap translation
@@ -233,12 +284,34 @@ fn create_natpool<J: NatIpWithBitmap>(
         // FIXME: Add port range, too
         .try_for_each(|prefix| bitmap.add_prefix(&prefix.prefix(), &reverse_bitmap_mapping))?;
 
+    let reserved_prefixes_ports =
+        build_reserved_prefixes_ports(prefixes_and_ports_to_exclude_from_pools)?;
+
     Ok(NatPool::new(
         bitmap,
         bitmap_mapping,
         reverse_bitmap_mapping,
+        reserved_prefixes_ports,
         idle_timeout,
     ))
+}
+
+fn build_reserved_prefixes_ports(
+    prefixes_and_ports_to_exclude_from_pools: &BTreeSet<PrefixWithOptionalPorts>,
+) -> Result<Option<DisjointRangesBTreeMap<IpRange, PortRange>>, AllocatorError> {
+    if prefixes_and_ports_to_exclude_from_pools.is_empty() {
+        return Ok(None);
+    }
+    let mut reserved_prefixes_ports = DisjointRangesBTreeMap::new();
+    for prefix in prefixes_and_ports_to_exclude_from_pools {
+        reserved_prefixes_ports.insert(
+            prefix.prefix().into(),
+            prefix.ports().ok_or(AllocatorError::InternalIssue(format!(
+                "Expected port range for port forwarding prefix {prefix:?}"
+            )))?,
+        );
+    }
+    Ok(Some(reserved_prefixes_ports))
 }
 
 fn pool_table_tcp_key_for_expose<I: NatIp>(
@@ -299,4 +372,154 @@ fn create_ipv6_bitmap_mappings(
         }
     }
     Ok((bitmap_mapping, reverse_bitmap_mapping))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_masquerade_portfw_overlap, intersection_list_prefixes};
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
+    use std::collections::BTreeSet;
+
+    fn prefix_with_ports(s: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(s.into(), Some(PortRange::new(start, end).unwrap()))
+    }
+
+    // intersection_list_prefixes()
+
+    #[test]
+    fn intersection_list_prefixes_both_empty() {
+        let result = intersection_list_prefixes(&BTreeSet::new(), &BTreeSet::new());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn intersection_list_prefixes_left_empty() {
+        let right = BTreeSet::from(["10.0.0.0/24".into()]);
+        let result = intersection_list_prefixes(&BTreeSet::new(), &right);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn intersection_list_prefixes_right_empty() {
+        let left = BTreeSet::from(["10.0.0.0/24".into()]);
+        let result = intersection_list_prefixes(&left, &BTreeSet::new());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn intersection_list_prefixes_no_overlap() {
+        let left = BTreeSet::from(["10.0.0.0/24".into()]);
+        let right = BTreeSet::from(["192.168.0.0/24".into()]);
+        let result = intersection_list_prefixes(&left, &right);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn intersection_list_prefixes_identical() {
+        let left = BTreeSet::from(["10.0.0.0/24".into()]);
+        let right = BTreeSet::from(["10.0.0.0/24".into()]);
+        let result = intersection_list_prefixes(&left, &right);
+        assert_eq!(result, BTreeSet::from(["10.0.0.0/24".into()]));
+    }
+
+    #[test]
+    fn intersection_list_prefixes_subset() {
+        // /24 is a subset of /16
+        let left = BTreeSet::from(["10.0.0.0/16".into()]);
+        let right = BTreeSet::from(["10.0.1.0/24".into()]);
+        let result = intersection_list_prefixes(&left, &right);
+        assert_eq!(result, BTreeSet::from(["10.0.1.0/24".into()]));
+    }
+
+    #[test]
+    fn intersection_list_prefixes_multiple_overlaps() {
+        let left = BTreeSet::from(["10.0.0.0/16".into(), "172.16.0.0/16".into()]);
+        let right = BTreeSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()]);
+        let result = intersection_list_prefixes(&left, &right);
+        assert_eq!(
+            result,
+            BTreeSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()])
+        );
+    }
+
+    #[test]
+    fn intersection_list_prefixes_partial_overlap_multiple_left() {
+        let left = BTreeSet::from(["10.0.0.0/24".into(), "192.168.0.0/24".into()]);
+        let right = BTreeSet::from(["10.0.0.0/16".into()]);
+        // Only 10.0.0.0/24 overlaps with 10.0.0.0/16, resulting in 10.0.0.0/24
+        let result = intersection_list_prefixes(&left, &right);
+        assert_eq!(result, BTreeSet::from(["10.0.0.0/24".into()]));
+    }
+
+    #[test]
+    fn intersection_list_prefixes_with_ports() {
+        let left = BTreeSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)]);
+        let right = BTreeSet::from(["10.0.0.0/24".into()]);
+        let result = intersection_list_prefixes(&left, &right);
+        assert_eq!(
+            result,
+            BTreeSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)])
+        );
+    }
+
+    #[test]
+    fn intersection_list_prefixes_with_overlapping_ports() {
+        let left = BTreeSet::from([prefix_with_ports("10.0.0.0/24", 80, 200)]);
+        let right = BTreeSet::from([prefix_with_ports("10.0.0.0/24", 150, 300)]);
+        let result = intersection_list_prefixes(&left, &right);
+        assert_eq!(
+            result,
+            BTreeSet::from([prefix_with_ports("10.0.0.0/24", 150, 200)])
+        );
+    }
+
+    #[test]
+    fn intersection_list_prefixes_with_disjoint_ports() {
+        let left = BTreeSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)]);
+        let right = BTreeSet::from([prefix_with_ports("10.0.0.0/24", 200, 300)]);
+        let result = intersection_list_prefixes(&left, &right);
+        assert!(result.is_empty());
+    }
+
+    // find_masquerade_portfw_overlap()
+
+    #[test]
+    fn find_masquerade_portfw_overlap_multiple_pf_exposes() {
+        let expose = VpcExpose::empty()
+            .ip("10.0.0.0/16".into())
+            .ip("172.16.0.0/16".into());
+        let pf_expose1 = VpcExpose::empty().ip("10.0.1.0/24".into());
+        let pf_expose2 = VpcExpose::empty().ip("172.16.5.0/24".into());
+        let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
+        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+        assert_eq!(
+            result,
+            BTreeSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()])
+        );
+    }
+
+    #[test]
+    fn find_masquerade_portfw_overlap_with_ports() {
+        let expose = VpcExpose::empty().ip("10.0.0.0/24".into());
+        let pf_expose = VpcExpose::empty().ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
+        let pf_exposes_vec = vec![&pf_expose];
+        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+        assert_eq!(
+            result,
+            BTreeSet::from([prefix_with_ports("10.0.0.0/24", 8080, 8090)])
+        );
+    }
+
+    #[test]
+    fn find_masquerade_portfw_overlap_duplicates_collapsed() {
+        // Two port-forwarding exposes with the same prefix should produce one entry
+        let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
+        let pf_expose1 = VpcExpose::empty().ip("10.0.1.0/24".into());
+        let pf_expose2 = VpcExpose::empty().ip("10.0.1.0/24".into());
+        let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
+        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result, BTreeSet::from(["10.0.1.0/24".into()]));
+    }
 }

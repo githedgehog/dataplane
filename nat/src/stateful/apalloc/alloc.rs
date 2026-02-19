@@ -11,10 +11,12 @@
 
 use super::{NatIpWithBitmap, port_alloc};
 use crate::port::NatPort;
+use crate::ranges::IpRange;
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
 use concurrency::sync::{Arc, RwLock, Weak};
-use lpm::prefix::{IpPrefix, Prefix};
+use lpm::prefix::range_map::DisjointRangesBTreeMap;
+use lpm::prefix::{IpPrefix, PortRange, Prefix};
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::Ipv6Addr;
@@ -233,6 +235,7 @@ pub(crate) struct NatPool<I: NatIpWithBitmap> {
     bitmap_mapping: BTreeMap<u32, u128>,
     reverse_bitmap_mapping: BTreeMap<u128, u32>,
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
+    reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
     idle_timeout: Duration,
 }
 
@@ -241,6 +244,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         bitmap: PoolBitmap,
         bitmap_mapping: BTreeMap<u32, u128>,
         reverse_bitmap_mapping: BTreeMap<u128, u32>,
+        reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
         idle_timeout: Duration,
     ) -> Self {
         Self {
@@ -248,6 +252,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             bitmap_mapping,
             reverse_bitmap_mapping,
             in_use: VecDeque::new(),
+            reserved_prefixes_ports,
             idle_timeout,
         }
     }
