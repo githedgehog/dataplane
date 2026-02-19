@@ -69,7 +69,7 @@ pub fn build_test_ipv4_packet_with_transport(
         }
 
         Some(NextHeader::UDP) => {
-            let mut udp = Udp::default();
+            let mut udp = Udp::empty();
             udp.set_source(123.try_into().unwrap());
             udp.set_destination(456.try_into().unwrap());
             Some(Transport::Udp(udp))

@@ -109,7 +109,7 @@ pub enum DoneReason {
 
 bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    struct MetaFlags: u16 {
+    struct MetaFlags: u32 {
         const INITIALIZED = 0b0000_0001; /* initialized */
         const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
         const NATTED      = 0b0000_0100; /* set to true if a packet has been NATed */
@@ -118,6 +118,7 @@ bitflags! {
         const IS_OVERLAY  = 0b0010_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
         const REQ_STATEFUL_NAT  = 0b0100_0000;      /* Packet requires stateful NAT (source and/or destination) */
         const REQ_STATELESS_NAT = 0b1000_0000;      /* Packet requires stateless NAT (source and/or destination) */
+        const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
     }
 }
 
@@ -180,6 +181,17 @@ impl PacketMeta {
             self.flags.insert(MetaFlags::REQ_STATELESS_NAT);
         } else {
             self.flags.remove(MetaFlags::REQ_STATELESS_NAT);
+        }
+    }
+    #[must_use]
+    pub fn requires_port_forwarding(&self) -> bool {
+        self.flags.contains(MetaFlags::REQ_PORT_FORWARDING)
+    }
+    pub fn set_port_forwarding(&mut self, value: bool) {
+        if value {
+            self.flags.insert(MetaFlags::REQ_PORT_FORWARDING);
+        } else {
+            self.flags.remove(MetaFlags::REQ_PORT_FORWARDING);
         }
     }
 

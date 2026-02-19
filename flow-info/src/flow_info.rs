@@ -126,6 +126,9 @@ pub struct FlowInfoLocked {
 
     // State information for stateful NAT, (see NatFlowState)
     pub nat_state: Option<Box<dyn FlowInfoItem>>,
+
+    // State information for port forwarding
+    pub port_fw_state: Option<Box<dyn FlowInfoItem>>,
 }
 
 #[derive(Debug)]
@@ -277,14 +280,23 @@ impl FlowInfo {
     /// # Thread Safety
     ///
     /// This method is thread-safe.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the status transition is invalid.
-    ///
-    pub fn update_status(&self, status: FlowStatus) -> Result<(), FlowInfoError> {
+    pub fn update_status(&self, status: FlowStatus) {
         self.status
             .store(status, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Display for FlowInfoLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(data) = &self.dst_vpcd {
+            writeln!(f, "      dst-vpcd:{}", data)?;
+        }
+        if let Some(data) = &self.port_fw_state {
+            writeln!(f, "      port-forwarding:{}", data)?;
+        }
+        if let Some(data) = &self.nat_state {
+            writeln!(f, "      nat-state:{}", data)?;
+        }
         Ok(())
     }
 }
@@ -293,12 +305,17 @@ impl Display for FlowInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let expires_at = self.expires_at.load(Ordering::Relaxed);
         let expires_in = expires_at.saturating_duration_since(Instant::now());
-        write!(
+        writeln!(f)?;
+        if let Ok(info) = self.locked.try_read() {
+            write!(f, "{}", info)?;
+        } else {
+            write!(f, "could not lock!")?;
+        }
+        writeln!(
             f,
-            " status: {:?}, expires in {}s",
+            "      status: {:?}, expires in {}s",
             self.status,
             expires_in.as_secs()
         )
-        // we can't show the flowinfo yet.
     }
 }
