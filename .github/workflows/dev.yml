@@ -439,7 +439,6 @@ jobs:
       prebuild: "just bump dataplane ${{ needs.version.outputs.version }}-release"
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
-      gateway_agentless: true
       includeonie: ${{ matrix.includeonie }}
       buildmode: ${{ matrix.buildmode }}
       vpcmode: ${{ matrix.vpcmode }}
