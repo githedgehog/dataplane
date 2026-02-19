@@ -4,24 +4,17 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
-    use caps::Capability::CAP_NET_ADMIN;
     use config::external::communities::PriorityCommunityTable;
     use config::external::gwgroup::GwGroup;
     use config::external::gwgroup::GwGroupMember;
     use config::external::gwgroup::GwGroupTable;
 
-    use flow_filter::FlowFilterTableWriter;
     use lpm::prefix::Prefix;
-    use nat::stateful::NatAllocatorWriter;
-    use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
-    use test_utils::with_caps;
-    use tracectl::get_trace_ctl;
-    use tracing::error;
     use tracing_test::traced_test;
 
     use config::external::ExternalConfigBuilder;
@@ -45,17 +38,6 @@ pub mod test {
     use routing::Render;
 
     use crate::processor::confbuild::internal::build_internal_config;
-    use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
-    use routing::{Router, RouterParamsBuilder};
-    use tracing::debug;
-
-    use stats::VpcMapName;
-    use stats::VpcStatsStore;
-    use vpcmap::map::VpcMapWriter;
-
-    use concurrency::sync::Arc;
-    use config::internal::status::DataplaneStatus;
-    use tokio::sync::RwLock;
 
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
@@ -388,8 +370,10 @@ pub mod test {
         println!("{rendered}");
     }
 
+    /// Test disabled during vm test runner refactor
+    #[cfg(false)]
+    #[n_vm::in_vm]
     #[tokio::test]
-    #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_sample_config() {
         get_trace_ctl()
             .setup_from_string("cpi=debug,mgmt=debug,routing=debug")

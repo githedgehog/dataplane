@@ -3,6 +3,7 @@
 
 //! DPDK dataplane driver
 
+#![cfg(feature = "dpdk")]
 #![allow(unused)]
 
 use dpdk::dev::{Dev, TxOffloadConfig};
