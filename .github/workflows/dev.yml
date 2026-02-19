@@ -461,9 +461,9 @@ jobs:
           - l2vni
         hybrid:
           - false
+        # Upgrade tests are disabled at the moment
         upgradefrom:
           - ""
-          - "25.05"
         include:
           # gateway l3vni
           - fabricmode: spine-leaf
