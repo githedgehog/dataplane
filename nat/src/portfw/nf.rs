@@ -182,13 +182,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
-            // FIXME: here we'll attempt to process all packets
-            // If flow-filter can identify if packets have to be port-forwarded
-            // here we can filter out with packet.meta().requires_port_forwarding().
-            #[allow(clippy::collapsible_if)]
-            if !packet.is_done() {
+            if !packet.is_done() && packet.meta().requires_port_forwarding() {
                 if let Some(pfwtable) = self.fwtable.enter() {
                     self.process_packet(&mut packet, pfwtable.as_ref());
+                } else {
+                    // we were told to port-forward but we couldn't. So, drop the packet
+                    packet.done(DoneReason::InternalFailure);
                 }
             }
             packet.enforce()

@@ -97,6 +97,7 @@ mod nf_test {
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
+        packet.meta_mut().set_port_forwarding(true);
         packet
     }
 
@@ -106,6 +107,7 @@ mod nf_test {
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
+        packet.meta_mut().set_port_forwarding(true);
         packet
     }
 
@@ -114,6 +116,7 @@ mod nf_test {
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
+        packet.meta_mut().set_port_forwarding(true);
         packet
     }
 
