@@ -3,15 +3,16 @@
 
 //! Port forwarding flow state
 
+#![allow(clippy::single_match_else)]
+
 use net::buffer::PacketBufferMut;
 use net::headers::TryTcp;
 use net::ip::UnicastIpAddr;
-use net::packet::Packet;
+use net::packet::{DoneReason, Packet};
 use net::tcp::Tcp;
 use std::fmt::Display;
 use std::num::NonZero;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use flow_entry::flow_table::flow_key::Uni;
 use flow_entry::flow_table::{FlowInfo, FlowKey};
@@ -242,18 +243,18 @@ pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
 pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
 ) -> Option<PortFwState> {
-    let Some(flow_info) = packet.meta().flow_info.as_ref() else {
+    let Some(flow) = packet.meta().flow_info.as_ref() else {
         debug!("Packet has no flow-info associated");
         return None;
     };
-    let status = flow_info.status();
+    let status = flow.status();
     if status != FlowStatus::Active {
         debug!("Packet flow-info is not active (status:{status})");
         return None;
     }
-    let Ok(flow_info_locked) = flow_info.locked.read() else {
+    let Ok(flow_info_locked) = flow.locked.read() else {
         error!("Packet has flow-info but it could not be locked");
-        unreachable!();
+        return None;
     };
     let Some(state) = flow_info_locked
         .port_fw_state
@@ -265,11 +266,10 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
     };
     if state.rule.upgrade().is_none() {
         debug!("Packet flow-info contains port-forwarding state, but rule has been deleted");
-        let _ = flow_info.reset_expiry_unchecked(Duration::from_secs(0));
-        flow_info.update_status(FlowStatus::Expired);
+        invalidate_flow_state(packet);
         return None;
     }
-    debug!("Packet hit entry with port-forwarding state: {flow_info}");
+    debug!("Packet hit entry with port-forwarding state: {flow}");
     Some(state.clone())
 }
 
@@ -326,24 +326,17 @@ fn next_flow_status<Buf: PacketBufferMut>(
     }
 }
 
-/// Get the initial timeout to refresh a flow entry with port-forwarding state.
-/// If the port-forwarding entry cannot be accessible (rule was removed),
-/// use zero seconds.
-fn fetch_rule_initial_timeout(pfw_state: &PortFwState) -> Duration {
-    pfw_state
-        .rule
-        .upgrade()
-        .map_or(Duration::from_secs(0), |entry| entry.init_timeout())
-}
-
-/// Get the established timeout to refresh a flow entry with port-forwarding state
-/// If the port-forwarding entry cannot be accessible (rule was removed),
-/// use zero seconds.
-fn fetch_rule_established_timeout(pfw_state: &PortFwState) -> Duration {
-    pfw_state
-        .rule
-        .upgrade()
-        .map_or(Duration::from_secs(0), |entry| entry.estab_timeout())
+/// Invalidate the flow that this packet matched and the related one if any.
+fn invalidate_flow_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
+    let Some(flow_info) = packet.meta().flow_info.as_ref() else {
+        return;
+    };
+    flow_info.invalidate();
+    flow_info
+        .related
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .inspect(|related| related.invalidate());
 }
 
 /// Update the port-forwarding state of a flow entry after processing a packet.
@@ -362,26 +355,49 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     //(*) Note: atm, this is a clone of the state found by the packet
     // That's fine for updating the status since it's an arc'ed atomic
 
-    // update the status depending on the packet and the current status
+    // recover the rule used to port-forward this packet. If the rule has been dropped,
+    // invalidate the flows, since that indicates that the rule was removed from the config
+    // and drop the packet.
+    let Some(entry) = state.rule.upgrade() else {
+        invalidate_flow_state(packet);
+        packet.done(DoneReason::Filtered);
+        return;
+    };
+
+    // update the flow status (for port forwading) depending on the packet and the current status
     let new_status = next_flow_status(packet, state);
     let current_status = state.status.load();
     if new_status != current_status {
-        debug!("State transition from {current_status} -> {new_status}");
+        debug!("Flow state transitions from {current_status} -> {new_status}");
         state.status.store(new_status);
     }
 
-    // compute the extent to which the lifetime of the flow entry should be extended
-    // depending on the associated port-forwarding rule and the new state of the flow.
+    // compute new timeout for the flow. In case of reset, invalidate the flows in both directions.
+    // but do not drop the packet since we want it to make to its recipient.
     let extend_by = match new_status {
-        PortFwFlowStatus::Established => fetch_rule_established_timeout(state),
-        PortFwFlowStatus::Reset => Duration::from_secs(0),
-        _ => fetch_rule_initial_timeout(state),
+        PortFwFlowStatus::Established => entry.estab_timeout(),
+        PortFwFlowStatus::Reset => return invalidate_flow_state(packet),
+        _ => entry.init_timeout(),
     };
 
-    // refresh the entry
-    if let Some(flow_info) = packet.meta_mut().flow_info.as_mut() {
-        let _ = flow_info.reset_expiry_unchecked(extend_by);
-        let seconds = extend_by.as_secs();
-        debug!("Extended flow entry timeout by {seconds} seconds");
+    let seconds = extend_by.as_secs();
+
+    // refresh the flow. In general, we only refresh the flow in one direction ...
+    if let Some(flow) = packet.meta_mut().flow_info.as_mut() {
+        match flow.reset_expiry_unchecked(extend_by) {
+            Ok(()) => debug!("Extended flow lifetime by {seconds}s"),
+            Err(_) => warn!("Failed to extend flow lifetime by {seconds}s"),
+        }
+
+        // .. except if we transition to established, as that is a sound indication of legit traffic
+        if new_status == PortFwFlowStatus::Established && new_status != current_status {
+            flow.related
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .inspect(|reverse| match reverse.reset_expiry_unchecked(extend_by) {
+                    Ok(()) => debug!("Extended reverse-flow lifetime by {seconds}s"),
+                    Err(_) => warn!("Failed to extend reverse-flow lifetime by {seconds}s"),
+                });
+        }
     }
 }

@@ -133,27 +133,26 @@ impl PortForwarder {
         pfwtable: &PortFwTable,
     ) {
         let nfi = &self.name;
+        // check if the packet can be port forwarded at all
         let Some((key, dst_port)) = Self::can_be_port_forwarded(packet) else {
-            if let Some(reason) = packet.get_done() {
-                debug!("{nfi}: packet cannot be port-forwarded. Dropping it (reason:{reason})");
-            } else {
-                debug!("{nfi}: packet cannot be port-forwarded. Releasing it.");
-            }
+            packet.done(DoneReason::Filtered);
+            let reason = packet.get_done().unwrap_or_else(|| unreachable!());
+            debug!("{nfi}: packet cannot be port-forwarded. Dropping it (reason:{reason})");
             return;
         };
 
-        // lookup the port-forwarding rule with the given key that contains the given port
+        // lookup the port-forwarding rule, using the given key, that contains the destination port
         let Some(entry) = pfwtable.lookup_matching_rule(&key, dst_port) else {
-            debug!("{nfi}: no rule found for port-forwarding key {key}. Releasing packet...");
+            debug!("{nfi}: no rule found for port-forwarding key {key}. Dropping packet.");
+            packet.done(DoneReason::Filtered);
             return;
         };
 
-        // map the destination port
-        let ext_ports = entry.ext_ports;
-        let Some(new_dst_port) = entry.ext_ports.map_port_to(dst_port, entry.dst_ports) else {
-            debug!("{nfi}: port {dst_port} is not in {ext_ports}. Releasing packet...",);
-            return;
-        };
+        // map the destination port. This can't fail since we found a rule containing the port.
+        let new_dst_port = entry
+            .ext_ports
+            .map_port_to(dst_port, entry.dst_ports)
+            .unwrap_or_else(|| unreachable!());
         self.do_port_forwarding(packet, entry, dst_port, new_dst_port);
     }
 
@@ -164,11 +163,13 @@ impl PortForwarder {
         pfwtable: &PortFwTable,
     ) {
         if let Some(pfw_state) = get_packet_port_fw_state(packet) {
+            // this is the fast-path based on the flow table
             if !nat_packet(packet, &pfw_state) {
                 error!("Failed to nat port-forwarded packet");
                 packet.done(DoneReason::InternalFailure);
                 return;
             }
+            // refresh the state. Packet may still be dropped here
             refresh_port_fw_entry(packet, &pfw_state);
         } else {
             self.try_port_forwarding(packet, pfwtable);
