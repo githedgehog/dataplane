@@ -112,6 +112,15 @@ impl Prefix {
         }
     }
 
+    /// Returns the last `IpAddr` covered by the prefix
+    #[must_use]
+    pub fn last_address(&self) -> IpAddr {
+        match *self {
+            Prefix::IPV4(p) => p.last_address().into(),
+            Prefix::IPV6(p) => p.last_address().into(),
+        }
+    }
+
     /// Get prefix length
     #[must_use]
     pub fn length(&self) -> u8 {
