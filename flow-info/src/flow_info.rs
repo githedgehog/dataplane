@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub enum FlowInfoError {
     #[error("flow expired")]
     FlowExpired(Instant),
+    #[error("flow was cancelled")]
+    FlowCancelled,
     #[error("no such status")]
     NoSuchStatus(u8),
     #[error("Timeout unchanged: would go backwards")]
@@ -25,17 +27,20 @@ pub enum FlowInfoError {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FlowStatus {
+    // the flow is valid for packet processing
     Active = 0,
-    Expired = 1,
-    Removed = 2,
+    // the flow is invalid and should not be used for packet processing even if present
+    Cancelled = 1,
+    // the flow is invalid because it timed out and will be removed from the flow table
+    Expired = 2,
 }
 
 impl Display for FlowStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Active => write!(f, "active"),
+            Self::Cancelled => write!(f, "cancelled"),
             Self::Expired => write!(f, "expired"),
-            Self::Removed => write!(f, "removed"),
         }
     }
 }
@@ -46,8 +51,8 @@ impl TryFrom<u8> for FlowStatus {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(FlowStatus::Active),
-            1 => Ok(FlowStatus::Expired),
-            2 => Ok(FlowStatus::Removed),
+            1 => Ok(FlowStatus::Cancelled),
+            2 => Ok(FlowStatus::Expired),
             v => Err(FlowInfoError::NoSuchStatus(v)),
         }
     }
@@ -242,12 +247,13 @@ impl FlowInfo {
     ///
     /// Returns `FlowInfoError::FlowExpired` if the flow is expired with the expiry `Instant`.
     /// Returns `FlowInfoError::TimeoutUnchanged` if the new timeout is smaller than the current.
-    ///
+    /// Returns `FlowInfoError::FlowCancelled` if the flow had been cancelled
     pub fn reset_expiry(&self, duration: Duration) -> Result<(), FlowInfoError> {
-        if self.status.load(std::sync::atomic::Ordering::Relaxed) == FlowStatus::Expired {
-            return Err(FlowInfoError::FlowExpired(self.expires_at()));
+        match self.status.load(std::sync::atomic::Ordering::Relaxed) {
+            FlowStatus::Active => self.reset_expiry_unchecked(duration),
+            FlowStatus::Cancelled => Err(FlowInfoError::FlowCancelled),
+            FlowStatus::Expired => Err(FlowInfoError::FlowExpired(self.expires_at())),
         }
-        self.reset_expiry_unchecked(duration)
     }
 
     /// Reset the expiry of the flow without checking if it is already expired.
@@ -271,8 +277,34 @@ impl FlowInfo {
         Ok(())
     }
 
+    /// Get the `FlowStatus` of a `FlowInfo` object
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe.
     pub fn status(&self) -> FlowStatus {
         self.status.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Tell if a `FlowInfo` is valid for processing the packets that match it.
+    /// Only `FlowInfo`s with status `FlowStatus::Active` are. This method is mostly useful for NFs
+    /// which don't care about the actual states that a flow may have.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe.
+    pub fn is_valid(&self) -> bool {
+        self.status() == FlowStatus::Active
+    }
+
+    /// Cancel a flow. In other words, invalidate it so that it is not used to process packets.
+    /// Note: a canceled flow may still remain in the flow table until its timer expires.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe.
+    pub fn invalidate(&self) {
+        self.update_status(FlowStatus::Cancelled);
     }
 
     /// Update the flow status.
