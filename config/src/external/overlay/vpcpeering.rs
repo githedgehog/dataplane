@@ -672,6 +672,18 @@ impl VpcManifest {
             .filter(|expose| !expose.has_stateful_nat())
             .filter(|expose| expose.is_v6())
     }
+    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_port_forwarding())
+            .filter(|expose| expose.is_44())
+    }
+    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_port_forwarding())
+            .filter(|expose| expose.is_66())
+    }
     pub fn default_expose(&self) -> Result<Option<&VpcExpose>, ConfigError> {
         let default_exposes: Vec<&VpcExpose> = self
             .exposes
