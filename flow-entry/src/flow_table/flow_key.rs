@@ -25,11 +25,6 @@ pub enum FlowKeyError {
     NoFlowKeyData,
 }
 
-#[cfg(test)]
-trait SrcLeqDst {
-    fn src_leq_dst(&self) -> bool;
-}
-
 trait HashSrc {
     fn hash_src<H: Hasher>(&self, state: &mut H);
 }
@@ -46,11 +41,6 @@ trait SrcDstPort {
     fn symmetric_eq(&self, other: &Self) -> bool {
         (self.src_port() == other.src_port() && self.dst_port() == other.dst_port())
             || (self.src_port() == other.dst_port() && self.dst_port() == other.src_port())
-    }
-
-    #[cfg(test)]
-    fn src_leq_dst(&self) -> bool {
-        self.src_port() <= self.dst_port()
     }
 
     fn hash_src<H: Hasher>(&self, state: &mut H) {
@@ -398,17 +388,6 @@ impl IpProtoKey {
     }
 }
 
-#[cfg(test)]
-impl SrcLeqDst for IpProtoKey {
-    fn src_leq_dst(&self) -> bool {
-        match self {
-            IpProtoKey::Tcp(tcp) => tcp.src_leq_dst(),
-            IpProtoKey::Udp(udp) => udp.src_leq_dst(),
-            IpProtoKey::Icmp(_) => true,
-        }
-    }
-}
-
 impl HashSrc for IpProtoKey {
     fn hash_src<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -490,27 +469,6 @@ impl FlowKeyData {
             src_ip: self.dst_ip,
             dst_ip: self.src_ip,
             proto_key_info: self.proto_key_info.reverse(),
-        }
-    }
-}
-
-#[cfg(test)]
-impl SrcLeqDst for FlowKeyData {
-    fn src_leq_dst(&self) -> bool {
-        match (self.src_vpcd, self.dst_vpcd) {
-            (Some(src_vpcd), Some(dst_vpcd)) => {
-                src_vpcd < dst_vpcd
-                    || (src_vpcd == dst_vpcd && self.src_ip < self.dst_ip)
-                    || (src_vpcd == dst_vpcd
-                        && self.src_ip == self.dst_ip
-                        && self.proto_key_info.src_leq_dst())
-            }
-            (Some(_), None) => true, // No dst vpcd is bigger than anything with a src vpcd
-            (None, Some(_)) => false, // No src vpcd is bigger than anything with a dst vpcd
-            (None, None) => {
-                (self.src_ip < self.dst_ip)
-                    || (self.src_ip == self.dst_ip && self.proto_key_info.src_leq_dst())
-            }
         }
     }
 }
@@ -834,90 +792,6 @@ mod tests {
     use net::packet::contract::CommonPacket;
     use net::packet::{Packet, VpcDiscriminant};
     use net::vxlan::Vni;
-
-    #[test]
-    fn test_flow_key_src_leq_dst() {
-        // VNI
-        let flow_key_1 = FlowKey::uni(
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            IpProtoKey::Tcp(TcpProtoKey {
-                src_port: TcpPort::new_checked(1024).unwrap(),
-                dst_port: TcpPort::new_checked(2048).unwrap(),
-            }),
-        );
-
-        assert!(!flow_key_1.data().src_leq_dst());
-
-        let flow_key_2 = FlowKey::uni(
-            Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            IpProtoKey::Tcp(TcpProtoKey {
-                src_port: TcpPort::new_checked(1025).unwrap(),
-                dst_port: TcpPort::new_checked(2048).unwrap(),
-            }),
-        );
-
-        assert!(flow_key_2.data().src_leq_dst());
-
-        // IP decides
-        let flow_key_3 = FlowKey::uni(
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.5".parse::<IpAddr>().unwrap(),
-            IpProtoKey::Udp(UdpProtoKey {
-                src_port: UdpPort::new_checked(1025).unwrap(),
-                dst_port: UdpPort::new_checked(2048).unwrap(),
-            }),
-        );
-
-        assert!(flow_key_3.data().src_leq_dst());
-
-        let flow_key_4 = FlowKey::uni(
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.5".parse::<IpAddr>().unwrap(),
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            IpProtoKey::Udp(UdpProtoKey {
-                src_port: UdpPort::new_checked(1025).unwrap(),
-                dst_port: UdpPort::new_checked(2048).unwrap(),
-            }),
-        );
-
-        assert!(!flow_key_4.data().src_leq_dst());
-
-        // Port decides
-        let flow_key_5 = FlowKey::uni(
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            IpProtoKey::Udp(UdpProtoKey {
-                src_port: UdpPort::new_checked(1025).unwrap(),
-                dst_port: UdpPort::new_checked(2048).unwrap(),
-            }),
-        );
-
-        assert!(flow_key_5.data().src_leq_dst());
-
-        let flow_key_6 = FlowKey::uni(
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
-            "1.2.3.4".parse::<IpAddr>().unwrap(),
-            IpProtoKey::Udp(UdpProtoKey {
-                src_port: UdpPort::new_checked(2048).unwrap(),
-                dst_port: UdpPort::new_checked(1025).unwrap(),
-            }),
-        );
-
-        assert!(!flow_key_6.data().src_leq_dst());
-    }
 
     #[test]
     fn test_flow_key_reverse() {
