@@ -3,7 +3,7 @@
 
 use bnum::cast::CastFrom;
 use lpm::prefix::range_map::UpperBoundFrom;
-use lpm::prefix::{IpRangeWithPorts, PortRange, PrefixSize, PrefixWithPortsSize};
+use lpm::prefix::{IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ops::{Bound, RangeBounds};
@@ -227,6 +227,12 @@ impl RangeBounds<IpAddr> for IpRange {
     }
     fn end_bound(&self) -> Bound<&IpAddr> {
         Bound::Included(&self.end)
+    }
+}
+
+impl From<Prefix> for IpRange {
+    fn from(prefix: Prefix) -> Self {
+        Self::new(prefix.as_address(), prefix.last_address())
     }
 }
 
