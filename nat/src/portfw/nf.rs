@@ -169,6 +169,7 @@ impl PortForwarder {
                 packet.done(DoneReason::InternalFailure);
                 return;
             }
+            // refresh the state. Packet may still be dropped here
             refresh_port_fw_entry(packet, &pfw_state);
         } else {
             self.try_port_forwarding(packet, pfwtable);
