@@ -185,12 +185,15 @@ impl FlowTable {
             Self::remove_with_read_lock(&table, flow_key);
             return None;
         };
-        if item.status() == FlowStatus::Expired {
-            debug!("lookup: Flow key {:?} is expired, removing", flow_key);
-            Self::remove_with_read_lock(&table, flow_key);
-            return None;
+        let status = item.status();
+        match status {
+            FlowStatus::Active => Some(item),
+            FlowStatus::Expired | FlowStatus::Cancelled => {
+                debug!("lookup: Flow key {:?} is '{status}', removing", flow_key);
+                Self::remove_with_read_lock(&table, flow_key);
+                None
+            }
         }
-        Some(item)
     }
 
     /// Remove a flow from the table.
