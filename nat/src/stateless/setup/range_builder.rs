@@ -2,9 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatPeeringError;
-use super::tables::{
-    IpPort, IpPortRange, IpPortRangeBounds, IpRange, NatTableValue, PortAddrTranslationValue,
-};
+use super::tables::{NatTableValue, PortAddrTranslationValue};
+use crate::ranges::{IpPort, IpPortRange, IpPortRangeBounds, IpRange};
 use bnum::cast::CastFrom;
 use lpm::prefix::{
     IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithOptionalPorts, PrefixWithPorts,
@@ -341,10 +340,11 @@ fn create_new_ranges(
             debug_assert!(addr_port_cursor.0 == range_end.0);
             // We're only covering a single IP address. Create the relevant port range over this single
             // address and return.
-            ranges.push(IpPortRange::new(
-                IpRange::new(addr_port_cursor.0, range_end.0),
-                PortRange::new(addr_port_cursor.1, range_end.1).unwrap_or_else(|_| unreachable!()),
-            ));
+            ranges.push(IpPortRange {
+                ip_range: IpRange::new(addr_port_cursor.0, range_end.0),
+                port_range: PortRange::new(addr_port_cursor.1, range_end.1)
+                    .unwrap_or_else(|_| unreachable!()),
+            });
         }
         1 => {
             // We're covering the start and end addresses.
@@ -353,23 +353,23 @@ fn create_new_ranges(
             {
                 // The start and end ports are aligned with the port range associated with the
                 // target prefix, we can cover these with a single range.
-                ranges.push(IpPortRange::new(
-                    IpRange::new(addr_port_cursor.0, range_end.0),
-                    target_range_ports,
-                ));
+                ranges.push(IpPortRange {
+                    ip_range: IpRange::new(addr_port_cursor.0, range_end.0),
+                    port_range: target_range_ports,
+                });
             } else {
                 // The start and end ports are not aligned with the port range associated with the
                 // target prefix, we need two ranges, one for each of the two IP addresses.
-                ranges.push(IpPortRange::new(
-                    IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
-                    PortRange::new(addr_port_cursor.1, target_range_ports.end())
+                ranges.push(IpPortRange {
+                    ip_range: IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
+                    port_range: PortRange::new(addr_port_cursor.1, target_range_ports.end())
                         .unwrap_or_else(|_| unreachable!()),
-                ));
-                ranges.push(IpPortRange::new(
-                    IpRange::new(range_end.0, range_end.0),
-                    PortRange::new(target_range_ports.start(), range_end.1)
+                });
+                ranges.push(IpPortRange {
+                    ip_range: IpRange::new(range_end.0, range_end.0),
+                    port_range: PortRange::new(target_range_ports.start(), range_end.1)
                         .unwrap_or_else(|_| unreachable!()),
-                ));
+                });
             }
         }
         _ => {
@@ -380,11 +380,11 @@ fn create_new_ranges(
             // prefix, create a first range to compensate the difference, for the first IP in the
             // range (in our example: IP 1.0.1.1, ports 4500 to 4999)
             if addr_port_cursor.1 != target_range_ports.start() {
-                ranges.push(IpPortRange::new(
-                    IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
-                    PortRange::new(addr_port_cursor.1, target_range_ports.end())
+                ranges.push(IpPortRange {
+                    ip_range: IpRange::new(addr_port_cursor.0, addr_port_cursor.0),
+                    port_range: PortRange::new(addr_port_cursor.1, target_range_ports.end())
                         .unwrap_or_else(|_| unreachable!()),
-                ));
+                });
                 // Compute start of middle range, in our example: IP 1.0.1.2, port 4000
                 start_middle_range = (
                     add_offset_to_address(&addr_port_cursor.0, PrefixSize::U128(1))
@@ -402,21 +402,21 @@ fn create_new_ranges(
             // Insert the middle range, covering IP addresses for which we use all ports in the port
             // range associated with the target prefix (in our example: IPs 1.0.1.2 to 1.0.1.38,
             // ports 4000-4999)
-            ranges.push(IpPortRange::new(
-                IpRange::new(start_middle_range.0, end_middle_range.0),
-                PortRange::new(start_middle_range.1, end_middle_range.1)
+            ranges.push(IpPortRange {
+                ip_range: IpRange::new(start_middle_range.0, end_middle_range.0),
+                port_range: PortRange::new(start_middle_range.1, end_middle_range.1)
                     .unwrap_or_else(|_| unreachable!()),
-            ));
+            });
 
             // If range end doesn't align with the end of the port range associated with the target prefix,
             // create a third range to compensate the difference, for the last IP in the range (in
             // our example: IP 1.0.1.39, ports 4000 to 4899)
             if range_end.1 != target_range_ports.end() {
-                ranges.push(IpPortRange::new(
-                    IpRange::new(range_end.0, range_end.0),
-                    PortRange::new(target_range_ports.start(), range_end.1)
+                ranges.push(IpPortRange {
+                    ip_range: IpRange::new(range_end.0, range_end.0),
+                    port_range: PortRange::new(target_range_ports.start(), range_end.1)
                         .unwrap_or_else(|_| unreachable!()),
-                ));
+                });
             }
         }
     }
@@ -447,8 +447,14 @@ fn add_new_ranges(
             range.size().saturating_sub(PrefixWithPortsSize::from(1u8)),
         )?;
         let prefix_portion = IpPortRangeBounds::new(
-            IpPort::new(cursor.0, cursor.1),
-            IpPort::new(end_prefix_portion.0, end_prefix_portion.1),
+            IpPort {
+                ip: cursor.0,
+                port: cursor.1,
+            },
+            IpPort {
+                ip: end_prefix_portion.0,
+                port: end_prefix_portion.1,
+            },
         );
 
         value.insert_and_merge(prefix_portion, (*range, offset));
@@ -591,10 +597,10 @@ mod tests {
                 (addr_v4("1.0.0.1"), 10100),
                 PortRange::new(10, 12_000).unwrap(),
             ),
-            vec![IpPortRange::new(
-                IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
-                PortRange::new(100, 10100).unwrap(),
-            )]
+            vec![IpPortRange {
+                ip_range: IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                port_range: PortRange::new(100, 10100).unwrap(),
+            }]
         );
 
         // Consecutive IP addresses, aligned port range bounds
@@ -604,10 +610,10 @@ mod tests {
                 (addr_v4("1.0.0.2"), 4999),
                 PortRange::new(4000, 4999).unwrap(),
             ),
-            vec![IpPortRange::new(
-                IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.2")),
-                PortRange::new(4000, 4999).unwrap(),
-            )]
+            vec![IpPortRange {
+                ip_range: IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.2")),
+                port_range: PortRange::new(4000, 4999).unwrap(),
+            }]
         );
 
         // Consecutive IP addresses, unaligned port range bounds
@@ -618,14 +624,14 @@ mod tests {
                 PortRange::new(4000, 4999).unwrap(),
             ),
             vec![
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
-                    PortRange::new(4200, 4999).unwrap(),
-                ),
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.2")),
-                    PortRange::new(4000, 4800).unwrap(),
-                )
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                    port_range: PortRange::new(4200, 4999).unwrap(),
+                },
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.2")),
+                    port_range: PortRange::new(4000, 4800).unwrap(),
+                }
             ]
         );
 
@@ -636,10 +642,10 @@ mod tests {
                 (addr_v4("1.0.0.10"), 4999),
                 PortRange::new(4000, 4999).unwrap(),
             ),
-            vec![IpPortRange::new(
-                IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.10")),
-                PortRange::new(4000, 4999).unwrap(),
-            ),]
+            vec![IpPortRange {
+                ip_range: IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.10")),
+                port_range: PortRange::new(4000, 4999).unwrap(),
+            }]
         );
 
         // Covering more than 2 IPs, unaligned port range start
@@ -650,14 +656,14 @@ mod tests {
                 PortRange::new(4000, 4999).unwrap(),
             ),
             vec![
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
-                    PortRange::new(4200, 4999).unwrap(),
-                ),
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.10")),
-                    PortRange::new(4000, 4999).unwrap(),
-                ),
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                    port_range: PortRange::new(4200, 4999).unwrap(),
+                },
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.10")),
+                    port_range: PortRange::new(4000, 4999).unwrap(),
+                },
             ]
         );
 
@@ -669,14 +675,14 @@ mod tests {
                 PortRange::new(4000, 4999).unwrap(),
             ),
             vec![
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.9")),
-                    PortRange::new(4000, 4999).unwrap(),
-                ),
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.10"), addr_v4("1.0.0.10")),
-                    PortRange::new(4000, 4800).unwrap(),
-                ),
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.9")),
+                    port_range: PortRange::new(4000, 4999).unwrap(),
+                },
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.10"), addr_v4("1.0.0.10")),
+                    port_range: PortRange::new(4000, 4800).unwrap(),
+                },
             ]
         );
 
@@ -688,18 +694,18 @@ mod tests {
                 PortRange::new(4000, 4999).unwrap(),
             ),
             vec![
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
-                    PortRange::new(4200, 4999).unwrap(),
-                ),
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.9")),
-                    PortRange::new(4000, 4999).unwrap(),
-                ),
-                IpPortRange::new(
-                    IpRange::new(addr_v4("1.0.0.10"), addr_v4("1.0.0.10")),
-                    PortRange::new(4000, 4800).unwrap(),
-                ),
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.1"), addr_v4("1.0.0.1")),
+                    port_range: PortRange::new(4200, 4999).unwrap(),
+                },
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.2"), addr_v4("1.0.0.9")),
+                    port_range: PortRange::new(4000, 4999).unwrap(),
+                },
+                IpPortRange {
+                    ip_range: IpRange::new(addr_v4("1.0.0.10"), addr_v4("1.0.0.10")),
+                    port_range: PortRange::new(4000, 4800).unwrap(),
+                },
             ]
         );
     }
