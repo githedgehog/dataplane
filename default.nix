@@ -137,7 +137,6 @@ let
     inputsFrom = [ sysroot ];
     shellHook = ''
       export RUSTC_BOOTSTRAP=1
-      export PS1="\n⟪\$PWD⟫\\n⟪dataplane⟫ "
     '';
   };
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
@@ -394,7 +393,7 @@ let
       in
       ''
         tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home}
+        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
         ln -s /run "$tmp/var/run"
         for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"

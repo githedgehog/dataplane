@@ -38,7 +38,7 @@ cargo test
 # Step 7: build and run test archive
 
 nix --extra-experimental-features nix-command build -f default.nix tests.all --out-link results/tests.all
-cargo nextest run --archive-file results/tests.all/*.tar.zst --workspace-remap "$(pwd)" || true
+cargo nextest run --archive-file results/tests.all/*.tar.zst --workspace-remap "$(pwd)"
 
 # Step 8: build individual tests archives
 

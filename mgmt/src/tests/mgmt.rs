@@ -388,6 +388,7 @@ pub mod test {
         println!("{rendered}");
     }
 
+    #[n_vm::in_vm]
     #[tokio::test]
     #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_sample_config() {

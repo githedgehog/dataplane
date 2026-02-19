@@ -1531,6 +1531,7 @@ dependencies = [
  "ipnet",
  "linkme",
  "multi_index_map",
+ "n-vm",
  "netdev",
  "pretty_assertions",
  "rtnetlink",
@@ -1538,6 +1539,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
 ]
 

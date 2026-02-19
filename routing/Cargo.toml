@@ -37,7 +37,7 @@ netgauze-bgp-pkt = { workspace = true }
 netgauze-bmp-pkt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "rt", "sync", "net", "macros"] }
+tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt", "net", "macros"] }
 tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }
 
