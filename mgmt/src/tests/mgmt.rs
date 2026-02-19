@@ -390,7 +390,6 @@ pub mod test {
 
     #[n_vm::in_vm]
     #[tokio::test]
-    #[fixin::wrap(with_caps([CAP_NET_ADMIN]))]
     async fn test_sample_config() {
         get_trace_ctl()
             .setup_from_string("cpi=debug,mgmt=debug,routing=debug")
