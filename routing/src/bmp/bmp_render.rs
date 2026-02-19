@@ -39,6 +39,18 @@ pub fn handle_bmp_message(status: &mut DataplaneStatus, msg: &BmpMessage) {
     }
 }
 
+// We are trying to avoid internal RIB or other non-peer buckets in our BGP neighbor status,
+// so we can keep it focused on real neighbors and not have to worry about weird
+// edge cases with non-peer buckets.
+fn is_real_bgp_neighbor(pt: BmpPeerType) -> bool {
+    matches!(
+        pt,
+        BmpPeerType::GlobalInstancePeer { .. }
+            | BmpPeerType::LocalInstancePeer { .. }
+            | BmpPeerType::RdInstancePeer { .. }
+    )
+}
+
 /// A stable-ish neighbor key.
 /// Keep this stable across sessions so counters accumulate reasonably.
 ///
@@ -46,19 +58,9 @@ pub fn handle_bmp_message(status: &mut DataplaneStatus, msg: &BmpMessage) {
 /// `<peer_type>-<bgp_id>-<peer_as>-<addr|-none>-<rd|-no-rd>`
 #[allow(clippy::map_unwrap_or)]
 fn key_from_peer_header(peer: &netgauze_bmp_pkt::PeerHeader) -> String {
-    let pt = peer.peer_type();
-    let id = peer.bgp_id();
-    let asn = peer.peer_as();
-    let ip = peer
-        .address()
+    peer.address()
         .map(|a| a.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let rd = peer
-        .rd()
-        .map(|rd| format!("{rd:?}"))
-        .unwrap_or_else(|| "no-rd".to_string());
-
-    format!("{pt:?}-{id}-{asn}-{ip}-{rd}")
+        .unwrap_or_else(|| peer.bgp_id().to_string())
 }
 
 /// VRF bucket key. Warning: Not working with FRR BMP Update Messages with per-vrf
@@ -68,21 +70,8 @@ fn key_from_peer_header(peer: &netgauze_bmp_pkt::PeerHeader) -> String {
 /// - If RD is absent, fall back to a key based on the peer type so you don’t collapse
 ///   Local/Global/LocRIB streams into one bucket.
 ///
-fn vrf_from_peer_header(peer: &netgauze_bmp_pkt::PeerHeader) -> String {
-    if let Some(rd) = peer.rd() {
-        return format!("rd:{rd:?}");
-    }
-
-    match peer.peer_type() {
-        BmpPeerType::GlobalInstancePeer { .. } => "default".to_string(),
-        BmpPeerType::LocalInstancePeer { .. } => "local-instance".to_string(),
-        BmpPeerType::LocRibInstancePeer { .. } => "loc-rib".to_string(),
-        BmpPeerType::RdInstancePeer { .. } => "rd:missing".to_string(),
-        BmpPeerType::Experimental251 { .. } => "exp-251".to_string(),
-        BmpPeerType::Experimental252 { .. } => "exp-252".to_string(),
-        BmpPeerType::Experimental253 { .. } => "exp-253".to_string(),
-        BmpPeerType::Experimental254 { .. } => "exp-254".to_string(),
-    }
+fn vrf_from_peer_header(_peer: &netgauze_bmp_pkt::PeerHeader) -> String {
+    "default".to_string()
 }
 
 fn set_neighbor_session_state(n: &mut BgpNeighborStatus, st: BgpNeighborSessionState) {
@@ -132,6 +121,10 @@ fn post_policy_from_peer_type(pt: BmpPeerType) -> bool {
 #[allow(clippy::map_unwrap_or)]
 fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
     let peer = pu.peer_header();
+    if !is_real_bgp_neighbor(peer.peer_type()) {
+        return;
+    }
+
     let vrf = vrf_from_peer_header(peer);
     let key = key_from_peer_header(peer);
 
@@ -185,6 +178,10 @@ fn on_peer_up(status: &mut DataplaneStatus, pu: &PeerUpNotificationMessage) {
 
 fn on_peer_down(status: &mut DataplaneStatus, pd: &PeerDownNotificationMessage) {
     let peer = pd.peer_header();
+    if !is_real_bgp_neighbor(peer.peer_type()) {
+        return;
+    }
+
     let vrf = vrf_from_peer_header(peer);
     let key = key_from_peer_header(peer);
 
@@ -225,10 +222,17 @@ fn on_peer_down(status: &mut DataplaneStatus, pd: &PeerDownNotificationMessage) 
 
 fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage) {
     let peer = rm.peer_header();
-    let vrf = vrf_from_peer_header(peer);
-    let key = key_from_peer_header(peer);
+    if !is_real_bgp_neighbor(peer.peer_type()) {
+        return;
+    }
 
     let post = post_policy_from_peer_type(peer.peer_type());
+    if post {
+        return;
+    }
+
+    let vrf = vrf_from_peer_header(peer);
+    let key = key_from_peer_header(peer);
 
     let bgp = ensure_bgp(status);
     let vrf_s = ensure_vrf(bgp, &vrf);
@@ -251,14 +255,8 @@ fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage
         .ipv4_unicast_prefixes
         .get_or_insert_with(BgpNeighborPrefixes::default);
 
-    if post {
-        // post-policy: we count "received" only
-        pref.received = pref.received.saturating_add(1);
-    } else {
-        // pre-policy view: bump both
-        pref.received_pre_policy = pref.received_pre_policy.saturating_add(1);
-        pref.received = pref.received.saturating_add(1);
-    }
+    pref.received_pre_policy = pref.received_pre_policy.saturating_add(1);
+    pref.received = pref.received.saturating_add(1);
 
     debug!(
         "BMP: route-monitoring vrf={} key={} post_policy={} ipv4_received={} ipv4_received_pre={}",
@@ -268,6 +266,10 @@ fn on_route_monitoring(status: &mut DataplaneStatus, rm: &RouteMonitoringMessage
 
 fn on_statistics(status: &mut DataplaneStatus, sr: &StatisticsReportMessage) {
     let peer = sr.peer_header();
+    if !is_real_bgp_neighbor(peer.peer_type()) {
+        return;
+    }
+
     let vrf = vrf_from_peer_header(peer);
     let key = key_from_peer_header(peer);
 
