@@ -135,9 +135,9 @@ fn process_as_block(
 fn process_nat_block(
     vpc_expose: VpcExpose,
     nat: Option<&GatewayAgentPeeringsPeeringExposeNat>,
-) -> Result<VpcExpose, FromK8sConversionError> {
+) -> Result<Vec<VpcExpose>, FromK8sConversionError> {
     let Some(nat) = nat else {
-        return Ok(vpc_expose);
+        return Ok(vec![vpc_expose]);
     };
     match (&nat.masquerade, &nat.port_forward, &nat.r#static) {
         (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
@@ -147,9 +147,9 @@ fn process_nat_block(
         }
         (Some(masquerade), None, None) => {
             let idle_timeout = masquerade.idle_timeout.map(std::time::Duration::from);
-            vpc_expose
-                .make_stateful_nat(idle_timeout)
-                .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
+            Ok(vec![vpc_expose.make_stateful_nat(idle_timeout).map_err(
+                |e| FromK8sConversionError::NotAllowed(e.to_string()),
+            )?])
         }
         (None, Some(_port_forward), None) => {
             // TODO: port forwarding support
@@ -158,15 +158,42 @@ fn process_nat_block(
                 "Port forwarding is not yet supported".to_string(),
             ))
         }
-        (None, None, Some(_)) => vpc_expose
-            .make_stateless_nat()
-            .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string())),
+        (None, None, Some(_)) => {
+            Ok(vec![vpc_expose.make_stateless_nat().map_err(|e| {
+                FromK8sConversionError::NotAllowed(e.to_string())
+            })?])
+        }
         (None, None, None) => Err(FromK8sConversionError::NotAllowed(
             "NAT config block must specify one NAT mode".to_string(),
         )),
     }
 }
-impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
+
+#[derive(Debug, Clone)]
+pub(crate) struct VpcExposes(Vec<VpcExpose>);
+
+impl VpcExposes {
+    #[cfg(test)]
+    fn get_single(self) -> Result<VpcExpose, FromK8sConversionError> {
+        if self.0.len() != 1 {
+            return Err(FromK8sConversionError::NotAllowed(
+                "Expected exactly one VPC expose".to_owned(),
+            ));
+        }
+        Ok(self.0.into_iter().next().unwrap())
+    }
+}
+
+impl IntoIterator for VpcExposes {
+    type Item = VpcExpose;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExposes {
     type Error = FromK8sConversionError;
 
     fn try_from(
@@ -187,7 +214,7 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
                     "A Default expose can't contain 'as' prefixes".to_string(),
                 ));
             }
-            return Ok(vpc_expose);
+            return Ok(VpcExposes(vec![vpc_expose]));
         }
 
         // Process PeeringIP rules
@@ -206,15 +233,15 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
             ));
         }
 
-        vpc_expose = process_nat_block(vpc_expose, expose.nat.as_ref())?;
-
         if let Some(ases) = expose.r#as.as_ref() {
             for r#as in ases {
                 vpc_expose = process_as_block(vpc_expose, r#as)?;
             }
         }
 
-        Ok(vpc_expose)
+        let vpc_exposes = process_nat_block(vpc_expose, expose.nat.as_ref())?;
+
+        Ok(VpcExposes(vpc_exposes))
     }
 }
 
@@ -391,7 +418,7 @@ mod test {
         bolero::check!()
             .with_generator(expose_gen)
             .for_each(|k8s_expose| {
-                let expose = VpcExpose::try_from((&subnets, k8s_expose)).unwrap();
+                let expose = VpcExposes::try_from((&subnets, k8s_expose)).unwrap().get_single().unwrap();
                 let mut ips = expose
                     .ips
                     .iter()
