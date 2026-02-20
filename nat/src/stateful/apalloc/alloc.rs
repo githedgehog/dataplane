@@ -165,9 +165,14 @@ pub(crate) struct AllocatedIp<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> AllocatedIp<I> {
-    fn new(ip: I, ip_allocator: IpAllocator<I>, disable_randomness: bool) -> Self {
+    fn new(
+        ip: I,
+        ip_allocator: IpAllocator<I>,
+        reserved_port_range: Option<PortRange>,
+        disable_randomness: bool,
+    ) -> Self {
         // Allow opt-in deterministic port allocation for tests
-        let port_allocator = Self::get_new_portallocator(disable_randomness);
+        let port_allocator = Self::get_new_portallocator(reserved_port_range, disable_randomness);
 
         Self {
             ip,
@@ -177,16 +182,22 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
     }
 
     #[cfg(test)]
-    fn get_new_portallocator(disable_randomness: bool) -> port_alloc::PortAllocator<I> {
+    fn get_new_portallocator(
+        reserved_port_range: Option<PortRange>,
+        disable_randomness: bool,
+    ) -> port_alloc::PortAllocator<I> {
         if disable_randomness {
-            port_alloc::PortAllocator::new_no_randomness()
+            port_alloc::PortAllocator::new_no_randomness(reserved_port_range)
         } else {
-            port_alloc::PortAllocator::new()
+            port_alloc::PortAllocator::new(reserved_port_range)
         }
     }
     #[cfg(not(test))]
-    fn get_new_portallocator(_disable_randomness: bool) -> port_alloc::PortAllocator<I> {
-        port_alloc::PortAllocator::new()
+    fn get_new_portallocator(
+        reserved_port_range: Option<PortRange>,
+        _disable_randomness: bool,
+    ) -> port_alloc::PortAllocator<I> {
+        port_alloc::PortAllocator::new(reserved_port_range)
     }
 
     pub(crate) fn ip(&self) -> I {
@@ -282,7 +293,19 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         let offset = self.bitmap.pop_ip()?;
 
         let ip = I::try_from_offset(offset, &self.bitmap_mapping)?;
-        Ok(AllocatedIp::new(ip, ip_allocator, disable_randomness))
+
+        // Check if the IP is in a reserved prefix, retrieve the reserved port range if any
+        let reserved_port_range = self
+            .reserved_prefixes_ports
+            .as_ref()
+            .and_then(|ranges| ranges.lookup(&ip.to_ip_addr()).map(|(_, range)| *range));
+
+        Ok(AllocatedIp::new(
+            ip,
+            ip_allocator,
+            reserved_port_range,
+            disable_randomness,
+        ))
     }
 
     fn deallocate_from_pool(&mut self, ip: I) {
@@ -315,7 +338,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // drops an AllocatedIp and its reference count goes to 0, but it hasn't called the drop()
         // function to remove the IP from the bitmap in that other thread yet).
         let _ = self.bitmap.set_ip_allocated(offset);
-        let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator, disable_randomness));
+        let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator, None, disable_randomness));
         self.add_in_use(&arc_ip);
         Ok(arc_ip)
     }
