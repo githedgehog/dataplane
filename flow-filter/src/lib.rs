@@ -1360,7 +1360,7 @@ mod tests {
                             .ip("1.0.0.0/24".into())
                             .as_range("100.0.0.0/24".into()), // Stateful NAT
                         VpcExpose::empty()
-                            .make_port_forwarding()
+                            .make_port_forwarding(None)
                             .unwrap()
                             .ip(PrefixWithOptionalPorts::new(
                                 "1.0.0.27/32".into(),
