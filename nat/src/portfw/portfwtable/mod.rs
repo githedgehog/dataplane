@@ -7,6 +7,7 @@ pub mod access;
 mod display;
 pub mod objects;
 pub mod portrange;
+pub mod rangeset;
 pub mod setup;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -27,4 +28,8 @@ pub enum PortFwTableError {
     InvalidInitialTimeout,
     #[error("Invalid established timeout: the minimum allowed is 3 seconds")]
     InvalidEstablishedTimeout,
+    #[error("Invalid port mapping {0} -> {1}: can't translate between ip versions")]
+    AddressMapVersionMismatch(String, String),
+    #[error("Invalid port mapping {0} -> {1}: prefixes are not of the same size")]
+    AddressMapLengthMismatch(String, String),
 }
