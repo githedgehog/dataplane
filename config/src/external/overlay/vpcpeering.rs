@@ -633,6 +633,9 @@ impl VpcManifest {
     pub fn add_expose(&mut self, expose: VpcExpose) {
         self.exposes.push(expose);
     }
+    pub fn add_exposes(&mut self, exposes: impl IntoIterator<Item = VpcExpose>) {
+        self.exposes.extend(exposes);
+    }
     pub fn validate(&self) -> ConfigResult {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Manifest name"));

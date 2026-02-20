@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use super::expose::VpcExposes;
 use k8s_intf::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeering};
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
-use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering};
+use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering};
 
 impl TryFrom<(&SubnetMap, &str, &GatewayAgentPeeringsPeering)> for VpcManifest {
     type Error = FromK8sConversionError;
@@ -15,7 +16,7 @@ impl TryFrom<(&SubnetMap, &str, &GatewayAgentPeeringsPeering)> for VpcManifest {
     ) -> Result<Self, Self::Error> {
         let mut manifest = VpcManifest::new(vpc_name);
         for expose in peering.expose.as_ref().unwrap_or(&vec![]) {
-            manifest.add_expose(VpcExpose::try_from((subnets, expose))?);
+            manifest.add_exposes(VpcExposes::try_from((subnets, expose))?);
         }
         Ok(manifest)
     }
