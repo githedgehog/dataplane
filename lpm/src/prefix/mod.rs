@@ -112,6 +112,24 @@ impl Prefix {
         }
     }
 
+    #[must_use]
+    pub fn matches_version(&self, other: Self) -> bool {
+        self.is_ipv4() && other.is_ipv4() || self.is_ipv6() && other.is_ipv6()
+    }
+
+    #[must_use]
+    pub fn network(&self) -> IpAddr {
+        self.as_address()
+    }
+
+    #[must_use]
+    pub fn last_address(&self) -> IpAddr {
+        match *self {
+            Prefix::IPV4(p) => p.last_address().into(),
+            Prefix::IPV6(p) => p.last_address().into(),
+        }
+    }
+
     /// Get prefix length
     #[must_use]
     pub fn length(&self) -> u8 {
