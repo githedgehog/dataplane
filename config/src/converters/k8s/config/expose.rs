@@ -166,7 +166,32 @@ fn process_nat_block(
         )),
     }
 }
-impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
+
+#[derive(Debug, Clone)]
+pub(crate) struct VpcExposes(Vec<VpcExpose>);
+
+impl VpcExposes {
+    #[cfg(test)]
+    fn get_single(self) -> Result<VpcExpose, FromK8sConversionError> {
+        if self.0.len() != 1 {
+            return Err(FromK8sConversionError::NotAllowed(
+                "Expected exactly one VPC expose".to_owned(),
+            ));
+        }
+        Ok(self.0.into_iter().next().unwrap())
+    }
+}
+
+impl IntoIterator for VpcExposes {
+    type Item = VpcExpose;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExposes {
     type Error = FromK8sConversionError;
 
     fn try_from(
@@ -187,7 +212,7 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
                     "A Default expose can't contain 'as' prefixes".to_string(),
                 ));
             }
-            return Ok(vpc_expose);
+            return Ok(VpcExposes(vec![vpc_expose]));
         }
 
         // Process PeeringIP rules
@@ -214,7 +239,7 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
             }
         }
 
-        Ok(vpc_expose)
+        Ok(VpcExposes(vec![vpc_expose]))
     }
 }
 
@@ -391,7 +416,7 @@ mod test {
         bolero::check!()
             .with_generator(expose_gen)
             .for_each(|k8s_expose| {
-                let expose = VpcExpose::try_from((&subnets, k8s_expose)).unwrap();
+                let expose = VpcExposes::try_from((&subnets, k8s_expose)).unwrap().get_single().unwrap();
                 let mut ips = expose
                     .ips
                     .iter()
