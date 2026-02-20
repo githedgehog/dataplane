@@ -15,6 +15,7 @@ use crate::stateful::allocator::AllocatorError;
 use concurrency::concurrency_mode;
 use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};
+use lpm::prefix::PortRange;
 use std::collections::HashMap;
 use std::thread::ThreadId;
 
@@ -58,6 +59,13 @@ impl AllocatorPortBlock {
     }
 }
 
+impl From<&AllocatorPortBlock> for PortRange {
+    fn from(value: &AllocatorPortBlock) -> Self {
+        let start = value.to_port_number();
+        PortRange::new(start, start + 255).unwrap_or_else(|_| unreachable!())
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // PortAllocator
 ///////////////////////////////////////////////////////////////////////////////
@@ -73,10 +81,11 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
     current_alloc_index: AtomicUsize,
     thread_blocks: ThreadPortMap,
     allocated_blocks: AllocatedPortBlockMap<I>,
+    reserved_port_range: Option<PortRange>,
 }
 
 impl<I: NatIpWithBitmap> PortAllocator<I> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(reserved_port_range: Option<PortRange>) -> Self {
         let mut base_ports = (0..=255).collect::<Vec<_>>();
 
         // Shuffle the list of port blocks for the port allocator. This way, we can pick blocks in a
@@ -92,11 +101,12 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             current_alloc_index: AtomicUsize::new(0),
             thread_blocks: ThreadPortMap::new(),
             allocated_blocks: AllocatedPortBlockMap::new(),
+            reserved_port_range,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn new_no_randomness() -> Self {
+    pub(crate) fn new_no_randomness(reserved_port_range: Option<PortRange>) -> Self {
         let base_ports = (0..=255).collect::<Vec<_>>();
         // Do not shuffle
         let blocks = std::array::from_fn(|i| AllocatorPortBlock::new(base_ports[i]));
@@ -106,6 +116,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             current_alloc_index: AtomicUsize::new(0),
             thread_blocks: ThreadPortMap::new(),
             allocated_blocks: AllocatedPortBlockMap::new(),
+            reserved_port_range,
         }
     }
 
@@ -172,7 +183,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             .cycle_blocks()
             .find(|(_, block)| {
                 // Find the first block for which the atomic compare_exchange succeeds
-                block
+                if block
                     .free
                     .compare_exchange(
                         true,
@@ -180,7 +191,30 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
                         concurrency::sync::atomic::Ordering::Relaxed,
                         concurrency::sync::atomic::Ordering::Relaxed,
                     )
-                    .is_ok()
+                    .is_err()
+                {
+                    return false;
+                }
+
+                // Check if this block is fully contained in the reserved range
+                if let Some(reserved_range) = self.reserved_port_range
+                    && reserved_range.len() >= 255
+                {
+                    // Corner case: reserved_range is 1-255+, but 0 cannot be allocated so
+                    // reserved_range effectively renders the block unusable (except maybe for ICMP
+                    // but never mind)
+                    let adjusted_reserved_range = if reserved_range.start() == 1 {
+                        PortRange::new(0, reserved_range.end()).unwrap_or_else(|_| unreachable!())
+                    } else {
+                        reserved_range
+                    };
+
+                    let block_range = PortRange::from(*block);
+                    if adjusted_reserved_range.covers(block_range) {
+                        return false;
+                    }
+                }
+                true
             })
             .ok_or(AllocatorError::NoPortBlock)?;
         Ok((index, block.to_port_number()))
@@ -204,7 +238,20 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         self.usable_blocks
             .fetch_sub(1, concurrency::sync::atomic::Ordering::Relaxed);
 
-        AllocatedPortBlock::new(ip, index, base_port_index, allow_null)
+        let reserved_port_range_for_block = self.reserved_port_range.and_then(|range| {
+            range.intersection(
+                PortRange::new(base_port_index, base_port_index + 255)
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+        });
+
+        AllocatedPortBlock::new(
+            ip,
+            index,
+            base_port_index,
+            reserved_port_range_for_block,
+            allow_null,
+        )
     }
 
     pub(crate) fn allocate_port(
@@ -267,6 +314,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
             ip,
             index,
             (port.as_u16() / 256) * 256, // port block base index, discard offset within block
+            None,
             allow_null,
         )?);
         self.allocated_blocks
@@ -332,6 +380,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         ip: Arc<AllocatedIp<I>>,
         index: usize,
         base_port_idx: u16,
+        reserved_port_range: Option<PortRange>,
         allow_null: bool,
     ) -> Result<Self, AllocatorError> {
         let block = Self {
@@ -341,17 +390,29 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
             usage_bitmap: Mutex::new(Bitmap256::new()),
         };
         // Port 0 may be reserved, in which case we don't want to use it, so we mark it as not free.
-        if !allow_null && block.base_port_idx == 0 {
-            block
-                .usage_bitmap
-                .lock()
-                .unwrap()
-                .reserve_port_from_bitmap(0)
-                .map_err(|()| {
+        let reserve_zero = !allow_null && block.base_port_idx == 0;
+        let reserve_range = reserved_port_range.is_some();
+        if reserve_zero || reserve_range {
+            let mut mutex_guard = block.usage_bitmap.lock().unwrap();
+            if reserve_zero {
+                mutex_guard.reserve_port_from_bitmap(0).map_err(|()| {
                     AllocatorError::InternalIssue(
                         "Failed to reserve port 0 from new block".to_string(),
                     )
                 })?;
+            }
+            if reserve_range {
+                mutex_guard
+                    .reserve_port_range_from_bitmap(
+                        // We just check that reserved_port_range.is_some()
+                        reserved_port_range.unwrap_or_else(|| unreachable!()),
+                    )
+                    .map_err(|()| {
+                        AllocatorError::InternalIssue(
+                            "Failed to reserve port range from new block".to_string(),
+                        )
+                    })?;
+            }
         }
         Ok(block)
     }
@@ -657,5 +718,53 @@ impl Bitmap256 {
 
     fn reserve_port_from_bitmap(&mut self, port_in_block: u8) -> Result<(), ()> {
         self.set_bitmap_value(port_in_block, 1)
+    }
+
+    fn set_half_bitmap_range(
+        &mut self,
+        start_offset: u8,
+        end_offset: u8,
+        value: u128,
+    ) -> Result<(), ()> {
+        if start_offset > 127 || end_offset > 127 || start_offset > end_offset {
+            return Err(());
+        }
+        let mask = if end_offset - start_offset == 127 {
+            u128::MAX
+        } else {
+            ((1u128 << (end_offset - start_offset + 1)) - 1) << start_offset
+        };
+        match value {
+            0 => {
+                self.first_half &= !mask;
+            }
+            1 => {
+                self.first_half |= mask;
+            }
+            _ => return Err(()),
+        }
+        Ok(())
+    }
+
+    fn set_bitmap_range(
+        &mut self,
+        start_offset: u8,
+        end_offset: u8,
+        value: u128,
+    ) -> Result<(), ()> {
+        if start_offset < 128 {
+            self.set_half_bitmap_range(start_offset, end_offset.min(127), value)?;
+        }
+        if end_offset >= 128 {
+            self.set_half_bitmap_range(start_offset.max(128) - 128, end_offset - 128, value)?;
+        }
+        Ok(())
+    }
+
+    fn reserve_port_range_from_bitmap(&mut self, range: PortRange) -> Result<(), ()> {
+        let start = u8::try_from(range.start() % 256).unwrap_or_else(|_| unreachable!());
+        let end = u8::try_from(range.end() % 256).unwrap_or_else(|_| unreachable!());
+        self.set_bitmap_range(start, end, 1)?;
+        Ok(())
     }
 }
