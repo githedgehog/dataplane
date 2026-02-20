@@ -6,6 +6,7 @@ use std::convert::TryFrom;
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
+    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto,
 };
 use lpm::prefix::{PortRange, Prefix, PrefixString, PrefixWithOptionalPorts, PrefixWithPorts};
 
@@ -151,12 +152,35 @@ fn process_nat_block(
                 |e| FromK8sConversionError::NotAllowed(e.to_string()),
             )?])
         }
-        (None, Some(_port_forward), None) => {
-            // TODO: port forwarding support
-            // Don't forget to also update the TypeGenerator in k8s-intf/src/bolero/expose.rs
-            Err(FromK8sConversionError::NotAllowed(
-                "Port forwarding is not yet supported".to_string(),
-            ))
+        (None, Some(port_forward), None) => {
+            let idle_timeout = port_forward.idle_timeout.map(std::time::Duration::from);
+            let orig_port_ranges = if let Some(vec) = port_forward.ports.as_ref() {
+                Some(vec.iter().try_fold(Vec::new(), |mut acc, ports| {
+                    let Some(port_string) = ports.port.as_ref() else {
+                        return Err(FromK8sConversionError::NotAllowed(
+                            "Port forward must specify a port".to_string(),
+                        ));
+                    };
+                    let Some(as_string) = ports.r#as.as_ref() else {
+                        return Err(FromK8sConversionError::NotAllowed(
+                            "Port forward must specify a port to map to".to_string(),
+                        ));
+                    };
+                    acc.push((
+                        parse_port_ranges(port_string)?,
+                        parse_port_ranges(as_string)?,
+                        ports.proto.as_ref(),
+                    ));
+                    Ok(acc)
+                })?)
+            } else {
+                None
+            };
+            set_port_ranges(vpc_expose, orig_port_ranges)?
+                .into_iter()
+                .map(|vpc_expose| vpc_expose.make_port_forwarding(idle_timeout))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
         }
         (None, None, Some(_)) => {
             Ok(vec![vpc_expose.make_stateless_nat().map_err(|e| {
@@ -167,6 +191,67 @@ fn process_nat_block(
             "NAT config block must specify one NAT mode".to_string(),
         )),
     }
+}
+
+#[allow(clippy::type_complexity)]
+fn set_port_ranges(
+    vpc_expose: VpcExpose,
+    orig_port_ranges: Option<
+        Vec<(
+            Vec<PortRange>,
+            Vec<PortRange>,
+            Option<&GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto>,
+        )>,
+    >,
+) -> Result<Vec<VpcExpose>, FromK8sConversionError> {
+    let Some(port_ranges_vec) = orig_port_ranges else {
+        return Ok(vec![vpc_expose]);
+    };
+    if port_ranges_vec.is_empty() {
+        return Err(FromK8sConversionError::NotAllowed(
+            "Port forward must specify at least one ports block".to_string(),
+        ));
+    }
+
+    let mut vpc_exposes = Vec::new();
+    for (orig_ranges, target_ranges, _proto) in port_ranges_vec {
+        let mut vpc_expose_clone = vpc_expose.clone();
+
+        let nat = vpc_expose_clone
+            .nat
+            .as_mut()
+            .unwrap_or_else(|| unreachable!());
+
+        let orig_prefixes = vpc_expose_clone.ips.clone();
+        let target_prefixes = nat.as_range.clone();
+
+        for orig_prefix in &orig_prefixes {
+            debug_assert!(orig_prefix.ports().is_none());
+            for range in &orig_ranges {
+                vpc_expose_clone.ips.insert(PrefixWithOptionalPorts::new(
+                    orig_prefix.prefix(),
+                    Some(*range),
+                ));
+            }
+            vpc_expose_clone.ips.remove(orig_prefix);
+        }
+
+        for target_prefix in &target_prefixes {
+            debug_assert!(target_prefix.ports().is_none());
+            for range in &target_ranges {
+                nat.as_range.insert(PrefixWithOptionalPorts::new(
+                    target_prefix.prefix(),
+                    Some(*range),
+                ));
+            }
+            nat.as_range.remove(target_prefix);
+        }
+        vpc_exposes.push(vpc_expose_clone);
+
+        // TODO: L4 protocol
+    }
+
+    Ok(vpc_exposes)
 }
 
 #[derive(Debug, Clone)]

@@ -10,7 +10,11 @@ use crate::bolero::{LegalValue, SubnetMap};
 use crate::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
-    GatewayAgentPeeringsPeeringExposeNatMasquerade, GatewayAgentPeeringsPeeringExposeNatStatic,
+    GatewayAgentPeeringsPeeringExposeNatMasquerade,
+    GatewayAgentPeeringsPeeringExposeNatPortForward,
+    GatewayAgentPeeringsPeeringExposeNatPortForwardPorts,
+    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto,
+    GatewayAgentPeeringsPeeringExposeNatStatic,
 };
 
 /// Generate a legal value for `GatewayAgentPeeringsPeeringExpose`
@@ -128,29 +132,60 @@ impl ValueGenerator for LegalValueExposeGenerator<'_> {
 impl TypeGenerator for LegalValue<GatewayAgentPeeringsPeeringExposeNat> {
     fn generate<D: Driver>(d: &mut D) -> Option<Self> {
         let nat_mode = d.produce::<u16>()? % 2;
+        let idle_timeout_secs = d.gen_u64(Bound::Included(&0), Bound::Included(&(2 * 3600)))?;
+        let idle_timeout = std::time::Duration::from_secs(idle_timeout_secs);
         match nat_mode {
-            0 => {
-                let idle_timeout_secs =
-                    d.gen_u64(Bound::Included(&0), Bound::Included(&(2 * 3600)))?;
-                let idle_timeout = std::time::Duration::from_secs(idle_timeout_secs);
-                Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
-                    masquerade: Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
-                        idle_timeout: Some(idle_timeout.into()),
-                    }),
-                    port_forward: None,
-                    r#static: None,
-                }))
-            }
+            0 => Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
+                masquerade: Some(GatewayAgentPeeringsPeeringExposeNatMasquerade {
+                    idle_timeout: Some(idle_timeout.into()),
+                }),
+                port_forward: None,
+                r#static: None,
+            })),
             1 => Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
                 masquerade: None,
                 port_forward: None,
                 r#static: Some(GatewayAgentPeeringsPeeringExposeNatStatic {}),
             })),
-            // 2 => Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
-            //     masquerade: None,
-            //     port_forward: Some(GatewayAgentPeeringsPeeringExposeNatPortForward {}),
-            //     r#static: None,
-            // })),
+            2 => {
+                // Generate a valid port range
+                let bound1 = d.gen_u16(Bound::Included(&1), Bound::Included(&65535))?;
+                let bound2 = d.gen_u16(Bound::Included(&1), Bound::Included(&65535))?;
+                let start = bound1.min(bound2);
+                let end = bound1.max(bound2);
+                let port_range = format!("{start}-{end}");
+
+                // Generate another valid port range of the same size
+                let port_range_size = (end - start) as usize + 1;
+                let max_new_start = u16::try_from(65536 - port_range_size).unwrap();
+                let new_bound = d.gen_u16(Bound::Included(&0), Bound::Included(&max_new_start))?;
+                let new_port_range = format!(
+                    "{new_bound}-{}",
+                    new_bound + u16::try_from(port_range_size - 1).unwrap()
+                );
+
+                Some(LegalValue(GatewayAgentPeeringsPeeringExposeNat {
+                    masquerade: None,
+                    port_forward: Some(GatewayAgentPeeringsPeeringExposeNatPortForward {
+                        idle_timeout: Some(idle_timeout.into()),
+                        ports: Some(vec![GatewayAgentPeeringsPeeringExposeNatPortForwardPorts {
+                            r#as: Some(new_port_range),
+                            port: Some(port_range),
+                            proto: match d.produce::<u32>()? % 3 {
+                                0 => Some(
+                                    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp,
+                                ),
+                                1 => Some(
+                                    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp,
+                                ),
+                                2 => None,
+                                _ => unreachable!(),
+                            },
+                        }]),
+                    }),
+                    r#static: None,
+                }))
+            }
             _ => unreachable!(),
         }
     }

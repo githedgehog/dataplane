@@ -28,8 +28,18 @@ impl Default for VpcExposeStatefulNat {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct VpcExposePortForwarding;
+#[derive(Clone, Debug, PartialEq)]
+pub struct VpcExposePortForwarding {
+    pub idle_timeout: Duration,
+}
+
+impl Default for VpcExposePortForwarding {
+    fn default() -> Self {
+        VpcExposePortForwarding {
+            idle_timeout: Duration::from_secs(120),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum VpcExposeNatConfig {
@@ -150,15 +160,24 @@ impl VpcExpose {
     // # Errors
     //
     // Returns an error if the [`VpcExpose`] already has a different NAT mode.
-    pub fn make_port_forwarding(mut self) -> Result<Self, ConfigError> {
+    pub fn make_port_forwarding(
+        mut self,
+        idle_timeout: Option<Duration>,
+    ) -> Result<Self, ConfigError> {
+        let options = idle_timeout
+            .map(|to| VpcExposePortForwarding { idle_timeout: to })
+            .unwrap_or_default();
         match self.nat.as_mut() {
-            Some(nat) if nat.is_port_forwarding() => Ok(self),
+            Some(nat) if nat.is_port_forwarding() => {
+                nat.config = VpcExposeNatConfig::PortForwarding(options);
+                Ok(self)
+            }
             Some(_) => Err(ConfigError::Invalid(format!(
                 "refusing to overwrite previous NAT mode with port forwarding for VpcExpose {self}"
             ))),
             None => {
                 self.nat = Some(VpcExposeNat {
-                    config: VpcExposeNatConfig::PortForwarding(VpcExposePortForwarding {}),
+                    config: VpcExposeNatConfig::PortForwarding(options),
                     ..VpcExposeNat::default()
                 });
                 Ok(self)
