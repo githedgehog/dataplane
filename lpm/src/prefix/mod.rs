@@ -30,6 +30,8 @@ pub enum PrefixError {
     Invalid(String),
     #[error("Mask length {0} is invalid")]
     InvalidLength(u8),
+    #[error("Invalid ip version conversion")]
+    InvalidVerConversion,
 }
 
 /// Type to represent both IPv4 and IPv6 prefixes to expose an IP version-independent API.

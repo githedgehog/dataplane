@@ -5,7 +5,7 @@ use std::fmt::{Debug, Display};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
-use crate::prefix::{PrefixError, PrefixSize};
+use crate::prefix::{Prefix, PrefixError, PrefixSize};
 use ipnet::{Ipv4Net, Ipv6Net};
 use num_traits::{CheckedShr, PrimInt, Unsigned, Zero};
 
@@ -231,6 +231,17 @@ impl FromStr for Ipv4Prefix {
     }
 }
 
+impl TryFrom<Prefix> for Ipv4Prefix {
+    type Error = PrefixError;
+
+    fn try_from(value: Prefix) -> Result<Self, Self::Error> {
+        match value {
+            Prefix::IPV4(p) => Ok(p),
+            Prefix::IPV6(_) => Err(Self::Error::InvalidVerConversion),
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////
 // IPv6 Prefix
 ////////////////////////////////////////////////////////////
@@ -362,6 +373,17 @@ impl FromStr for Ipv6Prefix {
             .map_err(|_| PrefixError::Invalid(s.to_string()))?;
 
         Self::new(addr, len)
+    }
+}
+
+impl TryFrom<Prefix> for Ipv6Prefix {
+    type Error = PrefixError;
+
+    fn try_from(value: Prefix) -> Result<Self, Self::Error> {
+        match value {
+            Prefix::IPV4(_) => Err(Self::Error::InvalidVerConversion),
+            Prefix::IPV6(p) => Ok(p),
+        }
     }
 }
 
