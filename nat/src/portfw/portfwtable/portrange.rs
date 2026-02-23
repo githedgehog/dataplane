@@ -8,6 +8,7 @@
 use super::PortFwTableError;
 use std::fmt::Display;
 use std::num::NonZero;
+use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PortRange {
@@ -93,7 +94,26 @@ impl PortRange {
     #[must_use]
     /// Tell if this `PortRange` overlaps with another
     pub fn overlaps_with(&self, other: Self) -> bool {
-        other.contains(self.first) || other.contains(self.last)
+        other.contains(self.first)
+            || other.contains(self.last)
+            || self.contains(other.first)
+            || self.contains(other.last)
+    }
+
+    #[must_use]
+    pub fn as_range(&self) -> Range<NonZero<u16>> {
+        Range {
+            start: self.first,
+            end: self.last,
+        }
+    }
+    #[must_use]
+    pub fn first(&self) -> NonZero<u16> {
+        self.first
+    }
+    #[must_use]
+    pub fn last(&self) -> NonZero<u16> {
+        self.last
     }
 }
 
