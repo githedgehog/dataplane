@@ -102,9 +102,7 @@ impl PortForwarder {
         new_dst_ip: UnicastIpAddr,
         new_dst_port: NonZero<u16>,
     ) {
-        debug!(
-            "Will translate {dst_ip}:{dst_port} -> {new_dst_ip}:{new_dst_port} according to {entry}"
-        );
+        debug!("Will translate {dst_ip}:{dst_port} -> {new_dst_ip}:{new_dst_port} as per {entry}");
 
         // crate a pair of related flow entries (outside the flow table). Timeout is set according to the rule
         let (forward, reverse) = FlowInfo::related_pair(Instant::now() + entry.init_timeout());
@@ -147,7 +145,7 @@ impl PortForwarder {
         };
 
         // lookup the port-forwarding rule, using the given key, that contains the destination port
-        let Some(entry) = pfwtable.lookup_matching_rule(&key, dst_ip.inner(), dst_port) else {
+        let Some(entry) = pfwtable.lookup_matching_rule(key, dst_ip.inner(), dst_port) else {
             debug!("{nfi}: no rule found for port-forwarding key {key}. Dropping packet.");
             packet.done(DoneReason::Filtered);
             return;

@@ -295,10 +295,10 @@ mod std_tests {
         let tuple = FlowKey::uni(
             Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             tcp_proto_key(1234, 5678),
-        );
+        )
+        .extend_with_dst_vpcd(vpcd2());
 
         let mut allocator = build_allocator().unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
@@ -369,17 +369,17 @@ mod std_tests {
         let tcp_flow_key = FlowKey::uni(
             Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             tcp_proto_key(1234, 5678),
-        );
+        )
+        .extend_with_dst_vpcd(vpcd2());
         let udp_flow_key = FlowKey::uni(
             Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             udp_proto_key(1234, 5678),
-        );
+        )
+        .extend_with_dst_vpcd(vpcd2());
 
         let mut allocator = build_allocator().unwrap();
         let (bitmap, in_use) = get_ip_allocator_v4(
@@ -465,17 +465,17 @@ mod std_tests {
         let flow_key1 = FlowKey::uni(
             Some(vpcd1()),
             ipaddr("1.1.0.0"),
-            Some(vpcd2()),
             ipaddr("10.3.0.2"),
             tcp_proto_key(1111, 1112),
-        );
+        )
+        .extend_with_dst_vpcd(vpcd2());
         let flow_key2 = FlowKey::uni(
             Some(vpcd1()),
             ipaddr("2.0.1.3"),
-            Some(vpcd2()),
             ipaddr("10.4.1.1"),
             tcp_proto_key(2222, 2223),
-        );
+        )
+        .extend_with_dst_vpcd(vpcd2());
 
         let allocator = build_allocator().unwrap();
         let allocator1 = Arc::new(allocator);
@@ -541,31 +541,31 @@ mod tests_shuttle {
             let flow_key1 = FlowKey::uni(
                 Some(vpcd1()),
                 ipaddr("1.1.0.0"),
-                Some(vpcd2()),
                 ipaddr("10.3.0.2"),
                 tcp_proto_key(1111, 1112),
-            );
+            )
+            .extend_with_dst_vpcd(vpcd2());
             let flow_key2 = FlowKey::uni(
                 Some(vpcd1()),
                 ipaddr("2.0.1.3"),
-                Some(vpcd2()),
                 ipaddr("10.4.1.1"),
                 tcp_proto_key(2222, 2223),
-            );
+            )
+            .extend_with_dst_vpcd(vpcd2());
             let flow_key3 = FlowKey::uni(
                 Some(vpcd1()),
                 ipaddr("1.1.0.0"),
-                Some(vpcd2()),
                 ipaddr("10.3.0.2"),
                 tcp_proto_key(3333, 3334),
-            );
+            )
+            .extend_with_dst_vpcd(vpcd2());
             let flow_key4 = FlowKey::uni(
                 Some(vpcd1()),
                 ipaddr("1.1.0.0"),
-                Some(vpcd2()),
                 ipaddr("10.3.0.3"),
                 tcp_proto_key(4444, 4445),
-            );
+            )
+            .extend_with_dst_vpcd(vpcd2());
 
             let allocator = build_allocator().unwrap();
             let allocator_arc = Arc::new(allocator);

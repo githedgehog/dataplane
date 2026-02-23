@@ -4,7 +4,7 @@
 //! NAT allocator trait: a trait to build allocators to manage IP addresses and ports for stateful NAT.
 
 use crate::port::NatPortError;
-use flow_entry::flow_table::FlowKey;
+use flow_entry::flow_table::ExtendedFlowKey;
 use net::ip::NextHeader;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -106,8 +106,14 @@ where
     U: Debug,
 {
     fn new() -> Self;
-    fn allocate_v4(&self, flow_key: &FlowKey) -> Result<AllocationResult<T>, AllocatorError>;
-    fn allocate_v6(&self, flow_key: &FlowKey) -> Result<AllocationResult<U>, AllocatorError>;
+    fn allocate_v4(
+        &self,
+        eflow_key: &ExtendedFlowKey,
+    ) -> Result<AllocationResult<T>, AllocatorError>;
+    fn allocate_v6(
+        &self,
+        eflow_key: &ExtendedFlowKey,
+    ) -> Result<AllocationResult<U>, AllocatorError>;
 
     // TODO: Should the method for building the allocator from a VpcTable be part of this trait?
 }

@@ -161,11 +161,10 @@ impl StatefulNat {
         &self,
         src_vpcd: Option<VpcDiscriminant>,
         src_ip: IpAddr,
-        dst_vpcd: Option<VpcDiscriminant>,
         dst_ip: IpAddr,
         proto_key_info: IpProtoKey,
     ) -> Option<(NatTranslationData, Duration)> {
-        let flow_key = FlowKey::uni(src_vpcd, src_ip, dst_vpcd, dst_ip, proto_key_info);
+        let flow_key = FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info);
         let flow_info = self.sessions.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
@@ -188,7 +187,6 @@ impl StatefulNat {
         let new_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
             flow_key.data().src_vpcd(),
             *flow_key.data().src_ip(),
-            None,
             *flow_key.data().dst_ip(),
             *flow_key.data().proto_key_info(),
         ));
@@ -330,7 +328,6 @@ impl StatefulNat {
     fn new_reverse_session<I: NatIpWithBitmap>(
         flow_key: &FlowKey,
         alloc: &AllocationResult<AllocatedIpPort<I>>,
-        src_vpc_id: VpcDiscriminant,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<FlowKey, StatefulNatError> {
         // Forward session:
@@ -414,7 +411,6 @@ impl StatefulNat {
         Ok(FlowKey::uni(
             Some(dst_vpc_id),
             reverse_src_addr,
-            Some(src_vpc_id),
             reverse_dst_addr,
             reverse_proto_key,
         ))
@@ -446,7 +442,6 @@ impl StatefulNat {
         let inner_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
             flow_key.data().src_vpcd(),     // Source VPC discriminant
             *embedded_packet_data.dst_ip(), // Source IP address: embedded destination IP address
-            None, // Destination VPC discriminant: we don't store it in the key for NAT
             *embedded_packet_data.src_ip(), // Destination IP address: embedded source IP address
             (*embedded_packet_data.proto_key_info()).into(),
         ));
@@ -569,6 +564,12 @@ impl StatefulNat {
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
 
+        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
+        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+
+        // build extended flow key, with the dst vpc discriminant
+        let e_flow_key = flow_key.extend_with_dst_vpcd(dst_vpc_id);
+
         match self.deal_with_icmp_error_msg::<Buf, I>(packet, &flow_key) {
             Err(e) => return Err(e),     // Something wrong happened
             Ok(true) => return Ok(true), // ICMP Error message, and we completed translation
@@ -577,7 +578,8 @@ impl StatefulNat {
 
         // Else, if we need NAT for this packet, create a new session and translate the address
         let alloc =
-            I::allocate(allocator, &flow_key).map_err(StatefulNatError::AllocationFailure)?;
+            I::allocate(allocator, &e_flow_key).map_err(StatefulNatError::AllocationFailure)?;
+
         // If we didn't find source NAT translation information, we should deny the creation of a
         // new session: we don't allow packets "from the outside" to create new sessions.
         debug_assert!(alloc.src.is_some());
@@ -590,11 +592,7 @@ impl StatefulNat {
 
         let translation_data = Self::get_translation_data(&alloc.src, &alloc.dst);
 
-        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
-
-        let reverse_flow_key =
-            Self::new_reverse_session(&flow_key, &alloc, src_vpc_id, dst_vpc_id)?;
+        let reverse_flow_key = Self::new_reverse_session(&flow_key, &alloc, dst_vpc_id)?;
         let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
 
         self.create_session(&flow_key, forward_state, dst_vpc_id, idle_timeout);

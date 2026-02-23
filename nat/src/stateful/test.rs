@@ -258,19 +258,7 @@ mod tests {
     }
 
     fn flow_lookup<Buf: PacketBufferMut>(flow_table: &FlowTable, packet: &mut Packet<Buf>) {
-        fn get_flow_key<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> FlowKey {
-            let packet_flowkey = FlowKey::try_from(Uni(packet)).unwrap();
-            // We need the same, but without the dst_vpcd set, to emulate how the flow table is queried
-            FlowKey::uni(
-                packet_flowkey.data().src_vpcd(),
-                *packet_flowkey.data().src_ip(),
-                None,
-                *packet_flowkey.data().dst_ip(),
-                *packet_flowkey.data().proto_key_info(),
-            )
-        }
-
-        let flow_key = get_flow_key(packet);
+        let flow_key = FlowKey::try_from(Uni(&*packet)).unwrap();
         if let Some(flow_info) = flow_table.lookup(&flow_key) {
             packet.meta_mut().flow_info = Some(flow_info);
         }
@@ -334,7 +322,6 @@ mod tests {
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
             Some(vpcd(100)),
             IpAddr::from_str(orig_src).unwrap(),
-            None,
             IpAddr::from_str(orig_dst).unwrap(),
             IpProtoKey::Udp(UdpProtoKey {
                 src_port: UdpPort::new_checked(9998).unwrap(),
@@ -348,7 +335,6 @@ mod tests {
         let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
             Some(vpcd(200)),
             IpAddr::from_str(orig_dst).unwrap(),
-            None,
             IpAddr::from_str(target_src).unwrap(),
             IpProtoKey::Udp(UdpProtoKey {
                 src_port: UdpPort::new_checked(output_dst_port).unwrap(),

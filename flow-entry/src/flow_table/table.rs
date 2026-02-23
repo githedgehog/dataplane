@@ -350,7 +350,6 @@ mod tests {
             let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
-                Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1025).unwrap(),
@@ -375,7 +374,6 @@ mod tests {
             let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(42).unwrap())),
                 "10.0.0.1".parse::<IpAddr>().unwrap(),
-                Some(VpcDiscriminant::VNI(Vni::new_checked(43).unwrap())),
                 "10.0.0.2".parse::<IpAddr>().unwrap(),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1234).unwrap(),
@@ -416,7 +414,6 @@ mod tests {
             let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
-                Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
                 IpProtoKey::Tcp(TcpProtoKey {
                     src_port: TcpPort::new_checked(1025).unwrap(),
@@ -482,7 +479,7 @@ mod tests {
 
                     // We purposely keep the flow alive here to make sure lookup reaps it
                     let _flow_info = flow_table.lookup(flow_key).unwrap();
-                    assert!(flow_table.lookup(&flow_key.reverse()).is_none());
+                    assert!(flow_table.lookup(&flow_key.reverse(None)).is_none());
 
                     thread::sleep(Duration::from_millis(100));
                     flow_table.reap_all_expired();
@@ -504,7 +501,7 @@ mod tests {
                 .for_each(|flow_key| {
                     flow_table.insert(*flow_key, FlowInfo::new(Instant::now()));
                     let flow_info = flow_table.lookup(flow_key).unwrap();
-                    assert!(flow_table.lookup(&flow_key.reverse()).is_none());
+                    assert!(flow_table.lookup(&flow_key.reverse(None)).is_none());
 
                     let result = flow_table.remove(flow_key);
                     assert!(result.is_some());
@@ -534,7 +531,6 @@ mod tests {
                     let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
                         Some(VpcDiscriminant::VNI(Vni::new_checked(42).unwrap())),
                         "10.0.0.1".parse::<IpAddr>().unwrap(),
-                        Some(VpcDiscriminant::VNI(Vni::new_checked(43).unwrap())),
                         "10.0.0.2".parse::<IpAddr>().unwrap(),
                         IpProtoKey::Tcp(TcpProtoKey {
                             src_port: TcpPort::new_checked(1234).unwrap(),
@@ -580,9 +576,6 @@ mod tests {
                             Vni::new_checked(u32::from(i) + 1).unwrap(),
                         )),
                         format!("10.0.{i}.1").parse::<IpAddr>().unwrap(),
-                        Some(VpcDiscriminant::VNI(
-                            Vni::new_checked(u32::from(i) + 100).unwrap(),
-                        )),
                         format!("10.0.{i}.2").parse::<IpAddr>().unwrap(),
                         IpProtoKey::Tcp(TcpProtoKey {
                             src_port: TcpPort::new_checked(1000 + i).unwrap(),
@@ -712,7 +705,6 @@ mod tests {
                     let flow_key1 = FlowKey::Unidirectional(FlowKeyData::new(
                         Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                         "1.2.3.4".parse::<IpAddr>().unwrap(),
-                        Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
                         "4.5.6.7".parse::<IpAddr>().unwrap(),
                         IpProtoKey::Tcp(TcpProtoKey {
                             src_port: TcpPort::new_checked(1025).unwrap(),
@@ -723,7 +715,6 @@ mod tests {
                     let flow_key2 = FlowKey::Unidirectional(FlowKeyData::new(
                         Some(VpcDiscriminant::VNI(Vni::new_checked(10).unwrap())),
                         "10.2.3.4".parse::<IpAddr>().unwrap(),
-                        Some(VpcDiscriminant::VNI(Vni::new_checked(20).unwrap())),
                         "40.5.6.7".parse::<IpAddr>().unwrap(),
                         IpProtoKey::Tcp(TcpProtoKey {
                             src_port: TcpPort::new_checked(1025).unwrap(),

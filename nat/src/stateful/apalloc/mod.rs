@@ -69,9 +69,9 @@ use super::{NatAllocator, NatIp};
 use crate::NatPort;
 use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
-use flow_entry::flow_table::FlowKey;
 use flow_entry::flow_table::IpProtoKey;
 use flow_entry::flow_table::flow_key::IcmpProtoKey;
+use flow_entry::flow_table::{ExtendedFlowKey, FlowKey};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
@@ -200,10 +200,10 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
 
     fn allocate_v4(
         &self,
-        flow_key: &FlowKey,
+        eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
         Self::allocate_from_tables(
-            flow_key,
+            eflow_key,
             &self.pools_src44,
             &self.pools_dst44,
             self.must_disable_randomness(),
@@ -212,10 +212,10 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
 
     fn allocate_v6(
         &self,
-        flow_key: &FlowKey,
+        eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
         Self::allocate_from_tables(
-            flow_key,
+            eflow_key,
             &self.pools_src66,
             &self.pools_dst66,
             self.must_disable_randomness(),
@@ -225,14 +225,16 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
 
 impl NatDefaultAllocator {
     fn allocate_from_tables<I: NatIpWithBitmap>(
-        flow_key: &FlowKey,
+        eflow_key: &ExtendedFlowKey,
         pools_src: &PoolTable<I, I>,
         pools_dst: &PoolTable<I, I>,
         disable_randomness: bool,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
+        // get flow key from extended flow key
+        let flow_key = eflow_key.flow_key();
         let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
-        let (src_vpc_id, dst_vpc_id) = Self::get_vpc_discriminants(flow_key)?;
+        let (src_vpc_id, dst_vpc_id) = Self::get_vpc_discriminants(eflow_key)?;
 
         // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
@@ -333,17 +335,17 @@ impl NatDefaultAllocator {
     }
 
     fn get_vpc_discriminants(
-        flow_key: &FlowKey,
+        eflow_key: &ExtendedFlowKey,
     ) -> Result<(VpcDiscriminant, VpcDiscriminant), AllocatorError> {
-        let src_vpc_id = flow_key
+        let src_vpc_id = eflow_key
+            .flow_key()
             .data()
             .src_vpcd()
             .ok_or(AllocatorError::MissingDiscriminant)?;
-        let dst_vpc_id = flow_key
-            .data()
+
+        let dst_vpc_id = eflow_key
             .dst_vpcd()
             .ok_or(AllocatorError::MissingDiscriminant)?;
-
         Ok((src_vpc_id, dst_vpc_id))
     }
 
