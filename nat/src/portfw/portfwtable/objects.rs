@@ -7,12 +7,14 @@
 #![allow(clippy::new_without_default)]
 
 use ahash::RandomState;
+use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use net::ip::NextHeader;
 use net::ip::UnicastIpAddr;
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::IpAddr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
 use std::sync::Arc;
 #[cfg(test)]
@@ -29,7 +31,8 @@ use super::portrange::PortRange;
 pub struct PortFwEntry {
     pub(crate) key: PortFwKey,
     pub(crate) dst_vpcd: VpcDiscriminant,
-    pub(crate) dst_ip: UnicastIpAddr,
+    pub(crate) ext_dst_ip: Prefix,
+    pub(crate) dst_ip: Prefix,
     pub(crate) ext_ports: PortRange,
     pub(crate) dst_ports: PortRange,
     pub(crate) init_timeout: Arc<AtomicU64>,
@@ -53,10 +56,12 @@ impl PortFwEntry {
     /// # Errors
     ///
     /// This function returns a `PortFwTableError` if the rule is invalid.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         key: PortFwKey,
         dst_vpcd: VpcDiscriminant,
-        dst_ip: IpAddr,
+        ext_dst_ip: Prefix,
+        dst_ip: Prefix,
         ext_ports: (u16, u16),
         dst_ports: (u16, u16),
         init_timeout: Option<Duration>,
@@ -66,7 +71,8 @@ impl PortFwEntry {
         let entry = Self {
             key,
             dst_vpcd,
-            dst_ip: UnicastIpAddr::try_from(dst_ip).map_err(PortFwTableError::InvalidAddress)?,
+            ext_dst_ip,
+            dst_ip,
             ext_ports: PortRange::new(ext_ports.0, ext_ports.1)?,
             dst_ports: PortRange::new(dst_ports.0, dst_ports.1)?,
             init_timeout: Arc::from(AtomicU64::new(
@@ -117,17 +123,14 @@ impl PortFwEntry {
     fn is_valid(&self) -> Result<(), PortFwTableError> {
         let key = &self.key;
 
-        if key.dst_ip.inner().is_unspecified() {
-            return Err(PortFwTableError::InvalidAddress(key.dst_ip.inner()));
-        }
-        if self.dst_ip.inner().is_unspecified() {
-            return Err(PortFwTableError::InvalidAddress(self.dst_ip.inner()));
-        }
-        if key.dst_ip.is_ipv4() && !self.dst_ip.is_ipv4()
-            || key.dst_ip.is_ipv6() && !self.dst_ip.is_ipv6()
-        {
+        if !self.dst_ip.matches_version(self.ext_dst_ip) {
             return Err(PortFwTableError::Unsupported(
                 "Can't do port-forwarding between distinct IP versions".to_string(),
+            ));
+        }
+        if self.dst_ip.length() != self.ext_dst_ip.length() {
+            return Err(PortFwTableError::Unsupported(
+                "Can't do port-forwarding between prefixes of distinct length".to_string(),
             ));
         }
         if key.src_vpcd == self.dst_vpcd {
@@ -148,10 +151,48 @@ impl PortFwEntry {
     /// We need this to be able to treat those as identical, even if they aren't
     pub(crate) fn matches(&self, other: &Self) -> bool {
         self.key == other.key
+            && self.ext_dst_ip == other.ext_dst_ip
             && self.dst_ip == other.dst_ip
             && self.ext_ports == other.ext_ports
             && self.dst_ports == other.dst_ports
             && self.dst_vpcd == other.dst_vpcd
+    }
+
+    fn map_ipv4(address: Ipv4Addr, from: Ipv4Prefix, to: Ipv4Prefix) -> IpAddr {
+        let offset = address.to_bits() - from.network().to_bits();
+        Ipv4Addr::from_bits(to.network().to_bits() + offset).into()
+    }
+    fn map_ipv6(address: Ipv6Addr, from: Ipv6Prefix, to: Ipv6Prefix) -> IpAddr {
+        let offset = address.to_bits() - from.network().to_bits();
+        Ipv6Addr::from_bits(to.network().to_bits() + offset).into()
+    }
+    fn map_ip(address: IpAddr, from: Prefix, to: Prefix) -> Option<IpAddr> {
+        match address {
+            IpAddr::V4(a) => Some(Self::map_ipv4(
+                a,
+                from.try_into().ok()?,
+                to.try_into().ok()?,
+            )),
+            IpAddr::V6(a) => Some(Self::map_ipv6(
+                a,
+                from.try_into().ok()?,
+                to.try_into().ok()?,
+            )),
+        }
+    }
+
+    /// Transform an address and a port according to this rule. It is assumed that the
+    /// input address and port fall within the prefix and port range represented by this rule.
+    #[must_use]
+    pub fn map_address_port(
+        &self,
+        dst_ip: IpAddr,
+        dst_port: NonZero<u16>,
+    ) -> Option<(UnicastIpAddr, NonZero<u16>)> {
+        let new_dst_port = self.ext_ports.map_port_to(dst_port, self.dst_ports)?;
+        let new_dst_ip = Self::map_ip(dst_ip, self.ext_dst_ip, self.dst_ip)?;
+        let new_ip = UnicastIpAddr::try_from(new_dst_ip).ok()?;
+        Some((new_ip, new_dst_port))
     }
 }
 
@@ -159,18 +200,13 @@ impl PortFwEntry {
 #[derive(Copy, Clone, Hash, PartialEq, Eq)]
 pub struct PortFwKey {
     src_vpcd: VpcDiscriminant,
-    dst_ip: UnicastIpAddr,
     proto: NextHeader,
 }
 
 impl PortFwKey {
     #[must_use]
-    pub fn new(src_vpcd: VpcDiscriminant, dst_ip: UnicastIpAddr, proto: NextHeader) -> Self {
-        Self {
-            src_vpcd,
-            dst_ip,
-            proto,
-        }
+    pub fn new(src_vpcd: VpcDiscriminant, proto: NextHeader) -> Self {
+        Self { src_vpcd, proto }
     }
 
     #[must_use]
@@ -182,11 +218,6 @@ impl PortFwKey {
     pub fn src_vpcd(&self) -> VpcDiscriminant {
         self.src_vpcd
     }
-
-    #[must_use]
-    pub fn dst_ip(&self) -> UnicastIpAddr {
-        self.dst_ip
-    }
 }
 
 impl Debug for PortFwKey {
@@ -195,10 +226,7 @@ impl Debug for PortFwKey {
     }
 }
 
-/// A `PortFwGroup` is just a vector of `PortFwEntry`s. Instead of associating
-/// a single `PortFwEntry` to a `PortFwKey`, we allow associating a `PortFwGroup`
-/// which is just a vector of them in order to support load-balancing in the future
-/// (at least within a VPC).
+/// A `PortFwGroup` is a vector of `PortFwEntry`s
 #[derive(Clone, Default)]
 pub(crate) struct PortFwGroup(Vec<Arc<PortFwEntry>>);
 impl PortFwGroup {
@@ -242,11 +270,17 @@ impl PortFwGroup {
         }
     }
 
-    /// Return the rule containing the given port. Only one rule should contain a port.
-    /// This should be enforced by construction. This method will return the first
-    /// rule that includes the port.
-    pub fn get_rule_for_port(&self, port: NonZero<u16>) -> Option<&Arc<PortFwEntry>> {
-        self.0.iter().find(|e| e.ext_ports.contains(port))
+    /// Return the rule containing the given port and address. Only one rule should contain both.
+    /// This should be enforced by construction. This method will return the first rule that
+    /// contains both.
+    pub fn get_rule_for_addr_and_port(
+        &self,
+        address: IpAddr,
+        port: NonZero<u16>,
+    ) -> Option<&Arc<PortFwEntry>> {
+        self.0
+            .iter()
+            .find(|e| e.ext_dst_ip.covers_addr(&address) && e.ext_ports.contains(port))
     }
 
     /// Get a reference to the entry in this group matching the provided one
@@ -356,11 +390,12 @@ impl PortFwTable {
     pub(crate) fn lookup_matching_rule(
         &self,
         key: &PortFwKey,
+        address: IpAddr,
         port: NonZero<u16>,
     ) -> Option<&Arc<PortFwEntry>> {
         self.0
             .get(key)
-            .and_then(|group| group.get_rule_for_port(port))
+            .and_then(|group| group.get_rule_for_addr_and_port(address, port))
     }
 
     #[must_use]
@@ -398,10 +433,9 @@ impl Default for PortFwTable {
 #[cfg(test)]
 mod test {
     use super::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableError};
+    use lpm::prefix::Prefix;
     use net::ip::NextHeader;
-    use net::ip::UnicastIpAddr;
     use net::packet::VpcDiscriminant;
-    use std::net::IpAddr;
     use std::str::FromStr;
     use std::sync::Arc;
     use std::time::Duration;
@@ -412,13 +446,13 @@ mod test {
         let mut fwtable = PortFwTable::new();
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
         };
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
             (22, 22),
             None,
@@ -432,13 +466,13 @@ mod test {
 
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
         };
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(4000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (4022, 4022),
             (22, 22),
             None,
@@ -452,13 +486,13 @@ mod test {
 
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
         };
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3080, 3080),
             (80, 80),
             None,
@@ -472,13 +506,13 @@ mod test {
 
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::UDP,
         };
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.2").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.2/32").unwrap(),
             (3053, 3053),
             (53, 53),
             None,
@@ -495,13 +529,13 @@ mod test {
         let mut fwtable = PortFwTable::new();
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
         };
         let entry1 = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
             (22, 22),
             None,
@@ -523,7 +557,8 @@ mod test {
         let entry2 = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(4000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.2").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
             (23, 23),
             None,
@@ -541,13 +576,13 @@ mod test {
     fn test_port_forwarding_entry_reject_distinct_ip_ver() {
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
         };
         let r = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("2002:a:b:c::1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("2002:a:b:c::1/128").unwrap(),
             (3022, 3022),
             (22, 22),
             None,
@@ -560,13 +595,13 @@ mod test {
     fn test_port_forwarding_entry_reject_common_vpcd() {
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("192.168.1.1").unwrap(),
             proto: NextHeader::UDP,
         };
         let r = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            IpAddr::from_str("70.71.72.73").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
             (22, 22),
             None,
@@ -581,13 +616,13 @@ mod test {
         let mut fwtable = build_sample_port_forwarding_table();
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
         };
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
             (22, 22),
             None,
@@ -619,13 +654,13 @@ mod test {
         let mut fwtable = PortFwTable::new();
         let key = PortFwKey {
             src_vpcd: VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            dst_ip: UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             proto: NextHeader::TCP,
         };
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
             (22, 22),
             None,
@@ -646,7 +681,8 @@ mod test {
         let entry = PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
             (22, 22),
             Some(Duration::from_secs(13)),

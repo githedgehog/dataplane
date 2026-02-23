@@ -175,6 +175,7 @@ pub(crate) fn setup_forward_flow<Buf: PacketBufferMut>(
     forward_flow: &Arc<FlowInfo>,
     packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
+    new_dst_ip: UnicastIpAddr,
     new_dst_port: NonZero<u16>,
 ) -> (FlowKey, AtomicPortFwFlowStatus) {
     // build flow key for the forward path from the original packet
@@ -186,7 +187,7 @@ pub(crate) fn setup_forward_flow<Buf: PacketBufferMut>(
     // build port forwarding state to the forward flow
     let status = AtomicPortFwFlowStatus::new();
     let port_fw_state = PortFwState::new_dnat(
-        entry.dst_ip,
+        new_dst_ip,
         new_dst_port,
         Arc::downgrade(entry),
         status.clone(),
@@ -209,6 +210,7 @@ pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
     reverse_flow: &Arc<FlowInfo>,
     packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
+    dst_ip: UnicastIpAddr,
     dst_port: NonZero<u16>,
     status: AtomicPortFwFlowStatus,
 ) -> FlowKey {
@@ -221,9 +223,8 @@ pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
         .reverse()
         .strip_dst_vpcd();
 
-    // build port forwarding state to the reverse flow
-    let port_fw_state =
-        PortFwState::new_snat(entry.key.dst_ip(), dst_port, Arc::downgrade(entry), status);
+    // build port forwarding state for the reverse flow
+    let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);
 
     // set the port forwarding state in the flow
     if let Ok(mut write_guard) = reverse_flow.locked.write() {
@@ -264,11 +265,30 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
-    if state.rule.upgrade().is_none() {
+    let Some(_rule) = state.rule.upgrade() else {
         debug!("Packet flow-info contains port-forwarding state, but rule has been deleted");
         invalidate_flow_state(packet);
         return None;
-    }
+    };
+
+    // Even if flow state refers to a rule, the rule may have changed and no longer include
+    // the address or the port. So, we need to check again here. We check only if the packet
+    // hit a flow with port-forwarding in the forward direction.
+    // FIXME: we don't have a way to update rules yet, other than timers
+    /*
+       if state.action() == PortFwAction::DstNat {
+           let dst_ip = packet.ip_destination().unwrap_or_else(|| unreachable!());
+           let dst_port = packet
+               .transport_dst_port()
+               .unwrap_or_else(|| unreachable!());
+
+           if !rule.ext_dst_ip.covers_addr(&dst_ip) || !rule.ext_ports.contains(dst_port) {
+               debug!("The rule this flow refers to no longer includes the ip or port");
+               invalidate_flow_state(packet);
+               return None;
+           }
+       }
+    */
     debug!("Packet hit entry with port-forwarding state: {flow}");
     Some(state.clone())
 }
