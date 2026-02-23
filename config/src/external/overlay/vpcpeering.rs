@@ -388,6 +388,7 @@ impl VpcExpose {
     }
 
     /// Validate the [`VpcExpose`]:
+    #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> ConfigResult {
         // Check default exposes and prefixes
         self.validate_default_expose()?;
@@ -486,6 +487,30 @@ impl VpcExpose {
                 ips_sizes - nots_sizes,
                 as_range_sizes - not_as_sizes,
             ));
+        }
+
+        // For port forwarding, ensure that:
+        // - we have a single prefix on each side (private and public addresses)
+        // - we do not use any exclusion prefixes
+        // - if the list of publicly-exposed addresses is not empty, then we have the same number of
+        //   addresses on each side
+        // - the list of associated port ranges also is on the same size on each side
+        if self.has_port_forwarding() {
+            if self.ips.len() != 1
+                || self.as_range_or_empty().len() != 1
+                || !self.nots.is_empty()
+                || !self.not_as_or_empty().is_empty()
+            {
+                return Err(ConfigError::Forbidden(
+                    "Port forwarding requires a single prefix on each side, no exclusion prefix allowed",
+                ));
+            }
+            if ips_sizes != as_range_sizes {
+                return Err(ConfigError::MismatchedPrefixSizes(
+                    ips_sizes,
+                    as_range_sizes,
+                ));
+            }
         }
 
         // For stateful NAT, we don't support port ranges
