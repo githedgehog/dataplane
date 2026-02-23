@@ -1,90 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"))
-        .ancestors()
-        .nth(1)
-        .expect("Workspace root not found")
-        .to_path_buf()
-}
-
-fn env_file_name() -> PathBuf {
-    workspace_root().join("scripts").join("k8s-crd.env")
-}
-
-#[derive(Default)]
-struct EnvConfig {
-    version: Option<String>,
-    url: Option<String>,
-    local_path: Option<String>,
-}
-
-fn read_env_config() -> EnvConfig {
-    let env_file_path = env_file_name();
-    let env_file =
-        dotenvy::from_path_iter(env_file_path).expect("Failed to read scripts/k8s-crd.env");
-
-    let mut config = EnvConfig::default();
-    env_file.filter_map(Result::ok).for_each(|(key, value)| {
-        match key.as_str() {
-            "K8S_GATEWAY_AGENT_REF" => {
-                if !value.is_empty() {
-                    config.version = Some(value);
-                }
-            }
-            "K8S_GATEWAY_AGENT_CRD_URL" => {
-                if !value.is_empty() {
-                    config.url = Some(value);
-                }
-            }
-            "K8S_GATEWAY_AGENT_CRD_PATH" => {
-                if !value.is_empty() {
-                    config.local_path = Some(value);
-                }
-            }
-            _ => { /* ignore undeclared variables */ }
-        }
-    });
-
-    // don't set version if we'll build from local crd spec
-    if config.local_path.is_some() {
-        config.version.take();
-    }
-
-    config
-}
-
-fn fetch_crd(url: &str) -> String {
-    println!("cargo:note=Fetching CRD from: {url}");
-    ureq::get(url)
-        .call()
-        .expect("Failed to fetch agent CRD from url")
-        .body_mut()
-        .read_to_string()
-        .expect("Failed to read response body")
-}
-
-fn fetch_crd_from_file(path: &str) -> String {
-    println!("cargo:note=Fetching CRD from file at {path}");
-    match fs::read_to_string(path) {
-        Ok(crd) => crd,
-        Err(e) => panic!("Failed to read CRD from {path}: {e}"),
-    }
-}
-
-const LICENSE_PREAMBLE: &str = "// SPDX-License-Identifier: Apache-2.0
-// Copyright Open Network Fabric Authors
-
-";
-
-fn fixup_signed_types(raw: String) -> String {
-    raw.replace("i64", "u64").replace("i32", "u32")
-}
 
 /// Fixup the types in the generated Rust code
 ///
@@ -94,31 +13,26 @@ fn fixup_signed_types(raw: String) -> String {
 ///
 /// By rewriting the types, serde_json used by kube-rs should parse the
 /// json correctly.
+///
+/// TODO: replace this with a proc macro as the text replacement is likely fragile
 fn fixup_types(raw: String) -> String {
-    let raw = fixup_signed_types(raw);
     raw.replace("asn: Option<i32>", "asn: Option<u32>")
-        .replace("workers: Option<u64>", "workers: Option<u8>") // Gateway Go code says this is a u8
+        // This should get both vtep_mtu and plain mtu
+        .replace("mtu: Option<i32>", "mtu: Option<u32>")
+        .replace("vni: Option<i32>", "vni: Option<u32>")
+        .replace("workers: Option<i64>", "workers: Option<u8>") // Gateway Go code says this is a u8
         .replace(
             "idle_timeout: Option<String>",
             "idle_timeout: Option<kube_core::duration::Duration>",
         )
-        .replace(
-            "last_applied_gen: Option<u64>",
-            "last_applied_gen: Option<i64>",
-        )
-    // fixme: we should consider to use u64 for generation Ids?
+        .replace("b: Option<i64>", "b: Option<u64>")
+        .replace("d: Option<i64>", "d: Option<u64>")
+        .replace("p: Option<i64>", "p: Option<u64>")
+        .replace("priority: Option<i32>", "priority: Option<u32>")
+        .replace("priority: i32", "priority: u32")
 }
 
-fn gen_version_const(version: &Option<String>) -> String {
-    let version = version
-        .as_ref()
-        .map(|v| format!("Some(\"{v}\")"))
-        .unwrap_or("None".to_string());
-
-    format!("pub const GW_API_VERSION: Option<&str> = {version};\n\n")
-}
-
-fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String {
+fn generate_rust_for_crd(crd_content: &str) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
         .args(["-D", "PartialEq", "-Af", "-"])
@@ -147,14 +61,13 @@ fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String 
 
     let raw = String::from_utf8(output.stdout).expect("Failed to convert kopium output to string");
 
-    LICENSE_PREAMBLE.to_string() + gen_version_const(version).as_str() + &fixup_types(raw)
+    fixup_types(raw)
 }
 
-const GENERATED_OUTPUT_DIR: &str = "src/generated";
-const KOPIUM_OUTPUT_FILE: &str = "gateway_agent_crd.rs";
+const KOPIUM_OUTPUT_FILE: &str = "generated.rs";
 
 fn kopium_output_path() -> PathBuf {
-    PathBuf::from(GENERATED_OUTPUT_DIR).join(KOPIUM_OUTPUT_FILE)
+    PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(KOPIUM_OUTPUT_FILE)
 }
 
 fn code_needs_regen(new_code: &str) -> bool {
@@ -171,44 +84,49 @@ fn code_needs_regen(new_code: &str) -> bool {
     true
 }
 
-fn rerun() {
-    println!("cargo:rerun-if-changed={}", env_file_name().display());
-}
-
 fn main() {
-    rerun();
-
-    // get config from env file
-    let config = read_env_config();
-
-    // get CRD spec from local path or URL
-    let crd_spec = if let Some(agent_crd_file) = config.local_path {
-        fetch_crd_from_file(&agent_crd_file)
-    } else if let Some(agent_crd_url) = config.url {
-        fetch_crd(&agent_crd_url)
-    } else {
-        panic!("No CRD path or URL is set in env file");
+    let agent_crd_contents = {
+        let agent_crd_path =
+            PathBuf::from(std::env::var("GW_CRD_PATH").expect("GW_CRD_PATH var unset"))
+                .join("gwint.githedgehog.com_gatewayagents.yaml");
+        let mut agent_crd_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .open(&agent_crd_path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to open {path}: {e}",
+                    path = agent_crd_path.to_str().expect("non unicode crd path")
+                )
+            });
+        let mut contents = String::with_capacity(
+            agent_crd_file
+                .metadata()
+                .expect("unable to get crd metadata")
+                .len() as usize,
+        );
+        agent_crd_file
+            .read_to_string(&mut contents)
+            .unwrap_or_else(|e| panic!("unable to read crd data into string: {e}"));
+        contents
     };
+    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents);
 
-    // CRD spec can't be empty
-    if crd_spec.is_empty() {
-        panic!("Empty CRD specification");
-    }
-
-    // generate rust types from the read crd_spec
-    let agent_generated_code = generate_rust_for_crd(&crd_spec, &config.version);
     if !code_needs_regen(&agent_generated_code) {
         println!("cargo:note=No changes to code generated from CRD");
         return;
     }
 
-    // Write the generated code
-    let output_dir = PathBuf::from(GENERATED_OUTPUT_DIR);
-    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
-
     let output_file = kopium_output_path();
     fs::write(&output_file, agent_generated_code)
         .expect("Failed to write generated agent CRD code");
+
+    let sysroot = dpdk_sysroot_helper::get_sysroot();
+
+    let rerun_if_changed = ["build.rs", sysroot.as_str()];
+    for file in rerun_if_changed {
+        println!("cargo:rerun-if-changed={file}");
+    }
 
     println!(
         "cargo:note=Generated gateway agent CRD types written to {:?}",
