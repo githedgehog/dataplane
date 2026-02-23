@@ -41,7 +41,6 @@ mod nf_test {
         reply.set_ip_destination(src_ip).unwrap();
         reply.set_source_port(dst_port).unwrap();
         reply.set_destination_port(src_port).unwrap();
-        reply.meta_mut().dst_vpcd.take(); // FIXME
 
         if reply.is_tcp() {
             let tcp = reply.try_tcp_mut().unwrap();
@@ -194,9 +193,7 @@ mod nf_test {
         assert!(expires_in > PortFwEntry::INITIAL_TIMEOUT.as_secs() - 2);
 
         // process original packet again. It should be fast-natted
-        let mut repeated = udp_packet_to_port_forward();
-        // this is a hack needed until the flow lookup gets fixed.
-        repeated.meta_mut().dst_vpcd.take();
+        let repeated = udp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, repeated);
         assert_eq!(output.ip_source().unwrap().to_string(), "10.0.0.1");
         assert_eq!(output.ip_destination().unwrap().to_string(), "192.168.1.2");
@@ -260,7 +257,6 @@ mod nf_test {
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_ack(true);
         tcp.set_syn(false);
@@ -273,7 +269,6 @@ mod nf_test {
 
         // process TCP FIN in reverse direction: flow entry should be found. State should become Closing
         let mut packet = tcp_packet_reverse_reply();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_fin(true);
         let output = process_packet(&mut pipeline, packet);
@@ -285,7 +280,6 @@ mod nf_test {
 
         // process TCP FIN ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_ack(true);
         tcp.set_fin(false);
@@ -298,7 +292,6 @@ mod nf_test {
 
         // process TCP ACK in reverse direction: flow entry should be found. State should become Closing
         let mut packet = tcp_packet_reverse_reply();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_ack(true);
         let output = process_packet(&mut pipeline, packet);
@@ -329,7 +322,6 @@ mod nf_test {
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_ack(true);
         tcp.set_syn(false);
@@ -341,7 +333,6 @@ mod nf_test {
 
         // process TCP RST packet in forward direction.
         let mut packet = tcp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_rst(true);
         tcp.set_syn(false);
@@ -372,7 +363,6 @@ mod nf_test {
 
         // process TCP SYN|ACK packet in reverse direction: flow entry should be found. State should become 2way
         let mut packet = tcp_packet_reverse_reply();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_syn(true);
         tcp.set_ack(true);
@@ -385,7 +375,6 @@ mod nf_test {
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_ack(true);
         tcp.set_syn(false);
@@ -402,7 +391,6 @@ mod nf_test {
         writer.update_table(&ruleset).unwrap();
 
         let mut packet = tcp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_ack(false);
         tcp.set_syn(false);
@@ -416,7 +404,6 @@ mod nf_test {
         let _ = pipeline.process(std::iter::empty::<Packet<TestBuffer>>());
 
         let mut packet = tcp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take(); // FIXME when flow-filter fixed
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_ack(false);
         tcp.set_syn(false);
@@ -513,18 +500,16 @@ mod nf_test {
         assert!(!output.is_done());
 
         // send another packet to be port-forwarded: it should hit a flow
-        //       let mut packet = udp_packet_to_port_forward();
-        //        packet.meta_mut().dst_vpcd.take();
-        //        let output = process_packet(&mut pipeline, packet);
-        //        assert!(hit_port_fw_state_valid(&output));
+        let packet = udp_packet_to_port_forward();
+        let output = process_packet(&mut pipeline, packet);
+        assert!(hit_port_fw_state_valid(&output));
 
         // the flow table should have 2 flows
         assert_eq!(flow_table.len(), Some(2));
         println!("{flow_table}");
 
         // process a reply from the dest vpc. It should hit a flow
-        let mut reply = build_reply(&output);
-        reply.meta_mut().dst_vpcd.take();
+        let reply = build_reply(&output);
         let output = process_packet(&mut pipeline, reply);
         assert!(!output.is_done());
         assert!(hit_port_fw_state_valid(&output));
@@ -537,8 +522,7 @@ mod nf_test {
 
         // process the original udp packet to be port-forwarded: it should still find a flow
         // but it should not be valid for port-forwarding.
-        let mut packet = udp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take();
+        let packet = udp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
         assert!(hit_port_fw_state_invalid(&output));
 
@@ -557,18 +541,16 @@ mod nf_test {
         assert!(!output.is_done());
 
         // send another packet to be port-forwarded: it should hit a flow
-        //        let mut packet = udp_packet_to_port_forward();
-        //        packet.meta_mut().dst_vpcd.take();
-        //        let output = process_packet(&mut pipeline, packet);
-        //        assert!(hit_port_fw_state_valid(&output));
+        let packet = udp_packet_to_port_forward();
+        let output = process_packet(&mut pipeline, packet);
+        assert!(hit_port_fw_state_valid(&output));
 
         // the flow table should have 2 flows
         assert_eq!(flow_table.len(), Some(2));
         println!("{flow_table}");
 
         // process a reply from the dest vpc. It should hit a flow
-        let mut reply = build_reply(&output);
-        reply.meta_mut().dst_vpcd.take();
+        let reply = build_reply(&output);
         let output = process_packet(&mut pipeline, reply);
         assert!(!output.is_done());
         assert!(hit_port_fw_state_valid(&output));
@@ -581,8 +563,7 @@ mod nf_test {
 
         // process the original udp packet to be port-forwarded: it should still find a flow
         // but it should not be valid for port-forwarding.
-        let mut packet = udp_packet_to_port_forward();
-        packet.meta_mut().dst_vpcd.take();
+        let packet = udp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
         assert!(hit_port_fw_state_invalid(&output));
 

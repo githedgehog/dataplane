@@ -361,8 +361,8 @@ impl PortFwTable {
 
     #[must_use]
     #[cfg(test)]
-    pub(crate) fn get_group(&self, key: &PortFwKey) -> Option<&PortFwGroup> {
-        self.0.get(key)
+    pub(crate) fn get_group(&self, key: PortFwKey) -> Option<&PortFwGroup> {
+        self.0.get(&key)
     }
 
     #[must_use]
@@ -389,19 +389,19 @@ impl PortFwTable {
     /// Lookup a `PortFwEntry` with the given `PortFwKey` matching (including) the given port.
     pub(crate) fn lookup_matching_rule(
         &self,
-        key: &PortFwKey,
+        key: PortFwKey,
         address: IpAddr,
         port: NonZero<u16>,
     ) -> Option<&Arc<PortFwEntry>> {
         self.0
-            .get(key)
+            .get(&key)
             .and_then(|group| group.get_rule_for_addr_and_port(address, port))
     }
 
     #[must_use]
     #[cfg(test)]
     pub(crate) fn contains_rule(&self, entry: &PortFwEntry) -> bool {
-        match self.get_group(&entry.key) {
+        match self.get_group(entry.key) {
             None => false,
             Some(group) => group.0.iter().any(|e| e.as_ref() == entry),
         }
@@ -546,12 +546,12 @@ mod test {
 
         fwtable.add_entry(entry1.clone()).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(&key).unwrap().len(), 1);
+        assert_eq!(fwtable.get_group(key).unwrap().len(), 1);
 
         // idempotence -- nothing gets added
         fwtable.add_entry(entry1).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(&key).unwrap().len(), 1);
+        assert_eq!(fwtable.get_group(key).unwrap().len(), 1);
 
         // add a second entry, for the same key but distinct ports. Should succeed
         let entry2 = PortFwEntry::new(
@@ -569,7 +569,7 @@ mod test {
 
         fwtable.add_entry(entry2).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(&key).unwrap().len(), 2);
+        assert_eq!(fwtable.get_group(key).unwrap().len(), 2);
     }
 
     #[test]

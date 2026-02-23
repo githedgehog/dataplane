@@ -411,7 +411,6 @@ impl HashDst for IpProtoKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub struct FlowKeyData {
     src_vpcd: Option<VpcDiscriminant>,
-    dst_vpcd: Option<VpcDiscriminant>, // If None, the dst_vpcd is ambiguous and the flow table is needed to resolve it
     src_ip: IpAddr,
     dst_ip: IpAddr,
     proto_key_info: IpProtoKey,
@@ -422,14 +421,12 @@ impl FlowKeyData {
     pub fn new(
         src_vpcd: Option<VpcDiscriminant>,
         src_ip: IpAddr,
-        dst_vpcd: Option<VpcDiscriminant>,
         dst_ip: IpAddr,
         ip_proto_key: IpProtoKey,
     ) -> Self {
         Self {
             src_vpcd,
             src_ip,
-            dst_vpcd,
             dst_ip,
             proto_key_info: ip_proto_key,
         }
@@ -438,11 +435,6 @@ impl FlowKeyData {
     #[must_use]
     pub fn src_vpcd(&self) -> Option<VpcDiscriminant> {
         self.src_vpcd
-    }
-
-    #[must_use]
-    pub fn dst_vpcd(&self) -> Option<VpcDiscriminant> {
-        self.dst_vpcd
     }
 
     #[must_use]
@@ -462,13 +454,34 @@ impl FlowKeyData {
 
     /// Creates a new flow key with src and dst swapped
     #[must_use]
-    pub fn reverse(&self) -> Self {
+    pub fn reverse(&self, src_vpcd: Option<VpcDiscriminant>) -> Self {
         Self {
-            src_vpcd: self.dst_vpcd,
-            dst_vpcd: self.src_vpcd,
+            src_vpcd,
             src_ip: self.dst_ip,
             dst_ip: self.src_ip,
             proto_key_info: self.proto_key_info.reverse(),
+        }
+    }
+}
+
+pub struct ExtendedFlowKey {
+    flow_key: FlowKey,
+    dst_vpcd: Option<VpcDiscriminant>,
+}
+impl ExtendedFlowKey {
+    #[must_use]
+    pub fn flow_key(&self) -> &FlowKey {
+        &self.flow_key
+    }
+    #[must_use]
+    pub fn dst_vpcd(&self) -> Option<VpcDiscriminant> {
+        self.dst_vpcd
+    }
+    #[must_use]
+    pub fn reverse(&self) -> Self {
+        Self {
+            flow_key: self.flow_key.reverse(self.dst_vpcd),
+            dst_vpcd: self.flow_key.data().src_vpcd,
         }
     }
 }
@@ -478,7 +491,6 @@ impl Hash for FlowKeyData {
         self.src_vpcd.hash(state);
         self.src_ip.hash(state);
         self.proto_key_info.hash_src(state);
-        self.dst_vpcd.hash(state);
         self.dst_ip.hash(state);
         self.proto_key_info.hash_dst(state);
     }
@@ -504,15 +516,11 @@ impl FlowKey {
     }
 
     #[must_use]
-    pub fn strip_dst_vpcd(mut self) -> Self {
-        self.data_mut().dst_vpcd = None;
-        self
-    }
-
-    #[must_use]
-    pub fn strip_src_vpcd(mut self) -> Self {
-        self.data_mut().src_vpcd = None;
-        self
+    pub fn extend_with_dst_vpcd(&self, dst_vpcd: VpcDiscriminant) -> ExtendedFlowKey {
+        ExtendedFlowKey {
+            flow_key: *self,
+            dst_vpcd: Some(dst_vpcd),
+        }
     }
 
     /// Create a unidirectional flow key
@@ -522,24 +530,17 @@ impl FlowKey {
     pub fn uni(
         src_vpcd: Option<VpcDiscriminant>,
         src_ip: IpAddr,
-        dst_vpcd: Option<VpcDiscriminant>, // If None, the dst_vpcd is ambiguous and the flow table is needed to resolve it
         dst_ip: IpAddr,
         proto_key_info: IpProtoKey,
     ) -> FlowKey {
-        FlowKey::Unidirectional(FlowKeyData::new(
-            src_vpcd,
-            src_ip,
-            dst_vpcd,
-            dst_ip,
-            proto_key_info,
-        ))
+        FlowKey::Unidirectional(FlowKeyData::new(src_vpcd, src_ip, dst_ip, proto_key_info))
     }
 
     // Creates the flow key with src and dst swapped
     #[must_use]
-    pub fn reverse(&self) -> FlowKey {
+    pub fn reverse(&self, src_vpcd: Option<VpcDiscriminant>) -> FlowKey {
         match self {
-            FlowKey::Unidirectional(data) => FlowKey::Unidirectional(data.reverse()),
+            FlowKey::Unidirectional(data) => FlowKey::Unidirectional(data.reverse(src_vpcd)),
         }
     }
 }
@@ -598,14 +599,7 @@ fn flow_key_data_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opti
     };
 
     let src_vpcd = packet.meta().src_vpcd;
-    let dst_vpcd = packet.meta().dst_vpcd;
-    Some(FlowKeyData::new(
-        src_vpcd,
-        src_ip,
-        dst_vpcd,
-        dst_ip,
-        ip_proto_key,
-    ))
+    Some(FlowKeyData::new(src_vpcd, src_ip, dst_ip, ip_proto_key))
 }
 
 impl<Buf: PacketBufferMut> TryFrom<Uni<&Packet<Buf>>> for FlowKey {
@@ -615,18 +609,11 @@ impl<Buf: PacketBufferMut> TryFrom<Uni<&Packet<Buf>>> for FlowKey {
         let FlowKeyData {
             src_vpcd,
             src_ip,
-            dst_vpcd,
             dst_ip,
             proto_key_info,
         } = flow_key_data_from_packet(packet).ok_or(FlowKeyError::NoFlowKeyData)?;
 
-        Ok(FlowKey::uni(
-            src_vpcd,
-            src_ip,
-            dst_vpcd,
-            dst_ip,
-            proto_key_info,
-        ))
+        Ok(FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info))
     }
 }
 
@@ -746,7 +733,6 @@ mod contract {
     impl TypeGenerator for FlowKeyData {
         fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
             let src_vpcd = driver.produce();
-            let dst_vpcd = driver.produce();
             let v6 = driver.produce::<bool>()?;
             // In theory, src_ip and dst_ip could have different versions, e.g., for NAT64, but we don't support that yet
             let (src_ip, dst_ip) = if v6 {
@@ -763,7 +749,6 @@ mod contract {
             let proto_key_info = super::IpProtoKey::generate(driver)?;
             Some(FlowKeyData {
                 src_vpcd,
-                dst_vpcd,
                 src_ip,
                 dst_ip,
                 proto_key_info,
@@ -798,7 +783,6 @@ mod tests {
         let flow_key = FlowKey::uni(
             Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
             "1.2.3.4".parse::<IpAddr>().unwrap(),
-            Some(VpcDiscriminant::VNI(Vni::new_checked(2).unwrap())),
             "4.5.6.7".parse::<IpAddr>().unwrap(),
             IpProtoKey::Tcp(TcpProtoKey {
                 src_port: TcpPort::new_checked(1025).unwrap(),
@@ -806,10 +790,7 @@ mod tests {
             }),
         );
 
-        let reverse_flow_key = flow_key.reverse();
-
-        assert_eq!(flow_key.data().src_vpcd, reverse_flow_key.data().dst_vpcd);
-        assert_eq!(flow_key.data().dst_vpcd, reverse_flow_key.data().src_vpcd);
+        let reverse_flow_key = flow_key.reverse(None);
         assert_eq!(flow_key.data().src_ip, reverse_flow_key.data().dst_ip);
         assert_eq!(flow_key.data().dst_ip, reverse_flow_key.data().src_ip);
         assert_eq!(
@@ -823,7 +804,6 @@ mod tests {
         let flow_key = FlowKey::uni(
             None,
             "1.2.3.4".parse::<IpAddr>().unwrap(),
-            None,
             "4.5.6.7".parse::<IpAddr>().unwrap(),
             IpProtoKey::Tcp(TcpProtoKey {
                 src_port: TcpPort::new_checked(1025).unwrap(),
@@ -831,7 +811,7 @@ mod tests {
             }),
         );
 
-        let reverse_flow_key = flow_key.reverse();
+        let reverse_flow_key = flow_key.reverse(None);
 
         // Reverse should not be equal to the original
         assert_ne!(flow_key, reverse_flow_key);
@@ -933,7 +913,6 @@ mod tests {
             };
 
             let src_vpcd = packet.meta().src_vpcd;
-            let dst_vpcd = packet.meta().dst_vpcd;
 
             let transport = packet.headers().try_transport()?;
             let proto = match transport {
@@ -967,10 +946,8 @@ mod tests {
                 },
             };
             if let Some(proto) = proto {
-                let (flow_key, mut packet) = (
-                    FlowKey::uni(src_vpcd, src_ip, dst_vpcd, dst_ip, proto),
-                    packet,
-                );
+                let (flow_key, mut packet) =
+                    (FlowKey::uni(src_vpcd, src_ip, dst_ip, proto), packet);
                 set_packet_fields(&mut packet, &flow_key);
                 Some((Some(flow_key), packet))
             } else {

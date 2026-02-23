@@ -49,12 +49,8 @@ impl Display for FlowKeyData {
         };
 
         match self.src_vpcd() {
-            Some(vpcd) => write!(f, "{{ VPCs({vpcd}->"),
+            Some(vpcd) => write!(f, "{{ VPCs({vpcd}"),
             None => write!(f, "{{ VPCs(None->"),
-        }?;
-        match self.dst_vpcd() {
-            Some(vpcd) => write!(f, "{vpcd})"),
-            None => write!(f, "None)"),
         }?;
         write!(f, " {protocol} ({source}, {destination}){icmp_data} }}")
     }

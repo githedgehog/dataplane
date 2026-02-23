@@ -180,9 +180,7 @@ pub(crate) fn setup_forward_flow<Buf: PacketBufferMut>(
 ) -> (FlowKey, AtomicPortFwFlowStatus) {
     // build flow key for the forward path from the original packet
     let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
-    let flow_key = FlowKey::try_from(Uni(&*packet))
-        .unwrap_or_else(|_| unreachable!())
-        .strip_dst_vpcd();
+    let flow_key = FlowKey::try_from(Uni(&*packet)).unwrap_or_else(|_| unreachable!());
 
     // build port forwarding state to the forward flow
     let status = AtomicPortFwFlowStatus::new();
@@ -215,13 +213,11 @@ pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
     status: AtomicPortFwFlowStatus,
 ) -> FlowKey {
     // create the flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
-    // We derive the key for the reverse flow from the packet that we port-forward, which has src/dst vpc discriminants.
-    // We strip the dst vpcd from the key.
-    let dst_vpcd = packet.meta_mut().src_vpcd.unwrap_or_else(|| unreachable!());
+    // We derive the key for the reverse flow from the packet that we already translated.
+    let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
         .unwrap_or_else(|_| unreachable!())
-        .reverse()
-        .strip_dst_vpcd();
+        .reverse(Some(dst_vpcd));
 
     // build port forwarding state for the reverse flow
     let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);

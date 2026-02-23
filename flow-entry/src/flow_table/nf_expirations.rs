@@ -62,7 +62,6 @@ mod test {
         let flow_table = Arc::new(FlowTable::default());
         let mut expirations_nf = ExpirationsNF::new(flow_table.clone());
         let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
-        let dst_vpcd = VpcDiscriminant::VNI(Vni::new_checked(200).unwrap());
         let src_ip = "1.2.3.4".parse::<UnicastIpAddr>().unwrap();
         let dst_ip = "5.6.7.8".parse::<IpAddr>().unwrap();
         let src_port = TcpPort::new_checked(1025).unwrap();
@@ -71,7 +70,6 @@ mod test {
         let flow_key = FlowKey::uni(
             Some(src_vpcd),
             src_ip.into(),
-            Some(dst_vpcd),
             dst_ip,
             IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
         );
