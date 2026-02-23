@@ -25,6 +25,7 @@ use test_utils::with_caps;
 use tracing::info;
 use tracing_test::traced_test;
 
+#[n_vm::in_vm]
 #[test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
 #[traced_test]
