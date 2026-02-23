@@ -1413,7 +1413,7 @@ dependencies = [
  "nix 0.31.1",
  "procfs",
  "strum 0.28.0",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
