@@ -84,10 +84,9 @@ impl PortFwTableReader {
 mod test {
     use crate::portfw::portfwtable::access::PortFwTableWriter;
     use crate::portfw::{PortFwEntry, PortFwKey};
+    use lpm::prefix::Prefix;
     use net::ip::NextHeader;
-    use net::ip::UnicastIpAddr;
     use net::packet::VpcDiscriminant;
-    use std::net::IpAddr;
     use std::str::FromStr;
     use std::time::Duration;
     use tracing_test::traced_test;
@@ -95,13 +94,13 @@ mod test {
     fn build_sample_port_forwarding_rule(dst_port: u16) -> PortFwEntry {
         let key = PortFwKey::new(
             VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            UnicastIpAddr::from_str("70.71.72.73").unwrap(),
             NextHeader::TCP,
         );
         PortFwEntry::new(
             key,
             VpcDiscriminant::VNI(3000.try_into().unwrap()),
-            IpAddr::from_str("192.168.1.1").unwrap(),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.1/32").unwrap(),
             (dst_port, dst_port),
             (22, 22),
             None,

@@ -8,35 +8,32 @@ use std::fmt::Display;
 use crate::portfw::portfwtable::objects::{PortFwEntry, PortFwGroup, PortFwKey, PortFwTable};
 
 macro_rules! PORTFW_KEY {
-    ($vpc:expr, $proto:expr, $dstip:expr) => {
-        format_args!("{:>} {:<3} {:>}", $vpc, $proto, $dstip)
+    ($vpc:expr, $proto:expr) => {
+        format_args!("{:>} {:<3}", $vpc, $proto)
     };
 }
 macro_rules! PORTFW_ENTRY {
-    ($dstip:expr, $dstport:expr, $vpc:expr, $initial:expr, $estab:expr) => {
+    ($extip:expr, $extports:expr, $dstip:expr, $ports:expr, $vpc:expr, $initial:expr, $estab:expr) => {
         format_args!(
-            "{:}:{:<} at {} timers:[init:{}s estab:{}s]",
-            $dstip, $dstport, $vpc, $initial, $estab
+            "{}:{} -> {:}:{:<} at {} timers:[init:{}s estab:{}s]",
+            $extip, $extports, $dstip, $ports, $vpc, $initial, $estab
         )
     };
 }
 impl Display for PortFwKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            PORTFW_KEY!(self.src_vpcd(), self.proto(), self.dst_ip()),
-        )
+        write!(f, "{}", PORTFW_KEY!(self.src_vpcd(), self.proto()),)
     }
 }
 impl Display for PortFwEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}:{} -> {}",
+            "{}: {}",
             self.key,
-            self.ext_ports,
             PORTFW_ENTRY!(
+                self.ext_dst_ip,
+                self.ext_ports,
                 self.dst_ip,
                 self.dst_ports,
                 self.dst_vpcd,
