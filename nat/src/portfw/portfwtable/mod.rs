@@ -7,6 +7,7 @@ pub mod access;
 mod display;
 pub mod lpmmap;
 pub mod objects;
+pub mod portforwarder;
 pub mod portrange;
 pub mod rangeset;
 pub mod setup;
