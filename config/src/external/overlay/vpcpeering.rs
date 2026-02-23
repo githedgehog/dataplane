@@ -388,24 +388,12 @@ impl VpcExpose {
     }
 
     /// Validate the [`VpcExpose`]:
-    ///
-    /// 1. Make sure that all prefixes and exclusion prefixes for this [`VpcExpose`] are of the same
-    ///    IP version.
-    /// 2. Make sure that all prefixes (or exclusion prefixes) in each list
-    ///    (ips/nots/as_range/not_as) don't overlap with other prefixes (or exclusion prefixes,
-    ///    respectively) of this list.
-    /// 3. Make sure that all exclusion prefixes are contained within existing prefixes, unless the
-    ///    list of allowed prefixes is empty.
-    /// 4. Make sure exclusion prefixes in a list don't exclude all of the prefixes in the
-    ///    associated prefixes list.
-    /// 5. Make sure we have the same number of addresses available on each side (public/private),
-    ///    taking exclusion prefixes into account.
     pub fn validate(&self) -> ConfigResult {
-        // 0. Check default exposes and prefixes
+        // Check default exposes and prefixes
         self.validate_default_expose()?;
 
-        // 1. Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
-        //    support NAT46 or NAT64 at the moment.
+        // Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
+        // support NAT46 or NAT64 at the moment.
         //
         // TODO: We can loosen this restriction in the future. When we do, some additional
         //       considerations might be required to validate independently the IPv4 and the IPv6
@@ -430,7 +418,7 @@ impl VpcExpose {
             }
         }
 
-        // 2. Check that items in prefix lists of each kind don't overlap
+        // Check that items in prefix lists of each kind don't overlap
         for prefixes in prefix_sets {
             for prefix_with_ports in prefixes {
                 // Loop over the remaining prefixes in the tree
@@ -447,8 +435,8 @@ impl VpcExpose {
             }
         }
 
-        // 3. Ensure all exclusion prefixes are contained within existing allowed prefixes,
-        //    unless the list of allowed prefixes is empty.
+        // Ensure all exclusion prefixes are contained within existing allowed prefixes, unless the
+        // list of allowed prefixes is empty.
         for (prefixes, excludes) in [
             (prefix_sets[0], prefix_sets[1]),
             (prefix_sets[2], prefix_sets[3]),
@@ -472,7 +460,7 @@ impl VpcExpose {
         }
         let zero_size = PrefixWithPortsSize::from(0u8);
 
-        // 4. Ensure we don't exclude all of the allowed prefixes
+        // Ensure we don't exclude all of the allowed prefixes
         let ips_sizes = prefixes_size(&self.ips);
         let nots_sizes = prefixes_size(&self.nots);
         if ips_sizes > zero_size && ips_sizes <= nots_sizes {
@@ -485,11 +473,11 @@ impl VpcExpose {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
 
-        // 5. For static NAT, ensure that, if the list of publicly-exposed addresses is not empty,
-        //    then we have the same number of addresses on each side.
+        // For static NAT, ensure that, if the list of publicly-exposed addresses is not empty, then
+        // we have the same number of addresses on each side.
         //
-        //    Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
-        //    size was smaller than allowed prefixes size already.
+        // Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
+        // size was smaller than allowed prefixes size already.
         if self.has_stateless_nat()
             && as_range_sizes > zero_size
             && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes
@@ -500,7 +488,7 @@ impl VpcExpose {
             ));
         }
 
-        // 6. For stateful NAT, we don't support port ranges
+        // For stateful NAT, we don't support port ranges
         if self.has_stateful_nat()
             && (self.ips.iter().any(|p| p.ports().is_some())
                 || self.as_range_or_empty().iter().any(|p| p.ports().is_some()))
@@ -510,11 +498,8 @@ impl VpcExpose {
             ));
         }
 
-        // 7. Forbid empty ips list if not is non-empty.
-        //    Forbid empty as_range list if not_as is non-empty.
-        //    These configurations are allowed by the user API, but we don't currently support them,
-        //    so we reject them during validation.
-        //    https://github.com/githedgehog/dataplane/issues/650
+        // Forbid empty ips list if not is non-empty.
+        // Forbid empty as_range list if not_as is non-empty.
         if !self.nots.is_empty() && self.ips.is_empty() {
             return Err(ConfigError::Forbidden(
                 "Empty 'ips' with non-empty 'nots' is currently not supported",
