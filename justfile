@@ -93,15 +93,7 @@ build-container *args:
       --argstr platform {{ platform }} \
       --out-link results/dataplane.tar \
       {{ args }}
-
-# Load the dataplane container into the local docker daemon
-[script]
-load-container: build-container && version
-    {{ _just_debuggable_ }}
-    skopeo copy \
-      docker-archive:results/dataplane.tar \
-      docker-daemon:{{ oci_image_full }}
-    echo "Loaded {{ oci_image_full }}"
+    docker import ./results/dataplane.tar dataplane:{{version}}
 
 # Build and push the dataplane container
 [script]
@@ -109,7 +101,7 @@ push: build-container && version
     {{ _just_debuggable_ }}
     skopeo copy \
       {{ _skopeo_dest_insecure }} \
-      docker-archive:results/dataplane.tar \
+      docker://dataplane:{{version}} \
       docker://{{ oci_image_full }}
     echo "Pushed {{ oci_image_full }}"
 

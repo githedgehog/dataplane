@@ -202,16 +202,20 @@ jobs:
             --argstr profile "${{matrix.build.profile}}" \
             --argstr sanitize "${{matrix.build.sanitize}}" \
             --argstr instrumentation "${{matrix.build.instrument}}" \
-            --out-link "${{matrix.nix-target}}" \
+            --out-link "results/${{matrix.nix-target}}" \
             --print-build-logs \
             ${{matrix.nix-target}}
           if [ "${{matrix.nix-target}}" = "tests.all" ]; then
             nix-shell --run \
-              "cargo nextest run --archive-file ${{matrix.nix-target}}/*.tar.zst --workspace-remap $(pwd)"
+              "cargo nextest run --archive-file results/${{matrix.nix-target}}/*.tar.zst --workspace-remap $(pwd)"
           elif [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
-            image="$(docker import dataplane-tar)"
+            image="$(docker import results/dataplane-tar)"
             nix-shell --run \
-              "skopeo copy --src-daemon-host=unix:///run/docker/docker.sock docker-daemon:${image} oci-archive:image.tar"
+              "just --yes debug_justfile="${{inputs.debug_justfile}}" profile=${{matrix.profile}} sanitize=${{matrix.sanitize}} instrument=${{matrix.instrument}} platform=${{matrix.platform}} push"
+            nix-shell --run \
+              "skopeo copy docker://${image} \
+               docker://127.0.0.1:30000/githedgehog/dataplane
+              "
           fi
 
       - name: "Setup tmate session for debug"
