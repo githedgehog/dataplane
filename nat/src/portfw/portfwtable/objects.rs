@@ -3,9 +3,6 @@
 
 //! Port forwarding objects
 
-#![allow(clippy::struct_field_names)]
-#![allow(clippy::new_without_default)]
-
 use ahash::RandomState;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use net::ip::NextHeader;
@@ -24,6 +21,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::PortFwTableError;
+use super::portforwarder::PortForwarder;
 use super::portrange::PortRange;
 
 /// A `PortFwEntry` contains the essential data required to perform port forwarding
@@ -226,91 +224,18 @@ impl Debug for PortFwKey {
     }
 }
 
-/// A `PortFwGroup` is a vector of `PortFwEntry`s
-#[derive(Clone, Default)]
-pub(crate) struct PortFwGroup(Vec<Arc<PortFwEntry>>);
-impl PortFwGroup {
-    #[must_use]
-    #[allow(unused)]
-    fn new() -> Self {
-        Self::default()
-    }
-    #[must_use]
-    fn new_with_entry(entry: Arc<PortFwEntry>) -> Self {
-        Self(vec![entry])
-    }
-
-    /// Add a `PortFwEntry`  to a `PortFwGroup`.
-    /// We allow adding the same rule multiple times (idempotence) or updating an existing entry if it is
-    /// equivalent to the provided one, except for the values of the timeouts. Equivalence is dealt with by
-    /// `PortFwEntry::matches()` method.
-    fn add_mod_rule(&mut self, entry: Arc<PortFwEntry>) -> Result<(), PortFwTableError> {
-        if let Some(index) = self.0.iter().position(|e| e.matches(&entry)) {
-            let exist = self.0.get(index).unwrap_or_else(|| unreachable!());
-            exist.set_init_timeout(entry.init_timeout());
-            exist.set_estab_timeout(entry.estab_timeout());
-            Ok(())
-        } else {
-            // We allow overlap in ports. There's no reason not to allow this
-            // and it allows some load-balancing if needed.
-            #[allow(clippy::overly_complex_bool_expr)]
-            if false
-                && self
-                    .0
-                    .iter()
-                    .any(|e| e.ext_ports.overlaps_with(entry.ext_ports))
-            {
-                return Err(PortFwTableError::OverlappingRange(
-                    entry.ext_ports.to_string(),
-                ));
-            }
-
-            self.0.push(entry);
-            Ok(())
-        }
-    }
-
-    /// Return the rule containing the given port and address. Only one rule should contain both.
-    /// This should be enforced by construction. This method will return the first rule that
-    /// contains both.
-    pub fn get_rule_for_addr_and_port(
-        &self,
-        address: IpAddr,
-        port: NonZero<u16>,
-    ) -> Option<&Arc<PortFwEntry>> {
-        self.0
-            .iter()
-            .find(|e| e.ext_prefix.covers_addr(&address) && e.ext_ports.contains(port))
-    }
-
-    /// Get a reference to the entry in this group matching the provided one
-    #[cfg(test)]
-    pub fn get_rule(&self, entry: &PortFwEntry) -> Option<&Arc<PortFwEntry>> {
-        self.0.iter().find(|e| e.matches(entry))
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<PortFwEntry>> {
-        self.0.iter()
-    }
-
-    #[allow(unused)]
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    #[allow(unused)]
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
 /// Port Forwarding table.
 ///
 /// This table tells the data-path NF how to perform port forwarding; which
 /// IP addresses and ports to re-write and among which VPCs, when that
 /// cannot determined from the flow table. That is, this table is only consulted
 /// in the slow path when no flow state exists in the flow table.
-pub struct PortFwTable(HashMap<PortFwKey, PortFwGroup, RandomState>);
+pub struct PortFwTable(HashMap<PortFwKey, PortForwarder, RandomState>);
+impl Default for PortFwTable {
+    fn default() -> Self {
+        Self(HashMap::with_hasher(RandomState::with_seed(0)))
+    }
+}
 impl PortFwTable {
     #[must_use]
     #[cfg(test)]
@@ -319,23 +244,30 @@ impl PortFwTable {
     }
 
     /// Add a `Arc<PortFwEntry>` to this `PortFwTable`.
-    /// This method is never called directly, but from `Self::update()`.
     fn add_entry(&mut self, entry: Arc<PortFwEntry>) -> Result<(), PortFwTableError> {
         let key = &entry.key;
-        if let Some(group) = self.0.get_mut(key) {
-            group.add_mod_rule(entry)
-        } else {
-            self.0.insert(*key, PortFwGroup::new_with_entry(entry));
-            Ok(())
+        let forwarder = self.0.entry(*key).or_default();
+
+        // check if an identical entry exists, except for the timers
+        // This could be done in the base definition of `RangeSet`. However, that would require us to
+        // implement `PartialEq` or add a trait bound for equivalence
+        if let Some(exist) = forwarder.get_rule(entry.ext_prefix, entry.ext_ports)
+            && exist.matches(&entry)
+        {
+            exist.set_init_timeout(entry.init_timeout());
+            exist.set_estab_timeout(entry.estab_timeout());
+            return Ok(());
         }
+
+        forwarder
+            .insert_rule(entry)
+            .map_err(|e| PortFwTableError::OverlappingRange(e.to_string()))
     }
 
     /// Remove the `PortFwEntry` that matches the provided one from the table.
-    /// This method is never called directly, but from `Self::update()`.
     fn remove_entry(&mut self, entry: &PortFwEntry) -> Option<Arc<PortFwEntry>> {
-        let group = self.0.get_mut(&entry.key)?;
-        let index = group.0.iter().position(|e| e.matches(entry))?;
-        Some(group.0.swap_remove(index))
+        let forwarder = self.0.get_mut(&entry.key)?;
+        forwarder.remove_rule(entry)
     }
 
     #[allow(unused)]
@@ -360,32 +292,6 @@ impl PortFwTable {
     }
 
     #[must_use]
-    #[cfg(test)]
-    pub(crate) fn get_group(&self, key: PortFwKey) -> Option<&PortFwGroup> {
-        self.0.get(&key)
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    /// Lookup a `PortFwEntry` in the `PortFwTable`. For an entry to be returned, it must
-    /// match the provided `PortFwEntry`, except for the timers configuration.
-    /// This is only for TESTING.
-    pub(crate) fn lookup_rule(&self, entry: &PortFwEntry) -> Option<&Arc<PortFwEntry>> {
-        self.0
-            .get(&entry.key)
-            .and_then(|group| group.get_rule(entry))
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    /// Lookup a `PortFwEntry` in the `PortFwTable` and return a `Weak` reference to it if found.
-    /// For an entry to be returned, it must match the provided `PortFwEntry`, except for the timers
-    /// configuration. This is only for TESTING.
-    pub(crate) fn lookup_rule_ref(&self, entry: &PortFwEntry) -> Option<Weak<PortFwEntry>> {
-        self.lookup_rule(entry).map(Arc::downgrade)
-    }
-
-    #[must_use]
     /// Lookup a `PortFwEntry` with the given `PortFwKey` matching (including) the given port.
     pub(crate) fn lookup_matching_rule(
         &self,
@@ -395,23 +301,11 @@ impl PortFwTable {
     ) -> Option<&Arc<PortFwEntry>> {
         self.0
             .get(&key)
-            .and_then(|group| group.get_rule_for_addr_and_port(address, port))
+            .and_then(|forwarder| forwarder.lookup(address, port))
     }
 
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn contains_rule(&self, entry: &PortFwEntry) -> bool {
-        match self.get_group(entry.key) {
-            None => false,
-            Some(group) => group.0.iter().any(|e| e.as_ref() == entry),
-        }
-    }
-
-    #[allow(unused)]
     pub(crate) fn values(&self) -> impl Iterator<Item = &PortFwEntry> {
-        self.0
-            .values()
-            .flat_map(|v| v.0.iter().map(std::convert::AsRef::as_ref))
+        self.0.values().flat_map(PortForwarder::iter)
     }
 
     /// Tell if an entry is within the provided ruleset
@@ -424,9 +318,32 @@ impl PortFwTable {
     }
 }
 
-impl Default for PortFwTable {
-    fn default() -> Self {
-        Self(HashMap::with_hasher(RandomState::with_seed(0)))
+#[cfg(test)]
+impl PortFwTable {
+    #[must_use]
+    /// Lookup a `PortFwEntry` in the `PortFwTable`. For an entry to be returned, it must
+    /// match the provided `PortFwEntry`, except for the timers configuration.
+    /// This is only for TESTING.
+    pub(crate) fn lookup_rule(&self, entry: &PortFwEntry) -> Option<&Arc<PortFwEntry>> {
+        self.0
+            .get(&entry.key)
+            .and_then(|forwarder| forwarder.get_rule(entry.ext_prefix, entry.ext_ports))
+    }
+
+    #[must_use]
+    /// Lookup a `PortFwEntry` in the `PortFwTable` and return a `Weak` reference to it if found.
+    pub(crate) fn lookup_rule_ref(&self, entry: &PortFwEntry) -> Option<Weak<PortFwEntry>> {
+        self.lookup_rule(entry).map(Arc::downgrade)
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn contains_rule(&self, entry: &PortFwEntry) -> bool {
+        if let Some(exist) = self.lookup_rule(entry) {
+            exist.as_ref() == entry
+        } else {
+            false
+        }
     }
 }
 
@@ -546,12 +463,10 @@ mod test {
 
         fwtable.add_entry(entry1.clone()).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(key).unwrap().len(), 1);
 
         // idempotence -- nothing gets added
         fwtable.add_entry(entry1).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(key).unwrap().len(), 1);
 
         // add a second entry, for the same key but distinct ports. Should succeed
         let entry2 = PortFwEntry::new(
@@ -559,7 +474,7 @@ mod test {
             VpcDiscriminant::VNI(4000.try_into().unwrap()),
             Prefix::from_str("70.71.72.73/32").unwrap(),
             Prefix::from_str("192.168.1.1/32").unwrap(),
-            (3022, 3022),
+            (3023, 3023),
             (23, 23),
             None,
             None,
@@ -569,7 +484,6 @@ mod test {
 
         fwtable.add_entry(entry2).unwrap();
         assert_eq!(fwtable.0.len(), 1);
-        assert_eq!(fwtable.get_group(key).unwrap().len(), 2);
     }
 
     #[test]

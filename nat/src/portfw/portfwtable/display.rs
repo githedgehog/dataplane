@@ -5,7 +5,7 @@
 
 use std::fmt::Display;
 
-use crate::portfw::portfwtable::objects::{PortFwEntry, PortFwGroup, PortFwKey, PortFwTable};
+use crate::portfw::portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable};
 
 macro_rules! PORTFW_KEY {
     ($vpc:expr, $proto:expr) => {
@@ -15,7 +15,7 @@ macro_rules! PORTFW_KEY {
 macro_rules! PORTFW_ENTRY {
     ($extip:expr, $extports:expr, $dstip:expr, $ports:expr, $vpc:expr, $initial:expr, $estab:expr) => {
         format_args!(
-            "{}:{} -> {:}:{:<} at {} timers:[init:{}s estab:{}s]",
+            "{}:{:<6} -> {:}:{:<6} at {} timers:[init:{}s estab:{}s]",
             $extip, $extports, $dstip, $ports, $vpc, $initial, $estab
         )
     };
@@ -43,18 +43,10 @@ impl Display for PortFwEntry {
         )
     }
 }
-impl Display for PortFwGroup {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for e in self.iter() {
-            write!(f, "{e}")?;
-        }
-        writeln!(f)
-    }
-}
 fn fmt_port_fw_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     writeln!(
         f,
-        " ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Port forwarding table ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        " ────────────────────────────────────── Port forwarding table ──────────────────────────────────────"
     )
 }
 
