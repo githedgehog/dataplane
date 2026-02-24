@@ -97,6 +97,27 @@ cargo test --profile=release
 
 This covers basic testing and building of dataplane, but [there is more to testing dataplane](./testing.md).
 
+## Updating the gateway-agent version
+
+The gateway pin in `npins/sources.json` is frozen to prevent accidental updates.
+To update it to a specific version:
+
+```bash
+npins unfreeze gateway
+npins add github githedgehog gateway --at <version>
+npins freeze gateway
+```
+
+For example, to pin to `v0.42.0`:
+
+```bash
+npins unfreeze gateway
+npins add github githedgehog gateway --at v0.42.0
+npins freeze gateway
+```
+
+After updating, exit and restart `nix-shell` for the changes to take effect.
+
 ## IDE Setup
 
 The nix-shell provides the full toolchain, so IDE setup is straightforward.

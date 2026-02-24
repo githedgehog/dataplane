@@ -66,11 +66,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.41.0",
-      "revision": "38ee84275c8f8659ab18976914781c728e64bac2",
-      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.41.0",
-      "hash": "sha256-beZDnd8JDTkT2Hb0BHLDOtrrcCwntbnNwMLH3qk8Gxk=",
-      "frozen": true
+      "version": "v0.42.0",
+      "revision": "19c1274d13ef670178f603bb683b9f1870432293",
+      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.42.0",
+      "hash": "sha256-h1MT0wxo6XA5nmNCOU7BUs04ZhzW0jkrZcDW0e4aj/0="
     },
     "kopium": {
       "type": "GitRelease",

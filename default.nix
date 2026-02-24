@@ -146,12 +146,14 @@ let
     };
   };
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
+  jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
   outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
       p: t:
       (markdownFilter p t)
+      || (jsonFilter p t)
       || (cHeaderFilter p t)
       || ((outputsFilter p t) && (craneLib.filterCargoSources p t));
     src = ./.;
