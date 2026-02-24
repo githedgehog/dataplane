@@ -77,9 +77,6 @@ _dataplane_base_container := if _image_profile == "release" { _libc_container } 
 
 # Warn if the compile-env image is deprecated (or missing)
 
-[private]
-_compile_env_check := if shell('docker image list --format "{{.Repository}}:{{.Tag}}" | grep -x "' + _compile_env_container + '" || true') == '' { shell('printf "\n/!\\ Latest compile-env not found, try \"just refresh-compile-env\"\n\n" >&2') } else { '' }
-
 # Docker settings
 
 [private]
@@ -554,3 +551,7 @@ bump_minor_version:
     echo "New version: ${NEW_VERSION}"
     sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
     just cargo update -w
+
+[script]
+shell:
+   nix-shell
