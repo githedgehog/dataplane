@@ -211,11 +211,7 @@ jobs:
           elif [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
             image="$(docker import results/dataplane-tar)"
             nix-shell --run \
-              "just --yes debug_justfile="${{inputs.debug_justfile}}" profile=${{matrix.profile}} sanitize=${{matrix.sanitize}} instrument=${{matrix.instrument}} platform=${{matrix.platform}} push"
-            nix-shell --run \
-              "skopeo copy docker://${image} \
-               docker://127.0.0.1:30000/githedgehog/dataplane
-              "
+              "skopeo copy docker://${image} docker://127.0.0.1:30000/githedgehog/dataplane"
           fi
 
       - name: "Setup tmate session for debug"
