@@ -1271,13 +1271,15 @@ mod tests {
                             .make_stateless_nat()
                             .unwrap()
                             .ip("2.0.0.0/24".into())
-                            .as_range("20.0.0.0/24".into()), // Stateless NAT
+                            .as_range("20.0.0.0/24".into()) // Stateless NAT
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_stateful_nat(None)
                             .unwrap()
                             .ip("3.0.0.0/24".into())
-                            .as_range("30.0.0.0/24".into()), // Stateful NAT
-                        VpcExpose::empty().set_default(),           // Default (no NAT)
+                            .as_range("30.0.0.0/24".into()) // Stateful NAT
+                            .unwrap(),
+                        VpcExpose::empty().set_default(), // Default (no NAT)
                     ],
                 },
                 VpcManifest {
@@ -1288,13 +1290,15 @@ mod tests {
                             .make_stateless_nat()
                             .unwrap()
                             .ip("6.0.0.0/24".into())
-                            .as_range("60.0.0.0/24".into()), // Stateless NAT
+                            .as_range("60.0.0.0/24".into()) // Stateless NAT
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_stateful_nat(None)
                             .unwrap()
                             .ip("7.0.0.0/24".into())
-                            .as_range("70.0.0.0/24".into()), // Stateful NAT
-                        VpcExpose::empty().set_default(),           // Default (no NAT)
+                            .as_range("70.0.0.0/24".into()) // Stateful NAT
+                            .unwrap(),
+                        VpcExpose::empty().set_default(), // Default (no NAT)
                     ],
                 },
             ))
@@ -1410,7 +1414,8 @@ mod tests {
                             .make_stateful_nat(None)
                             .unwrap()
                             .ip("1.0.0.0/24".into())
-                            .as_range("100.0.0.0/24".into()), // Stateful NAT
+                            .as_range("100.0.0.0/24".into()) // Stateful NAT
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_port_forwarding(None)
                             .unwrap()
@@ -1421,7 +1426,8 @@ mod tests {
                             .as_range(PrefixWithOptionalPorts::new(
                                 "100.0.0.27/32".into(),
                                 Some(PortRange::new(3000, 3001).unwrap()),
-                            )), // Port forwarding
+                            )) // Port forwarding
+                            .unwrap(),
                     ],
                 },
                 VpcManifest {
@@ -1640,7 +1646,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.0.0.0/24".into())
-            .as_range("100.0.0.0/24".into());
+            .as_range("100.0.0.0/24".into())
+            .unwrap();
         // Create a TCP-only port forwarding expose
         let mut pf_expose = VpcExpose::empty()
             .make_port_forwarding(None)
@@ -1652,7 +1659,8 @@ mod tests {
             .as_range(PrefixWithOptionalPorts::new(
                 "100.0.0.27/32".into(),
                 Some(PortRange::new(3000, 3001).unwrap()),
-            ));
+            ))
+            .unwrap();
         pf_expose.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
 
         let mut peering_table = VpcPeeringTable::new();
@@ -1787,7 +1795,8 @@ mod tests {
                             .make_stateful_nat(None)
                             .unwrap()
                             .ip("1.0.0.0/24".into())
-                            .as_range("100.0.0.0/24".into()),
+                            .as_range("100.0.0.0/24".into())
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_port_forwarding(None)
                             .unwrap()
@@ -1798,7 +1807,8 @@ mod tests {
                             .as_range(PrefixWithOptionalPorts::new(
                                 "100.0.0.27/32".into(),
                                 Some(PortRange::new(3000, 3001).unwrap()),
-                            )),
+                            ))
+                            .unwrap(),
                     ],
                 },
                 VpcManifest {
