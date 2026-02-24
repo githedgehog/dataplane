@@ -1066,13 +1066,15 @@ mod tests {
                             .make_stateless_nat()
                             .unwrap()
                             .ip("2.0.0.0/24".into())
-                            .as_range("20.0.0.0/24".into()), // Stateless NAT
+                            .as_range("20.0.0.0/24".into()) // Stateless NAT
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_stateful_nat(None)
                             .unwrap()
                             .ip("3.0.0.0/24".into())
-                            .as_range("30.0.0.0/24".into()), // Stateful NAT
-                        VpcExpose::empty().set_default(),           // Default (no NAT)
+                            .as_range("30.0.0.0/24".into()) // Stateful NAT
+                            .unwrap(),
+                        VpcExpose::empty().set_default(), // Default (no NAT)
                     ],
                 },
                 VpcManifest {
@@ -1083,13 +1085,15 @@ mod tests {
                             .make_stateless_nat()
                             .unwrap()
                             .ip("6.0.0.0/24".into())
-                            .as_range("60.0.0.0/24".into()), // Stateless NAT
+                            .as_range("60.0.0.0/24".into()) // Stateless NAT
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_stateful_nat(None)
                             .unwrap()
                             .ip("7.0.0.0/24".into())
-                            .as_range("70.0.0.0/24".into()), // Stateful NAT
-                        VpcExpose::empty().set_default(),           // Default (no NAT)
+                            .as_range("70.0.0.0/24".into()) // Stateful NAT
+                            .unwrap(),
+                        VpcExpose::empty().set_default(), // Default (no NAT)
                     ],
                 },
             ))

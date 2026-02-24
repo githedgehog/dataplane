@@ -30,14 +30,7 @@ pub enum VpcExposeNatConfig {
     Stateless(VpcExposeStatelessNat),
 }
 
-impl Default for VpcExposeNatConfig {
-    fn default() -> Self {
-        #[allow(clippy::default_constructed_unit_structs)]
-        VpcExposeNatConfig::Stateless(VpcExposeStatelessNat::default())
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VpcExposeNat {
     pub as_range: BTreeSet<PrefixWithOptionalPorts>,
     pub not_as: BTreeSet<PrefixWithOptionalPorts>,
@@ -71,14 +64,6 @@ pub struct VpcExpose {
     pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
-    #[must_use]
-    pub fn make_nat(mut self) -> Self {
-        if self.nat.is_none() {
-            self.nat = Some(VpcExposeNat::default());
-        }
-        self
-    }
-
     // Make the [`VpcExpose`] use stateless NAT.
     //
     // # Errors
@@ -93,7 +78,8 @@ impl VpcExpose {
             None => {
                 self.nat = Some(VpcExposeNat {
                     config: VpcExposeNatConfig::Stateless(VpcExposeStatelessNat {}),
-                    ..VpcExposeNat::default()
+                    as_range: BTreeSet::new(),
+                    not_as: BTreeSet::new(),
                 });
                 Ok(self)
             }
@@ -125,7 +111,8 @@ impl VpcExpose {
             None => {
                 self.nat = Some(VpcExposeNat {
                     config: VpcExposeNatConfig::Stateful(options),
-                    ..VpcExposeNat::default()
+                    as_range: BTreeSet::new(),
+                    not_as: BTreeSet::new(),
                 });
                 Ok(self)
             }
@@ -190,23 +177,19 @@ impl VpcExpose {
         self.nots.insert(prefix);
         self
     }
-    #[must_use]
-    pub fn as_range(self, prefix: PrefixWithOptionalPorts) -> Self {
-        let mut ret = self.make_nat();
-        let Some(nat) = ret.nat.as_mut() else {
-            unreachable!()
-        };
+    pub fn as_range(mut self, prefix: PrefixWithOptionalPorts) -> Result<Self, ConfigError> {
+        let nat = self.nat.as_mut().ok_or(ConfigError::InternalFailure(
+            "VpcExpose::as_range called on expose without NAT".to_string(),
+        ))?;
         nat.as_range.insert(prefix);
-        ret
+        Ok(self)
     }
-    #[must_use]
-    pub fn not_as(self, prefix: PrefixWithOptionalPorts) -> Self {
-        let mut ret = self.make_nat();
-        let Some(nat) = ret.nat.as_mut() else {
-            unreachable!()
-        };
+    pub fn not_as(mut self, prefix: PrefixWithOptionalPorts) -> Result<Self, ConfigError> {
+        let nat = self.nat.as_mut().ok_or(ConfigError::InternalFailure(
+            "VpcExpose::not_as called on expose without NAT".to_string(),
+        ))?;
         nat.not_as.insert(prefix);
-        ret
+        Ok(self)
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {

@@ -73,13 +73,19 @@ pub mod test {
         m1.add_expose(expose);
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("192.168.50.0", 24)).into())
-            .as_range(Prefix::expect_from(("100.100.50.0", 24)).into());
+            .as_range(Prefix::expect_from(("100.100.50.0", 24)).into())
+            .unwrap();
         m1.add_expose(expose);
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("192.168.30.0", 24)).into())
-            .as_range(Prefix::expect_from(("100.100.30.0", 24)).into());
+            .as_range(Prefix::expect_from(("100.100.30.0", 24)).into())
+            .unwrap();
         m1.add_expose(expose);
         m1
     }
@@ -91,34 +97,49 @@ pub mod test {
         m1.add_expose(expose);
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("192.168.70.0", 24)).into())
-            .as_range(Prefix::expect_from(("200.200.70.0", 24)).into());
+            .as_range(Prefix::expect_from(("200.200.70.0", 24)).into())
+            .unwrap();
         m1.add_expose(expose);
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("192.168.90.0", 24)).into())
-            .as_range(Prefix::expect_from(("200.200.90.0", 24)).into());
+            .as_range(Prefix::expect_from(("200.200.90.0", 24)).into())
+            .unwrap();
         m1.add_expose(expose);
         m1
     }
     fn man_vpc1_with_vpc3() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-1");
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("192.168.60.0", 24)).into())
-            .as_range(Prefix::expect_from(("100.100.60.0", 24)).into());
+            .as_range(Prefix::expect_from(("100.100.60.0", 24)).into())
+            .unwrap();
         m1.add_expose(expose);
         m1
     }
     fn man_vpc3_with_vpc1() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-3");
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("192.168.128.0", 27)).into())
-            .as_range(Prefix::expect_from(("100.30.128.0", 27)).into());
+            .as_range(Prefix::expect_from(("100.30.128.0", 27)).into())
+            .unwrap();
         m1.add_expose(expose);
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("192.168.100.0", 24)).into())
-            .as_range(Prefix::expect_from(("192.168.100.0", 24)).into());
+            .as_range(Prefix::expect_from(("192.168.100.0", 24)).into())
+            .unwrap();
         m1.add_expose(expose);
         m1
     }

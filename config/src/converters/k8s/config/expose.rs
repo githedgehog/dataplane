@@ -120,13 +120,17 @@ fn process_as_block(
             let prefix = cidr.parse::<Prefix>().map_err(|e| {
                 FromK8sConversionError::InvalidData(format!("CIDR format: {cidr}: {e}"))
             })?;
-            vpc_expose = vpc_expose.as_range(PrefixWithOptionalPorts::from(prefix));
+            vpc_expose = vpc_expose
+                .as_range(PrefixWithOptionalPorts::from(prefix))
+                .map_err(|e| FromK8sConversionError::InternalError(e.to_string()))?;
         }
         (None, Some(not)) => {
             let prefix = Prefix::try_from(PrefixString(not.as_str())).map_err(|e| {
                 FromK8sConversionError::InvalidData(format!("CIDR format: {not}: {e}"))
             })?;
-            vpc_expose = vpc_expose.not_as(PrefixWithOptionalPorts::from(prefix));
+            vpc_expose = vpc_expose
+                .not_as(PrefixWithOptionalPorts::from(prefix))
+                .map_err(|e| FromK8sConversionError::InternalError(e.to_string()))?;
         }
     }
     Ok(vpc_expose)
