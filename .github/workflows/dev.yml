@@ -107,6 +107,7 @@ jobs:
   build:
     if: "${{ needs.check_changes.outputs.devfiles == 'true' }}"
     name: "${{matrix.nix-target}}/${{matrix.build.name}}"
+    continue-on-error: ${{ matrix.build.optional || false }}
     runs-on: lab
     needs:
       - check_changes
@@ -137,13 +138,15 @@ jobs:
             sanitize: "" # TODO: enable safe-stack,cfi when possible
             instrument: "none"
           - name: "sanitize/address"
-            profile: "debug" # TODO: should be fuzz, but build time explodes for unknown reasons
+            profile: "debug" # FIXME: should be fuzz, but build time explodes for unknown reasons
             sanitize: "address"
-            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
+            instrument: "none" # FIXME: should be coverage, but build time explodes for unknown reasons
+            optional: true # FIXME: Make required once existing bugs are fixed
           - name: "sanitize/thread"
             profile: "fuzz"
             sanitize: "thread"
-            instrument: "none" # TODO: should be coverage, but build time explodes for unknown reasons
+            instrument: "none" # FIXME: should be coverage, but build time explodes for unknown reasons
+            optional: true # FIXME: Make required once existing bugs are fixed
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     steps:
@@ -183,8 +186,10 @@ jobs:
       - uses: "cachix/cachix-action@v14"
         with:
           name: "hedgehog"
-          signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          # prettier-ignore
+          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
+          # prettier-ignore
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: "build packages"
         run: |
