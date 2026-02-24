@@ -104,12 +104,15 @@ mod context {
             .ip("1.2.0.0/16".into())
             .ip("1.3.0.0/16".into())
             .as_range("10.1.0.0/30".into())
-            .not_as("10.1.0.3/32".into());
+            .unwrap()
+            .not_as("10.1.0.3/32".into())
+            .unwrap();
         let expose2 = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
             .ip("2.0.0.0/16".into())
-            .as_range("10.2.0.0/29".into());
+            .as_range("10.2.0.0/29".into())
+            .unwrap();
 
         let manifest1 = VpcManifest {
             name: "VPC-1".into(),
@@ -121,13 +124,16 @@ mod context {
             .unwrap()
             .ip("3.0.0.0/24".into())
             .ip("3.0.1.0/24".into())
-            .as_range("10.3.0.0/30".into());
+            .as_range("10.3.0.0/30".into())
+            .unwrap();
         let expose4 = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
             .ip("4.0.0.0/16".into())
             .as_range("10.4.0.0/31".into())
-            .as_range("10.4.1.0/30".into());
+            .unwrap()
+            .as_range("10.4.1.0/30".into())
+            .unwrap();
 
         let manifest2 = VpcManifest {
             name: "VPC-2".into(),

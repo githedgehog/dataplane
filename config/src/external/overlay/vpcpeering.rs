@@ -48,14 +48,7 @@ pub enum VpcExposeNatConfig {
     PortForwarding(VpcExposePortForwarding),
 }
 
-impl Default for VpcExposeNatConfig {
-    fn default() -> Self {
-        #[allow(clippy::default_constructed_unit_structs)]
-        VpcExposeNatConfig::Stateless(VpcExposeStatelessNat::default())
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VpcExposeNat {
     pub as_range: PrefixPortsSet,
     pub not_as: PrefixPortsSet,
@@ -64,6 +57,16 @@ pub struct VpcExposeNat {
 }
 
 impl VpcExposeNat {
+    #[must_use]
+    pub fn from_config(config: VpcExposeNatConfig) -> Self {
+        Self {
+            as_range: PrefixPortsSet::new(),
+            not_as: PrefixPortsSet::new(),
+            config,
+            proto: L4Protocol::default(),
+        }
+    }
+
     #[must_use]
     pub fn is_stateful(&self) -> bool {
         matches!(self.config, VpcExposeNatConfig::Stateful(_))
@@ -95,14 +98,6 @@ pub struct VpcExpose {
     pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
-    #[must_use]
-    pub fn make_nat(mut self) -> Self {
-        if self.nat.is_none() {
-            self.nat = Some(VpcExposeNat::default());
-        }
-        self
-    }
-
     // Make the [`VpcExpose`] use stateless NAT.
     //
     // # Errors
@@ -115,10 +110,9 @@ impl VpcExpose {
                 "refusing to overwrite previous NAT mode with stateless NAT mode for VpcExpose {self}"
             ))),
             None => {
-                self.nat = Some(VpcExposeNat {
-                    config: VpcExposeNatConfig::Stateless(VpcExposeStatelessNat {}),
-                    ..VpcExposeNat::default()
-                });
+                self.nat = Some(VpcExposeNat::from_config(VpcExposeNatConfig::Stateless(
+                    VpcExposeStatelessNat {},
+                )));
                 Ok(self)
             }
         }
@@ -147,10 +141,9 @@ impl VpcExpose {
             ))),
 
             None => {
-                self.nat = Some(VpcExposeNat {
-                    config: VpcExposeNatConfig::Stateful(options),
-                    ..VpcExposeNat::default()
-                });
+                self.nat = Some(VpcExposeNat::from_config(VpcExposeNatConfig::Stateful(
+                    options,
+                )));
                 Ok(self)
             }
         }
@@ -177,10 +170,9 @@ impl VpcExpose {
                 "refusing to overwrite previous NAT mode with port forwarding for VpcExpose {self}"
             ))),
             None => {
-                self.nat = Some(VpcExposeNat {
-                    config: VpcExposeNatConfig::PortForwarding(options),
-                    ..VpcExposeNat::default()
-                });
+                self.nat = Some(VpcExposeNat::from_config(
+                    VpcExposeNatConfig::PortForwarding(options),
+                ));
                 Ok(self)
             }
         }
@@ -240,23 +232,19 @@ impl VpcExpose {
         self.nots.insert(prefix);
         self
     }
-    #[must_use]
-    pub fn as_range(self, prefix: PrefixWithOptionalPorts) -> Self {
-        let mut ret = self.make_nat();
-        let Some(nat) = ret.nat.as_mut() else {
-            unreachable!()
-        };
+    pub fn as_range(mut self, prefix: PrefixWithOptionalPorts) -> Result<Self, ConfigError> {
+        let nat = self.nat.as_mut().ok_or(ConfigError::MissingParameter(
+            "'as' block requires NAT configuration for the expose",
+        ))?;
         nat.as_range.insert(prefix);
-        ret
+        Ok(self)
     }
-    #[must_use]
-    pub fn not_as(self, prefix: PrefixWithOptionalPorts) -> Self {
-        let mut ret = self.make_nat();
-        let Some(nat) = ret.nat.as_mut() else {
-            unreachable!()
-        };
+    pub fn not_as(mut self, prefix: PrefixWithOptionalPorts) -> Result<Self, ConfigError> {
+        let nat = self.nat.as_mut().ok_or(ConfigError::MissingParameter(
+            "'not' prefix for 'as' block requires NAT configuration for the expose",
+        ))?;
         nat.not_as.insert(prefix);
-        ret
+        Ok(self)
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {

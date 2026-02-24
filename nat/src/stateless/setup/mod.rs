@@ -133,6 +133,8 @@ mod tests {
     #[test]
     fn test_fabric() {
         let expose1 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("1.1.0.0/16".into())
             .not("1.1.5.0/24".into())
             .not("1.1.3.0/24".into())
@@ -140,29 +142,46 @@ mod tests {
             .ip("1.2.0.0/16".into())
             .not("1.2.2.0/24".into())
             .as_range("2.2.0.0/16".into())
+            .unwrap()
             .not_as("2.1.10.0/24".into())
+            .unwrap()
             .not_as("2.1.1.0/24".into())
+            .unwrap()
             .not_as("2.1.8.0/24".into())
+            .unwrap()
             .not_as("2.1.2.0/24".into())
-            .as_range("2.1.0.0/16".into());
+            .unwrap()
+            .as_range("2.1.0.0/16".into())
+            .unwrap();
         let expose2 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("3.0.0.0/16".into())
-            .as_range("4.0.0.0/16".into());
+            .as_range("4.0.0.0/16".into())
+            .unwrap();
 
         let mut manifest1 = VpcManifest::new("VPC-1");
         manifest1.add_expose(expose1);
         manifest1.add_expose(expose2);
 
         let expose3 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("1::/64".into())
             .not("1::/128".into())
             .as_range("1:1::/64".into())
-            .not_as("1:1::/128".into());
+            .unwrap()
+            .not_as("1:1::/128".into())
+            .unwrap();
         let expose4 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("2::/64".into())
             .not("2::/128".into())
             .as_range("2:4::/64".into())
-            .not_as("2:4::/128".into());
+            .unwrap()
+            .not_as("2:4::/128".into())
+            .unwrap();
 
         let mut manifest2 = VpcManifest::new("VPC-2");
         manifest2.add_expose(expose3);
