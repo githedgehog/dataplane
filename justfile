@@ -51,6 +51,17 @@ oci_image_full := oci_repo + "/" + oci_name + ":" + version
 [private]
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
 
+# Set DOCKER_HOST and DOCKER_SOCK if /var/run/docker.sock exists and they are not already set
+[private]
+_setup_docker_env_ := ```
+    if [ -S /var/run/docker.sock ]; then
+      declare -r DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
+      declare -r DOCKER_SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
+      export DOCKER_HOST
+      export DOCKER_SOCK
+    fi
+```
+
 # Build a nix derivation with standard build arguments
 [script]
 build target *args:
@@ -94,22 +105,21 @@ build-container *args:
       --out-link results/dataplane.tar \
       {{ args }}
 
-# Load the dataplane container into the local docker daemon
+# Load the dataplane container tar into docker
 [script]
-load-container: build-container && version
+load-container: build-container
     {{ _just_debuggable_ }}
-    skopeo copy \
-      docker-archive:results/dataplane.tar \
-      docker-daemon:{{ oci_image_full }}
-    echo "Loaded {{ oci_image_full }}"
+    {{ _setup_docker_env_ }}
+    docker import ./results/dataplane.tar dataplane:{{version}}
 
 # Build and push the dataplane container
 [script]
-push: build-container && version
+push-container: load-container && version
     {{ _just_debuggable_ }}
+    {{ _setup_docker_env_ }}
     skopeo copy \
       {{ _skopeo_dest_insecure }} \
-      docker-archive:results/dataplane.tar \
+      docker-daemon:dataplane:{{version}} \
       docker://{{ oci_image_full }}
     echo "Pushed {{ oci_image_full }}"
 
