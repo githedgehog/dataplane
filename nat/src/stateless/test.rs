@@ -156,16 +156,23 @@ pub(crate) mod tests {
             .ip("1.2.0.0/16".into())
             .not("1.2.2.0/24".into())
             .as_range("2.2.0.0/16".into())
+            .unwrap()
             .not_as("2.1.8.0/24".into())
+            .unwrap()
             .not_as("2.2.10.0/24".into())
+            .unwrap()
             .not_as("2.2.1.0/24".into())
+            .unwrap()
             .not_as("2.2.2.0/24".into())
-            .as_range("2.1.0.0/16".into());
+            .unwrap()
+            .as_range("2.1.0.0/16".into())
+            .unwrap();
         let expose2 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("3.0.0.0/16".into())
-            .as_range("4.0.0.0/16".into());
+            .as_range("4.0.0.0/16".into())
+            .unwrap();
 
         let manifest1 = VpcManifest {
             name: "VPC-1".into(),
@@ -196,7 +203,9 @@ pub(crate) mod tests {
             .not("8.0.0.0/24".into())
             .ip("9.0.0.0/17".into())
             .as_range("3.0.0.0/16".into())
-            .not_as("3.0.1.0/24".into());
+            .unwrap()
+            .not_as("3.0.1.0/24".into())
+            .unwrap();
         let expose4 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
@@ -204,9 +213,13 @@ pub(crate) mod tests {
             .not("10.0.1.0/24".into())
             .not("10.0.2.0/24".into())
             .as_range("5.5.0.0/17".into())
+            .unwrap()
             .as_range("5.6.0.0/17".into())
+            .unwrap()
             .not_as("5.6.0.0/24".into())
-            .not_as("5.6.8.0/24".into());
+            .unwrap()
+            .not_as("5.6.8.0/24".into())
+            .unwrap();
 
         let manifest2 = VpcManifest {
             name: "VPC-2".into(),
@@ -382,69 +395,84 @@ pub(crate) mod tests {
             .make_stateless_nat()
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("10.12.0.0/16".into());
+            .as_range("10.12.0.0/16".into())
+            .unwrap();
         let expose122 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.2.0.0/16".into())
             .as_range("10.98.128.0/17".into())
-            .as_range("10.99.0.0/17".into());
+            .unwrap()
+            .as_range("10.99.0.0/17".into())
+            .unwrap();
         let expose123 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.3.0.0/24".into())
-            .as_range("10.100.0.0/24".into());
+            .as_range("10.100.0.0/24".into())
+            .unwrap();
         let expose211 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.2.2.0/24".into())
-            .as_range("10.201.201.0/24".into());
+            .as_range("10.201.201.0/24".into())
+            .unwrap();
         let expose212 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.2.3.0/24".into())
-            .as_range("10.201.202.0/24".into());
+            .as_range("10.201.202.0/24".into())
+            .unwrap();
         let expose213 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("2.0.0.0/24".into())
-            .as_range("10.201.203.0/24".into());
+            .as_range("10.201.203.0/24".into())
+            .unwrap();
         let expose214 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("2.0.1.0/28".into())
-            .as_range("10.201.204.192/28".into());
+            .as_range("10.201.204.192/28".into())
+            .unwrap();
 
         // VPC1 <-> VPC3
         let expose131 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("3.3.0.0/16".into());
+            .as_range("3.3.0.0/16".into())
+            .unwrap();
         let expose132 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.2.0.0/16".into())
             .as_range("3.1.0.0/16".into())
+            .unwrap()
             .not_as("3.1.128.0/17".into())
-            .as_range("3.2.0.0/17".into());
+            .unwrap()
+            .as_range("3.2.0.0/17".into())
+            .unwrap();
         let expose311 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("192.168.128.0/24".into())
-            .as_range("3.3.3.0/24".into());
+            .as_range("3.3.3.0/24".into())
+            .unwrap();
 
         // VPC1 <-> VPC4
         let expose141 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("4.4.0.0/16".into());
+            .as_range("4.4.0.0/16".into())
+            .unwrap();
         let expose411 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("4.5.0.0/16".into());
+            .as_range("4.5.0.0/16".into())
+            .unwrap();
 
         // VPC2 <-> VPC4
         let expose241 = VpcExpose::empty()
@@ -453,21 +481,26 @@ pub(crate) mod tests {
             .ip("2.4.0.0/16".into())
             .not("2.4.1.0/24".into())
             .as_range("44.0.0.0/16".into())
-            .not_as("44.0.200.0/24".into());
+            .unwrap()
+            .not_as("44.0.200.0/24".into())
+            .unwrap();
         let expose421 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("4.4.0.0/16".into())
             .not("4.4.128.0/18".into())
             .as_range("44.4.0.0/16".into())
-            .not_as("44.4.64.0/18".into());
+            .unwrap()
+            .not_as("44.4.64.0/18".into())
+            .unwrap();
 
         // VPC3 <-> VPC4
         let expose341 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
             .ip("192.168.100.0/24".into())
-            .as_range("34.34.34.0/24".into());
+            .as_range("34.34.34.0/24".into())
+            .unwrap();
         let expose431 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
@@ -833,7 +866,8 @@ pub(crate) mod tests {
             .as_range(PrefixWithOptionalPorts::new(
                 "10.1.0.0/16".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         let expose2 = VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
             "10.2.0.0/16".into(),
             Some(PortRange::new(1, 5).unwrap()),
@@ -915,26 +949,32 @@ pub(crate) mod tests {
                 "10.1.0.0/30".into(),
                 Some(PortRange::new(2001, 2300).unwrap()), // 4 IPs, 300 ports
             ))
+            .unwrap()
             .as_range(PrefixWithOptionalPorts::new(
                 "10.1.0.128/25".into(),
                 Some(PortRange::new(2001, 3000).unwrap()), // 128 IPs, 1000 ports
             ))
+            .unwrap()
             .as_range(PrefixWithOptionalPorts::new(
                 "10.1.1.0/25".into(),
                 Some(PortRange::new(2501, 3000).unwrap()), // 128 IPs, 500 ports
             ))
+            .unwrap()
             .as_range(PrefixWithOptionalPorts::new(
                 "10.1.1.128/25".into(),
                 Some(PortRange::new(3001, 4000).unwrap()), // 128 IPs, 1000 ports
             ))
+            .unwrap()
             .not_as(PrefixWithOptionalPorts::new(
                 "10.1.1.128/25".into(),
                 Some(PortRange::new(3456, 3755).unwrap()), // 128 IPs, 300 ports (exclusion)
             ))
+            .unwrap()
             .as_range(PrefixWithOptionalPorts::new(
                 "10.1.2.3/32".into(),
                 Some(PortRange::new(1, 37200).unwrap()), // 1 IP, 37200 ports
-            ));
+            ))
+            .unwrap();
         // Total: (4 * 300 + 128 * 1000 + 128 * 500 + 128 * 1000 + 1 * 37200) - (128 * 300)
         //     = 320,000 ip/port combinations
 
@@ -948,7 +988,8 @@ pub(crate) mod tests {
             .as_range(PrefixWithOptionalPorts::new(
                 "10.2.0.0/30".into(),
                 Some(PortRange::new(1, 16384).unwrap()), // 4 IPs, 16384 ports
-            ));
+            ))
+            .unwrap();
 
         // First address/port (assuming ordered ranges)
 
@@ -1122,7 +1163,8 @@ pub(crate) mod tests {
             .as_range(PrefixWithOptionalPorts::new(
                 "10.1.0.0/16".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         let expose2 = VpcExpose::empty()
             .make_stateless_nat()
             .unwrap()
@@ -1133,7 +1175,8 @@ pub(crate) mod tests {
             .as_range(PrefixWithOptionalPorts::new(
                 "10.2.0.0/16".into(),
                 Some(PortRange::new(6001, 7000).unwrap()),
-            ));
+            ))
+            .unwrap();
         let expose3 = VpcExpose::empty().set_default();
 
         let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2, expose3]);

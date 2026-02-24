@@ -23,21 +23,29 @@ pub mod test {
     fn build_manifest_vpc1() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-1");
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("10.0.0.0", 25)).into())
             .ip(Prefix::expect_from(("10.0.2.128", 25)).into())
             .not(Prefix::expect_from(("10.0.0.13", 32)).into())
             .not(Prefix::expect_from(("10.0.2.130", 32)).into())
             .as_range(Prefix::expect_from(("100.64.1.0", 24)).into())
+            .unwrap()
             .not_as(Prefix::expect_from(("100.64.1.13", 32)).into())
-            .not_as(Prefix::expect_from(("100.64.1.14", 32)).into());
+            .unwrap()
+            .not_as(Prefix::expect_from(("100.64.1.14", 32)).into())
+            .unwrap();
         m1.add_expose(expose);
         m1
     }
     fn build_manifest_vpc2() -> VpcManifest {
         let mut m2 = VpcManifest::new("VPC-2");
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(Prefix::expect_from(("10.0.0.0", 24)).into())
-            .as_range(Prefix::expect_from(("100.64.2.0", 24)).into());
+            .as_range(Prefix::expect_from(("100.64.2.0", 24)).into())
+            .unwrap();
 
         m2.add_expose(expose);
         m2
@@ -112,36 +120,42 @@ pub mod test {
         */
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
-            .as_range("2.0.0.0/16".into());
+            .as_range("2.0.0.0/16".into())
+            .unwrap();
         assert_eq!(expose.validate(), Ok(()));
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/24".into())
             .as_range("2.0.0.0/16".into())
-            .not_as("2.0.0.0/24".into());
+            .unwrap()
+            .not_as("2.0.0.0/24".into())
+            .unwrap();
         assert_eq!(expose.validate(), Ok(()));
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("1::/64".into())
-            .as_range("2::/64".into());
+            .as_range("2::/64".into())
+            .unwrap();
         assert_eq!(expose.validate(), Ok(()));
-
-        // Empty ips/as_range but non-empty nots/not_as - Currently not supported
-        /*
-        let expose = VpcExpose::empty()
-            .not("10.0.0.0/16".into())
-            .not_as("2.0.0.0/16".into());
-        assert_eq!(expose.validate(), Ok(()));
-        */
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
             .ip("1::/64".into())
             .as_range("2.0.0.0/16".into())
-            .as_range("2::/64".into());
+            .unwrap()
+            .as_range("2::/64".into())
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
@@ -149,8 +163,11 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
-            .as_range("1::/112".into());
+            .as_range("1::/112".into())
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
@@ -158,10 +175,14 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
             .not("1::/120".into())
             .as_range("2.0.0.0/16".into())
-            .not_as("2::/120".into());
+            .unwrap()
+            .not_as("2::/120".into())
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
@@ -169,10 +190,14 @@ pub mod test {
 
         // Incorrect: prefix overlapping
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
             .ip("10.0.0.0/17".into())
             .as_range("2.0.0.0/16".into())
-            .as_range("3.0.0.0/17".into());
+            .unwrap()
+            .as_range("3.0.0.0/17".into())
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::OverlappingPrefixes(
@@ -183,10 +208,14 @@ pub mod test {
 
         // Incorrect: out-of-range exclusion prefix
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
             .not("8.0.0.0/24".into())
             .as_range("2.0.0.0/16".into())
-            .not_as("2.0.1.0/24".into());
+            .unwrap()
+            .not_as("2.0.1.0/24".into())
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::OutOfRangeExclusionPrefix("8.0.0.0/24".into()))
@@ -194,12 +223,17 @@ pub mod test {
 
         // Incorrect: all prefixes excluded
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/17".into())
             .not("10.0.128.0/17".into())
             .as_range("2.0.0.0/16".into())
+            .unwrap()
             .not_as("2.0.0.0/17".into())
-            .not_as("2.0.128.0/17".into());
+            .unwrap()
+            .not_as("2.0.128.0/17".into())
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone())))
@@ -207,9 +241,12 @@ pub mod test {
 
         // Incorrect: mismatched prefix lists sizes
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.1.0/24".into())
-            .as_range("2.0.0.0/24".into());
+            .as_range("2.0.0.0/24".into())
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::MismatchedPrefixSizes(
@@ -222,20 +259,32 @@ pub mod test {
     #[test]
     fn test_manifest_expose_overlap() {
         let expose1 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("1.0.0.0/16".into()) // expose3 overlaps with this
             .ip("2.0.0.0/16".into())
             .ip("3.0.0.0/16".into())
             .as_range("11.0.0.0/16".into())
+            .unwrap()
             .as_range("12.0.0.0/16".into())
-            .as_range("13.0.0.0/16".into());
+            .unwrap()
+            .as_range("13.0.0.0/16".into())
+            .unwrap();
         let expose2 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("4.0.0.0/16".into())
-            .as_range("14.0.0.0/16".into());
+            .as_range("14.0.0.0/16".into())
+            .unwrap();
         let expose3 = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip("5.0.0.0/16".into())
             .ip("1.0.1.0/24".into()) // overlaps with expose1.ips
             .as_range("15.0.0.0/16".into())
-            .as_range("16.0.0.0/24".into());
+            .unwrap()
+            .as_range("16.0.0.0/24".into())
+            .unwrap();
         let expose4 = VpcExpose::empty()
             .ip("6.0.0.0/16".into())
             .ip("12.0.2.0/24".into()); // overlaps with expose1.as_range (no as_range for expose4)
@@ -304,7 +353,8 @@ pub mod test {
                         .make_stateful_nat(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
-                        .as_range("2.0.0.0/8".into()),
+                        .as_range("2.0.0.0/8".into())
+                        .unwrap(),
                 ],
             },
             VpcManifest {
@@ -314,7 +364,8 @@ pub mod test {
                         .make_stateful_nat(None)
                         .unwrap()
                         .ip("3.0.0.0/8".into())
-                        .as_range("4.0.0.0/8".into()),
+                        .as_range("4.0.0.0/8".into())
+                        .unwrap(),
                 ],
             },
         );
@@ -350,7 +401,8 @@ pub mod test {
                         .make_stateful_nat(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
-                        .as_range("2.0.0.0/8".into()),
+                        .as_range("2.0.0.0/8".into())
+                        .unwrap(),
                 ],
             },
             VpcManifest {
@@ -360,7 +412,8 @@ pub mod test {
                         .make_stateless_nat()
                         .unwrap()
                         .ip("3.0.0.0/8".into())
-                        .as_range("4.0.0.0/8".into()),
+                        .as_range("4.0.0.0/8".into())
+                        .unwrap(),
                 ],
             },
         );
@@ -508,11 +561,15 @@ pub mod test {
             m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
+                .make_stateless_nat()
+                .unwrap()
                 .ip(Prefix::expect_from(("192.168.111.0", 24)).into())
                 .not(Prefix::expect_from(("192.168.111.2", 32)).into())
                 .not(Prefix::expect_from(("192.168.111.254", 32)).into())
                 .as_range(Prefix::expect_from(("100.64.200.0", 24)).into())
-                .not_as(Prefix::expect_from(("100.64.200.12", 31)).into());
+                .unwrap()
+                .not_as(Prefix::expect_from(("100.64.200.12", 31)).into())
+                .unwrap();
             m1.add_expose(expose);
             m1
         }
@@ -555,8 +612,11 @@ pub mod test {
             m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
+                .make_stateless_nat()
+                .unwrap()
                 .ip(Prefix::expect_from(("192.168.204.4", 32)).into())
-                .as_range(Prefix::expect_from(("100.64.204.4", 32)).into());
+                .as_range(Prefix::expect_from(("100.64.204.4", 32)).into())
+                .unwrap();
             m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
@@ -665,6 +725,8 @@ pub mod test {
         assert_eq!(expose.validate(), Ok(()));
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
@@ -672,10 +734,13 @@ pub mod test {
             .as_range(PrefixWithOptionalPorts::new(
                 "2.0.0.0/16".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(expose.validate(), Ok(()));
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
@@ -688,13 +753,17 @@ pub mod test {
                 "2.0.0.0/16".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
             ))
+            .unwrap()
             .not_as(PrefixWithOptionalPorts::new(
                 "2.0.0.0/25".into(),
                 Some(PortRange::new(8001, 8200).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(expose.validate(), Ok(()));
 
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "1::/64".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
@@ -702,7 +771,8 @@ pub mod test {
             .as_range(PrefixWithOptionalPorts::new(
                 "2::/64".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(expose.validate(), Ok(()));
 
         // Overlapping prefix, but distinct port ranges
@@ -719,6 +789,8 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
@@ -731,10 +803,12 @@ pub mod test {
                 "2.0.0.0/16".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
             ))
+            .unwrap()
             .as_range(PrefixWithOptionalPorts::new(
                 "2::/64".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
@@ -742,6 +816,8 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
@@ -749,7 +825,8 @@ pub mod test {
             .as_range(PrefixWithOptionalPorts::new(
                 "1::/112".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
@@ -757,6 +834,8 @@ pub mod test {
 
         // Incorrect: prefix overlapping
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
@@ -769,10 +848,12 @@ pub mod test {
                 "2.0.0.0/16".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
             ))
+            .unwrap()
             .as_range(PrefixWithOptionalPorts::new(
                 "3.0.0.0/17".into(),
                 Some(PortRange::new(8001, 8500).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::OverlappingPrefixes(
@@ -872,6 +953,8 @@ pub mod test {
 
         // Incorrect: mismatched prefix lists sizes
         let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
@@ -883,7 +966,8 @@ pub mod test {
             .as_range(PrefixWithOptionalPorts::new(
                 "2.0.0.0/24".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::MismatchedPrefixSizes(
@@ -900,7 +984,8 @@ pub mod test {
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(5001, 6000).unwrap()),
             ))
-            .as_range(PrefixWithOptionalPorts::new("2.0.0.0/24".into(), None));
+            .as_range(PrefixWithOptionalPorts::new("2.0.0.0/24".into(), None))
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::Forbidden(
@@ -916,7 +1001,8 @@ pub mod test {
             .as_range(PrefixWithOptionalPorts::new(
                 "2.0.0.0/24".into(),
                 Some(PortRange::new(8001, 9000).unwrap()),
-            ));
+            ))
+            .unwrap();
         assert_eq!(
             expose.validate(),
             Err(ConfigError::Forbidden(

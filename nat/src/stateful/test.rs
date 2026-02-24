@@ -78,18 +78,22 @@ mod tests {
             .make_stateful_nat(Some(ONE_MINUTE))
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("10.12.0.0/16".into());
+            .as_range("10.12.0.0/16".into())
+            .unwrap();
         let expose122 = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.2.0.0/16".into())
             .as_range("10.98.128.0/17".into())
-            .as_range("10.99.0.0/17".into());
+            .unwrap()
+            .as_range("10.99.0.0/17".into())
+            .unwrap();
         let expose123 = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.3.0.0/24".into())
-            .as_range("10.100.0.0/24".into());
+            .as_range("10.100.0.0/24".into())
+            .unwrap();
         let expose211 = VpcExpose::empty().ip("10.201.201.0/24".into());
         let expose212 = VpcExpose::empty().ip("10.201.202.0/24".into());
         let expose213 = VpcExpose::empty().ip("10.201.203.0/24".into());
@@ -100,14 +104,18 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("3.3.0.0/16".into());
+            .as_range("3.3.0.0/16".into())
+            .unwrap();
         let expose132 = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.2.0.0/16".into())
             .as_range("3.1.0.0/16".into())
+            .unwrap()
             .not_as("3.1.128.0/17".into())
-            .as_range("3.2.0.0/17".into());
+            .unwrap()
+            .as_range("3.2.0.0/17".into())
+            .unwrap();
         let expose311 = VpcExpose::empty().ip("3.3.3.0/24".into());
 
         // VPC1 <-> VPC4
@@ -115,7 +123,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("4.4.0.0/16".into());
+            .as_range("4.4.0.0/16".into())
+            .unwrap();
         let expose411 = VpcExpose::empty().ip("4.5.0.0/16".into());
 
         // VPC2 <-> VPC4
@@ -125,7 +134,9 @@ mod tests {
             .ip("2.4.0.0/16".into())
             .not("2.4.1.0/24".into())
             .as_range("44.0.0.0/16".into())
-            .not_as("44.0.200.0/24".into());
+            .unwrap()
+            .not_as("44.0.200.0/24".into())
+            .unwrap();
         let expose421 = VpcExpose::empty()
             .ip("44.4.0.0/16".into())
             .not("44.4.64.0/18".into());
@@ -135,7 +146,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("192.168.100.0/24".into())
-            .as_range("34.34.34.0/24".into());
+            .as_range("34.34.34.0/24".into())
+            .unwrap();
         let expose431 = VpcExpose::empty().ip("4.4.0.0/24".into());
 
         // VPC1 <-> VPC2
@@ -203,7 +215,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("2.2.0.0/16".into());
+            .as_range("2.2.0.0/16".into())
+            .unwrap();
         let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
 
         let mut manifest12 = VpcManifest::new("VPC-1");
@@ -802,7 +815,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .as_range("2.2.0.0/16".into());
+            .as_range("2.2.0.0/16".into())
+            .unwrap();
         let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
         let expose212 = VpcExpose::empty().set_default();
 
@@ -926,7 +940,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.0.0.0/24".into())
-            .as_range("2.0.0.0/24".into());
+            .as_range("2.0.0.0/24".into())
+            .unwrap();
         let expose21 = VpcExpose::empty().ip("5.0.0.0/24".into());
 
         let mut manifest12 = VpcManifest::new("VPC-1");
@@ -941,7 +956,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.0.0.0/24".into())
-            .as_range("2.0.0.0/24".into());
+            .as_range("2.0.0.0/24".into())
+            .unwrap();
         let expose23 = VpcExpose::empty().ip("5.0.0.0/24".into());
 
         let mut manifest23 = VpcManifest::new("VPC-2");
@@ -1285,7 +1301,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.0.0.0/24".into())
-            .as_range("2.0.0.0/24".into());
+            .as_range("2.0.0.0/24".into())
+            .unwrap();
         let expose1_2 = VpcExpose::empty().ip("5.0.0.0/24".into());
 
         let mut manifest1_1 = VpcManifest::new("VPC-1");
@@ -1301,7 +1318,8 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("3.0.0.0/24".into())
-            .as_range("2.0.0.0/24".into()); // Overlap
+            .as_range("2.0.0.0/24".into()) // Overlap
+            .unwrap();
         let expose2_2 = VpcExpose::empty().ip("6.0.0.0/24".into());
 
         let mut manifest2_1 = VpcManifest::new("VPC-1");
