@@ -32,10 +32,10 @@ impl Display for PortFwEntry {
             "{}: {}",
             self.key,
             PORTFW_ENTRY!(
-                self.ext_dst_ip,
+                self.ext_prefix,
                 self.ext_ports,
-                self.dst_ip,
-                self.dst_ports,
+                self.int_prefix,
+                self.int_ports,
                 self.dst_vpcd,
                 self.init_timeout().as_secs(),
                 self.estab_timeout().as_secs()

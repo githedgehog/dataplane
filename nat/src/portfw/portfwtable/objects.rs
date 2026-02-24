@@ -31,10 +31,10 @@ use super::portrange::PortRange;
 pub struct PortFwEntry {
     pub(crate) key: PortFwKey,
     pub(crate) dst_vpcd: VpcDiscriminant,
-    pub(crate) ext_dst_ip: Prefix,
-    pub(crate) dst_ip: Prefix,
-    pub(crate) ext_ports: PortRange,
-    pub(crate) dst_ports: PortRange,
+    pub(crate) ext_prefix: Prefix,   // external prefix to translate
+    pub(crate) int_prefix: Prefix,   // internal prefix we translate into
+    pub(crate) ext_ports: PortRange, // external ports to translate
+    pub(crate) int_ports: PortRange, // internal ports we transtale into
     pub(crate) init_timeout: Arc<AtomicU64>,
     pub(crate) estab_timeout: Arc<AtomicU64>,
 }
@@ -71,10 +71,10 @@ impl PortFwEntry {
         let entry = Self {
             key,
             dst_vpcd,
-            ext_dst_ip,
-            dst_ip,
+            ext_prefix: ext_dst_ip,
+            int_prefix: dst_ip,
             ext_ports: PortRange::new(ext_ports.0, ext_ports.1)?,
-            dst_ports: PortRange::new(dst_ports.0, dst_ports.1)?,
+            int_ports: PortRange::new(dst_ports.0, dst_ports.1)?,
             init_timeout: Arc::from(AtomicU64::new(
                 init_timeout
                     .unwrap_or(PortFwEntry::INITIAL_TIMEOUT)
@@ -123,12 +123,12 @@ impl PortFwEntry {
     fn is_valid(&self) -> Result<(), PortFwTableError> {
         let key = &self.key;
 
-        if !self.dst_ip.matches_version(self.ext_dst_ip) {
+        if !self.int_prefix.matches_version(self.ext_prefix) {
             return Err(PortFwTableError::Unsupported(
                 "Can't do port-forwarding between distinct IP versions".to_string(),
             ));
         }
-        if self.dst_ip.length() != self.ext_dst_ip.length() {
+        if self.int_prefix.length() != self.ext_prefix.length() {
             return Err(PortFwTableError::Unsupported(
                 "Can't do port-forwarding between prefixes of distinct length".to_string(),
             ));
@@ -138,10 +138,10 @@ impl PortFwEntry {
                 "Can't do port-forwarding within the same VPC".to_string(),
             ));
         }
-        if self.ext_ports.len() != self.dst_ports.len() {
+        if self.ext_ports.len() != self.int_ports.len() {
             return Err(PortFwTableError::InvalidPortRangeMapping(
                 self.ext_ports.to_string(),
-                self.dst_ports.to_string(),
+                self.int_ports.to_string(),
             ));
         }
         Ok(())
@@ -151,10 +151,10 @@ impl PortFwEntry {
     /// We need this to be able to treat those as identical, even if they aren't
     pub(crate) fn matches(&self, other: &Self) -> bool {
         self.key == other.key
-            && self.ext_dst_ip == other.ext_dst_ip
-            && self.dst_ip == other.dst_ip
+            && self.ext_prefix == other.ext_prefix
+            && self.int_prefix == other.int_prefix
             && self.ext_ports == other.ext_ports
-            && self.dst_ports == other.dst_ports
+            && self.int_ports == other.int_ports
             && self.dst_vpcd == other.dst_vpcd
     }
 
@@ -189,8 +189,8 @@ impl PortFwEntry {
         dst_ip: IpAddr,
         dst_port: NonZero<u16>,
     ) -> Option<(UnicastIpAddr, NonZero<u16>)> {
-        let new_dst_port = self.ext_ports.map_port_to(dst_port, self.dst_ports)?;
-        let new_dst_ip = Self::map_ip(dst_ip, self.ext_dst_ip, self.dst_ip)?;
+        let new_dst_port = self.ext_ports.map_port_to(dst_port, self.int_ports)?;
+        let new_dst_ip = Self::map_ip(dst_ip, self.ext_prefix, self.int_prefix)?;
         let new_ip = UnicastIpAddr::try_from(new_dst_ip).ok()?;
         Some((new_ip, new_dst_port))
     }
@@ -280,7 +280,7 @@ impl PortFwGroup {
     ) -> Option<&Arc<PortFwEntry>> {
         self.0
             .iter()
-            .find(|e| e.ext_dst_ip.covers_addr(&address) && e.ext_ports.contains(port))
+            .find(|e| e.ext_prefix.covers_addr(&address) && e.ext_ports.contains(port))
     }
 
     /// Get a reference to the entry in this group matching the provided one
