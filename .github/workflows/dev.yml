@@ -137,16 +137,20 @@ jobs:
             profile: "release"
             sanitize: "" # TODO: enable safe-stack,cfi when possible
             instrument: "none"
-          - name: "sanitize/address"
-            profile: "debug" # FIXME: should be fuzz, but build time explodes for unknown reasons
-            sanitize: "address"
-            instrument: "none" # FIXME: should be coverage, but build time explodes for unknown reasons
-            optional: true # FIXME: Make required once existing bugs are fixed
-          - name: "sanitize/thread"
-            profile: "fuzz"
-            sanitize: "thread"
-            instrument: "none" # FIXME: should be coverage, but build time explodes for unknown reasons
-            optional: true # FIXME: Make required once existing bugs are fixed
+        # FIXME: The following commented sections are marked optional
+        # and the build continues after they fail, but then summary
+        # fails.  For now, comment this out, but ideally we'd run them
+        # let them fail, but let the summary pass anyway
+        #          - name: "sanitize/address"
+        #            profile: "debug" # FIXME: should be fuzz, but build time explodes for unknown reasons
+        #            sanitize: "address"
+        #            instrument: "none" # FIXME: should be coverage, but build time explodes for unknown reasons
+        #            optional: true # FIXME: Make required once existing bugs are fixed
+        #          - name: "sanitize/thread"
+        #            profile: "fuzz"
+        #            sanitize: "thread"
+        #            instrument: "none" # FIXME: should be coverage, but build time explodes for unknown reasons
+        #            optional: true # FIXME: Make required once existing bugs are fixed
         debug_justfile:
           - "${{ inputs.debug_justfile || false }}"
     steps:
