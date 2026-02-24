@@ -62,6 +62,25 @@ build target *args:
       --argstr platform {{ platform }} \
       {{ args }}
 
+# Create devroot and sysroot symlinks for local development
+[script]
+setup-roots *args:
+    {{ _just_debuggable_ }}
+    nix build -f default.nix devroot \
+      --argstr profile {{ profile }} \
+      --argstr sanitize '{{ sanitize }}' \
+      --argstr instrumentation {{ instrument }} \
+      --argstr platform {{ platform }} \
+      --out-link devroot \
+      {{ args }}
+    nix build -f default.nix sysroot \
+      --argstr profile {{ profile }} \
+      --argstr sanitize '{{ sanitize }}' \
+      --argstr instrumentation {{ instrument }} \
+      --argstr platform {{ platform }} \
+      --out-link sysroot \
+      {{ args }}
+
 # Build the dataplane container tar
 [script]
 build-container *args:
