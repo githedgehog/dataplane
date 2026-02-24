@@ -39,3 +39,4 @@ net = { workspace = true, features = ["bolero", "test_buffer"] }
 
 [build-dependencies]
 dpdk-sysroot-helper = { workspace = true }
+serde_json = { workspace = true }

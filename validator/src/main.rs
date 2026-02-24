@@ -11,7 +11,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use config::{ExternalConfig, GwConfig, converters::k8s::FromK8sConversionError};
-use k8s_intf::generated::gateway_agent_crd::GatewayAgent;
+use k8s_intf::gateway_agent_crd::GatewayAgent;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 

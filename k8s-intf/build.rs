@@ -5,6 +5,10 @@ use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 
+fn fixup_signed_types(raw: String) -> String {
+    raw.replace("i64", "u64").replace("i32", "u32")
+}
+
 /// Fixup the types in the generated Rust code
 ///
 /// This is gross, but needed.  OpenAPI v3 does not have any unsigned types
@@ -13,26 +17,30 @@ use std::path::PathBuf;
 ///
 /// By rewriting the types, serde_json used by kube-rs should parse the
 /// json correctly.
-///
-/// TODO: replace this with a proc macro as the text replacement is likely fragile
 fn fixup_types(raw: String) -> String {
+    let raw = fixup_signed_types(raw);
     raw.replace("asn: Option<i32>", "asn: Option<u32>")
-        // This should get both vtep_mtu and plain mtu
-        .replace("mtu: Option<i32>", "mtu: Option<u32>")
-        .replace("vni: Option<i32>", "vni: Option<u32>")
-        .replace("workers: Option<i64>", "workers: Option<u8>") // Gateway Go code says this is a u8
+        .replace("workers: Option<u64>", "workers: Option<u8>") // Gateway Go code says this is a u8
         .replace(
             "idle_timeout: Option<String>",
             "idle_timeout: Option<kube_core::duration::Duration>",
         )
-        .replace("b: Option<i64>", "b: Option<u64>")
-        .replace("d: Option<i64>", "d: Option<u64>")
-        .replace("p: Option<i64>", "p: Option<u64>")
-        .replace("priority: Option<i32>", "priority: Option<u32>")
-        .replace("priority: i32", "priority: u32")
+        .replace(
+            "last_applied_gen: Option<u64>",
+            "last_applied_gen: Option<i64>",
+        )
 }
 
-fn generate_rust_for_crd(crd_content: &str) -> String {
+fn gen_version_const(version: &Option<String>) -> String {
+    let version = version
+        .as_ref()
+        .map(|v| format!("Some(\"{v}\")"))
+        .unwrap_or("None".to_string());
+
+    format!("pub const GW_API_VERSION: Option<&str> = {version};\n\n")
+}
+
+fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
         .args(["-D", "PartialEq", "-Af", "-"])
@@ -61,10 +69,27 @@ fn generate_rust_for_crd(crd_content: &str) -> String {
 
     let raw = String::from_utf8(output.stdout).expect("Failed to convert kopium output to string");
 
-    fixup_types(raw)
+    gen_version_const(version) + &fixup_types(raw)
 }
 
-const KOPIUM_OUTPUT_FILE: &str = "generated.rs";
+fn get_gateway_version() -> Option<String> {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let sources_path = manifest_dir.join("../npins/sources.json");
+    println!(
+        "cargo:rerun-if-changed={}",
+        sources_path.to_str().expect("non unicode sources_path")
+    );
+
+    let sources = fs::read_to_string(&sources_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", sources_path.display()));
+    let json: serde_json::Value =
+        serde_json::from_str(&sources).expect("failed to parse npins/sources.json");
+    json["pins"]["gateway"]["version"]
+        .as_str()
+        .map(String::from)
+}
+
+const KOPIUM_OUTPUT_FILE: &str = "gateway_agent_crd.rs";
 
 fn kopium_output_path() -> PathBuf {
     PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(KOPIUM_OUTPUT_FILE)
@@ -85,10 +110,17 @@ fn code_needs_regen(new_code: &str) -> bool {
 }
 
 fn main() {
+    let version = get_gateway_version();
     let agent_crd_contents = {
         let agent_crd_path =
             PathBuf::from(std::env::var("GW_CRD_PATH").expect("GW_CRD_PATH var unset"))
                 .join("gwint.githedgehog.com_gatewayagents.yaml");
+        println!("cargo:rerun-if-env-changed=GW_CRD_PATH");
+        println!(
+            "cargo:rerun-if-changed={}",
+            agent_crd_path.to_str().expect("non unicode crd path")
+        );
+
         let mut agent_crd_file = std::fs::OpenOptions::new()
             .read(true)
             .write(false)
@@ -110,7 +142,7 @@ fn main() {
             .unwrap_or_else(|e| panic!("unable to read crd data into string: {e}"));
         contents
     };
-    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents);
+    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents, &version);
 
     if !code_needs_regen(&agent_generated_code) {
         println!("cargo:note=No changes to code generated from CRD");
@@ -122,11 +154,18 @@ fn main() {
         .expect("Failed to write generated agent CRD code");
 
     let sysroot = dpdk_sysroot_helper::get_sysroot();
+    // get_sysroot uses DATAPLANE_SYSROOT, so rerun if it changes
+    println!("cargo:rerun-if-env-changed=DATAPLANE_SYSROOT");
 
-    let rerun_if_changed = ["build.rs", sysroot.as_str()];
+    let rerun_if_changed = [
+        "build.rs",
+        sysroot.as_str(),
+        output_file.to_str().expect("non unicode crd path"),
+    ];
     for file in rerun_if_changed {
         println!("cargo:rerun-if-changed={file}");
     }
+    println!("cargo:rerun-if-changed={}", sysroot.as_str());
 
     println!(
         "cargo:note=Generated gateway agent CRD types written to {:?}",
