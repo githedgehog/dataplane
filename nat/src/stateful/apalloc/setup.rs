@@ -13,9 +13,7 @@ use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::utils::collapse_prefixes_peering;
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{
-    IpPrefix, IpRangeWithPorts, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
-};
+use lpm::prefix::{IpPrefix, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
@@ -180,25 +178,8 @@ fn find_masquerade_portfw_overlap<'a>(
 ) -> PrefixPortsSet {
     port_forwarding_exposes
         .iter()
-        .flat_map(|pf_expose| intersection_list_prefixes(&pf_expose.ips, &expose.ips))
+        .flat_map(|pf_expose| pf_expose.ips.intersection_prefixes_and_ports(&expose.ips))
         .collect()
-}
-
-// Maybe we should wrap the list of prefixes for VpcExpose into some type and make this a method of
-// this type, one day
-fn intersection_list_prefixes(
-    list_left: &PrefixPortsSet,
-    list_right: &PrefixPortsSet,
-) -> PrefixPortsSet {
-    let mut result = PrefixPortsSet::new();
-    for prefix_left in list_left {
-        for prefix_right in list_right {
-            if let Some(intersection) = prefix_left.intersection(prefix_right) {
-                result.insert(intersection);
-            }
-        }
-    }
-    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -378,109 +359,12 @@ fn create_ipv6_bitmap_mappings(
 
 #[cfg(test)]
 mod tests {
-    use super::{find_masquerade_portfw_overlap, intersection_list_prefixes};
+    use super::find_masquerade_portfw_overlap;
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
 
     fn prefix_with_ports(s: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
         PrefixWithOptionalPorts::new(s.into(), Some(PortRange::new(start, end).unwrap()))
-    }
-
-    // intersection_list_prefixes()
-
-    #[test]
-    fn intersection_list_prefixes_both_empty() {
-        let result = intersection_list_prefixes(&PrefixPortsSet::new(), &PrefixPortsSet::new());
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn intersection_list_prefixes_left_empty() {
-        let right = PrefixPortsSet::from(["10.0.0.0/24".into()]);
-        let result = intersection_list_prefixes(&PrefixPortsSet::new(), &right);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn intersection_list_prefixes_right_empty() {
-        let left = PrefixPortsSet::from(["10.0.0.0/24".into()]);
-        let result = intersection_list_prefixes(&left, &PrefixPortsSet::new());
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn intersection_list_prefixes_no_overlap() {
-        let left = PrefixPortsSet::from(["10.0.0.0/24".into()]);
-        let right = PrefixPortsSet::from(["192.168.0.0/24".into()]);
-        let result = intersection_list_prefixes(&left, &right);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn intersection_list_prefixes_identical() {
-        let left = PrefixPortsSet::from(["10.0.0.0/24".into()]);
-        let right = PrefixPortsSet::from(["10.0.0.0/24".into()]);
-        let result = intersection_list_prefixes(&left, &right);
-        assert_eq!(result, PrefixPortsSet::from(["10.0.0.0/24".into()]));
-    }
-
-    #[test]
-    fn intersection_list_prefixes_subset() {
-        // /24 is a subset of /16
-        let left = PrefixPortsSet::from(["10.0.0.0/16".into()]);
-        let right = PrefixPortsSet::from(["10.0.1.0/24".into()]);
-        let result = intersection_list_prefixes(&left, &right);
-        assert_eq!(result, PrefixPortsSet::from(["10.0.1.0/24".into()]));
-    }
-
-    #[test]
-    fn intersection_list_prefixes_multiple_overlaps() {
-        let left = PrefixPortsSet::from(["10.0.0.0/16".into(), "172.16.0.0/16".into()]);
-        let right = PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()]);
-        let result = intersection_list_prefixes(&left, &right);
-        assert_eq!(
-            result,
-            PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()])
-        );
-    }
-
-    #[test]
-    fn intersection_list_prefixes_partial_overlap_multiple_left() {
-        let left = PrefixPortsSet::from(["10.0.0.0/24".into(), "192.168.0.0/24".into()]);
-        let right = PrefixPortsSet::from(["10.0.0.0/16".into()]);
-        // Only 10.0.0.0/24 overlaps with 10.0.0.0/16, resulting in 10.0.0.0/24
-        let result = intersection_list_prefixes(&left, &right);
-        assert_eq!(result, PrefixPortsSet::from(["10.0.0.0/24".into()]));
-    }
-
-    #[test]
-    fn intersection_list_prefixes_with_ports() {
-        let left = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)]);
-        let right = PrefixPortsSet::from(["10.0.0.0/24".into()]);
-        let result = intersection_list_prefixes(&left, &right);
-        assert_eq!(
-            result,
-            PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)])
-        );
-    }
-
-    #[test]
-    fn intersection_list_prefixes_with_overlapping_ports() {
-        let left = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 200)]);
-        let right = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 150, 300)]);
-        let result = intersection_list_prefixes(&left, &right);
-        assert_eq!(
-            result,
-            PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 150, 200)])
-        );
-    }
-
-    #[test]
-    fn intersection_list_prefixes_with_disjoint_ports() {
-        let left = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)]);
-        let right = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 200, 300)]);
-        let result = intersection_list_prefixes(&left, &right);
-        assert!(result.is_empty());
     }
 
     // find_masquerade_portfw_overlap()
