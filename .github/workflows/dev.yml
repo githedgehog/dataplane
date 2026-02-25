@@ -202,7 +202,7 @@ jobs:
             profile="${{matrix.build.profile}}" \
             sanitize="${{matrix.build.sanitize}}" \
             instrument="${{matrix.build.instrument}}" \
-            profile="${{matrix.profile}}" \
+            profile="${{matrix.build.profile}}" \
             build "${{matrix.nix-target}}" \
             --out-link "results/${{matrix.nix-target}}" \
             --print-build-logs
@@ -216,7 +216,7 @@ jobs:
             profile="${{matrix.build.profile}}" \
             sanitize="${{matrix.build.sanitize}}" \
             instrument="${{matrix.build.instrument}}" \
-            profile="${{matrix.profile}}" \
+            profile="${{matrix.build.profile}}" \
             push
 
       - name: "Setup tmate session for debug"
