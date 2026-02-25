@@ -82,11 +82,8 @@ build-container-image *args: (build-container-rootfs args) && version
 [script]
 push *args: (build-container-rootfs args) && version
     {{ _just_debuggable_ }}
-    image="$(docker import ./results/dataplane.tar dataplane:{{version}})"
-    skopeo copy \
-      {{ _skopeo_dest_insecure }} \
-      docker://dataplane:{{version}} \
-      docker://{{ oci_image_full }}
+    image="$(docker import ./results/dataplane.tar {{ oci_image_full }})"
+    docker push {{ oci_image_full }}
     echo "Pushed {{ oci_image_full }}"
 
 # Print names of container images to build or push
