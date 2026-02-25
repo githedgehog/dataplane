@@ -22,7 +22,7 @@ use crate::portfw::flow_state::setup_reverse_flow;
 use crate::portfw::packet::{dnat_packet, nat_packet};
 
 #[allow(unused)]
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use tracectl::trace_target;
 trace_target!("port-forwarding", LevelFilter::INFO, &["nat", "pipeline"]);
@@ -80,7 +80,7 @@ impl PortForwarder {
         if let Some(tcp) = packet.try_tcp()
             && (!tcp.syn() || tcp.ack())
         {
-            debug!("Ignoring TCP segment without SYN flag");
+            debug!("Dropping TCP segment: it has no SYN (or ack) and we have no state for it");
             packet.done(DoneReason::Filtered);
             return None;
         }
@@ -192,6 +192,11 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
             if !packet.is_done() && packet.meta().requires_port_forwarding() {
                 if let Some(pfwtable) = self.fwtable.enter() {
                     self.process_packet(&mut packet, pfwtable.as_ref());
+                    if packet.is_done() {
+                        debug!("Could NOT port-forward packet:\n{packet}");
+                    } else {
+                        trace!("Port-forwarded packet:\n{packet}");
+                    }
                 } else {
                     // we were told to port-forward but we couldn't. So, drop the packet
                     packet.done(DoneReason::InternalFailure);

@@ -29,7 +29,6 @@ pub struct PortFwTableReader(ReadHandle<PortFwTable>);
 
 #[allow(clippy::unnecessary_wraps)]
 fn validate_ruleset(_ruleset: &[PortFwEntry]) -> Result<(), PortFwTableError> {
-    debug!("Validating port-forwarding ruleset...");
     // deferring the implementation of this since it will change
     // when we introduce port ranges
     Ok(())
