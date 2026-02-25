@@ -28,8 +28,13 @@ use net::packet::VpcDiscriminant;
 use net::udp::UdpEncap;
 use net::vxlan::{Vxlan, VxlanEncap};
 
-use tracectl::trace_target;
+use tracectl::{custom_target, tdebug, trace_target};
 trace_target!("ip-forward", LevelFilter::WARN, &["pipeline"]);
+
+const VXLAN_D: &str = "vxlan-decap";
+const VXLAN_E: &str = "vxlan-encap";
+custom_target!(VXLAN_D, LevelFilter::OFF, &["vxlan"]);
+custom_target!(VXLAN_E, LevelFilter::OFF, &["vxlan"]);
 
 pub struct IpForwarder {
     name: String,
@@ -131,8 +136,8 @@ impl IpForwarder {
         match packet.vxlan_decap() {
             Some(Ok(vxlan)) => {
                 let vni = vxlan.vni();
-                debug!("{nfi}: DECAPSULATED vxlan packet:\n {packet}");
-                debug!("{nfi}: Packet comes with vni {vni}");
+                tdebug!(VXLAN_D, "DECAPSULATED vxlan packet (vni={vni}):\n{packet}");
+                debug!("{nfi}: DECAPSULATED vxlan packet, vni = {vni}");
 
                 // access fib for Vni vni
                 let fibkey = FibKey::from_vni(vni);
@@ -274,8 +279,6 @@ impl IpForwarder {
             }
             Ok(vxlan_headers) => match packet.vxlan_encap(&vxlan_headers) {
                 Ok(()) => {
-                    debug!("{nfi}: ENCAPSULATED packet with VxLAN:\n {packet}");
-
                     let vni = vxlan_headers
                         .headers()
                         .udp_encap
@@ -284,6 +287,7 @@ impl IpForwarder {
                         .vxlan_vni();
 
                     packet.meta_mut().dst_vpcd = vni.map(VpcDiscriminant::VNI);
+                    tdebug!(VXLAN_E, "ENCAPSULATED packet with VxLAN:\n{packet}");
                 }
                 Err(e) => {
                     error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");
