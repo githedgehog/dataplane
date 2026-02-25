@@ -195,24 +195,29 @@ jobs:
           # prettier-ignore
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
-      - name: "build packages"
+      - name: "test"
+        if: ${{ matrix.nix-target ==  'tests.all' }}
         run: |
-          nix build \
-            --file default.nix \
-            --argstr profile "${{matrix.build.profile}}" \
-            --argstr sanitize "${{matrix.build.sanitize}}" \
-            --argstr instrumentation "${{matrix.build.instrument}}" \
+          just \
+            profile="${{matrix.build.profile}}" \
+            sanitize="${{matrix.build.sanitize}}" \
+            instrument="${{matrix.build.instrument}}" \
+            profile="${{matrix.profile}}" \
+            build "${{matrix.nix-target}}" \
             --out-link "results/${{matrix.nix-target}}" \
-            --print-build-logs \
-            ${{matrix.nix-target}}
-          if [ "${{matrix.nix-target}}" = "tests.all" ]; then
-            nix-shell --run \
-              "cargo nextest run --archive-file results/${{matrix.nix-target}}/*.tar.zst --workspace-remap $(pwd)"
-          elif [ "${{matrix.nix-target}}" = "dataplane-tar" ]; then
-            image="$(docker import results/dataplane-tar)"
-            nix-shell --run \
-              "skopeo copy docker://${image} docker://127.0.0.1:30000/githedgehog/dataplane"
-          fi
+            --print-build-logs
+          nix-shell --run \
+            "cargo nextest run --archive-file results/${{matrix.nix-target}}/*.tar.zst --workspace-remap $(pwd)"
+
+      - name: "push"
+        if: ${{ matrix.nix-target == 'dataplane-tar' }}
+        run: |
+          just \
+            profile="${{matrix.build.profile}}" \
+            sanitize="${{matrix.build.sanitize}}" \
+            instrument="${{matrix.build.instrument}}" \
+            profile="${{matrix.profile}}" \
+            push
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}

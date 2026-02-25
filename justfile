@@ -55,50 +55,34 @@ _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" }
 [script]
 build target *args:
     {{ _just_debuggable_ }}
-    nix build -f default.nix {{ target }} \
-      --argstr profile {{ profile }} \
-      --argstr sanitize '{{ sanitize }}' \
-      --argstr instrumentation {{ instrument }} \
-      --argstr platform {{ platform }} \
+    nix build --file default.nix {{ target }} \
+      --argstr profile "{{ profile }}" \
+      --argstr sanitize "{{ sanitize }}" \
+      --argstr instrumentation "{{ instrument }}" \
+      --argstr platform "{{ platform }}" \
       {{ args }}
 
 # Create devroot and sysroot symlinks for local development
 [script]
-setup-roots *args:
+setup-roots *args: (build "devroot" "--out-link" "devroot" args) (build "sysroot" "--out-link" "sysroot" args)
     {{ _just_debuggable_ }}
-    nix build -f default.nix devroot \
-      --argstr profile {{ profile }} \
-      --argstr sanitize '{{ sanitize }}' \
-      --argstr instrumentation {{ instrument }} \
-      --argstr platform {{ platform }} \
-      --out-link devroot \
-      {{ args }}
-    nix build -f default.nix sysroot \
-      --argstr profile {{ profile }} \
-      --argstr sanitize '{{ sanitize }}' \
-      --argstr instrumentation {{ instrument }} \
-      --argstr platform {{ platform }} \
-      --out-link sysroot \
-      {{ args }}
 
 # Build the dataplane container tar
 [script]
-build-container *args:
+build-container-rootfs *args: (build "dataplane-tar" "--out-link" "results/dataplane.tar" args)
     {{ _just_debuggable_ }}
-    mkdir -p results
-    nix build -f default.nix dataplane-tar \
-      --argstr profile {{ profile }} \
-      --argstr sanitize '{{ sanitize }}' \
-      --argstr instrumentation {{ instrument }} \
-      --argstr platform {{ platform }} \
-      --out-link results/dataplane.tar \
-      {{ args }}
-    docker import ./results/dataplane.tar dataplane:{{version}}
+
+# Build the dataplane container image
+[script]
+build-container-image *args: (build-container-rootfs args) && version
+    {{ _just_debuggable_ }}
+    image="$(docker import ./results/dataplane.tar dataplane:{{version}})"
 
 # Build and push the dataplane container
 [script]
-push: build-container && version
+push *args: (build-container-rootfs args) && version
     {{ _just_debuggable_ }}
+    image="$(docker import ./results/dataplane.tar dataplane:{{version}})"
     skopeo copy \
       {{ _skopeo_dest_insecure }} \
       docker://dataplane:{{version}} \
