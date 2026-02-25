@@ -1,17 +1,3 @@
-{
-  pkgs ? import <nixpkgs> { },
-}:
-(pkgs.buildFHSEnv {
-  name = "dataplane-shell";
-  targetPkgs =
-    pkgs:
-    (with pkgs; [
-      # dev tools
-      bash
-      direnv
-      just
-      nil
-      nixd
-      wget
-    ]);
-}).env
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+inputs@{...}:(import ./default.nix inputs).devenv

@@ -4,16 +4,10 @@
 set unstable := true
 set shell := [x"${SHELL:-bash}", "-euo", "pipefail", "-c"]
 set script-interpreter := [x"${SHELL:-bash}", "-euo", "pipefail"]
-set dotenv-load := true
-set dotenv-required := true
-set dotenv-path := "."
-set dotenv-filename := "./scripts/rust.env"
 
 # enable to debug just recipes
 
 debug_justfile := "false"
-[private]
-dpdk_sys_commit := shell("source ./scripts/dpdk-sys.env && echo $DPDK_SYS_COMMIT")
 [private]
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
@@ -23,22 +17,25 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 @default:
     just --list --justfile {{ justfile() }}
 
-# Set to FUZZ to run the full fuzzer in the fuzz recipe
-_test_type := "DEFAULT"
+# cargo build profile (debug/release/fuzz)
+profile := "debug"
+
+# sanitizer to use (address/thread/"")
+sanitize := ""
+
+# instrumentation mode (none/coverage)
+instrument := "none"
+
+# target platform (x86-64-v3/bluefield2)
+platform := "x86-64-v3"
 
 # comma delimited list of sanitizers to use with bolero
 sanitizers := "address,leak"
 
-# the tripple to compile for
-target := "x86_64-unknown-linux-gnu"
-
-# cargo build profile to use
-profile := "release"
-
 version_extra := ""
-version_target := if target == "x86_64-unknown-linux-gnu" { "" } else { "-" + target }
+version_platform := if platform == "x86-64-v3" { "" } else { "-" + platform }
 version_profile := if profile == "release" { "" } else { "-" + profile }
-version := env("VERSION", "") || `git describe --tags --dirty --always` + version_target + version_profile + version_extra
+version := env("VERSION", "") || `git describe --tags --dirty --always` + version_platform + version_profile + version_extra
 
 # Print version that will be used in the build
 version:
@@ -51,195 +48,69 @@ oci_insecure := ""
 oci_name := "githedgehog/dataplane"
 oci_image_full := oci_repo + "/" + oci_name + ":" + version
 
-# Docker images
-# The respository to push images to or pull them from
-dpdp_sys_registry := "${REGISTRY_URL:-ghcr.io}"
 [private]
-_image_profile := if profile == "debug" { "debug" } else { "release" }
-[private]
-_dpdk_sys_container_repo := dpdp_sys_registry + "/githedgehog/dpdk-sys"
-[private]
-_dpdk_sys_container_tag := dpdk_sys_commit
+_skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
 
-[private]
-_libc_container := _dpdk_sys_container_repo + "/libc-env:" + _dpdk_sys_container_tag + "." + _image_profile
-
-[private]
-_debug_env_container := _dpdk_sys_container_repo + "/debug-env:" + _dpdk_sys_container_tag + "." + _image_profile
-[private]
-_compile_env_image_name := _dpdk_sys_container_repo + "/compile-env"
-[private]
-_compile_env_container := _compile_env_image_name + ":" + _dpdk_sys_container_tag + "." + _image_profile
-
-# Base container for the dataplane build
-[private]
-_dataplane_base_container := if _image_profile == "release" { _libc_container } else { _debug_env_container }
-
-# Warn if the compile-env image is deprecated (or missing)
-
-[private]
-_compile_env_check := if shell('docker image list --format "{{.Repository}}:{{.Tag}}" | grep -x "' + _compile_env_container + '" || true') == '' { shell('printf "\n/!\\ Latest compile-env not found, try \"just refresh-compile-env\"\n\n" >&2') } else { '' }
-
-# Docker settings
-
-[private]
-_network := "host"
-[private]
-_docker_sock_cmd := replace_regex(_just_debuggable_, ".+", "$0;") + '''
-  declare -r DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
-  declare -r without_unix="${DOCKER_HOST##unix://}"
-  if [ -S "${without_unix}" ]; then
-    printf -- '%s' "${without_unix}"
-  elif [ -S "/run/docker/docker.sock" ]; then
-    printf -- '%s' "/run/docker/docker.sock"
-  elif [ -S /var/run/docker.sock ]; then
-    printf -- '%s' "/var/run/docker.sock"
-  fi
-'''
-export DOCKER_HOST := x"${DOCKER_HOST:-unix:///var/run/docker.sock}"
-export DOCKER_SOCK := shell(_docker_sock_cmd)
-
-# The git commit hash of the last commit to HEAD
-# We allow this command to fail in the sterile environment because git is not available there
-
-[private]
-_commit := `git rev-parse HEAD 2>/dev/null || echo "sterile"`
-
-# The git branch we are currnetly on
-# We allow this command to fail in the sterile environment because git is not available there
-
-[private]
-_branch := `(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "sterile") | tr -c '[:alnum:]\n' '-'`
-
-# The git tree state (clean or dirty)
-# We allow this command to fail in the sterile environment because git is not available there
-
-[private]
-_clean := ```
-  set -euo pipefail
-  (
-    git diff-index --quiet HEAD -- 2>/dev/null && \
-    test -z "$(git ls-files --exclude-standard --others)" && \
-    echo clean \
-  ) || echo dirty
-```
-
-# The slug is the branch name (sanitized) with a marker if the tree is dirty
-
-[private]
-_slug := (if _clean == "clean" { "" } else { "dirty." }) + _branch
-
-# Some branch names could be too long for docker tags, e.g. merge queue one
-
-[private]
-_dirty_prefix := (if _clean == "clean" { "" } else { "dirty" })
-
-# Define a function to truncate long lines to the limit for containers tags
-
-[private]
-_define_truncate128 := 'truncate128() { printf -- "%s" "${1::128}" ; }'
-
-# The time of the build (in iso8601 utc)
-
-[private]
-_build_time := datetime_utc("%+")
-
-
-# Run cargo with RUSTFLAGS computed based on profile
+# Build a nix derivation with standard build arguments
 [script]
-cargo *args:
-    # Ideally this would be done via Cargo.toml and .cargo/config.toml,
-    # unfortunately passing RUSTFLAGS based on profile (rather than target or cfg)
-    # is currently unstable (nightly builds only).
+build target *args:
     {{ _just_debuggable_ }}
-    export PATH="$(pwd)/compile-env/bin:${PATH}"
-    declare -a args=({{ args }})
-    declare -a extra_args=()
-    for arg in "${args[@]}"; do
-      case "$arg" in
-        --debug|--profile=debug|--cargo-profile=debug)
-          declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
-          declare -rx LIBC_ENV_PROFILE="debug"
-          ;;
-        --release|--profile=release|--cargo-profile=release)
-          declare -rx RUSTFLAGS="${RUSTFLAGS_RELEASE}"
-          extra_args+=("$arg")
-          ;;
-        --profile=fuzz|--cargo-profile=fuzz)
-          declare -rx RUSTFLAGS="${RUSTFLAGS_FUZZ}"
-          export RUSTC_BOOTSTRAP=1
-          extra_args+=("$arg")
-          ;;
-        *)
-          extra_args+=("$arg")
-          ;;
-      esac
-    done
-    if [ -z "${RUSTFLAGS:-}" ]; then
-      declare -rx RUSTFLAGS="${RUSTFLAGS_DEBUG}"
-    fi
-
-    export RUSTDOCFLAGS="${RUSTDOCFLAGS:-} ${RUSTFLAGS} --html-in-header $(pwd)/scripts/doc/custom-header.html"
-    ./compile-env/bin/cargo "${extra_args[@]}"
-
-# Run the (very minimal) compile environment
-[script]
-compile-env *args:
-    {{ _just_debuggable_ }}
-    mkdir -p dev-env-template/etc
-    if [ -z "${UID:-}" ]; then
-      >&2 echo "ERROR: environment variable UID not set"
-    fi
-    declare -rxi UID
-    GID="$(id -g)"
-    declare -rxi GID
-    declare -rx USER="${USER:-runner}"
-    declare  DOCKER_GID
-    DOCKER_GID="$(getent group docker | cut -d: -f3)"
-    declare -rxi DOCKER_GID
-    envsubst < dev-env-template/etc.template/group.template > dev-env-template/etc/group
-    envsubst < dev-env-template/etc.template/passwd.template > dev-env-template/etc/passwd
-    mkdir -p "$(pwd)/sterile"
-    declare CARGO_TARGET_DIR
-    CARGO_TARGET_DIR="$(pwd)/target"
-    TMPDIR="${CARGO_TARGET_DIR}/tmp" # needed for doctests, as /tmp is "noexec"
-    mkdir -p "${CARGO_TARGET_DIR}/tmp"
-    sudo -E docker run \
-      --rm \
-      --interactive \
-      --network="{{ _network }}" \
-      --env DOCKER_HOST="${DOCKER_HOST}" \
-      --env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
-      --env TMPDIR="${TMPDIR}" \
-      --env DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}" \
-      --env TEST_TYPE="{{ _test_type }}" \
-      --env VERSION="{{ version }}" \
-      --tmpfs "/tmp:uid=$(id -u),gid=$(id -g),nodev,noexec,nosuid" \
-      --mount "type=tmpfs,destination=/home/${USER:-runner},tmpfs-mode=1777" \
-      --mount "type=bind,source=$(pwd),destination=$(pwd),bind-propagation=rprivate" \
-      --mount "type=bind,source=$(pwd)/dev-env-template/etc/passwd,destination=/etc/passwd,readonly" \
-      --mount "type=bind,source=$(pwd)/dev-env-template/etc/group,destination=/etc/group,readonly" \
-      --mount "type=bind,source=${CARGO_TARGET_DIR},destination=${CARGO_TARGET_DIR}" \
-      --mount "type=bind,source={{ DOCKER_SOCK }},destination={{ DOCKER_SOCK }}" \
-      --user "$(id -u):$(id -g)" \
-      --device "/dev/kvm" \
-      --device "/dev/vhost-net" \
-      --device "/dev/vhost-vsock" \
-      --cap-drop ALL \
-      --cap-add SETUID `# needed for sudo in test-runner` \
-      --cap-add SETGID `# needed for sudo in test-runner` \
-      --cap-add SETFCAP `# needed by test-runner to grant/limit caps of tests` \
-      --read-only \
-      --group-add="$(getent group docker | cut -d: -f3)" \
-      --workdir "$(pwd)" \
-      "{{ _compile_env_container }}" \
+    nix build --file default.nix {{ target }} \
+      --argstr profile "{{ profile }}" \
+      --argstr sanitize "{{ sanitize }}" \
+      --argstr instrumentation "{{ instrument }}" \
+      --argstr platform "{{ platform }}" \
       {{ args }}
 
-# Pull the latest versions of the containers
+# Create devroot and sysroot symlinks for local development
 [script]
-pull:
+setup-roots *args: (build "devroot" "--out-link" "devroot" args) (build "sysroot" "--out-link" "sysroot" args)
     {{ _just_debuggable_ }}
-    sudo -E docker pull "{{ _compile_env_container }}"
+
+# Build the dataplane container tar
+[script]
+build-container-rootfs *args: (build "dataplane-tar" "--out-link" "results/dataplane.tar" args)
+    {{ _just_debuggable_ }}
+
+# Build the dataplane container image
+[script]
+build-container-image *args: (build-container-rootfs args) && version
+    {{ _just_debuggable_ }}
+    image="$(docker import ./results/dataplane.tar dataplane:{{version}})"
+
+# Build and push the dataplane container
+[script]
+push *args: (build-container-rootfs args) && version
+    {{ _just_debuggable_ }}
+    image="$(docker import ./results/dataplane.tar {{ oci_image_full }})"
+    docker push {{ oci_image_full }}
+    echo "Pushed {{ oci_image_full }}"
+
+# Print names of container images to build or push
+[script]
+print-container-tags:
+    echo "{{ oci_image_full }}"
+
+# Run Clippy
+[script]
+clippy *args:
+    {{ _just_debuggable_ }}
+    cargo clippy --all-targets --all-features {{ args }} -- -D warnings
+
+# List available bolero fuzz tests
+[script]
+list-fuzz-tests *args:
+    {{ _just_debuggable_ }}
+    cargo bolero list --sanitizer={{ sanitizers }} --build-std --profile=fuzz {{ args }}
+
+# Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
+[script]
+fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args=-max_len=65536":
+    {{ _just_debuggable_ }}
+    cargo bolero test {{ test }} --build-std --profile=fuzz --sanitizer={{ sanitizers }} {{ timeout }} {{ args }}
+
+# Run the full fuzzer / property-checker on a bolero test with the AFL fuzzer
+fuzz-afl test: (fuzz test "" "--engine=afl" "--engine-args=-mnone")
 
 # Allocate 2M hugepages (if needed)
 [private]
@@ -311,208 +182,12 @@ setup-test-env: allocate-2M-hugepages allocate-1G-hugepages mount-hugepages
 # Tear down environment for testing locally
 teardown-test-env: umount-hugepages
 
-# Dump the compile-env container into a sysroot for use by the build
-[script]
-create-compile-env:
-    {{ _just_debuggable_ }}
-    mkdir compile-env
-    sudo -E docker create --name dpdk-sys-compile-env-{{ _slug }} "{{ _compile_env_container }}" - fake
-    sudo -E docker export dpdk-sys-compile-env-{{ _slug }} \
-      | tar --no-same-owner --no-same-permissions -xf - -C compile-env
-    sudo -E docker rm dpdk-sys-compile-env-{{ _slug }}
-
-# remove the compile-env directory
-[confirm("Remove old compile environment? (yes/no)\n(you can recreate it with `just create-compile-env`)")]
-[script]
-remove-compile-env:
-    {{ _just_debuggable_ }}
-    if [ -d compile-env ]; then sudo rm -rf compile-env; fi
-
-# refresh the compile-env (clear and restore)
-[script]
-refresh-compile-env: pull remove-compile-env create-compile-env
-
-# clean up (delete) old compile-env images from system
-[script]
-prune-old-compile-env:
-    {{ _just_debuggable_ }}
-    docker image list "{{ _compile_env_image_name }}" --format "{{{{.Repository}}:{{{{.Tag}}" | \
-        grep -v "{{ _dpdk_sys_container_tag }}" | \
-        xargs -r docker image rm
-
-# Install "fake-nix" (required for local builds to function)
-[confirm("Fake a nix install (yes/no)")]
-[script]
-fake-nix refake="":
-    {{ _just_debuggable_ }}
-    if [ -h /nix ]; then
-      if [ "$(readlink -e /nix)" = "$(readlink -e "$(pwd)/compile-env/nix")" ]; then
-        >&2 echo "Nix already faked!"
-        exit 0
-      else
-        if [ "{{ refake }}" = "refake" ]; then
-          sudo rm /nix
-        else
-          >&2 echo "Nix already faked elsewhere!"
-          >&2 echo "Run \`just fake-nix refake\` to re-fake to this location"
-          exit 1
-        fi
-      fi
-    elif [ -d /nix ]; then
-      >&2 echo "Nix already installed, can't fake it!"
-      exit 1
-    fi
-    if [ ! -d ./compile-env/nix ]; then
-      just refresh-compile-env
-    fi
-    if [ ! -d ./compile-env/nix ]; then
-      >&2 echo "Failed to create nix environment"
-      exit 1
-    fi
-    sudo ln -rs ./compile-env/nix /nix
-
-# Run a "sterile" command
-sterile *args: \
-  (cargo "clean") \
-  (compile-env "just" \
-    ("debug_justfile=" + debug_justfile) \
-    ("target=" + target) \
-    ("profile=" + profile) \
-    ("_test_type=" + _test_type) \
-    ("sanitizers=" + sanitizers) \
-    args \
-  )
-
-# Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
-[script]
-list-fuzz-tests *args: (cargo "bolero" "list" ("--sanitizer=" + sanitizers) "--build-std" "--profile=fuzz" args)
-
-# Run the full fuzzer / property-checker on a bolero test. Args are forwarded to bolero
-fuzz test timeout="-T 60sec" *args="--engine=libfuzzer --engine-args=-max_len=65536": ( \
-  compile-env \
-    "just" \
-    "_test_type=FUZZ" \
-    "cargo" \
-    "bolero" \
-    "test" \
-    test \
-    "--build-std" \
-    "--profile=fuzz" \
-    ("--sanitizer=" + sanitizers) \
-    timeout \
-    args \
-  )
-
-# Run the full fuzzer / property-checker on a bolero test with the AFL fuzzer
-[script]
-fuzz-afl test: (fuzz test "" "--engine=afl" "--engine-args=-mnone")
-
-[script]
-sh *args:
-    /bin/sh -i -c "{{ args }}"
-
-# Build containers in a sterile environment
-[script]
-build-container: (sterile "_network=none" "cargo" "--locked" "build" ("--profile=" + profile) ("--target=" + target) "--package=dataplane" "--package=dataplane-cli") && version
-    {{ _just_debuggable_ }}
-    mkdir -p "artifact/{{ target }}/{{ profile }}"
-    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
-    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/cli" "artifact/{{ target }}/{{ profile }}/dataplane-cli"
-    declare build_date
-    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
-    declare -r build_date
-    declare build_time_epoch
-    build_time_epoch="$(date --utc '+%s' --date="{{ _build_time }}")"
-    declare -r build_time_epoch
-    sudo -E docker build \
-      --label "git.commit={{ _commit }}" \
-      --label "git.branch={{ _branch }}" \
-      --label "git.tree-state={{ _clean }}" \
-      --label "build.date=${build_date}" \
-      --label "build.timestamp={{ _build_time }}" \
-      --label "build.time_epoch=${build_time_epoch}" \
-      --tag "{{ oci_image_full }}" \
-      --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
-      --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
-      --build-arg BASE="{{ _dataplane_base_container }}" \
-      .
-
-# Build a container for local testing, without cache and extended base
-[script]
-build-container-quick: (compile-env "cargo" "--locked" "build" ("--target=" + target) "--package=dataplane" "--package=dataplane-cli")
-    {{ _just_debuggable_ }}
-    mkdir -p "artifact/{{ target }}/{{ profile }}"
-    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/dataplane" "artifact/{{ target }}/{{ profile }}/dataplane"
-    cp -r "${CARGO_TARGET_DIR:-target}/{{ target }}/{{ profile }}/cli" "artifact/{{ target }}/{{ profile }}/dataplane-cli"
-    declare build_date
-    build_date="$(date --utc --iso-8601=date --date="{{ _build_time }}")"
-    declare -r build_date
-    sudo -E docker build \
-      --label "git.commit={{ _commit }}" \
-      --label "git.branch={{ _branch }}" \
-      --label "git.tree-state={{ _clean }}" \
-      --label "build.date=${build_date}" \
-      --label "build.timestamp={{ _build_time }}" \
-      --tag "{{ oci_image_full }}" \
-      --build-arg ARTIFACT="artifact/{{ target }}/{{ profile }}/dataplane" \
-      --build-arg ARTIFACT_CLI="artifact/{{ target }}/{{ profile }}/dataplane-cli" \
-      --build-arg BASE="{{ _debug_env_container }}" \
-      .
-
-    sudo -E docker tag "{{ oci_image_full }}" "dataplane:local-testing-latest"
-
-# Temporary tools to get a proper skopeo version
-localbin := "bin"
-localpath := `pwd`
-localbinpath := `pwd`/localbin
-
-_localbin:
-  @mkdir -p {{localbin}}
-
-# go install helper
-_goinstall PACKAGE VERSION BINNAME TARGET FLAGS="": _localbin
-  #!/usr/bin/env bash
-  set -euo pipefail
-
-  echo "Installing go package: {{PACKAGE}}@{{VERSION}}..."
-  GOBIN=`pwd`/{{localbin}} go install {{FLAGS}} {{PACKAGE}}@{{VERSION}}
-  mv {{localbin}}/{{BINNAME}} {{TARGET}}
-
-skopeo_version := "v1.21.0"
-skopeo := localbin / "skopeo" + "-" + skopeo_version
-@_skopeo: _localbin
-  [ -f {{skopeo}} ] || just _goinstall "github.com/containers/skopeo/cmd/skopeo" {{skopeo_version}} "skopeo" {{skopeo}} "--tags containers_image_openpgp,exclude_graphdriver_btrfs"
-
-skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
-skopeo_copy_flags := if env("DOCKER_HOST", "") != "" { "--src-daemon-host " + env_var("DOCKER_HOST") } else { "" }
-
-# Build and push containers
-[script]
-push: _skopeo build-container && version
-    {{ skopeo }} copy {{skopeo_copy_flags}} {{skopeo_dest_insecure}} --all docker-daemon:{{ oci_image_full }} docker://{{ oci_image_full }}
-    echo "Pushed {{ oci_image_full }}"
-
-# Print names of container images to build or push
-[script]
-print-container-tags:
-    echo "{{ oci_image_full }}"
-
-# Run Clippy like you're in CI
-[script]
-clippy *args: (cargo "clippy" "--all-targets" "--all-features" args "--" "-D" "warnings")
-
-# Serve rustdoc output locally (using port 8000)
-[script]
-rustdoc-serve:
-    echo "Launching web server, hit Ctrl-C to stop."
-    python -m http.server -d "target/{{ target }}/doc"
-
 # Build for each separate commit (for "pull_request") or for the HEAD of the branch (other events)
 [script]
 build-sweep start="main":
     {{ _just_debuggable_ }}
     set -euo pipefail
-    if [ {{ _clean }} != "clean" ]; then
+    if ! git diff-index --quiet HEAD -- 2>/dev/null || [ -n "$(git ls-files --exclude-standard --others)" ]; then
       >&2 echo "can not build-sweep with dirty branch (would risk data loss)"
       >&2 git status
       exit 1
@@ -521,27 +196,34 @@ build-sweep start="main":
     # Get all commits since {{ start }}, in chronological order
     while read -r commit; do
       git -c advice.detachedHead=false checkout "${commit}" || exit 1
-      { just debug_justfile={{ debug_justfile }} cargo build --locked --profile=dev --target=x86_64-unknown-linux-gnu; } || exit 1
+      { cargo build --locked --profile=dev; } || exit 1
     done < <(git rev-list --reverse "{{ start }}".."$(git rev-parse HEAD)")
     # Return to the initial branch if any (exit "detached HEAD" state)
     git checkout "${INIT_HEAD}"
 
-# Run tests with code coverage.  Args will be forwarded to nextest
+# Serve rustdoc output locally (using port 8000)
 [script]
-coverage *args: \
-  (cargo "llvm-cov" "clean" "--workspace") \
-  (cargo "llvm-cov" "--no-report" "--branch" "--remap-path-prefix" "nextest" "--cargo-profile=fuzz" args) \
-  (cargo "llvm-cov" "report" "--html" "--output-dir=./target/nextest/coverage" "--profile=fuzz") \
-  (cargo "llvm-cov" "report" "--json" "--output-path=./target/nextest/coverage/report.json" "--profile=fuzz") \
-  (cargo "llvm-cov" "report" "--codecov" "--output-path=./target/nextest/coverage/codecov.json" "--profile=fuzz")
+rustdoc-serve:
+    echo "Launching web server, hit Ctrl-C to stop."
+    python -m http.server -d "target/doc"
 
+# Run tests with code coverage. Args will be forwarded to nextest
+[script]
+coverage *args:
+    {{ _just_debuggable_ }}
+    cargo llvm-cov clean --workspace
+    cargo llvm-cov --no-report --branch --remap-path-prefix nextest --cargo-profile=fuzz {{ args }}
+    cargo llvm-cov report --html --output-dir=./target/nextest/coverage --profile=fuzz
+    cargo llvm-cov report --json --output-path=./target/nextest/coverage/report.json --profile=fuzz
+    cargo llvm-cov report --codecov --output-path=./target/nextest/coverage/codecov.json --profile=fuzz
 
-# regenerate the dependency graph for the project
+# Regenerate the dependency graph for the project
 [script]
 depgraph:
-  just cargo depgraph --exclude dataplane-test-utils,dataplane-dpdk-sysroot-helper  --workspace-only \
-    | sed 's/dataplane-//g' \
-    | dot -Grankdir=TD -Gsplines=polyline -Granksep=1.5 -Tsvg > workspace-deps.svg
+    {{ _just_debuggable_ }}
+    cargo depgraph --exclude dataplane-test-utils,dataplane-dpdk-sysroot-helper --workspace-only \
+      | sed 's/dataplane-//g' \
+      | dot -Grankdir=TD -Gsplines=polyline -Granksep=1.5 -Tsvg > workspace-deps.svg
 
 # Bump the minor version in Cargo.toml and reset patch version to 0
 [script]
@@ -553,4 +235,9 @@ bump_minor_version:
     NEW_VERSION="${MAJOR_VNUM}.$((MINOR_VNUM + 1)).0"
     echo "New version: ${NEW_VERSION}"
     sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
-    just cargo update -w
+    cargo update -w
+
+# Enter nix-shell
+[script]
+shell:
+   nix-shell

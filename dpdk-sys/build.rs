@@ -20,7 +20,8 @@ impl ParseCallbacks for Cb {
     }
 }
 
-fn bind(path: &Path, sysroot: &str) {
+fn bind(path: &Path) {
+    let sysroot = dpdk_sysroot_helper::get_sysroot();
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let static_fn_path = out_path.join("generated.h");
     bindgen::Builder::default()
@@ -47,7 +48,6 @@ fn bind(path: &Path, sysroot: &str) {
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
         .blocklist_item("rte_atomic.*")
         .allowlist_item("rte.*")
-        .allowlist_item("wrte_.*")
         .allowlist_item("RTE.*")
         .blocklist_item("__*")
         .clang_macro_fallback()
@@ -68,15 +68,9 @@ fn bind(path: &Path, sysroot: &str) {
 }
 
 fn main() {
+    dpdk_sysroot_helper::use_sysroot();
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let sysroot = dpdk_sysroot_helper::get_sysroot();
 
-    println!("cargo:rustc-link-arg=--sysroot={sysroot}");
-    println!("cargo:rustc-link-search=all={sysroot}/lib");
-
-    // NOTE: DPDK absolutely requires whole-archive in the linking command.
-    // While I find this very questionable, it is what it is.
-    // It is just more work for the LTO later on I suppose ¯\_(ツ)_/¯
     let depends = [
         "dpdk_wrapper",
         "rte_net_virtio",
@@ -100,6 +94,7 @@ fn main() {
         "rte_rcu",
         "rte_ring",
         "rte_eal",
+        "rte_argparse",
         "rte_kvargs",
         "rte_telemetry",
         "rte_log",
@@ -109,6 +104,7 @@ fn main() {
         "efa",
         "hns",
         "mana",
+        "ionic",
         "bnxt_re-rdmav59",
         "cxgb4-rdmav59",
         "erdma-rdmav59",
@@ -126,12 +122,11 @@ fn main() {
         "numa",
     ];
 
-    for dep in &depends {
+    // NOTE: DPDK absolutely requires whole-archive in the linking command.
+    // While I find this very questionable, it is what it is.
+    // It is just more work for the LTO later on I suppose ¯\_(ツ)_/¯
+    for dep in depends {
         println!("cargo:rustc-link-lib=static:+whole-archive,+bundle={dep}");
     }
-    let rerun_if_changed = ["build.rs", "../scripts/dpdk-sys.env"];
-    for file in &rerun_if_changed {
-        println!("cargo:rerun-if-changed={file}");
-    }
-    bind(&out_path, sysroot.as_str());
+    bind(&out_path);
 }

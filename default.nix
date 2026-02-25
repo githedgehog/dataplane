@@ -29,6 +29,7 @@ let
     {
       "debug" = "dev";
       "release" = "release";
+      "fuzz" = "fuzz";
     }
     .${profile};
   overlays = import ./nix/overlays {
@@ -52,6 +53,15 @@ let
         overlays.rust
         overlays.llvm
         overlays.dataplane
+      ];
+    }).pkgsCross.${platform'.info.nixarch};
+  frr-pkgs =
+    (import sources.nixpkgs {
+      overlays = [
+        overlays.rust
+        overlays.llvm
+        overlays.dataplane
+        overlays.frr
       ];
     }).pkgsCross.${platform'.info.nixarch};
   sysroot = pkgs.pkgsHostHost.symlinkJoin {
@@ -118,23 +128,32 @@ let
       npins
       pkg-config
       rust-toolchain
+      skopeo
     ]);
   };
   devenv = pkgs.mkShell {
     name = "dataplane-dev-shell";
     packages = [ devroot ];
     inputsFrom = [ sysroot ];
-    shellHook = ''
-      export RUSTC_BOOTSTRAP=1
-    '';
+    env = {
+      RUSTC_BOOTSTRAP = "1";
+      DATAPLANE_SYSROOT = "${sysroot}";
+      C_INCLUDE_PATH = "${sysroot}/include";
+      LIBRARY_PATH = "${sysroot}/lib";
+      PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
+      LIBCLANG_PATH = "${devroot}/lib";
+      GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+    };
   };
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
+  jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
   outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
       p: t:
       (markdownFilter p t)
+      || (jsonFilter p t)
       || (cHeaderFilter p t)
       || ((outputsFilter p t) && (craneLib.filterCargoSources p t));
     src = ./.;
@@ -147,7 +166,7 @@ let
   };
   target = pkgs.stdenv'.targetPlatform.rust.rustcTarget;
   is-cross-compile = dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
-  cc = if is-cross-compile then "${target}-clang" else "clang";
+  cxx = if is-cross-compile then "${target}-clang++" else "clang++";
   strip = if is-cross-compile then "${target}-strip" else "strip";
   objcopy = if is-cross-compile then "${target}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
@@ -168,18 +187,9 @@ let
   cargo-cmd-prefix = [
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
     "--target=${target}"
-  ]
-  ++ (
-    if builtins.elem "thread" sanitizers then
-      [
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
-      ]
-    else
-      [
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
-      ]
-  );
+  ];
   invoke =
     {
       builder,
@@ -232,8 +242,9 @@ let
           RUSTFLAGS = builtins.concatStringsSep " " (
             profile'.RUSTFLAGS
             ++ [
-              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}"
+              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
               "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
+              "-Clink-arg=-Wl,--as-needed,--gc-sections"
               "-Clink-arg=-L${sysroot}/lib"
               # NOTE: this is basically a trick to make our source code available to debuggers.
               # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
@@ -248,15 +259,6 @@ let
               # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
               "--remap-path-prefix==${src}"
             ]
-            ++ (
-              if ((builtins.elem "thread" sanitizers) || (builtins.elem "safe-stack" sanitizers)) then
-                [
-                  # "-Zexternal-clangrt"
-                  # "-Clink-arg=--rtlib=compiler-rt"
-                ]
-              else
-                [ ]
-            )
           );
         };
       }
@@ -320,9 +322,12 @@ let
 
   test-builder =
     {
-      pname ? null,
+      package ? null,
       cargoArtifacts ? null,
     }:
+    let
+      pname = if package != null then package else "all";
+    in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       args = {
@@ -336,19 +341,22 @@ let
             "--archive-file"
             "$out/${pname}.tar.zst"
             "--cargo-profile=${cargo-profile}"
-            "--package=${pname}"
           ]
+          ++ (if package != null then [ "--package=${pname}" ] else [ ])
           ++ cargo-cmd-prefix
         );
       };
     };
 
-  tests = builtins.mapAttrs (
-    dir: pname:
-    test-builder {
-      inherit pname;
-    }
-  ) package-list;
+  tests = {
+    all = test-builder { };
+    pkg = builtins.mapAttrs (
+      dir: package:
+      test-builder {
+        inherit package;
+      }
+    ) package-list;
+  };
 
   clippy-builder =
     {
@@ -382,8 +390,8 @@ let
     }
   ) package-list;
 
-  dataplane-tar = pkgs.stdenv'.mkDerivation {
-    pname = "dataplane-tar";
+  min-tar = pkgs.stdenv'.mkDerivation {
+    pname = "min-tar";
     inherit version;
     dontUnpack = true;
     src = null;
@@ -393,12 +401,8 @@ let
       in
       ''
         tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns}
+        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
         ln -s /run "$tmp/var/run"
-        cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
-        cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
-        cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
-        ln -s cli "$tmp/bin/sh"
         for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
         done
@@ -418,8 +422,8 @@ let
           --group=0 \
           \
           `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
-          `# More, we expressly forbid setuid / setgid anything.  May as well toss in the sticky bit as well.` \
-          --mode='u-sw,go=' \
+          `# More, we expressly forbid setuid / setgid anything.` \
+          --mode='ugo-sw' \
           \
           `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
           --no-acls \
@@ -463,19 +467,111 @@ let
           \
           . \
           ${pkgs.pkgsHostHost.libc.out} \
-          ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.glibc.libgcc or "" else ""} \
+          ${pkgs.pkgsHostHost.glibc.libgcc} \
       '';
 
+  };
+
+  dataplane-tar = pkgs.stdenv'.mkDerivation {
+    pname = "dataplane-tar";
+    inherit version;
+    dontUnpack = true;
+    src = null;
+    buildPhase = ''
+      tmp="$(mktemp -d)"
+      tar xf "${min-tar}" -C "$tmp"
+      chown -R $(id -u):$(id -g) $tmp
+      chmod +w $tmp/bin
+      cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
+      cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
+      cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
+      ln -s cli "$tmp/bin/sh"
+      cd "$tmp"
+      # we take some care to make the tar file reproducible here
+      tar \
+        --create \
+        --file "$out" \
+        --sort=name \
+        --clamp-mtime \
+        --mtime=0 \
+        --format=posix \
+        --numeric-owner \
+        --owner=0 \
+        --group=0 \
+        --mode='ugo-sw' \
+        --no-acls \
+        --no-xattrs \
+        --no-selinux \
+        --verbose \
+        .
+    '';
+
+  };
+
+  containers.libc = pkgs.dockerTools.buildLayeredImage {
+    name = "dataplane-debugger";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "dataplane-debugger-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [
+        pkgs.pkgsBuildHost.gdb
+        pkgs.pkgsBuildHost.rr
+        pkgs.pkgsBuildHost.coreutils
+        pkgs.pkgsBuildHost.bashInteractive
+        pkgs.pkgsBuildHost.iproute2
+        pkgs.pkgsBuildHost.ethtool
+
+        pkgs.pkgsHostHost.libc.debug
+        workspace.cli.debug
+        workspace.dataplane.debug
+        workspace.init.debug
+      ];
+    };
+  };
+
+  containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
+    name = "dataplane-debugger";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "dataplane-debugger-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [
+        pkgs.pkgsBuildHost.gdb
+        pkgs.pkgsBuildHost.rr
+        pkgs.pkgsBuildHost.coreutils
+        pkgs.pkgsBuildHost.bashInteractive
+        pkgs.pkgsBuildHost.iproute2
+        pkgs.pkgsBuildHost.ethtool
+
+        pkgs.pkgsHostHost.libc.debug
+        workspace.cli.debug
+        workspace.dataplane.debug
+        workspace.init.debug
+      ];
+    };
   };
 
 in
 {
   inherit
     clippy
+    containers
     dataplane-tar
     dev-pkgs
-    devroot
     devenv
+    devroot
+    min-tar
     package-list
     pkgs
     sources

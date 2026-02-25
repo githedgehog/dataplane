@@ -5,7 +5,7 @@
 set -euxo pipefail
 
 declare -r MERMAID_VERSION="11.12.2"
-declare -r KATEX_VERSION="0.16.27"
+declare -r KATEX_VERSION="0.16.28"
 
 declare -rx MERMAID_JS_URL="https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.min.js"
 declare -rx KATEX_JS_URL="https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.js"
