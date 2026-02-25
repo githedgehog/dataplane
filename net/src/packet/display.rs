@@ -146,7 +146,7 @@ impl Tcp {
             flags += "|RST";
         }
         if self.psh() {
-            flags += "|RST";
+            flags += "|PSH";
         }
         if self.urg() {
             flags += "|URG";
