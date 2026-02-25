@@ -4,7 +4,7 @@
 use crate::ConfigError;
 use crate::external::overlay::vpcpeering::VpcExpose;
 use crate::utils::collapse_prefix_lists;
-use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts, PrefixWithPortsSize};
+use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts, PrefixWithPortsSize};
 use std::collections::BTreeSet;
 
 pub fn check_private_prefixes_dont_overlap(
@@ -155,10 +155,10 @@ pub fn check_no_overlap_or_left_contains_right(
 }
 
 fn check_prefix_lists_no_overlap_or_left_contains_right(
-    prefixes_left: &BTreeSet<PrefixWithOptionalPorts>,
-    excludes_left: &BTreeSet<PrefixWithOptionalPorts>,
-    prefixes_right: &BTreeSet<PrefixWithOptionalPorts>,
-    excludes_right: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes_left: &PrefixPortsSet,
+    excludes_left: &PrefixPortsSet,
+    prefixes_right: &PrefixPortsSet,
+    excludes_right: &PrefixPortsSet,
 ) -> Result<(), ConfigError> {
     let collapsed_prefixes_left = collapse_prefix_lists(prefixes_left, excludes_left);
     let collapsed_prefixes_right = collapse_prefix_lists(prefixes_right, excludes_right);

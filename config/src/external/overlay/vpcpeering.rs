@@ -7,8 +7,10 @@ use crate::utils::{
     check_no_overlap_or_left_contains_right, check_private_prefixes_dont_overlap,
     check_public_prefixes_dont_overlap,
 };
-use lpm::prefix::{IpRangeWithPorts, Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
-use std::collections::{BTreeMap, BTreeSet};
+use lpm::prefix::{
+    IpRangeWithPorts, Prefix, PrefixPortsSet, PrefixWithOptionalPorts, PrefixWithPortsSize,
+};
+use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
 
@@ -57,8 +59,8 @@ impl Default for VpcExposeNatConfig {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeNat {
-    pub as_range: BTreeSet<PrefixWithOptionalPorts>,
-    pub not_as: BTreeSet<PrefixWithOptionalPorts>,
+    pub as_range: PrefixPortsSet,
+    pub not_as: PrefixPortsSet,
     pub config: VpcExposeNatConfig,
 }
 
@@ -79,9 +81,9 @@ impl VpcExposeNat {
     }
 }
 
-fn empty_btreeset() -> &'static BTreeSet<PrefixWithOptionalPorts> {
-    static EMPTY_SET: std::sync::LazyLock<BTreeSet<PrefixWithOptionalPorts>> =
-        std::sync::LazyLock::new(BTreeSet::new);
+fn empty_set() -> &'static PrefixPortsSet {
+    static EMPTY_SET: std::sync::LazyLock<PrefixPortsSet> =
+        std::sync::LazyLock::new(PrefixPortsSet::new);
     &EMPTY_SET
 }
 
@@ -89,8 +91,8 @@ use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
     pub default: bool,
-    pub ips: BTreeSet<PrefixWithOptionalPorts>,
-    pub nots: BTreeSet<PrefixWithOptionalPorts>,
+    pub ips: PrefixPortsSet,
+    pub nots: PrefixPortsSet,
     pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
@@ -197,17 +199,13 @@ impl VpcExpose {
     }
 
     #[must_use]
-    pub fn as_range_or_empty(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
-        self.nat
-            .as_ref()
-            .map_or(empty_btreeset(), |nat| &nat.as_range)
+    pub fn as_range_or_empty(&self) -> &PrefixPortsSet {
+        self.nat.as_ref().map_or(empty_set(), |nat| &nat.as_range)
     }
 
     #[must_use]
-    pub fn not_as_or_empty(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
-        self.nat
-            .as_ref()
-            .map_or(empty_btreeset(), |nat| &nat.not_as)
+    pub fn not_as_or_empty(&self) -> &PrefixPortsSet {
+        self.nat.as_ref().map_or(empty_set(), |nat| &nat.not_as)
     }
 
     #[must_use]
@@ -283,7 +281,7 @@ impl VpcExpose {
     // public IPs are those from the "ips" list. This method returns the current list of public IPs
     // for the VpcExpose.
     #[must_use]
-    pub fn public_ips(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
+    pub fn public_ips(&self) -> &PrefixPortsSet {
         let Some(nat) = self.nat.as_ref() else {
             return &self.ips;
         };
@@ -296,7 +294,7 @@ impl VpcExpose {
 
     // Same as public_ips, but returns the list of excluded prefixes
     #[must_use]
-    pub fn public_excludes(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
+    pub fn public_excludes(&self) -> &PrefixPortsSet {
         let Some(nat) = self.nat.as_ref() else {
             return &self.nots;
         };
@@ -476,7 +474,7 @@ impl VpcExpose {
         }
 
         #[allow(clippy::items_after_statements)]
-        fn prefixes_size(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> PrefixWithPortsSize {
+        fn prefixes_size(prefixes: &PrefixPortsSet) -> PrefixWithPortsSize {
             prefixes
                 .iter()
                 .map(|p| p.size())
