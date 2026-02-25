@@ -4,6 +4,7 @@
 use crate::prefix::range_map::UpperBoundFrom;
 use crate::prefix::{Prefix, PrefixSize};
 use bnum::BUint;
+use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
 use std::str::FromStr;
@@ -130,6 +131,53 @@ impl IpRangeWithPorts for PrefixWithPorts {
         } else {
             None
         }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrefixPortsSet(BTreeSet<PrefixWithOptionalPorts>);
+
+impl PrefixPortsSet {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl IntoIterator for PrefixPortsSet {
+    type Item = PrefixWithOptionalPorts;
+    type IntoIter = std::collections::btree_set::IntoIter<PrefixWithOptionalPorts>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+impl<'a> IntoIterator for &'a PrefixPortsSet {
+    type Item = &'a PrefixWithOptionalPorts;
+    type IntoIter = std::collections::btree_set::Iter<'a, PrefixWithOptionalPorts>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+impl FromIterator<PrefixWithOptionalPorts> for PrefixPortsSet {
+    fn from_iter<T: IntoIterator<Item = PrefixWithOptionalPorts>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+impl<const N: usize> From<[PrefixWithOptionalPorts; N]> for PrefixPortsSet {
+    fn from(value: [PrefixWithOptionalPorts; N]) -> Self {
+        Self(value.into_iter().collect())
+    }
+}
+// Implement Deref and DerefMut to directly expose all methods from the inner BTreeSet
+impl std::ops::Deref for PrefixPortsSet {
+    type Target = BTreeSet<PrefixWithOptionalPorts>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for PrefixPortsSet {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
