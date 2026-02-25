@@ -4,18 +4,86 @@
 //! Port-forwarding build configuration routines.
 //! These are the functions to convert the configuration into port-forwarding rules.
 
+use crate::portfw::{PortFwEntry, PortFwKey, PortFwTableError};
 use config::ConfigError;
-use config::external::overlay::vpc::VpcTable;
+use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
+use config::external::overlay::vpcpeering::VpcExpose;
+use lpm::prefix::{L4Protocol, PrefixWithOptionalPorts};
+use net::ip::NextHeader;
+use net::packet::VpcDiscriminant;
 
-use crate::portfw::PortFwEntry;
+fn expose_to_portfw_rule(
+    expose: &VpcExpose,
+    src_vpc: VpcDiscriminant,
+    dst_vpc: VpcDiscriminant,
+) -> Result<PortFwEntry, PortFwTableError> {
+    let nat = expose.nat.as_ref().unwrap_or_else(|| unreachable!());
+    debug_assert!(nat.is_port_forwarding());
+    debug_assert_eq!(nat.as_range.len(), 1);
+    debug_assert_eq!(expose.ips.len(), 1);
+    let ips = expose.ips.first().unwrap_or_else(|| unreachable!());
+    let (prefix, ports) = match ips {
+        PrefixWithOptionalPorts::Prefix(_) => unreachable!(),
+        PrefixWithOptionalPorts::PrefixPorts(e) => (e.prefix(), e.ports()),
+    };
+
+    let as_range = nat.as_range.first().unwrap_or_else(|| unreachable!());
+    let (ext_prefix, ext_ports) = match as_range {
+        PrefixWithOptionalPorts::Prefix(_) => unreachable!(),
+        PrefixWithOptionalPorts::PrefixPorts(e) => (e.prefix(), e.ports()),
+    };
+
+    let proto = match nat.proto {
+        L4Protocol::Tcp => NextHeader::TCP,
+        L4Protocol::Udp => NextHeader::UDP,
+        L4Protocol::Any => unreachable!(),
+    };
+
+    // build the rule
+    let key = PortFwKey::new(src_vpc, proto);
+    PortFwEntry::new(
+        key,
+        dst_vpc,
+        ext_prefix,
+        prefix,
+        (ext_ports.start(), ext_ports.end()),
+        (ports.start(), ports.end()),
+        None,
+        None,
+    )
+}
+fn vpc_port_fw_peering(
+    vpc_table: &VpcTable,
+    dst_vpc: VpcDiscriminant,
+    peering: &Peering,
+) -> Result<Vec<PortFwEntry>, PortFwTableError> {
+    let mut rules = vec![];
+    for expose in peering.local.port_forwarding_exposes() {
+        let remote_vpc_vni = vpc_table.get_remote_vni(peering);
+        let src_vpc = VpcDiscriminant::from_vni(remote_vpc_vni);
+        let rule = expose_to_portfw_rule(expose, src_vpc, dst_vpc)?;
+        rules.push(rule);
+    }
+    Ok(rules)
+}
+fn vpc_port_fw(vpc_table: &VpcTable, vpc: &Vpc) -> Result<Vec<PortFwEntry>, PortFwTableError> {
+    let mut collected = vec![];
+    let dst_vpc = VpcDiscriminant::from_vni(vpc.vni);
+    for peering in &vpc.peerings {
+        let mut rules = vpc_port_fw_peering(vpc_table, dst_vpc, peering)?;
+        collected.append(&mut rules);
+    }
+    Ok(collected)
+}
 
 pub fn build_port_forwarding_configuration(
-    _vpc_table: &VpcTable,
+    vpc_table: &VpcTable,
 ) -> Result<Vec<PortFwEntry>, ConfigError> {
-    // TODO: for all Vpcs in the vpc table, check those whose peering exposes have port forwarding
-    // configuration and build a collection of port-forwarding rules (`PortFwEntry`s).
-    // and build the appropriate rules
-    let ruleset: Vec<PortFwEntry> = vec![];
-
+    let mut ruleset = vec![];
+    for vpc in vpc_table.values() {
+        let mut rules =
+            vpc_port_fw(vpc_table, vpc).map_err(|e| ConfigError::PortForwarding(e.to_string()))?;
+        ruleset.append(&mut rules);
+    }
     Ok(ruleset)
 }

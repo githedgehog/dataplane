@@ -532,9 +532,14 @@ fn apply_port_forwarding_config(
     portfw_w: &mut PortFwTableWriter,
 ) -> ConfigResult {
     let ruleset = build_port_forwarding_configuration(vpc_table)?;
+    debug!("Port-forwarding configuration successfully built. Applying changes ...");
     portfw_w
         .update_table(&ruleset)
-        .map_err(|e| ConfigError::PortForwarding(e.to_string()))
+        .map_err(|e| ConfigError::PortForwarding(e.to_string()))?;
+
+    let pfw_table = portfw_w.enter().unwrap_or_else(|| unreachable!());
+    debug!("Port-forwarding table is:\n{}", pfw_table.as_ref());
+    Ok(())
 }
 
 fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
