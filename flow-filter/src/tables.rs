@@ -4,9 +4,9 @@
 //! A module implementing a structure to back the flow filter lookups.
 
 use config::ConfigError;
-use config::external::overlay::vpcpeering::VpcExposeNatConfig;
+use config::external::overlay::vpcpeering::{VpcExposeNat, VpcExposeNatConfig};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{PortRange, Prefix};
+use lpm::prefix::{L4Protocol, PortRange, Prefix};
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
@@ -405,15 +405,15 @@ impl PortRangeMap<DstConnectionData> {
 pub(crate) enum NatRequirement {
     Stateless,
     Stateful,
-    PortForwarding,
+    PortForwarding(L4Protocol),
 }
 
-impl From<&VpcExposeNatConfig> for NatRequirement {
-    fn from(config: &VpcExposeNatConfig) -> NatRequirement {
-        match config {
-            VpcExposeNatConfig::Stateful(_) => NatRequirement::Stateful,
-            VpcExposeNatConfig::Stateless(_) => NatRequirement::Stateless,
-            VpcExposeNatConfig::PortForwarding(_) => NatRequirement::PortForwarding,
+impl NatRequirement {
+    pub(crate) fn from_nat(nat: &VpcExposeNat) -> NatRequirement {
+        match (&nat.config, nat.proto) {
+            (VpcExposeNatConfig::Stateful(_), _) => NatRequirement::Stateful,
+            (VpcExposeNatConfig::Stateless(_), _) => NatRequirement::Stateless,
+            (VpcExposeNatConfig::PortForwarding(_), proto) => NatRequirement::PortForwarding(proto),
         }
     }
 }
@@ -447,9 +447,28 @@ impl RemoteData {
         self.src_nat_req == Some(NatRequirement::Stateless)
             || self.dst_nat_req == Some(NatRequirement::Stateless)
     }
-    pub(crate) fn requires_port_forwarding(&self) -> bool {
-        self.src_nat_req == Some(NatRequirement::PortForwarding)
-            || self.dst_nat_req == Some(NatRequirement::PortForwarding)
+
+    pub(crate) fn requires_port_forwarding(&self, packet_proto: L4Protocol) -> bool {
+        for requirement in [self.src_nat_req, self.dst_nat_req] {
+            if let Some(NatRequirement::PortForwarding(req_proto)) = requirement
+                && packet_proto.intersection(&req_proto).is_some()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Determines whether the NAT requirements object covers a given L4 protocol.
+    pub(crate) fn applies_to(&self, packet_proto: L4Protocol) -> bool {
+        for requirement in [self.src_nat_req, self.dst_nat_req] {
+            if let Some(NatRequirement::PortForwarding(req_proto)) = requirement
+                && req_proto.intersection(&packet_proto).is_none()
+            {
+                return false;
+            }
+        }
+        true
     }
 }
 
