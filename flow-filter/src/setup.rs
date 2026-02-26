@@ -468,7 +468,7 @@ fn split_overlapping(
 }
 
 fn get_nat_requirement(expose: &VpcExpose) -> Option<NatRequirement> {
-    expose.nat_config().map(NatRequirement::from)
+    expose.nat.as_ref().map(NatRequirement::from_nat)
 }
 
 #[cfg(test)]
@@ -478,7 +478,7 @@ mod tests {
     use super::*;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeeringTable};
-    use lpm::prefix::{PortRange, Prefix, PrefixWithPortsSize};
+    use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithPortsSize};
     use net::packet::VpcDiscriminant;
     use net::vxlan::Vni;
     use std::collections::BTreeSet;
@@ -857,7 +857,7 @@ mod tests {
             HashSet::from([RemoteData::new(
                 vpcd(200),
                 None,
-                Some(NatRequirement::PortForwarding),
+                Some(NatRequirement::PortForwarding(L4Protocol::Any)),
             )]),
         );
 

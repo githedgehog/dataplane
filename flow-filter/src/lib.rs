@@ -16,8 +16,9 @@
 use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use flow_info::FlowStatus;
 use flow_info::flow_info_item::ExtractRef;
+use lpm::prefix::L4Protocol;
 use net::buffer::PacketBufferMut;
-use net::headers::{TryIp, TryTransport};
+use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use std::collections::HashSet;
@@ -213,15 +214,20 @@ fn deal_with_multiple_matches<Buf: PacketBufferMut>(
         return None;
     }
 
+    let packet_proto = get_l4_proto(packet);
+
     // If we have stateful NAT and port masquerading on the source side, given
     // that we haven't found a valid NAT entry, stateful NAT should take
     // precedence so the packet can come out..
     if let Some(dst_data) = data_set
         .iter()
         .find(|d| d.src_nat_req == Some(NatRequirement::Stateful))
-        && data_set
-            .iter()
-            .any(|d| d.src_nat_req == Some(NatRequirement::PortForwarding))
+        && data_set.iter().any(|d| {
+            let Some(NatRequirement::PortForwarding(requirement_proto)) = d.src_nat_req else {
+                return false;
+            };
+            requirement_proto.intersection(&packet_proto).is_some()
+        })
     {
         set_nat_requirements(packet, dst_data);
         return Some(first_vpcd);
@@ -229,12 +235,14 @@ fn deal_with_multiple_matches<Buf: PacketBufferMut>(
     // If we have stateful NAT and port masquerading on the destination side,
     // given that we haven't found a valid NAT entry, port forwarding should
     // take precedence.
-    if let Some(dst_data) = data_set
+    if let Some(dst_data) = data_set.iter().find(|d| {
+        let Some(NatRequirement::PortForwarding(req_proto)) = d.dst_nat_req else {
+            return false;
+        };
+        req_proto.intersection(&packet_proto).is_some()
+    }) && data_set
         .iter()
-        .find(|d| d.dst_nat_req == Some(NatRequirement::PortForwarding))
-        && data_set
-            .iter()
-            .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
+        .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
     {
         set_nat_requirements(packet, dst_data);
         return Some(first_vpcd);
@@ -318,7 +326,7 @@ fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &R
     if data.requires_stateless_nat() {
         packet.meta_mut().set_stateless_nat(true);
     }
-    if data.requires_port_forwarding() {
+    if data.requires_port_forwarding(get_l4_proto(packet)) {
         packet.meta_mut().set_port_forwarding(true);
     }
 }
@@ -348,6 +356,14 @@ fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
             Ok(())
         }
         _ => Err(()),
+    }
+}
+
+pub(crate) fn get_l4_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> L4Protocol {
+    match packet.try_transport() {
+        Some(Transport::Tcp(_)) => L4Protocol::Tcp,
+        Some(Transport::Udp(_)) => L4Protocol::Udp,
+        _ => L4Protocol::Any,
     }
 }
 
