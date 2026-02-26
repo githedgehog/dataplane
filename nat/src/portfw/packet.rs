@@ -104,3 +104,95 @@ pub(crate) fn nat_packet<Buf: PacketBufferMut>(
         PortFwAction::SrcNat => snat_packet(packet, state.use_ip(), state.use_port()),
     }
 }
+
+use net::headers::Net;
+use net::headers::{TryIp, TryIpv4Mut, TryIpv6Mut, TryTcp, TryTcpMut};
+use net::tcp::Tcp;
+
+/// Build a TCP RST from a packet. This method is unfinished, unpolished and NOT currently in use.
+/// Error handling has to be significantly re-worked, and I am adding it here only for future reference.
+/// The idea is to send a RST back to the source of the packet.
+/// We reverse all fields. However, for the RST to be valid, we need to ACK the last seqn sent by the sender,
+/// do not include any options, use a window of 0... see rfc 5961.
+/// This function is ugly because we don't have yet the ability to generically allocate buffers,
+/// (only `TestBuffers`). So, we attempt to build the packet from the one we receive.
+#[allow(unused)]
+pub(crate) fn tcp_reset<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Result<(), ()> {
+    if !packet.is_tcp() {
+        return Err(());
+    }
+
+    // get all the info we need to build our packet
+    let src_vpcd = packet.meta().src_vpcd;
+    let dst_vpcd = packet.meta().dst_vpcd;
+    let src_mac = packet.eth_source().unwrap_or_else(|| unreachable!());
+    let dst_mac = packet.eth_destination().unwrap_or_else(|| unreachable!());
+    let src_ip = packet.ip_source().unwrap_or_else(|| unreachable!());
+    let dst_ip = packet.ip_destination().unwrap_or_else(|| unreachable!());
+    let src_port = packet.tcp_source_port().unwrap_or_else(|| unreachable!());
+    let dst_port = packet
+        .tcp_destination_port()
+        .unwrap_or_else(|| unreachable!());
+
+    let tcp = packet.try_tcp().unwrap_or_else(|| unreachable!());
+    let ackn = tcp.ack_number();
+    let seqn = tcp.sequence_number();
+    let tcp_data_offset = u16::from(tcp.data_offset() * 4); // how much tcp header + options occupy in quad-words
+
+    // == Build of new packet ==/
+
+    // reset the metadata
+    packet.meta_reset();
+
+    // set vpc discriminants
+    packet.meta_mut().src_vpcd = dst_vpcd;
+    packet.meta_mut().dst_vpcd = src_vpcd;
+
+    // Eth header
+    packet.set_eth_source(dst_mac).map_err(|_| ())?;
+    packet.set_eth_destination(src_mac).map_err(|_| ())?;
+
+    // Ip source and dest
+    packet.set_ip_destination(src_ip).map_err(|_| ())?;
+    packet
+        .set_ip_source(dst_ip.try_into().map_err(|_| ())?)
+        .map_err(|_| ())?;
+
+    // compute length of tcp payload. We need this to know how much we need to ack in TCP
+    let data_len = match packet.try_ip().unwrap_or_else(|| unreachable!()) {
+        #[allow(clippy::cast_possible_truncation)]
+        // ipv4.header_len() should probably not return usize
+        Net::Ipv4(ipv4) => ipv4.total_len() - (ipv4.header_len() as u16) - tcp_data_offset,
+        Net::Ipv6(_ipv6) => todo!(),
+    };
+
+    // IP adjustments
+    if let Some(ipv4) = packet.try_ipv4_mut() {
+        ipv4.set_ttl(64);
+        ipv4.set_payload_len(Tcp::MIN_LENGTH.into())
+            .map_err(|_| ())?;
+    } else if let Some(ipv6) = packet.try_ipv6_mut() {
+        ipv6.set_hop_limit(64);
+        ipv6.set_payload_length(Tcp::MIN_LENGTH.into());
+    } else {
+        unreachable!()
+    }
+
+    // build TCP header without options and RST|ACK flags, with the proper ack number and seq number
+    let tcp = packet.try_tcp_mut().unwrap_or_else(|| unreachable!());
+    *tcp = Tcp::new();
+    tcp.set_ack(true);
+    tcp.set_rst(true);
+    tcp.set_ack_number(seqn + u32::from(data_len));
+    tcp.set_sequence_number(ackn);
+    tcp.set_window_size(0);
+
+    // ports
+    tcp.set_source(dst_port);
+    tcp.set_destination(src_port);
+
+    // we need to recompute the checksum
+    packet.meta_mut().set_checksum_refresh(true);
+
+    Ok(())
+}
