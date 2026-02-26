@@ -15,6 +15,7 @@ use concurrency::sync::Arc;
 use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterTableWriter};
 
+use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::{StatefulNat, StatelessNat};
@@ -41,6 +42,7 @@ where
     pub flowfiltertablesw: FlowFilterTableWriter,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
+    pub portfw_w: PortFwTableWriter,
 }
 
 /// Start a router and provide the associated pipeline
@@ -52,6 +54,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let flowfiltertablesw = FlowFilterTableWriter::new();
     let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
+    let portfw_w = PortFwTableWriter::new();
 
     // Allocate the shared VPC stats store (returns Arc<VpcStatsStore>)
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
@@ -69,6 +72,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let atabler_factory = router.get_atabler_factory();
     let nattabler_factory = nattablesw.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
+    let portfw_factory = portfw_w.reader().factory();
 
     let pipeline_builder = move || {
         // Build network functions
@@ -87,6 +91,11 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
         let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
+        let portfw = PortForwarder::new(
+            "port-forwarder",
+            portfw_factory.handle(),
+            flow_table.clone(),
+        );
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
@@ -95,6 +104,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(iprouter1)
             .add_stage(flow_lookup)
             .add_stage(flow_filter)
+            .add_stage(portfw)
             .add_stage(stateless_nat)
             .add_stage(stateful_nat)
             .add_stage(iprouter2)
@@ -113,5 +123,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         flowfiltertablesw,
         stats,
         vpc_stats_store,
+        portfw_w,
     })
 }

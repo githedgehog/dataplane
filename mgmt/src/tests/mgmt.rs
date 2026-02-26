@@ -12,6 +12,7 @@ pub mod test {
 
     use flow_filter::FlowFilterTableWriter;
     use lpm::prefix::Prefix;
+    use nat::portfw::PortFwTableWriter;
     use nat::stateful::NatAllocatorWriter;
     use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
@@ -437,6 +438,9 @@ pub mod test {
         /* create FlowFilterTable for flow filtering */
         let flowfilterw = FlowFilterTableWriter::new();
 
+        /* create port forwarding table */
+        let portfw_w = PortFwTableWriter::new();
+
         /* create VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();
 
@@ -447,6 +451,7 @@ pub mod test {
             nattablesw,
             natallocatorw,
             flowfilterw,
+            portfw_w,
             vpc_stats_store,
             dp_status_r,
             bmp_options: None,

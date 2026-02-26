@@ -400,6 +400,12 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         &mut self.meta
     }
 
+    /// Reset the metadata of this `Packet`
+    pub fn meta_reset(&mut self) {
+        self.done(DoneReason::Delivered); // this is just to avoid a log from Metadata Drop impl
+        *self.meta_mut() = PacketMeta::new(self.meta.keep());
+    }
+
     /// Wraps a packet in an `Option` depending on the metadata:
     /// If [`Packet`] is to be dropped, returns `None`. Else, `Some`.
     pub fn enforce(self) -> Option<Self> {

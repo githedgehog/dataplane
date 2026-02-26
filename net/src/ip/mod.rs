@@ -119,6 +119,15 @@ impl Display for UnicastIpAddr {
     }
 }
 
+impl Display for NextHeader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self.0.keyword_str() {
+            Some(s) => write!(f, "{}", s.to_lowercase()),
+            None => write!(f, "{}", self.0.0),
+        }
+    }
+}
+
 impl TryFrom<IpAddr> for UnicastIpAddr {
     type Error = IpAddr;
 

@@ -30,6 +30,8 @@ pub enum PrefixError {
     Invalid(String),
     #[error("Mask length {0} is invalid")]
     InvalidLength(u8),
+    #[error("Invalid ip version conversion")]
+    InvalidVerConversion,
 }
 
 /// Type to represent both IPv4 and IPv6 prefixes to expose an IP version-independent API.
@@ -109,6 +111,24 @@ impl Prefix {
         match *self {
             Prefix::IPV4(p) => p.network().into(),
             Prefix::IPV6(p) => p.network().into(),
+        }
+    }
+
+    #[must_use]
+    pub fn matches_version(&self, other: Self) -> bool {
+        self.is_ipv4() && other.is_ipv4() || self.is_ipv6() && other.is_ipv6()
+    }
+
+    #[must_use]
+    pub fn network(&self) -> IpAddr {
+        self.as_address()
+    }
+
+    #[must_use]
+    pub fn last_address(&self) -> IpAddr {
+        match *self {
+            Prefix::IPV4(p) => p.last_address().into(),
+            Prefix::IPV6(p) => p.last_address().into(),
         }
     }
 

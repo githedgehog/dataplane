@@ -49,12 +49,8 @@ impl Display for FlowKeyData {
         };
 
         match self.src_vpcd() {
-            Some(vpcd) => write!(f, "{{ VPCs({vpcd}->"),
+            Some(vpcd) => write!(f, "{{ VPCs({vpcd}"),
             None => write!(f, "{{ VPCs(None->"),
-        }?;
-        match self.dst_vpcd() {
-            Some(vpcd) => write!(f, "{vpcd})"),
-            None => write!(f, "None)"),
         }?;
         write!(f, " {protocol} ({source}, {destination}){icmp_data} }}")
     }
@@ -63,30 +59,24 @@ impl Display for FlowKeyData {
 impl Display for FlowKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FlowKey::Unidirectional(data) | FlowKey::Bidirectional(data) => write!(f, "{data}"),
+            FlowKey::Unidirectional(data) => write!(f, "{data}"),
         }
     }
 }
 
 impl Display for FlowTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let table = self.table.read().unwrap();
-        Heading(format!("Flow Table ({})", table.len())).fmt(f)?;
-        for entry in table.iter() {
-            if let Some(value) = entry.value().upgrade() {
-                let value = value.locked.read().unwrap();
-                let nat_state = value.nat_state.as_ref();
-                let dst_vpcd = value.dst_vpcd.as_ref();
-                write!(f, "{} -> ", entry.key())?;
-                match nat_state {
-                    Some(state) => write!(f, "{{ {state}, "),
-                    None => write!(f, "{{ None, "),
-                }?;
-                match dst_vpcd {
-                    Some(vpcd) => writeln!(f, "dst_vpcd: {vpcd} }}"),
-                    None => writeln!(f, "dst_vpcd: None }}"),
-                }?;
+        if let Ok(table) = self.table.try_read() {
+            Heading(format!("Flow Table ({} entries)", table.len())).fmt(f)?;
+            for entry in table.iter() {
+                let key = entry.key();
+                match entry.value().upgrade() {
+                    Some(value) => writeln!(f, "key = {key}\ndata = {value}")?,
+                    None => writeln!(f, "key = {key} NONE")?,
+                }
             }
+        } else {
+            write!(f, "Failed to lock flow table")?;
         }
         Ok(())
     }
