@@ -33,6 +33,12 @@ impl Tcp {
     /// The maximum length of a [`Tcp`]
     pub const MAX_LENGTH: usize = 60;
 
+    #[must_use]
+    /// Build a new `Tcp` object
+    pub fn new() -> Self {
+        Self(TcpHeader::default())
+    }
+
     fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> TcpChecksum {
         #[allow(clippy::expect_used)] // DPDK should exclude payload greater than 2^16 bytes
         self.0
