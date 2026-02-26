@@ -681,7 +681,7 @@ impl Display for PrefixWithOptionalPorts {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum L4Protocol {
     Tcp,
     Udp,
