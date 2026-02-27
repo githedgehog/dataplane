@@ -4,6 +4,7 @@
 //! Dataplane configuration model: overlay configuration
 
 pub mod tests;
+pub mod validation_tests;
 pub mod vpc;
 pub mod vpcpeering;
 
