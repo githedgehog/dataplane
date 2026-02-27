@@ -46,6 +46,12 @@ impl Peering {
             self.remote.validate()?;
         }
 
+        if self.local.default_expose().is_some() && self.remote.default_expose().is_some() {
+            return Err(ConfigError::Forbidden(
+                "A default expose cannot be peered with another default expose",
+            ));
+        }
+
         self.validate_nat_combinations()
     }
 
