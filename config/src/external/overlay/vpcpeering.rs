@@ -5,7 +5,8 @@
 
 use crate::utils::{check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap};
 use lpm::prefix::{
-    IpRangeWithPorts, Prefix, PrefixPortsSet, PrefixWithOptionalPorts, PrefixWithPortsSize,
+    IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
+    PrefixWithPortsSize,
 };
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
@@ -59,6 +60,7 @@ pub struct VpcExposeNat {
     pub as_range: PrefixPortsSet,
     pub not_as: PrefixPortsSet,
     pub config: VpcExposeNatConfig,
+    pub proto: L4Protocol,
 }
 
 impl VpcExposeNat {
