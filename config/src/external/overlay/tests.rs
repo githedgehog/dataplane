@@ -102,7 +102,12 @@ pub mod test {
     #[test]
     fn test_expose_validate() {
         let expose = VpcExpose::empty();
-        assert_eq!(expose.validate(), Ok(()));
+        assert_eq!(
+            expose.validate(),
+            Err(ConfigError::Forbidden(
+                "Non-default expose cannot have empty 'ips' list"
+            ))
+        );
 
         let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
         assert_eq!(expose.validate(), Ok(()));
@@ -713,9 +718,6 @@ pub mod test {
 
     #[test]
     fn test_expose_with_port_ranges_validate() {
-        let expose = VpcExpose::empty();
-        assert_eq!(expose.validate(), Ok(()));
-
         let expose = VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
             "10.0.0.0/16".into(),
             Some(PortRange::new(1, 65535).unwrap()),

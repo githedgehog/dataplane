@@ -388,6 +388,20 @@ impl VpcExpose {
         // Check default exposes and prefixes
         self.validate_default_expose()?;
 
+        // Forbid empty ips list
+        if self.ips.is_empty() && !self.default {
+            return Err(ConfigError::Forbidden(
+                "Non-default expose cannot have empty 'ips' list",
+            ));
+        }
+
+        // If NAT is enabled, forbid empty as_range list
+        if self.nat.is_some() && self.as_range_or_empty().is_empty() {
+            return Err(ConfigError::Forbidden(
+                "Expose cannot have empty 'as_range' list with NAT enabled",
+            ));
+        }
+
         // Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
         // support NAT46 or NAT64 at the moment.
         //
@@ -518,18 +532,6 @@ impl VpcExpose {
             ));
         }
 
-        // Forbid empty ips list if not is non-empty.
-        // Forbid empty as_range list if not_as is non-empty.
-        if !self.nots.is_empty() && self.ips.is_empty() {
-            return Err(ConfigError::Forbidden(
-                "Empty 'ips' with non-empty 'nots' is currently not supported",
-            ));
-        }
-        if self.as_range_or_empty().is_empty() && !self.not_as_or_empty().is_empty() {
-            return Err(ConfigError::Forbidden(
-                "Empty 'as_range' with non-empty 'not_as' is currently not supported",
-            ));
-        }
         Ok(())
     }
 }
