@@ -681,6 +681,26 @@ impl Display for PrefixWithOptionalPorts {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum L4Protocol {
+    Tcp,
+    Udp,
+    #[default]
+    Any,
+}
+
+impl L4Protocol {
+    #[must_use]
+    pub fn intersection(&self, other: &L4Protocol) -> Option<L4Protocol> {
+        match (self, other) {
+            (L4Protocol::Any, other_proto) => Some(*other_proto),
+            (self_proto, L4Protocol::Any) => Some(*self_proto),
+            (self_proto, other_proto) if self_proto == other_proto => Some(*self_proto),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,7 +8,7 @@ use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
     GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto,
 };
-use lpm::prefix::{PortRange, Prefix, PrefixString, PrefixWithOptionalPorts};
+use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixString, PrefixWithOptionalPorts};
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::SubnetMap;
@@ -201,7 +201,7 @@ fn set_port_ranges(
     }
 
     let mut vpc_exposes = Vec::new();
-    for (orig_ranges, target_ranges, _proto) in port_ranges_rules {
+    for (orig_ranges, target_ranges, proto) in port_ranges_rules {
         let mut vpc_expose_clone = vpc_expose.clone();
 
         let nat = vpc_expose_clone
@@ -233,9 +233,16 @@ fn set_port_ranges(
             }
             nat.as_range.remove(target_prefix);
         }
-        vpc_exposes.push(vpc_expose_clone);
 
-        // TODO: L4 protocol
+        nat.proto = match proto {
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp) => L4Protocol::Tcp,
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp) => L4Protocol::Udp,
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::KopiumEmpty) | None => {
+                L4Protocol::Any
+            }
+        };
+
+        vpc_exposes.push(vpc_expose_clone);
     }
 
     Ok(vpc_exposes)
