@@ -501,10 +501,7 @@ pub(crate) mod tests {
             .ip("192.168.100.0/24".into())
             .as_range("34.34.34.0/24".into())
             .unwrap();
-        let expose431 = VpcExpose::empty()
-            .make_stateless_nat()
-            .unwrap()
-            .ip("4.4.0.0/24".into());
+        let expose431 = VpcExpose::empty().ip("4.4.0.0/24".into());
 
         // VPC1 <-> VPC2
         let mut manifest12 = VpcManifest::new("VPC-1");
