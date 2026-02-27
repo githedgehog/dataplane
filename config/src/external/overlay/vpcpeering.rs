@@ -374,35 +374,10 @@ impl VpcExpose {
     }
 
     fn validate_default_expose(&self) -> ConfigResult {
-        if self.default {
-            if !self.ips.is_empty() || !self.nots.is_empty() || self.nat.is_some() {
-                return Err(ConfigError::Invalid(
-                    "Default expose cannot have ips/nots or nat configuration".to_string(),
-                ));
-            }
-        } else {
-            if self.ips.iter().any(|p| p.prefix().is_root()) {
-                return Err(ConfigError::Forbidden(
-                    "Expose: root prefix as 'ip' forbidden",
-                ));
-            }
-            if self.nots.iter().any(|p| p.prefix().is_root()) {
-                return Err(ConfigError::Forbidden(
-                    "Expose: root prefix as 'not' is forbidden",
-                ));
-            }
-            if let Some(nat) = &self.nat {
-                if nat.as_range.iter().any(|p| p.prefix().is_root()) {
-                    return Err(ConfigError::Forbidden(
-                        "Expose: root prefix as NAT 'as' is forbidden",
-                    ));
-                }
-                if nat.not_as.iter().any(|p| p.prefix().is_root()) {
-                    return Err(ConfigError::Forbidden(
-                        "Expose: root prefix as NAT 'as-not' is forbidden",
-                    ));
-                }
-            }
+        if self.default && (!self.ips.is_empty() || !self.nots.is_empty() || self.nat.is_some()) {
+            return Err(ConfigError::Invalid(
+                "Default expose cannot have ips/nots or nat configuration".to_string(),
+            ));
         }
         Ok(())
     }
