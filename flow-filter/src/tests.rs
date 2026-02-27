@@ -796,8 +796,8 @@ fn test_flow_filter_table_check_default_to_default() {
         .unwrap();
 
     let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Validation is necessary to build overlay.vpc_table's peerings from peering_table
-    overlay.validate().unwrap();
+    // Build overlay.vpc_table's peerings from peering_table, with no validation
+    overlay.collect_peerings();
 
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
 
