@@ -630,7 +630,17 @@ impl VpcManifest {
         if self.exposes.is_empty() {
             return Err(ConfigError::NoExposes(self.name.clone()));
         }
+
+        let mut found_default = false;
         for expose in &self.exposes {
+            if expose.default {
+                if found_default {
+                    return Err(ConfigError::Forbidden(
+                        "Manifest cannot have multiple default exposes",
+                    ));
+                }
+                found_default = true;
+            }
             expose.validate()?;
         }
         self.validate_expose_collisions()?;
@@ -682,18 +692,9 @@ impl VpcManifest {
             .iter()
             .filter(|expose| expose.has_port_forwarding())
     }
-    pub fn default_expose(&self) -> Result<Option<&VpcExpose>, ConfigError> {
-        let default_exposes: Vec<&VpcExpose> = self
-            .exposes
-            .iter()
-            .filter(|expose| expose.default)
-            .collect();
-        if default_exposes.len() > 1 {
-            return Err(ConfigError::InternalFailure(
-                "Multiple default exposes found".to_string(),
-            ));
-        }
-        Ok(default_exposes.first().copied())
+    #[must_use]
+    pub fn default_expose(&self) -> Option<&VpcExpose> {
+        self.exposes.iter().find(|expose| expose.default)
     }
 }
 

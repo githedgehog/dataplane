@@ -49,8 +49,8 @@ impl FlowFilterTable {
             dst_vpcd,
             local_prefixes,
             remote_prefixes,
-            peering.local.default_expose()?,
-            peering.remote.default_expose()?,
+            peering.local.default_expose(),
+            peering.remote.default_expose(),
         )?;
 
         let (local_prefixes, remote_prefixes) =
@@ -61,8 +61,8 @@ impl FlowFilterTable {
             dst_vpcd,
             local_prefixes,
             remote_prefixes,
-            peering.local.default_expose()?,
-            peering.remote.default_expose()?,
+            peering.local.default_expose(),
+            peering.remote.default_expose(),
         )
     }
 }
