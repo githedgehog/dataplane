@@ -11,6 +11,7 @@ use lpm::prefix::{
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
+use tracing::warn;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStatelessNat;
@@ -445,18 +446,16 @@ impl VpcExpose {
             }
         }
 
-        // Ensure all exclusion prefixes are contained within existing allowed prefixes, unless the
-        // list of allowed prefixes is empty.
+        // Warn if any exclusion prefix does not overlap with any allowed prefix.
         for (prefixes, excludes) in [
             (prefix_sets[0], prefix_sets[1]),
             (prefix_sets[2], prefix_sets[3]),
         ] {
-            if prefixes.is_empty() {
-                continue;
-            }
             for exclude in excludes {
-                if !prefixes.iter().any(|p| p.covers(exclude)) {
-                    return Err(ConfigError::OutOfRangeExclusionPrefix(*exclude));
+                if !prefixes.iter().any(|p| p.overlaps(exclude)) {
+                    warn!(
+                        "Exclusion prefix {exclude} in expose {self} does not overlap with any allowed prefix"
+                    );
                 }
             }
         }
