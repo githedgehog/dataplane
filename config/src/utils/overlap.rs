@@ -3,8 +3,7 @@
 
 use crate::ConfigError;
 use crate::external::overlay::vpcpeering::VpcExpose;
-use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts, PrefixWithPortsSize};
-use std::collections::BTreeSet;
+use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithPortsSize};
 
 pub fn check_private_prefixes_dont_overlap(
     expose_left: &VpcExpose,
@@ -63,10 +62,10 @@ fn port_forwarding_with_distinct_l4_protocols(
 
 // Validate that two sets of prefixes, with their exclusion prefixes applied, don't overlap
 fn check_prefixes_dont_overlap(
-    prefixes_left: &BTreeSet<PrefixWithOptionalPorts>,
-    excludes_left: &BTreeSet<PrefixWithOptionalPorts>,
-    prefixes_right: &BTreeSet<PrefixWithOptionalPorts>,
-    excludes_right: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes_left: &PrefixPortsSet,
+    excludes_left: &PrefixPortsSet,
+    prefixes_right: &PrefixPortsSet,
+    excludes_right: &PrefixPortsSet,
 ) -> Result<(), ConfigError> {
     // Find colliding prefixes
     let mut colliding = Vec::new();
