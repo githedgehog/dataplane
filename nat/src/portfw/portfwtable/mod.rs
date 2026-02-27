@@ -5,6 +5,7 @@
 
 pub mod access;
 mod display;
+pub mod lpmmap;
 pub mod objects;
 pub mod portrange;
 pub mod rangeset;
