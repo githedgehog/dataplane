@@ -6,14 +6,14 @@ use std::convert::TryFrom;
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExpose, GatewayAgentPeeringsPeeringExposeAs,
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
+    GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto,
 };
-use lpm::prefix::{PortRange, Prefix, PrefixString, PrefixWithOptionalPorts, PrefixWithPorts};
+use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixString, PrefixWithOptionalPorts};
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::SubnetMap;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
-#[allow(dead_code)] // We'll need this code again for port forwarding support
 fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversionError> {
     ports_str
         // Split port ranges for prefix on ','
@@ -24,25 +24,6 @@ fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversio
             })
         })
         .collect()
-}
-
-#[allow(dead_code)] // We'll need this code again for port forwarding support
-fn map_ports(
-    prefix: Prefix,
-    ports_opt: Option<&str>,
-) -> Result<Vec<PrefixWithOptionalPorts>, FromK8sConversionError> {
-    let Some(ports_str) = ports_opt else {
-        return Ok(vec![PrefixWithOptionalPorts::from(prefix)]);
-    };
-    parse_port_ranges(ports_str)?
-        .into_iter()
-        // Derive one PrefixWithOptionalPorts for each port range
-        .map(|port_range| {
-            Ok(PrefixWithOptionalPorts::PrefixPorts(PrefixWithPorts::new(
-                prefix, port_range,
-            )))
-        })
-        .collect::<Result<Vec<_>, _>>()
 }
 
 fn process_ip_block(
@@ -151,12 +132,13 @@ fn process_nat_block(
                 .make_stateful_nat(idle_timeout)
                 .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
         }
-        (None, Some(_port_forward), None) => {
-            // TODO: port forwarding support
-            // Don't forget to also update the TypeGenerator in k8s-intf/src/bolero/expose.rs
-            Err(FromK8sConversionError::NotAllowed(
-                "Port forwarding is not yet supported".to_string(),
-            ))
+        (None, Some(port_forward), None) => {
+            let idle_timeout = port_forward.idle_timeout.map(std::time::Duration::from);
+            // Note: We'll need additional processing to handle port mapping rules, see
+            // nat_expand_rules()
+            vpc_expose
+                .make_port_forwarding(idle_timeout)
+                .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
         }
         (None, None, Some(_)) => vpc_expose
             .make_stateless_nat()
@@ -166,7 +148,131 @@ fn process_nat_block(
         )),
     }
 }
-impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
+
+fn nat_expand_rules(
+    vpc_expose: VpcExpose,
+    nat: Option<&GatewayAgentPeeringsPeeringExposeNat>,
+) -> Result<Vec<VpcExpose>, FromK8sConversionError> {
+    // Only port forwarding needs some extra processing
+    let Some(port_forward) = nat.and_then(|n| n.port_forward.as_ref()) else {
+        return Ok(vec![vpc_expose]);
+    };
+
+    let Some(ports_vec) = port_forward.ports.as_ref() else {
+        return Err(FromK8sConversionError::NotAllowed(
+            "Port forward must specify ports".to_string(),
+        ));
+    };
+
+    let port_range_rules = ports_vec.iter().try_fold(Vec::new(), |mut rules, ports| {
+        let Some(port_string) = ports.port.as_ref() else {
+            return Err(FromK8sConversionError::NotAllowed(
+                "Port forward must specify a port".to_string(),
+            ));
+        };
+        let Some(as_string) = ports.r#as.as_ref() else {
+            return Err(FromK8sConversionError::NotAllowed(
+                "Port forward must specify a port to map to".to_string(),
+            ));
+        };
+        rules.push((
+            parse_port_ranges(port_string)?,
+            parse_port_ranges(as_string)?,
+            ports.proto.as_ref(),
+        ));
+        Ok(rules)
+    })?;
+
+    set_port_ranges(&vpc_expose, port_range_rules)
+}
+
+fn set_port_ranges(
+    vpc_expose: &VpcExpose,
+    port_ranges_rules: Vec<(
+        Vec<PortRange>,
+        Vec<PortRange>,
+        Option<&GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto>,
+    )>,
+) -> Result<Vec<VpcExpose>, FromK8sConversionError> {
+    if port_ranges_rules.is_empty() {
+        return Err(FromK8sConversionError::NotAllowed(
+            "Port forward must specify at least one ports block".to_string(),
+        ));
+    }
+
+    let mut vpc_exposes = Vec::new();
+    for (orig_ranges, target_ranges, proto) in port_ranges_rules {
+        let mut vpc_expose_clone = vpc_expose.clone();
+
+        let nat = vpc_expose_clone
+            .nat
+            .as_mut()
+            .unwrap_or_else(|| unreachable!());
+
+        let orig_prefixes = vpc_expose_clone.ips.clone();
+        let target_prefixes = nat.as_range.clone();
+
+        for orig_prefix in &orig_prefixes {
+            debug_assert!(orig_prefix.ports().is_none());
+            for range in &orig_ranges {
+                vpc_expose_clone.ips.insert(PrefixWithOptionalPorts::new(
+                    orig_prefix.prefix(),
+                    Some(*range),
+                ));
+            }
+            vpc_expose_clone.ips.remove(orig_prefix);
+        }
+
+        for target_prefix in &target_prefixes {
+            debug_assert!(target_prefix.ports().is_none());
+            for range in &target_ranges {
+                nat.as_range.insert(PrefixWithOptionalPorts::new(
+                    target_prefix.prefix(),
+                    Some(*range),
+                ));
+            }
+            nat.as_range.remove(target_prefix);
+        }
+
+        nat.proto = match proto {
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp) => L4Protocol::Tcp,
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp) => L4Protocol::Udp,
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::KopiumEmpty) | None => {
+                L4Protocol::Any
+            }
+        };
+
+        vpc_exposes.push(vpc_expose_clone);
+    }
+
+    Ok(vpc_exposes)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct VpcExposes(Vec<VpcExpose>);
+
+impl VpcExposes {
+    #[cfg(test)]
+    fn get_single(self) -> Result<VpcExpose, FromK8sConversionError> {
+        if self.0.len() != 1 {
+            return Err(FromK8sConversionError::NotAllowed(
+                "Expected exactly one VPC expose".to_owned(),
+            ));
+        }
+        Ok(self.0.into_iter().next().unwrap())
+    }
+}
+
+impl IntoIterator for VpcExposes {
+    type Item = VpcExpose;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExposes {
     type Error = FromK8sConversionError;
 
     fn try_from(
@@ -187,7 +293,7 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
                     "A Default expose can't contain 'as' prefixes".to_string(),
                 ));
             }
-            return Ok(vpc_expose);
+            return Ok(VpcExposes(vec![vpc_expose]));
         }
 
         // Process PeeringIP rules
@@ -214,15 +320,35 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExpose {
             }
         }
 
-        Ok(vpc_expose)
+        let vpc_exposes = nat_expand_rules(vpc_expose, expose.nat.as_ref())?;
+
+        Ok(VpcExposes(vpc_exposes))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
-
     use super::*;
+    use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
+    use lpm::prefix::PrefixWithPorts;
+
+    fn map_ports(
+        prefix: Prefix,
+        ports_opt: Option<&str>,
+    ) -> Result<Vec<PrefixWithOptionalPorts>, FromK8sConversionError> {
+        let Some(ports_str) = ports_opt else {
+            return Ok(vec![PrefixWithOptionalPorts::from(prefix)]);
+        };
+        parse_port_ranges(ports_str)?
+            .into_iter()
+            // Derive one PrefixWithOptionalPorts for each port range
+            .map(|port_range| {
+                Ok(PrefixWithOptionalPorts::PrefixPorts(PrefixWithPorts::new(
+                    prefix, port_range,
+                )))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }
 
     #[test]
     fn test_map_ports_no_ports() {
@@ -391,7 +517,7 @@ mod test {
         bolero::check!()
             .with_generator(expose_gen)
             .for_each(|k8s_expose| {
-                let expose = VpcExpose::try_from((&subnets, k8s_expose)).unwrap();
+                let expose = VpcExposes::try_from((&subnets, k8s_expose)).unwrap().get_single().unwrap();
                 let mut ips = expose
                     .ips
                     .iter()
@@ -507,6 +633,46 @@ mod test {
                             assert_eq!(config.idle_timeout, std::time::Duration::new(2 * 60, 0));
                         }
                     },
+                    (Some(VpcExposeNatConfig::PortForwarding(config)), Some(k8s_nat)) => {
+                        let Some(k8s_port_forward) = k8s_nat.port_forward.as_ref() else {
+                            panic!("Port forwarding configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
+                        };
+                        if let Some(k8s_idle_timeout) = k8s_port_forward.idle_timeout {
+                            assert_eq!(config.idle_timeout, k8s_idle_timeout);
+                        } else {
+                            assert_eq!(config.idle_timeout, std::time::Duration::new(2 * 60, 0));
+                        }
+                        // Verify port ranges from port forwarding config are applied
+                        if let Some(ports) = k8s_port_forward.ports.as_ref() {
+                            for ports_block in ports {
+                                if let Some(port_str) = ports_block.port.as_ref() {
+                                    let expected_ranges = parse_port_ranges(port_str).unwrap();
+                                    for prefix_with_ports in &expose.ips {
+                                        let port_range = prefix_with_ports.ports().expect(
+                                            "Port forwarding expose ips should have port ranges",
+                                        );
+                                        assert!(
+                                            expected_ranges.contains(&port_range),
+                                            "IP port range {port_range:?} not in expected {expected_ranges:?}"
+                                        );
+                                    }
+                                }
+                                if let Some(as_str) = ports_block.r#as.as_ref() {
+                                    let expected_as_ranges = parse_port_ranges(as_str).unwrap();
+                                    let nat = expose.nat.as_ref().unwrap();
+                                    for as_prefix in &nat.as_range {
+                                        let port_range = as_prefix.ports().expect(
+                                            "Port forwarding as_range should have port ranges",
+                                        );
+                                        assert!(
+                                            expected_as_ranges.contains(&port_range),
+                                            "As port range {port_range:?} not in expected {expected_as_ranges:?}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     (Some(VpcExposeNatConfig::Stateless(_)), Some(k8s_nat)) => {
                         assert!(k8s_nat.r#static.is_some(), "Stateless NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
                     },

@@ -4,11 +4,13 @@
 //! A module implementing a structure to back the flow filter lookups.
 
 use config::ConfigError;
+use config::external::overlay::vpcpeering::{VpcExposeNat, VpcExposeNatConfig};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{PortRange, Prefix};
+use lpm::prefix::{L4Protocol, PortRange, Prefix};
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::net::IpAddr;
 use std::ops::RangeBounds;
@@ -18,14 +20,14 @@ use tracing::debug;
 trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
 
 /// The result of a remote information lookup in the flow filter table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VpcdLookupResult {
     /// A single, unambiguous matching connection information object was found.
     Single(RemoteData),
 
     /// Multiple matching connection information object match the packet, we cannot tell which is
     /// the right one for this packet.
-    MultipleMatches,
+    MultipleMatches(HashSet<RemoteData>),
 }
 
 /// Stores allowed flows between VPCs and answers: given a packet's 5-tuple
@@ -110,7 +112,7 @@ impl FlowFilterTable {
         // We have a remote_prefix_data object for our destination address, and the port ranges
         // associated to this IP: we may need to find the right item for this entry based on the
         // destination port
-        remote_prefix_data.get(dst_port).copied()
+        remote_prefix_data.get(dst_port).cloned()
     }
 
     pub(crate) fn insert(
@@ -357,8 +359,25 @@ impl PortRangeMap<DstConnectionData> {
         dst_prefix: Prefix,
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        self.get_mut(src_port_range)?
-            .update(dst_data_result, dst_prefix, dst_port_range)
+        match self {
+            PortRangeMap::AllPorts(data) => {
+                data.update(dst_data_result, dst_prefix, dst_port_range)
+            }
+            PortRangeMap::Ranges(map) => {
+                let port_range = src_port_range.ok_or(ConfigError::InternalFailure(
+                    "Trying to update (local) port ranges map with overlapping ranges".to_string(),
+                ))?;
+                if let Some(data) = map.get_mut(&port_range) {
+                    data.update(dst_data_result, dst_prefix, dst_port_range)
+                } else {
+                    map.insert(
+                        port_range,
+                        DstConnectionData::new(dst_data_result, dst_prefix, dst_port_range),
+                    );
+                    Ok(())
+                }
+            }
+        }
     }
 
     fn update_for_default(
@@ -366,36 +385,40 @@ impl PortRangeMap<DstConnectionData> {
         dst_data_result: VpcdLookupResult,
         src_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
-        self.get_mut(src_port_range)?
-            .update_for_default(dst_data_result)
-    }
-
-    fn get_mut(
-        &mut self,
-        port_range: Option<PortRange>,
-    ) -> Result<&mut DstConnectionData, ConfigError> {
         match self {
-            PortRangeMap::AllPorts(data) => Ok(data),
+            PortRangeMap::AllPorts(data) => data.update_for_default(dst_data_result),
             PortRangeMap::Ranges(map) => {
-                let port_range = port_range.ok_or(ConfigError::InternalFailure(
+                let port_range = src_port_range.ok_or(ConfigError::InternalFailure(
                     "Trying to update (local) port ranges map with overlapping ranges".to_string(),
                 ))?;
-                map.get_mut(&port_range).ok_or(ConfigError::InternalFailure(
-                    "Cannot find entry to update in port ranges map".to_string(),
-                ))
+                map.get_mut(&port_range)
+                    .ok_or(ConfigError::InternalFailure(
+                        "Cannot find entry to update in port ranges map".to_string(),
+                    ))
+                    .and_then(|data| data.update_for_default(dst_data_result))
             }
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NatRequirement {
     Stateless,
     Stateful,
-    PortForwarding,
+    PortForwarding(L4Protocol),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl NatRequirement {
+    pub(crate) fn from_nat(nat: &VpcExposeNat) -> NatRequirement {
+        match (&nat.config, nat.proto) {
+            (VpcExposeNatConfig::Stateful(_), _) => NatRequirement::Stateful,
+            (VpcExposeNatConfig::Stateless(_), _) => NatRequirement::Stateless,
+            (VpcExposeNatConfig::PortForwarding(_), proto) => NatRequirement::PortForwarding(proto),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RemoteData {
     pub(crate) vpcd: VpcDiscriminant,
     pub(crate) src_nat_req: Option<NatRequirement>,
@@ -424,10 +447,28 @@ impl RemoteData {
         self.src_nat_req == Some(NatRequirement::Stateless)
             || self.dst_nat_req == Some(NatRequirement::Stateless)
     }
-    pub(crate) fn requires_port_forwarding(&self) -> bool {
-        // This is temporary: do we want to reuse dst_nat_req
-        // or have a separate field?
-        self.dst_nat_req == Some(NatRequirement::PortForwarding)
+
+    pub(crate) fn requires_port_forwarding(&self, packet_proto: L4Protocol) -> bool {
+        for requirement in [self.src_nat_req, self.dst_nat_req] {
+            if let Some(NatRequirement::PortForwarding(req_proto)) = requirement
+                && packet_proto.intersection(&req_proto).is_some()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Determines whether the NAT requirements object covers a given L4 protocol.
+    pub(crate) fn applies_to(&self, packet_proto: L4Protocol) -> bool {
+        for requirement in [self.src_nat_req, self.dst_nat_req] {
+            if let Some(NatRequirement::PortForwarding(req_proto)) = requirement
+                && req_proto.intersection(&packet_proto).is_none()
+            {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -477,33 +518,44 @@ impl DstConnectionData {
     ) -> Result<(), ConfigError> {
         match (self.trie.get_mut(prefix), port_range) {
             (Some(PortRangeMap::Ranges(existing_range_map)), Some(range)) => {
-                let existing_result = existing_range_map.insert(range, result);
+                let existing_result = existing_range_map.insert(range, result.clone());
 
-                // The only case we had an existing value is when we have multiple matches. Let's do
-                // a sanity check.
-                if existing_result.is_some_and(|r| {
-                    r != VpcdLookupResult::MultipleMatches
-                        || result != VpcdLookupResult::MultipleMatches
-                }) {
-                    return Err(ConfigError::InternalFailure(
-                        "Trying to insert conflicting values for remote port range information"
-                            .to_string(),
-                    ));
+                if let Some(actual_existing_result) = existing_result {
+                    // The only case we had an existing value is when we have multiple matches.
+                    // Let's do a sanity check.
+                    if let VpcdLookupResult::MultipleMatches(existing_data_set) =
+                        actual_existing_result
+                        && let VpcdLookupResult::MultipleMatches(_) = result
+                    {
+                        // Fetch the data set we just inserted and merge the previous data set in
+                        let Some(VpcdLookupResult::MultipleMatches(data_set)) =
+                            existing_range_map.get_mut(&range)
+                        else {
+                            unreachable!() // We just added the entry
+                        };
+                        data_set.extend(existing_data_set);
+                    } else {
+                        return Err(ConfigError::InternalFailure(
+                            "Trying to insert conflicting values for remote port range information"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
-            (Some(PortRangeMap::AllPorts(existing_data)), port_range)
+            (Some(PortRangeMap::AllPorts(existing_result)), port_range)
                 if port_range.is_none_or(|r| r.is_max_range()) =>
             {
                 // We should only hit this case if we already inserted an entry with the same
                 // destination VPC.
-                if !(*existing_data == VpcdLookupResult::MultipleMatches
-                    && result == VpcdLookupResult::MultipleMatches)
+                if let VpcdLookupResult::MultipleMatches(existing_data_set) = existing_result
+                    && let VpcdLookupResult::MultipleMatches(new_data_set) = result
                 {
+                    existing_data_set.extend(new_data_set);
+                } else {
                     return Err(ConfigError::InternalFailure(
                         "Trying to insert conflicting values for remote information".to_string(),
                     ));
                 }
-                // We already know we have multiple matches, no need to update
             }
             (Some(_), _) => {
                 // One of the entries, the existing or the new, covers all ports, so we can't add a
@@ -564,7 +616,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result,
+                dst_data_result.clone(),
                 src_prefix,
                 None,
                 dst_prefix,
@@ -608,7 +660,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result,
+                dst_data_result.clone(),
                 src_prefix,
                 src_port_range,
                 dst_prefix,
@@ -653,7 +705,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result1,
+                dst_data_result1.clone(),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -664,7 +716,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result2,
+                dst_data_result2.clone(),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("30.0.0.0/24"),
@@ -758,7 +810,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result,
+                dst_data_result.clone(),
                 src_prefix,
                 None,
                 dst_prefix,
@@ -793,7 +845,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result1,
+                dst_data_result1.clone(),
                 Prefix::from("10.0.0.0/16"),
                 None,
                 Prefix::from("20.0.0.0/16"),
@@ -805,7 +857,7 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                dst_data_result2,
+                dst_data_result2.clone(),
                 Prefix::from("10.0.1.0/24"),
                 None,
                 Prefix::from("20.0.1.0/24"),

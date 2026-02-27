@@ -3,8 +3,15 @@
 
 //! Dataplane configuration model: vpc peering
 
-use lpm::prefix::{IpRangeWithPorts, Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::utils::{
+    check_no_overlap_or_left_contains_right, check_private_prefixes_dont_overlap,
+    check_public_prefixes_dont_overlap,
+};
+use lpm::prefix::{
+    IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
+    PrefixWithPortsSize,
+};
+use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
 
@@ -25,9 +32,23 @@ impl Default for VpcExposeStatefulNat {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct VpcExposePortForwarding {
+    pub idle_timeout: Duration,
+}
+
+impl Default for VpcExposePortForwarding {
+    fn default() -> Self {
+        VpcExposePortForwarding {
+            idle_timeout: Duration::from_secs(120),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum VpcExposeNatConfig {
     Stateful(VpcExposeStatefulNat),
     Stateless(VpcExposeStatelessNat),
+    PortForwarding(VpcExposePortForwarding),
 }
 
 impl Default for VpcExposeNatConfig {
@@ -39,9 +60,10 @@ impl Default for VpcExposeNatConfig {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeNat {
-    pub as_range: BTreeSet<PrefixWithOptionalPorts>,
-    pub not_as: BTreeSet<PrefixWithOptionalPorts>,
+    pub as_range: PrefixPortsSet,
+    pub not_as: PrefixPortsSet,
     pub config: VpcExposeNatConfig,
+    pub proto: L4Protocol,
 }
 
 impl VpcExposeNat {
@@ -54,11 +76,16 @@ impl VpcExposeNat {
     pub fn is_stateless(&self) -> bool {
         matches!(self.config, VpcExposeNatConfig::Stateless(_))
     }
+
+    #[must_use]
+    pub fn is_port_forwarding(&self) -> bool {
+        matches!(self.config, VpcExposeNatConfig::PortForwarding(_))
+    }
 }
 
-fn empty_btreeset() -> &'static BTreeSet<PrefixWithOptionalPorts> {
-    static EMPTY_SET: std::sync::LazyLock<BTreeSet<PrefixWithOptionalPorts>> =
-        std::sync::LazyLock::new(BTreeSet::new);
+fn empty_set() -> &'static PrefixPortsSet {
+    static EMPTY_SET: std::sync::LazyLock<PrefixPortsSet> =
+        std::sync::LazyLock::new(PrefixPortsSet::new);
     &EMPTY_SET
 }
 
@@ -66,8 +93,8 @@ use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
     pub default: bool,
-    pub ips: BTreeSet<PrefixWithOptionalPorts>,
-    pub nots: BTreeSet<PrefixWithOptionalPorts>,
+    pub ips: PrefixPortsSet,
+    pub nots: PrefixPortsSet,
     pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
@@ -83,12 +110,12 @@ impl VpcExpose {
     //
     // # Errors
     //
-    // Returns an error if the [`VpcExpose`] is in stateful mode.
+    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
     pub fn make_stateless_nat(mut self) -> Result<Self, ConfigError> {
         match self.nat.as_mut() {
             Some(nat) if nat.is_stateless() => Ok(self),
             Some(_) => Err(ConfigError::Invalid(format!(
-                "refusing to overwrite stateful NAT mode with stateless NAT mode for VpcExpose {self}"
+                "refusing to overwrite previous NAT mode with stateless NAT mode for VpcExpose {self}"
             ))),
             None => {
                 self.nat = Some(VpcExposeNat {
@@ -105,7 +132,7 @@ impl VpcExpose {
     //
     // # Errors
     //
-    // Returns an error if the [`VpcExpose`] is in stateless mode.
+    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
     pub fn make_stateful_nat(
         mut self,
         idle_timeout: Option<Duration>,
@@ -119,12 +146,42 @@ impl VpcExpose {
                 Ok(self)
             }
             Some(_) => Err(ConfigError::Invalid(format!(
-                "refusing to overwrite stateless NAT mode with stateful NAT mode for VpcExpose {self}"
+                "refusing to overwrite previous NAT mode with stateful NAT mode for VpcExpose {self}"
             ))),
 
             None => {
                 self.nat = Some(VpcExposeNat {
                     config: VpcExposeNatConfig::Stateful(options),
+                    ..VpcExposeNat::default()
+                });
+                Ok(self)
+            }
+        }
+    }
+
+    // Make the [`VpcExpose`] use port forwarding.
+    //
+    // # Errors
+    //
+    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
+    pub fn make_port_forwarding(
+        mut self,
+        idle_timeout: Option<Duration>,
+    ) -> Result<Self, ConfigError> {
+        let options = idle_timeout
+            .map(|to| VpcExposePortForwarding { idle_timeout: to })
+            .unwrap_or_default();
+        match self.nat.as_mut() {
+            Some(nat) if nat.is_port_forwarding() => {
+                nat.config = VpcExposeNatConfig::PortForwarding(options);
+                Ok(self)
+            }
+            Some(_) => Err(ConfigError::Invalid(format!(
+                "refusing to overwrite previous NAT mode with port forwarding for VpcExpose {self}"
+            ))),
+            None => {
+                self.nat = Some(VpcExposeNat {
+                    config: VpcExposeNatConfig::PortForwarding(options),
                     ..VpcExposeNat::default()
                 });
                 Ok(self)
@@ -144,17 +201,13 @@ impl VpcExpose {
     }
 
     #[must_use]
-    pub fn as_range_or_empty(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
-        self.nat
-            .as_ref()
-            .map_or(empty_btreeset(), |nat| &nat.as_range)
+    pub fn as_range_or_empty(&self) -> &PrefixPortsSet {
+        self.nat.as_ref().map_or(empty_set(), |nat| &nat.as_range)
     }
 
     #[must_use]
-    pub fn not_as_or_empty(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
-        self.nat
-            .as_ref()
-            .map_or(empty_btreeset(), |nat| &nat.not_as)
+    pub fn not_as_or_empty(&self) -> &PrefixPortsSet {
+        self.nat.as_ref().map_or(empty_set(), |nat| &nat.not_as)
     }
 
     #[must_use]
@@ -230,7 +283,7 @@ impl VpcExpose {
     // public IPs are those from the "ips" list. This method returns the current list of public IPs
     // for the VpcExpose.
     #[must_use]
-    pub fn public_ips(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
+    pub fn public_ips(&self) -> &PrefixPortsSet {
         let Some(nat) = self.nat.as_ref() else {
             return &self.ips;
         };
@@ -243,7 +296,7 @@ impl VpcExpose {
 
     // Same as public_ips, but returns the list of excluded prefixes
     #[must_use]
-    pub fn public_excludes(&self) -> &BTreeSet<PrefixWithOptionalPorts> {
+    pub fn public_excludes(&self) -> &PrefixPortsSet {
         let Some(nat) = self.nat.as_ref() else {
             return &self.nots;
         };
@@ -312,6 +365,12 @@ impl VpcExpose {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
     }
 
+    pub fn has_port_forwarding(&self) -> bool {
+        self.nat
+            .as_ref()
+            .is_some_and(VpcExposeNat::is_port_forwarding)
+    }
+
     #[must_use]
     pub fn nat_config(&self) -> Option<&VpcExposeNatConfig> {
         self.nat.as_ref().map(|nat| &nat.config)
@@ -352,24 +411,13 @@ impl VpcExpose {
     }
 
     /// Validate the [`VpcExpose`]:
-    ///
-    /// 1. Make sure that all prefixes and exclusion prefixes for this [`VpcExpose`] are of the same
-    ///    IP version.
-    /// 2. Make sure that all prefixes (or exclusion prefixes) in each list
-    ///    (ips/nots/as_range/not_as) don't overlap with other prefixes (or exclusion prefixes,
-    ///    respectively) of this list.
-    /// 3. Make sure that all exclusion prefixes are contained within existing prefixes, unless the
-    ///    list of allowed prefixes is empty.
-    /// 4. Make sure exclusion prefixes in a list don't exclude all of the prefixes in the
-    ///    associated prefixes list.
-    /// 5. Make sure we have the same number of addresses available on each side (public/private),
-    ///    taking exclusion prefixes into account.
+    #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> ConfigResult {
-        // 0. Check default exposes and prefixes
+        // Check default exposes and prefixes
         self.validate_default_expose()?;
 
-        // 1. Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
-        //    support NAT46 or NAT64 at the moment.
+        // Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
+        // support NAT46 or NAT64 at the moment.
         //
         // TODO: We can loosen this restriction in the future. When we do, some additional
         //       considerations might be required to validate independently the IPv4 and the IPv6
@@ -394,7 +442,7 @@ impl VpcExpose {
             }
         }
 
-        // 2. Check that items in prefix lists of each kind don't overlap
+        // Check that items in prefix lists of each kind don't overlap
         for prefixes in prefix_sets {
             for prefix_with_ports in prefixes {
                 // Loop over the remaining prefixes in the tree
@@ -411,8 +459,8 @@ impl VpcExpose {
             }
         }
 
-        // 3. Ensure all exclusion prefixes are contained within existing allowed prefixes,
-        //    unless the list of allowed prefixes is empty.
+        // Ensure all exclusion prefixes are contained within existing allowed prefixes, unless the
+        // list of allowed prefixes is empty.
         for (prefixes, excludes) in [
             (prefix_sets[0], prefix_sets[1]),
             (prefix_sets[2], prefix_sets[3]),
@@ -428,7 +476,7 @@ impl VpcExpose {
         }
 
         #[allow(clippy::items_after_statements)]
-        fn prefixes_size(prefixes: &BTreeSet<PrefixWithOptionalPorts>) -> PrefixWithPortsSize {
+        fn prefixes_size(prefixes: &PrefixPortsSet) -> PrefixWithPortsSize {
             prefixes
                 .iter()
                 .map(|p| p.size())
@@ -436,7 +484,7 @@ impl VpcExpose {
         }
         let zero_size = PrefixWithPortsSize::from(0u8);
 
-        // 4. Ensure we don't exclude all of the allowed prefixes
+        // Ensure we don't exclude all of the allowed prefixes
         let ips_sizes = prefixes_size(&self.ips);
         let nots_sizes = prefixes_size(&self.nots);
         if ips_sizes > zero_size && ips_sizes <= nots_sizes {
@@ -449,11 +497,11 @@ impl VpcExpose {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
 
-        // 5. For static NAT, ensure that, if the list of publicly-exposed addresses is not empty,
-        //    then we have the same number of addresses on each side.
+        // For static NAT, ensure that, if the list of publicly-exposed addresses is not empty, then
+        // we have the same number of addresses on each side.
         //
-        //    Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
-        //    size was smaller than allowed prefixes size already.
+        // Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
+        // size was smaller than allowed prefixes size already.
         if self.has_stateless_nat()
             && as_range_sizes > zero_size
             && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes
@@ -464,7 +512,31 @@ impl VpcExpose {
             ));
         }
 
-        // 6. For stateful NAT, we don't support port ranges
+        // For port forwarding, ensure that:
+        // - we have a single prefix on each side (private and public addresses)
+        // - we do not use any exclusion prefixes
+        // - if the list of publicly-exposed addresses is not empty, then we have the same number of
+        //   addresses on each side
+        // - the list of associated port ranges also is on the same size on each side
+        if self.has_port_forwarding() {
+            if self.ips.len() != 1
+                || self.as_range_or_empty().len() != 1
+                || !self.nots.is_empty()
+                || !self.not_as_or_empty().is_empty()
+            {
+                return Err(ConfigError::Forbidden(
+                    "Port forwarding requires a single prefix on each side, no exclusion prefix allowed",
+                ));
+            }
+            if ips_sizes != as_range_sizes {
+                return Err(ConfigError::MismatchedPrefixSizes(
+                    ips_sizes,
+                    as_range_sizes,
+                ));
+            }
+        }
+
+        // For stateful NAT, we don't support port ranges
         if self.has_stateful_nat()
             && (self.ips.iter().any(|p| p.ports().is_some())
                 || self.as_range_or_empty().iter().any(|p| p.ports().is_some()))
@@ -474,11 +546,8 @@ impl VpcExpose {
             ));
         }
 
-        // 7. Forbid empty ips list if not is non-empty.
-        //    Forbid empty as_range list if not_as is non-empty.
-        //    These configurations are allowed by the user API, but we don't currently support them,
-        //    so we reject them during validation.
-        //    https://github.com/githedgehog/dataplane/issues/650
+        // Forbid empty ips list if not is non-empty.
+        // Forbid empty as_range list if not_as is non-empty.
         if !self.nots.is_empty() && self.ips.is_empty() {
             return Err(ConfigError::Forbidden(
                 "Empty 'ips' with non-empty 'nots' is currently not supported",
@@ -515,27 +584,66 @@ impl VpcManifest {
         for (index, expose_left) in self.exposes.iter().enumerate() {
             // Loop over the remaining exposes in the list
             for expose_right in self.exposes.iter().skip(index + 1) {
-                // Always check for overlap for the lists of private IPs - these are not allowed to
-                // overlap inside of a given expose.
-                validate_overlapping(
-                    &expose_left.ips,
-                    &expose_left.nots,
-                    &expose_right.ips,
-                    &expose_right.nots,
-                )?;
-                // If any of the expose requires NAT, then check for overlap for the lists of
-                // public prefixes. Depending on the case, this can be:
-                // - expose_left.as_range / expose_right.as_range
-                // - expose_left.ips      / expose_right.as_range
-                // - expose_left.as_range / expose_right.ips
-                // (along with the respective exclusion prefixes).
-                if expose_left.has_nat() || expose_right.has_nat() {
-                    validate_overlapping(
-                        expose_left.public_ips(),
-                        expose_left.public_excludes(),
-                        expose_right.public_ips(),
-                        expose_right.public_excludes(),
-                    )?;
+                #[allow(clippy::unnested_or_patterns)]
+                match (&expose_left.nat_config(), &expose_right.nat_config()) {
+                    // Overlap allowed (with conditions)
+
+                    // Port forwarding plus stateful NAT can be used in combination. This is because
+                    // both imply a unique direction for opening a connection, so we can use port
+                    // forwarding when the request is in the associated direction, and stateful NAT
+                    // otherwise.
+                    (
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                    ) => {
+                        check_no_overlap_or_left_contains_right(expose_left, expose_right)?;
+                    }
+                    (
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                    ) => {
+                        check_no_overlap_or_left_contains_right(expose_right, expose_left)?;
+                    }
+
+                    // Overlap denied
+
+                    // If using no NAT at all, private prefixes (which are also publicly exposed)
+                    // cannot overlap. Compared to the cases with NAT below, checking private and
+                    // public prefixes is the same operation, so we only need to do it once.
+                    (None, None) => {
+                        check_private_prefixes_dont_overlap(expose_left, expose_right)?;
+                    }
+
+                    // We do not support stateless NAT in combination with another mode.
+                    (Some(VpcExposeNatConfig::Stateless { .. }), _)
+                    | (_, Some(VpcExposeNatConfig::Stateless { .. }))
+                    // Two exposes using port forwarding must use distinct internal prefixes, or we
+                    // don't know which to use.
+                    | (
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                        Some(VpcExposeNatConfig::PortForwarding { .. }),
+                    )
+                    // Two exposes using stateful NAT must use distinct internal prefixes, or we
+                    // don't know which to use.
+                    | (
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                        Some(VpcExposeNatConfig::Stateful { .. }),
+                    )
+                    // Stateful NAT cannot be used in combination with no NAT, or we don't know
+                    // which prefix to use. Similar to port forwarding plus no NAT, here we could
+                    // figure out something based on the direction for stateful NAT (which only
+                    // works for source NAT), but this is not supported at the moment, and stateful
+                    // NAT might work in both directions in the future anyway.
+                    | (Some(VpcExposeNatConfig::Stateful { .. }), None)
+                    | (None, Some(VpcExposeNatConfig::Stateful { .. }))
+                    // Port forwarding cannot be used in combination with no NAT, because no NAT is
+                    // stateless and the flow entry for port forwarding would "mask" the prefix for
+                    // use with no NAT
+                    | (Some(VpcExposeNatConfig::PortForwarding { .. }), None)
+                    | (None, Some(VpcExposeNatConfig::PortForwarding { .. })) => {
+                        check_private_prefixes_dont_overlap(expose_left, expose_right)?;
+                        check_public_prefixes_dont_overlap(expose_left, expose_right)?;
+                    }
                 }
             }
         }
@@ -543,6 +651,9 @@ impl VpcManifest {
     }
     pub fn add_expose(&mut self, expose: VpcExpose) {
         self.exposes.push(expose);
+    }
+    pub fn add_exposes(&mut self, exposes: impl IntoIterator<Item = VpcExpose>) {
+        self.exposes.extend(exposes);
     }
     pub fn validate(&self) -> ConfigResult {
         if self.name.is_empty() {
@@ -582,6 +693,23 @@ impl VpcManifest {
             .iter()
             .filter(|expose| !expose.has_stateful_nat())
             .filter(|expose| expose.is_v6())
+    }
+    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_port_forwarding())
+            .filter(|expose| expose.is_44())
+    }
+    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_port_forwarding())
+            .filter(|expose| expose.is_66())
+    }
+    pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
+        self.exposes
+            .iter()
+            .filter(|expose| expose.has_port_forwarding())
     }
     pub fn default_expose(&self) -> Result<Option<&VpcExpose>, ConfigError> {
         let default_exposes: Vec<&VpcExpose> = self
@@ -697,99 +825,4 @@ impl VpcPeeringTable {
             .values()
             .filter(move |p| p.left.name == vpc || p.right.name == vpc)
     }
-}
-
-// Validate that two sets of prefixes, with their exclusion prefixes applied, don't overlap
-fn validate_overlapping(
-    prefixes_left: &BTreeSet<PrefixWithOptionalPorts>,
-    excludes_left: &BTreeSet<PrefixWithOptionalPorts>,
-    prefixes_right: &BTreeSet<PrefixWithOptionalPorts>,
-    excludes_right: &BTreeSet<PrefixWithOptionalPorts>,
-) -> Result<(), ConfigError> {
-    // Find colliding prefixes
-    let mut colliding = Vec::new();
-    for prefix_left in prefixes_left {
-        for prefix_right in prefixes_right {
-            if prefix_left.overlaps(prefix_right) {
-                colliding.push((*prefix_left, *prefix_right));
-            }
-        }
-    }
-    // If not prefixes collide, we're good - exit.
-    if colliding.is_empty() {
-        return Ok(());
-    }
-
-    // How do we determine whether there is a collision between the set of available addresses on
-    // the left side, and the set of available addresses on the right side? A collision means:
-    //
-    // - Prefixes collide, in other words, they have a non-empty intersection (we've checked that
-    //   earlier)
-    //
-    // - This intersection is not fully covered by exclusion prefixes
-    //
-    // The idea in the loop below is that for each pair of colliding prefixes:
-    //
-    // - We retrieve the size of the intersection of the colliding prefixes.
-    //
-    // - We retrieve the size of the union of the intersections of all the exclusion prefixes (from
-    //   left and right sides) covering part of this intersection.
-    //
-    // - If the size of the intersection of colliding allowed prefixes is bigger than the size of
-    //   the union of the intersections of the exclusion prefixes applying to these allowed
-    //   prefixes, then it means that some addresses are effectively allowed in both the left-side
-    //   and the right-side set of available addresses, and this is an error. If the sizes are
-    //   identical, then all addresses in the intersection of the prefixes are excluded on at least
-    //   one side, so it's all good.
-    for (prefix_left, prefix_right) in colliding {
-        let intersection_prefix = prefix_left.intersection(&prefix_right).unwrap_or_else(|| {
-            unreachable!(); // These prefixes were paired precisely because they collide
-        });
-
-        // We need to compute the size of the union of the excluded prefixes. Start by adding the
-        // sizes of all exclusion prefixes, from both sides.
-        let mut union_excludes_size = PrefixWithPortsSize::from(0u8);
-
-        // Now we remove once the size of the intersection of each pair of excluded prefixes, to
-        // avoid double-counting some ranges. We know that all exclusion prefixes on the left side
-        // are disjoint, and all so are exclusion prefixes on the right side, which means that we
-        // cannot have more than two prefixes overlapping. It's enough to look for intersection of
-        // all left-side prefixes with each right-side prefix.
-        for exclude_left in excludes_left
-            .iter()
-            .filter(|exclude| exclude.overlaps(&intersection_prefix))
-        {
-            let exclude_covering_allowed_left = exclude_left
-                .intersection(&intersection_prefix)
-                .unwrap_or_else(|| {
-                    // We filtered prefixes with overlap with intersection_prefix
-                    unreachable!();
-                });
-            union_excludes_size += exclude_covering_allowed_left.size();
-            for exclude_right in excludes_right
-                .iter()
-                .filter(|exclude| exclude.overlaps(&intersection_prefix))
-            {
-                let exclude_covering_allowed_right = exclude_right
-                    .intersection(&intersection_prefix)
-                    .unwrap_or_else(|| {
-                        // We filtered prefixes with overlap with intersection_prefix
-                        unreachable!();
-                    });
-                union_excludes_size += exclude_covering_allowed_right.size();
-                // Remove size of intersection, to avoid double-counting for a given range
-                union_excludes_size -= exclude_covering_allowed_left
-                    .intersection(&exclude_covering_allowed_right)
-                    .map_or(PrefixWithPortsSize::from(0u8), |p| p.size());
-            }
-        }
-
-        if union_excludes_size < intersection_prefix.size() {
-            // Some addresses at the intersection of both prefixes are not covered by the union of
-            // all exclusion prefixes, in other words, they are available from both prefixes. This
-            // is an error.
-            return Err(ConfigError::OverlappingPrefixes(prefix_left, prefix_right));
-        }
-    }
-    Ok(())
 }

@@ -11,7 +11,7 @@ use config::internal::interfaces::interface::InterfaceConfigTable;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
 use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts};
 use net::packet::VpcDiscriminant;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use tracectl::trace_target;
 use tracing::debug;
@@ -41,7 +41,7 @@ impl FlowFilterTable {
         let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
         let (local_manifests_overlap, remote_manifests_overlap) =
-            get_manifests_overlap(vpc, peering);
+            get_manifests_overlap(overlay, vpc, peering, dst_vpcd);
 
         // Get list of local prefixes, splitting to account for overlapping, if necessary
         let overlap_trie = consolidate_overlap_list(local_manifests_overlap);
@@ -72,7 +72,7 @@ impl FlowFilterTable {
                             *remote_nat_req,
                         ))
                     }
-                    VpcdLookupResult::MultipleMatches => {
+                    VpcdLookupResult::MultipleMatches(_) => {
                         return Err(ConfigError::InternalFailure(
                             "Unexpected multiple matches for destination VPC when handling local default expose".to_string(),
                         ));
@@ -98,7 +98,7 @@ impl FlowFilterTable {
                             get_nat_requirement(remote_default_expose),
                         ))
                     }
-                    VpcdLookupResult::MultipleMatches => {
+                    VpcdLookupResult::MultipleMatches(_) => {
                         return Err(ConfigError::InternalFailure(
                             "Unexpected multiple matches for destination VPC when handling remote default expose".to_string(),
                         ));
@@ -132,21 +132,61 @@ impl FlowFilterTable {
         for (local_prefix, local_vpcd_result, local_nat_req) in &local_prefixes {
             for (remote_prefix, remote_vpcd_result, remote_nat_req) in &remote_prefixes {
                 let remote_vpcd_to_use = match (remote_vpcd_result, local_vpcd_result) {
-                    (VpcdLookupResult::MultipleMatches, VpcdLookupResult::MultipleMatches) => {
-                        VpcdLookupResult::MultipleMatches
+                    (
+                        VpcdLookupResult::MultipleMatches(dst_data),
+                        VpcdLookupResult::MultipleMatches(_),
+                    ) => {
+                        // Update the source NAT requirement for all matching destinations
+                        let data = dst_data
+                            .iter()
+                            .cloned()
+                            .map(|mut d| {
+                                d.src_nat_req = *local_nat_req;
+                                d
+                            })
+                            .collect();
+                        VpcdLookupResult::MultipleMatches(data)
                     }
-                    (VpcdLookupResult::MultipleMatches, VpcdLookupResult::Single(dst_data)) => {
+                    (
+                        VpcdLookupResult::MultipleMatches(dst_data),
+                        VpcdLookupResult::Single(local_dst_data),
+                    ) => {
                         // If the remote prefix is ambiguous but we are able to tell what
-                        // destination VPC to use based on the local prefix in use, do so
+                        // destination VPC to use based on the local prefix in use, do so.
+                        //
+                        // Assuming we have distinct remote_nat_req between exposes, we'll create
+                        // several RemoteData entries for the same destination VPC, but indicating
+                        // the NAT mode is ambiguous.
+                        //
+                        // Note: We should never have a single entry in the MultipleMatches at the
+                        // end of the processing, because this would mean we have overlapping
+                        // prefixes with the same NAT mode; otherwise, if there's no overlap, we
+                        // should have created a Single variant.
+                        let data = dst_data
+                            .iter()
+                            .cloned()
+                            .map(|mut d| {
+                                d.vpcd = local_dst_data.vpcd;
+                                d.src_nat_req = *local_nat_req;
+                                d
+                            })
+                            .collect();
+                        VpcdLookupResult::MultipleMatches(data)
+                    }
+                    (VpcdLookupResult::Single(dst_data), VpcdLookupResult::MultipleMatches(_)) => {
+                        VpcdLookupResult::MultipleMatches(HashSet::from([RemoteData::new(
+                            dst_data.vpcd,
+                            *local_nat_req,
+                            *remote_nat_req,
+                        )]))
+                    }
+                    (VpcdLookupResult::Single(dst_data), VpcdLookupResult::Single(_)) => {
                         VpcdLookupResult::Single(RemoteData::new(
                             dst_data.vpcd,
                             *local_nat_req,
                             *remote_nat_req,
                         ))
                     }
-                    (VpcdLookupResult::Single(dst_data), _) => VpcdLookupResult::Single(
-                        RemoteData::new(dst_data.vpcd, *local_nat_req, *remote_nat_req),
-                    ),
                 };
 
                 self.insert(
@@ -196,33 +236,51 @@ fn clone_skipping_peerings(vpc: &Vpc) -> Vpc {
 // - between prefixes from remote manifest and prefixes from remote manifests for other peerings
 // - between prefixes from local manifest and prefixes from local manifests for other peerings
 fn get_manifests_overlap(
+    overlay: &Overlay,
     vpc: &Vpc,
     peering: &Peering,
+    dst_vpcd: VpcDiscriminant,
 ) -> (
-    BTreeSet<PrefixWithOptionalPorts>,
-    BTreeSet<PrefixWithOptionalPorts>,
+    BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
+    BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
 ) {
-    let mut local_manifests_overlap = BTreeSet::new();
-    let mut remote_manifests_overlap = BTreeSet::new();
+    let mut local_manifests_overlap = BTreeMap::new();
+    let mut remote_manifests_overlap = BTreeMap::new();
     for other_peering in &vpc.peerings {
-        if other_peering.name == peering.name {
-            // Don't compare peering with itself
-            continue;
-        }
-        // Get overlap for prefixes related to source address
-        let local_overlap =
-            get_manifest_ips_overlap(&peering.local, &other_peering.local, |expose| &expose.ips);
-        // Get overlap for prefixes related to destination address
-        let remote_overlap =
-            get_manifest_ips_overlap(&peering.remote, &other_peering.remote, |expose| {
-                expose.public_ips()
-            });
+        let compare_to_self = other_peering.name == peering.name;
+        let other_dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(other_peering));
 
+        // Get overlap for prefixes related to source address
+        let local_overlap = get_manifest_ips_overlap(
+            &peering.local,
+            &other_peering.local,
+            dst_vpcd,
+            other_dst_vpcd,
+            |expose| &expose.ips,
+            compare_to_self,
+        );
+        // Get overlap for prefixes related to destination address
+        let remote_overlap = get_manifest_ips_overlap(
+            &peering.remote,
+            &other_peering.remote,
+            dst_vpcd,
+            other_dst_vpcd,
+            |expose| expose.public_ips(),
+            compare_to_self,
+        );
+
+        // If either side has no overlap, we'll be able to tell which is the destination VPC by
+        // looking at both the source and destination prefixes for the packet, so there's no need to
+        // account for any overlap...
         if local_overlap.is_empty() || remote_overlap.is_empty() {
-            // If either side has no overlap, we'll be able to tell which is the destination VPC
-            // by looking at both the source and destination prefixes for the packet, so there's
-            // no need to account for any overlap
-            continue;
+            // ... However, when we compare two expose blocks from the same manifest, we want to
+            // split anyway: this is the case when we have two expose blocks on the same side of a
+            // peering with overlapping prefixes, one with stateful NAT, one with port forwarding,
+            // for example. In such a case we need to split to determine what portion of the
+            // overlapping prefixes is shared.
+            if !compare_to_self {
+                continue;
+            }
         }
 
         // If there's overlap for both source and destination, we'll need to split prefixes to
@@ -247,23 +305,46 @@ fn get_manifests_overlap(
 fn get_manifest_ips_overlap(
     manifest_left: &VpcManifest,
     manifest_right: &VpcManifest,
+    dst_vpcd_left: VpcDiscriminant,
+    dst_vpcd_right: VpcDiscriminant,
     get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
-) -> BTreeSet<PrefixWithOptionalPorts> {
-    let mut overlap = BTreeSet::new();
-    for prefix_left in manifest_left
+    compare_to_self: bool,
+) -> BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>> {
+    let mut overlap = BTreeMap::new();
+    for expose_left in manifest_left
         .exposes
         .iter()
         .filter(|expose| !expose.default)
-        .flat_map(|expose| get_ips(expose).iter())
     {
-        for prefix_right in manifest_right
+        for expose_right in manifest_right
             .exposes
             .iter()
             .filter(|expose| !expose.default)
-            .flat_map(|expose| get_ips(expose).iter())
         {
-            if let Some(intersection) = prefix_left.intersection(prefix_right) {
-                overlap.insert(intersection);
+            if compare_to_self && expose_left == expose_right {
+                // We're comparing the expose to itself: skip
+                continue;
+            }
+            for prefix_left in get_ips(expose_left).iter() {
+                for prefix_right in get_ips(expose_right).iter() {
+                    if let Some(intersection) = prefix_left.intersection(prefix_right) {
+                        overlap.insert(
+                            intersection,
+                            HashSet::from([
+                                RemoteData::new(
+                                    dst_vpcd_left,
+                                    None, // Unknown at this stage
+                                    get_nat_requirement(expose_left),
+                                ),
+                                RemoteData::new(
+                                    dst_vpcd_right,
+                                    None, // Unknown at this stage
+                                    get_nat_requirement(expose_right),
+                                ),
+                            ]),
+                        );
+                    }
+                }
             }
         }
     }
@@ -273,21 +354,27 @@ fn get_manifest_ips_overlap(
 // Consolidate overlapping prefixes, by merging adjacent prefixes when possible
 // This is to avoid splitting prefixes for a peering more than necessary
 fn consolidate_overlap_list(
-    mut overlap: BTreeSet<PrefixWithOptionalPorts>,
-) -> BTreeSet<PrefixWithOptionalPorts> {
-    let mut consolidated_overlap = BTreeSet::new();
-    while let Some(first_prefix) = overlap.pop_first() {
-        let Some(&second_prefix) = overlap.first() else {
+    mut overlap: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
+) -> BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>> {
+    let mut consolidated_overlap = BTreeMap::new();
+    while let Some((first_prefix, first_data)) = overlap.pop_first() {
+        let Some((&second_prefix, second_data)) = overlap.first_key_value() else {
             // We've reached the end of the list, just insert the last item we popped
-            consolidated_overlap.insert(first_prefix);
+            consolidated_overlap.insert(first_prefix, first_data);
             break;
         };
-        if let Some(merged_prefix) = first_prefix.merge(&second_prefix) {
+        // Only merge if associated RemoteData objects are the same
+        if first_data
+            .symmetric_difference(second_data)
+            .next()
+            .is_none()
+            && let Some(merged_prefix) = first_prefix.merge(&second_prefix)
+        {
             overlap.remove(&second_prefix);
-            overlap.insert(merged_prefix);
+            overlap.insert(merged_prefix, first_data);
             continue;
         }
-        consolidated_overlap.insert(first_prefix);
+        consolidated_overlap.insert(first_prefix, first_data);
     }
     consolidated_overlap
 }
@@ -310,7 +397,7 @@ fn get_split_prefixes_for_manifest(
     manifest: &VpcManifest,
     vpcd: &VpcDiscriminant,
     get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
-    overlaps: BTreeSet<PrefixWithOptionalPorts>,
+    overlaps: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
 ) -> Vec<(
     PrefixWithOptionalPorts,
     VpcdLookupResult,
@@ -320,9 +407,13 @@ fn get_split_prefixes_for_manifest(
     for expose in &manifest.exposes {
         let nat_req = get_nat_requirement(expose);
         'next_prefix: for prefix in get_ips(expose) {
-            for overlap_prefix in overlaps.iter() {
+            for (overlap_prefix, overlap_data) in overlaps.iter() {
                 if overlap_prefix.covers(prefix) {
-                    prefixes_with_vpcd.push((*prefix, VpcdLookupResult::MultipleMatches, nat_req));
+                    prefixes_with_vpcd.push((
+                        *prefix,
+                        VpcdLookupResult::MultipleMatches(overlap_data.clone()),
+                        nat_req,
+                    ));
                     continue 'next_prefix;
                 } else if prefix.covers(overlap_prefix) {
                     // The current prefix partially overlaps with some other prefixes (of which
@@ -337,7 +428,7 @@ fn get_split_prefixes_for_manifest(
                                     p,
                                     if p == *overlap_prefix {
                                         // Multiple destination VPC matches for the overlapping section
-                                        VpcdLookupResult::MultipleMatches
+                                        VpcdLookupResult::MultipleMatches(overlap_data.clone())
                                     } else {
                                         // Single destination VPC match for the other sections
                                         VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None))
@@ -377,16 +468,7 @@ fn split_overlapping(
 }
 
 fn get_nat_requirement(expose: &VpcExpose) -> Option<NatRequirement> {
-    let nat = expose.nat.as_ref()?;
-    debug_assert!(!(nat.is_stateful() && nat.is_stateless())); // Only one NAT mode allowed
-
-    if nat.is_stateful() {
-        Some(NatRequirement::Stateful)
-    } else if nat.is_stateless() {
-        Some(NatRequirement::Stateless)
-    } else {
-        unreachable!("Unknown NAT mode")
-    }
+    expose.nat.as_ref().map(NatRequirement::from_nat)
 }
 
 #[cfg(test)]
@@ -396,11 +478,18 @@ mod tests {
     use super::*;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeeringTable};
-    use lpm::prefix::{PortRange, Prefix, PrefixWithPortsSize};
+    use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithPortsSize};
     use net::packet::VpcDiscriminant;
     use net::vxlan::Vni;
     use std::collections::BTreeSet;
     use std::ops::Bound;
+
+    fn vni(id: u32) -> Vni {
+        Vni::new_checked(id).unwrap()
+    }
+    fn vpcd(id: u32) -> VpcDiscriminant {
+        VpcDiscriminant::VNI(vni(id))
+    }
 
     #[test]
     fn test_split_overlapping_basic() {
@@ -528,6 +617,9 @@ mod tests {
 
     #[test]
     fn test_get_manifest_ips_overlap_no_overlap() {
+        let vpcd1 = vpcd(100);
+        let vpcd2 = vpcd(200);
+
         let manifest1 = VpcManifest {
             name: "manifest1".to_string(),
             exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
@@ -538,7 +630,14 @@ mod tests {
             exposes: vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
         };
 
-        let overlap = get_manifest_ips_overlap(&manifest1, &manifest2, |expose| &expose.ips);
+        let overlap = get_manifest_ips_overlap(
+            &manifest1,
+            &manifest2,
+            vpcd1,
+            vpcd2,
+            |expose| &expose.ips,
+            false,
+        );
 
         // No overlap between 10.0.0.0/24 and 20.0.0.0/24
         assert!(overlap.is_empty());
@@ -546,6 +645,9 @@ mod tests {
 
     #[test]
     fn test_get_manifest_ips_overlap_with_overlap() {
+        let vpcd1 = vpcd(100);
+        let vpcd2 = vpcd(200);
+
         let manifest1 = VpcManifest {
             name: "manifest1".to_string(),
             exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
@@ -556,16 +658,71 @@ mod tests {
             exposes: vec![VpcExpose::empty().ip("10.0.0.0/25".into())],
         };
 
-        let overlap = get_manifest_ips_overlap(&manifest1, &manifest2, |expose| &expose.ips);
+        let overlap = get_manifest_ips_overlap(
+            &manifest1,
+            &manifest2,
+            vpcd1,
+            vpcd2,
+            |expose| &expose.ips,
+            false,
+        );
 
         // Should have one overlap: 10.0.0.0/25 (intersection of /24 and /25)
         assert_eq!(overlap.len(), 1);
         let expected_prefix = PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None);
-        assert!(overlap.contains(&expected_prefix));
+        assert!(overlap.get(&expected_prefix).is_some_and(|set| {
+            set.len() == 2
+                && set.contains(&RemoteData::new(vpcd1, None, None))
+                && set.contains(&RemoteData::new(vpcd2, None, None))
+        }));
+    }
+
+    #[test]
+    fn test_get_manifest_ips_overlap_with_overlap_and_ports() {
+        let vpcd1 = vpcd(100);
+        let vpcd2 = vpcd(200);
+
+        let manifest1 = VpcManifest {
+            name: "manifest1".to_string(),
+            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        };
+
+        let manifest2 = VpcManifest {
+            name: "manifest2".to_string(),
+            exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/25".into(),
+                Some(PortRange::new(100, 200).unwrap()),
+            ))],
+        };
+
+        let overlap = get_manifest_ips_overlap(
+            &manifest1,
+            &manifest2,
+            vpcd1,
+            vpcd2,
+            |expose| &expose.ips,
+            false,
+        );
+
+        // Should have one overlap: 10.0.0.0/25 with ports 100-200 (intersection of /24 and /25 and
+        // port ranges)
+        assert_eq!(overlap.len(), 1);
+        let expected_prefix = PrefixWithOptionalPorts::new(
+            Prefix::from("10.0.0.0/25"),
+            Some(PortRange::new(100, 200).unwrap()),
+        );
+        assert!(overlap.get(&expected_prefix).is_some_and(|set| {
+            set.len() == 2
+                && set.contains(&RemoteData::new(vpcd1, None, None))
+                && set.contains(&RemoteData::new(vpcd2, None, None))
+        }));
     }
 
     #[test]
     fn test_get_manifest_ips_overlap_multiple_prefixes() {
+        let vpcd1 = vpcd(100);
+        let vpcd2 = vpcd(200);
+
         let manifest1 = VpcManifest {
             name: "manifest1".to_string(),
             exposes: vec![
@@ -578,12 +735,22 @@ mod tests {
         let manifest2 = VpcManifest {
             name: "manifest2".to_string(),
             exposes: vec![
-                VpcExpose::empty().ip("10.0.0.0/25".into()),
+                VpcExpose::empty()
+                    .make_stateful_nat(None)
+                    .unwrap()
+                    .ip("10.0.0.0/25".into()),
                 VpcExpose::empty().ip("20.0.0.0/24".into()),
             ],
         };
 
-        let overlap = get_manifest_ips_overlap(&manifest1, &manifest2, |expose| &expose.ips);
+        let overlap = get_manifest_ips_overlap(
+            &manifest1,
+            &manifest2,
+            vpcd1,
+            vpcd2,
+            |expose| &expose.ips,
+            false,
+        );
 
         // Should have two overlaps: 10.0.0.0/25 and 20.0.0.128/25
         assert_eq!(overlap.len(), 2);
@@ -591,21 +758,43 @@ mod tests {
         let prefix1 = PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None);
         let prefix2 = PrefixWithOptionalPorts::new(Prefix::from("20.0.0.128/25"), None);
 
-        assert!(overlap.contains(&prefix1));
-        assert!(overlap.contains(&prefix2));
+        assert!(
+            overlap.get(&prefix1).is_some_and(|set| {
+                set.len() == 2
+                    // Sending to 10.0.0.0/25 via manifest 1 requires no NAT
+                    && set.contains(&RemoteData::new(vpcd1, None, None))
+                    // Replying to 10.0.0.0/25 via manifest 2 requires stateful (destination) NAT
+                    && set.contains(&RemoteData::new(
+                        vpcd2,
+                        None,
+                        Some(NatRequirement::Stateful),
+                    ))
+            }),
+            "{overlap:#?}"
+        );
+
+        assert!(
+            overlap.get(&prefix2).is_some_and(|set| {
+                // Sending to 20.0.0.128/25 requires no NAT
+                set.len() == 2
+                    && set.contains(&RemoteData::new(vpcd1, None, None))
+                    && set.contains(&RemoteData::new(vpcd2, None, None))
+            }),
+            "{overlap:#?}"
+        );
     }
 
     #[test]
     fn test_consolidate_overlap_list_no_merge() {
-        let mut overlap = BTreeSet::new();
-        overlap.insert(PrefixWithOptionalPorts::new(
-            Prefix::from("10.0.0.0/25"),
-            None,
-        ));
-        overlap.insert(PrefixWithOptionalPorts::new(
-            Prefix::from("20.0.0.0/25"),
-            None,
-        ));
+        let mut overlap = BTreeMap::new();
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None),
+            HashSet::new(),
+        );
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("20.0.0.0/25"), None),
+            HashSet::new(),
+        );
 
         let result = consolidate_overlap_list(overlap);
 
@@ -615,35 +804,79 @@ mod tests {
 
     #[test]
     fn test_consolidate_overlap_list_with_merge() {
-        let mut overlap = BTreeSet::new();
+        let mut overlap = BTreeMap::new();
         // These two adjacent /25 prefixes can merge into a /24
-        overlap.insert(PrefixWithOptionalPorts::new(
-            Prefix::from("10.0.0.0/25"),
-            None,
-        ));
-        overlap.insert(PrefixWithOptionalPorts::new(
-            Prefix::from("10.0.0.128/25"),
-            None,
-        ));
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None),
+            HashSet::new(),
+        );
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None),
+            HashSet::new(),
+        );
 
         let result = consolidate_overlap_list(overlap);
 
         // Should merge into a single /24
         assert_eq!(result.len(), 1);
         let expected_prefix = PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/24"), None);
-        assert!(result.contains(&expected_prefix));
+        assert!(result.contains_key(&expected_prefix));
+    }
+
+    #[test]
+    fn test_consolidate_overlap_list_differing_dst_vpcd() {
+        let mut overlap = BTreeMap::new();
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None),
+            HashSet::from([RemoteData::new(vpcd(100), None, None)]),
+        );
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None),
+            HashSet::from([RemoteData::new(vpcd(200), None, None)]),
+        );
+
+        let result = consolidate_overlap_list(overlap);
+
+        // Should have two separate prefixes (no merging possible)
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_consolidate_overlap_list_differing_nat_requirements() {
+        let mut overlap = BTreeMap::new();
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None),
+            HashSet::from([RemoteData::new(
+                vpcd(200),
+                None,
+                Some(NatRequirement::Stateful),
+            )]),
+        );
+        overlap.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None),
+            HashSet::from([RemoteData::new(
+                vpcd(200),
+                None,
+                Some(NatRequirement::PortForwarding(L4Protocol::Any)),
+            )]),
+        );
+
+        let result = consolidate_overlap_list(overlap);
+
+        // Should have two separate prefixes (no merging possible)
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn test_get_split_prefixes_for_manifest_no_overlap() {
-        let vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+        let vpcd = vpcd(100);
 
         let manifest = VpcManifest {
             name: "manifest".to_string(),
             exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         };
 
-        let overlaps = BTreeSet::new();
+        let overlaps = BTreeMap::new();
 
         let result =
             get_split_prefixes_for_manifest(&manifest, &vpcd, |expose| &expose.ips, overlaps);
@@ -662,22 +895,22 @@ mod tests {
 
     #[test]
     fn test_get_split_prefixes_for_manifest_with_overlap() {
-        let vpcd1 = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+        let vpcd = vpcd(100);
 
         let manifest = VpcManifest {
             name: "manifest".to_string(),
             exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         };
 
-        let mut overlaps = BTreeSet::new();
+        let mut overlaps = BTreeMap::new();
         // The overlap covers part of the manifest's prefix
-        overlaps.insert(PrefixWithOptionalPorts::new(
-            Prefix::from("10.0.0.0/25"),
-            None,
-        ));
+        overlaps.insert(
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None),
+            HashSet::new(),
+        );
 
         let mut result =
-            get_split_prefixes_for_manifest(&manifest, &vpcd1, |expose| &expose.ips, overlaps);
+            get_split_prefixes_for_manifest(&manifest, &vpcd, |expose| &expose.ips, overlaps);
         result.sort_by_key(|(prefix, _, _)| *prefix);
 
         // Should split into multiple prefixes
@@ -686,14 +919,14 @@ mod tests {
             result[0].0,
             PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None)
         );
-        assert_eq!(result[0].1, VpcdLookupResult::MultipleMatches);
+        assert!(matches!(result[0].1, VpcdLookupResult::MultipleMatches(_)));
         assert_eq!(
             result[1].0,
             PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None)
         );
         assert_eq!(
             result[1].1,
-            VpcdLookupResult::Single(RemoteData::new(vpcd1, None, None))
+            VpcdLookupResult::Single(RemoteData::new(vpcd, None, None))
         );
     }
 
@@ -701,8 +934,8 @@ mod tests {
     fn test_add_peering_no_overlap() {
         let mut vpc_table = VpcTable::new();
 
-        let vni1 = Vni::new_checked(100).unwrap();
-        let vni2 = Vni::new_checked(200).unwrap();
+        let vni1 = vni(100);
+        let vni2 = vni(200);
 
         let mut vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
         let vpc2 = Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap();
@@ -734,7 +967,7 @@ mod tests {
             .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
             .unwrap();
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap();
 
@@ -742,7 +975,7 @@ mod tests {
         assert_eq!(
             dst_data,
             Some(VpcdLookupResult::Single(RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
+                vni2.into(),
                 None,
                 None
             )))
@@ -753,9 +986,9 @@ mod tests {
     fn test_process_peering_with_overlap() {
         let mut vpc_table = VpcTable::new();
 
-        let vni1 = Vni::new_checked(100).unwrap();
-        let vni2 = Vni::new_checked(200).unwrap();
-        let vni3 = Vni::new_checked(300).unwrap();
+        let vni1 = vni(100);
+        let vni2 = vni(200);
+        let vni3 = vni(300);
 
         let mut vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
         let vpc2 = Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap();
@@ -804,25 +1037,32 @@ mod tests {
             .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
             .unwrap();
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap(); // In overlapping segment
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
-        assert_eq!(dst_vpcd, Some(VpcdLookupResult::MultipleMatches));
+        assert_eq!(
+            dst_vpcd,
+            Some(VpcdLookupResult::MultipleMatches(HashSet::from([
+                RemoteData::new(vni2.into(), None, None),
+                RemoteData::new(vni3.into(), None, None),
+            ])))
+        );
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.129".parse().unwrap(); // Not in overlapping segment
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
         assert_eq!(
             dst_vpcd,
-            Some(VpcdLookupResult::Single(RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
-                None,
-                None
-            )))
+            // Note: We have a MultipleMatches variant with only one element: this happens because
+            // we have overlapping prefixes with the same NAT mode, which is not usually allowed
+            // outside of tests. Here it's OK.
+            Some(VpcdLookupResult::MultipleMatches(HashSet::from([
+                RemoteData::new(vni2.into(), None, None)
+            ])))
         );
     }
 

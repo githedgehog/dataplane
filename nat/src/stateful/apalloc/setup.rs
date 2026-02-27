@@ -4,6 +4,7 @@
 use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
+use crate::ranges::IpRange;
 use crate::stateful::allocator::AllocatorError;
 use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::{NatAllocator, NatIp};
@@ -11,7 +12,10 @@ use config::ConfigError;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::utils::collapse_prefixes_peering;
-use lpm::prefix::{IpPrefix, Prefix, PrefixWithOptionalPorts};
+use lpm::prefix::range_map::DisjointRangesBTreeMap;
+use lpm::prefix::{
+    IpPrefix, L4Protocol, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
+};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,6 +74,7 @@ impl NatDefaultAllocator {
             &peering.local,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_44,
+            VpcManifest::port_forwarding_exposes_44,
             VpcExpose::as_range_or_empty,
             |expose| &expose.ips,
             &mut self.pools_src44,
@@ -80,6 +85,7 @@ impl NatDefaultAllocator {
             &peering.local,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_66,
+            VpcManifest::port_forwarding_exposes_66,
             VpcExpose::as_range_or_empty,
             |expose| &expose.ips,
             &mut self.pools_src66,
@@ -96,6 +102,7 @@ impl NatDefaultAllocator {
             &peering.remote,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_44,
+            VpcManifest::port_forwarding_exposes_44,
             |expose| &expose.ips,
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst44,
@@ -106,6 +113,7 @@ impl NatDefaultAllocator {
             &peering.remote,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_66,
+            VpcManifest::port_forwarding_exposes_66,
             |expose| &expose.ips,
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst66,
@@ -115,11 +123,13 @@ impl NatDefaultAllocator {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G, H>(
+fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, G, H, P, PIter>(
     manifest: &'a VpcManifest,
     dst_vpc_id: VpcDiscriminant,
     // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
     exposes_filter: F,
+    // A filter to select other exposes with port forwarding, for the relevant IP version
+    port_forwarding_exposes_filter: P,
     // A function to get the list of prefixes to translate into
     original_prefixes_from_expose: G,
     // A function to get the list of prefixes to translate from
@@ -128,19 +138,37 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, Iter, G
     icmp_proto: NextHeader,
 ) -> Result<(), AllocatorError>
 where
-    F: FnOnce(&'a VpcManifest) -> Iter,
-    Iter: Iterator<Item = &'a VpcExpose>,
-    G: Fn(&'a VpcExpose) -> &'a BTreeSet<PrefixWithOptionalPorts>,
-    H: Fn(&'a VpcExpose) -> &'a BTreeSet<PrefixWithOptionalPorts>,
+    F: FnOnce(&'a VpcManifest) -> FIter,
+    FIter: Iterator<Item = &'a VpcExpose>,
+    P: FnOnce(&'a VpcManifest) -> PIter,
+    PIter: Iterator<Item = &'a VpcExpose>,
+    G: Fn(&'a VpcExpose) -> &'a PrefixPortsSet,
+    H: Fn(&'a VpcExpose) -> &'a PrefixPortsSet,
 {
+    let port_forwarding_exposes: Vec<&'a VpcExpose> =
+        port_forwarding_exposes_filter(manifest).collect();
     exposes_filter(manifest).try_for_each(|expose| {
+        let prefixes_and_ports_to_exclude_from_pools =
+            find_masquerade_portfw_overlap(&port_forwarding_exposes, expose);
+
         // We should always have an idle timeout if we process this expose for stateful NAT.
         let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
 
-        let tcp_ip_allocator =
-            ip_allocator_for_prefixes(original_prefixes_from_expose(expose), idle_timeout)?;
-        let udp_ip_allocator = tcp_ip_allocator.deep_clone()?;
-        let icmp_ip_allocator = tcp_ip_allocator.deep_clone()?;
+        let tcp_ip_allocator = ip_allocator_for_prefixes(
+            original_prefixes_from_expose(expose),
+            idle_timeout,
+            &prefixes_and_ports_to_exclude_from_pools.tcp,
+        )?;
+        let udp_ip_allocator = ip_allocator_for_prefixes(
+            original_prefixes_from_expose(expose),
+            idle_timeout,
+            &prefixes_and_ports_to_exclude_from_pools.udp,
+        )?;
+        let icmp_ip_allocator = ip_allocator_for_prefixes(
+            original_prefixes_from_expose(expose),
+            idle_timeout,
+            &PrefixPortsSet::default(),
+        )?;
 
         add_pool_entries(
             table,
@@ -154,10 +182,42 @@ where
     })
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ReserveSets {
+    tcp: PrefixPortsSet,
+    udp: PrefixPortsSet,
+}
+
+fn find_masquerade_portfw_overlap<'a>(
+    port_forwarding_exposes: &Vec<&'a VpcExpose>,
+    expose: &'a VpcExpose,
+) -> ReserveSets {
+    let expose_nat = expose.nat.as_ref().unwrap_or_else(|| unreachable!());
+    let mut reserve_sets = ReserveSets::default();
+
+    for pf_expose in port_forwarding_exposes {
+        let pf_nat = pf_expose.nat.as_ref().unwrap_or_else(|| unreachable!());
+        let Some(relevant_proto) = expose_nat.proto.intersection(&pf_nat.proto) else {
+            // No overlap on L4 protocols, so no overlap for prefixes and ports.
+            continue;
+        };
+        let ranges_intersection = pf_expose.ips.intersection_prefixes_and_ports(&expose.ips);
+        match relevant_proto {
+            L4Protocol::Tcp => reserve_sets.tcp.extend(ranges_intersection),
+            L4Protocol::Udp => reserve_sets.udp.extend(ranges_intersection),
+            L4Protocol::Any => {
+                reserve_sets.tcp.extend(ranges_intersection.clone());
+                reserve_sets.udp.extend(ranges_intersection);
+            }
+        }
+    }
+    reserve_sets
+}
+
 #[allow(clippy::too_many_arguments)]
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
-    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes: &PrefixPortsSet,
     dst_vpc_id: VpcDiscriminant,
     tcp_allocator: &IpAllocator<J>,
     udp_allocator: &IpAllocator<J>,
@@ -205,16 +265,22 @@ fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
 }
 
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
-    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes: &PrefixPortsSet,
     idle_timeout: Duration,
+    prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
 ) -> Result<IpAllocator<J>, AllocatorError> {
-    let pool = create_natpool(prefixes, idle_timeout)?;
+    let pool = create_natpool(
+        prefixes,
+        prefixes_and_ports_to_exclude_from_pools,
+        idle_timeout,
+    )?;
     let allocator = IpAllocator::new(pool);
     Ok(allocator)
 }
 
 fn create_natpool<J: NatIpWithBitmap>(
-    prefixes: &BTreeSet<PrefixWithOptionalPorts>,
+    prefixes: &PrefixPortsSet,
+    prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
     idle_timeout: Duration,
 ) -> Result<NatPool<J>, AllocatorError> {
     // Build mappings for IPv6 <-> u32 bitmap translation
@@ -233,12 +299,34 @@ fn create_natpool<J: NatIpWithBitmap>(
         // FIXME: Add port range, too
         .try_for_each(|prefix| bitmap.add_prefix(&prefix.prefix(), &reverse_bitmap_mapping))?;
 
+    let reserved_prefixes_ports =
+        build_reserved_prefixes_ports(prefixes_and_ports_to_exclude_from_pools)?;
+
     Ok(NatPool::new(
         bitmap,
         bitmap_mapping,
         reverse_bitmap_mapping,
+        reserved_prefixes_ports,
         idle_timeout,
     ))
+}
+
+fn build_reserved_prefixes_ports(
+    prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
+) -> Result<Option<DisjointRangesBTreeMap<IpRange, PortRange>>, AllocatorError> {
+    if prefixes_and_ports_to_exclude_from_pools.is_empty() {
+        return Ok(None);
+    }
+    let mut reserved_prefixes_ports = DisjointRangesBTreeMap::new();
+    for prefix in prefixes_and_ports_to_exclude_from_pools {
+        reserved_prefixes_ports.insert(
+            prefix.prefix().into(),
+            prefix.ports().ok_or(AllocatorError::InternalIssue(format!(
+                "Expected port range for port forwarding prefix {prefix:?}"
+            )))?,
+        );
+    }
+    Ok(Some(reserved_prefixes_ports))
 }
 
 fn pool_table_tcp_key_for_expose<I: NatIp>(
@@ -299,4 +387,113 @@ fn create_ipv6_bitmap_mappings(
         }
     }
     Ok((bitmap_mapping, reverse_bitmap_mapping))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReserveSets, find_masquerade_portfw_overlap};
+    use config::external::overlay::vpcpeering::VpcExpose;
+    use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+
+    fn prefix_with_ports(s: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(s.into(), Some(PortRange::new(start, end).unwrap()))
+    }
+
+    // find_masquerade_portfw_overlap()
+
+    #[test]
+    fn find_masquerade_portfw_overlap_multiple_pf_exposes() {
+        let expose = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("10.0.0.0/16".into())
+            .ip("172.16.0.0/16".into());
+        let pf_expose1 = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip("10.0.1.0/24".into());
+        let pf_expose2 = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip("172.16.5.0/24".into());
+        let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
+        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+        assert_eq!(
+            result,
+            ReserveSets {
+                tcp: PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()]),
+                udp: PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn find_masquerade_portfw_overlap_with_ports() {
+        let expose = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("10.0.0.0/24".into());
+        let pf_expose = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
+        let pf_exposes_vec = vec![&pf_expose];
+        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+        assert_eq!(
+            result,
+            ReserveSets {
+                tcp: PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 8080, 8090)]),
+                udp: PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 8080, 8090)]),
+            }
+        );
+    }
+
+    #[test]
+    fn find_masquerade_portfw_overlap_with_ports_tcp() {
+        let expose = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("10.0.0.0/24".into());
+        let mut pf_expose = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
+        // Make port forwarding for TCP only
+        pf_expose.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
+        let pf_exposes_vec = vec![&pf_expose];
+        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+        assert_eq!(
+            result,
+            ReserveSets {
+                tcp: PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 8080, 8090)]),
+                udp: PrefixPortsSet::default()
+            }
+        );
+    }
+
+    #[test]
+    fn find_masquerade_portfw_overlap_duplicates_collapsed() {
+        // Two port-forwarding exposes with the same prefix should produce one entry
+        let expose = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("10.0.0.0/16".into());
+        let pf_expose1 = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip("10.0.1.0/24".into());
+        let pf_expose2 = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip("10.0.1.0/24".into());
+        let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
+        let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
+        assert_eq!(
+            result,
+            ReserveSets {
+                tcp: PrefixPortsSet::from(["10.0.1.0/24".into()]),
+                udp: PrefixPortsSet::from(["10.0.1.0/24".into()]),
+            }
+        );
+    }
 }

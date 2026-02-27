@@ -4,6 +4,7 @@
 use crate::prefix::range_map::UpperBoundFrom;
 use crate::prefix::{Prefix, PrefixSize};
 use bnum::BUint;
+use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
 use std::str::FromStr;
@@ -130,6 +131,77 @@ impl IpRangeWithPorts for PrefixWithPorts {
         } else {
             None
         }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrefixPortsSet(BTreeSet<PrefixWithOptionalPorts>);
+
+impl PrefixPortsSet {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Given two [`PrefixPortsSet`] objects, returns the set containing the intersection of
+    /// prefixes and ports. This new set may contain overlapping prefixes (within the set), if any
+    /// of the two initial sets contains overlapping prefixes (within that set) that also overlap
+    /// with prefixes from the other set.
+    ///
+    /// Returns an empty set if the first set contains no prefix overlapping with any of the
+    /// prefixes from the second set.
+    ///
+    /// Not to be confused with `intersection`, inherited from the inner [`BTreeSet`], which returns
+    /// the entries that are in both sets only if they are equal in both sets (and not in the case
+    /// of partial overlap).
+    #[must_use]
+    pub fn intersection_prefixes_and_ports(&self, other: &PrefixPortsSet) -> PrefixPortsSet {
+        let mut result = PrefixPortsSet::new();
+        for prefix_left in self {
+            for prefix_right in other {
+                if let Some(intersection) = prefix_left.intersection(prefix_right) {
+                    result.insert(intersection);
+                }
+            }
+        }
+        result
+    }
+}
+
+impl IntoIterator for PrefixPortsSet {
+    type Item = PrefixWithOptionalPorts;
+    type IntoIter = std::collections::btree_set::IntoIter<PrefixWithOptionalPorts>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+impl<'a> IntoIterator for &'a PrefixPortsSet {
+    type Item = &'a PrefixWithOptionalPorts;
+    type IntoIter = std::collections::btree_set::Iter<'a, PrefixWithOptionalPorts>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+impl FromIterator<PrefixWithOptionalPorts> for PrefixPortsSet {
+    fn from_iter<T: IntoIterator<Item = PrefixWithOptionalPorts>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+impl<const N: usize> From<[PrefixWithOptionalPorts; N]> for PrefixPortsSet {
+    fn from(value: [PrefixWithOptionalPorts; N]) -> Self {
+        Self(value.into_iter().collect())
+    }
+}
+// Implement Deref and DerefMut to directly expose all methods from the inner BTreeSet
+impl std::ops::Deref for PrefixPortsSet {
+    type Target = BTreeSet<PrefixWithOptionalPorts>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for PrefixPortsSet {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -605,6 +677,26 @@ impl Display for PrefixWithOptionalPorts {
             PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
                 write!(f, "{prefix_with_ports}")
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum L4Protocol {
+    Tcp,
+    Udp,
+    #[default]
+    Any,
+}
+
+impl L4Protocol {
+    #[must_use]
+    pub fn intersection(&self, other: &L4Protocol) -> Option<L4Protocol> {
+        match (self, other) {
+            (L4Protocol::Any, other_proto) => Some(*other_proto),
+            (self_proto, L4Protocol::Any) => Some(*self_proto),
+            (self_proto, other_proto) if self_proto == other_proto => Some(*self_proto),
+            _ => None,
         }
     }
 }
@@ -1290,5 +1382,106 @@ mod tests {
         let result = PortRange::from_str("80 - 90");
         assert!(result.is_err());
         assert!(matches!(result, Err(PortRangeError::ParseError(_))));
+    }
+
+    // PrefixPortsSet intersection tests
+
+    fn prefix_with_ports(s: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(s.into(), Some(PortRange::new(start, end).unwrap()))
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_both_empty() {
+        let result = PrefixPortsSet::new().intersection_prefixes_and_ports(&PrefixPortsSet::new());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_left_empty() {
+        let right = PrefixPortsSet::from(["10.0.0.0/24".into()]);
+        let result = PrefixPortsSet::new().intersection_prefixes_and_ports(&right);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_right_empty() {
+        let left = PrefixPortsSet::from(["10.0.0.0/24".into()]);
+        let result = left.intersection_prefixes_and_ports(&PrefixPortsSet::new());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_no_overlap() {
+        let left = PrefixPortsSet::from(["10.0.0.0/24".into()]);
+        let right = PrefixPortsSet::from(["192.168.0.0/24".into()]);
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_identical() {
+        let left = PrefixPortsSet::from(["10.0.0.0/24".into()]);
+        let right = PrefixPortsSet::from(["10.0.0.0/24".into()]);
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert_eq!(result, PrefixPortsSet::from(["10.0.0.0/24".into()]));
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_subset() {
+        // /24 is a subset of /16
+        let left = PrefixPortsSet::from(["10.0.0.0/16".into()]);
+        let right = PrefixPortsSet::from(["10.0.1.0/24".into()]);
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert_eq!(result, PrefixPortsSet::from(["10.0.1.0/24".into()]));
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_multiple_overlaps() {
+        let left = PrefixPortsSet::from(["10.0.0.0/16".into(), "172.16.0.0/16".into()]);
+        let right = PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()]);
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert_eq!(
+            result,
+            PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()])
+        );
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_partial_overlap_multiple_left() {
+        let left = PrefixPortsSet::from(["10.0.0.0/24".into(), "192.168.0.0/24".into()]);
+        let right = PrefixPortsSet::from(["10.0.0.0/16".into()]);
+        // Only 10.0.0.0/24 overlaps with 10.0.0.0/16, resulting in 10.0.0.0/24
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert_eq!(result, PrefixPortsSet::from(["10.0.0.0/24".into()]));
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_with_ports() {
+        let left = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)]);
+        let right = PrefixPortsSet::from(["10.0.0.0/24".into()]);
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert_eq!(
+            result,
+            PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)])
+        );
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_with_overlapping_ports() {
+        let left = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 200)]);
+        let right = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 150, 300)]);
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert_eq!(
+            result,
+            PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 150, 200)])
+        );
+    }
+
+    #[test]
+    fn test_intersection_list_prefixes_with_disjoint_ports() {
+        let left = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 80, 100)]);
+        let right = PrefixPortsSet::from([prefix_with_ports("10.0.0.0/24", 200, 300)]);
+        let result = left.intersection_prefixes_and_ports(&right);
+        assert!(result.is_empty());
     }
 }
