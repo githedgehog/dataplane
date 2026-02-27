@@ -46,14 +46,6 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         Some(self.pool.read().ok()?.idle_timeout())
     }
 
-    pub(crate) fn deep_clone(&self) -> Result<IpAllocator<I>, AllocatorError> {
-        let nat_pool = self
-            .pool
-            .read()
-            .map_err(|_| AllocatorError::InternalIssue("Failed to read pool".to_string()))?;
-        Ok(IpAllocator::new((*nat_pool).clone()))
-    }
-
     fn deallocate_ip(&self, ip: I) {
         self.pool.write().unwrap().deallocate_from_pool(ip);
     }
