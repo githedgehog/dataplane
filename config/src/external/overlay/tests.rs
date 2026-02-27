@@ -151,6 +151,18 @@ pub mod test {
             .unwrap();
         assert_eq!(expose.validate(), Ok(()));
 
+        // Out-of-range exclusion prefix
+        let expose = VpcExpose::empty()
+            .make_stateful_nat(None)
+            .unwrap()
+            .ip("10.0.0.0/16".into())
+            .not("8.0.0.0/24".into())
+            .as_range("2.0.0.0/16".into())
+            .unwrap()
+            .not_as("2.0.1.0/24".into())
+            .unwrap();
+        assert_eq!(expose.validate(), Ok(()));
+
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
             .make_stateless_nat()
@@ -209,21 +221,6 @@ pub mod test {
                 "10.0.0.0/16".into(),
                 "10.0.0.0/17".into(),
             ))
-        );
-
-        // Incorrect: out-of-range exclusion prefix
-        let expose = VpcExpose::empty()
-            .make_stateless_nat()
-            .unwrap()
-            .ip("10.0.0.0/16".into())
-            .not("8.0.0.0/24".into())
-            .as_range("2.0.0.0/16".into())
-            .unwrap()
-            .not_as("2.0.1.0/24".into())
-            .unwrap();
-        assert_eq!(
-            expose.validate(),
-            Err(ConfigError::OutOfRangeExclusionPrefix("8.0.0.0/24".into()))
         );
 
         // Incorrect: all prefixes excluded
@@ -787,6 +784,46 @@ pub mod test {
             ));
         assert_eq!(expose.validate(), Ok(()));
 
+        // Out-of-range exclusion prefix (IPs)
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .ip(PrefixWithOptionalPorts::new(
+                "11.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/15".into(),
+                Some(PortRange::new(5001, 5500).unwrap()),
+            ));
+        assert_eq!(expose.validate(), Ok(()));
+
+        // Out-of-range exclusion prefix (port range)
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/24".into(),
+                Some(PortRange::new(7001, 8000).unwrap()),
+            ));
+        assert_eq!(expose.validate(), Ok(()));
+
+        // Out-of-range exclusion prefix (port range, albeit with overlap)
+        let expose = VpcExpose::empty()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .not(PrefixWithOptionalPorts::new(
+                "10.0.0.0/24".into(),
+                Some(PortRange::new(5001, 8000).unwrap()),
+            ));
+        assert_eq!(expose.validate(), Ok(()));
+
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
             .make_stateless_nat()
@@ -865,66 +902,6 @@ pub mod test {
                     "10.0.0.0/17".into(),
                     Some(PortRange::new(5001, 5500).unwrap())
                 ),
-            ))
-        );
-
-        // Incorrect: out-of-range exclusion prefix (IPs)
-        let expose = VpcExpose::empty()
-            .ip(PrefixWithOptionalPorts::new(
-                "10.0.0.0/16".into(),
-                Some(PortRange::new(5001, 6000).unwrap()),
-            ))
-            .not(PrefixWithOptionalPorts::new(
-                "10.0.0.0/15".into(),
-                Some(PortRange::new(5001, 5500).unwrap()),
-            ));
-        assert_eq!(
-            expose.validate(),
-            Err(ConfigError::OutOfRangeExclusionPrefix(
-                PrefixWithOptionalPorts::new(
-                    "10.0.0.0/15".into(),
-                    Some(PortRange::new(5001, 5500).unwrap()),
-                )
-            ))
-        );
-
-        // Incorrect: out-of-range exclusion prefix (port range)
-        let expose = VpcExpose::empty()
-            .ip(PrefixWithOptionalPorts::new(
-                "10.0.0.0/16".into(),
-                Some(PortRange::new(5001, 6000).unwrap()),
-            ))
-            .not(PrefixWithOptionalPorts::new(
-                "10.0.0.0/24".into(),
-                Some(PortRange::new(7001, 8000).unwrap()),
-            ));
-        assert_eq!(
-            expose.validate(),
-            Err(ConfigError::OutOfRangeExclusionPrefix(
-                PrefixWithOptionalPorts::new(
-                    "10.0.0.0/24".into(),
-                    Some(PortRange::new(7001, 8000).unwrap()),
-                )
-            ))
-        );
-
-        // Incorrect: out-of-range exclusion prefix (port range, albeit with overlap)
-        let expose = VpcExpose::empty()
-            .ip(PrefixWithOptionalPorts::new(
-                "10.0.0.0/16".into(),
-                Some(PortRange::new(5001, 6000).unwrap()),
-            ))
-            .not(PrefixWithOptionalPorts::new(
-                "10.0.0.0/24".into(),
-                Some(PortRange::new(5001, 8000).unwrap()),
-            ));
-        assert_eq!(
-            expose.validate(),
-            Err(ConfigError::OutOfRangeExclusionPrefix(
-                PrefixWithOptionalPorts::new(
-                    "10.0.0.0/24".into(),
-                    Some(PortRange::new(5001, 8000).unwrap()),
-                )
             ))
         );
 
