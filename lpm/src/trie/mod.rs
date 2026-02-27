@@ -114,6 +114,16 @@ impl<V: Clone> IpPrefixTrie<V> {
         }
     }
 
+    pub fn get<Q>(&self, prefix: Q) -> Option<&V>
+    where
+        Q: Into<Prefix>,
+    {
+        match prefix.into() {
+            Prefix::IPV4(prefix) => self.ipv4.get(prefix),
+            Prefix::IPV6(prefix) => self.ipv6.get(prefix),
+        }
+    }
+
     pub fn matching_entries<Q>(&self, addr: Q) -> Box<dyn Iterator<Item = (Prefix, &V)> + '_>
     where
         Q: Into<IpAddr>,
@@ -145,6 +155,18 @@ impl<V: Clone> IpPrefixTrie<V> {
             Prefix::IPV4(_) => Box::new(self.ipv4.iter().map(|(k, v)| (Prefix::IPV4(*k), v))),
             Prefix::IPV6(_) => Box::new(self.ipv6.iter().map(|(k, v)| (Prefix::IPV6(*k), v))),
         }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (Prefix, &V)> {
+        let ipv4 = self.ipv4.iter().map(|(p, v)| (Prefix::IPV4(*p), v));
+        let ipv6 = self.ipv6.iter().map(|(p, v)| (Prefix::IPV6(*p), v));
+        ipv4.chain(ipv6)
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Prefix, &mut V)> {
+        let ipv4 = self.ipv4.iter_mut().map(|(p, v)| (Prefix::IPV4(*p), v));
+        let ipv6 = self.ipv6.iter_mut().map(|(p, v)| (Prefix::IPV6(*p), v));
+        ipv4.chain(ipv6)
     }
 }
 
