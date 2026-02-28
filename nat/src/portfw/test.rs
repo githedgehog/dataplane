@@ -3,7 +3,8 @@
 
 #[cfg(test)]
 mod nf_test {
-    use crate::portfw::flow_state::{PortFwFlowStatus, get_portfw_state_flow_status};
+    use crate::portfw::flow_state::get_portfw_state_flow_status;
+    use crate::portfw::protocol::PortFwFlowStatus;
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
 
     use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};

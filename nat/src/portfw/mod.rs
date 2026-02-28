@@ -7,6 +7,7 @@ mod flow_state;
 mod nf;
 mod packet;
 mod portfwtable;
+mod protocol;
 mod test;
 
 // re-exports
