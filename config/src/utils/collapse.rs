@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::external::overlay::vpc::Peering;
-use crate::utils::ConfigUtilError;
+use crate::external::overlay::{vpc::Peering, vpcpeering::VpcExpose};
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet};
 
 // Collapse prefixes and exclusion prefixes in a Peering object: for each expose object, "apply"
@@ -16,26 +15,33 @@ use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet};
 // 1.0.0.0/17, with associated port range 4000-4500. The resulting expose will contain (1.0.0.0/16,
 // 0-3999), (1.0.0.0/16, 4501-5000), and (1.0.128.0/17, 4000-4500) as "ips" prefixes, and again, an
 // empty "nots" list.
-pub fn collapse_prefixes_peering(peering: &Peering) -> Result<Peering, ConfigUtilError> {
-    let mut clone = peering.clone();
-    for expose in &mut clone
+#[must_use]
+pub fn collapse_prefixes_peering(peering: &Peering) -> Peering {
+    let mut new_peering = peering.clone();
+
+    for expose in new_peering
         .local
         .exposes
         .iter_mut()
-        .chain(&mut clone.remote.exposes.iter_mut())
+        .chain(new_peering.remote.exposes.iter_mut())
     {
-        let ips = collapse_prefix_lists(&expose.ips, &expose.nots);
-        expose.ips = ips;
-        expose.nots = PrefixPortsSet::new();
-
-        let Some(nat) = expose.nat.as_mut() else {
-            continue;
-        };
-        let as_range = collapse_prefix_lists(&nat.as_range, &nat.not_as);
-        nat.as_range = as_range;
-        nat.not_as = PrefixPortsSet::new();
+        collapse_prefixes(expose);
     }
-    Ok(clone)
+
+    new_peering
+}
+
+fn collapse_prefixes(expose: &mut VpcExpose) {
+    let ips = collapse_prefix_lists(&expose.ips, &expose.nots);
+    expose.ips = ips;
+    expose.nots = PrefixPortsSet::new();
+
+    let Some(nat) = expose.nat.as_mut() else {
+        return;
+    };
+    let as_range = collapse_prefix_lists(&nat.as_range, &nat.not_as);
+    nat.as_range = as_range;
+    nat.not_as = PrefixPortsSet::new();
 }
 
 // Collapse prefixes (first set) and exclusion prefixes (second set), by "applying" exclusion
@@ -257,8 +263,7 @@ mod tests {
             .ip("2.0.2.0/25".into())
             .ip("3.0.0.0/17".into());
 
-        let collapsed_peering =
-            collapse_prefixes_peering(&peering).expect("Failed to collapse prefixes");
+        let collapsed_peering = collapse_prefixes_peering(&peering);
 
         assert_eq!(collapsed_peering.local.exposes[0], expected_expose);
     }

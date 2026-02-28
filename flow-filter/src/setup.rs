@@ -8,7 +8,7 @@ use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::internal::interfaces::interface::InterfaceConfigTable;
-use config::utils::{ConfigUtilError, collapse_prefixes_peering};
+use config::utils::collapse_prefixes_peering;
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -268,11 +268,7 @@ fn cleanup_vpc_table(vpcs: Vec<&Vpc>) -> Result<Vec<Vpc>, ConfigError> {
 
         for peering in &vpc.peerings {
             // "Collapse" prefixes to get rid of exclusion prefixes
-            let collapsed_peering = collapse_prefixes_peering(peering).map_err(|e| match e {
-                ConfigUtilError::SplitPrefixError(prefix) => {
-                    ConfigError::FailureApply(format!("Failed to split prefix: {prefix}"))
-                }
-            })?;
+            let collapsed_peering = collapse_prefixes_peering(peering);
             new_vpc.peerings.push(collapsed_peering);
         }
         new_set.push(new_vpc);

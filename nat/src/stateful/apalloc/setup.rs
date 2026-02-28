@@ -53,8 +53,7 @@ impl NatDefaultAllocator {
         peering: &Peering,
         dst_vpc_id: VpcDiscriminant,
     ) -> Result<(), AllocatorError> {
-        let new_peering = collapse_prefixes_peering(peering)
-            .map_err(|e| AllocatorError::InternalIssue(e.to_string()))?;
+        let new_peering = collapse_prefixes_peering(peering);
 
         // Update tables for source NAT
         self.build_src_nat_pool_for_expose(&new_peering, dst_vpc_id)?;
