@@ -6,10 +6,8 @@
 #![allow(clippy::single_match_else)]
 
 use net::buffer::PacketBufferMut;
-use net::headers::TryTcp;
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet};
-use net::tcp::Tcp;
 use std::fmt::Display;
 use std::num::NonZero;
 use std::sync::{Arc, Weak};
@@ -17,9 +15,9 @@ use std::sync::{Arc, Weak};
 use flow_entry::flow_table::flow_key::Uni;
 use flow_entry::flow_table::{FlowInfo, FlowKey};
 use flow_info::{ExtractRef, FlowStatus};
-use std::sync::atomic::AtomicU8;
 
 use crate::portfw::PortFwEntry;
+use crate::portfw::protocol::{AtomicPortFwFlowStatus, PortFwFlowStatus, next_flow_status};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -30,57 +28,10 @@ pub enum PortFwAction {
     SrcNat,
 }
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PortFwFlowStatus {
-    OneWay = 0,
-    TwoWay = 1,
-    Established = 2,
-    Reset = 3,
-    Closing = 4,
-}
-
-impl From<u8> for PortFwFlowStatus {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => PortFwFlowStatus::OneWay,
-            1 => PortFwFlowStatus::TwoWay,
-            2 => PortFwFlowStatus::Established,
-            3 => PortFwFlowStatus::Reset,
-            4 => PortFwFlowStatus::Closing,
-            _ => unreachable!(),
-        }
-    }
-}
-impl From<PortFwFlowStatus> for u8 {
-    fn from(value: PortFwFlowStatus) -> Self {
-        value as u8
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AtomicPortFwFlowStatus(Arc<AtomicU8>);
-impl AtomicPortFwFlowStatus {
-    #[must_use]
-    pub fn new() -> Self {
-        AtomicPortFwFlowStatus(Arc::new(AtomicU8::new(PortFwFlowStatus::OneWay.into())))
-    }
-
-    #[must_use]
-    pub fn load(&self) -> PortFwFlowStatus {
-        self.0.load(std::sync::atomic::Ordering::Relaxed).into()
-    }
-
-    pub fn store(&self, status: PortFwFlowStatus) {
-        self.0
-            .store(status.into(), std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PortFwState {
-    action: PortFwAction,
-    status: AtomicPortFwFlowStatus,
+    pub(crate) action: PortFwAction,
+    pub(crate) status: AtomicPortFwFlowStatus,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
     rule: Weak<PortFwEntry>,
@@ -139,18 +90,6 @@ impl Display for PortFwAction {
         match self {
             PortFwAction::DstNat => write!(f, "dnat"),
             PortFwAction::SrcNat => write!(f, "snat"),
-        }
-    }
-}
-
-impl Display for PortFwFlowStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PortFwFlowStatus::OneWay => write!(f, "oneway"),
-            PortFwFlowStatus::TwoWay => write!(f, "twoway"),
-            PortFwFlowStatus::Established => write!(f, "established"),
-            PortFwFlowStatus::Reset => write!(f, "reset"),
-            PortFwFlowStatus::Closing => write!(f, "closing"),
         }
     }
 }
@@ -290,56 +229,11 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
 }
 
 #[allow(unused)]
+#[cfg(test)]
 pub(crate) fn get_portfw_state_flow_status<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
 ) -> Option<PortFwFlowStatus> {
     get_packet_port_fw_state(packet).map(|state| state.status.load())
-}
-
-fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus {
-    let status = pfw_state.status.load();
-    match pfw_state.action {
-        PortFwAction::DstNat => match status {
-            PortFwFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => PortFwFlowStatus::Established,
-            other if tcp.rst() => PortFwFlowStatus::Reset,
-            other if tcp.fin() => PortFwFlowStatus::Closing,
-            other => other,
-        },
-        PortFwAction::SrcNat => match status {
-            PortFwFlowStatus::OneWay if tcp.syn() && tcp.ack() => PortFwFlowStatus::TwoWay,
-            other if tcp.rst() => PortFwFlowStatus::Reset,
-            other if tcp.fin() => PortFwFlowStatus::Closing,
-            other => other,
-        },
-    }
-}
-fn next_flow_status_non_tcp(pfw_state: &PortFwState) -> PortFwFlowStatus {
-    let status = pfw_state.status.load();
-    match pfw_state.action {
-        PortFwAction::DstNat => match status {
-            PortFwFlowStatus::TwoWay => PortFwFlowStatus::Established,
-            other => other,
-        },
-        PortFwAction::SrcNat => match status {
-            PortFwFlowStatus::OneWay => PortFwFlowStatus::TwoWay,
-            other => other,
-        },
-    }
-}
-
-/// Compute the next `PortFwFlowStatus` of a flow, given the current, the received packet and
-/// the direction, which is implicit in the `PortFwAction`:
-///     `DstNat` is the forward path and
-///     `SrcNat` the reverse path.
-fn next_flow_status<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
-    pfw_state: &PortFwState,
-) -> PortFwFlowStatus {
-    if let Some(tcp) = packet.try_tcp() {
-        next_flow_status_tcp(pfw_state, tcp)
-    } else {
-        next_flow_status_non_tcp(pfw_state)
-    }
 }
 
 /// Invalidate the flow that this packet matched and the related one if any.
