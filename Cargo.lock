@@ -1268,6 +1268,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-common"
+version = "0.13.0"
+
+[[package]]
 name = "dataplane-concurrency"
 version = "0.13.0"
 dependencies = [
