@@ -49,31 +49,32 @@ where
 pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
-    let nattablesw = NatTablesWriter::new();
-    let natallocatorw = NatAllocatorWriter::new();
-    let flowfiltertablesw = FlowFilterTableWriter::new();
-    let router = Router::new(params)?;
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
-    let portfw_w = PortFwTableWriter::new();
-
-    // Allocate the shared VPC stats store (returns Arc<VpcStatsStore>)
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
 
     // Build stats collector + writer, wiring the same store instance in
     // Also returns stats store handle for gRPC server access
-    let (stats, writer, vpc_stats_store) =
+    let (stats, stats_w, vpc_stats_store) =
         StatsCollector::new_with_store(vpcmapw.get_reader(), vpc_stats_store.clone());
 
+    // create entities shared by management and data-path NFs
     let flow_table = Arc::new(FlowTable::default());
-
-    let iftr_factory = router.get_iftabler_factory();
-    let fibtr_factory = router.get_fibtr_factory();
+    let flowfiltertablesw = FlowFilterTableWriter::new();
     let flowfiltertablesr_factory = flowfiltertablesw.get_reader_factory();
-    let atabler_factory = router.get_atabler_factory();
+    let nattablesw = NatTablesWriter::new();
+    let natallocatorw = NatAllocatorWriter::new();
     let nattabler_factory = nattablesw.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
+    let portfw_w = PortFwTableWriter::new();
     let portfw_factory = portfw_w.reader().factory();
 
+    // create router
+    let router = Router::new(params)?;
+    let iftr_factory = router.get_iftabler_factory();
+    let fibtr_factory = router.get_fibtr_factory();
+    let atabler_factory = router.get_atabler_factory();
+
+    // create pipeline builder
     let pipeline_builder = move || {
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
@@ -87,7 +88,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             natallocator_factory.handle(),
         );
         let pktdump = PacketDumper::new("pipeline-end", true, None);
-        let stats_stage = Stats::new("stats", writer.clone());
+        let stats_stage = Stats::new("stats", stats_w.clone());
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
         let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
         let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
