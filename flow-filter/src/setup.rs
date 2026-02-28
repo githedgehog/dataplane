@@ -704,6 +704,72 @@ mod tests {
         );
     }
 
+    // Regression test: when a prefix is split against one overlap entry, the resulting fragments
+    // must be re-checked against the remaining overlap entries. Currently the code marks
+    // non-overlapping fragments as `Single` without further comparison, which is incorrect when a
+    // fragment matches another overlap.
+    //
+    // Setup (the concrete example from the bug analysis):
+    //   -> VPC A (vpcd 100) exposes 10.0.0.0/24
+    //   -> Overlap 1: 10.0.0.0/25   (A overlaps with B)
+    //   -> Overlap 2: 10.0.0.128/25 (A overlaps with C)
+    //
+    // After splitting 10.0.0.0/24 against overlap 1 (10.0.0.0/25):
+    //   -> 10.0.0.0/25   -> MultipleMatches (correct)
+    //   -> 10.0.0.128/25 -> should be MultipleMatches (matches overlap 2),
+    //                       but the code currently produces Single (BUG)
+    #[test]
+    fn test_get_split_prefixes_for_manifest_with_two_overlaps() {
+        let vpcd_a = vpcd(100);
+
+        // VPC A exposes 10.0.0.0/24
+        let manifest = VpcManifest {
+            name: "manifest_a".to_string(),
+            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        };
+
+        let mut overlaps = BTreeSet::new();
+        // Overlap 1: 10.0.0.0/25 is shared between A and B
+        overlaps.insert(PrefixWithOptionalPorts::new(
+            Prefix::from("10.0.0.0/25"),
+            None,
+        ));
+        // Overlap 2: 10.0.0.128/25 is shared between A and C
+        overlaps.insert(PrefixWithOptionalPorts::new(
+            Prefix::from("10.0.0.128/25"),
+            None,
+        ));
+
+        let mut result =
+            get_split_prefixes_for_manifest(&manifest, &vpcd_a, |expose| &expose.ips, overlaps);
+        result.sort_by_key(|(prefix, _, _)| *prefix);
+
+        assert_eq!(result.len(), 2, "expected two fragments after splitting");
+
+        // First fragment: 10.0.0.0/25 - overlaps with B, must be MultipleMatches
+        assert_eq!(
+            result[0].0,
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None)
+        );
+        assert!(
+            matches!(result[0].1, VpcdLookupResult::MultipleMatches),
+            "10.0.0.0/25 should be MultipleMatches (overlap with B)"
+        );
+
+        // Second fragment: 10.0.0.128/25 - overlaps with C, must ALSO be
+        // MultipleMatches. This is the assertion that currently fails due to
+        // the bug: the code produces Single instead.
+        assert_eq!(
+            result[1].0,
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None)
+        );
+        assert!(
+            matches!(result[1].1, VpcdLookupResult::MultipleMatches),
+            "10.0.0.128/25 should be MultipleMatches (overlap with C), \
+             but got Single due to missing re-check of split fragments"
+        );
+    }
+
     #[test]
     fn test_add_peering_no_overlap() {
         let mut vpc_table = VpcTable::new();
