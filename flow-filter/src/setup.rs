@@ -319,42 +319,48 @@ fn get_split_prefixes_for_manifest(
     let mut prefixes_with_vpcd = Vec::new();
     for expose in &manifest.exposes {
         let nat_req = get_nat_requirement(expose);
-        'next_prefix: for prefix in get_ips(expose) {
-            for overlap_prefix in overlaps.iter() {
-                if overlap_prefix.covers(prefix) {
-                    prefixes_with_vpcd.push((*prefix, VpcdLookupResult::MultipleMatches, nat_req));
-                    continue 'next_prefix;
-                } else if prefix.covers(overlap_prefix) {
-                    // The current prefix partially overlaps with some other prefixes (of which
-                    // overlap_prefix is the union of all intersections with the current prefix), so
-                    // we need to split the current prefix into parts that don't have partial
-                    // overlap with the other prefixes
-                    prefixes_with_vpcd.extend(
-                        split_overlapping(prefix, overlap_prefix)
-                            .into_iter()
-                            .map(|p| {
-                                (
+        for prefix in get_ips(expose) {
+            // Use a stack so that fragments produced by splitting are re-checked against all
+            // overlap entries before being considered as not overlapping and pushed to
+            // prefixes_with_vpcd.
+            let mut fragments_to_check = vec![*prefix];
+            'next_fragment: while let Some(fragment) = fragments_to_check.pop() {
+                for overlap_prefix in overlaps.iter() {
+                    if overlap_prefix.covers(&fragment) {
+                        prefixes_with_vpcd.push((
+                            fragment,
+                            VpcdLookupResult::MultipleMatches,
+                            nat_req,
+                        ));
+                        continue 'next_fragment;
+                    } else if fragment.covers(overlap_prefix) {
+                        // The current fragment partially overlaps with some other prefixes (of
+                        // which overlap_prefix is the union of all intersections with the current
+                        // fragment), so we need to split it into parts that don't have partial
+                        // overlap with the other prefixes.
+                        for p in split_overlapping(&fragment, overlap_prefix) {
+                            if p == *overlap_prefix {
+                                // Multiple destination VPC matches for the overlapping section
+                                prefixes_with_vpcd.push((
                                     p,
-                                    if p == *overlap_prefix {
-                                        // Multiple destination VPC matches for the overlapping section
-                                        VpcdLookupResult::MultipleMatches
-                                    } else {
-                                        // Single destination VPC match for the other sections
-                                        VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None))
-                                    },
+                                    VpcdLookupResult::MultipleMatches,
                                     nat_req,
-                                )
-                            }),
-                    );
-                    continue 'next_prefix;
+                                ));
+                            } else {
+                                // Re-check this sub-fragment against remaining overlaps
+                                fragments_to_check.push(p);
+                            }
+                        }
+                        continue 'next_fragment;
+                    }
                 }
+                // We found no overlap, add the prefix with the single associated destination VPC
+                prefixes_with_vpcd.push((
+                    fragment,
+                    VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None)),
+                    nat_req,
+                ));
             }
-            // We found no overlap, just add the prefix with the single associated destination VPC
-            prefixes_with_vpcd.push((
-                *prefix,
-                VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None)),
-                nat_req,
-            ));
         }
     }
     prefixes_with_vpcd
@@ -401,6 +407,13 @@ mod tests {
     use net::vxlan::Vni;
     use std::collections::BTreeSet;
     use std::ops::Bound;
+
+    fn vni(id: u32) -> Vni {
+        Vni::new_checked(id).unwrap()
+    }
+    fn vpcd(id: u32) -> VpcDiscriminant {
+        VpcDiscriminant::VNI(vni(id))
+    }
 
     #[test]
     fn test_split_overlapping_basic() {
@@ -636,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_get_split_prefixes_for_manifest_no_overlap() {
-        let vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+        let vpcd = vpcd(100);
 
         let manifest = VpcManifest {
             name: "manifest".to_string(),
@@ -662,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_get_split_prefixes_for_manifest_with_overlap() {
-        let vpcd1 = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+        let vpcd = vpcd(100);
 
         let manifest = VpcManifest {
             name: "manifest".to_string(),
@@ -677,7 +690,7 @@ mod tests {
         ));
 
         let mut result =
-            get_split_prefixes_for_manifest(&manifest, &vpcd1, |expose| &expose.ips, overlaps);
+            get_split_prefixes_for_manifest(&manifest, &vpcd, |expose| &expose.ips, overlaps);
         result.sort_by_key(|(prefix, _, _)| *prefix);
 
         // Should split into multiple prefixes
@@ -693,7 +706,67 @@ mod tests {
         );
         assert_eq!(
             result[1].1,
-            VpcdLookupResult::Single(RemoteData::new(vpcd1, None, None))
+            VpcdLookupResult::Single(RemoteData::new(vpcd, None, None))
+        );
+    }
+
+    // Check that when a prefix is split against multiple overlaps, the resulting fragments are
+    // checked against all overlaps.
+    //
+    // Setup:
+    //   -> VPC A (vpcd 100) exposes 10.0.0.0/24
+    //   -> Overlap 1: 10.0.0.0/25   (A overlaps with B)
+    //   -> Overlap 2: 10.0.0.128/25 (A overlaps with C)
+    //
+    // After splitting 10.0.0.0/24 against overlap 1 (10.0.0.0/25):
+    //   -> 10.0.0.0/25   -> MultipleMatches
+    //   -> 10.0.0.128/25 -> MultipleMatches
+    #[test]
+    fn test_get_split_prefixes_for_manifest_with_two_overlaps() {
+        let vpcd_a = vpcd(100);
+
+        // VPC A exposes 10.0.0.0/24
+        let manifest = VpcManifest {
+            name: "manifest_a".to_string(),
+            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        };
+
+        let mut overlaps = BTreeSet::new();
+        // Overlap 1: 10.0.0.0/25 is shared between A and B
+        overlaps.insert(PrefixWithOptionalPorts::new(
+            Prefix::from("10.0.0.0/25"),
+            None,
+        ));
+        // Overlap 2: 10.0.0.128/25 is shared between A and C
+        overlaps.insert(PrefixWithOptionalPorts::new(
+            Prefix::from("10.0.0.128/25"),
+            None,
+        ));
+
+        let mut result =
+            get_split_prefixes_for_manifest(&manifest, &vpcd_a, |expose| &expose.ips, overlaps);
+        result.sort_by_key(|(prefix, _, _)| *prefix);
+
+        assert_eq!(result.len(), 2, "expected two fragments after splitting");
+
+        // First fragment: 10.0.0.0/25 - overlaps with B, must be MultipleMatches
+        assert_eq!(
+            result[0].0,
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.0/25"), None)
+        );
+        assert!(
+            matches!(result[0].1, VpcdLookupResult::MultipleMatches),
+            "10.0.0.0/25 should be MultipleMatches (overlap with B)"
+        );
+
+        // Second fragment: 10.0.0.128/25 - overlaps with C, must also be MultipleMatches.
+        assert_eq!(
+            result[1].0,
+            PrefixWithOptionalPorts::new(Prefix::from("10.0.0.128/25"), None)
+        );
+        assert!(
+            matches!(result[1].1, VpcdLookupResult::MultipleMatches),
+            "10.0.0.128/25 should be MultipleMatches (overlap with C)"
         );
     }
 
@@ -701,8 +774,8 @@ mod tests {
     fn test_add_peering_no_overlap() {
         let mut vpc_table = VpcTable::new();
 
-        let vni1 = Vni::new_checked(100).unwrap();
-        let vni2 = Vni::new_checked(200).unwrap();
+        let vni1 = vni(100);
+        let vni2 = vni(200);
 
         let mut vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
         let vpc2 = Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap();
@@ -734,7 +807,7 @@ mod tests {
             .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
             .unwrap();
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap();
 
@@ -742,7 +815,7 @@ mod tests {
         assert_eq!(
             dst_data,
             Some(VpcdLookupResult::Single(RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
+                vni2.into(),
                 None,
                 None
             )))
@@ -753,9 +826,9 @@ mod tests {
     fn test_process_peering_with_overlap() {
         let mut vpc_table = VpcTable::new();
 
-        let vni1 = Vni::new_checked(100).unwrap();
-        let vni2 = Vni::new_checked(200).unwrap();
-        let vni3 = Vni::new_checked(300).unwrap();
+        let vni1 = vni(100);
+        let vni2 = vni(200);
+        let vni3 = vni(300);
 
         let mut vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
         let vpc2 = Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap();
@@ -804,14 +877,14 @@ mod tests {
             .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
             .unwrap();
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap(); // In overlapping segment
 
         let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
         assert_eq!(dst_vpcd, Some(VpcdLookupResult::MultipleMatches));
 
-        let src_vpcd = VpcDiscriminant::VNI(vni1);
+        let src_vpcd = vni1.into();
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.129".parse().unwrap(); // Not in overlapping segment
 
@@ -819,7 +892,7 @@ mod tests {
         assert_eq!(
             dst_vpcd,
             Some(VpcdLookupResult::Single(RemoteData::new(
-                VpcDiscriminant::VNI(vni2),
+                vni2.into(),
                 None,
                 None
             )))
