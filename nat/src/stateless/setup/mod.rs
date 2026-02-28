@@ -14,7 +14,7 @@ use crate::stateless::{NatTableValue, NatTables, PerVniTable};
 use config::ConfigError;
 use config::external::overlay::vpc::{Peering, VpcTable};
 use config::external::overlay::vpcpeering::VpcExpose;
-use config::utils::{ConfigUtilError, collapse_prefixes_peering};
+use config::utils::collapse_prefixes_peering;
 use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::vxlan::Vni;
 use std::collections::BTreeSet;
@@ -23,8 +23,6 @@ use std::collections::BTreeSet;
 pub enum NatPeeringError {
     #[error("entry {0} already exists")]
     EntryExists(Prefix),
-    #[error("failed to split prefix {0}")]
-    SplitPrefixError(Prefix),
     #[error("malformed peering")]
     MalformedPeering,
 }
@@ -59,9 +57,7 @@ impl PerVniTable {
         peering: &Peering,
         dst_vni: Vni,
     ) -> Result<(), NatPeeringError> {
-        let new_peering = collapse_prefixes_peering(peering).map_err(|e| match e {
-            ConfigUtilError::SplitPrefixError(prefix) => NatPeeringError::SplitPrefixError(prefix),
-        })?;
+        let new_peering = collapse_prefixes_peering(peering);
 
         new_peering
             .local
