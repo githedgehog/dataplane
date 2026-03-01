@@ -137,9 +137,7 @@ pub(crate) fn setup_forward_flow<Buf: PacketBufferMut>(
     } else {
         unreachable!()
     }
-
-    debug!("Set up flow for port-forwarding;\nkey={flow_key}\ninfo={forward_flow}");
-
+    debug!("Set up FORWARD flow for port-forwarding;\nkey={flow_key}\ninfo={forward_flow}");
     (flow_key, status)
 }
 
@@ -152,8 +150,9 @@ pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
     status: AtomicPortFwFlowStatus,
 ) -> FlowKey {
     // create the flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
-    // We derive the key for the reverse flow from the packet that we already translated.
+    // We derive the key for the reverse flow from the packet that we already destination NATed
     let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
+    let src_vpcd = packet.meta_mut().src_vpcd.unwrap_or_else(|| unreachable!());
     let flow_key = FlowKey::try_from(Uni(&*packet))
         .unwrap_or_else(|_| unreachable!())
         .reverse(Some(dst_vpcd));
@@ -164,13 +163,11 @@ pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
     // set the port forwarding state in the flow
     if let Ok(mut write_guard) = reverse_flow.locked.write() {
         write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
+        write_guard.dst_vpcd = Some(Box::new(src_vpcd));
     } else {
         unreachable!()
     }
-
-    debug!("Set up flow for port-forwarding (reverse);\nkey={flow_key}\ninfo={reverse_flow}");
-
+    debug!("Set up REVERSE flow for port-forwarding;\nkey={flow_key}\ninfo={reverse_flow}");
     flow_key
 }
 
