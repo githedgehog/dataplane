@@ -106,6 +106,11 @@ mod nf_test {
     // build a TCP packet to be port forwarded according to the port-forwarding table
     fn tcp_packet_to_port_forward() -> Packet<TestBuffer> {
         let mut packet = build_test_tcp_ipv4_packet("10.0.0.2", "70.71.72.73", 7777, 3022);
+        packet.try_tcp_mut().unwrap().set_syn(false);
+        packet.try_tcp_mut().unwrap().set_ack(false);
+        packet.try_tcp_mut().unwrap().set_fin(false);
+        packet.try_tcp_mut().unwrap().set_rst(false);
+
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
@@ -115,6 +120,11 @@ mod nf_test {
 
     fn tcp_packet_reverse_reply() -> Packet<TestBuffer> {
         let mut packet = build_test_tcp_ipv4_packet("192.168.1.1", "10.0.0.2", 22, 7777);
+        packet.try_tcp_mut().unwrap().set_syn(false);
+        packet.try_tcp_mut().unwrap().set_ack(false);
+        packet.try_tcp_mut().unwrap().set_fin(false);
+        packet.try_tcp_mut().unwrap().set_rst(false);
+
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
@@ -232,24 +242,17 @@ mod nf_test {
         assert!(output.meta().flow_info.is_none());
     }
 
-    #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_tcp_success() {
-        let ruleset = build_test_port_forwarding_ruleset();
-
-        // build a pipeline with flow lookup + port forwarder
-        let (flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
-
+    fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
         // process TCP SYN packet: entries should be created in both directions
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_syn(true);
-        let output = process_packet(&mut pipeline, packet);
+        packet.try_tcp_mut().unwrap().set_syn(true);
+
+        let output = process_packet(pipeline, packet);
         assert!(!output.is_done());
 
         // process TCP SYN|ACK packet in reverse direction: flow entry should be found. State should become 2way
         let reply = build_reply(&output);
-        let output = process_packet(&mut pipeline, reply);
+        let output = process_packet(pipeline, reply);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(
             get_portfw_state_flow_status(&output),
@@ -258,48 +261,164 @@ mod nf_test {
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_ack(true);
-        tcp.set_syn(false);
-        let output = process_packet(&mut pipeline, packet);
+        packet.try_tcp_mut().unwrap().set_ack(true);
+        let output = process_packet(pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(
             get_portfw_state_flow_status(&output),
             Some(PortFwFlowStatus::Established)
         );
+    }
 
-        // process TCP FIN in reverse direction: flow entry should be found. State should become Closing
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_tcp_establishment() {
+        let ruleset = build_test_port_forwarding_ruleset();
+
+        // build a pipeline with flow lookup + port forwarder
+        let (_flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
+
+        // establish a TCP connection (port-forwarded)
+        establish_tcp_connection(&mut pipeline);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_tcp_close_server() {
+        let ruleset = build_test_port_forwarding_ruleset();
+
+        // build a pipeline with flow lookup + port forwarder
+        let (flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
+
+        // establish a TCP connection (port-forwarded)
+        establish_tcp_connection(&mut pipeline);
+
+        // process TCP FIN in reverse direction: flow entry should be found. State should become SClosing
         let mut packet = tcp_packet_reverse_reply();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_fin(true);
+        packet.try_tcp_mut().unwrap().set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(
             get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::Closing)
+            Some(PortFwFlowStatus::SClosing)
         );
 
         // process TCP FIN ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_ack(true);
-        tcp.set_fin(false);
+        packet.try_tcp_mut().unwrap().set_ack(true).set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(
             get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::Closing)
+            Some(PortFwFlowStatus::LastAck)
         );
 
-        // process TCP ACK in reverse direction: flow entry should be found. State should become Closing
+        // process TCP ACK in reverse direction: flow entry should be found. State should become Closed
         let mut packet = tcp_packet_reverse_reply();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_ack(true);
+        packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(
             get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::Closing)
+            Some(PortFwFlowStatus::Closed)
+        );
+        println!("{flow_table}");
+        assert_eq!(flow_table.len().unwrap(), 2);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_tcp_close_client() {
+        let ruleset = build_test_port_forwarding_ruleset();
+
+        // build a pipeline with flow lookup + port forwarder
+        let (flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
+
+        // establish a TCP connection (port-forwarded)
+        establish_tcp_connection(&mut pipeline);
+
+        // process TCP FIN in reverse direction: flow entry should be found. State should become CClosing
+        let mut packet = tcp_packet_to_port_forward();
+        packet.try_tcp_mut().unwrap().set_fin(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::CClosing)
+        );
+
+        // process TCP FIN ACK packet in reverse direction
+        let mut packet = tcp_packet_reverse_reply();
+        packet.try_tcp_mut().unwrap().set_ack(true).set_fin(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(!output.is_done());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::LastAck)
+        );
+
+        // process TCP ACK in forward direction: flow entry should be found. State should become Closed
+        let mut packet = tcp_packet_reverse_reply();
+        packet.try_tcp_mut().unwrap().set_ack(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::Closed)
+        );
+        println!("{flow_table}");
+        assert_eq!(flow_table.len().unwrap(), 2);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_tcp_half_close_client() {
+        let ruleset = build_test_port_forwarding_ruleset();
+
+        // build a pipeline with flow lookup + port forwarder
+        let (flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
+
+        // establish a TCP connection (port-forwarded)
+        establish_tcp_connection(&mut pipeline);
+
+        // process TCP FIN in forward direction: flow entry should be found. State should become CClosing
+        let mut packet = tcp_packet_to_port_forward();
+        packet.try_tcp_mut().unwrap().set_fin(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::CClosing)
+        );
+
+        // process TCP ACK packet in reverse direction. We assume this ACKs the FIN
+        let mut packet = tcp_packet_reverse_reply();
+        packet.try_tcp_mut().unwrap().set_ack(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(!output.is_done());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::CHalfClose)
+        );
+
+        // process TCP FIN in reverse direction: flow entry should be found. State should become LastAck
+        let mut packet = tcp_packet_reverse_reply();
+        packet.try_tcp_mut().unwrap().set_fin(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::LastAck)
+        );
+
+        // process TCP ACK in forward direction: flow entry should be found. State should become Closed
+        let mut packet = tcp_packet_to_port_forward();
+        packet.try_tcp_mut().unwrap().set_ack(true);
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(
+            get_portfw_state_flow_status(&output),
+            Some(PortFwFlowStatus::Closed)
         );
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
@@ -313,8 +432,7 @@ mod nf_test {
 
         // process TCP SYN packet: entries should be created in both directions
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_syn(true);
+        packet.try_tcp_mut().unwrap().set_syn(true);
         let output = process_packet(&mut pipeline, packet);
 
         // process TCP SYN|ACK packet in reverse direction: flow entry should be found. State should become 2way
@@ -323,9 +441,7 @@ mod nf_test {
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_ack(true);
-        tcp.set_syn(false);
+        packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert_eq!(
             get_portfw_state_flow_status(&output),
@@ -334,9 +450,7 @@ mod nf_test {
 
         // process TCP RST packet in forward direction.
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_rst(true);
-        tcp.set_syn(false);
+        packet.try_tcp_mut().unwrap().set_rst(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert!(get_portfw_state_flow_status(&output).is_none());
@@ -357,16 +471,13 @@ mod nf_test {
 
         // process TCP SYN packet: entries should be created in both directions
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_syn(true);
+        packet.try_tcp_mut().unwrap().set_syn(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
 
         // process TCP SYN|ACK packet in reverse direction: flow entry should be found. State should become 2way
         let mut packet = tcp_packet_reverse_reply();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_syn(true);
-        tcp.set_ack(true);
+        packet.try_tcp_mut().unwrap().set_syn(true).set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(
@@ -376,9 +487,7 @@ mod nf_test {
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_ack(true);
-        tcp.set_syn(false);
+        packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(
@@ -391,10 +500,7 @@ mod nf_test {
         ruleset.remove(0);
         writer.update_table(&ruleset).unwrap();
 
-        let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_ack(false);
-        tcp.set_syn(false);
+        let packet = tcp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
         assert_eq!(output.get_done(), Some(DoneReason::Filtered));
         assert!(get_portfw_state_flow_status(&output).is_none());
@@ -404,10 +510,7 @@ mod nf_test {
         std::thread::sleep(Duration::from_secs(4));
         let _ = pipeline.process(std::iter::empty::<Packet<TestBuffer>>());
 
-        let mut packet = tcp_packet_to_port_forward();
-        let tcp = packet.try_tcp_mut().unwrap();
-        tcp.set_ack(false);
-        tcp.set_syn(false);
+        let packet = tcp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
         assert_eq!(output.get_done(), Some(DoneReason::Filtered));
         assert!(get_portfw_state_flow_status(&output).is_none());

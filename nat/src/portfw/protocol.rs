@@ -24,7 +24,12 @@ pub enum PortFwFlowStatus {
     TwoWay = 1,
     Established = 2,
     Reset = 3,
-    Closing = 4,
+    CClosing = 4,
+    SClosing = 5,
+    CHalfClose = 6,
+    SHalfClose = 7,
+    LastAck = 8,
+    Closed = 9,
 }
 
 impl From<u8> for PortFwFlowStatus {
@@ -34,7 +39,12 @@ impl From<u8> for PortFwFlowStatus {
             1 => PortFwFlowStatus::TwoWay,
             2 => PortFwFlowStatus::Established,
             3 => PortFwFlowStatus::Reset,
-            4 => PortFwFlowStatus::Closing,
+            4 => PortFwFlowStatus::CClosing,
+            5 => PortFwFlowStatus::SClosing,
+            6 => PortFwFlowStatus::CHalfClose,
+            7 => PortFwFlowStatus::SHalfClose,
+            8 => PortFwFlowStatus::LastAck,
+            9 => PortFwFlowStatus::Closed,
             _ => unreachable!(),
         }
     }
@@ -52,7 +62,12 @@ impl Display for PortFwFlowStatus {
             PortFwFlowStatus::TwoWay => write!(f, "twoway"),
             PortFwFlowStatus::Established => write!(f, "established"),
             PortFwFlowStatus::Reset => write!(f, "reset"),
-            PortFwFlowStatus::Closing => write!(f, "closing"),
+            PortFwFlowStatus::CClosing => write!(f, "client-closing"),
+            PortFwFlowStatus::SClosing => write!(f, "server-closing"),
+            PortFwFlowStatus::CHalfClose => write!(f, "client-half-close"),
+            PortFwFlowStatus::SHalfClose => write!(f, "server-half-close"),
+            PortFwFlowStatus::LastAck => write!(f, "last-ack"),
+            PortFwFlowStatus::Closed => write!(f, "closed"),
         }
     }
 }
@@ -62,14 +77,23 @@ fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus 
     match pfw_state.action {
         PortFwAction::DstNat => match status {
             PortFwFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => PortFwFlowStatus::Established,
+            PortFwFlowStatus::Established if tcp.fin() => PortFwFlowStatus::CClosing,
+            PortFwFlowStatus::SClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::SHalfClose,
+            PortFwFlowStatus::SClosing if tcp.fin() && tcp.ack() => PortFwFlowStatus::LastAck,
+            PortFwFlowStatus::SHalfClose if tcp.fin() => PortFwFlowStatus::LastAck,
+            PortFwFlowStatus::LastAck if tcp.ack() => PortFwFlowStatus::Closed,
             other if tcp.rst() => PortFwFlowStatus::Reset,
-            other if tcp.fin() => PortFwFlowStatus::Closing,
             other => other,
         },
         PortFwAction::SrcNat => match status {
             PortFwFlowStatus::OneWay if tcp.syn() && tcp.ack() => PortFwFlowStatus::TwoWay,
+            PortFwFlowStatus::Established if tcp.fin() => PortFwFlowStatus::SClosing,
+            PortFwFlowStatus::CClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::CHalfClose,
+            PortFwFlowStatus::CClosing if tcp.fin() && tcp.ack() => PortFwFlowStatus::LastAck,
+            PortFwFlowStatus::CClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::CHalfClose,
+            PortFwFlowStatus::CHalfClose if tcp.fin() => PortFwFlowStatus::LastAck,
+            PortFwFlowStatus::LastAck if tcp.ack() => PortFwFlowStatus::Closed,
             other if tcp.rst() => PortFwFlowStatus::Reset,
-            other if tcp.fin() => PortFwFlowStatus::Closing,
             other => other,
         },
     }
