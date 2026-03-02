@@ -240,11 +240,13 @@ impl FlowTable {
         // If the common case is that the entry has no other references here,
         // then this operation should be cheap, though not free due to the
         // dereference of the value and the lock acquisition.
-        #[allow(unused_must_use)]
         let expires_at = v.expires_at();
         if now >= &expires_at {
             debug!("decide_expiry: Reap for flow key {k:?} with expires_at {expires_at:?}");
             PQAction::Reap
+        } else if v.status() == FlowStatus::Cancelled {
+            debug!("decide_expiry: Cancel for flow key {k:?}, which was cancelled");
+            PQAction::Cancel
         } else {
             debug!("decide_expiry: Update for flow key {k:?} with time {expires_at:?}");
             PQAction::Update(expires_at)

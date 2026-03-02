@@ -11,7 +11,7 @@ use concurrency::sync::RwLock;
 // We aren't using the hash table feature right now, though we may want it later.
 use priority_queue::PriorityQueue;
 use thread_local::ThreadLocal;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use tracectl::trace_target;
 trace_target!(
@@ -19,6 +19,9 @@ trace_target!(
     LevelFilter::INFO,
     &["flow-expiration", "pipeline"]
 );
+
+// this could be configurable at some point
+pub(crate) const AGRESSIVE_REAP_THRESHOLD: usize = 1_000_000;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +93,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PQAction {
     Reap,
+    Cancel,
     Update(Instant),
 }
 
@@ -207,6 +211,29 @@ where
         all_reaped
     }
 
+    fn aggressive_reap(
+        pq: &mut concurrency::sync::RwLockWriteGuard<
+            PriorityQueue<Entry<K, V>, Priority, RandomState>,
+        >,
+        now: &Instant,
+        on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
+        on_reaped: impl Fn(&K, V),
+    ) -> Vec<K> {
+        let reaped: Vec<_> = pq
+            .extract_if(|entry, _prio| {
+                let action = on_expired(now, &entry.key, &entry.value);
+                action == PQAction::Reap || action == PQAction::Cancel
+            })
+            .map(|(entry, _prio)| {
+                let key = entry.key;
+                on_reaped(&key, entry.value);
+                key
+            })
+            .collect();
+        debug!("Reaped {} flows", reaped.len());
+        reaped
+    }
+
     fn reap_expired_locked_with_time(
         pq: &mut concurrency::sync::RwLockWriteGuard<
             PriorityQueue<Entry<K, V>, Priority, RandomState>,
@@ -215,12 +242,19 @@ where
         on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
         on_reaped: impl Fn(&K, V),
     ) -> Vec<K> {
+        let len = pq.len();
+        if len > AGRESSIVE_REAP_THRESHOLD {
+            warn!("The number of flows ({len}) exceeds {AGRESSIVE_REAP_THRESHOLD}. Reaping...");
+            return Self::aggressive_reap(pq, now, on_expired, on_reaped);
+        }
+
         let mut expired = Vec::new();
         debug!(
             "Reaping expired flows at {:?}, queue size {}",
             now,
             pq.len()
         );
+
         while let Some((_, expires_at)) = pq.peek() {
             if *now >= expires_at.0 {
                 let ret = pq.pop();
@@ -250,7 +284,7 @@ where
         let mut reaped = vec![];
         for (entry, _) in expired {
             match on_expired(now, &entry.key, &entry.value) {
-                PQAction::Reap => {
+                PQAction::Reap | PQAction::Cancel => {
                     // entry.value is consumed here, but the key is kept so that
                     // the corresponding flow-entry, pointing to a dropped flow-info
                     // can be removed from the flow-table.

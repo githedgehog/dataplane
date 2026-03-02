@@ -55,6 +55,7 @@ mod test {
 
     use crate::flow_table::FlowKey;
     use crate::flow_table::nf_expirations::ExpirationsNF;
+    use crate::flow_table::thread_local_pq::AGRESSIVE_REAP_THRESHOLD;
     use crate::flow_table::{FlowTable, IpProtoKey, TcpProtoKey};
 
     #[test]
@@ -82,5 +83,57 @@ mod test {
         // call process() on the NF (no packet is actually needed). NF should expire entry
         let _output_iter = expirations_nf.process(std::iter::empty::<Packet<TestBuffer>>());
         assert!(flow_table.lookup(&flow_key).is_none());
+    }
+
+    #[test]
+    fn test_aggressive_expiration() {
+        let flow_table = Arc::new(FlowTable::default());
+        let mut expirations_nf = ExpirationsNF::new(flow_table.clone());
+        let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+        let src_ip = "1.2.3.4".parse::<UnicastIpAddr>().unwrap();
+        let dst_ip = "5.6.7.8".parse::<IpAddr>().unwrap();
+
+        // create > AGRESSIVE_REAP_THRESHOLD flows
+        for src_port in 1..u16::MAX {
+            let src_port = TcpPort::new_checked(src_port).unwrap();
+            for dst_port in
+                1..=u16::try_from(AGRESSIVE_REAP_THRESHOLD.div_ceil(u16::MAX as usize)).unwrap()
+            {
+                let dst_port = TcpPort::new_checked(dst_port).unwrap();
+                let flow_key = FlowKey::uni(
+                    Some(src_vpcd),
+                    src_ip.into(),
+                    dst_ip,
+                    IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
+                );
+                let flow_info =
+                    FlowInfo::new(Instant::now().checked_add(Duration::from_mins(10)).unwrap());
+                flow_table.insert(flow_key, flow_info);
+            }
+        }
+        // check we inserted more flows than the threshold
+        assert!(flow_table.len().unwrap() > AGRESSIVE_REAP_THRESHOLD);
+
+        // expire: no flow should be reaped because all are Active
+        let _: Vec<_> = expirations_nf
+            .process(std::iter::empty::<Packet<TestBuffer>>())
+            .collect();
+        assert!(flow_table.len().unwrap() > AGRESSIVE_REAP_THRESHOLD);
+
+        // pretend that all flows -but one- get Cancelled
+        for (num, flow_info) in flow_table.table.read().unwrap().iter().enumerate() {
+            if num != 13 {
+                flow_info
+                    .upgrade()
+                    .unwrap()
+                    .update_status(flow_info::FlowStatus::Cancelled);
+            }
+        }
+
+        // reap again, only one flow should be there
+        let _: Vec<_> = expirations_nf
+            .process(std::iter::empty::<Packet<TestBuffer>>())
+            .collect();
+        assert_eq!(flow_table.len().unwrap(), 1);
     }
 }
