@@ -10,6 +10,9 @@ pub fn check_private_prefixes_dont_overlap(
     expose_left: &VpcExpose,
     expose_right: &VpcExpose,
 ) -> Result<(), ConfigError> {
+    if port_forwarding_with_distinct_l4_protocols(expose_left, expose_right) {
+        return Ok(());
+    }
     check_prefixes_dont_overlap(
         &expose_left.ips,
         &expose_left.nots,
@@ -29,12 +32,33 @@ pub fn check_public_prefixes_dont_overlap(
     expose_left: &VpcExpose,
     expose_right: &VpcExpose,
 ) -> Result<(), ConfigError> {
+    if port_forwarding_with_distinct_l4_protocols(expose_left, expose_right) {
+        return Ok(());
+    }
     check_prefixes_dont_overlap(
         expose_left.public_ips(),
         expose_left.public_excludes(),
         expose_right.public_ips(),
         expose_right.public_excludes(),
     )
+}
+
+// If the two expose blocks have port fortwarding set up, one for TCP and one for UDP, then there is
+// no overlap.
+fn port_forwarding_with_distinct_l4_protocols(
+    expose_left: &VpcExpose,
+    expose_right: &VpcExpose,
+) -> bool {
+    if expose_left.has_port_forwarding()
+        && expose_right.has_port_forwarding()
+        && let Some(nat_left) = expose_left.nat.as_ref()
+        && let Some(nat_right) = expose_right.nat.as_ref()
+        && nat_left.proto.intersection(&nat_right.proto).is_none()
+    {
+        true
+    } else {
+        false
+    }
 }
 
 // Validate that two sets of prefixes, with their exclusion prefixes applied, don't overlap
