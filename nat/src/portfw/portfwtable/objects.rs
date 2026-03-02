@@ -46,8 +46,19 @@ impl PartialEq for PortFwEntry {
 }
 
 impl PortFwEntry {
-    pub const ESTABLISHED_TIMEOUT: Duration = Duration::from_mins(3);
-    pub const INITIAL_TIMEOUT: Duration = Duration::from_secs(3);
+    pub const DEFAULT_INITIAL_TOUT: Duration = Duration::from_secs(3);
+    pub const DEFAULT_ESTABLISHED_TOUT_TCP: Duration = Duration::from_mins(30);
+    pub const DEFAULT_ESTABLISHED_TOUT_UDP: Duration = Duration::from_secs(30);
+
+    /// Provide the default established timeout for flows in port-forwarding,
+    /// according to protocol
+    fn default_established_timeout(proto: NextHeader) -> Duration {
+        match proto {
+            NextHeader::TCP => PortFwEntry::DEFAULT_ESTABLISHED_TOUT_TCP,
+            NextHeader::UDP => PortFwEntry::DEFAULT_ESTABLISHED_TOUT_UDP,
+            _ => unreachable!(),
+        }
+    }
 
     /// Create a port-forwarding rule
     ///
@@ -75,12 +86,12 @@ impl PortFwEntry {
             int_ports: PortRange::new(dst_ports.0, dst_ports.1)?,
             init_timeout: Arc::from(AtomicU64::new(
                 init_timeout
-                    .unwrap_or(PortFwEntry::INITIAL_TIMEOUT)
+                    .unwrap_or(PortFwEntry::DEFAULT_INITIAL_TOUT)
                     .as_secs(),
             )),
             estab_timeout: Arc::from(AtomicU64::new(
                 estab_timeout
-                    .unwrap_or(PortFwEntry::ESTABLISHED_TIMEOUT)
+                    .unwrap_or(Self::default_established_timeout(key.proto))
                     .as_secs(),
             )),
         };
