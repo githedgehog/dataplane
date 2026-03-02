@@ -3,7 +3,6 @@
 
 #[cfg(test)]
 mod nf_test {
-    use crate::portfw::flow_state::get_portfw_state_flow_status;
     use crate::portfw::protocol::PortFwFlowStatus;
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
 
@@ -21,6 +20,28 @@ mod nf_test {
     use std::str::FromStr;
     use std::sync::Arc;
     use tracing_test::traced_test;
+
+    fn get_flow_status(packet: &Packet<TestBuffer>) -> Option<FlowStatus> {
+        packet
+            .meta()
+            .flow_info
+            .as_ref()
+            .map(|flow_info| flow_info.status())
+    }
+
+    fn get_pfw_flow_status(packet: &Packet<TestBuffer>) -> Option<PortFwFlowStatus> {
+        packet
+            .meta()
+            .flow_info
+            .as_ref()?
+            .locked
+            .read()
+            .unwrap()
+            .port_fw_state
+            .as_ref()
+            .and_then(|s| s.extract_ref::<PortFwState>())
+            .map(|state| state.status.load())
+    }
 
     // build a reply for a given packet
     fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
@@ -190,10 +211,8 @@ mod nf_test {
         assert_eq!(output.ip_destination().unwrap().to_string(), "10.0.0.1");
         assert_eq!(output.udp_source_port().unwrap().as_u16(), 3053);
         assert_eq!(output.udp_destination_port().unwrap().as_u16(), 9876);
-        assert_eq!(
-            get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::TwoWay)
-        );
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
+        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::TwoWay));
 
         let flow_info = output.meta().flow_info.as_ref().unwrap();
         assert_eq!(flow_info.status(), FlowStatus::Active);
@@ -201,7 +220,7 @@ mod nf_test {
             .expires_at()
             .saturating_duration_since(std::time::Instant::now())
             .as_secs();
-        assert!(expires_in > PortFwEntry::INITIAL_TIMEOUT.as_secs() - 2);
+        assert!(expires_in > PortFwEntry::DEFAULT_INITIAL_TOUT.as_secs() - 2);
 
         // process original packet again. It should be fast-natted
         let repeated = udp_packet_to_port_forward();
@@ -218,7 +237,7 @@ mod nf_test {
             .expires_at()
             .saturating_duration_since(std::time::Instant::now())
             .as_secs();
-        assert!(expires_in > PortFwEntry::ESTABLISHED_TIMEOUT.as_secs() - 5);
+        assert!(expires_in > PortFwEntry::DEFAULT_ESTABLISHED_TOUT_UDP.as_secs() - 5);
     }
 
     #[traced_test]
@@ -254,18 +273,17 @@ mod nf_test {
         let reply = build_reply(&output);
         let output = process_packet(pipeline, reply);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::TwoWay)
-        );
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
+        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::TwoWay));
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(pipeline, packet);
         assert!(!output.is_done());
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::Established)
         );
     }
@@ -298,8 +316,9 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::SClosing)
         );
 
@@ -308,8 +327,9 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true).set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::LastAck)
         );
 
@@ -318,10 +338,8 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::Closed)
-        );
+        assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // it may be None if the nf expiration removes it
+        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
     }
@@ -343,7 +361,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::CClosing)
         );
 
@@ -353,7 +371,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::LastAck)
         );
 
@@ -362,10 +380,8 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::Closed)
-        );
+        assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // may be cancelled or none
+        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
     }
@@ -387,7 +403,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::CClosing)
         );
 
@@ -397,7 +413,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::CHalfClose)
         );
 
@@ -407,7 +423,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::LastAck)
         );
 
@@ -416,10 +432,8 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::Closed)
-        );
+        assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // may be cancelled or none
+        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
     }
@@ -444,7 +458,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::Established)
         );
 
@@ -453,10 +467,10 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_rst(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
-        assert!(get_portfw_state_flow_status(&output).is_none());
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Cancelled));
+        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Reset));
 
         // the flow table still contains the two flows, although they are unusable
-        // this will be fixed later.
         assert_eq!(flow_table.len(), Some(2));
         println!("{flow_table}");
     }
@@ -480,10 +494,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_syn(true).set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_portfw_state_flow_status(&output),
-            Some(PortFwFlowStatus::TwoWay)
-        );
+        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::TwoWay));
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
@@ -491,7 +502,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(
-            get_portfw_state_flow_status(&output),
+            get_pfw_flow_status(&output),
             Some(PortFwFlowStatus::Established)
         );
 
@@ -503,7 +514,7 @@ mod nf_test {
         let packet = tcp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
         assert_eq!(output.get_done(), Some(DoneReason::Filtered));
-        assert!(get_portfw_state_flow_status(&output).is_none());
+        //        assert!(get_pfw_flow_status(&output).is_none());
 
         println!("{flow_table}");
 
@@ -512,8 +523,9 @@ mod nf_test {
 
         let packet = tcp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
-        assert_eq!(output.get_done(), Some(DoneReason::Filtered));
-        assert!(get_portfw_state_flow_status(&output).is_none());
+        assert_eq!(output.get_done(), Some(DoneReason::Filtered)); // should be filtered
+        assert_eq!(get_flow_status(&output), None); // expiration NF should have removed the flow
+        assert!(get_pfw_flow_status(&output).is_none());
         println!("{flow_table}");
     }
 

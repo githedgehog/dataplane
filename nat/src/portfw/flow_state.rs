@@ -225,14 +225,6 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
     Some(state.clone())
 }
 
-#[allow(unused)]
-#[cfg(test)]
-pub(crate) fn get_portfw_state_flow_status<Buf: PacketBufferMut>(
-    packet: &Packet<Buf>,
-) -> Option<PortFwFlowStatus> {
-    get_packet_port_fw_state(packet).map(|state| state.status.load())
-}
-
 /// Invalidate the flow that this packet matched and the related one if any.
 fn invalidate_flow_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
     let Some(flow_info) = packet.meta().flow_info.as_ref() else {
