@@ -43,6 +43,20 @@ mod nf_test {
             .map(|state| state.status.load())
     }
 
+    fn get_pfw_flow_state_rule(packet: &Packet<TestBuffer>) -> Option<Arc<PortFwEntry>> {
+        packet
+            .meta()
+            .flow_info
+            .as_ref()?
+            .locked
+            .read()
+            .unwrap()
+            .port_fw_state
+            .as_ref()
+            .and_then(|s| s.extract_ref::<PortFwState>())
+            .and_then(|state| state.rule.upgrade())
+    }
+
     // build a reply for a given packet
     fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         let src_vpcd = packet.meta().src_vpcd;
@@ -682,6 +696,127 @@ mod nf_test {
         let packet = udp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
         assert!(hit_port_fw_state_invalid(&output));
+
+        println!("{flow_table}");
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_compatible_rule_updates_preserves_flows() {
+        // check that, when updating a rule, existing flows remain if the new rule would allow them
+
+        // build rule
+        let entry = PortFwEntry::new(
+            PortFwKey::new(
+                VpcDiscriminant::VNI(2000.try_into().unwrap()),
+                NextHeader::TCP,
+            ),
+            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            Prefix::from_str("70.71.72.0/24").unwrap(),
+            Prefix::from_str("192.168.1.0/24").unwrap(),
+            (3010, 3050),
+            (10, 50),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // create pipeline with port-forwarder
+        let (flow_table, mut pipeline, mut writer) = setup_pipeline(&[entry]);
+
+        // establish a TCP connection (port-forwarded). This should succeed and 2 flows be created
+        establish_tcp_connection(&mut pipeline);
+        assert_eq!(flow_table.len(), Some(2));
+
+        // update the rule to include the previous one
+        let entry = PortFwEntry::new(
+            PortFwKey::new(
+                VpcDiscriminant::VNI(2000.try_into().unwrap()),
+                NextHeader::TCP,
+            ),
+            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            Prefix::from_str("70.71.72.73/32").unwrap(),
+            Prefix::from_str("192.168.1.73/32").unwrap(),
+            (3022, 3023),
+            (22, 23),
+            None,
+            None,
+        )
+        .unwrap();
+        writer.update_table(std::slice::from_ref(&entry)).unwrap();
+
+        // send a new packet in forward path. Flow entry remains Active and flow status is still Established
+        let packet = tcp_packet_to_port_forward();
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
+        assert_eq!(
+            get_pfw_flow_status(&output),
+            Some(PortFwFlowStatus::Established)
+        );
+        let rule_referenced = get_pfw_flow_state_rule(&output);
+        assert_eq!(rule_referenced.as_ref().unwrap().as_ref(), &entry);
+
+        println!("{flow_table}");
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_nf_port_forwarding_incompatible_rule_updates_remove_flows() {
+        // check that, when updating a rule, existing flows remain if the new rule would allow them
+
+        // build rule
+        let entry = PortFwEntry::new(
+            PortFwKey::new(
+                VpcDiscriminant::VNI(2000.try_into().unwrap()),
+                NextHeader::TCP,
+            ),
+            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            Prefix::from_str("70.71.72.0/24").unwrap(),
+            Prefix::from_str("192.168.1.0/24").unwrap(),
+            (3010, 3050),
+            (10, 50),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // create pipeline with port-forwarder
+        let (flow_table, mut pipeline, mut writer) = setup_pipeline(&[entry]);
+
+        // establish a TCP connection (port-forwarded). This should succeed and 2 flows be created
+        establish_tcp_connection(&mut pipeline);
+        assert_eq!(flow_table.len(), Some(2));
+
+        // update the rule so that the traffic would be sent somewhere else
+        let entry = PortFwEntry::new(
+            PortFwKey::new(
+                VpcDiscriminant::VNI(2000.try_into().unwrap()),
+                NextHeader::TCP,
+            ),
+            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            Prefix::from_str("70.71.72.0/24").unwrap(),
+            Prefix::from_str("192.168.2.0/24").unwrap(),
+            (3010, 3050),
+            (10, 50),
+            None,
+            None,
+        )
+        .unwrap();
+        writer.update_table(std::slice::from_ref(&entry)).unwrap();
+
+        // send a new packet in forward path. Flow entry should be invalidated and the packet dropped
+        let packet = tcp_packet_to_port_forward();
+        let output = process_packet(&mut pipeline, packet);
+        assert!(output.meta().flow_info.is_some());
+        assert_eq!(get_flow_status(&output), Some(FlowStatus::Cancelled)); // flow should be cancelled
+        assert_eq!(
+            get_pfw_flow_status(&output),
+            Some(PortFwFlowStatus::Established) // this remains established. That's fine.
+        );
+        let rule_referenced = get_pfw_flow_state_rule(&output);
+        assert!(rule_referenced.is_none()); // flow did not get a new reference to a rule
+        assert_eq!(output.get_done(), Some(DoneReason::Filtered)); // packet was dropped
 
         println!("{flow_table}");
     }

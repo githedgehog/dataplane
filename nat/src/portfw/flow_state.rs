@@ -7,7 +7,7 @@
 
 use net::buffer::PacketBufferMut;
 use net::ip::UnicastIpAddr;
-use net::packet::{DoneReason, Packet};
+use net::packet::Packet;
 use std::fmt::Display;
 use std::num::NonZero;
 use std::sync::{Arc, Weak};
@@ -34,7 +34,7 @@ pub struct PortFwState {
     pub(crate) status: AtomicPortFwFlowStatus,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
-    rule: Weak<PortFwEntry>,
+    pub(crate) rule: Weak<PortFwEntry>,
 }
 impl PortFwState {
     #[must_use]
@@ -197,36 +197,12 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
-    let Some(_rule) = state.rule.upgrade() else {
-        debug!("Packet flow-info contains port-forwarding state, but rule has been deleted");
-        invalidate_flow_state(packet);
-        return None;
-    };
-
-    // Even if flow state refers to a rule, the rule may have changed and no longer include
-    // the address or the port. So, we need to check again here. We check only if the packet
-    // hit a flow with port-forwarding in the forward direction.
-    // FIXME: we don't have a way to update rules yet, other than timers
-    /*
-       if state.action() == PortFwAction::DstNat {
-           let dst_ip = packet.ip_destination().unwrap_or_else(|| unreachable!());
-           let dst_port = packet
-               .transport_dst_port()
-               .unwrap_or_else(|| unreachable!());
-
-           if !rule.ext_dst_ip.covers_addr(&dst_ip) || !rule.ext_ports.contains(dst_port) {
-               debug!("The rule this flow refers to no longer includes the ip or port");
-               invalidate_flow_state(packet);
-               return None;
-           }
-       }
-    */
     debug!("Packet hit entry with port-forwarding state: {flow}");
     Some(state.clone())
 }
 
 /// Invalidate the flow that this packet matched and the related one if any.
-fn invalidate_flow_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
+pub(crate) fn invalidate_flow_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
     let Some(flow_info) = packet.meta().flow_info.as_ref() else {
         return;
     };
@@ -245,25 +221,18 @@ fn invalidate_flow_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
 /// extended by a large period. In other states, the entries are kept alive with
 /// the initial timeout just to give enough time to transition to the next status.
 ///
-/// Note: currently, in the case of TCP, we don't penalize (with the timer) entries
-/// for which packets are unexpectedly received. This will be done later.
+/// Note: currently, in the case of TCP, we don't penalize entries for which packets
+/// are unexpectedly received. This will be done later when introducing a more
+/// elaborate TCP state machine with ack & seqn numbers.
 pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
+    entry: &PortFwEntry,
     state: &PortFwState, // (*)
 ) {
     //(*) Note: atm, this is a clone of the state found by the packet
     // That's fine for updating the status since it's an arc'ed atomic
 
-    // recover the rule used to port-forward this packet. If the rule has been dropped,
-    // invalidate the flows, since that indicates that the rule was removed from the config
-    // and drop the packet.
-    let Some(entry) = state.rule.upgrade() else {
-        invalidate_flow_state(packet);
-        packet.done(DoneReason::Filtered);
-        return;
-    };
-
-    // update the flow status (for port forwading) depending on the packet and the current status
+    // update the flow status (for port forwarding) depending on the packet and the current status
     let new_status = next_flow_status(packet, state);
     let current_status = state.status.load();
     if new_status != current_status {
@@ -282,7 +251,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     let seconds = extend_by.as_secs();
 
     // refresh the flow. In general, we only refresh the flow in one direction ...
-    if let Some(flow) = packet.meta_mut().flow_info.as_mut() {
+    if let Some(flow) = packet.meta_mut().flow_info.as_ref() {
         match flow.reset_expiry_unchecked(extend_by) {
             Ok(()) => debug!("Extended flow lifetime by {seconds}s"),
             Err(_) => warn!("Failed to extend flow lifetime by {seconds}s"),
