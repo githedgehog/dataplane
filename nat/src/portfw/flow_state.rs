@@ -279,11 +279,11 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
         state.status.store(new_status);
     }
 
-    // compute new timeout for the flow. In case of reset, invalidate the flows in both directions.
-    // but do not drop the packet since we want it to make to its recipient.
+    // compute new timeout for the flow. In case of TCP, if the connection was reset or closed,
+    // invalidate the flows in both directions. In either case, the packet is let through.
     let extend_by = match new_status {
         PortFwFlowStatus::Established => entry.estab_timeout(),
-        PortFwFlowStatus::Reset => return invalidate_flow_state(packet),
+        PortFwFlowStatus::Closed | PortFwFlowStatus::Reset => return invalidate_flow_state(packet),
         _ => entry.init_timeout(),
     };
 
