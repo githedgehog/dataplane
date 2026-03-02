@@ -78,22 +78,20 @@ where
     ///
     /// See the documentation of [`IpPortPrefixTrie`] for details on the lookup logic.
     pub fn lookup(&self, addr: &IpAddr, port_opt: Option<u16>) -> Option<(Prefix, &V)> {
-        // If the longest matching prefix has no associated port range, we assume it matches any
-        // port, so the lookup is successful
-        if let Some((prefix, value)) = self.0.lookup(*addr)
-            && value.covers_all_ports()
-        {
-            return Some((prefix, value));
-        }
-
-        // Else, we need to check all matching IP prefixes (not necessarily the longest), and their
-        // port ranges. We expect the trie to contain only one matching IP prefix matching the
-        // address and associated to a port range matching the port, so we return the first we find.
-        let port = port_opt?;
-        let matching_entries = self.0.matching_entries(*addr);
-        for (prefix, value) in matching_entries {
-            if value.covers_port(port) {
-                return Some((prefix, value));
+        // We need to check all matching IP prefixes (not necessarily the longest), and their port
+        // ranges. We may have overlap in the trie in the case of masquerading (no ports) and port
+        // forwarding (always using ports), so we must go for the most specific first: try the
+        // longest-prefix match first (hence the .rev()) and see if it covers the ports for the
+        // packet.
+        let matching_entries = self.0.matching_entries(*addr).collect::<Vec<_>>();
+        for (prefix, value) in matching_entries.iter().rev() {
+            if let Some(port) = port_opt
+                && value.covers_port(port)
+            {
+                return Some((*prefix, value));
+            }
+            if value.covers_all_ports() {
+                return Some((*prefix, value));
             }
         }
         None
