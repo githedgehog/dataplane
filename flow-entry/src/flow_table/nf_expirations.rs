@@ -53,10 +53,10 @@ mod test {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use crate::flow_table::FlowKey;
+    use crate::flow_table::FlowTable;
     use crate::flow_table::nf_expirations::ExpirationsNF;
     use crate::flow_table::thread_local_pq::AGRESSIVE_REAP_THRESHOLD;
-    use crate::flow_table::{FlowTable, IpProtoKey, TcpProtoKey};
+    use net::{FlowKey, IpProtoKey, TcpProtoKey};
 
     #[test]
     fn test_expirations_nf() {

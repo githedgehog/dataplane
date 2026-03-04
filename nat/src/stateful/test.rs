@@ -13,11 +13,11 @@ mod tests {
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
     use etherparse::Icmpv4Type;
-    use flow_entry::flow_table::flow_key::Uni;
-    use flow_entry::flow_table::{FlowKey, FlowLookup, FlowTable, IpProtoKey, UdpProtoKey};
+    use flow_entry::flow_table::{FlowLookup, FlowTable};
     use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
     use net::buffer::{PacketBufferMut, TestBuffer};
     use net::eth::mac::Mac;
+    use net::flow_key::Uni;
     use net::headers::{
         EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
     };
@@ -31,6 +31,7 @@ mod tests {
     use net::tcp::TruncatedTcp;
     use net::udp::{TruncatedUdp, UdpPort};
     use net::vxlan::Vni;
+    use net::{FlowKey, IpProtoKey, UdpProtoKey};
     use pipeline::NetworkFunction;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;

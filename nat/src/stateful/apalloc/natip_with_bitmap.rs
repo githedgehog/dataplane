@@ -10,7 +10,7 @@ use super::super::allocator::{AllocationResult, AllocatorError, NatAllocator};
 use super::AllocatedIpPort;
 use crate::stateful::apalloc::alloc::{map_address, map_offset};
 use concurrency::sync::Arc;
-use flow_entry::flow_table::ExtendedFlowKey;
+use net::ExtendedFlowKey;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
