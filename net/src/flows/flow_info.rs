@@ -194,16 +194,14 @@ impl FlowInfo {
     #[allow(clippy::unwrap_used)]
     pub fn related_pair(
         expires_at: Instant,
-        key1: Option<FlowKey>,
-        key2: Option<FlowKey>,
+        key1: FlowKey,
+        key2: FlowKey,
     ) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
         // keys MUST differ
-        key1.inspect(|key1| {
-            assert!(
-                Some(key1) != key2.as_ref(),
-                "Attempted to build two flow entries with identical key {key1}"
-            );
-        });
+        debug_assert!(
+            key1 != key2,
+            "Attempted to build two flows with identical key {key1}"
+        );
 
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
         let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
@@ -225,14 +223,14 @@ impl FlowInfo {
             // overwrite the memory locations with the FlowInfo's
             one_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
-                flowkey: key1,
+                flowkey: Some(key1),
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(two_weak),
             });
             two_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
-                flowkey: key2,
+                flowkey: Some(key2),
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(one_weak),
