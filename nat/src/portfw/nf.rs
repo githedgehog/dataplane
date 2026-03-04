@@ -112,9 +112,9 @@ impl PortForwarder {
         let (fw_key, rev_key) =
             build_portfw_flow_keys(packet, new_dst_ip, new_dst_port, entry.dst_vpcd);
 
-        // crate a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
+        // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
         let timeout = Instant::now() + entry.init_timeout();
-        let (fw_flow, rev_flow) = FlowInfo::related_pair(timeout, Some(fw_key), Some(rev_key));
+        let (fw_flow, rev_flow) = FlowInfo::related_pair(timeout, fw_key, rev_key);
 
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
