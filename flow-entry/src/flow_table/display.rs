@@ -23,10 +23,8 @@ impl Display for FlowTable {
             Heading(format!("Flow Table ({} entries)", table.len())).fmt(f)?;
             for entry in table.iter() {
                 let key = entry.key();
-                match entry.value().upgrade() {
-                    Some(value) => writeln!(f, "key = {key}\ndata = {value}")?,
-                    None => writeln!(f, "key = {key} NONE")?,
-                }
+                let value = entry.value();
+                writeln!(f, "key = {key}\ndata = {value}")?;
             }
         } else {
             write!(f, "Failed to lock flow table")?;

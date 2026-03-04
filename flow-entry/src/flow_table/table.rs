@@ -8,11 +8,10 @@ use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, warn};
 
-use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use concurrency::sync::{Arc, RwLock, RwLockReadGuard};
 
-use crate::flow_table::thread_local_pq::{PQAction, ThreadLocalPriorityQueue};
 use net::flows::{FlowInfo, FlowStatus};
 
 #[derive(Debug, thiserror::Error)]
@@ -21,14 +20,13 @@ pub enum FlowTableError {
     InvalidShardCount(usize),
 }
 
-type PriorityQueue = ThreadLocalPriorityQueue<FlowKey, Arc<FlowInfo>>;
-type Table = DashMap<FlowKey, Weak<FlowInfo>, RandomState>;
+type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 
 #[derive(Debug)]
 pub struct FlowTable {
     // TODO(mvachhar) move this to a cross beam sharded lock
     pub(crate) table: RwLock<Table>,
-    pub(crate) priority_queue: PriorityQueue,
+    reap_threshold: usize,
 }
 
 impl Default for FlowTable {
@@ -44,6 +42,11 @@ fn hasher_state() -> &'static RandomState {
 }
 
 impl FlowTable {
+    /// When the raw `DashMap` entry count exceeds this threshold, `insert_common` will
+    /// proactively purge all stale (Expired / Cancelled / deadline-passed) entries to
+    /// prevent unbounded memory growth.
+    pub const AGGRESSIVE_REAP_THRESHOLD: usize = 1_000_000;
+
     #[must_use]
     pub fn new(num_shards: usize) -> Self {
         Self {
@@ -51,12 +54,12 @@ impl FlowTable {
                 hasher_state().clone(),
                 num_shards,
             )),
-            priority_queue: PriorityQueue::new(None),
+            reap_threshold: Self::AGGRESSIVE_REAP_THRESHOLD,
         }
     }
 
     pub fn set_reap_threshold(&mut self, reap_threshold: usize) {
-        self.priority_queue.set_reap_threshold(reap_threshold);
+        self.reap_threshold = reap_threshold;
     }
 
     /// Reshard the flow table into the given number of shards.
@@ -171,17 +174,73 @@ impl FlowTable {
 
     fn insert_common(&self, flow_key: FlowKey, val: &Arc<FlowInfo>) -> Option<Arc<FlowInfo>> {
         let table = self.table.read().unwrap();
-        let expires_at = val.expires_at();
-        let result = table.insert(flow_key, Arc::downgrade(val));
-        self.priority_queue.push(flow_key, val.clone(), expires_at);
-        let ret = match result {
-            Some(w) => w.upgrade(),
-            None => None,
-        };
+        let result = table.insert(flow_key, val.clone());
 
-        let Some(ret) = ret else {
-            return ret;
-        };
+        // Proactively purge stale entries when the raw table size exceeds the threshold.
+        // This bounds memory growth when flows expire faster than they are looked up,
+        // since expired entries otherwise accumulate in the `DashMap` until a lookup hits them.
+        let raw_len = table.len();
+        if raw_len > self.reap_threshold {
+            warn!(
+                "The number of flows ({raw_len}) exceeds {}. Reaping stale entries...",
+                self.reap_threshold
+            );
+            Self::drain_stale_with_read_lock(&table);
+        }
+
+        // Spawn a per-flow expiration timer when running inside a tokio runtime.
+        // The timer marks the flow as Expired; the `DashMap` entry is cleaned up
+        // lazily the next time lookup() is called for this key.
+        // In non-tokio contexts (shuttle tests, sync unit tests) the guard fails
+        // gracefully and lazy time-checking in `lookup` handles expiration instead.
+        //
+        // Only spawn a timer for a genuinely new Arc.  If the same Arc is being
+        // reinserted (e.g. via reinsert()), its existing timer loop already handles
+        // extended deadlines via the `new_deadline > deadline` re-check, so spawning
+        // a second task would be redundant and would cause unbounded task growth.
+        //
+        // The timer holds a Weak<FlowInfo> rather than Arc<FlowInfo> and drops the
+        // upgrade before sleeping, so the timer task does not extend the lifetime of
+        // the FlowInfo allocation.  Once the DashMap entry is removed (drain_stale,
+        // lookup lazy cleanup, or explicit remove) and all other callers drop their
+        // Arc clones, the allocation is freed even if the timer has not yet woken up.
+        // The status check after each sleep avoids redundant work for flows that were
+        // already Cancelled before their deadline elapsed.
+        let need_timer = result.as_ref().is_none_or(|old| !Arc::ptr_eq(old, val));
+        if need_timer && tokio::runtime::Handle::try_current().is_ok() {
+            let fi_weak = Arc::downgrade(val);
+            tokio::task::spawn(async move {
+                loop {
+                    // Upgrade to check status and read the deadline.  If the Arc has
+                    // already been dropped (no DashMap entry, no in-flight holders),
+                    // there is nothing left to expire.
+                    let Some(fi) = fi_weak.upgrade() else { break };
+                    if fi.status() != FlowStatus::Active {
+                        // Already Cancelled or Expired by another path; nothing to do.
+                        break;
+                    }
+                    let deadline = fi.expires_at();
+                    // Drop the strong ref before sleeping so this task does not
+                    // prevent the FlowInfo allocation from being freed.
+                    drop(fi);
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                    // Re-acquire after sleeping and re-check before committing.
+                    let Some(fi) = fi_weak.upgrade() else { break };
+                    if fi.status() != FlowStatus::Active {
+                        break;
+                    }
+                    let new_deadline = fi.expires_at();
+                    if new_deadline > deadline {
+                        // Deadline was extended (e.g. by StatefulNat); sleep again.
+                        continue;
+                    }
+                    fi.update_status(FlowStatus::Expired);
+                    break;
+                }
+            });
+        }
+
+        let ret = result?;
 
         if ret.status() == FlowStatus::Expired {
             return None;
@@ -191,6 +250,11 @@ impl FlowTable {
     }
 
     /// Lookup a flow in the table.
+    ///
+    /// Performs lazy time-based expiration: if the matched entry is still
+    /// `Active` but its deadline has passed (e.g. because the tokio timer has
+    /// not yet fired, or no tokio runtime is present), the entry is marked
+    /// `Expired` and removed here.
     ///
     /// # Panics
     ///
@@ -203,18 +267,22 @@ impl FlowTable {
     {
         debug!("lookup: Looking up flow key {:?}", flow_key);
         let table = self.table.read().unwrap();
-        let item = table.get(flow_key)?.upgrade();
-        let Some(item) = item else {
-            debug!(
-                "lookup: Removing flow key {:?}, found empty weak reference",
-                flow_key
-            );
-            Self::remove_with_read_lock(&table, flow_key);
-            return None;
-        };
+        let item = table.get(flow_key)?.value().clone();
         let status = item.status();
         match status {
-            FlowStatus::Active => Some(item),
+            FlowStatus::Active => {
+                // Lazy expiration: cover non-tokio contexts and timer scheduling lag.
+                if item.expires_at() <= Instant::now() {
+                    debug!(
+                        "lookup: Flow key {:?} has passed its deadline, expiring",
+                        flow_key
+                    );
+                    item.update_status(FlowStatus::Expired);
+                    Self::remove_with_read_lock(&table, flow_key);
+                    return None;
+                }
+                Some(item)
+            }
             FlowStatus::Expired | FlowStatus::Cancelled => {
                 debug!("lookup: Flow key {:?} is '{status}', removing", flow_key);
                 Self::remove_with_read_lock(&table, flow_key);
@@ -240,114 +308,78 @@ impl FlowTable {
     }
 
     fn remove_with_read_lock<Q>(
-        table: &RwLockReadGuard<DashMap<FlowKey, Weak<FlowInfo>, RandomState>>,
+        table: &RwLockReadGuard<DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
         flow_key: &Q,
     ) -> Option<(FlowKey, Arc<FlowInfo>)>
     where
         FlowKey: Borrow<Q>,
         Q: Hash + Eq + ?Sized + Debug,
     {
-        let result = table.remove(flow_key);
-        let (k, w) = result?;
-        let old_val = w.upgrade()?;
-        if old_val.status() == FlowStatus::Expired {
+        let (k, v) = table.remove(flow_key)?;
+        if v.status() == FlowStatus::Expired {
             return None;
         }
-        Some((k, old_val))
+        Some((k, v))
     }
 
-    fn decide_expiry(now: &Instant, k: &FlowKey, v: &Arc<FlowInfo>) -> PQAction {
-        // Note(mvachhar)
-        //
-        //I'm not sure if marking the entry as expired is worthwhile here
-        // nor am I sure of the performance cost of doing this.
-        // It isn't strictly needed, though it means other holders of the Arc may
-        // be able to read stale data and wouldn't know the entry is expired.
-        //
-        // If the common case is that the entry has no other references here,
-        // then this operation should be cheap, though not free due to the
-        // dereference of the value and the lock acquisition.
-        let expires_at = v.expires_at();
-        if now >= &expires_at {
-            debug!("decide_expiry: Reap for flow key {k:?} with expires_at {expires_at:?}");
-            PQAction::Reap
-        } else if v.status() == FlowStatus::Cancelled {
-            debug!("decide_expiry: Cancel for flow key {k:?}, which was cancelled");
-            PQAction::Cancel
-        } else {
-            debug!("decide_expiry: Update for flow key {k:?} with time {expires_at:?}");
-            PQAction::Update(expires_at)
-        }
-    }
-
-    // Pass by value here since the PQ doesn't know the value is an Arc
-    // and we get ownership of the value here
-    #[allow(clippy::needless_pass_by_value)]
-    fn do_reap(k: &FlowKey, v: Arc<FlowInfo>) {
-        v.update_status(FlowStatus::Expired);
-        debug!("do_reap: Updated flow status for {k:?} to expired");
-    }
-
-    /// Remove all of the flow entries for the provided `FlowKey`s, returning the number of
-    /// entries removed
+    /// Remove all stale entries from the table (entries that are `Expired`, `Cancelled`, or
+    /// whose deadline has already passed).
+    ///
+    /// Returns the number of entries removed.
     ///
     /// # Panics
     ///
-    /// Panics if this thread already holds the read lock on the table or
-    /// if the table lock is poisoned.
-    fn remove_flow_entries(&self, reaped_keys: &Vec<FlowKey>) -> usize {
-        let num_keys = reaped_keys.len();
-        let mut removed = 0;
+    /// Panics if this thread already holds the read lock on the table or if the lock is poisoned.
+    pub fn drain_stale(&self) -> usize {
         let table = self.table.read().unwrap();
-        for flow_key in reaped_keys {
-            if let Some((_key, _flow_info)) = table.remove(flow_key) {
-                removed += 1;
-            }
+        Self::drain_stale_with_read_lock(&table)
+    }
+
+    fn drain_stale_with_read_lock(
+        table: &RwLockReadGuard<DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
+    ) -> usize {
+        let now = Instant::now();
+        let to_remove: Vec<FlowKey> = table
+            .iter()
+            .filter_map(|entry| {
+                let val = entry.value();
+                match val.status() {
+                    FlowStatus::Expired | FlowStatus::Cancelled => Some(*entry.key()),
+                    FlowStatus::Active if val.expires_at() <= now => {
+                        // Deadline passed but the tokio timer has not fired yet; mark and remove.
+                        val.update_status(FlowStatus::Expired);
+                        Some(*entry.key())
+                    }
+                    FlowStatus::Active => None,
+                }
+            })
+            .collect();
+        let removed = to_remove.len();
+        for key in &to_remove {
+            table.remove(key);
         }
-        debug!("Removed {removed} flow-entries out of {num_keys} keys");
-        num_keys
-    }
-
-    /// Reap expired entries from the priority queue for the current thread.
-    ///
-    /// # Thread Safety
-    ///
-    /// This method is thread-safe but should not be called if the current thread is
-    /// holding a lock on any element in the flow table.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any lock acquired by this method is poisoned.
-    pub fn reap_expired(&self) -> usize {
-        let reaped_keys = self
-            .priority_queue
-            .reap_expired(Self::decide_expiry, Self::do_reap);
-        self.remove_flow_entries(&reaped_keys)
-    }
-
-    pub fn reap_all_expired(&self) -> usize {
-        let reaped_keys = self
-            .priority_queue
-            .reap_all_expired(Self::decide_expiry, Self::do_reap);
-        self.remove_flow_entries(&reaped_keys)
-    }
-
-    #[cfg(all(test, feature = "shuttle"))]
-    pub fn reap_all_expired_with_time(&self, time: &Instant) -> usize {
-        let reaped_keys = self.priority_queue.reap_all_expired_with_time(
-            time,
-            Self::decide_expiry,
-            Self::do_reap,
-        );
-        self.remove_flow_entries(&reaped_keys)
+        debug!("drain_stale: Removed {removed} stale flows");
+        removed
     }
 
     #[allow(clippy::len_without_is_empty)]
-    /// Tell how many flows are in the table if it can be locked
-    /// This is mostly for testing
+    /// Returns the total number of entries physically stored in the table, regardless of
+    /// their expiration status.  This is mostly for testing.
     pub fn len(&self) -> Option<usize> {
         let table = self.table.try_read().ok()?;
         Some(table.len())
+    }
+
+    /// Returns the number of *active* (non-expired, non-cancelled) flows in the table.
+    /// This is mostly for testing.
+    pub fn active_len(&self) -> Option<usize> {
+        let table = self.table.try_read().ok()?;
+        Some(
+            table
+                .iter()
+                .filter(|e| e.value().status() == FlowStatus::Active)
+                .count(),
+        )
     }
 }
 
@@ -413,20 +445,16 @@ mod tests {
             let flow_info = FlowInfo::new(now + two_seconds);
             flow_table.insert(flow_key, flow_info);
 
-            // Wait 1 second, should still be present
+            // Wait 1 second — flow not yet expired, lazy lookup should return Some.
             thread::sleep(one_second);
-            // Reap expired entries after 1 second (should not reap our entry)
-            flow_table.reap_expired();
             assert!(
                 flow_table.lookup(&flow_key).is_some(),
                 "Flow key should still be present after 1 second"
             );
 
-            // Wait another 2 seconds (total 3s), should be expired
+            // Wait another 2 seconds (total 3s) — flow expired.
+            // Lazy expiration in lookup cleans it up.
             thread::sleep(two_seconds);
-            // Reap expired entries
-            flow_table.reap_expired();
-
             assert!(
                 flow_table.lookup(&flow_key).is_none(),
                 "Flow key should have expired and been removed"
@@ -434,7 +462,7 @@ mod tests {
         }
 
         #[test]
-        fn test_flow_table_weak_ref_replaced_on_insert() {
+        fn test_flow_table_entry_replaced_on_insert() {
             let now = Instant::now();
             let first_expiry_time = now + Duration::from_secs(5);
             let second_expiry_time = now + Duration::from_secs(10);
@@ -450,51 +478,32 @@ mod tests {
                 }),
             ));
 
-            // Insert first entry
-            let first_flow_info = FlowInfo::new(first_expiry_time);
-            let first_flow_info_arc = Arc::new(first_flow_info);
-            let weak_flow_info_reference = Arc::downgrade(&first_flow_info_arc);
-            flow_table.insert_from_arc(flow_key, &first_flow_info_arc);
-            drop(first_flow_info_arc);
+            // Insert first entry.
+            let first_arc = Arc::new(FlowInfo::new(first_expiry_time));
+            flow_table.insert_from_arc(flow_key, &first_arc);
 
-            // The weak reference stored in the table should still resolve
+            // The entry stored in the table should be the first arc.
             {
                 let table = flow_table.table.read().unwrap();
                 let entry = table
                     .get(&flow_key)
                     .expect("entry should exist after first insert");
-                let resolved = entry
-                    .upgrade()
-                    .expect("weak ref should resolve after first insert");
-                assert_eq!(resolved.as_ref().expires_at(), first_expiry_time);
-            } // drops `entry` (shard read lock) and `table` (outer RwLock read guard)
+                assert_eq!(entry.value().expires_at(), first_expiry_time);
+            }
 
-            // The weak reference we kept outside of the table should still resolve, too. Upgrade
-            // it: we now have two strong references, one from the priority queue and one from the
-            // upgrade.
-            let upgrade = weak_flow_info_reference.upgrade();
-            assert_eq!(Arc::strong_count(&upgrade.unwrap()), 2);
+            // Insert a second entry under the same key.
+            let second_arc = Arc::new(FlowInfo::new(second_expiry_time));
+            flow_table.insert_from_arc(flow_key, &second_arc);
 
-            // Insert a second entry under the same key but with a different value.
-            let second_flow_info = FlowInfo::new(second_expiry_time);
-            flow_table.insert_from_arc(flow_key, &Arc::new(second_flow_info));
-
-            // The weak reference should now resolve to second_arc, not first_arc.
+            // The table should now point to the second entry.
             {
                 let table = flow_table.table.read().unwrap();
                 let entry = table
                     .get(&flow_key)
                     .expect("entry should exist after second insert");
-                let resolved = entry
-                    .upgrade()
-                    .expect("weak ref should resolve after second insert");
-                assert_ne!(resolved.as_ref().expires_at(), first_expiry_time);
-                assert_eq!(resolved.as_ref().expires_at(), second_expiry_time);
+                assert_ne!(entry.value().expires_at(), first_expiry_time);
+                assert_eq!(entry.value().expires_at(), second_expiry_time);
             }
-
-            // The strong reference from the priority queue for the first entry has been dropped.
-            assert_eq!(Weak::strong_count(&weak_flow_info_reference), 0);
-            assert!(weak_flow_info_reference.upgrade().is_none());
         }
 
         #[test]
@@ -503,21 +512,22 @@ mod tests {
             bolero::check!()
                 .with_type::<FlowKey>()
                 .for_each(|flow_key| {
-                    flow_table.insert(*flow_key, FlowInfo::new(Instant::now()));
-                    let flow_info_str = format!("{:?}", flow_table.lookup(flow_key).unwrap());
-
-                    // We purposely keep the flow alive here to make sure lookup reaps it
-                    let _flow_info = flow_table.lookup(flow_key).unwrap();
+                    // Insert with a future expiry so early lookups see the flow.
+                    flow_table.insert(
+                        *flow_key,
+                        FlowInfo::new(Instant::now() + Duration::from_secs(60)),
+                    );
+                    let flow_info = flow_table.lookup(flow_key).unwrap();
                     assert!(flow_table.lookup(&flow_key.reverse(None)).is_none());
 
-                    thread::sleep(Duration::from_millis(100));
-                    flow_table.reap_all_expired();
+                    // Simulate expiration (what the tokio timer would do).
+                    flow_info.update_status(FlowStatus::Expired);
 
+                    // Lazy cleanup on next lookup.
                     let result = flow_table.lookup(flow_key);
                     assert!(
                         result.is_none(),
-                        "flow_key lookup is not none {result:#?}, inserted {flow_info_str}, now: {:?}",
-                        Instant::now()
+                        "expired flow should be removed by lookup, inserted {flow_info:?}"
                     );
                 });
         }
@@ -528,7 +538,11 @@ mod tests {
             bolero::check!()
                 .with_type::<FlowKey>()
                 .for_each(|flow_key| {
-                    flow_table.insert(*flow_key, FlowInfo::new(Instant::now()));
+                    // Use a future expiry so the flow stays active long enough for remove().
+                    flow_table.insert(
+                        *flow_key,
+                        FlowInfo::new(Instant::now() + Duration::from_secs(60)),
+                    );
                     let flow_info = flow_table.lookup(flow_key).unwrap();
                     assert!(flow_table.lookup(&flow_key.reverse(None)).is_none());
 
@@ -539,6 +553,56 @@ mod tests {
                     assert!(Arc::ptr_eq(&v, &flow_info));
                     assert!(flow_table.lookup(flow_key).is_none());
                 });
+        }
+
+        #[test]
+        fn test_aggressive_reap_threshold() {
+            // Must be small enough to stay within u16 port range (< 65_535).
+            const REAP_THRESHOLD_TEST: usize = 10_000;
+
+            let mut flow_table = FlowTable::default();
+            flow_table.set_reap_threshold(REAP_THRESHOLD_TEST);
+
+            let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
+            let src_ip: IpAddr = "1.2.3.4".parse().unwrap();
+            let dst_ip: IpAddr = "5.6.7.8".parse().unwrap();
+
+            // Insert REAP_THRESHOLD_TEST + 100 flows, all Active with a far-future expiry.
+            for src_port in 1..=REAP_THRESHOLD_TEST + 100 {
+                #[allow(clippy::cast_possible_truncation)]
+                let src_port = TcpPort::new_checked(src_port as u16).unwrap();
+                let dst_port = TcpPort::new_checked(100).unwrap();
+                let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
+                    Some(src_vpcd),
+                    src_ip,
+                    dst_ip,
+                    IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
+                ));
+                let flow_info = FlowInfo::new(Instant::now() + Duration::from_secs(3600));
+                flow_table.insert(flow_key, flow_info);
+            }
+
+            // We inserted more flows than the threshold.
+            assert!(flow_table.active_len().unwrap() > REAP_THRESHOLD_TEST);
+
+            // drain_stale: nothing should be reaped because all are Active with far-future expiry.
+            let reaped = flow_table.drain_stale();
+            assert_eq!(reaped, 0);
+            assert!(flow_table.active_len().unwrap() > REAP_THRESHOLD_TEST);
+
+            // Mark all flows except the first one as Cancelled.
+            let mut kept = 0usize;
+            for entry in flow_table.table.read().unwrap().iter() {
+                if kept == 0 {
+                    kept += 1;
+                    continue;
+                }
+                entry.value().update_status(FlowStatus::Cancelled);
+            }
+
+            // drain_stale: all Cancelled flows should be purged, leaving exactly 1.
+            flow_table.drain_stale();
+            assert_eq!(flow_table.active_len().unwrap(), 1);
         }
     }
 
@@ -554,7 +618,6 @@ mod tests {
                 move || {
                     let now = Instant::now();
                     let two_seconds = Duration::from_secs(2);
-                    let one_second = Duration::from_secs(1);
 
                     let flow_table = FlowTable::default();
                     let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
@@ -570,21 +633,21 @@ mod tests {
                     let flow_info = FlowInfo::new(now + two_seconds);
                     flow_table.insert(flow_key, flow_info);
 
-                    // Reap expired entries after 1 second (should not reap our entry)
-                    // Shuttle does not model time, hence this hack
-                    flow_table.reap_all_expired_with_time(&(now + one_second));
+                    // Flow is active; lookup should return Some.
                     assert!(
                         flow_table.lookup(&flow_key).is_some(),
-                        "Flow key should still be present after 1 second"
+                        "Flow key should be present"
                     );
 
-                    // Reap expired entries
-                    // Shuttle does not model time, hence this hack
-                    flow_table.reap_all_expired_with_time(&(now + two_seconds));
+                    // Simulate timer expiration by marking the flow directly.
+                    if let Some(fi) = flow_table.lookup(&flow_key) {
+                        fi.update_status(FlowStatus::Expired);
+                    }
 
+                    // Lazy cleanup on next lookup.
                     assert!(
                         flow_table.lookup(&flow_key).is_none(),
-                        "Flow key should have expired and been removed"
+                        "Flow key should be gone after expiration"
                     );
                 },
                 100,
@@ -594,7 +657,7 @@ mod tests {
         #[allow(clippy::too_many_lines)]
         #[test]
         #[tracing_test::traced_test]
-        fn test_flow_table_concurrent_insert_remove_lookup_timeout() {
+        fn test_flow_table_concurrent_insert_remove_lookup_expire() {
             const N: usize = 3;
 
             let two_seconds = Duration::from_secs(2);
@@ -630,15 +693,20 @@ mod tests {
                     let mut flow_info_holder = Some(flow_info);
 
                     let mut handles = vec![];
+
+                    // "expirer" thread — simulates what the tokio timer would do.
                     handles.push(
                         thread::Builder::new()
-                            .name("timeout_reaper".to_string())
+                            .name("expirer".to_string())
                             .spawn({
                                 let flow_table = flow_table.clone();
+                                let flow_key = flow_keys[0];
                                 move || {
                                     for _ in 0..N {
                                         thread::yield_now();
-                                        flow_table.reap_expired();
+                                        if let Some(fi) = flow_table.lookup(&flow_key) {
+                                            fi.update_status(FlowStatus::Expired);
+                                        }
                                     }
                                 }
                             })
@@ -703,22 +771,11 @@ mod tests {
                         handle.join().unwrap();
                     }
 
-                    // Shuttle does not model time so we need this hack
-                    let reap_time = now + two_seconds;
-                    flow_table.reap_all_expired_with_time(&reap_time);
-
-                    // After all threads, all keys should be either gone or expired
-                    for key in &flow_keys {
-                        let result = flow_table.lookup(key);
-                        assert!(
-                            result.is_none(),
-                            "Flow key {:#?} should have expired at {:?} and been removed, now at create: {:?}, reap time: {:?}",
-                            *key,
-                            result.unwrap().expires_at(),
-                            now,
-                            reap_time
-                        );
-                    }
+                    // After all threads, flow[0] should be expired/gone (expirer thread ran).
+                    assert!(
+                        flow_table.lookup(&flow_keys[0]).is_none(),
+                        "Flow key[0] should have been expired"
+                    );
                 },
                 100,
             );
