@@ -18,6 +18,7 @@ pub mod addr_parse_error;
 pub mod buffer;
 pub mod checksum;
 pub mod eth;
+pub mod flows;
 pub mod headers;
 pub mod icmp4;
 pub mod icmp6;
@@ -35,3 +36,8 @@ pub mod tcp;
 pub mod udp;
 pub mod vlan;
 pub mod vxlan;
+
+// re-export
+pub use flows::flow_key::{
+    self, ExtendedFlowKey, FlowKey, FlowKeyData, IcmpProtoKey, IpProtoKey, TcpProtoKey, UdpProtoKey,
+};

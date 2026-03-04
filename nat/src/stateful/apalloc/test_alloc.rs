@@ -16,12 +16,12 @@ mod context {
     use config::ConfigError;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
-    use flow_entry::flow_table::{IpProtoKey, TcpProtoKey, UdpProtoKey};
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
     use net::tcp::TcpPort;
     use net::udp::UdpPort;
     use net::vxlan::Vni;
+    use net::{IpProtoKey, TcpProtoKey, UdpProtoKey};
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
@@ -186,7 +186,7 @@ mod std_tests {
     use crate::stateful::apalloc::PoolTableKey;
     use concurrency::sync::Arc;
     use concurrency::thread;
-    use flow_entry::flow_table::FlowKey;
+    use net::FlowKey;
     use net::ip::NextHeader;
 
     #[test]
@@ -500,7 +500,7 @@ mod std_tests {
 mod tests_shuttle {
     use super::context::*;
     use crate::stateful::allocator::NatAllocator;
-    use flow_entry::flow_table::FlowKey;
+    use net::FlowKey;
     use net::ip::NextHeader;
     use shuttle::sync::{Arc, Mutex};
     use shuttle::thread;

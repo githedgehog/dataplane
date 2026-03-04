@@ -2,16 +2,11 @@
 // Copyright Open Network Fabric Authors
 
 mod display;
-pub mod flow_key;
 pub mod nf_expirations;
 pub mod nf_lookup;
 pub mod table;
 mod thread_local_pq;
 
-pub use flow_key::IpProtoKey;
-pub use flow_key::TcpProtoKey;
-pub use flow_key::UdpProtoKey;
-pub use flow_key::{ExtendedFlowKey, FlowKey, FlowKeyData};
 pub use table::FlowTable;
 
 pub use ::flow_info::atomic_instant::AtomicInstant;

@@ -3,6 +3,7 @@
 
 use ahash::RandomState;
 use dashmap::DashMap;
+use net::FlowKey;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -12,7 +13,7 @@ use tracing::debug;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
 use crate::flow_table::thread_local_pq::{PQAction, ThreadLocalPriorityQueue};
-use crate::flow_table::{FlowInfo, FlowKey, FlowStatus};
+use crate::flow_table::{FlowInfo, FlowStatus};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowTableError {
@@ -336,7 +337,7 @@ mod tests {
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
 
-    use crate::flow_table::{FlowKey, FlowKeyData, IpProtoKey, TcpProtoKey};
+    use net::{FlowKey, FlowKeyData, IpProtoKey, TcpProtoKey};
 
     #[concurrency_mode(std)]
     mod std_tests {

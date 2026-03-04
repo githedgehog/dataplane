@@ -1,27 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+//! Flow keys
+
+#![allow(missing_docs)]
+
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::num::NonZero;
 
-use etherparse::{Icmpv4Type, Icmpv6Type};
-use net::buffer::PacketBufferMut;
-use net::headers::{
+use crate::buffer::PacketBufferMut;
+use crate::headers::{
     EmbeddedTransport, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryHeaders, TryInnerIp,
     TryIp, TryTransport,
 };
-use net::icmp_any::TruncatedIcmpAny;
-use net::icmp4::{Icmp4, TruncatedIcmp4};
-use net::icmp6::{Icmp6, TruncatedIcmp6};
-use net::packet::Packet;
-use net::packet::VpcDiscriminant;
-use net::tcp::{TcpPort, TcpPortError};
-use net::udp::{UdpPort, UdpPortError};
+use crate::icmp_any::TruncatedIcmpAny;
+use crate::icmp4::{Icmp4, TruncatedIcmp4};
+use crate::icmp6::{Icmp6, TruncatedIcmp6};
+use crate::packet::Packet;
+use crate::packet::VpcDiscriminant;
+use crate::tcp::{TcpPort, TcpPortError};
+use crate::udp::{UdpPort, UdpPortError};
+use etherparse::{Icmpv4Type, Icmpv6Type};
 
 #[derive(Debug, thiserror::Error)]
+/// Errors that may occur when building a `FlowKey`
 pub enum FlowKeyError {
     #[error("Flow key data not found in packet")]
+    /// No key data found
     NoFlowKeyData,
 }
 
@@ -566,10 +572,11 @@ impl Hash for FlowKey {
 ///
 /// Example:
 /// ```
-/// # use dataplane_flow_entry::flow_table::FlowKey;
-/// # use dataplane_flow_entry::flow_table::flow_key::{Uni};
-/// # use net::ip::NextHeader;
-/// # let packet = net::packet::test_utils::build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
+/// # use dataplane_net::FlowKey;
+/// # use dataplane_net::flow_key::{Uni};
+/// # use dataplane_net::ip::NextHeader;
+/// # use dataplane_net::packet::test_utils::build_test_ipv4_packet_with_transport;
+/// # let packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
 /// let flow_key = FlowKey::try_from(Uni(&packet));
 /// # assert!(flow_key.is_ok());
 /// ```
@@ -623,10 +630,10 @@ mod contract {
         EmbeddedPacketData, FlowKey, FlowKeyData, IcmpProtoKey, InnerIcmpProtoKey, InnerIpProtoKey,
         IpProtoKey, TcpProtoKey, UdpProtoKey,
     };
+    use crate::ip::UnicastIpAddr;
+    use crate::ipv4::addr::UnicastIpv4Addr;
+    use crate::ipv6::addr::UnicastIpv6Addr;
     use bolero::{Driver, TypeGenerator};
-    use net::ip::UnicastIpAddr;
-    use net::ipv4::addr::UnicastIpv4Addr;
-    use net::ipv6::addr::UnicastIpv6Addr;
 
     impl TypeGenerator for TcpProtoKey {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
@@ -767,16 +774,16 @@ mod contract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::TestBuffer;
+    use crate::headers::TryIpv6;
+    use crate::ip::UnicastIpAddr;
+    use crate::ipv4::addr::UnicastIpv4Addr;
+    use crate::ipv6::addr::UnicastIpv6Addr;
+    use crate::packet::contract::CommonPacket;
+    use crate::packet::{Packet, VpcDiscriminant};
+    use crate::vxlan::Vni;
     use ahash::AHasher;
     use bolero::{Driver, ValueGenerator};
-    use net::buffer::TestBuffer;
-    use net::headers::TryIpv6;
-    use net::ip::UnicastIpAddr;
-    use net::ipv4::addr::UnicastIpv4Addr;
-    use net::ipv6::addr::UnicastIpv6Addr;
-    use net::packet::contract::CommonPacket;
-    use net::packet::{Packet, VpcDiscriminant};
-    use net::vxlan::Vni;
 
     #[test]
     fn test_flow_key_reverse() {
