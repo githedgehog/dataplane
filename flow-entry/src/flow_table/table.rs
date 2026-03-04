@@ -98,9 +98,24 @@ impl FlowTable {
     ///
     /// # Panics
     ///
-    /// Panics if this thread already holds the read lock on the table or
-    /// if the table lock is poisoned.
-    pub fn insert(&self, flow_key: FlowKey, flow_info: FlowInfo) -> Option<Arc<FlowInfo>> {
+    /// Panics if:
+    ///  - this thread already holds the read lock on the table orif the table lock is poisoned.
+    ///  - if the `flow_info` to insert has a key different from `flow_key`
+    ///
+    pub fn insert(&self, flow_key: FlowKey, mut flow_info: FlowInfo) -> Option<Arc<FlowInfo>> {
+        // if the flow_info embeds its key already, it must match `flow_key`
+        flow_info.flowkey().inspect(|key| {
+            assert_eq!(
+                *key, &flow_key,
+                "Attempted to insert a flow with key: {key} with a distinct key: {flow_key}"
+            )
+        });
+
+        // embed the key in the flow if it did not provide one
+        if flow_info.flowkey().is_none() {
+            flow_info.set_flowkey(flow_key);
+        }
+
         debug!("insert: Inserting flow key {:?}", flow_key);
         let val = Arc::new(flow_info);
         self.insert_common(flow_key, &val)
