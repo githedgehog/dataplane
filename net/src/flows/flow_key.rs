@@ -17,6 +17,7 @@ use crate::headers::{
 use crate::icmp_any::TruncatedIcmpAny;
 use crate::icmp4::{Icmp4, TruncatedIcmp4};
 use crate::icmp6::{Icmp6, TruncatedIcmp6};
+use crate::ip::NextHeader;
 use crate::packet::Packet;
 use crate::packet::VpcDiscriminant;
 use crate::tcp::{TcpPort, TcpPortError};
@@ -82,6 +83,15 @@ impl From<(TcpPort, TcpPort)> for TcpProtoKey {
     }
 }
 
+impl From<(NonZero<u16>, NonZero<u16>)> for TcpProtoKey {
+    fn from(value: (NonZero<u16>, NonZero<u16>)) -> Self {
+        Self {
+            src_port: TcpPort::new(value.0),
+            dst_port: TcpPort::new(value.1),
+        }
+    }
+}
+
 impl TcpProtoKey {
     #[must_use]
     pub fn reverse(&self) -> Self {
@@ -127,6 +137,15 @@ impl From<(UdpPort, UdpPort)> for UdpProtoKey {
         Self {
             src_port: value.0,
             dst_port: value.1,
+        }
+    }
+}
+
+impl From<(NonZero<u16>, NonZero<u16>)> for UdpProtoKey {
+    fn from(value: (NonZero<u16>, NonZero<u16>)) -> Self {
+        Self {
+            src_port: UdpPort::new(value.0),
+            dst_port: UdpPort::new(value.1),
         }
     }
 }
@@ -339,6 +358,21 @@ pub enum IpProtoKey {
     Icmp(IcmpProtoKey),
 }
 
+// This implementation is only valid for UDP and TCP
+impl From<(NextHeader, NonZero<u16>, NonZero<u16>)> for IpProtoKey {
+    fn from((proto, src_port, dst_port): (NextHeader, NonZero<u16>, NonZero<u16>)) -> Self {
+        debug_assert!(
+            proto == NextHeader::UDP || proto == NextHeader::TCP,
+            "Only valid for UDP/TCP"
+        );
+        match proto {
+            NextHeader::UDP => IpProtoKey::Udp(UdpProtoKey::from((src_port, dst_port))),
+            NextHeader::TCP => IpProtoKey::Tcp(TcpProtoKey::from((src_port, dst_port))),
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl IpProtoKey {
     #[must_use]
     pub fn reverse(&self) -> Self {
@@ -451,6 +485,60 @@ impl FlowKeyData {
     #[must_use]
     pub fn dst_ip(&self) -> &IpAddr {
         &self.dst_ip
+    }
+
+    #[must_use]
+    pub fn src_port(&self) -> Option<NonZero<u16>> {
+        match self.proto_key_info {
+            IpProtoKey::Tcp(tcp) => Some(tcp.src_port.into()),
+            IpProtoKey::Udp(udp) => Some(udp.src_port.into()),
+            IpProtoKey::Icmp(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn dst_port(&self) -> Option<NonZero<u16>> {
+        match self.proto_key_info {
+            IpProtoKey::Tcp(tcp) => Some(tcp.dst_port.into()),
+            IpProtoKey::Udp(udp) => Some(udp.dst_port.into()),
+            IpProtoKey::Icmp(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn ports(&self) -> Option<(NonZero<u16>, NonZero<u16>)> {
+        match self.proto_key_info {
+            IpProtoKey::Tcp(tcp) => Some((tcp.src_port.into(), tcp.dst_port.into())),
+            IpProtoKey::Udp(udp) => Some((udp.src_port.into(), udp.dst_port.into())),
+            IpProtoKey::Icmp(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn proto(&self) -> NextHeader {
+        match self.proto_key_info {
+            IpProtoKey::Tcp(_) => NextHeader::TCP,
+            IpProtoKey::Udp(_) => NextHeader::UDP,
+            IpProtoKey::Icmp(_) => {
+                if self.src_ip().is_ipv4() {
+                    NextHeader::ICMP
+                } else {
+                    NextHeader::ICMP6
+                }
+            }
+        }
+    }
+
+    pub fn set_src_ip(&mut self, address: IpAddr) {
+        self.src_ip = address;
+    }
+
+    pub fn set_dst_ip(&mut self, address: IpAddr) {
+        self.dst_ip = address;
+    }
+
+    pub fn set_ip_proto_key(&mut self, proto_key_info: IpProtoKey) {
+        self.proto_key_info = proto_key_info;
     }
 
     #[must_use]
