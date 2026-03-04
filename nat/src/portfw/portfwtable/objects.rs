@@ -28,11 +28,11 @@ use super::portrange::PortRange;
 #[derive(Clone, Debug)]
 pub struct PortFwEntry {
     pub(crate) key: PortFwKey,
-    pub(crate) dst_vpcd: VpcDiscriminant,
-    pub(crate) ext_prefix: Prefix,   // external prefix to translate
-    pub(crate) int_prefix: Prefix,   // internal prefix we translate into
-    pub(crate) ext_ports: PortRange, // external ports to translate
-    pub(crate) int_ports: PortRange, // internal ports we transtale into
+    pub(crate) dst_vpcd: VpcDiscriminant, // vpc to send packet to
+    pub(crate) ext_prefix: Prefix,        // external prefix to translate
+    pub(crate) int_prefix: Prefix,        // internal prefix we translate into
+    pub(crate) ext_ports: PortRange,      // external ports to translate
+    pub(crate) int_ports: PortRange,      // internal ports we translate into
     pub(crate) init_timeout: Arc<AtomicU64>,
     pub(crate) estab_timeout: Arc<AtomicU64>,
 }

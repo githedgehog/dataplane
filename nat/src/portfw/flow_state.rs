@@ -6,16 +6,17 @@
 #![allow(clippy::single_match_else)]
 
 use net::buffer::PacketBufferMut;
+use net::flow_key::Uni;
+use net::flows::{ExtractRef, FlowStatus};
 use net::ip::UnicastIpAddr;
-use net::packet::Packet;
+use net::packet::{Packet, VpcDiscriminant};
+use net::{FlowKey, IpProtoKey};
+
 use std::fmt::Display;
 use std::num::NonZero;
 use std::sync::{Arc, Weak};
 
 use flow_entry::flow_table::FlowInfo;
-use net::FlowKey;
-use net::flow_key::Uni;
-use net::flows::{ExtractRef, FlowStatus};
 
 use crate::portfw::PortFwEntry;
 use crate::portfw::protocol::{AtomicPortFwFlowStatus, PortFwFlowStatus, next_flow_status};
@@ -111,18 +112,39 @@ impl Display for PortFwState {
     }
 }
 
-pub(crate) fn setup_forward_flow<Buf: PacketBufferMut>(
+// Build the flow keys for a port-forwarding flow
+pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>, // packet to be port-forwarded (in the forward path)
+    new_dst_ip: UnicastIpAddr, // destination ip to forward to
+    new_dst_port: NonZero<u16>, // destination port to forward to
+    dst_vpcd: VpcDiscriminant, // destination VPC to forward to
+) -> (FlowKey, FlowKey) {
+    // build the keys for the forward path and the reverse path.
+    let key_forward = FlowKey::try_from(Uni(&*packet)).unwrap_or_else(|_| unreachable!());
+    let proto = key_forward.data().proto();
+    let src_port = key_forward
+        .data()
+        .src_port()
+        .unwrap_or_else(|| unreachable!());
+
+    let mut key_forward_dnated = key_forward;
+    key_forward_dnated.data_mut().set_dst_ip(new_dst_ip.inner());
+    key_forward_dnated
+        .data_mut()
+        .set_ip_proto_key(IpProtoKey::from((proto, src_port, new_dst_port)));
+    let key_reverse = key_forward_dnated.reverse(Some(dst_vpcd));
+
+    (key_forward, key_reverse)
+}
+
+pub(crate) fn setup_forward_flow(
+    flow_key: &FlowKey,
     forward_flow: &Arc<FlowInfo>,
-    packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
     new_dst_ip: UnicastIpAddr,
     new_dst_port: NonZero<u16>,
-) -> (FlowKey, AtomicPortFwFlowStatus) {
-    // build flow key for the forward path from the original packet
-    let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
-    let flow_key = FlowKey::try_from(Uni(&*packet)).unwrap_or_else(|_| unreachable!());
-
-    // build port forwarding state to the forward flow
+) -> AtomicPortFwFlowStatus {
+    // build port forwarding state for the forward flow
     let status = AtomicPortFwFlowStatus::new();
     let port_fw_state = PortFwState::new_dnat(
         new_dst_ip,
@@ -134,42 +156,33 @@ pub(crate) fn setup_forward_flow<Buf: PacketBufferMut>(
     // set the port forwarding state in the flow
     if let Ok(mut write_guard) = forward_flow.locked.write() {
         write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
+        write_guard.dst_vpcd = Some(Box::new(entry.dst_vpcd));
     } else {
         unreachable!()
     }
     debug!("Set up FORWARD flow for port-forwarding;\nkey={flow_key}\ninfo={forward_flow}");
-    (flow_key, status)
+    status
 }
 
-pub(crate) fn setup_reverse_flow<Buf: PacketBufferMut>(
+pub(crate) fn setup_reverse_flow(
+    reverse_key: &FlowKey,
     reverse_flow: &Arc<FlowInfo>,
-    packet: &mut Packet<Buf>,
     entry: &Arc<PortFwEntry>,
     dst_ip: UnicastIpAddr,
     dst_port: NonZero<u16>,
     status: AtomicPortFwFlowStatus,
-) -> FlowKey {
-    // create the flow key for the reverse flow. This can't fail because the packet qualified for port-forwarding.
-    // We derive the key for the reverse flow from the packet that we already destination NATed
-    let dst_vpcd = packet.meta_mut().dst_vpcd.unwrap_or_else(|| unreachable!());
-    let src_vpcd = packet.meta_mut().src_vpcd.unwrap_or_else(|| unreachable!());
-    let flow_key = FlowKey::try_from(Uni(&*packet))
-        .unwrap_or_else(|_| unreachable!())
-        .reverse(Some(dst_vpcd));
-
-    // build port forwarding state for the reverse flow
+) {
+    // build port forwarding state for the REVERSE flow
     let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);
 
     // set the port forwarding state in the flow
     if let Ok(mut write_guard) = reverse_flow.locked.write() {
         write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(Box::new(src_vpcd));
+        write_guard.dst_vpcd = Some(Box::new(entry.key.src_vpcd()));
     } else {
         unreachable!()
     }
-    debug!("Set up REVERSE flow for port-forwarding;\nkey={flow_key}\ninfo={reverse_flow}");
-    flow_key
+    debug!("Set up REVERSE flow for port-forwarding;\nkey={reverse_key}\ninfo={reverse_flow}");
 }
 
 /// Check if the flow entry that a packet was annotated with contains any _VALID_
