@@ -7,8 +7,9 @@ mod nf_test {
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
 
     use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};
-    use flow_info::{ExtractRef, FlowStatus};
     use net::buffer::TestBuffer;
+    use net::flows::FlowStatus;
+    use net::flows::flow_info_item::ExtractRef;
     use net::headers::TryTcpMut;
     use net::ip::NextHeader;
     use net::packet::test_utils::{build_test_tcp_ipv4_packet, build_test_udp_ipv4_packet};

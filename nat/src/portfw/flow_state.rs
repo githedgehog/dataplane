@@ -13,9 +13,9 @@ use std::num::NonZero;
 use std::sync::{Arc, Weak};
 
 use flow_entry::flow_table::FlowInfo;
-use flow_info::{ExtractRef, FlowStatus};
 use net::FlowKey;
 use net::flow_key::Uni;
+use net::flows::{ExtractRef, FlowStatus};
 
 use crate::portfw::PortFwEntry;
 use crate::portfw::protocol::{AtomicPortFwFlowStatus, PortFwFlowStatus, next_flow_status};

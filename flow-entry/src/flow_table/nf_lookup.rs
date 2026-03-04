@@ -57,10 +57,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
 
 #[cfg(test)]
 mod test {
-    use flow_info::FlowInfo;
     use net::FlowKey;
     use net::buffer::PacketBufferMut;
     use net::buffer::TestBuffer;
+    use net::flows::FlowInfo;
     use net::ip::NextHeader;
     use net::ip::UnicastIpAddr;
     use net::packet::Packet;

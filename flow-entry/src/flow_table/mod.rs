@@ -9,8 +9,8 @@ mod thread_local_pq;
 
 pub use table::FlowTable;
 
-pub use ::flow_info::atomic_instant::AtomicInstant;
-pub use ::flow_info::*;
+pub use net::flows::atomic_instant::AtomicInstant;
+pub use net::flows::flow_info::*;
 pub use nf_expirations::ExpirationsNF;
 pub use nf_lookup::FlowLookup;
 

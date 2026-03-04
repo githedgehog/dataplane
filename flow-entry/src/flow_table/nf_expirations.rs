@@ -41,8 +41,8 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for ExpirationsNF {
 
 #[cfg(test)]
 mod test {
-    use flow_info::FlowInfo;
     use net::buffer::TestBuffer;
+    use net::flows::FlowInfo;
     use net::ip::UnicastIpAddr;
     use net::packet::Packet;
     use net::packet::VpcDiscriminant;
@@ -126,7 +126,7 @@ mod test {
                 flow_info
                     .upgrade()
                     .unwrap()
-                    .update_status(flow_info::FlowStatus::Cancelled);
+                    .update_status(net::flows::FlowStatus::Cancelled);
             }
         }
 

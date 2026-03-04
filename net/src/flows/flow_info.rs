@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::expect_used)]
+
 use concurrency::sync::Arc;
 use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
@@ -8,7 +10,7 @@ use std::fmt::{Debug, Display};
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
 
-use crate::{AtomicInstant, FlowInfoItem};
+use super::{AtomicInstant, FlowInfoItem};
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -173,7 +175,9 @@ impl FlowInfo {
     /// This associated function creates a pair of related `FlowInfo`s by construction. The intended usage is
     /// to call this function when a couple of related flow entries are needed and later insert them in the
     /// flow-table.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
+    #[allow(clippy::unwrap_used)]
     pub fn related_pair(expires_at: Instant) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
         let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
@@ -187,6 +191,8 @@ impl FlowInfo {
         let one_weak = Arc::downgrade(&one);
         let two_weak = Arc::downgrade(&two);
 
+        #[allow(unsafe_code)]
+        #[allow(clippy::ptr_as_ptr)]
         unsafe {
             let one_weak = Weak::from_raw(Weak::into_raw(one_weak) as *const Self);
             let two_weak = Weak::from_raw(Weak::into_raw(two_weak) as *const Self);
@@ -321,13 +327,13 @@ impl FlowInfo {
 impl Display for FlowInfoLocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(data) = &self.dst_vpcd {
-            writeln!(f, "      dst-vpcd:{}", data)?;
+            writeln!(f, "      dst-vpcd:{data}")?;
         }
         if let Some(data) = &self.port_fw_state {
-            writeln!(f, "      port-forwarding:{}", data)?;
+            writeln!(f, "      port-forwarding:{data}")?;
         }
         if let Some(data) = &self.nat_state {
-            writeln!(f, "      nat-state:{}", data)?;
+            writeln!(f, "      nat-state:{data}")?;
         }
         Ok(())
     }
@@ -339,23 +345,21 @@ impl Display for FlowInfo {
         let expires_in = expires_at.saturating_duration_since(Instant::now());
         writeln!(f)?;
         if let Ok(info) = self.locked.try_read() {
-            write!(f, "{}", info)?;
+            write!(f, "{info}")?;
         } else {
             write!(f, "could not lock!")?;
         }
         let has_related = self
             .related
             .as_ref()
-            .and_then(|flow| flow.upgrade())
-            .map(|_| "yes")
-            .unwrap_or("no");
+            .and_then(std::sync::Weak::upgrade)
+            .map_or("no", |_| "yes");
 
         writeln!(
             f,
-            "      status: {:?}, expires in {}s, related: {}",
+            "      status: {:?}, expires in {}s, related: {has_related}",
             self.status,
             expires_in.as_secs(),
-            has_related
         )
     }
 }
