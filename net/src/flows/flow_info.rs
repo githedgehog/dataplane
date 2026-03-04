@@ -8,11 +8,11 @@ use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
 use std::fmt::{Debug, Display};
 use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{AtomicInstant, FlowInfoItem};
-
-use std::sync::atomic::{AtomicU8, Ordering};
+use crate::FlowKey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowInfoError {
@@ -141,6 +141,7 @@ pub struct FlowInfoLocked {
 #[derive(Debug)]
 pub struct FlowInfo {
     expires_at: AtomicInstant,
+    flowkey: Option<FlowKey>,
     status: AtomicFlowStatus,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
@@ -154,10 +155,20 @@ impl FlowInfo {
     pub fn new(expires_at: Instant) -> Self {
         Self {
             expires_at: AtomicInstant::new(expires_at),
+            flowkey: None,
             status: AtomicFlowStatus::from(FlowStatus::Active),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
         }
+    }
+
+    pub fn set_flowkey(&mut self, key: FlowKey) {
+        self.flowkey = Some(key);
+    }
+
+    #[must_use]
+    pub fn flowkey(&self) -> Option<&FlowKey> {
+        self.flowkey.as_ref()
     }
 
     /// We want to create a pair of `FlowInfo`s that are mutually related via a `Weak` references so that no lookup
@@ -199,12 +210,14 @@ impl FlowInfo {
             // overwrite the memory locations with the FlowInfo's
             one_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
+                flowkey: None,
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(two_weak),
             });
             two_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
+                flowkey: None,
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(one_weak),
