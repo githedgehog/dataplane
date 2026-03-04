@@ -6,9 +6,9 @@
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
 use flow_entry::flow_table::FlowInfo;
 use flow_entry::flow_table::FlowTable;
-use flow_info::ExtractMut;
-use flow_info::ExtractRef;
 use net::buffer::PacketBufferMut;
+use net::flows::ExtractMut;
+use net::flows::ExtractRef;
 use net::headers::{TryIp, TryTcp, TryTransport};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};

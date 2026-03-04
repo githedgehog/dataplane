@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 config = { workspace = true }
-flow-info = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
 lpm = { workspace = true }

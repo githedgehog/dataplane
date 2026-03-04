@@ -1326,7 +1326,6 @@ dependencies = [
  "bolero",
  "dashmap",
  "dataplane-concurrency",
- "dataplane-flow-info",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
@@ -1345,7 +1344,6 @@ name = "dataplane-flow-filter"
 version = "0.12.0"
 dependencies = [
  "dataplane-config",
- "dataplane-flow-info",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
@@ -1354,16 +1352,6 @@ dependencies = [
  "linkme",
  "tracing",
  "tracing-test",
-]
-
-[[package]]
-name = "dataplane-flow-info"
-version = "0.12.0"
-dependencies = [
- "atomic-instant-full",
- "dataplane-concurrency",
- "downcast-rs",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1556,7 +1544,6 @@ dependencies = [
  "dataplane-config",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
- "dataplane-flow-info",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-pipeline",
@@ -1580,13 +1567,14 @@ version = "0.12.0"
 dependencies = [
  "ahash",
  "arrayvec",
+ "atomic-instant-full",
  "bitflags 2.11.0",
  "bolero",
  "bytecheck",
  "dataplane-concurrency",
- "dataplane-flow-info",
  "dataplane-id",
  "derive_builder 0.20.2",
+ "downcast-rs",
  "etherparse",
  "linux-raw-sys 0.12.1",
  "multi_index_map",

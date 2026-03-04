@@ -14,10 +14,10 @@
 //!   peerings, get dropped.
 
 use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
-use flow_info::FlowStatus;
-use flow_info::flow_info_item::ExtractRef;
 use lpm::prefix::L4Protocol;
 use net::buffer::PacketBufferMut;
+use net::flows::FlowStatus;
+use net::flows::flow_info_item::ExtractRef;
 use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
@@ -391,9 +391,9 @@ mod tests {
     use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
-    use flow_info::FlowInfo;
     use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
     use net::buffer::TestBuffer;
+    use net::flows::FlowInfo;
     use net::headers::{Net, TryHeadersMut, TryIpMut};
     use net::ip::NextHeader;
     use net::ipv4::addr::UnicastIpv4Addr;

@@ -13,7 +13,7 @@ use tracing::debug;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
 use crate::flow_table::thread_local_pq::{PQAction, ThreadLocalPriorityQueue};
-use crate::flow_table::{FlowInfo, FlowStatus};
+use net::flows::{FlowInfo, FlowStatus};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowTableError {

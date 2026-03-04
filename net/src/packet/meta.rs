@@ -3,6 +3,7 @@
 
 #![allow(missing_docs)] // TODO
 
+use crate::flows::FlowInfo;
 use crate::interface::InterfaceIndex;
 use crate::ip::dscp::Dscp;
 use crate::ip::ecn::Ecn;
@@ -10,7 +11,6 @@ use crate::vxlan::Vni;
 
 use bitflags::bitflags;
 use concurrency::sync::Arc;
-use flow_info::FlowInfo;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Display;
