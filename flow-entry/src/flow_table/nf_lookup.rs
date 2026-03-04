@@ -196,7 +196,8 @@ mod test {
             let key_2 = FlowKey::try_from(net::flow_key::Uni(&packet_2)).unwrap();
 
             // create a pair of related flow entries; flow_2 will get a longer timeout
-            let (flow_1, flow_2) = FlowInfo::related_pair(Instant::now() + Duration::from_secs(2));
+            let duration = Instant::now() + Duration::from_secs(2);
+            let (flow_1, flow_2) = FlowInfo::related_pair(duration, Some(key_1), Some(key_2));
             assert_eq!(Arc::weak_count(&flow_1), 1);
             assert_eq!(Arc::weak_count(&flow_2), 1);
             assert_eq!(Arc::strong_count(&flow_1), 1);

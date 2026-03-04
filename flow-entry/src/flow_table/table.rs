@@ -108,7 +108,7 @@ impl FlowTable {
             assert_eq!(
                 *key, &flow_key,
                 "Attempted to insert a flow with key: {key} with a distinct key: {flow_key}"
-            )
+            );
         });
 
         // embed the key in the flow if it did not provide one
@@ -129,13 +129,20 @@ impl FlowTable {
     ///
     /// # Panics
     ///
-    /// Panics if this thread already holds the read lock on the table or
-    /// if the table lock is poisoned.
+    /// Panics if:
+    ///   - this thread already holds the read lock on the table or if the table lock is poisoned.
+    ///   - if the `flow_info` to insert has a key different from `flow_key`
     pub fn insert_from_arc(
         &self,
         flow_key: FlowKey,
         flow_info: &Arc<FlowInfo>,
     ) -> Option<Arc<FlowInfo>> {
+        flow_info.flowkey().inspect(|key| {
+            assert_eq!(
+                *key, &flow_key,
+                "Attempted to insert a flow with key: {key} with a distinct key: {flow_key}"
+            );
+        });
         debug!("insert: Inserting flow key {:?}", flow_key);
         self.insert_common(flow_key, flow_info)
     }

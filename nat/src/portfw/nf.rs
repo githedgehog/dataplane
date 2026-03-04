@@ -109,7 +109,8 @@ impl PortForwarder {
         debug!("Will translate {dst_ip}:{dst_port} -> {new_dst_ip}:{new_dst_port} as per {entry}");
 
         // crate a pair of related flow entries (outside the flow table). Timeout is set according to the rule
-        let (forward, reverse) = FlowInfo::related_pair(Instant::now() + entry.init_timeout());
+        let timeout = Instant::now() + entry.init_timeout();
+        let (forward, reverse) = FlowInfo::related_pair(timeout, None, None); // FIXME
 
         // set up a flow in the forward direction for subsequent packets
         let (key_fw, status) =

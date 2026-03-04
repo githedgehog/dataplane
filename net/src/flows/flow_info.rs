@@ -186,10 +186,25 @@ impl FlowInfo {
     /// This associated function creates a pair of related `FlowInfo`s by construction. The intended usage is
     /// to call this function when a couple of related flow entries are needed and later insert them in the
     /// flow-table.
+    ///
+    /// # Panics
+    ///   This function panics if two equal keys are provided
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     #[allow(clippy::unwrap_used)]
-    pub fn related_pair(expires_at: Instant) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
+    pub fn related_pair(
+        expires_at: Instant,
+        key1: Option<FlowKey>,
+        key2: Option<FlowKey>,
+    ) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
+        // keys MUST differ
+        key1.inspect(|key1| {
+            assert!(
+                Some(key1) != key2.as_ref(),
+                "Attempted to build two flow entries with identical key {key1}"
+            );
+        });
+
         let mut one: Arc<MaybeUninit<Self>> = Arc::new_uninit();
         let mut two: Arc<MaybeUninit<Self>> = Arc::new_uninit();
 
@@ -210,14 +225,14 @@ impl FlowInfo {
             // overwrite the memory locations with the FlowInfo's
             one_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
-                flowkey: None,
+                flowkey: key1,
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(two_weak),
             });
             two_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
-                flowkey: None,
+                flowkey: key2,
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(one_weak),
