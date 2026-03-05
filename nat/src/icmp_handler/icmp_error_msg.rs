@@ -4,8 +4,8 @@
 //! NAT processing for `ICMPv4` and `ICMPv6` Error messages with embedded IP packets, common to
 //! stateless and stateful NAT modes
 
-use super::NatTranslationData;
 use crate::NatPort;
+use crate::NatTranslationData;
 use net::buffer::PacketBufferMut;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{

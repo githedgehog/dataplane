@@ -7,7 +7,7 @@ pub mod natrw;
 pub mod setup;
 pub(crate) mod test;
 
-use crate::icmp_error_msg::{
+use crate::icmp_handler::icmp_error_msg::{
     IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,
 };
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
