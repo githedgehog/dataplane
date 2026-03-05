@@ -22,6 +22,7 @@
 //!   be equal to the total number of publicly exposed addresses in this object.
 
 mod icmp_error_msg;
+mod icmp_handler;
 mod port;
 pub mod portfw;
 mod ranges;
