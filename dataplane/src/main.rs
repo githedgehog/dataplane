@@ -17,8 +17,8 @@ use drivers::kernel::DriverKernel;
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
 use nix::unistd::gethostname;
-use pyroscope::PyroscopeAgent;
-use pyroscope_pprofrs::{PprofConfig, pprof_backend};
+use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
+use pyroscope::pyroscope::PyroscopeAgentBuilder;
 
 use routing::{BmpServerParams, RouterParamsBuilder};
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -135,13 +135,21 @@ fn main() {
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
     let agent_running = args.pyroscope_url().and_then(|url| {
-        match PyroscopeAgent::builder(url.as_str(), "hedgehog-dataplane")
-            .backend(pprof_backend(
-                PprofConfig::new()
-                    .sample_rate(100) // Hz
-                    .report_thread_name(),
-            ))
-            .build()
+        match PyroscopeAgentBuilder::new(
+            url.as_str(),
+            "hedgehog-dataplane",
+            100u32,
+            "pyroscope-rs",
+            "1.0.2", // To keep in sync with pyroscope dependency in toplevel Cargo.toml!
+            pprof_backend(
+                PprofConfig { sample_rate: 100 },
+                BackendConfig {
+                    report_thread_name: true,
+                    ..BackendConfig::default()
+                },
+            ),
+        )
+        .build()
         {
             Ok(agent) => match agent.start() {
                 Ok(running) => Some(running),

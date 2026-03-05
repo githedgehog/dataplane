@@ -36,7 +36,6 @@ ordermap = { workspace = true, features = ["std"] }
 parking_lot = { workspace = true }
 pipeline = { workspace = true }
 pyroscope = { workspace = true }
-pyroscope_pprofrs = { workspace = true }
 routing = { workspace = true }
 rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["derive"] }
