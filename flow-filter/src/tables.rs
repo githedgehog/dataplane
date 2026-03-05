@@ -55,16 +55,20 @@ pub(crate) enum VpcdLookupResult {
 //   DstConnectionData:    IpPortPrefixTrie<RemotePortRangesData>
 //   RemotePortRangesData: PortRangeMap<VpcdLookupResult>    (by dst port)
 #[derive(Debug, Clone)]
-pub struct FlowFilterTable(HashMap<VpcDiscriminant, VpcConnectionsTable>);
+pub struct FlowFilterTable {
+    with_ports: HashMap<VpcDiscriminant, VpcConnectionsTable>,
+}
 
 impl FlowFilterTable {
     #[allow(clippy::new_without_default)]
     pub(crate) fn new() -> Self {
-        Self(HashMap::new())
+        Self {
+            with_ports: HashMap::new(),
+        }
     }
 
     fn get_or_create_table(&mut self, src_vpcd: VpcDiscriminant) -> &mut VpcConnectionsTable {
-        self.0
+        self.with_ports
             .entry(src_vpcd)
             .or_insert_with(VpcConnectionsTable::new)
     }
@@ -77,7 +81,7 @@ impl FlowFilterTable {
         ports: Option<(u16, u16)>,
     ) -> Option<VpcdLookupResult> {
         // Get the table related to the source VPC for the packet
-        let Some(table) = self.0.get(&src_vpcd) else {
+        let Some(table) = self.with_ports.get(&src_vpcd) else {
             debug!("Could not find connections table for VPC {src_vpcd}");
             return None;
         };
