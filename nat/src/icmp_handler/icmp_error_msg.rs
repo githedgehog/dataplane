@@ -10,10 +10,10 @@ use net::buffer::PacketBufferMut;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{
     EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
-    TryHeaders, TryInnerIpMut, TryInnerIpv4, TryIp, TryTransport,
+    TryIcmpAny, TryInnerIpMut, TryInnerIpv4, TryIp,
 };
 use net::icmp_any::TruncatedIcmpAny;
-use net::icmp_any::{IcmpAny, IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
+use net::icmp_any::{IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
 use net::ipv4::Ipv4;
 use net::packet::Packet;
 use std::net::IpAddr;
@@ -44,17 +44,11 @@ pub enum IcmpErrorMsgError {
 pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
 ) -> Result<bool, IcmpErrorMsgError> {
-    let headers = packet.headers();
-    let Some(net) = headers.try_ip() else {
+    let Some(net) = packet.try_ip() else {
         // No network layer, no translation needed
         return Ok(false);
     };
-    let Some(transport) = packet.headers().try_transport() else {
-        // No transport layer, no translation needed
-        return Ok(false);
-    };
-
-    let Ok(icmp) = IcmpAny::try_from(transport) else {
+    let Some(icmp) = packet.try_icmp_any() else {
         // Not ICMPv4 or ICMPv6, no translation needed
         return Ok(false);
     };
@@ -357,6 +351,7 @@ mod bolero_tests {
     use super::*;
     use crate::NatPort;
     use net::buffer::TestBuffer;
+    use net::headers::TryHeaders;
     use net::headers::{
         Net, TryEmbeddedTransport, TryIcmpAnyMut, TryInnerIp, TryInnerIpv4Mut, TryIpv4,
     };
