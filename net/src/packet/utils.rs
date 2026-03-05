@@ -13,8 +13,8 @@ use crate::eth::mac::{
 };
 use crate::headers::Net::{Ipv4, Ipv6};
 use crate::headers::{
-    EmbeddedTransport, Transport, TryEmbeddedTransportMut, TryEth, TryEthMut, TryInnerIpMut, TryIp,
-    TryIpMut, TryTcp, TryTransport, TryTransportMut, TryUdp,
+    EmbeddedTransport, Transport, TryEmbeddedTransportMut, TryEth, TryEthMut, TryIcmpAny,
+    TryInnerIpMut, TryIp, TryIpMut, TryTcp, TryTransport, TryTransportMut, TryUdp,
 };
 use crate::icmp_any::TruncatedIcmpAny;
 use crate::ip::{NextHeader, UnicastIpAddr};
@@ -171,6 +171,14 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self.try_transport().is_some_and(|transport| {
             matches!(transport, Transport::Icmp4(_)) || matches!(transport, Transport::Icmp6(_))
         })
+    }
+
+    /// Is this an ICMP error packet?
+    pub fn is_icmp_error(&self) -> bool {
+        match self.try_icmp_any() {
+            Some(icmp) => icmp.is_error_message(),
+            None => false,
+        }
     }
 
     /// UDP source port
