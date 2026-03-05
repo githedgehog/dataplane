@@ -8,7 +8,7 @@ mod natip;
 mod test;
 
 use super::NatTranslationData;
-use crate::icmp_error_msg::{
+use crate::icmp_handler::icmp_error_msg::{
     IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,
 };
 use crate::stateful::allocator::{AllocationResult, AllocatorError, NatAllocator};
