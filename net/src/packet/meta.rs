@@ -105,6 +105,8 @@ pub enum DoneReason {
     Local,                /* the packet has to be locally consumed by kernel */
     Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
     InternalDrop,         /* the packet was dropped internally due to a queue being full */
+    InvalidChecksum,      /* the validation of a checksum for this packet failed */
+    IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
 }
 
 bitflags! {
