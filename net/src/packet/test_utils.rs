@@ -39,6 +39,37 @@ use crate::ip::dscp::Dscp;
 use crate::ip::ecn::Ecn;
 use crate::vxlan::{Vni, Vxlan};
 
+fn make_default_for_transport(transport_type: Option<NextHeader>) -> Option<Transport> {
+    match transport_type {
+        Some(NextHeader::TCP) => {
+            let mut tcp = Tcp::default();
+            tcp.set_source(123.try_into().unwrap());
+            tcp.set_destination(456.try_into().unwrap());
+            tcp.set_syn(true);
+            tcp.set_sequence_number(1);
+            Some(Transport::Tcp(tcp))
+        }
+        Some(NextHeader::UDP) => {
+            let mut udp = Udp::empty();
+            udp.set_source(123.try_into().unwrap());
+            udp.set_destination(456.try_into().unwrap());
+            Some(Transport::Udp(udp))
+        }
+        Some(transport_type) => {
+            panic!("make_default_for_transport: Unsupported transport type: {transport_type:?}")
+        }
+        None => None,
+    }
+}
+
+fn make_default_for_eth(ethtype: EthType) -> Eth {
+    Eth::new(
+        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
+        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
+        ethtype,
+    )
+}
+
 #[must_use]
 /// Builds a test ipv4 packet with the given TTL value and transport type.
 ///
@@ -58,35 +89,9 @@ pub fn build_test_ipv4_packet_with_transport(
     transport_type: Option<NextHeader>,
 ) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     let mut headers = HeadersBuilder::default();
+    let mut transport = make_default_for_transport(transport_type);
 
-    let mut transport = match transport_type {
-        Some(NextHeader::TCP) => {
-            let mut tcp = Tcp::default();
-            tcp.set_source(123.try_into().unwrap());
-            tcp.set_destination(456.try_into().unwrap());
-            tcp.set_syn(true);
-            tcp.set_sequence_number(1);
-            Some(Transport::Tcp(tcp))
-        }
-
-        Some(NextHeader::UDP) => {
-            let mut udp = Udp::empty();
-            udp.set_source(123.try_into().unwrap());
-            udp.set_destination(456.try_into().unwrap());
-            Some(Transport::Udp(udp))
-        }
-
-        Some(transport_type) => panic!(
-            "build_test_ipv4_packet_with_transport: Unsupported transport type: {transport_type:?}"
-        ),
-        None => None,
-    };
-
-    headers.eth(Some(Eth::new(
-        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-        EthType::IPV4,
-    )));
+    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
     let mut ipv4 = Ipv4::default();
     ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
     ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
@@ -187,7 +192,6 @@ pub fn build_test_udp_ipv4_packet(
 
 #[must_use]
 #[allow(unsafe_code)]
-/// Builds a UDP/IPv4/Eth frame
 pub fn build_test_tcp_ipv4_packet(
     src_ip: &str,
     dst_ip: &str,
@@ -228,11 +232,7 @@ pub fn build_test_tcp_ipv4_packet(
 /// respectively.
 pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
     let mut headers = HeadersBuilder::default();
-    headers.eth(Some(Eth::new(
-        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-        EthType::IPV6,
-    )));
+    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
     let mut ipv6 = Ipv6::default();
     // To construct an Ipv6Addr from a string, use FromStr or "::1.2.3.4".parse()
     ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
@@ -278,11 +278,7 @@ pub fn build_test_icmp4_destination_unreachable_packet(
     let mut headers = HeadersBuilder::default();
 
     // Ethernet
-    headers.eth(Some(Eth::new(
-        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-        EthType::IPV4,
-    )));
+    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
 
     // Inner transport
     let mut inner_transport;
@@ -401,11 +397,7 @@ pub fn build_test_icmp4_echo(
     let mut headers = HeadersBuilder::default();
 
     // Ethernet
-    headers.eth(Some(Eth::new(
-        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-        EthType::IPV4,
-    )));
+    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
 
     // ICMP Echo header
     let echo_header = IcmpEchoHeader {
@@ -468,11 +460,7 @@ pub fn build_test_vxlan_ipv4_packet_with_outer_qos(
 
     // Outer headers
     let mut headers = HeadersBuilder::default();
-    headers.eth(Some(Eth::new(
-        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-        EthType::IPV4,
-    )));
+    headers.eth(Some(make_default_for_eth(EthType::IPV4)));
 
     let mut ipv4 = Ipv4::default();
     ipv4.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(1, 2, 3, 4)).unwrap());
@@ -536,11 +524,7 @@ pub fn build_test_vxlan_ipv6_packet_with_outer_qos(
     let udp_len_u16: u16 = udp_total_len.try_into().unwrap();
 
     let mut headers = HeadersBuilder::default();
-    headers.eth(Some(Eth::new(
-        SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-        DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-        EthType::IPV6,
-    )));
+    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
 
     let mut ipv6 = Ipv6::default();
     ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
