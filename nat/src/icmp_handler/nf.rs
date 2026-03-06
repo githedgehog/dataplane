@@ -20,6 +20,9 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use tracectl::trace_target;
+
+use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
+
 trace_target!("icmp-errors", LevelFilter::INFO, &["nat", "pipeline"]);
 
 pub struct IcmpErrorHandler {
@@ -148,9 +151,7 @@ impl IcmpErrorHandler {
             .extract_ref::<VpcDiscriminant>()
             .copied()
         else {
-            warn!(
-                "Flow-info for {rev_flow_key} has no destination VPC discriminant. This is a bug"
-            );
+            warn!("Flow-info for {rev_flow_key} has no dst VPC discriminant. This is a bug");
             packet.done(DoneReason::InternalFailure);
             return;
         };
@@ -158,11 +159,7 @@ impl IcmpErrorHandler {
         // burn the dst vpcd in the packet. This NF offloads the flow-filter from doing that
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
 
-        // mark which NF should handle the packet.
-        // We should in reality process the packets here given that we already know
-        // the flow that the offending packet relates to, and that knowledge would
-        // be lost if we'd let the packet go here... unless we associated it with
-        // the flow which we just found, but that may be confusing.
+        // process the packet depending on the state of the flow
         if flow_info_locked.nat_state.is_some() {
             packet.meta_mut().set_stateful_nat(true);
             //
@@ -170,12 +167,9 @@ impl IcmpErrorHandler {
             // This may be done in a submodule-specific function
             //
         } else if flow_info_locked.port_fw_state.is_some() {
-            packet.meta_mut().set_port_forwarding(true);
-            //
-            // TODO: process icmp error according to port forwarding.
-            // This may be done in a submodule-specific function
-            //
+            handle_icmp_error_port_forwarding(packet, flow.as_ref());
         } else {
+            debug!("Found no specific NAT state to process ICMP error message. Dropping...");
             // This can't happen atm since the only NFs that create flows are stateful NAT
             // and port-forwarding. If we hit a flow that does not have either of those set
             // that's, atm, a bug in either of them.
