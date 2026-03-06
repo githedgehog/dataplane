@@ -760,7 +760,7 @@ mod tests {
         let src_addr = "10.0.0.1".parse().unwrap();
         let dst_addr = "20.0.0.1".parse().unwrap();
 
-        let result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        let result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((2000, 3000)));
         assert!(result.is_none());
     }
 
@@ -788,17 +788,17 @@ mod tests {
         // Should allow traffic from src to dst
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.10".parse().unwrap();
-        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        let vpcd_result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((2000, 3000)));
         assert_eq!(vpcd_result, Some(dst_data_result));
 
         // Should not allow traffic from different src
         let wrong_src_addr = "10.1.0.5".parse().unwrap();
-        let vpcd_result = table.lookup(src_vpcd, &wrong_src_addr, &dst_addr, None);
+        let vpcd_result = table.lookup(src_vpcd, &wrong_src_addr, &dst_addr, Some((2000, 3000)));
         assert!(vpcd_result.is_none());
 
         // Should not allow traffic to different dst
         let wrong_dst_addr = "30.0.0.10".parse().unwrap();
-        let result = table.lookup(src_vpcd, &src_addr, &wrong_dst_addr, None);
+        let result = table.lookup(src_vpcd, &src_addr, &wrong_dst_addr, Some((2000, 3000)));
         assert!(result.is_none());
     }
 
@@ -888,11 +888,21 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
 
         // Should route to dst_vpcd1
-        let result = table.lookup(src_vpcd, &src_addr, &"20.0.0.10".parse().unwrap(), None);
+        let result = table.lookup(
+            src_vpcd,
+            &src_addr,
+            &"20.0.0.10".parse().unwrap(),
+            Some((2000, 3000)),
+        );
         assert_eq!(result, Some(dst_data_result1));
 
         // Should route to dst_vpcd2
-        let vpcd_result = table.lookup(src_vpcd, &src_addr, &"30.0.0.10".parse().unwrap(), None);
+        let vpcd_result = table.lookup(
+            src_vpcd,
+            &src_addr,
+            &"30.0.0.10".parse().unwrap(),
+            Some((2000, 3000)),
+        );
         assert_eq!(vpcd_result, Some(dst_data_result2));
     }
 
@@ -981,7 +991,7 @@ mod tests {
 
         let src_addr = "2001:db8::1".parse().unwrap();
         let dst_addr = "2001:db9::1".parse().unwrap();
-        let result = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        let result = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((2000, 3000)));
         assert_eq!(result, Some(dst_data_result));
     }
 
@@ -1031,7 +1041,7 @@ mod tests {
             src_vpcd,
             &"10.0.1.5".parse().unwrap(),
             &"20.0.1.10".parse().unwrap(),
-            None,
+            Some((2000, 3000)),
         );
         assert_eq!(result, Some(dst_data_result2));
 
@@ -1040,7 +1050,7 @@ mod tests {
             src_vpcd,
             &"10.0.2.5".parse().unwrap(),
             &"20.0.2.10".parse().unwrap(),
-            None,
+            Some((2000, 3000)),
         );
         assert_eq!(result, Some(dst_data_result1));
     }
@@ -1054,7 +1064,7 @@ mod tests {
             src_vpcd,
             &"10.0.0.1".parse().unwrap(),
             &"20.0.0.1".parse().unwrap(),
-            None,
+            Some((2000, 3000)),
         );
         assert!(result.is_none());
     }

@@ -1051,7 +1051,7 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap();
 
-        let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((2000, 3000)));
         assert_eq!(
             dst_data,
             Some(VpcdLookupResult::Single(RemoteData::new(
@@ -1121,7 +1121,7 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap(); // In overlapping segment
 
-        let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((2000, 3000)));
         assert_eq!(
             dst_vpcd,
             Some(VpcdLookupResult::MultipleMatches(HashSet::from([
@@ -1134,7 +1134,7 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.129".parse().unwrap(); // Not in overlapping segment
 
-        let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        let dst_vpcd = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((2000, 3000)));
         assert_eq!(
             dst_vpcd,
             // Note: We have a MultipleMatches variant with only one element: this happens because
@@ -1242,7 +1242,7 @@ mod tests {
         let src_addr = "10.0.0.5".parse().unwrap();
         let dst_addr = "20.0.0.5".parse().unwrap();
 
-        let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, None);
+        let dst_data = table.lookup(src_vpcd, &src_addr, &dst_addr, Some((2000, 3000)));
         assert_eq!(
             dst_data,
             Some(VpcdLookupResult::Single(RemoteData::new(
