@@ -22,6 +22,7 @@ use tracing::{debug, warn};
 use tracectl::trace_target;
 
 use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
+use crate::stateful::icmp_handling::handle_icmp_error_masquerading;
 
 trace_target!("icmp-errors", LevelFilter::INFO, &["nat", "pipeline"]);
 
@@ -161,11 +162,7 @@ impl IcmpErrorHandler {
 
         // process the packet depending on the state of the flow
         if flow_info_locked.nat_state.is_some() {
-            packet.meta_mut().set_stateful_nat(true);
-            //
-            // TODO: process icmp error according to masquerading/stateful NAT.
-            // This may be done in a submodule-specific function
-            //
+            handle_icmp_error_masquerading(packet, flow.as_ref());
         } else if flow_info_locked.port_fw_state.is_some() {
             handle_icmp_error_port_forwarding(packet, flow.as_ref());
         } else {

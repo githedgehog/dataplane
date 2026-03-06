@@ -4,6 +4,7 @@
 mod allocator;
 mod allocator_writer;
 pub mod apalloc;
+pub(crate) mod icmp_handling;
 mod natip;
 mod test;
 
@@ -63,7 +64,7 @@ pub enum StatefulNatError {
 }
 
 #[derive(Debug, Clone)]
-struct NatFlowState<I: NatIpWithBitmap> {
+pub(crate) struct NatFlowState<I: NatIpWithBitmap> {
     src_alloc: Option<AllocatedIpPort<I>>,
     dst_alloc: Option<AllocatedIpPort<I>>,
     idle_timeout: Duration,
