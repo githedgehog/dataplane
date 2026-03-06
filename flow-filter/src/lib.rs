@@ -1902,6 +1902,244 @@ mod tests {
         assert!(packets[0].meta().requires_port_forwarding());
     }
 
+    #[traced_test]
+    #[test]
+    fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap() {
+        let vni1 = Vni::new_checked(100).unwrap();
+        let vni2 = Vni::new_checked(200).unwrap();
+        let vni3 = Vni::new_checked(300).unwrap();
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
+            .unwrap();
+
+        let mut expose_port_forwarding_01_tcp = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
+                Some(PortRange::new(22, 22).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "20.10.90.100/32".into(),
+                Some(PortRange::new(2222, 2222).unwrap()),
+            ))
+            .unwrap();
+        expose_port_forwarding_01_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
+
+        let mut expose_port_forwarding_01_udp = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
+                Some(PortRange::new(53, 53).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "20.10.90.100/32".into(),
+                Some(PortRange::new(2053, 2053).unwrap()),
+            ))
+            .unwrap();
+        expose_port_forwarding_01_udp.nat.as_mut().unwrap().proto = L4Protocol::Udp;
+
+        let mut expose_port_forwarding_02_tcp = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
+                Some(PortRange::new(8080, 8080).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "20.10.90.100/32".into(),
+                Some(PortRange::new(80, 80).unwrap()),
+            ))
+            .unwrap();
+        expose_port_forwarding_02_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::with_default_group(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty()
+                            .ip("192.168.50.0/24".into())
+                            .ip("192.168.60.0/24".into()),
+                    ],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![
+                        expose_port_forwarding_01_tcp,
+                        expose_port_forwarding_01_udp,
+                        expose_port_forwarding_02_tcp,
+                        VpcExpose::empty().ip("192.168.80.0/24".into()),
+                    ],
+                },
+            ))
+            .unwrap();
+
+        peering_table
+            .add(VpcPeering::with_default_group(
+                "vpc1-to-vpc3",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty()
+                            .make_stateless_nat()
+                            .unwrap()
+                            .ip("192.168.50.0/24".into())
+                            .as_range("10.30.50.0/24".into())
+                            .unwrap(),
+                    ],
+                },
+                VpcManifest {
+                    name: "vpc3".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty().ip("192.168.100.0/24".into()),
+                        VpcExpose::empty()
+                            .make_stateless_nat()
+                            .unwrap()
+                            .ip("192.168.128.0/27".into())
+                            .as_range("30.10.128.0/27".into())
+                            .unwrap(),
+                    ],
+                },
+            ))
+            .unwrap();
+
+        peering_table
+            .add(VpcPeering::with_default_group(
+                "vpc2-to-vpc3",
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![
+                        VpcExpose::empty()
+                            .make_stateful_nat(None)
+                            .unwrap()
+                            .ip("192.168.90.0/24".into()) // Contains 192.168.90.100 used privately for VPC02
+                            .as_range("20.30.90.0/24".into())
+                            .unwrap(),
+                    ],
+                },
+                VpcManifest {
+                    name: "vpc3".to_string(),
+                    exposes: vec![VpcExpose::empty().ip("192.168.128.0/27".into())],
+                },
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        // Validation is necessary to build overlay.vpc_table's peerings from peering_table
+        overlay.validate().unwrap();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with packets
+
+        // VPC-2 -> VPC-3: ping 192.168.128.7
+        //
+        // We used to have a bug where we the flow-filter lookup would fail when looking for the
+        // source information because of the overlap between addresses exposed for port forwarding
+        // and masquerading. For ICMP (or TCP/UDP with unforwarded ports) it would run a LPM lookup
+        // on the address, find the port-forwarding entry that only works with ports, and then fail
+        // because the packet doesn't have a port (or a port in the relevant range). Fixed now.
+        let packet = create_test_icmp_v4_packet(
+            Some(vpcd(vni2.into())),
+            "192.168.90.100".parse().unwrap(),
+            "192.168.128.7".parse().unwrap(),
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC-2 -> VPC-3: 192.168.90.100:2345 -> 192.168.128.7:6789
+        let packet = create_test_ipv4_tcp_packet_with_ports(
+            Some(vpcd(vni2.into())),
+            "192.168.90.100".parse().unwrap(),
+            "192.168.128.7".parse().unwrap(),
+            2345,
+            6789,
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC-2 -> VPC-3: 192.168.90.100:22 -> 192.168.128.7:6789
+        //
+        // Must use masquerading even though we have overlap on source IP/port with port forwarding
+        // rules, because of unambiguous destination
+        let packet = create_test_ipv4_tcp_packet_with_ports(
+            Some(vpcd(vni2.into())),
+            "192.168.90.100".parse().unwrap(),
+            "192.168.128.7".parse().unwrap(),
+            22,
+            6789,
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
+        //
+        // Must use port forwarding even though we have overlap on source IP/port with masquerading
+        // rule, because of unambiguous destination
+        let packet = create_test_ipv4_tcp_packet_with_ports(
+            Some(vpcd(vni2.into())),
+            "192.168.90.100".parse().unwrap(),
+            "192.168.50.7".parse().unwrap(),
+            22,
+            6789,
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
+        assert!(!packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(packets[0].meta().requires_port_forwarding());
+    }
+
     #[test]
     fn test_flow_filter_batch_processing() {
         // Setup table
