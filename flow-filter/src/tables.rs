@@ -56,21 +56,15 @@ pub(crate) enum VpcdLookupResult {
 //   RemotePortRangesData: PortRangeMap<VpcdLookupResult>    (by dst port)
 #[derive(Debug, Clone)]
 pub struct FlowFilterTable {
-    with_ports: HashMap<VpcDiscriminant, VpcConnectionsTable>,
+    pub(crate) with_ports: FlowFilterSubtable,
 }
 
 impl FlowFilterTable {
     #[allow(clippy::new_without_default)]
     pub(crate) fn new() -> Self {
         Self {
-            with_ports: HashMap::new(),
+            with_ports: FlowFilterSubtable::new(),
         }
-    }
-
-    fn get_or_create_table(&mut self, src_vpcd: VpcDiscriminant) -> &mut VpcConnectionsTable {
-        self.with_ports
-            .entry(src_vpcd)
-            .or_insert_with(VpcConnectionsTable::new)
     }
 
     pub(crate) fn lookup(
@@ -116,6 +110,46 @@ impl FlowFilterTable {
         // associated to this IP: we may need to find the right item for this entry based on the
         // destination port
         remote_prefix_data.get(dst_port).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert(
+        &mut self,
+        src_vpcd: VpcDiscriminant,
+        dst_data_result: VpcdLookupResult,
+        src_prefix: Prefix,
+        src_port_range: Option<PortRange>,
+        dst_prefix: Prefix,
+        dst_port_range: Option<PortRange>,
+    ) -> Result<(), ConfigError> {
+        self.with_ports.insert(
+            src_vpcd,
+            dst_data_result,
+            src_prefix,
+            src_port_range,
+            dst_prefix,
+            dst_port_range,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FlowFilterSubtable(HashMap<VpcDiscriminant, VpcConnectionsTable>);
+
+impl FlowFilterSubtable {
+    #[allow(clippy::new_without_default)]
+    pub(crate) fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    fn get(&self, src_vpcd: &VpcDiscriminant) -> Option<&VpcConnectionsTable> {
+        self.0.get(src_vpcd)
+    }
+
+    fn get_or_create_table(&mut self, src_vpcd: VpcDiscriminant) -> &mut VpcConnectionsTable {
+        self.0
+            .entry(src_vpcd)
+            .or_insert_with(VpcConnectionsTable::new)
     }
 
     pub(crate) fn insert(
@@ -588,7 +622,14 @@ impl DstConnectionData {
 impl Display for FlowFilterTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Collect into a BTreeMap to get a deterministic order when dumping the entries
-        for (src_vpcd, table) in self.0.clone().into_iter().collect::<BTreeMap<_, _>>() {
+        writeln!(f, "subtable for TCP/UDP:")?;
+        for (src_vpcd, table) in self
+            .with_ports
+            .0
+            .clone()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
+        {
             writeln!(f, "source VPC {src_vpcd}:")?;
             writeln!(f, "{table}")?;
         }
