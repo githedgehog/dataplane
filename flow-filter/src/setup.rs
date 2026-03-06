@@ -9,7 +9,7 @@ use config::external::overlay::vpc::{Peering, Vpc};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::internal::interfaces::interface::InterfaceConfigTable;
 use config::utils::{ConfigUtilError, collapse_prefixes_peering};
-use lpm::prefix::{IpRangeWithPorts, PrefixWithOptionalPorts};
+use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -42,9 +42,21 @@ impl FlowFilterTable {
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
 
         let (local_prefixes, remote_prefixes) =
-            get_prefixes_for_ports_based_processing(overlay, vpc, peering, dst_vpcd);
+            get_prefixes_for_processing(overlay, vpc, peering, dst_vpcd, false);
 
         self.with_ports.process_peering(
+            local_vpcd,
+            dst_vpcd,
+            local_prefixes,
+            remote_prefixes,
+            peering.local.default_expose()?,
+            peering.remote.default_expose()?,
+        )?;
+
+        let (local_prefixes, remote_prefixes) =
+            get_prefixes_for_processing(overlay, vpc, peering, dst_vpcd, true);
+
+        self.no_ports.process_peering(
             local_vpcd,
             dst_vpcd,
             local_prefixes,
@@ -61,14 +73,15 @@ type PrefixWithData = (
     Option<NatRequirement>,
 );
 
-fn get_prefixes_for_ports_based_processing(
+fn get_prefixes_for_processing(
     overlay: &Overlay,
     vpc: &Vpc,
     peering: &Peering,
     dst_vpcd: VpcDiscriminant,
+    skip_ports: bool,
 ) -> (Vec<PrefixWithData>, Vec<PrefixWithData>) {
     let (local_manifests_overlap, remote_manifests_overlap) =
-        get_manifests_overlap(overlay, vpc, peering, dst_vpcd);
+        get_manifests_overlap(overlay, vpc, peering, dst_vpcd, skip_ports);
 
     // Get list of local prefixes, splitting to account for overlapping, if necessary
     let overlap_trie = consolidate_overlap_list(local_manifests_overlap);
@@ -77,6 +90,7 @@ fn get_prefixes_for_ports_based_processing(
         &dst_vpcd,
         |expose| &expose.ips,
         overlap_trie,
+        skip_ports,
     );
 
     // Get list of remote prefixes, splitting to account for overlapping, if necessary
@@ -86,6 +100,7 @@ fn get_prefixes_for_ports_based_processing(
         &dst_vpcd,
         |expose| expose.public_ips(),
         overlap_trie,
+        skip_ports,
     );
 
     (local_prefixes, remote_prefixes)
@@ -271,6 +286,7 @@ fn get_manifests_overlap(
     vpc: &Vpc,
     peering: &Peering,
     dst_vpcd: VpcDiscriminant,
+    skip_ports: bool,
 ) -> (
     BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
     BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
@@ -289,6 +305,7 @@ fn get_manifests_overlap(
             other_dst_vpcd,
             |expose| &expose.ips,
             compare_to_self,
+            skip_ports,
         );
         // Get overlap for prefixes related to destination address
         let remote_overlap = get_manifest_ips_overlap(
@@ -298,6 +315,7 @@ fn get_manifests_overlap(
             other_dst_vpcd,
             |expose| expose.public_ips(),
             compare_to_self,
+            skip_ports,
         );
 
         // If there's overlap for both source and destination, we'll need to split prefixes to
@@ -326,6 +344,7 @@ fn get_manifest_ips_overlap(
     dst_vpcd_right: VpcDiscriminant,
     get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
     compare_to_self: bool,
+    skip_ports: bool,
 ) -> BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>> {
     let mut overlap = BTreeMap::new();
     for expose_left in manifest_left
@@ -343,7 +362,15 @@ fn get_manifest_ips_overlap(
                 continue;
             }
             for prefix_left in get_ips(expose_left).iter() {
+                if skip_ports && prefix_left.ports().is_some() {
+                    // Skip prefixes with ports
+                    continue;
+                }
                 for prefix_right in get_ips(expose_right).iter() {
+                    if skip_ports && prefix_right.ports().is_some() {
+                        // Skip prefixes with ports
+                        continue;
+                    }
                     if let Some(intersection) = prefix_left.intersection(prefix_right) {
                         overlap.insert(
                             intersection,
@@ -415,11 +442,15 @@ fn get_split_prefixes_for_manifest(
     vpcd: &VpcDiscriminant,
     get_ips: fn(&VpcExpose) -> &PrefixPortsSet,
     overlaps: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
+    skip_ports: bool,
 ) -> Vec<PrefixWithData> {
     let mut prefixes_with_vpcd = Vec::new();
     for expose in &manifest.exposes {
         let nat_req = get_nat_requirement(expose);
         for prefix in get_ips(expose) {
+            if skip_ports && prefix.ports().is_some() {
+                continue;
+            }
             // Use a stack so that fragments produced by splitting are re-checked against all
             // overlap entries before being considered as not overlapping and pushed to
             // prefixes_with_vpcd.
@@ -652,6 +683,7 @@ mod tests {
             vpcd2,
             |expose| &expose.ips,
             false,
+            false,
         );
 
         // No overlap between 10.0.0.0/24 and 20.0.0.0/24
@@ -679,6 +711,7 @@ mod tests {
             vpcd1,
             vpcd2,
             |expose| &expose.ips,
+            false,
             false,
         );
 
@@ -716,6 +749,7 @@ mod tests {
             vpcd1,
             vpcd2,
             |expose| &expose.ips,
+            false,
             false,
         );
 
@@ -764,6 +798,7 @@ mod tests {
             vpcd1,
             vpcd2,
             |expose| &expose.ips,
+            false,
             false,
         );
 
@@ -893,8 +928,13 @@ mod tests {
 
         let overlaps = BTreeMap::new();
 
-        let result =
-            get_split_prefixes_for_manifest(&manifest, &vpcd, |expose| &expose.ips, overlaps);
+        let result = get_split_prefixes_for_manifest(
+            &manifest,
+            &vpcd,
+            |expose| &expose.ips,
+            overlaps,
+            false,
+        );
 
         // With no overlaps, should return the original prefix with Single result
         assert_eq!(result.len(), 1);
@@ -924,8 +964,13 @@ mod tests {
             HashSet::new(),
         );
 
-        let mut result =
-            get_split_prefixes_for_manifest(&manifest, &vpcd, |expose| &expose.ips, overlaps);
+        let mut result = get_split_prefixes_for_manifest(
+            &manifest,
+            &vpcd,
+            |expose| &expose.ips,
+            overlaps,
+            false,
+        );
         result.sort_by_key(|(prefix, _, _)| *prefix);
 
         // Should split into multiple prefixes
@@ -981,8 +1026,13 @@ mod tests {
             HashSet::from([remote_data_a, remote_data_c]),
         );
 
-        let mut result =
-            get_split_prefixes_for_manifest(&manifest, &vpcd_a, |expose| &expose.ips, overlaps);
+        let mut result = get_split_prefixes_for_manifest(
+            &manifest,
+            &vpcd_a,
+            |expose| &expose.ips,
+            overlaps,
+            false,
+        );
         result.sort_by_key(|(prefix, _, _)| *prefix);
 
         assert_eq!(result.len(), 2, "expected two fragments after splitting");
