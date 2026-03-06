@@ -4,6 +4,7 @@
 //! Port forwarding
 
 mod flow_state;
+pub(crate) mod icmp_handling;
 mod nf;
 mod packet;
 mod portfwtable;
