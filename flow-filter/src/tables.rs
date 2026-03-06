@@ -57,13 +57,23 @@ pub(crate) enum VpcdLookupResult {
 #[derive(Debug, Clone)]
 pub struct FlowFilterTable {
     pub(crate) with_ports: FlowFilterSubtable,
+    pub(crate) no_ports: FlowFilterSubtable,
 }
 
 impl FlowFilterTable {
     #[allow(clippy::new_without_default)]
     pub(crate) fn new() -> Self {
         Self {
-            with_ports: FlowFilterSubtable::new(),
+            with_ports: FlowFilterSubtable::new(), // For TCP, UDP
+            no_ports: FlowFilterSubtable::new(),   // For ICMP
+        }
+    }
+
+    fn get_map_for_lookup(&self, ports: Option<(u16, u16)>) -> &FlowFilterSubtable {
+        if ports.is_some() {
+            &self.with_ports
+        } else {
+            &self.no_ports
         }
     }
 
@@ -75,7 +85,7 @@ impl FlowFilterTable {
         ports: Option<(u16, u16)>,
     ) -> Option<VpcdLookupResult> {
         // Get the table related to the source VPC for the packet
-        let Some(table) = self.with_ports.get(&src_vpcd) else {
+        let Some(table) = self.get_map_for_lookup(ports).get(&src_vpcd) else {
             debug!("Could not find connections table for VPC {src_vpcd}");
             return None;
         };
@@ -113,6 +123,8 @@ impl FlowFilterTable {
     }
 
     #[cfg(test)]
+    // Undistinctively insert in both with-ports no-ports tables.
+    // Used for tests, only, to avoid telling what subtable to use at every location.
     pub(crate) fn insert(
         &mut self,
         src_vpcd: VpcDiscriminant,
@@ -123,6 +135,14 @@ impl FlowFilterTable {
         dst_port_range: Option<PortRange>,
     ) -> Result<(), ConfigError> {
         self.with_ports.insert(
+            src_vpcd,
+            dst_data_result.clone(),
+            src_prefix,
+            src_port_range,
+            dst_prefix,
+            dst_port_range,
+        )?;
+        self.no_ports.insert(
             src_vpcd,
             dst_data_result,
             src_prefix,
@@ -625,6 +645,18 @@ impl Display for FlowFilterTable {
         writeln!(f, "subtable for TCP/UDP:")?;
         for (src_vpcd, table) in self
             .with_ports
+            .0
+            .clone()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
+        {
+            writeln!(f, "source VPC {src_vpcd}:")?;
+            writeln!(f, "{table}")?;
+        }
+
+        writeln!(f, "subtable for ICMP:")?;
+        for (src_vpcd, table) in self
+            .no_ports
             .0
             .clone()
             .into_iter()
