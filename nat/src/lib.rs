@@ -28,6 +28,7 @@ mod ranges;
 pub mod stateful;
 pub mod stateless;
 
+pub use icmp_handler::nf::IcmpErrorHandler;
 pub use port::NatPort;
 pub use stateful::StatefulNat;
 pub use stateless::StatelessNat;
