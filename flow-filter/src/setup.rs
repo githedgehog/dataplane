@@ -89,21 +89,12 @@ impl FlowFilterTable {
 
         // Handle remote default expose (for all local prefixes)
         if let Some(remote_default_expose) = peering.remote.default_expose()? {
-            for (local_prefix, local_vpcd_result, local_nat_req) in &local_prefixes {
-                let dst_data_result = match local_vpcd_result {
-                    VpcdLookupResult::Single(dst_data) => {
-                        VpcdLookupResult::Single(RemoteData::new(
-                            dst_data.vpcd,
-                            *local_nat_req,
-                            get_nat_requirement(remote_default_expose),
-                        ))
-                    }
-                    VpcdLookupResult::MultipleMatches(_) => {
-                        return Err(ConfigError::InternalFailure(
-                            "Unexpected multiple matches for destination VPC when handling remote default expose".to_string(),
-                        ));
-                    }
-                };
+            for (local_prefix, _local_vpcd_result, local_nat_req) in &local_prefixes {
+                let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
+                    dst_vpcd,
+                    *local_nat_req,
+                    get_nat_requirement(remote_default_expose),
+                ));
                 self.insert_default_remote(
                     local_vpcd,
                     dst_data_result,
