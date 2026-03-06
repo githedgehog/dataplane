@@ -40,3 +40,29 @@ struct NatTranslationData {
     src_port: Option<NatPort>,
     dst_port: Option<NatPort>,
 }
+impl NatTranslationData {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+    #[must_use]
+    pub(crate) fn src_addr(mut self, address: IpAddr) -> Self {
+        self.src_addr = Some(address);
+        self
+    }
+    #[must_use]
+    pub(crate) fn dst_addr(mut self, address: IpAddr) -> Self {
+        self.dst_addr = Some(address);
+        self
+    }
+    #[must_use]
+    pub(crate) fn src_port(mut self, natport: NatPort) -> Self {
+        self.src_port = Some(natport);
+        self
+    }
+    #[must_use]
+    pub(crate) fn dst_port(mut self, natport: NatPort) -> Self {
+        self.dst_port = Some(natport);
+        self
+    }
+}
