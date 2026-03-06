@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::FlowFilterTable;
-use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
+use crate::tables::{FlowFilterSubtable, NatRequirement, RemoteData, VpcdLookupResult};
 use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Peering, Vpc};
@@ -61,8 +61,37 @@ impl FlowFilterTable {
             overlap_trie,
         );
 
+        self.with_ports.process_peering(
+            local_vpcd,
+            dst_vpcd,
+            local_prefixes,
+            remote_prefixes,
+            peering.local.default_expose()?,
+            peering.remote.default_expose()?,
+        )
+    }
+}
+
+impl FlowFilterSubtable {
+    fn process_peering(
+        &mut self,
+        local_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+        local_prefixes: Vec<(
+            PrefixWithOptionalPorts,
+            VpcdLookupResult,
+            Option<NatRequirement>,
+        )>,
+        remote_prefixes: Vec<(
+            PrefixWithOptionalPorts,
+            VpcdLookupResult,
+            Option<NatRequirement>,
+        )>,
+        local_default_expose: Option<&VpcExpose>,
+        remote_default_expose: Option<&VpcExpose>,
+    ) -> Result<(), ConfigError> {
         // Handle local default expose (for all remote prefixes)
-        if let Some(local_default_expose) = peering.local.default_expose()? {
+        if let Some(local_default_expose) = local_default_expose {
             for (remote_prefix, remote_vpcd_result, remote_nat_req) in &remote_prefixes {
                 let dst_data_result = match remote_vpcd_result {
                     VpcdLookupResult::Single(dst_data) => {
@@ -78,7 +107,7 @@ impl FlowFilterTable {
                         ));
                     }
                 };
-                self.with_ports.insert_default_source(
+                self.insert_default_source(
                     local_vpcd,
                     dst_data_result,
                     remote_prefix.prefix(),
@@ -88,14 +117,14 @@ impl FlowFilterTable {
         }
 
         // Handle remote default expose (for all local prefixes)
-        if let Some(remote_default_expose) = peering.remote.default_expose()? {
+        if let Some(remote_default_expose) = remote_default_expose {
             for (local_prefix, _local_vpcd_result, local_nat_req) in &local_prefixes {
                 let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
                     dst_vpcd,
                     *local_nat_req,
                     get_nat_requirement(remote_default_expose),
                 ));
-                self.with_ports.insert_default_remote(
+                self.insert_default_remote(
                     local_vpcd,
                     dst_data_result,
                     local_prefix.prefix(),
@@ -105,15 +134,15 @@ impl FlowFilterTable {
         }
 
         // Handle the case when we have both local and remote default exposes
-        if let Some(local_default_expose) = peering.local.default_expose()?
-            && let Some(remote_default_expose) = peering.remote.default_expose()?
+        if let Some(local_default_expose) = local_default_expose
+            && let Some(remote_default_expose) = remote_default_expose
         {
             let dst_data = RemoteData::new(
                 dst_vpcd,
                 get_nat_requirement(local_default_expose),
                 get_nat_requirement(remote_default_expose),
             );
-            self.with_ports.insert_default_source_to_default_remote(
+            self.insert_default_source_to_default_remote(
                 local_vpcd,
                 VpcdLookupResult::Single(dst_data),
             )?;
@@ -180,7 +209,7 @@ impl FlowFilterTable {
                     }
                 };
 
-                self.with_ports.insert(
+                self.insert(
                     local_vpcd,
                     remote_vpcd_to_use,
                     local_prefix.prefix(),
