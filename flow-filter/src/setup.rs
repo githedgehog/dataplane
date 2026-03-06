@@ -396,7 +396,7 @@ fn consolidate_overlap_list(
 fn get_split_prefixes_for_manifest(
     manifest: &VpcManifest,
     vpcd: &VpcDiscriminant,
-    get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
+    get_ips: fn(&VpcExpose) -> &PrefixPortsSet,
     overlaps: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
 ) -> Vec<(
     PrefixWithOptionalPorts,
