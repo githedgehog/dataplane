@@ -260,20 +260,6 @@ fn get_manifests_overlap(
             compare_to_self,
         );
 
-        // If either side has no overlap, we'll be able to tell which is the destination VPC by
-        // looking at both the source and destination prefixes for the packet, so there's no need to
-        // account for any overlap...
-        if local_overlap.is_empty() || remote_overlap.is_empty() {
-            // ... However, when we compare two expose blocks from the same manifest, we want to
-            // split anyway: this is the case when we have two expose blocks on the same side of a
-            // peering with overlapping prefixes, one with stateful NAT, one with port forwarding,
-            // for example. In such a case we need to split to determine what portion of the
-            // overlapping prefixes is shared.
-            if !compare_to_self {
-                continue;
-            }
-        }
-
         // If there's overlap for both source and destination, we'll need to split prefixes to
         // separate the overlapping sections, so we can determine the destination VPC for
         // non-overlapping sections
