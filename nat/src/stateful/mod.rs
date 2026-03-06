@@ -122,7 +122,7 @@ impl StatefulNat {
     #[cfg(test)]
     /// Get session table
     #[must_use]
-    pub fn sessions(&self) -> &FlowTable {
+    pub fn sessions(&self) -> &Arc<FlowTable> {
         &self.sessions
     }
 

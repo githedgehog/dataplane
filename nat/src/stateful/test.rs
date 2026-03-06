@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::StatefulNat;
     use crate::stateful::NatAllocatorWriter;
+    use crate::{IcmpErrorHandler, StatefulNat};
     use concurrency::sync::Arc;
     use config::ConfigError;
     use config::external::overlay::Overlay;
@@ -627,13 +627,17 @@ mod tests {
         )
         .unwrap();
         packet.meta_mut().set_overlay(true);
-        packet.meta_mut().set_stateful_nat(true);
+        packet.meta_mut().set_stateful_nat(true); // set to false since ICMP error handler will take care
         packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
         packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
+        packet.meta_mut().dst_vpcd.take(); // remove to force processing by stateful
 
         flow_lookup(nat.sessions(), &mut packet);
 
-        let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+        let mut icmp_handler = IcmpErrorHandler::new(nat.sessions().clone());
+        let packets_out = icmp_handler.process(vec![packet].into_iter());
+        let packets_out: Vec<_> = nat.process(packets_out).collect();
+
         let hdr_out = packets_out[0].try_ipv4().unwrap();
         let inner_ip_out = packets_out[0].try_inner_ipv4().unwrap();
         let inner_transport_out = packets_out[0].try_embedded_transport().unwrap();
