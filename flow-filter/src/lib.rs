@@ -420,13 +420,13 @@ mod tests {
     use net::ipv4::addr::UnicastIpv4Addr;
     use net::ipv6::addr::UnicastIpv6Addr;
     use net::packet::test_utils::{
-        IcmpEchoDirection, build_test_icmp4_echo, build_test_ipv4_packet,
-        build_test_ipv4_packet_with_transport, build_test_ipv6_packet,
+        IcmpEchoDirection, build_test_icmp4_echo, build_test_ipv4_packet_with_transport,
+        build_test_ipv6_packet_with_transport,
     };
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
     use net::vxlan::Vni;
     use std::collections::HashSet;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;
     use std::sync::Arc;
     use tracing_test::traced_test;
@@ -468,15 +468,15 @@ mod tests {
         src_addr: IpAddr,
         dst_addr: IpAddr,
     ) -> Packet<TestBuffer> {
-        let mut packet = match dst_addr {
-            IpAddr::V4(_) => build_test_ipv4_packet(100).unwrap(),
-            IpAddr::V6(_) => build_test_ipv6_packet(100).unwrap(),
-        };
-        packet.meta_mut().set_overlay(true);
-        set_src_addr(&mut packet, src_addr);
-        set_dst_addr(&mut packet, dst_addr);
-        packet.meta_mut().src_vpcd = src_vpcd;
-        packet
+        match (src_addr, dst_addr) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => {
+                create_test_ipv4_udp_packet_with_ports(src_vpcd, src, dst, 1234, 5678)
+            }
+            (IpAddr::V6(src), IpAddr::V6(dst)) => {
+                create_test_ipv6_udp_packet_with_ports(src_vpcd, src, dst, 1234, 5678)
+            }
+            _ => panic!("Invalid IP versions combination"),
+        }
     }
 
     fn create_test_ipv4_udp_packet_with_ports(
@@ -518,6 +518,28 @@ mod tests {
             .unwrap();
         packet
             .set_tcp_destination_port(net::tcp::TcpPort::new_checked(dst_port).unwrap())
+            .unwrap();
+        packet.meta_mut().src_vpcd = src_vpcd;
+        packet
+    }
+
+    fn create_test_ipv6_udp_packet_with_ports(
+        src_vpcd: Option<VpcDiscriminant>,
+        src_addr: Ipv6Addr,
+        dst_addr: Ipv6Addr,
+        src_port: u16,
+        dst_port: u16,
+    ) -> Packet<TestBuffer> {
+        let mut packet = build_test_ipv6_packet_with_transport(100, Some(NextHeader::UDP)).unwrap();
+
+        packet.meta_mut().set_overlay(true);
+        set_src_addr(&mut packet, src_addr.into());
+        set_dst_addr(&mut packet, dst_addr.into());
+        packet
+            .set_udp_source_port(src_port.try_into().unwrap())
+            .unwrap();
+        packet
+            .set_udp_destination_port(dst_port.try_into().unwrap())
             .unwrap();
         packet.meta_mut().src_vpcd = src_vpcd;
         packet
