@@ -18,7 +18,7 @@ use flow_filter::{FlowFilter, FlowFilterTableWriter};
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
-use nat::{StatefulNat, StatelessNat};
+use nat::{IcmpErrorHandler, StatefulNat, StatelessNat};
 
 use net::buffer::PacketBufferMut;
 use pipeline::DynPipeline;
@@ -89,6 +89,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", writer.clone());
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
+        let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
         let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
         let portfw = PortForwarder::new(
@@ -104,6 +105,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(iprouter1)
             .add_stage(flow_lookup)
             .add_stage(flow_filter)
+            .add_stage(icmp_error_handler)
             .add_stage(portfw)
             .add_stage(stateless_nat)
             .add_stage(stateful_nat)
