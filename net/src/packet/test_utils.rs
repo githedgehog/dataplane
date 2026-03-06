@@ -247,6 +247,50 @@ pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
 }
 
 #[must_use]
+/// Builds a test IPv6 packet with the given hop-limit value and transport type.
+///
+/// The packet is an IPv6 packet with a source IP address of `::1.2.3.4` and a destination of
+/// `::5.6.7.8`. The Ethernet source and destination MAC addresses are 0x02:00:00:00:00:01 and
+/// 0x02:00:00:00:00:02 respectively. The source and destination ports are 123 and 456 respectively
+/// for TCP and UDP.
+///
+/// Tests can use the utility functions on [`Packet`] to then customize the addresses and ports as
+/// desired.
+///
+/// # Panics
+///
+/// Panics if the transport type is anything other than `Some(NextHeader::TCP)`, `Some(NextHeader::UDP)`, or None
+pub fn build_test_ipv6_packet_with_transport(
+    hl: u8,
+    transport_type: Option<NextHeader>,
+) -> Result<Packet<TestBuffer>, InvalidPacket<TestBuffer>> {
+    let mut headers = HeadersBuilder::default();
+    headers.eth(Some(make_default_for_eth(EthType::IPV6)));
+
+    let mut ipv6 = Ipv6::default();
+    ipv6.set_source(UnicastIpv6Addr::new("::1.2.3.4".parse::<Ipv6Addr>().unwrap()).unwrap());
+    ipv6.set_destination("::5.6.7.8".parse::<Ipv6Addr>().unwrap());
+    ipv6.set_hop_limit(hl);
+
+    if let Some(next_header) = transport_type {
+        let mut transport = make_default_for_transport(transport_type).unwrap();
+        ipv6.set_payload_length(transport.size().get());
+        ipv6.set_next_header(next_header);
+        let net = Net::Ipv6(ipv6);
+        transport.update_checksum(&net, None, []);
+        headers.net(Some(net));
+        headers.transport(Some(transport));
+    } else {
+        headers.net(Some(Net::Ipv6(ipv6)));
+    }
+
+    let headers = headers.build().unwrap();
+    let mut buffer: TestBuffer = TestBuffer::new();
+    headers.deparse(buffer.as_mut()).unwrap();
+    Packet::new(buffer)
+}
+
+#[must_use]
 /// Builds a test `ICMPv4` Destination Unreachable packet with embedded headers.
 ///
 /// The outer packet is an IPv4 packet with the specified source and destination addresses.
