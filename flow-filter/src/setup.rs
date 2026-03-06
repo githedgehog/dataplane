@@ -78,7 +78,7 @@ impl FlowFilterTable {
                         ));
                     }
                 };
-                self.insert_default_source(
+                self.with_ports.insert_default_source(
                     local_vpcd,
                     dst_data_result,
                     remote_prefix.prefix(),
@@ -95,7 +95,7 @@ impl FlowFilterTable {
                     *local_nat_req,
                     get_nat_requirement(remote_default_expose),
                 ));
-                self.insert_default_remote(
+                self.with_ports.insert_default_remote(
                     local_vpcd,
                     dst_data_result,
                     local_prefix.prefix(),
@@ -113,7 +113,7 @@ impl FlowFilterTable {
                 get_nat_requirement(local_default_expose),
                 get_nat_requirement(remote_default_expose),
             );
-            self.insert_default_source_to_default_remote(
+            self.with_ports.insert_default_source_to_default_remote(
                 local_vpcd,
                 VpcdLookupResult::Single(dst_data),
             )?;
@@ -180,7 +180,7 @@ impl FlowFilterTable {
                     }
                 };
 
-                self.insert(
+                self.with_ports.insert(
                     local_vpcd,
                     remote_vpcd_to_use,
                     local_prefix.prefix(),
