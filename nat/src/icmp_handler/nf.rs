@@ -8,12 +8,13 @@ use net::buffer::PacketBufferMut;
 use net::checksum::Checksum;
 use net::flows::ExtractRef;
 use net::headers::{
-    TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransport, TryIcmpAny, TryInnerIp,
+    EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp,
     TryInnerIpv4, TryIp,
 };
-use net::icmp_any::IcmpAnyChecksumPayload;
+use net::icmp_any::{IcmpAnyChecksumPayload, TruncatedIcmpAny};
+use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::{FlowKey, IpProtoKey};
+use net::{FlowKey, IcmpProtoKey, IpProtoKey, TcpProtoKey, UdpProtoKey};
 
 use pipeline::NetworkFunction;
 use std::sync::Arc;
@@ -86,18 +87,47 @@ fn icmp_checksums_ok<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> bool {
 /// Build a `FlowKey` for the embedded "offending" packet within an ICMP error packet
 fn get_icmp_inner_pkt_flowkey<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Option<FlowKey> {
     // get the data for the embedded, offending packet
-    let Some(inner) = packet.embedded_headers_mut() else {
+    let Some(inner) = packet.embedded_headers() else {
         debug!("ICMP error message does not contain inner packet");
         return None;
     };
+
     let net = inner.try_inner_ip()?;
     let src_ip = net.src_addr();
     let dst_ip = net.dst_addr();
     let proto = net.next_header();
-    let src_port = inner.try_embedded_transport()?.source()?;
-    let dst_port = inner.try_embedded_transport()?.destination()?;
-    debug!("ICMP offending packet: proto:{proto} src:{src_ip}:{src_port} dst:{dst_ip}:{dst_port}");
-    let proto_key = IpProtoKey::from((proto, src_port, dst_port));
+
+    let embedded_transport = inner.try_embedded_transport()?;
+    let proto_key = match embedded_transport {
+        EmbeddedTransport::Tcp(tcp) => {
+            debug_assert_eq!(proto, NextHeader::TCP);
+            IpProtoKey::Tcp(TcpProtoKey::from((tcp.source(), tcp.destination())))
+        }
+        EmbeddedTransport::Udp(udp) => {
+            debug_assert_eq!(proto, NextHeader::UDP);
+            IpProtoKey::Udp(UdpProtoKey::from((udp.source(), udp.destination())))
+        }
+        EmbeddedTransport::Icmp4(icmp) => {
+            debug_assert_eq!(proto, NextHeader::ICMP);
+            // Icmp errors are not sent for icmp errors
+            let icmp_id = icmp.identifier()?;
+            IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(icmp_id))
+        }
+        EmbeddedTransport::Icmp6(icmp6) => {
+            debug_assert_eq!(proto, NextHeader::ICMP6);
+            // Icmp errors are not sent for icmp errors
+            let icmp_id = icmp6.identifier()?;
+            IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(icmp_id))
+        }
+    };
+    if proto == NextHeader::TCP || proto == NextHeader::UDP {
+        let src_port = embedded_transport.source()?;
+        let dst_port = embedded_transport.destination()?;
+        debug!("ICMP offending packet: ({proto}) src:{src_ip}:{src_port} dst:{dst_ip}:{dst_port}");
+    } else if proto == NextHeader::ICMP || proto == NextHeader::ICMP6 {
+        let id = embedded_transport.icmp_identifier()?;
+        debug!("ICMP offending packet: ({proto}) src:{src_ip} dst:{dst_ip} id: {id}");
+    }
     let flow_key = FlowKey::uni(None, src_ip, dst_ip, proto_key);
     Some(flow_key)
 }

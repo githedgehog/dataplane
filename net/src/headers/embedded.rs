@@ -4,6 +4,7 @@
 use crate::checksum::Checksum;
 use crate::eth::EthError;
 use crate::headers::{MAX_NET_EXTENSIONS, Net, NetExt};
+use crate::icmp_any::TruncatedIcmpAny;
 use crate::icmp4::{Icmp4Checksum, TruncatedIcmp4};
 use crate::icmp6::{Icmp6Checksum, TruncatedIcmp6};
 use crate::impl_from_for_enum;
@@ -466,6 +467,14 @@ pub enum EmbeddedTransport {
 }
 
 impl EmbeddedTransport {
+    pub fn icmp_identifier(&self) -> Option<u16> {
+        match self {
+            EmbeddedTransport::Icmp4(icmp) => icmp.identifier(),
+            EmbeddedTransport::Icmp6(icmp) => icmp.identifier(),
+            _ => None,
+        }
+    }
+
     pub fn source(&self) -> Option<NonZero<u16>> {
         match self {
             EmbeddedTransport::Tcp(tcp) => Some(tcp.source().into()),
