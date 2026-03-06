@@ -517,8 +517,7 @@ impl StatefulNat {
 
         // Revert the IP and transport headers of the embedded IP packet to their original form,
         // using the matching mapping
-        stateful_translate_icmp_inner::<Buf>(packet, &state)
-            .map_err(StatefulNatError::IcmpErrorMsg)?;
+        stateful_translate_icmp_inner(packet, &state).map_err(StatefulNatError::IcmpErrorMsg)?;
 
         // Leave the ICMP Error type and code unchanged
         {}
