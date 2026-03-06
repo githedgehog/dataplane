@@ -40,26 +40,9 @@ impl FlowFilterTable {
     ) -> Result<(), ConfigError> {
         let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
         let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
-        let (local_manifests_overlap, remote_manifests_overlap) =
-            get_manifests_overlap(overlay, vpc, peering, dst_vpcd);
 
-        // Get list of local prefixes, splitting to account for overlapping, if necessary
-        let overlap_trie = consolidate_overlap_list(local_manifests_overlap);
-        let local_prefixes = get_split_prefixes_for_manifest(
-            &peering.local,
-            &dst_vpcd,
-            |expose| &expose.ips,
-            overlap_trie,
-        );
-
-        // Get list of remote prefixes, splitting to account for overlapping, if necessary
-        let overlap_trie = consolidate_overlap_list(remote_manifests_overlap);
-        let remote_prefixes = get_split_prefixes_for_manifest(
-            &peering.remote,
-            &dst_vpcd,
-            |expose| expose.public_ips(),
-            overlap_trie,
-        );
+        let (local_prefixes, remote_prefixes) =
+            get_prefixes_for_ports_based_processing(overlay, vpc, peering, dst_vpcd);
 
         self.with_ports.process_peering(
             local_vpcd,
@@ -72,21 +55,49 @@ impl FlowFilterTable {
     }
 }
 
+type PrefixWithData = (
+    PrefixWithOptionalPorts,
+    VpcdLookupResult,
+    Option<NatRequirement>,
+);
+
+fn get_prefixes_for_ports_based_processing(
+    overlay: &Overlay,
+    vpc: &Vpc,
+    peering: &Peering,
+    dst_vpcd: VpcDiscriminant,
+) -> (Vec<PrefixWithData>, Vec<PrefixWithData>) {
+    let (local_manifests_overlap, remote_manifests_overlap) =
+        get_manifests_overlap(overlay, vpc, peering, dst_vpcd);
+
+    // Get list of local prefixes, splitting to account for overlapping, if necessary
+    let overlap_trie = consolidate_overlap_list(local_manifests_overlap);
+    let local_prefixes = get_split_prefixes_for_manifest(
+        &peering.local,
+        &dst_vpcd,
+        |expose| &expose.ips,
+        overlap_trie,
+    );
+
+    // Get list of remote prefixes, splitting to account for overlapping, if necessary
+    let overlap_trie = consolidate_overlap_list(remote_manifests_overlap);
+    let remote_prefixes = get_split_prefixes_for_manifest(
+        &peering.remote,
+        &dst_vpcd,
+        |expose| expose.public_ips(),
+        overlap_trie,
+    );
+
+    (local_prefixes, remote_prefixes)
+}
+
 impl FlowFilterSubtable {
     fn process_peering(
         &mut self,
         local_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
-        local_prefixes: Vec<(
-            PrefixWithOptionalPorts,
-            VpcdLookupResult,
-            Option<NatRequirement>,
-        )>,
-        remote_prefixes: Vec<(
-            PrefixWithOptionalPorts,
-            VpcdLookupResult,
-            Option<NatRequirement>,
-        )>,
+        local_prefixes: Vec<PrefixWithData>,
+        remote_prefixes: Vec<PrefixWithData>,
         local_default_expose: Option<&VpcExpose>,
         remote_default_expose: Option<&VpcExpose>,
     ) -> Result<(), ConfigError> {
@@ -404,11 +415,7 @@ fn get_split_prefixes_for_manifest(
     vpcd: &VpcDiscriminant,
     get_ips: fn(&VpcExpose) -> &PrefixPortsSet,
     overlaps: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
-) -> Vec<(
-    PrefixWithOptionalPorts,
-    VpcdLookupResult,
-    Option<NatRequirement>,
-)> {
+) -> Vec<PrefixWithData> {
     let mut prefixes_with_vpcd = Vec::new();
     for expose in &manifest.exposes {
         let nat_req = get_nat_requirement(expose);
