@@ -27,6 +27,7 @@ pub mod portfw;
 mod ranges;
 pub mod stateful;
 pub mod stateless;
+pub mod vpcrouting;
 
 pub use icmp_handler::nf::IcmpErrorHandler;
 pub use port::NatPort;

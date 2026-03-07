@@ -45,6 +45,15 @@ impl NextHeader {
     /// ICMP6 next header
     pub const ICMP6: NextHeader = NextHeader(IpNumber::IPV6_ICMP);
 
+    /// GRE
+    pub const GRE: NextHeader = NextHeader(IpNumber::GRE);
+
+    /// ESP
+    pub const ESP: NextHeader = NextHeader(IpNumber::ENCAPSULATING_SECURITY_PAYLOAD);
+
+    /// AH
+    pub const AH: NextHeader = NextHeader(IpNumber::AUTHENTICATION_HEADER);
+
     /// Get the inner (wrapped) `etherparse` [`IpNumber`] type
     pub(crate) fn inner(self) -> IpNumber {
         self.0

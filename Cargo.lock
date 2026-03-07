@@ -1574,6 +1574,7 @@ version = "0.15.0"
 dependencies = [
  "ahash",
  "arc-swap",
+ "arrayvec",
  "bnum",
  "bolero",
  "dataplane-common",

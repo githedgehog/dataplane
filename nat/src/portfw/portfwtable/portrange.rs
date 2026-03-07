@@ -44,6 +44,16 @@ impl PortRange {
     }
 
     #[must_use]
+    pub fn all_ports() -> Self {
+        unsafe {
+            Self {
+                first: NonZero::new_unchecked(1),
+                last: NonZero::new_unchecked(u16::MAX),
+            }
+        }
+    }
+
+    #[must_use]
     #[allow(clippy::len_without_is_empty)]
     /// Returns number of ports contained in a `PortRange`
     pub fn len(self) -> u16 {
