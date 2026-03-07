@@ -51,8 +51,12 @@ impl FlowTable {
                 hasher_state().clone(),
                 num_shards,
             )),
-            priority_queue: PriorityQueue::new(),
+            priority_queue: PriorityQueue::new(None),
         }
+    }
+
+    pub fn set_reap_threshold(&mut self, reap_threshold: usize) {
+        self.priority_queue.set_reap_threshold(reap_threshold);
     }
 
     /// Reshard the flow table into the given number of shards.

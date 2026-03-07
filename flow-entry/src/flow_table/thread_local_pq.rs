@@ -20,9 +20,6 @@ trace_target!(
     &["flow-expiration", "pipeline"]
 );
 
-// this could be configurable at some point
-pub(crate) const AGRESSIVE_REAP_THRESHOLD: usize = 1_000_000;
-
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Priority(Instant);
@@ -88,6 +85,7 @@ where
 {
     #[allow(clippy::type_complexity)]
     pqs: ThreadLocal<RwLock<PriorityQueue<Entry<K, V>, Priority, RandomState>>>,
+    reap_threshold: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,10 +100,16 @@ where
     K: Send + Sync + Hash + PartialEq + Eq,
     V: Send + Sync,
 {
-    pub fn new() -> Self {
+    pub(crate) const AGRESSIVE_REAP_THRESHOLD: usize = 1_000_000;
+    pub fn new(reap_threshold: Option<usize>) -> Self {
         Self {
             pqs: ThreadLocal::new(),
+            reap_threshold: reap_threshold.unwrap_or(Self::AGRESSIVE_REAP_THRESHOLD),
         }
+    }
+
+    pub fn set_reap_threshold(&mut self, reap_threahold: usize) {
+        self.reap_threshold = reap_threahold;
     }
 
     fn get_pq_lock(&self) -> &RwLock<PriorityQueue<Entry<K, V>, Priority, RandomState>> {
@@ -162,7 +166,13 @@ where
     ) -> Vec<K> {
         let pql = self.get_pq_lock();
         let mut pq = pql.write().unwrap();
-        Self::reap_expired_locked_with_time(&mut pq, &Instant::now(), on_expired, on_reaped)
+        Self::reap_expired_locked_with_time(
+            &mut pq,
+            &Instant::now(),
+            on_expired,
+            on_reaped,
+            self.reap_threshold,
+        )
     }
 
     /// Reap expired entries from all priority queues (regardless of current thread)
@@ -204,8 +214,13 @@ where
         let mut all_reaped = vec![];
         for pq in pqs {
             let mut pq = pq.write().unwrap();
-            let mut reaped =
-                Self::reap_expired_locked_with_time(&mut pq, now, &on_expired, &on_reaped);
+            let mut reaped = Self::reap_expired_locked_with_time(
+                &mut pq,
+                now,
+                &on_expired,
+                &on_reaped,
+                self.reap_threshold,
+            );
             all_reaped.append(&mut reaped);
         }
         all_reaped
@@ -241,10 +256,11 @@ where
         now: &Instant,
         on_expired: impl Fn(&Instant, &K, &V) -> PQAction,
         on_reaped: impl Fn(&K, V),
+        reap_threshold: usize,
     ) -> Vec<K> {
         let len = pq.len();
-        if len > AGRESSIVE_REAP_THRESHOLD {
-            warn!("The number of flows ({len}) exceeds {AGRESSIVE_REAP_THRESHOLD}. Reaping...");
+        if len > reap_threshold {
+            warn!("The number of flows ({len}) exceeds {reap_threshold}. Reaping...");
             return Self::aggressive_reap(pq, now, on_expired, on_reaped);
         }
 
@@ -306,6 +322,6 @@ where
     V: Send + Sync,
 {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
