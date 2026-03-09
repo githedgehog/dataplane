@@ -114,6 +114,7 @@ setup-roots *args:
 [script]
 build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane-tar" } else { "containers." + target }) args)
     {{ _just_debuggable_ }}
+    {{ _setup_docker_env_ }}
     case "{{target}}" in
         "dataplane" | "dataplane-tar")
             docker import ./results/dataplane-tar {{ oci_image_dataplane }}
