@@ -51,12 +51,15 @@ oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
 [private]
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
 
+[private]
+docker_sock := "/run/docker/docker.sock"
+
 # Set DOCKER_HOST and DOCKER_SOCK if /var/run/docker.sock exists and they are not already set
 [private]
 _setup_docker_env_ := ```
     if [ -S /var/run/docker.sock ]; then
-      declare -r DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
-      declare -r DOCKER_SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
+      declare -r DOCKER_HOST="${DOCKER_HOST:-unix:/{{docker_sock}}}"
+      declare -r DOCKER_SOCK="${DOCKER_SOCK:-{{docker_sock}}}"
       export DOCKER_HOST
       export DOCKER_SOCK
     fi

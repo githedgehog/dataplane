@@ -205,6 +205,7 @@ jobs:
         if: ${{ matrix.nix-target == 'tests.all' }}
         run: |
           just \
+            docker_sock=/run/docker/docker.sock \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile="${{matrix.build.profile}}" \
             sanitize="${{matrix.build.sanitize}}" \
@@ -215,6 +216,7 @@ jobs:
         if: ${{ matrix.nix-target != 'tests.all' }}
         run: |
           just \
+            docker_sock=/run/docker/docker.sock \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile="${{matrix.build.profile}}" \
             sanitize="${{matrix.build.sanitize}}" \
@@ -385,6 +387,7 @@ jobs:
           docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
           docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
           just --yes \
+            docker_sock=/run/docker/docker.sock \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile}} \
             dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
