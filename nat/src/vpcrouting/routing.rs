@@ -277,7 +277,10 @@ impl EgressVpcPolicy {
             for (matched, matched_peermap) in original.0.matching_entries(prefix.network()) {
                 if matched.length() < prefix.length() {
                     for (discr, policy) in matched_peermap.iter() {
-                        peermap.insert(discr, policy.action);
+                        // inherit only if not there
+                        if peermap.lookup_policy(discr).is_none() {
+                            peermap.insert(discr, policy.action);
+                        }
                     }
                 }
             }
