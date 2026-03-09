@@ -191,6 +191,12 @@ fn deal_with_multiple_matches<Buf: PacketBufferMut>(
     nfi: &str,
     tuple: &FlowTuple,
 ) -> Option<VpcDiscriminant> {
+    // We should always have at least one matching RemoteData object applying to our packet.
+    debug_assert!(
+        !data_set.is_empty(),
+        "{nfi}: No matching RemoteData objects left for flow {tuple}"
+    );
+
     // Do all matches have the same destination VPC?
     let Some(first_vpcd) = data_set.iter().next().map(|d| d.vpcd) else {
         debug!("{nfi}: Missing destination VPC information for flow {tuple}, dropping packet");
@@ -213,14 +219,9 @@ fn deal_with_multiple_matches<Buf: PacketBufferMut>(
         .filter(|d| d.applies_to(packet_proto))
         .collect::<HashSet<_>>();
 
-    // We should always have at least one matching RemoteData object applying to our packet.
-    debug_assert!(
-        !data_set.is_empty(),
-        "{nfi}: No matching RemoteData objects left for flow {tuple}"
-    );
     if data_set.is_empty() {
         debug!(
-            "{nfi}: Unexpected case when trying to figure out NAT requirements to use for flow {tuple}, dropping packet"
+            "{nfi}: No NAT requirement found for flow {tuple} after filtering by protocol, dropping packet"
         );
         return None;
     }
@@ -706,7 +707,18 @@ mod tests {
         table
             .insert(
                 src_vpcd,
-                VpcdLookupResult::MultipleMatches(HashSet::new()),
+                VpcdLookupResult::MultipleMatches(HashSet::from([
+                    RemoteData::new(
+                        vpcd(200),
+                        None,
+                        Some(NatRequirement::PortForwarding(L4Protocol::Tcp)), // This rule is for TCP
+                    ),
+                    RemoteData::new(
+                        vpcd(300),
+                        None,
+                        Some(NatRequirement::PortForwarding(L4Protocol::Tcp)), // This rule is for TCP
+                    ),
+                ])),
                 Prefix::from("10.0.0.0/24"),
                 None,
                 Prefix::from("20.0.0.0/24"),
@@ -719,11 +731,13 @@ mod tests {
 
         let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
-        // Create test packet
-        let packet = create_test_packet(
+        // Create test UDP packet
+        let packet = create_test_ipv4_udp_packet_with_ports(
             Some(vpcd(100)),
             "10.0.0.5".parse().unwrap(),
             "20.0.0.10".parse().unwrap(),
+            1234,
+            5678,
         );
 
         let packets = flow_filter
