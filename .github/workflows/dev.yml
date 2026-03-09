@@ -216,7 +216,7 @@ jobs:
             profile="${{matrix.build.profile}}" \
             sanitize="${{matrix.build.sanitize}}" \
             instrument="${{matrix.build.instrument}}" \
-            test "${{matrix.nix-target}}"
+            test
 
       - name: "push container"
         if: ${{ matrix.nix-target == 'dataplane-tar' }}
