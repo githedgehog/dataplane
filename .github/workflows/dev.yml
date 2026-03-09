@@ -201,15 +201,6 @@ jobs:
         run: |
           nix-shell --run "cargo deny check"
 
-      - name: "build packages"
-        run: |
-          just \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile="${{matrix.build.profile}}" \
-            sanitize="${{matrix.build.sanitize}}" \
-            instrument="${{matrix.build.instrument}}" \
-            build "${{matrix.nix-target}}"
-
       - name: "run tests"
         if: ${{ matrix.nix-target == 'tests.all' }}
         run: |
