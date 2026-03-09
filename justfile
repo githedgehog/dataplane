@@ -117,6 +117,7 @@ setup-roots *args:
 [script]
 build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane-tar" } else { "containers." + target }) args)
     {{ _just_debuggable_ }}
+    {{ _setup_docker_env_ }}
     case "{{target}}" in
         "dataplane" | "dataplane-tar")
             docker import ./results/dataplane-tar {{ oci_image_dataplane }}
@@ -124,12 +125,12 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             ;;
         "frr.dataplane")
             docker load < ./results/containers.frr.dataplane
-            docker tag "frr-dataplane:latest" "{{oci_image_frr_dataplane}}"
+            docker tag "githedgehog/frr-dataplane:latest" "{{oci_image_frr_dataplane}}"
             echo "imported {{oci_image_frr_dataplane}}"
             ;;
         "frr.host")
             docker load < ./results/containers.frr.host
-            docker tag "frr-host:latest" "{{oci_image_frr_host}}"
+            docker tag "githedgehog/frr-host:latest" "{{oci_image_frr_host}}"
             echo "imported {{oci_image_frr_host}}"
             ;;
         *)
@@ -141,6 +142,7 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
 [script]
 push-container target="dataplane" *args: (build-container target args) && version
     {{ _just_debuggable_ }}
+    {{ _setup_docker_env_ }}
     case "{{target}}" in
         "dataplane" | "dataplane-tar")
             docker push {{ oci_image_dataplane }}

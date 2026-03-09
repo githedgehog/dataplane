@@ -614,7 +614,7 @@ let
   };
 
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
-    name = "frr-host";
+    name = "githedgehog/frr-host";
     inherit tag;
     contents = pkgs.buildEnv {
       name = "frr-host-env";
