@@ -526,6 +526,7 @@ fn apply_stateful_nat_config(
     Ok(())
 }
 
+#[allow(unused)]
 fn apply_flow_filtering_config(
     overlay: &Overlay,
     flowfilterw: &mut FlowFilterTableWriter,
@@ -591,6 +592,7 @@ impl ConfigProcessor {
         let vpcmapw = &mut self.proc_params.vpcmapw;
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
+        #[allow(unused)]
         let flowfilterw = &mut self.proc_params.flowfilterw;
         let portfw_w = &mut self.proc_params.portfw_w;
         let ort_rw = &self.proc_params.ort_rw;
@@ -627,7 +629,7 @@ impl ConfigProcessor {
         apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
 
         /* apply flow filtering config */
-        apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;
+        //apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;
 
         /* apply port-forwarding config */
         apply_port_forwarding_config(&config.external.overlay.vpc_table, portfw_w)?;
