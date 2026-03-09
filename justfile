@@ -124,11 +124,13 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             echo "imported {{ oci_image_dataplane }}"
             ;;
         "frr.dataplane")
-            skopeo copy "docker-archive:$(pwd)/results/containers.frr.dataplane" docker-daemon:{{oci_image_frr_dataplane}}
+            img="$(docker load < ./results/containers.frr.dataplane)"
+            docker tag "${img}" "{{oci_image_frr_dataplane}}"
             echo "imported {{oci_image_frr_dataplane}}"
             ;;
         "frr.host")
-            skopeo copy "docker-archive://$(pwd)/results/containers.frr.host" docker-daemon:{{oci_image_frr_host}}
+            img="$(docker load < ./results/containers.frr.host)"
+            docker tag "${img}" "{{oci_image_frr_host}}"
             echo "imported {{oci_image_frr_host}}"
             ;;
         *)
