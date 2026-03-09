@@ -26,6 +26,7 @@ use nat::portfw::build_port_forwarding_configuration;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
+use nat::vpcrouting::{OverlayRoutingRW, build_overlay_routing_configuration};
 use pipeline::PipelineData;
 
 use crate::processor::gwconfigdb::GwConfigDatabase;
@@ -103,6 +104,9 @@ pub struct ConfigProcessorParams {
 
     // BMP options to inject into InternalConfig
     pub bmp_options: Option<BmpOptions>,
+
+    // Overlay routing
+    pub ort_rw: OverlayRoutingRW,
 }
 
 impl ConfigProcessor {
@@ -532,6 +536,16 @@ fn apply_flow_filtering_config(
     Ok(())
 }
 
+fn apply_overlay_routing_config(
+    genid: GenId,
+    vpc_table: &VpcTable,
+    ort_rw: &OverlayRoutingRW,
+) -> ConfigResult {
+    let ort = build_overlay_routing_configuration(genid, vpc_table)?;
+    ort_rw.update(ort);
+    Ok(())
+}
+
 fn apply_port_forwarding_config(
     vpc_table: &VpcTable,
     portfw_w: &mut PortFwTableWriter,
@@ -579,6 +593,7 @@ impl ConfigProcessor {
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
         let portfw_w = &mut self.proc_params.portfw_w;
+        let ort_rw = &self.proc_params.ort_rw;
 
         // internal config should be available
         let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
@@ -616,6 +631,9 @@ impl ConfigProcessor {
 
         /* apply port-forwarding config */
         apply_port_forwarding_config(&config.external.overlay.vpc_table, portfw_w)?;
+
+        /* apply overlay routing config */
+        apply_overlay_routing_config(genid, &config.external.overlay.vpc_table, ort_rw)?;
 
         /* update stats mappings and seed names to the stats store */
         let _ = update_stats_vpc_mappings(&config, vpcmapw);

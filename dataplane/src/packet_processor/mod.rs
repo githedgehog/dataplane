@@ -18,6 +18,7 @@ use flow_filter::{FlowFilter, FlowFilterTableWriter};
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
+use nat::vpcrouting::OverlayRoutingRW;
 use nat::{IcmpErrorHandler, StatefulNat, StatelessNat};
 
 use net::buffer::PacketBufferMut;
@@ -43,6 +44,7 @@ where
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
+    pub ort_rw: OverlayRoutingRW,
 }
 
 /// Start a router and provide the associated pipeline
@@ -50,6 +52,9 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
+    let ort_rw = OverlayRoutingRW::new();
+
+    // Allocate the shared VPC stats store (returns Arc<VpcStatsStore>)
     let vpc_stats_store: Arc<VpcStatsStore> = VpcStatsStore::new();
 
     // Build stats collector + writer, wiring the same store instance in
@@ -139,5 +144,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         stats,
         vpc_stats_store,
         portfw_w,
+        ort_rw,
     })
 }

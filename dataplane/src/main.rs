@@ -220,6 +220,7 @@ fn main() {
             vpc_stats_store: setup.vpc_stats_store,
             dp_status_r: dp_status.clone(),
             bmp_options: bmp_client_opts,
+            ort_rw: setup.ort_rw,
         },
     })
     .expect("Failed to start management");

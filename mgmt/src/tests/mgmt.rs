@@ -54,6 +54,8 @@ pub mod test {
     use tracing::{debug, error};
     use vpcmap::map::VpcMapWriter;
 
+    use nat::vpcrouting::OverlayRoutingRW;
+
     /* OVERLAY config sample builders */
     fn sample_vpc_table() -> VpcTable {
         let mut vpc_table = VpcTable::new();
@@ -463,6 +465,7 @@ pub mod test {
 
         /* pipeline data */
         let pipeline_data = Arc::from(PipelineData::default());
+        let ort_rw = OverlayRoutingRW::new();
 
         /* build configuration of mgmt config processor */
         let processor_config = ConfigProcessorParams {
@@ -476,6 +479,7 @@ pub mod test {
             vpc_stats_store,
             dp_status_r,
             bmp_options: None,
+            ort_rw,
         };
 
         /* start config processor to test the processing of a config. The processor embeds the
