@@ -129,7 +129,7 @@ jobs:
           - tests.all
           - frr.dataplane
           - frr.host
-          - dataplane-tar
+          - dataplane
         build:
           - name: "debug"
             profile: "debug"
