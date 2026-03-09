@@ -5,9 +5,10 @@
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
+use net::flows::ExtractRef;
 use net::headers::TryIp;
 use net::ip::NextHeader;
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use std::sync::Arc;
 
@@ -17,14 +18,40 @@ use super::access::OverlayRoutingRW;
 use super::routing::{Action, OverlayRouting, PacketSummary};
 
 pub struct OverlayRouter {
+    #[allow(unused)]
     flow_table: Arc<FlowTable>,
     ort: OverlayRoutingRW,
+}
+
+struct BypassData {
+    dst_vpcd: VpcDiscriminant,
+    masquerade: bool,
+    port_forwarding: bool,
 }
 
 impl OverlayRouter {
     #[must_use]
     pub fn new(flow_table: Arc<FlowTable>, ort: OverlayRoutingRW) -> Self {
         Self { flow_table, ort }
+    }
+
+    fn process_with_flow_state<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+    ) -> Option<BypassData> {
+        let flow = packet.meta().flow_info.as_ref()?;
+        let locked = flow.locked.read().ok()?;
+        let dst_vcpd = locked
+            .dst_vpcd
+            .as_ref()
+            .and_then(|dst_vcpd| dst_vcpd.extract_ref::<VpcDiscriminant>())?;
+
+        let masquerade = locked.nat_state.is_some();
+        let port_forwarding = locked.port_fw_state.is_some();
+        Some(BypassData {
+            dst_vpcd: *dst_vcpd,
+            masquerade,
+            port_forwarding,
+        })
     }
 
     fn validate_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<PacketSummary> {
@@ -67,7 +94,20 @@ impl OverlayRouter {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>, ort: &OverlayRouting) {
+        // bypass if packet matched flow
+        if let Some(bypass) = Self::process_with_flow_state(packet) {
+            packet.meta_mut().dst_vpcd = Some(bypass.dst_vpcd);
+            if bypass.masquerade {
+                packet.meta_mut().set_stateful_nat(true);
+            }
+            if bypass.port_forwarding {
+                packet.meta_mut().set_port_forwarding(true);
+            }
+            return;
+        }
+
         let Some(s) = Self::validate_packet(packet) else {
             debug!("Dropping packet since we could not validate it:\n{packet}");
             packet.done(DoneReason::Unroutable);
