@@ -107,6 +107,9 @@ pub enum ConfigError {
 
     #[error("Failed to apply port-forwarding configuration: {0}")]
     PortForwarding(String),
+
+    #[error("Failed to build overlay routing: {0}")]
+    OverlayRoutingError(String),
 }
 
 /// Result-like type for configurations
