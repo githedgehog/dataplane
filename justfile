@@ -112,17 +112,14 @@ setup-roots *args:
 build-container *args: (build "dataplane-tar" args)
     {{ _just_debuggable_ }}
     {{ _setup_docker_env_ }}
-    docker import ./results/dataplane-tar dataplane:{{version}}
+    docker import ./results/dataplane-tar {{ oci_image_full }}
 
 # Build and push the dataplane container
 [script]
 push-container *args: (build-container args) && version
     {{ _just_debuggable_ }}
     {{ _setup_docker_env_ }}
-    skopeo copy \
-      {{ _skopeo_dest_insecure }} \
-      docker-daemon:dataplane:{{version}} \
-      docker://{{ oci_image_full }}
+    docker push {{ oci_image_full }}
     echo "Pushed {{ oci_image_full }}"
 
 # Print names of container images to build or push
