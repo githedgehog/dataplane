@@ -43,7 +43,10 @@ version:
 oci_repo := "127.0.0.1:30000"
 oci_insecure := ""
 oci_name := "githedgehog/dataplane"
-oci_image_full := oci_repo + "/" + oci_name + ":" + version
+oci_frr_prefix := "githedgehog/frr"
+oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
+oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + "-dataplane:" + version
+oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
 
 [private]
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
@@ -109,23 +112,53 @@ setup-roots *args:
 
 # Build the dataplane container image
 [script]
-build-container *args: (build "dataplane-tar" args)
+build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane-tar" } else { "containers." + target }) args)
     {{ _just_debuggable_ }}
-    {{ _setup_docker_env_ }}
-    docker import ./results/dataplane-tar {{ oci_image_full }}
+    case "{{target}}" in
+        "dataplane" | "dataplane-tar")
+            docker import ./results/dataplane-tar {{ oci_image_dataplane }}
+            echo "imported {{ oci_image_dataplane }}"
+            ;;
+        "frr.dataplane")
+            skopeo copy "docker-archive:$(pwd)/results/containers.frr.dataplane" docker-daemon:{{oci_image_frr_dataplane}}
+            echo "imported {{oci_image_frr_dataplane}}"
+            ;;
+        "frr.host")
+            skopeo copy "docker-archive://$(pwd)/results/containers.frr.host" docker-daemon:{{oci_image_frr_host}}
+            echo "imported {{oci_image_frr_host}}"
+            ;;
+        *)
+            >&2 echo "{{target}}" not a valid container
+            exit 99
+    esac
 
 # Build and push the dataplane container
 [script]
-push-container *args: (build-container args) && version
+push-container target="dataplane" *args: (build-container target args) && version
     {{ _just_debuggable_ }}
     {{ _setup_docker_env_ }}
-    docker push {{ oci_image_full }}
-    echo "Pushed {{ oci_image_full }}"
+    case "{{target}}" in
+        "dataplane" | "dataplane-tar")
+            docker push {{ oci_image_dataplane }}
+            echo "Pushed {{ oci_image_dataplane }}"
+            ;;
+        "frr.dataplane")
+            skopeo copy docker-daemon:{{oci_image_frr_dataplane}} docker://{{oci_image_frr_dataplane}}
+            echo "Pushed {{ oci_image_frr_dataplane }}"
+            ;;
+        "frr.host")
+            skopeo copy docker-daemon:{{oci_image_frr_host}} docker://{{oci_image_frr_host}}
+            echo "Pushed {{ oci_image_frr_host }}"
+            ;;
+        *)
+            >&2 echo "{{target}}" not a valid container
+            exit 99
+    esac
 
 # Print names of container images to build or push
 [script]
 print-container-tags:
-    echo "{{ oci_image_full }}"
+    echo "{{ oci_image_dataplane }}"
 
 # Run Clippy
 [script]

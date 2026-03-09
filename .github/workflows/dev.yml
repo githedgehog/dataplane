@@ -127,6 +127,8 @@ jobs:
       matrix:
         nix-target:
           - tests.all
+          - frr.dataplane
+          - frr.host
           - dataplane-tar
         build:
           - name: "debug"
@@ -219,24 +221,16 @@ jobs:
             test
 
       - name: "push container"
-        if: ${{ matrix.nix-target == 'dataplane-tar' }}
+        if: ${{ matrix.nix-target != 'tests.all' }}
         run: |
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile="${{matrix.build.profile}}" \
+            sanitize="${{matrix.build.sanitize}}" \
+            instrument="${{matrix.build.instrument}}" \
             version="${{ needs.version.outputs.version }}-${{ matrix.build.profile }}" \
             oci_repo="ghcr.io" \
-            push-container
-
-      - name: "print container image name"
-        if: ${{ matrix.build.profile == 'release' || matrix.build.profile == 'debug' }}
-        run: |
-          just \
-            debug_justfile="${{matrix.debug_justfile}}" \
-            profile=${{matrix.build.profile}} \
-            version=${{ needs.version.outputs.version }}-${{ matrix.build.profile }} \
-            oci_repo="ghcr.io" \
-            print-container-tags
+            push-container "${{matrix.nix-target}}"
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}

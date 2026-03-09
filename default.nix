@@ -6,6 +6,7 @@
   profile ? "debug",
   instrumentation ? "none",
   sanitize ? "",
+  tag ? "latest",
 }:
 let
   sources = import ./npins;
@@ -594,6 +595,34 @@ let
         workspace.cli.debug
         workspace.dataplane.debug
         workspace.init.debug
+      ];
+    };
+  };
+
+  containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
+    name = "githedgehog/frr-dataplane";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "frr-dataplane-env";
+      pathsToLink = [
+        "/"
+      ];
+      paths = [
+        frr-pkgs.fancy.frr.dataplane
+      ];
+    };
+  };
+
+  containers.frr.host = pkgs.dockerTools.buildLayeredImage {
+    name = "frr-host";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "frr-host-env";
+      pathsToLink = [
+        "/"
+      ];
+      paths = [
+        frr-pkgs.fancy.frr.host
       ];
     };
   };
