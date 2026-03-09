@@ -274,8 +274,16 @@ impl VpcExpose {
         self.ips.iter().map(|p| p.prefix())
     }
 
+    pub fn local_nots(&self) -> impl Iterator<Item = Prefix> {
+        self.nots.iter().map(|p| p.prefix())
+    }
+
     pub fn remote_prefixes(&self) -> impl Iterator<Item = &PrefixWithOptionalPorts> {
         self.public_ips().iter()
+    }
+
+    pub fn remote_nots(&self) -> impl Iterator<Item = &PrefixWithOptionalPorts> {
+        self.public_excludes().iter()
     }
 
     // Same as public_ips, but returns the list of excluded prefixes

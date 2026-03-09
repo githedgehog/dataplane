@@ -55,6 +55,8 @@ fn build_vpc_routing_table(
     let src_vpcd = VpcDiscriminant::from_vni(vpc.vni);
     for peering in &vpc.peerings {
         let dst_vpcd = vpc_table.get_remote_vni(peering);
+
+        // populate the outbound policy for the VPC
         for expose in &peering.local.exposes {
             let action = nat_config_to_local_action(expose.nat_config());
             if action == Action::PortForward {
@@ -63,8 +65,20 @@ fn build_vpc_routing_table(
             for prefix in expose.local_prefixes() {
                 emap.insert(src_vpcd, prefix, dst_vpcd.into(), action);
             }
+            for not in expose.local_nots() {
+                emap.insert(src_vpcd, not, dst_vpcd.into(), Action::Drop);
+            }
+            if expose.default {
+                emap.insert(
+                    src_vpcd,
+                    Prefix::root_v4(),
+                    dst_vpcd.into(),
+                    Action::Forward,
+                );
+            }
         }
 
+        // populate routing table for the vpc
         for expose in &peering.remote.exposes {
             let action = nat_config_to_remote_action(expose.nat_config());
             if action == Action::Masquerade {
@@ -91,6 +105,10 @@ fn build_vpc_routing_table(
                 let route = OvelayRoute::new(dst_vpcd.into(), prefix, proto, portrange, action);
                 imap.insert_route(src_vpcd, &Arc::from(route))
                     .map_err(|e| ConfigError::OverlayRoutingError(e.to_string()))?;
+            }
+
+            for not in expose.remote_nots() {
+                emap.insert(src_vpcd, not.prefix(), dst_vpcd.into(), Action::Drop);
             }
         }
     }
