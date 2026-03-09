@@ -18,7 +18,7 @@ use flow_filter::{FlowFilter, FlowFilterTableWriter};
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
-use nat::vpcrouting::OverlayRoutingRW;
+use nat::vpcrouting::{OverlayRouter, OverlayRoutingRW};
 use nat::{IcmpErrorHandler, StatefulNat, StatelessNat};
 
 use net::buffer::PacketBufferMut;
@@ -73,6 +73,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let portfw_w = PortFwTableWriter::new();
     let portfw_factory = portfw_w.reader().factory();
     let pdata = Arc::from(PipelineData::new(0));
+    let ort_rw_nf = ort_rw.clone();
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -105,7 +106,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         );
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", stats_w.clone());
-        let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
+        let _flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
         let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
         let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
         let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
@@ -114,6 +115,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             portfw_factory.handle(),
             flow_table.clone(),
         );
+        let overlay_rt = OverlayRouter::new(flow_table.clone(), ort_rw_nf.clone());
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
@@ -122,8 +124,9 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
             .add_stage(flow_lookup)
-            .add_stage(flow_filter)
+            .add_stage(overlay_rt)
             .add_stage(icmp_error_handler)
+            //.add_stage(flow_filter)
             .add_stage(portfw)
             .add_stage(stateless_nat)
             .add_stage(stateful_nat)
