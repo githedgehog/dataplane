@@ -124,13 +124,13 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             echo "imported {{ oci_image_dataplane }}"
             ;;
         "frr.dataplane")
-            img="$(docker load < ./results/containers.frr.dataplane)"
-            docker tag "${img}" "{{oci_image_frr_dataplane}}"
+            docker load < ./results/containers.frr.dataplane
+            docker tag "githedgehog/frr-dataplane:latest" "{{oci_image_frr_dataplane}}"
             echo "imported {{oci_image_frr_dataplane}}"
             ;;
         "frr.host")
-            img="$(docker load < ./results/containers.frr.host)"
-            docker tag "${img}" "{{oci_image_frr_host}}"
+            docker load < ./results/containers.frr.host
+            docker tag "githedgehog/frr-host:latest" "{{oci_image_frr_host}}"
             echo "imported {{oci_image_frr_host}}"
             ;;
         *)
