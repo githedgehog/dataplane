@@ -143,11 +143,11 @@ push-container target="dataplane" *args: (build-container target args) && versio
             echo "Pushed {{ oci_image_dataplane }}"
             ;;
         "frr.dataplane")
-            skopeo copy docker-daemon:{{oci_image_frr_dataplane}} docker://{{oci_image_frr_dataplane}}
+            docker push {{oci_image_frr_dataplane}}
             echo "Pushed {{ oci_image_frr_dataplane }}"
             ;;
         "frr.host")
-            skopeo copy docker-daemon:{{oci_image_frr_host}} docker://{{oci_image_frr_host}}
+            docker push {{oci_image_frr_host}}
             echo "Pushed {{ oci_image_frr_host }}"
             ;;
         *)
