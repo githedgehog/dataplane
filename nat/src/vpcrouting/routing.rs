@@ -61,7 +61,7 @@ pub enum Action {
     StaticNat,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OvelayRoute {
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) prefix: Prefix,               // not really needed
@@ -203,7 +203,12 @@ impl IngressMap {
     ) -> Result<(), VpcRoutingError> {
         debug!("Setting default route for VPC {src_vpcd} to {route}");
         let key = IngressKey::new(src_vpcd, None);
-        self.0.entry(key).or_default().set_default(route)
+        self.0.entry(key).or_default().set_default(route.clone())?;
+        let key = IngressKey::new(src_vpcd, Some(NextHeader::TCP));
+        self.0.entry(key).or_default().set_default(route.clone())?;
+        let key = IngressKey::new(src_vpcd, Some(NextHeader::UDP));
+        self.0.entry(key).or_default().set_default(route)?;
+        Ok(())
     }
 
     #[must_use]
