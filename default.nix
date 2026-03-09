@@ -390,6 +390,42 @@ let
     }
   ) package-list;
 
+  docs-builder =
+    {
+      package ? null,
+    }:
+    let
+      pname = if package != null then package else "all-docs";
+    in
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      args = {
+        inherit pname;
+        cargoArtifacts = null;
+        RUSTDOCFLAGS = "-D warnings";
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargo"
+            "doc"
+            "--profile=${cargo-profile}"
+            "--no-deps"
+          ]
+          ++ (if package != null then [ "--package=${pname}" ] else [ ])
+          ++ cargo-cmd-prefix
+        );
+      };
+    };
+
+  docs = {
+    all = docs-builder { };
+    pkg = builtins.mapAttrs (
+      dir: package:
+      docs-builder {
+        inherit package;
+      }
+    ) package-list;
+  };
+
   min-tar = pkgs.stdenv'.mkDerivation {
     pname = "min-tar";
     inherit version;
@@ -571,6 +607,7 @@ in
     dev-pkgs
     devenv
     devroot
+    docs
     min-tar
     package-list
     pkgs

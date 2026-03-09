@@ -201,27 +201,30 @@ jobs:
 
       - name: "build packages"
         run: |
-          nix build \
-            --file default.nix \
-            --argstr profile "${{matrix.build.profile}}" \
-            --argstr sanitize "${{matrix.build.sanitize}}" \
-            --argstr instrumentation "${{matrix.build.instrument}}" \
-            --out-link "results/${{matrix.nix-target}}" \
-            --print-build-logs \
-            ${{matrix.nix-target}}
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile="${{matrix.build.profile}}" \
+            sanitize="${{matrix.build.sanitize}}" \
+            instrument="${{matrix.build.instrument}}" \
+            build "${{matrix.nix-target}}"
 
       - name: "run tests"
         if: ${{ matrix.nix-target == 'tests.all' }}
         run: |
-          nix-shell --run "cargo nextest run --archive-file results/${{matrix.nix-target}}/*.tar.zst --workspace-remap $(pwd)"
+          just \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile="${{matrix.build.profile}}" \
+            sanitize="${{matrix.build.sanitize}}" \
+            instrument="${{matrix.build.instrument}}" \
+            test "${{matrix.nix-target}}"
 
       - name: "push container"
         if: ${{ matrix.nix-target == 'dataplane-tar' }}
         run: |
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
-            profile=${{matrix.build.profile}} \
-            version=${{ needs.version.outputs.version }}-${{ matrix.build.profile }} \
+            profile="${{matrix.build.profile}}" \
+            version="${{ needs.version.outputs.version }}-${{ matrix.build.profile }}" \
             oci_repo="ghcr.io" \
             push-container
 
