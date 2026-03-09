@@ -82,7 +82,7 @@ fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus 
             PortFwFlowStatus::SClosing if tcp.fin() && tcp.ack() => PortFwFlowStatus::LastAck,
             PortFwFlowStatus::SHalfClose if tcp.fin() => PortFwFlowStatus::LastAck,
             PortFwFlowStatus::LastAck if tcp.ack() => PortFwFlowStatus::Closed,
-            other if tcp.rst() => PortFwFlowStatus::Reset,
+            _other if tcp.rst() => PortFwFlowStatus::Reset,
             other => other,
         },
         PortFwAction::SrcNat => match status {
@@ -93,7 +93,7 @@ fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus 
             PortFwFlowStatus::CClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::CHalfClose,
             PortFwFlowStatus::CHalfClose if tcp.fin() => PortFwFlowStatus::LastAck,
             PortFwFlowStatus::LastAck if tcp.ack() => PortFwFlowStatus::Closed,
-            other if tcp.rst() => PortFwFlowStatus::Reset,
+            _other if tcp.rst() => PortFwFlowStatus::Reset,
             other => other,
         },
     }
