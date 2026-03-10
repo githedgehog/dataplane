@@ -125,7 +125,7 @@ impl Terminal {
         let _ = stdout().flush();
     }
     #[allow(clippy::unused_self)]
-    fn proc_line(&self, line: &str) -> Option<TermInput> {
+    pub fn proc_line(&self, line: &str) -> Option<TermInput> {
         let mut split = line.split_whitespace();
         let mut tokens: VecDeque<String> = VecDeque::new();
         let mut args = HashMap::new();
@@ -175,6 +175,9 @@ impl Terminal {
     }
     pub fn is_connected(&self) -> bool {
         self.connected
+    }
+    pub fn read_prompt(&self) -> &String {
+        &self.prompt
     }
 
     fn open_unix_sock<P: AsRef<Path>>(bind_addr: &P) -> Result<UnixDatagram, &'static str> {
