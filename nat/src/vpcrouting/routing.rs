@@ -112,7 +112,7 @@ impl VpcRoutingTable {
     pub fn insert_route(&mut self, route: Arc<OvelayRoute>) -> Result<(), VpcRoutingError> {
         let portrange = route.portrange.unwrap_or(PortRange::all_ports());
         self.rt.insert(route.prefix, portrange, route)?;
-        self.rt.resolve_overlaps()?;
+        self.rt.resolve_port_overlaps_if_set()?;
         Ok(())
     }
 
@@ -185,6 +185,7 @@ impl IngressMap {
             return Err(VpcRoutingError::InvalidRoute);
         }
         // if no proto is indicated, inject routes for UDP and TCP
+        // This is not correct as it may cause overlaps
         if route.proto.is_none() {
             let key = IngressKey::new(src_vpcd, Some(NextHeader::TCP));
             self.0.entry(key).or_default().insert_route(route.clone())?;

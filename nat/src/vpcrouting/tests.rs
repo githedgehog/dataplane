@@ -7,7 +7,7 @@
 mod test {
     use crate::portfw::PortRange;
     use crate::vpcrouting::routing::{Action, OvelayRoute};
-    use crate::vpcrouting::routing::{EgressVpcPolicy, EgressVpcPolicyMap, IngressKey, IngressMap};
+    use crate::vpcrouting::routing::{EgressVpcPolicyMap, IngressKey, IngressMap};
     use crate::vpcrouting::routing::{OverlayRouting, PacketSummary};
     use crate::vpcrouting::routing::{VpcRoutingError, VpcRoutingTable};
 
@@ -157,7 +157,7 @@ mod test {
     }
 
     #[test]
-    fn test_ingress_map() {
+    fn test_ingress_map_1() {
         let mut imap = IngressMap::new();
 
         let route = mk_route(
@@ -171,23 +171,26 @@ mod test {
 
         let route = mk_route(
             4000,
-            "192.168.0.0/16",
+            "192.168.0.0/17",
             Some(NextHeader::TCP),
             Some((401, 500)),
             Action::PortForward,
         );
         imap.insert_route(disc(3000), &route.into()).unwrap();
 
+        let route = mk_route(4000, "192.168.0.0/16", None, None, Action::StaticNat);
+        imap.insert_route(disc(3000), &route.into()).unwrap();
+
+        let route = mk_route(4000, "192.168.0.0/16", None, None, Action::StaticNat);
+        imap.insert_route(disc(3000), &route.into()).unwrap();
+
         let route = mk_route(
-            4000,
-            "192.168.0.0/16",
+            5000,
+            "192.168.70.0/24",
             Some(NextHeader::TCP),
             Some((501, 1500)),
             Action::PortForward,
         );
-        imap.insert_route(disc(3000), &route.into()).unwrap();
-
-        let route = mk_route(5000, "192.168.70.0/24", None, None, Action::StaticNat);
         imap.insert_route(disc(3000), &route.into()).unwrap();
 
         //imap.resolve_overlaps();
@@ -267,14 +270,15 @@ mod test {
         )
         .unwrap();
 
+        // 3000 -> 2000
         mk_route_insert(
             &mut imap,
             3000,
             2000,
-            "20.30.128.0/27",
+            "30.10.128.0/27",
             None,
             None,
-            Action::Forward,
+            Action::StaticNat,
         )
         .unwrap();
 
@@ -300,6 +304,7 @@ mod test {
         )
         .unwrap();
 
+        // 3000 -> 8000
         mk_route_insert_default(
             &mut imap,
             3000,
@@ -311,50 +316,60 @@ mod test {
         )
         .unwrap();
 
-        // 4000 -> 3000
+        // 3000 -> 1000
         mk_route_insert(
             &mut imap,
-            4000,
             3000,
-            "192.168.50.0/24",
+            1000,
+            "10.0.0.0/16",
             None,
             None,
             Action::Forward,
         )
         .unwrap();
 
+        // fails due to insertion of /16 and all ports
         mk_route_insert(
             &mut imap,
-            4000,
             3000,
-            "192.168.60.0/24",
+            1000,
+            "10.0.0.1/32",
+            Some(NextHeader::TCP),
+            Some((180, 180)),
+            Action::PortForward,
+        )
+        .unwrap();
+
+        mk_route_insert(
+            &mut imap,
+            3000,
+            1000,
+            "10.0.1.0/24",
             None,
             None,
             Action::Forward,
         )
         .unwrap();
 
-        // 4000 -> 2000
         mk_route_insert(
             &mut imap,
-            4000,
-            2000,
-            "192.168.128.0/27",
+            3000,
+            1000,
+            "10.0.1.0/25",
             None,
             None,
-            Action::Forward,
+            Action::StaticNat,
         )
         .unwrap();
 
-        // 2000 -> 4000
         mk_route_insert(
             &mut imap,
-            4000,
-            2000,
-            "20.30.90.30/32",
+            3000,
+            1000,
+            "10.0.1.128/25",
             None,
             None,
-            Action::Forward,
+            Action::Drop,
         )
         .unwrap();
 
@@ -405,27 +420,6 @@ mod test {
     }
 
     #[test]
-    fn test_egress_vpc_policy() {
-        let mut epolicy = EgressVpcPolicy::new();
-
-        let prefix = Prefix::from_str("192.168.50.0/24").unwrap();
-        epolicy.add(prefix, disc(4000), Action::Forward);
-        epolicy.add(prefix, disc(2000), Action::StaticNat);
-        epolicy.add(prefix, disc(6000), Action::Masquerade);
-
-        let prefix = Prefix::from_str("192.168.50.128/27").unwrap();
-        epolicy.add(prefix, disc(4000), Action::Drop);
-
-        let prefix = Prefix::from_str("192.168.60.0/24").unwrap();
-        epolicy.add(prefix, disc(4000), Action::Masquerade);
-
-        let prefix = Prefix::from_str("192.168.40.0/24").unwrap();
-        epolicy.add(prefix, disc(4000), Action::StaticNat);
-
-        println!("{epolicy}");
-    }
-
-    #[test]
     fn test_egress_vpc_policy_map() {
         let mut policy_map = EgressVpcPolicyMap::new();
 
@@ -434,11 +428,19 @@ mod test {
         policy_map.insert(disc(3000), prefix, disc(2000), Action::StaticNat);
         policy_map.insert(disc(3000), prefix, disc(6000), Action::Masquerade);
 
+        let prefix = Prefix::from_str("192.168.50.0/27").unwrap();
+        policy_map.insert(disc(3000), prefix, disc(5000), Action::StaticNat);
+        policy_map.insert(disc(3000), prefix, disc(2000), Action::Masquerade);
+
         let prefix = Prefix::from_str("192.168.50.128/27").unwrap();
-        policy_map.insert(disc(3000), prefix, disc(4000), Action::Drop);
+        policy_map.insert(disc(3000), prefix, disc(5000), Action::Forward);
+        policy_map.insert(disc(3000), prefix, disc(9000), Action::StaticNat);
 
         let prefix = Prefix::from_str("192.168.60.0/24").unwrap();
         policy_map.insert(disc(3000), prefix, disc(4000), Action::Masquerade);
+
+        let prefix = Prefix::from_str("192.168.50.140/32").unwrap();
+        policy_map.insert(disc(3000), prefix, disc(4000), Action::Drop);
 
         let address = IpAddr::from_str("192.168.50.1").unwrap();
         let (_, policy) = policy_map.lookup(disc(3000), address, disc(4000)).unwrap();
@@ -446,11 +448,31 @@ mod test {
 
         let address = IpAddr::from_str("192.168.50.1").unwrap();
         let (_, policy) = policy_map.lookup(disc(3000), address, disc(2000)).unwrap();
+        assert_eq!(policy.action, Action::Masquerade);
+
+        let address = IpAddr::from_str("192.168.50.1").unwrap();
+        let (_, policy) = policy_map.lookup(disc(3000), address, disc(6000)).unwrap();
+        assert_eq!(policy.action, Action::Masquerade);
+
+        let address = IpAddr::from_str("192.168.50.1").unwrap();
+        let (_, policy) = policy_map.lookup(disc(3000), address, disc(5000)).unwrap();
         assert_eq!(policy.action, Action::StaticNat);
 
         let address = IpAddr::from_str("192.168.50.129").unwrap();
+        let (_, policy) = policy_map.lookup(disc(3000), address, disc(5000)).unwrap();
+        assert_eq!(policy.action, Action::Forward);
+
+        let address = IpAddr::from_str("192.168.50.140").unwrap();
         let (_, policy) = policy_map.lookup(disc(3000), address, disc(4000)).unwrap();
         assert_eq!(policy.action, Action::Drop);
+
+        let address = IpAddr::from_str("192.168.50.128").unwrap();
+        let (_, policy) = policy_map.lookup(disc(3000), address, disc(5000)).unwrap();
+        assert_eq!(policy.action, Action::Forward);
+
+        let address = IpAddr::from_str("192.168.50.128").unwrap();
+        let (_, policy) = policy_map.lookup(disc(3000), address, disc(9000)).unwrap();
+        assert_eq!(policy.action, Action::StaticNat);
 
         println!("{policy_map}");
     }
@@ -458,52 +480,42 @@ mod test {
     fn build_egress_vpc_policy_map() -> EgressVpcPolicyMap {
         let mut policy_map = EgressVpcPolicyMap::new();
 
-        let prefix = Prefix::from_str("192.168.60.0/24").unwrap();
-        policy_map.insert(disc(3000), prefix, disc(4000), Action::Forward);
-
         let prefix = Prefix::from_str("192.168.50.0/24").unwrap();
         policy_map.insert(disc(3000), prefix, disc(4000), Action::Forward);
+
+        let prefix = Prefix::from_str("192.168.50.128/25").unwrap();
         policy_map.insert(disc(3000), prefix, disc(2000), Action::StaticNat);
+
+        let prefix = Prefix::from_str("192.168.50.13/32").unwrap();
         policy_map.insert(disc(3000), prefix, disc(6000), Action::Masquerade);
+
+        let prefix = Prefix::from_str("192.168.60.0/24").unwrap();
+        policy_map.insert(disc(3000), prefix, disc(4000), Action::Forward);
 
         let prefix = Prefix::from_str("192.168.50.128/27").unwrap();
         policy_map.insert(disc(3000), prefix, disc(4000), Action::Drop);
 
         let prefix = Prefix::from_str("192.168.60.0/24").unwrap();
-        policy_map.insert(disc(3000), prefix, disc(4000), Action::Masquerade);
+        policy_map.insert(disc(3000), prefix, disc(4000), Action::StaticNat);
+
+        let prefix = Prefix::from_str("192.168.60.0/24").unwrap();
+        policy_map.insert(disc(3000), prefix, disc(2000), Action::Masquerade);
+
+        let prefix = Prefix::from_str("192.168.60.0/24").unwrap();
+        policy_map.insert(disc(3000), prefix, disc(8000), Action::Forward);
+
+        println!("{policy_map}");
         policy_map
     }
 
     #[test]
-    #[traced_test]
-    fn test_egress_vpc_routing() {
-        let emap = build_egress_vpc_policy_map();
+    //#[traced_test]
+    fn test_complete_vpc_routing() {
         let imap = build_ingress_map();
-
-        println!("{imap}");
-        println!("{emap}");
-
-        let src = IpAddr::from_str("192.168.50.200").unwrap();
-        let dst = IpAddr::from_str("192.168.70.1").unwrap();
-        let route = imap
-            .lookup(disc(3000), NextHeader::ICMP, dst, None)
-            .unwrap();
-        let (_, policy) = emap.lookup(disc(3000), src, route.dst_vpcd).unwrap();
-        println!("{src} -> {dst}");
-        println!("hit {route}");
-        println!("policy {policy}");
-
-        let src = IpAddr::from_str("192.168.60.1").unwrap();
-        let dst = IpAddr::from_str("192.168.70.1").unwrap();
-        let route = imap.lookup(disc(3000), NextHeader::UDP, dst, None).unwrap();
-        let (_, policy) = emap.lookup(disc(3000), src, route.dst_vpcd).unwrap();
-        println!("{src} -> {dst}");
-        println!("hit {route}");
-        println!("policy {policy}");
-
-        // ================================================== //
+        let emap = build_egress_vpc_policy_map();
         let ort = OverlayRouting::new(1, imap, emap);
 
+        // ======== /
         let s = PacketSummary {
             src_vpcd: disc(3000),
             src_addr: IpAddr::from_str("192.168.50.200").unwrap(),
@@ -514,7 +526,37 @@ mod test {
         };
         let (dst_vpcd, local, remote) = ort.lookup(&s).unwrap();
         println!("{s} -> {dst_vpcd} {local} {remote}");
+        assert_eq!(dst_vpcd, disc(4000));
+        assert_eq!(local, Action::Forward);
+        assert_eq!(remote, Action::PortForward);
 
+        // ======== /
+        let s = PacketSummary {
+            src_vpcd: disc(3000),
+            src_addr: IpAddr::from_str("192.168.50.200").unwrap(),
+            dst_addr: IpAddr::from_str("20.10.90.100").unwrap(),
+            proto: NextHeader::TCP,
+            src_port: Some(mk_port(9999)),
+            dst_port: Some(mk_port(2222)),
+        };
+        let (dst_vpcd, local, remote) = ort.lookup(&s).unwrap();
+        println!("{s} -> {dst_vpcd} {local} {remote}");
+        assert_eq!(dst_vpcd, disc(4000));
+        assert_eq!(local, Action::Forward);
+        assert_eq!(remote, Action::PortForward);
+
+        // ======== /
+        let s = PacketSummary {
+            src_vpcd: disc(3000),
+            src_addr: IpAddr::from_str("192.168.50.200").unwrap(),
+            dst_addr: IpAddr::from_str("20.10.90.100").unwrap(),
+            proto: NextHeader::TCP,
+            src_port: Some(mk_port(9999)),
+            dst_port: Some(mk_port(2221)),
+        };
+        assert!(ort.lookup(&s).is_none());
+
+        // ======== /
         let s = PacketSummary {
             src_vpcd: disc(3000),
             src_addr: IpAddr::from_str("192.168.60.1").unwrap(),
@@ -525,5 +567,63 @@ mod test {
         };
         let (dst_vpcd, local, remote) = ort.lookup(&s).unwrap();
         println!("{s} -> {dst_vpcd} {local} {remote}");
+        assert_eq!(dst_vpcd, disc(4000));
+        assert_eq!(local, Action::StaticNat);
+        assert_eq!(remote, Action::Forward);
+
+        // ======== /
+        let s = PacketSummary {
+            src_vpcd: disc(3000),
+            src_addr: IpAddr::from_str("192.168.60.1").unwrap(),
+            dst_addr: IpAddr::from_str("192.168.128.1").unwrap(),
+            proto: NextHeader::ICMP,
+            src_port: None,
+            dst_port: None,
+        };
+        let (dst_vpcd, local, remote) = ort.lookup(&s).unwrap();
+        println!("{s} -> {dst_vpcd} {local} {remote}");
+        assert_eq!(dst_vpcd, disc(2000));
+        assert_eq!(local, Action::Masquerade);
+        assert_eq!(remote, Action::Forward);
+
+        // ======== /
+        let s = PacketSummary {
+            src_vpcd: disc(3000),
+            src_addr: IpAddr::from_str("192.168.60.1").unwrap(),
+            dst_addr: IpAddr::from_str("192.168.80.1").unwrap(),
+            proto: NextHeader::UDP,
+            src_port: Some(mk_port(44444)),
+            dst_port: Some(mk_port(2053)),
+        };
+        let (dst_vpcd, local, remote) = ort.lookup(&s).unwrap();
+        println!("{s} -> {dst_vpcd} {local} {remote}");
+        assert_eq!(dst_vpcd, disc(4000));
+        assert_eq!(local, Action::StaticNat);
+        assert_eq!(remote, Action::Forward);
+
+        // ======== /
+        let s = PacketSummary {
+            src_vpcd: disc(3000),
+            src_addr: IpAddr::from_str("192.168.60.1").unwrap(),
+            dst_addr: IpAddr::from_str("8.8.8.8").unwrap(),
+            proto: NextHeader::UDP,
+            src_port: Some(mk_port(44444)),
+            dst_port: Some(mk_port(2053)),
+        };
+        let (dst_vpcd, local, remote) = ort.lookup(&s).unwrap();
+        println!("{s} -> {dst_vpcd} {local} {remote}");
+        assert_eq!(dst_vpcd, disc(8000));
+        assert_eq!(local, Action::Forward);
+        assert_eq!(remote, Action::Forward);
+
+        let s = PacketSummary {
+            src_vpcd: disc(3000),
+            src_addr: IpAddr::from_str("192.168.50.1").unwrap(),
+            dst_addr: IpAddr::from_str("8.8.8.8").unwrap(),
+            proto: NextHeader::UDP,
+            src_port: Some(mk_port(44444)),
+            dst_port: Some(mk_port(2053)),
+        };
+        assert!(ort.lookup(&s).is_none());
     }
 }

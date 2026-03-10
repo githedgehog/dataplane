@@ -46,12 +46,28 @@ impl<V: Clone + Debug> LpmMap<V> {
     /// computed by `lookup_cumulative()` on each lookup, such that `lookup()` can be called instead.
     #[allow(unused)]
     pub fn resolve_overlaps(&mut self) -> Result<(), RangeSetError> {
-        let mut original = self.clone();
+        let original = self.clone();
         for (prefix, rangeset) in self.iter_mut() {
             for (matched, matched_rangeset) in original.0.matching_entries(prefix.network()) {
                 if matched.length() < prefix.length() {
                     for (first, last, value) in matched_rangeset.iter() {
                         rangeset.insert_range_allow_replace(first, last, value.clone())?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn resolve_port_overlaps_if_set(&mut self) -> Result<(), RangeSetError> {
+        let original = self.clone();
+        for (prefix, rangeset) in self.iter_mut() {
+            for (matched, matched_rangeset) in original.0.matching_entries(prefix.network()) {
+                if matched.length() < prefix.length() {
+                    for (first, last, value) in matched_rangeset.iter() {
+                        if first.get() != 1 && last.get() != u16::MAX {
+                            rangeset.insert_range_allow_replace(first, last, value.clone())?;
+                        }
                     }
                 }
             }

@@ -5,7 +5,6 @@
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
-use net::flows::ExtractRef;
 use net::headers::TryIp;
 use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -40,15 +39,11 @@ impl OverlayRouter {
     ) -> Option<BypassData> {
         let flow = packet.meta().flow_info.as_ref()?;
         let locked = flow.locked.read().ok()?;
-        let dst_vcpd = locked
-            .dst_vpcd
-            .as_ref()
-            .and_then(|dst_vcpd| dst_vcpd.extract_ref::<VpcDiscriminant>())?;
-
+        let dst_vpcd = locked.dst_vpcd?;
         let masquerade = locked.nat_state.is_some();
         let port_forwarding = locked.port_fw_state.is_some();
         Some(BypassData {
-            dst_vpcd: *dst_vcpd,
+            dst_vpcd,
             masquerade,
             port_forwarding,
         })
@@ -114,9 +109,18 @@ impl OverlayRouter {
             return;
         };
         let Some((dst_vpcd, loc_action, rem_action)) = ort.lookup(&s) else {
-            packet.done(DoneReason::Filtered);
+            if packet.is_icmp_error() {
+                debug!("Letting ICMP error handler process this packet");
+            } else {
+                packet.done(DoneReason::Filtered);
+            }
             return;
         };
+        // fixme: if dst_vcpd is known but there is no PF or masq, set the vpcd
+        if packet.is_icmp_error() {
+            debug!("Letting ICMP error handler process this packet. dst-vpcd is {dst_vpcd:?}");
+            return;
+        }
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
         Self::set_pkt_actions(packet, loc_action, rem_action);
     }
