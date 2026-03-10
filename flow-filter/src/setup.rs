@@ -456,41 +456,36 @@ fn get_split_prefixes_for_manifest(
             // prefixes_with_vpcd.
             let mut fragments_to_check = vec![*prefix];
             'next_fragment: while let Some(fragment) = fragments_to_check.pop() {
+                // Split the fragment into sub-fragments as long as we find overlapping prefixes
+                for (overlap_prefix, _overlap_data) in overlaps.iter() {
+                    if fragment.overlaps(overlap_prefix) && !overlap_prefix.covers(&fragment) {
+                        fragments_to_check.extend(split_overlapping(&fragment, overlap_prefix));
+                        continue 'next_fragment;
+                    }
+                }
+                // Now we've split as much as we could, we no longer have _partial_ overlap. Check
+                // whether the fragment we're currently processing overlaps (check whether it's
+                // covered by any overlap prefix). If it is, we insert a MultipleMatches, for each
+                // overlapping prefix.
+                let mut overlapping_fragment = false;
                 for (overlap_prefix, overlap_data) in overlaps.iter() {
                     if overlap_prefix.covers(&fragment) {
+                        overlapping_fragment = true;
                         prefixes_with_vpcd.push((
                             fragment,
                             VpcdLookupResult::MultipleMatches(overlap_data.clone()),
                             nat_req,
                         ));
-                        continue 'next_fragment;
-                    } else if fragment.covers(overlap_prefix) {
-                        // The current fragment partially overlaps with some other prefixes (of
-                        // which overlap_prefix is the union of all intersections with the current
-                        // fragment), so we need to split it into parts that don't have partial
-                        // overlap with the other prefixes.
-                        for p in split_overlapping(&fragment, overlap_prefix) {
-                            if p == *overlap_prefix {
-                                // Multiple destination VPC matches for the overlapping section
-                                prefixes_with_vpcd.push((
-                                    p,
-                                    VpcdLookupResult::MultipleMatches(overlap_data.clone()),
-                                    nat_req,
-                                ));
-                            } else {
-                                // Re-check this sub-fragment against remaining overlaps
-                                fragments_to_check.push(p);
-                            }
-                        }
-                        continue 'next_fragment;
                     }
                 }
-                // We found no overlap, add the prefix with the single associated destination VPC
-                prefixes_with_vpcd.push((
-                    fragment,
-                    VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None)),
-                    nat_req,
-                ));
+                if !overlapping_fragment {
+                    // We found no overlap, add the prefix with the single associated destination VPC
+                    prefixes_with_vpcd.push((
+                        fragment,
+                        VpcdLookupResult::Single(RemoteData::new(*vpcd, None, None)),
+                        nat_req,
+                    ));
+                }
             }
         }
     }
