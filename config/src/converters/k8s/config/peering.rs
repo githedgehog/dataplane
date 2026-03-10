@@ -15,8 +15,14 @@ impl TryFrom<(&SubnetMap, &str, &GatewayAgentPeeringsPeering)> for VpcManifest {
         (subnets, vpc_name, peering): (&SubnetMap, &str, &GatewayAgentPeeringsPeering),
     ) -> Result<Self, Self::Error> {
         let mut manifest = VpcManifest::new(vpc_name);
-        for expose in peering.expose.as_ref().unwrap_or(&vec![]) {
-            manifest.add_exposes(VpcExposes::try_from((subnets, expose))?);
+        if let Some(peering_exposes) = peering.expose.as_ref() {
+            for expose in peering_exposes {
+                manifest.add_exposes(VpcExposes::try_from((subnets, expose))?);
+            }
+        } else {
+            return Err(Self::Error::MissingData(format!(
+                "VPC {vpc_name} has a peering with no exposes"
+            )));
         }
         Ok(manifest)
     }

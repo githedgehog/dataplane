@@ -383,7 +383,7 @@ impl VpcTable {
         self.vpcs.values_mut()
     }
 
-    /// Iterate over all of the [`Peering`]s of all [`Vpc`]s mutably
+    /// Iterate over all of the [`Peering`]s of all [`Vpc`]s immutably
     pub fn peerings(&self) -> impl Iterator<Item = &Peering> {
         self.vpcs.values().flat_map(|vpc| vpc.peerings.iter())
     }
