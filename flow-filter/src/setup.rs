@@ -321,10 +321,20 @@ fn get_manifests_overlap(
         // If there's overlap for both source and destination, we'll need to split prefixes to
         // separate the overlapping sections, so we can determine the destination VPC for
         // non-overlapping sections
-        local_manifests_overlap.extend(local_overlap);
-        remote_manifests_overlap.extend(remote_overlap);
+        extend_merge(&mut local_manifests_overlap, local_overlap);
+        extend_merge(&mut remote_manifests_overlap, remote_overlap);
     }
     (local_manifests_overlap, remote_manifests_overlap)
+}
+
+fn extend_merge<K, V>(map: &mut BTreeMap<K, HashSet<V>>, other: BTreeMap<K, HashSet<V>>)
+where
+    K: Ord,
+    V: Eq + std::hash::Hash + Clone,
+{
+    for (key, value) in other {
+        map.entry(key).or_default().extend(value);
+    }
 }
 
 // Return the list of overlapping prefix sections between the sets of exposed prefixes of two
@@ -346,7 +356,7 @@ fn get_manifest_ips_overlap(
     compare_to_self: bool,
     skip_ports: bool,
 ) -> BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>> {
-    let mut overlap = BTreeMap::new();
+    let mut overlap: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>> = BTreeMap::new();
     for expose_left in manifest_left
         .exposes
         .iter()
@@ -372,21 +382,25 @@ fn get_manifest_ips_overlap(
                         continue;
                     }
                     if let Some(intersection) = prefix_left.intersection(prefix_right) {
-                        overlap.insert(
-                            intersection,
-                            HashSet::from([
-                                RemoteData::new(
-                                    dst_vpcd_left,
-                                    None, // Unknown at this stage
-                                    get_nat_requirement(expose_left),
-                                ),
-                                RemoteData::new(
-                                    dst_vpcd_right,
-                                    None, // Unknown at this stage
-                                    get_nat_requirement(expose_right),
-                                ),
-                            ]),
+                        let remote_data_1 = RemoteData::new(
+                            dst_vpcd_left,
+                            None, // Unknown at this stage
+                            get_nat_requirement(expose_left),
                         );
+                        let remote_data_2 = RemoteData::new(
+                            dst_vpcd_right,
+                            None, // Unknown at this stage
+                            get_nat_requirement(expose_right),
+                        );
+                        if let Some(entry) = overlap.get_mut(&intersection) {
+                            entry.insert(remote_data_1);
+                            entry.insert(remote_data_2);
+                        } else {
+                            overlap.insert(
+                                intersection,
+                                HashSet::from([remote_data_1, remote_data_2]),
+                            );
+                        }
                     }
                 }
             }
@@ -530,6 +544,23 @@ mod tests {
     }
     fn vpcd(id: u32) -> VpcDiscriminant {
         VpcDiscriminant::VNI(vni(id))
+    }
+
+    #[test]
+    fn test_extend_merge() {
+        let mut map = BTreeMap::new();
+        let mut other = BTreeMap::new();
+        map.insert(0, HashSet::from([0]));
+        map.insert(1, HashSet::from([1, 2]));
+        map.insert(2, HashSet::from([5, 6]));
+        other.insert(1, HashSet::from([3, 4]));
+        other.insert(2, HashSet::from([7, 8]));
+        other.insert(3, HashSet::from([9, 10]));
+        extend_merge(&mut map, other);
+        assert_eq!(map.get(&0).unwrap(), &HashSet::from([0]));
+        assert_eq!(map.get(&1).unwrap(), &HashSet::from([1, 2, 3, 4]));
+        assert_eq!(map.get(&2).unwrap(), &HashSet::from([5, 6, 7, 8]));
+        assert_eq!(map.get(&3).unwrap(), &HashSet::from([9, 10]));
     }
 
     #[test]
@@ -826,6 +857,125 @@ mod tests {
                     && set.contains(&RemoteData::new(vpcd2, None, None))
             }),
             "{overlap:#?}"
+        );
+    }
+
+    #[test]
+    fn test_get_manifest_ips_overlap_multiple_times() {
+        let vpcd = vpcd(100);
+
+        let mut pf_expose_tcp = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "1.0.0.1/32".into(),
+                Some(PortRange::new(8080, 8080).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.0.0.1/32".into(),
+                Some(PortRange::new(80, 80).unwrap()),
+            ))
+            .unwrap();
+        pf_expose_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
+
+        let mut pf_expose_udp = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "1.0.0.1/32".into(),
+                Some(PortRange::new(9999, 9999).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.0.0.1/32".into(),
+                Some(PortRange::new(80, 80).unwrap()),
+            ))
+            .unwrap();
+        pf_expose_udp.nat.as_mut().unwrap().proto = L4Protocol::Udp;
+
+        let manifest = VpcManifest {
+            name: "manifest2".to_string(),
+            exposes: vec![
+                pf_expose_tcp,
+                pf_expose_udp,
+                VpcExpose::empty()
+                    .make_stateful_nat(None)
+                    .unwrap()
+                    .ip("1.0.0.0/24".into())
+                    .as_range("10.0.0.0/24".into())
+                    .unwrap(),
+                VpcExpose::empty()
+                    .make_stateless_nat() // Invalid, but we don't care we just want to test
+                    .unwrap()
+                    .ip("1.0.0.0/24".into())
+                    .as_range("10.0.0.0/24".into())
+                    .unwrap(),
+            ],
+        };
+
+        let overlap = get_manifest_ips_overlap(
+            &manifest,
+            &manifest,
+            vpcd,
+            vpcd,
+            |expose| expose.public_ips(),
+            true,
+            false,
+        );
+
+        // Should have multiple overlaps: 10.0.0.1/32 with port 8080, and 10.0.0.0/24
+        assert_eq!(overlap.len(), 2, "{overlap:#?}");
+        let expected_prefix = PrefixWithOptionalPorts::new(
+            Prefix::from("10.0.0.1/32"),
+            Some(PortRange::new(80, 80).unwrap()),
+        );
+        let set = overlap.get(&expected_prefix);
+        assert!(set.is_some(), "{overlap:#?}");
+        let set = set.unwrap();
+        assert_eq!(set.len(), 4, "{set:?}");
+        assert!(
+            set.contains(&RemoteData::new(vpcd, None, Some(NatRequirement::Stateful),)),
+            "{set:?}"
+        );
+        assert!(
+            set.contains(&RemoteData::new(
+                vpcd,
+                None,
+                Some(NatRequirement::Stateless),
+            )),
+            "{set:?}"
+        );
+        assert!(
+            set.contains(&RemoteData::new(
+                vpcd,
+                None,
+                Some(NatRequirement::PortForwarding(L4Protocol::Tcp)),
+            )),
+            "{set:?}"
+        );
+        assert!(
+            set.contains(&RemoteData::new(
+                vpcd,
+                None,
+                Some(NatRequirement::PortForwarding(L4Protocol::Udp)),
+            )),
+            "{set:?}"
+        );
+
+        let set = overlap.get(&"10.0.0.0/24".into());
+        assert!(set.is_some(), "{overlap:#?}");
+        let set = set.unwrap();
+        assert_eq!(set.len(), 2, "{set:?}");
+        assert!(
+            set.contains(&RemoteData::new(vpcd, None, Some(NatRequirement::Stateful),)),
+            "{set:?}"
+        );
+        assert!(
+            set.contains(&RemoteData::new(
+                vpcd,
+                None,
+                Some(NatRequirement::Stateless),
+            )),
+            "{set:?}"
         );
     }
 
