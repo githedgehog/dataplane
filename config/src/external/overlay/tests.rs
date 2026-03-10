@@ -1288,4 +1288,14 @@ pub mod test {
             )),
         );
     }
+
+    #[test]
+    fn test_manifest_must_have_exposes() {
+        let manifest = VpcManifest::new("some-vpc");
+        assert!(
+            manifest
+                .validate()
+                .is_err_and(|e| matches!(e, ConfigError::NoExposes(_)))
+        );
+    }
 }
