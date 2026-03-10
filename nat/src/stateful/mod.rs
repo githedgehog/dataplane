@@ -568,6 +568,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
         input.filter_map(|mut packet| {
             if !packet.is_done()
                 && packet.meta().requires_stateful_nat()
+                && !packet.is_icmp_error()
                 && !packet.meta().is_natted()
             {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
