@@ -88,7 +88,7 @@ pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
     Ok(true)
 }
 
-pub(crate) fn stateful_translate_icmp_inner<Buf: PacketBufferMut>(
+pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     state: &NatTranslationData,
 ) -> Result<(), IcmpErrorMsgError> {
@@ -481,7 +481,7 @@ mod bolero_tests {
                     // Translate inner IP addresses, and possibly inner ports
                     let mut icmp_error_msg_clone = icmp_error_msg.clone();
                     let inner_translation_result =
-                        stateful_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data);
+                        nat_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data);
                     if *src_port == Some(NatPort::Identifier(0))
                         || *dst_port == Some(NatPort::Identifier(0))
                     {
