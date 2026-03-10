@@ -212,16 +212,13 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IcmpErrorHandler {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             if !packet.is_done() && packet.meta().is_overlay() && packet.is_icmp_error() {
-                if packet.meta().requires_stateless_nat() {
-                    // atm, let stateless NAT do the job. We can't help here because
-                    // with static NAT, there are no flows in the flow table and only
-                    // the NAT nat tables know how to translate those packets. However,
-                    // the flow filter should have determined the destination VPC.
-                    if packet.meta().dst_vpcd.is_none() {
-                        packet.done(DoneReason::Unroutable);
-                    }
+                if packet.meta().dst_vpcd.is_some() || packet.meta().requires_stateless_nat() {
+                    // don't process icmp errors for stateless NAT or if we have
+                    // already determined the dst-vpcd (which could happen without NAT at all)
                 } else {
-                    // this should handle masquerading or port-forwarding
+                    // here, we don't have a way to tell if the packet was masqueraded,
+                    // port-forwarded, or none of the two. In the latter case, we'll drop it
+                    // since no flow fill be found.
                     self.handle_icmp_error_msg(&mut packet);
                 }
             }

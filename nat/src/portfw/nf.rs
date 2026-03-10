@@ -350,7 +350,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
-            if !packet.is_done() && packet.meta().requires_port_forwarding() {
+            if !packet.is_done()
+                && packet.meta().requires_port_forwarding()
+                && !packet.is_icmp_error()
+            {
                 if let Some(pfwtable) = self.fwtable.enter() {
                     self.process_packet(&mut packet, pfwtable.as_ref());
                     if packet.is_done() {
