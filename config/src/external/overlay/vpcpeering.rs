@@ -640,6 +640,9 @@ impl VpcManifest {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Manifest name"));
         }
+        if self.exposes.is_empty() {
+            return Err(ConfigError::NoExposes(self.name.clone()));
+        }
         for expose in &self.exposes {
             expose.validate()?;
         }

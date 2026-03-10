@@ -81,6 +81,8 @@ pub enum ConfigError {
     MismatchedPrefixSizes(PrefixWithPortsSize, PrefixWithPortsSize),
     #[error("Peering {0} has manifests using incompatible NAT modes")]
     IncompatibleNatModes(String),
+    #[error("Vpc {0} has a peering with no exposes")]
+    NoExposes(String),
 
     // Interface addresses
     #[error("Invalid interface address format: {0}")]
