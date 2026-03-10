@@ -11,6 +11,8 @@
   perl,
   pkg-config,
   python3Minimal,
+  nukeReferences,
+  removeReferencesTo,
 
   c-ares,
   elfutils,
@@ -21,7 +23,6 @@
   pcre2,
   readline,
   rtrlib,
-  # xz,
   libgccjit,
 
   # tests
@@ -92,6 +93,8 @@ stdenv.mkDerivation (finalAttrs: {
     perl
     pkg-config
     python3Minimal
+    nukeReferences
+    removeReferencesTo
   ];
 
   buildInputs = [
@@ -211,9 +214,32 @@ stdenv.mkDerivation (finalAttrs: {
     cp -r . $build/src/frr
   '';
 
+  # preFixup = ''
+  #   find "$out" \
+  #       -type f \
+  #       -exec remove-references-to \
+  #       ${stdenv.cc.cc} \
+  #       '{}' +;
+  # '';
+  # preFixup = ''
+  #   find "$out" \
+  #       -type f \
+  #       -exec nuke-refs \
+  #       -e "$out" \
+  #       -e ${stdenv.cc.libc} \
+  #       -e ${python3Minimal} \
+  #       '{}' +;
+  # '';
+
+  # -e ${json_c} \
+  # -e ${c-ares} \
+  # -e ${libcap} \
+  # -e ${libgccjit} \
+  # -e ${libxcrypt} \
+  # -e ${libyang} \
+  # -e ${pcre2} \
+  # -e ${readline} \
+
   doCheck = false;
-
   enableParallelBuilding = true;
-
-  passthru.tests = { inherit (nixosTests) frr; };
 })

@@ -9,30 +9,59 @@
 }:
 final: prev:
 let
-  dep = pkg: pkg.override { stdenv = final.stdenv'; };
+  dep = pkg: (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (orig: {
+      nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.removeReferencesTo ];
+      postInstall = (orig.postInstall or "") + ''
+        find "$out" \
+            -type f \
+            -exec remove-references-to -t ${final.stdenv'.cc} '{}' +;
+        if [ ! -z "$lib" ] && [ -d "$lib"]; then
+            find "$lib" \
+                -type f \
+                -exec remove-references-to -t ${final.stdenv'.cc} '{}' +;
+        fi
+      '';
+  });
   frr-build =
     frrSrc:
-    (dep (
-      final.callPackage ../pkgs/frr (
+    dep (
+      (final.callPackage ../pkgs/frr (
         final.fancy
         // {
           stdenv = final.stdenv';
           inherit frrSrc;
         }
-      )
-    )).overrideAttrs
-      (orig: {
-        LDFLAGS =
-          (orig.LDFLAGS or "")
-          + " -L${final.fancy.libxcrypt}/lib -lcrypt "
-          + " -L${final.fancy.pcre2}/lib -lpcre2-8 "
-          + " -L${final.fancy.xxHash}/lib -lxxhash ";
-        configureFlags = orig.configureFlags ++ [
-          "--enable-shared"
-          "--enable-static"
-          "--enable-static-bin"
-        ];
-      });
+      )).overrideAttrs
+        (orig: {
+          LDFLAGS =
+            (orig.LDFLAGS or "")
+            + " -Wl,-as-needed "
+            + " -L${final.fancy.readline}/lib -lreadline "
+            + " -L${final.fancy.json_c}/lib -ljson-c "
+            + " -L${final.fancy.libxcrypt}/lib -lcrypt "
+            + " -L${final.fancy.pcre2}/lib -lpcre2-8 "
+            + " -L${final.fancy.xxHash}/lib -lxxhash "
+            + " -L${final.fancy.libgccjit}/lib -latomic ";
+          configureFlags = orig.configureFlags ++ [
+            "--enable-shared"
+            "--enable-static"
+            "--enable-static-bin"
+          ];
+          nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.nukeReferences ];
+          # disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
+          preFixup = ''
+            find "$out" \
+                -type f \
+                -exec nuke-refs \
+                -e "$out" \
+                -e ${final.stdenv'.cc.libc} \
+                -e ${final.python3Minimal} \
+                -e ${final.fancy.readline} \
+                -e ${final.fancy.json_c} \
+                '{}' +;
+          '';
+        })
+    );
 in
 {
   fancy = prev.fancy // {
@@ -81,7 +110,7 @@ in
           '';
         })
     );
-    json_c = (
+    json_c = dep (
       (dep prev.json_c).overrideAttrs (orig: {
         cmakeFlags = (orig.cmakeFlags or [ ]) ++ [
           "-DENABLE_STATIC=1"
@@ -90,7 +119,12 @@ in
           mkdir -p $dev/lib
           $RANLIB libjson-c.a;
           cp libjson-c.a $out/lib;
+          find "$out" \
+              -type f \
+              -exec remove-references-to -t ${final.stdenv'.cc} '{}' +;
         '';
+        nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.removeReferencesTo ];
+        disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
       })
     );
     rtrlib = dep (
@@ -114,18 +148,31 @@ in
         ];
       })
     );
-    ncurses = (
+    ncurses = dep (
       prev.ncurses.override {
         stdenv = final.stdenv';
         enableStatic = true;
         withCxx = false;
       }
     );
-    readline = (
-      prev.readline.override {
+    readline = dep (
+      (prev.readline.override {
         stdenv = final.stdenv';
         ncurses = final.fancy.ncurses;
-      }
+      }).overrideAttrs
+        (orig: {
+          nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.removeReferencesTo ];
+          disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
+          configureFlags = (orig.configureFlags or [ ]) ++ [
+            "--enable-static"
+            "--enable-shared"
+          ];
+          postInstall = (orig.postInstall or "") + ''
+            find "$out" \
+                -type f \
+                -exec remove-references-to -t ${final.stdenv'.cc} '{}' +;
+          '';
+        })
     );
     libxcrypt = (dep prev.libxcrypt).overrideAttrs (orig: {
       configureFlags = (orig.configureFlags or [ ]) ++ [

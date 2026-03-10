@@ -604,13 +604,34 @@ let
     inherit tag;
     contents = pkgs.buildEnv {
       name = "frr-dataplane-env";
-      pathsToLink = [
-        "/"
-      ];
-      paths = [
-        frr-pkgs.fancy.frr.dataplane
+      pathsToLink = [ "/" ];
+      paths = with frr-pkgs; [
+        # dplane-plugin
+        # dplane-rpc
+        # frr-agent
+        # frr-config
+        bash
+        coreutils
+        dockerTools.fakeNss
+        fancy.frr.dataplane
+        findutils
+        gnugrep
+        iproute2
+        jq
+        prometheus-frr-exporter
+        python3Minimal
+        tini
+        dockerTools.usrBinEnv
       ];
     };
+
+    fakeRootCommands = ''
+      #!${frr-pkgs.bash}/bin/bash
+      set -euxo pipefail
+      mkdir -p /tmp
+    '';
+
+    enableFakechroot = true;
   };
 
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
@@ -637,6 +658,7 @@ in
     devenv
     devroot
     docs
+    frr-pkgs
     min-tar
     package-list
     pkgs
