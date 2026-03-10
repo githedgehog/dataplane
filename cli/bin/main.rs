@@ -9,6 +9,7 @@
 use argsparse::{ArgsError, CliArgs};
 use clap::Parser;
 use cmdline::Cmdline;
+use cmdtree::Node;
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
@@ -171,16 +172,65 @@ fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
     }
 }
 
+fn process_command(
+    terminal: &mut Terminal,
+    cmds: &Rc<Node>,
+    cmdline: &Cmdline,
+    input: &mut TermInput,
+) {
+    if let Some(node) = cmds.find_best(input.get_tokens()) {
+        if let Some(action) = &node.action {
+            if let Ok(args) = process_args(input) {
+                execute_action(*action, &args, cmdline, terminal);
+            }
+        } else if node.depth > 0 {
+            print_err!("No action associated to command");
+            if node.children.is_empty() {
+                print_err!("Command is not implemented");
+            } else {
+                print_err!("Options are:");
+                node.show_children();
+            }
+        } else {
+            print_err!("syntax error");
+        }
+    }
+}
+
+fn proc_cmdline_commands(
+    terminal: &mut Terminal,
+    cmds: &Rc<Node>,
+    cmdline: &Cmdline,
+    input_cmds: &Vec<String>,
+) {
+    terminal.connect(&cmdline.bind_address, &cmdline.path);
+    if !terminal.is_connected() {
+        println!("Failed to connect to dataplane");
+        return;
+    }
+    for cmd in input_cmds {
+        if let Some(mut input) = terminal.proc_line(cmd) {
+            println!("{}{}", terminal.read_prompt(), input.get_line());
+            process_command(terminal, cmds, cmdline, &mut input);
+        }
+    }
+}
+
 fn main() {
     // parse cmd line
     let cmdline = cmdline::Cmdline::parse();
 
     // build command tree
-    let cmds = Rc::new(gw_cmd_tree());
-    let mut terminal = Terminal::new("dataplane", &cmds);
-    terminal.clear();
+    let cmdtree = Rc::new(gw_cmd_tree());
+    let mut terminal = Terminal::new("dataplane", &cmdtree);
 
-    // be polite
+    // if a command is specified, handle it and exit
+    if !cmdline.command.is_empty() {
+        proc_cmdline_commands(&mut terminal, &cmdtree, &cmdline, &cmdline.command);
+        return;
+    }
+
+    terminal.clear();
     greetings();
 
     terminal.connect(&cmdline.bind_address, &cmdline.path);
@@ -193,23 +243,7 @@ fn main() {
         }
         // don't process input if it starts with # ... but keep it in history
         if !input.get_line().starts_with('#') {
-            if let Some(node) = cmds.find_best(input.get_tokens()) {
-                if let Some(action) = &node.action {
-                    if let Ok(args) = process_args(&input) {
-                        execute_action(*action, &args, &cmdline, &mut terminal);
-                    }
-                } else if node.depth > 0 {
-                    print_err!("No action associated to command");
-                    if node.children.is_empty() {
-                        print_err!("Command is not implemented");
-                    } else {
-                        print_err!("Options are:");
-                        node.show_children();
-                    }
-                } else {
-                    print_err!("syntax error");
-                }
-            }
+            process_command(&mut terminal, &cmdtree, &cmdline, &mut input);
         }
         terminal.add_history_entry(input.get_line().to_owned());
     }

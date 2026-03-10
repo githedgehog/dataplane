@@ -26,4 +26,12 @@ pub struct Cmdline {
         help = "Path to bind this CLI to"
     )]
     pub bind_address: String,
+
+    #[arg(
+        long,
+        short,
+        value_name = "Command",
+        help = "Execute the provided command and exit. Multiple commands can be specified"
+    )]
+    pub command: Vec<String>,
 }
