@@ -233,10 +233,10 @@ impl StatelessNat {
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
         dst_vni: Vni,
-    ) -> Result<(), StatelessNatError> {
+    ) -> Result<bool, StatelessNatError> {
         match validate_checksums_icmp(packet) {
             Err(e) => return Err(StatelessNatError::IcmpErrorMsg(e)), // Error, drop packet
-            Ok(false) => return Ok(()),                               // No translation needed
+            Ok(false) => return Ok(false),                            // No translation needed
             Ok(true) => {} // Translation needed, carry on
         }
 
@@ -244,7 +244,8 @@ impl StatelessNat {
             return Err(StatelessNatError::UnsupportedTranslation);
         };
         stateful_translate_icmp_inner::<Buf>(packet, &state)
-            .map_err(StatelessNatError::IcmpErrorMsg)
+            .map_err(StatelessNatError::IcmpErrorMsg)?;
+        Ok(true)
     }
 
     /// Applies network address translation to a packet, knowing the current and target ranges.
@@ -310,13 +311,9 @@ impl StatelessNat {
             }
         }
 
-        // If we modified the outer header of the packet, check whether this is an ICMP Error
-        // message that requires additional processing
-        if !modified {
-            return Ok(false);
+        if packet.is_icmp() {
+            modified |= Self::translate_icmp_inner_packet_if_any(table, packet, dst_vni)?;
         }
-        Self::translate_icmp_inner_packet_if_any(table, packet, dst_vni)?;
-
         Ok(modified)
     }
 
