@@ -22,6 +22,7 @@ use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::NetworkFunction;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::net::IpAddr;
 use std::num::NonZero;
 use tracing::{debug, error};
@@ -323,13 +324,24 @@ impl FlowTuple {
     }
 }
 
-impl std::fmt::Display for FlowTuple {
+impl Display for FlowTuple {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "srcVpc={} src={}{} dst={}{}",
             self.src_vpcd, self.src_addr, self.src_port, self.dst_addr, self.dst_port
         )
+    }
+}
+
+impl Display for FlowFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{}:", self.name)?;
+        if let Some(table) = self.tablesr.enter() {
+            write!(f, "{}", *table)
+        } else {
+            writeln!(f, "[no table]")
+        }
     }
 }
 
