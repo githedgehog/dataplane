@@ -123,52 +123,61 @@ impl FlowFilter {
         // For Display
         let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
 
-        let Some(dst_data) = tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) else {
-            debug!("{nfi}: No valid destination VPC found for flow {tuple}, dropping packet");
-            packet.done(DoneReason::Filtered);
-            return;
-        };
-
-        let dst_vpcd = match dst_data {
-            VpcdLookupResult::Single(dst_data) => {
-                set_nat_requirements(packet, &dst_data);
-                dst_data.vpcd
+        let dst_vpcd = match tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
+            None => {
+                debug!("{nfi}: No valid destination VPC found for flow {tuple}");
+                None
             }
-            VpcdLookupResult::MultipleMatches(data_set) => {
+            Some(VpcdLookupResult::Single(dst_data)) => {
+                set_nat_requirements(packet, &dst_data);
+                Some(dst_data.vpcd)
+            }
+            Some(VpcdLookupResult::MultipleMatches(data_set)) => {
                 debug!(
                     "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
                 );
 
                 match self.check_packet_flow_info(packet) {
                     Ok(Some(dst_vpcd)) => {
-                        if set_nat_requirements_from_flow_info(packet).is_err() {
-                            debug!(
-                                "{nfi}: Failed to set NAT requirements from flow info, dropping packet"
-                            );
-                            packet.done(DoneReason::Filtered);
-                            return;
+                        if set_nat_requirements_from_flow_info(packet).is_ok() {
+                            Some(dst_vpcd)
+                        } else {
+                            debug!("{nfi}: Failed to set NAT requirements from flow info");
+                            None
                         }
-                        dst_vpcd
                     }
                     Ok(None) => {
                         debug!(
                             "{nfi}: No flow table entry found for flow {tuple}, trying to figure out destination VPC anyway"
                         );
-                        if let Some(dst_vpcd) =
-                            deal_with_multiple_matches(packet, &data_set, nfi, &tuple)
-                        {
-                            dst_vpcd
-                        } else {
-                            packet.done(DoneReason::Filtered);
-                            return;
-                        }
+                        deal_with_multiple_matches(packet, &data_set, nfi, &tuple)
                     }
                     Err(reason) => {
+                        debug!("Will drop packet. Reason: {reason}");
                         packet.done(reason);
                         return;
                     }
                 }
             }
+        };
+
+        // At this point, we may have determined the destination VPC for a packet or not. If we haven't, we
+        // should drop the packet. However, if it is an ICMP error packet, let the icmp-error handler deal with it.
+        // Now, the icmp-error handler works for masquerading and port-forwarding, but not stateless NAT,
+        // nor the absence of NAT, and here we don't know if the icmp error corresponds to traffic that
+        // was masqueraded, port-forwarded, statically nated or neither of the previous. If the dst-vpcd
+        // for an icmp error packet is known, the icmp handler will transparently let the static NAT NF deal with it.
+        if packet.is_icmp_error() {
+            debug!("Letting ICMP error handler process this packet. dst-vpcd is {dst_vpcd:?}");
+            packet.meta_mut().dst_vpcd = dst_vpcd; // wether we discovered the vpcd or not
+            return;
+        }
+
+        // Drop the packet since we don't know destination and it is not an icmp error
+        let Some(dst_vpcd) = dst_vpcd else {
+            debug!("Could not determine dst vpcd. Dropping packet");
+            packet.done(DoneReason::Filtered);
+            return;
         };
 
         debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
