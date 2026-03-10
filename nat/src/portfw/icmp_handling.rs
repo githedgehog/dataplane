@@ -39,7 +39,7 @@ use net::flows::ExtractRef;
 use net::flows::FlowInfo;
 use net::packet::{DoneReason, Packet};
 
-use crate::icmp_handler::icmp_error_msg::stateful_translate_icmp_inner;
+use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use crate::portfw::packet::nat_packet;
 use crate::{NatPort, NatTranslationData};
 
@@ -94,7 +94,7 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     // translate the inner packet depending on the port-forwarding state associated to the
     // reverse flow of the offending packet.
     let translation_data = as_nat_translation(pfw_state);
-    if let Err(e) = stateful_translate_icmp_inner(packet, &translation_data) {
+    if let Err(e) = nat_translate_icmp_inner(packet, &translation_data) {
         debug!("Translation of inner packet failed: {e}\n{packet}");
         packet.done(DoneReason::InternalFailure);
         return;

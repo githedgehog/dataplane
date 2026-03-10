@@ -5,7 +5,7 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::icmp_handler::icmp_error_msg::stateful_translate_icmp_inner;
+use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use net::buffer::PacketBufferMut;
 use net::flows::ExtractRef;
 use net::flows::FlowInfo;
@@ -47,7 +47,7 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     };
 
     // translate inner packet fragment
-    if let Err(e) = stateful_translate_icmp_inner(packet, &nat_translation) {
+    if let Err(e) = nat_translate_icmp_inner(packet, &nat_translation) {
         debug!("Translation of inner packet failed: {e}\n{packet}");
         packet.done(DoneReason::InternalFailure);
         return;

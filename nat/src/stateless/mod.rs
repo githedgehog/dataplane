@@ -8,7 +8,7 @@ pub mod setup;
 pub(crate) mod test;
 
 use crate::icmp_handler::icmp_error_msg::{
-    IcmpErrorMsgError, stateful_translate_icmp_inner, validate_checksums_icmp,
+    IcmpErrorMsgError, nat_translate_icmp_inner, validate_checksums_icmp,
 };
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use crate::{NatPort, NatTranslationData};
@@ -243,8 +243,7 @@ impl StatelessNat {
         let Some(state) = Self::find_translation_icmp_inner(table, packet, dst_vni) else {
             return Err(StatelessNatError::UnsupportedTranslation);
         };
-        stateful_translate_icmp_inner::<Buf>(packet, &state)
-            .map_err(StatelessNatError::IcmpErrorMsg)?;
+        nat_translate_icmp_inner::<Buf>(packet, &state).map_err(StatelessNatError::IcmpErrorMsg)?;
         Ok(true)
     }
 
