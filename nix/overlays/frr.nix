@@ -9,8 +9,10 @@
 }:
 final: prev:
 let
-  dep = pkg: (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (orig: {
-      nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.removeReferencesTo ];
+  dep =
+    pkg:
+    (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (orig: {
+      nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.removeReferencesTo ];
       postInstall = (orig.postInstall or "") + ''
         find "$out" \
             -type f \
@@ -21,7 +23,7 @@ let
                 -exec remove-references-to -t ${final.stdenv'.cc} '{}' +;
         fi
       '';
-  });
+    });
   frr-build =
     frrSrc:
     dep (
@@ -35,19 +37,20 @@ let
         (orig: {
           LDFLAGS =
             (orig.LDFLAGS or "")
-            + " -Wl,-as-needed "
             + " -L${final.fancy.readline}/lib -lreadline "
             + " -L${final.fancy.json_c}/lib -ljson-c "
+            + " -Wl,--push-state,--as-needed,--no-whole-archive,-Bstatic "
             + " -L${final.fancy.libxcrypt}/lib -lcrypt "
             + " -L${final.fancy.pcre2}/lib -lpcre2-8 "
             + " -L${final.fancy.xxHash}/lib -lxxhash "
-            + " -L${final.fancy.libgccjit}/lib -latomic ";
+            + " -L${final.fancy.libgccjit}/lib -latomic "
+            + " -Wl,--pop-state";
           configureFlags = orig.configureFlags ++ [
             "--enable-shared"
             "--enable-static"
             "--enable-static-bin"
           ];
-          nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.nukeReferences ];
+          nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.nukeReferences ];
           # disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
           preFixup = ''
             find "$out" \
@@ -123,8 +126,8 @@ in
               -type f \
               -exec remove-references-to -t ${final.stdenv'.cc} '{}' +;
         '';
-        nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.removeReferencesTo ];
-        disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
+        nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.removeReferencesTo ];
+        disallowedReferences = (orig.disallowedReferences or [ ]) ++ [ final.stdenv'.cc ];
       })
     );
     rtrlib = dep (
@@ -161,8 +164,8 @@ in
         ncurses = final.fancy.ncurses;
       }).overrideAttrs
         (orig: {
-          nativeBuildInputs = (orig.nativeBuildInputs or []) ++ [ prev.removeReferencesTo ];
-          disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
+          nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.removeReferencesTo ];
+          disallowedReferences = (orig.disallowedReferences or [ ]) ++ [ final.stdenv'.cc ];
           configureFlags = (orig.configureFlags or [ ]) ++ [
             "--enable-static"
             "--enable-shared"
