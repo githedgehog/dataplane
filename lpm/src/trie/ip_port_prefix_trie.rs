@@ -98,6 +98,10 @@ where
         }
         None
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (Prefix, &V)> {
+        self.0.iter()
+    }
 }
 
 impl<V> Default for IpPortPrefixTrie<V>
