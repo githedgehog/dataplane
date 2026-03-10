@@ -50,6 +50,7 @@ impl IcmpErrorHandler {
 /// This function is valid for any ICMP packet, whether it embeds a packet fragment or not, but we only
 /// use it for packets containing ICMP errors and assume that those packets must always include a fragment
 /// of the offending packet.
+/// FIXME(fredi): unify the two functions
 fn icmp_checksums_ok<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> bool {
     debug_assert!(packet.is_icmp());
     let icmp = packet.try_icmp_any().unwrap_or_else(|| unreachable!());
@@ -98,6 +99,9 @@ fn get_icmp_inner_pkt_flowkey<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) ->
     let proto = net.next_header();
 
     let embedded_transport = inner.try_embedded_transport()?;
+
+    // FIXME(fredi): see if we should do a TryFrom<EmbeddedTransport> for IpProtoKey
+    // as suggested by Quentin
     let proto_key = match embedded_transport {
         EmbeddedTransport::Tcp(tcp) => {
             debug_assert_eq!(proto, NextHeader::TCP);
@@ -133,6 +137,8 @@ fn get_icmp_inner_pkt_flowkey<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) ->
 }
 
 impl IcmpErrorHandler {
+    /// Handle an ICMP error packet. This processing follows requirements REQ-4 and REQ-5
+    /// of RFC 5508, "NAT Behavioral Requirements for ICMP".
     fn handle_icmp_error_msg<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         // where does this ICMP come from?
         let Some(icmp_src_vpcd) = packet.meta().src_vpcd else {
@@ -212,13 +218,16 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IcmpErrorHandler {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             if !packet.is_done() && packet.meta().is_overlay() && packet.is_icmp_error() {
-                if packet.meta().dst_vpcd.is_some() || packet.meta().requires_stateless_nat() {
+                if packet.meta().requires_stateless_nat() {
                     // don't process icmp errors for stateless NAT or if we have
-                    // already determined the dst-vpcd (which could happen without NAT at all)
+                    debug!("ICMP error will be handled by static NAT NF:\n{packet}");
+                } else if packet.meta().dst_vpcd.is_some() {
+                    // NOTE: this assumes that the flow-filter will NOT mark icmp errors
+                    // for port-forwarding or masquerading
+                    debug!("Dst-vpcd for ICMP error packet is known.",);
                 } else {
-                    // here, we don't have a way to tell if the packet was masqueraded,
-                    // port-forwarded, or none of the two. In the latter case, we'll drop it
-                    // since no flow fill be found.
+                    // last chance. If packet was triggered by a masqueraded or port forwarded
+                    // packet, we should be able to process it here.
                     self.handle_icmp_error_msg(&mut packet);
                 }
             }
