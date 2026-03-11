@@ -611,14 +611,9 @@ mod tests {
             "10.0.0.5".parse().unwrap(),
             "20.0.0.10".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(dst_data.vpcd));
     }
 
     #[test]
@@ -650,13 +645,8 @@ mod tests {
             "10.0.0.5".parse().unwrap(),
             "30.0.0.10".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].get_done(), Some(DoneReason::Filtered));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
     }
 
     #[test]
@@ -673,13 +663,8 @@ mod tests {
             "10.0.0.5".parse().unwrap(),
             "20.0.0.10".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].get_done(), Some(DoneReason::Unroutable));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert_eq!(packet_out.get_done(), Some(DoneReason::Unroutable));
     }
 
     #[test]
@@ -711,13 +696,8 @@ mod tests {
             "11.0.0.5".parse().unwrap(),
             "20.0.0.10".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].get_done(), Some(DoneReason::Filtered));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
     }
 
     #[test]
@@ -763,15 +743,10 @@ mod tests {
             1234,
             5678,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
         // Without table flow lookup we can't find the right dst_vpcd, so we should drop the packet
-        assert!(packets[0].is_done());
-        assert!(packets[0].meta().dst_vpcd.is_none());
+        assert!(packet_out.is_done());
+        assert!(packet_out.meta().dst_vpcd.is_none());
     }
 
     #[test]
@@ -862,14 +837,9 @@ mod tests {
             "1.0.0.5".parse().unwrap(),
             "5.0.0.10".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
 
         // VPC-3 -> VPC-2: No ambiguity
         let packet = create_test_packet(
@@ -877,14 +847,9 @@ mod tests {
             "1.0.0.70".parse().unwrap(),
             "5.0.0.10".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
 
         // VPC-2 -> VPC-1 using lower non-overlapping destination prefix section
         let packet = create_test_packet(
@@ -892,14 +857,9 @@ mod tests {
             "5.0.0.10".parse().unwrap(),
             "1.0.0.5".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
 
         // VPC-2 -> VPC-1 using upper non-overlapping destination prefix section
         let packet = create_test_packet(
@@ -907,14 +867,9 @@ mod tests {
             "5.0.0.10".parse().unwrap(),
             "1.0.0.205".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
 
         // VPC-2 -> VPC-3 using non-overlapping source prefix
         let packet = create_test_packet(
@@ -922,14 +877,9 @@ mod tests {
             "6.0.0.11".parse().unwrap(),
             "1.0.0.70".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
 
         // VPC-2 -> VPC-??? using overlapping prefix sections: multiple matches
         let packet = create_test_packet(
@@ -937,14 +887,9 @@ mod tests {
             "5.0.0.10".parse().unwrap(),
             "1.0.0.70".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, None)
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, None)
     }
 
     #[test]
@@ -980,14 +925,9 @@ mod tests {
             "2001:db8::1".parse().unwrap(),
             "2001:db9::1".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(dst_data.vpcd));
     }
 
     #[test]
@@ -1019,14 +959,9 @@ mod tests {
             Ipv4Addr::from_str("10.0.0.5").unwrap(),
             Ipv4Addr::from_str("20.0.0.10").unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(dst_data.vpcd));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(dst_data.vpcd));
     }
 
     #[test]
@@ -1058,14 +993,9 @@ mod tests {
             Ipv4Addr::from_str("10.0.0.5").unwrap(),
             Ipv4Addr::from_str("20.0.0.10").unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, None);
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(packet_out.is_done());
+        assert_eq!(packet_out.meta().dst_vpcd, None);
     }
 
     #[traced_test]
@@ -1140,15 +1070,10 @@ mod tests {
             "1.0.0.5".parse().unwrap(),
             "5.0.0.10".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_no_nat(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_no_nat(&packet_out));
 
         // VPC-1 -> VPC-2 using default range
         let packet = create_test_packet(
@@ -1156,14 +1081,9 @@ mod tests {
             "1.0.0.6".parse().unwrap(),
             "17.34.51.68".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
 
         // VPC-1 -> VPC-3, using source prefix overlapping with VPC-1 <-> VPC-2 peering
         let packet = create_test_packet(
@@ -1171,14 +1091,9 @@ mod tests {
             "1.0.0.7".parse().unwrap(),
             "6.0.0.8".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
 
         // VPC-1 -> VPC-3, using the other source prefix
         let packet = create_test_packet(
@@ -1187,13 +1102,9 @@ mod tests {
             "6.0.0.8".parse().unwrap(),
         );
 
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
 
         // Invalid: source from VPC-1 <-> VPC-3 peering, but invalid destination
         let packet = create_test_packet(
@@ -1201,14 +1112,9 @@ mod tests {
             "2.0.0.24".parse().unwrap(),
             "25.50.100.200".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(packets[0].is_done());
-        assert_eq!(packets[0].meta().dst_vpcd, None);
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(packet_out.is_done());
+        assert_eq!(packet_out.meta().dst_vpcd, None);
     }
 
     #[traced_test]
@@ -1258,14 +1164,9 @@ mod tests {
             "99.99.99.99".parse().unwrap(), // From "default" expose, use any address
             "5.0.0.8".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
     }
 
     #[traced_test]
@@ -1315,14 +1216,9 @@ mod tests {
             "99.99.99.99".parse().unwrap(),
             "77.77.77.77".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
     }
 
     #[traced_test]
@@ -1403,13 +1299,10 @@ mod tests {
             "1.0.0.5".parse().unwrap(),
             "5.0.0.10".parse().unwrap(),
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_no_nat(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_no_nat(&packet_out));
 
         // src: stateless NAT, dst: stateless NAT
         let packet = create_test_packet(
@@ -1417,12 +1310,10 @@ mod tests {
             "2.0.0.5".parse().unwrap(),
             "60.0.0.10".parse().unwrap(),
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_static_nat(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_static_nat(&packet_out));
 
         // src: stateful NAT, dst: no NAT
         let packet = create_test_packet(
@@ -1430,12 +1321,10 @@ mod tests {
             "3.0.0.5".parse().unwrap(),
             "5.0.0.10".parse().unwrap(),
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // src: no NAT, dst: stateful NAT
         let packet = create_test_packet(
@@ -1443,12 +1332,10 @@ mod tests {
             "1.0.0.5".parse().unwrap(),
             "70.0.0.10".parse().unwrap(),
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // src: stateful NAT, dst: default (no NAT)
         let packet = create_test_packet(
@@ -1456,12 +1343,10 @@ mod tests {
             "3.0.0.5".parse().unwrap(),
             "99.0.0.10".parse().unwrap(),
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_masquerade(&packet_out));
     }
 
     #[traced_test]
@@ -1532,13 +1417,10 @@ mod tests {
             2000,
             456,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC 1 to VPC 2, outside of port forwarding port range: stateful NAT
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1548,13 +1430,10 @@ mod tests {
             123,
             456,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC 1 to VPC 2, inside of port forwarding range: still stateful NAT (no existing port
         // forwarding entry in the flow table)
@@ -1565,13 +1444,10 @@ mod tests {
             2000,
             456,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC 2 to VPC 1, outside of port forwarding IP range: reverse stateful NAT
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1581,13 +1457,10 @@ mod tests {
             456,
             2000,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC 2 to VPC 1, outside of port forwarding port range: reverse stateful NAT
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1597,13 +1470,10 @@ mod tests {
             456,
             123,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC 2 to VPC 1, inside of port forwarding range: port forwarding
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1613,13 +1483,10 @@ mod tests {
             456,
             3000,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(needs_port_forwarding(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
+        assert!(needs_port_forwarding(&packet_out));
 
         // Back to VPC 1 to VPC 2, inside of port forwarding range, with flow_info attached for
         // stateful NAT: stateful NAT
@@ -1642,13 +1509,10 @@ mod tests {
         drop(binding);
         packet.meta_mut().flow_info = Some(Arc::new(flow_info));
 
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC 1 to VPC 2, inside of port forwarding range, this time with flow_info attached for
         // port forwarding: port forwarding
@@ -1671,13 +1535,10 @@ mod tests {
         drop(binding);
         packet.meta_mut().flow_info = Some(Arc::new(flow_info));
 
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(needs_port_forwarding(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
+        assert!(needs_port_forwarding(&packet_out));
     }
 
     #[test]
@@ -1761,13 +1622,10 @@ mod tests {
             2000,
             456,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
         // only stateful NAT remains -> stateful NAT
@@ -1778,13 +1636,10 @@ mod tests {
             2000,
             456,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
+        assert!(needs_masquerade(&packet_out));
 
         // Destination side: VPC 2 -> VPC 1
 
@@ -1796,13 +1651,10 @@ mod tests {
             456,
             3000,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(needs_port_forwarding(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
+        assert!(needs_port_forwarding(&packet_out));
 
         // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
         // only stateful NAT remains -> stateful NAT (not dropped!)
@@ -1813,13 +1665,10 @@ mod tests {
             456,
             3000,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
+        assert!(needs_masquerade(&packet_out));
     }
 
     #[test]
@@ -1891,12 +1740,9 @@ mod tests {
             456,
             3000,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert!(needs_port_forwarding(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert!(needs_port_forwarding(&packet_out));
 
         // Destination side: UDP packet -> port forwarding
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1906,12 +1752,9 @@ mod tests {
             456,
             3000,
         );
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert!(needs_port_forwarding(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert!(needs_port_forwarding(&packet_out));
     }
 
     #[traced_test]
@@ -2073,15 +1916,10 @@ mod tests {
             "192.168.90.100".parse().unwrap(),
             "192.168.128.7".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC-2 -> VPC-3: 192.168.90.100:2345 -> 192.168.128.7:6789
         let packet = create_test_ipv4_tcp_packet_with_ports(
@@ -2091,15 +1929,10 @@ mod tests {
             2345,
             6789,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC-2 -> VPC-3: 192.168.90.100:22 -> 192.168.128.7:6789
         //
@@ -2112,15 +1945,10 @@ mod tests {
             22,
             6789,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
         //
@@ -2133,15 +1961,10 @@ mod tests {
             22,
             6789,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
-        assert!(needs_port_forwarding(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
+        assert!(needs_port_forwarding(&packet_out));
     }
 
     // This is close to the previous test: We check that for masquerade and port forwarding on a
@@ -2317,15 +2140,10 @@ mod tests {
             "192.168.90.100".parse().unwrap(),
             "192.168.128.7".parse().unwrap(),
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC-2 -> VPC-3: 192.168.90.100:2345 -> 192.168.128.7:6789
         let packet = create_test_ipv4_tcp_packet_with_ports(
@@ -2335,15 +2153,10 @@ mod tests {
             2345,
             6789,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC-2 -> VPC-3: 192.168.90.100:22 -> 192.168.128.7:6789
         //
@@ -2356,15 +2169,10 @@ mod tests {
             22,
             6789,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni3.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
         //
@@ -2378,15 +2186,10 @@ mod tests {
             22,
             6789,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
+        assert!(needs_masquerade(&packet_out));
     }
 
     #[traced_test]
@@ -2464,15 +2267,10 @@ mod tests {
             1234,
             5678,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_masquerade(&packet_out));
 
         // VPC-1 -> VPC-2, inside port forwarding range
         //
@@ -2485,15 +2283,10 @@ mod tests {
             1234,
             2222,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(needs_port_forwarding(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(needs_port_forwarding(&packet_out));
 
         // VPC-2 -> VPC-1, inside port forwarding range
         //
@@ -2506,15 +2299,10 @@ mod tests {
             22,
             1234,
         );
-
-        let packets = flow_filter
-            .process([packet].into_iter())
-            .collect::<Vec<_>>();
-
-        assert_eq!(packets.len(), 1);
-        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
-        assert!(needs_masquerade(&packets[0]));
+        let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+        assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+        assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
+        assert!(needs_masquerade(&packet_out));
     }
 
     #[test]
