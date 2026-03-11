@@ -1371,6 +1371,7 @@ dependencies = [
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
+ "indenter",
  "left-right",
  "linkme",
  "tracing",
