@@ -448,11 +448,15 @@ impl PortRangeMap<DstConnectionData> {
                 let port_range = src_port_range.ok_or(ConfigError::InternalFailure(
                     "Trying to update (local) port ranges map with overlapping ranges".to_string(),
                 ))?;
-                map.get_mut(&port_range)
-                    .ok_or(ConfigError::InternalFailure(
-                        "Cannot find entry to update in port ranges map".to_string(),
-                    ))
-                    .and_then(|data| data.update_for_default(dst_data_result))
+                if let Some(data) = map.get_mut(&port_range) {
+                    data.update_for_default(dst_data_result)
+                } else {
+                    map.insert(
+                        port_range,
+                        DstConnectionData::new_for_default_remote(dst_data_result),
+                    );
+                    Ok(())
+                }
             }
         }
     }
@@ -629,12 +633,18 @@ impl DstConnectionData {
     }
 
     fn update_for_default(&mut self, result: VpcdLookupResult) -> Result<(), ConfigError> {
-        if self.default_remote_data.is_some() {
+        if let Some(PortRangeMap::AllPorts(VpcdLookupResult::MultipleMatches(existing_set))) =
+            &mut self.default_remote_data
+            && let VpcdLookupResult::MultipleMatches(new_set) = result
+        {
+            existing_set.extend(new_set)
+        } else if self.default_remote_data.is_some() {
             return Err(ConfigError::InternalFailure(
                 "Trying to update default remote with an existing default remote".to_string(),
             ));
+        } else {
+            self.default_remote_data = Some(PortRangeMap::AllPorts(result));
         }
-        self.default_remote_data = Some(PortRangeMap::AllPorts(result));
         Ok(())
     }
 }
