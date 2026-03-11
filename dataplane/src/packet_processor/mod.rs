@@ -71,11 +71,11 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
-        flow_table: None,
-        flow_filter: None,
-        portfw_table: None,
-        nat_tables: None,
-        flow_filter_table: None,
+        flow_table: Some(Box::new(flow_table.clone())),
+        flow_filter: Some(Box::new(flowfiltertablesr_factory.handle().inner())),
+        portfw_table: Some(Box::new(portfw_w.reader().inner())),
+        nat_tables: Some(Box::new(nattabler_factory.handle().inner())),
+        flow_filter_table: Some(Box::new(flowfiltertablesr_factory.handle().inner())),
     };
 
     // create router

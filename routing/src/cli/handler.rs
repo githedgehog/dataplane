@@ -14,18 +14,19 @@ use crate::rib::vrf::{Route, RouteOrigin, Vrf, VrfId};
 use crate::rib::vrf::{RouteV4Filter, RouteV6Filter};
 use crate::rib::vrftable::VrfTable;
 
+use crate::router::CliSources;
 use crate::router::cpi::rpc_send_control;
 use crate::router::revent::ROUTER_EVENTS;
 use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
-
-use crate::CliSources;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
 use tracing::{error, trace};
+
+use common::cliprovider::{CliData, CliDataProvider};
 
 use tracectl::{get_trace_ctl, trace_target};
 trace_target!("cli", LevelFilter::OFF, &[]);
@@ -366,10 +367,30 @@ fn show_ip_fib_groups(
     }
 }
 
+fn show_ext_provider(
+    request: CliRequest,
+    provider: Option<&dyn CliDataProvider>,
+    dataid: Option<CliData>,
+) -> Result<CliResponse, CliError> {
+    if let Some(provider) = provider {
+        Ok(CliResponse::from_request_ok(
+            request,
+            provider.provide(dataid),
+        ))
+    } else {
+        Ok(CliResponse::from_request_ok(
+            request,
+            "no data is available".to_string(),
+        ))
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn do_handle_cli_request(
     request: CliRequest,
     db: &RoutingDb,
     rio: &mut Rio,
+    cli_sources: &CliSources,
 ) -> Result<CliResponse, CliError> {
     let cpi_s = &rio.cpistats;
     let frrmi = &rio.frrmi;
@@ -468,6 +489,24 @@ fn do_handle_cli_request(
         CliAction::ShowRouterIpv6FibGroups => {
             return show_ip_fib_groups(request, db, false);
         }
+        CliAction::ShowFlowTable => {
+            return show_ext_provider(request, cli_sources.flow_table.as_deref(), None);
+        }
+        CliAction::ShowFlowFilter => {
+            return show_ext_provider(request, cli_sources.flow_filter.as_deref(), None);
+        }
+        CliAction::ShowPortForwarding => {
+            return show_ext_provider(request, cli_sources.portfw_table.as_deref(), None);
+        }
+        CliAction::ShowStaticNat => {
+            return show_ext_provider(request, cli_sources.nat_tables.as_deref(), None);
+        }
+        CliAction::ShowMasquerading => {
+            return Ok(CliResponse::from_request_ok(
+                request,
+                "not implemented".to_string(),
+            ));
+        }
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
     Ok(response)
@@ -478,11 +517,11 @@ pub(crate) fn handle_cli_request(
     peer: &SocketAddr,
     request: CliRequest,
     db: &RoutingDb,
-    _cli_sources: &CliSources,
+    cli_sources: &CliSources,
 ) {
     trace!("Got cli request: {request:#?} from {peer:?}");
 
-    let cliresponse = do_handle_cli_request(request.clone(), db, rio)
+    let cliresponse = do_handle_cli_request(request.clone(), db, rio, cli_sources)
         .unwrap_or_else(|e| CliResponse::from_request_fail(request, e));
 
     /* serialize the response */
