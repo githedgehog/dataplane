@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound;
 
 use bolero::{Driver, TypeGenerator, ValueGenerator};
@@ -30,6 +30,20 @@ fn extract_subnets(vpcs: &BTreeMap<String, GatewayAgentVpcs>) -> VpcSubnetMap {
     vpc_subnets
 }
 
+fn increment_string(s: &mut str) {
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let bytes = unsafe { s.as_bytes_mut() }; // Safe, we only manipulate ASCII characters
+    for byte in bytes.iter_mut().rev() {
+        let index = CHARS.iter().position(|&x| x == *byte).unwrap();
+        *byte = CHARS[(index + 1) % CHARS.len()];
+        // If we looped over available characters, also increment the previous character; otherwise,
+        // we're done.
+        if *byte != CHARS[0] {
+            break;
+        }
+    }
+}
+
 /// Generate a random legal `GatewayAgentSpec`
 ///
 /// This does not cover all legal `GatewayAgentSpecs`,
@@ -47,10 +61,17 @@ impl TypeGenerator for LegalValue<GatewayAgentSpec> {
 
         let mut vpcs = BTreeMap::new();
         let vni_base = d.gen_u32(Bound::Included(&1), Bound::Included(&1000))?;
+        let mut vpc_internal_ids = HashSet::new();
         for i in 0..num_vpcs {
             let vni_offset = u32::try_from(i).expect("too many vpcs");
             let lv_vpc = d.produce::<LegalValue<GatewayAgentVpcs>>()?;
             let mut vpc = lv_vpc.take();
+            let vpc_id = vpc.internal_id.as_mut().unwrap();
+            while !vpc_internal_ids.insert(vpc_id.clone()) {
+                // We already have a VPC with this internal_id, "increment" the string to generate a
+                // new one.
+                increment_string(vpc_id);
+            }
             vpc.vni = Some(vni_base + vni_offset);
             vpcs.insert(format!("vpc{i}"), vpc);
         }
