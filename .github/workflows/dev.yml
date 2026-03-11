@@ -221,6 +221,18 @@ jobs:
             profile="${{matrix.build.profile}}" \
             sanitize="${{matrix.build.sanitize}}" \
             instrument="${{matrix.build.instrument}}" \
+            oci_repo="ghcr.io" \
+            push-container "${{matrix.nix-target}}"
+
+      - name: "push container for vlab"
+        if: ${{ matrix.nix-target != 'tests.all' && matrix.build.sanitize == "" }}
+        run: |
+          just \
+            docker_sock=/run/docker/docker.sock \
+            debug_justfile="${{matrix.debug_justfile}}" \
+            profile="${{matrix.build.profile}}" \
+            sanitize="${{matrix.build.sanitize}}" \
+            instrument="${{matrix.build.instrument}}" \
             version="${{ needs.version.outputs.version }}-${{ matrix.build.profile }}" \
             oci_repo="ghcr.io" \
             push-container "${{matrix.nix-target}}"
