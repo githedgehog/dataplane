@@ -9,6 +9,7 @@ use config::GenId;
 use config::GwConfig;
 use config::internal::status::DataplaneStatus;
 
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
@@ -30,7 +31,7 @@ pub(crate) enum ConfigRequest {
 #[derive(Debug)]
 pub(crate) enum ConfigResponse {
     ApplyConfig(ConfigResult),
-    GetCurrentConfig(Box<Option<GwConfig>>),
+    GetCurrentConfig(Option<Arc<GwConfig>>),
     GetGeneration(Option<GenId>),
     GetDataplaneStatus(Box<DataplaneStatus>),
 }
@@ -97,7 +98,7 @@ impl ConfigClient {
     /// # Errors
     /// This method returns `ConfigProcessorError` if the request could not be sent or the response
     /// could not be received.
-    pub async fn get_current_config(&self) -> Result<GwConfig, ConfigProcessorError> {
+    pub async fn get_current_config(&self) -> Result<Arc<GwConfig>, ConfigProcessorError> {
         let (req, rx) = ConfigChannelRequest::new(ConfigRequest::GetCurrentConfig);
         self.tx.send(req).await?;
         let gwconfig = match rx.await? {
