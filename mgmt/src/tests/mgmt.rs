@@ -437,7 +437,7 @@ pub mod test {
             .expect("Should succeed due to defaults");
 
         /* start router */
-        let router = Router::new(router_params);
+        let router = Router::new(router_params, None);
         if let Err(e) = &router {
             error!("New router failed: {e}");
             panic!();

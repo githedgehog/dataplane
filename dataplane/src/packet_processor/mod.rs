@@ -24,7 +24,7 @@ use net::buffer::PacketBufferMut;
 use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
 
-use routing::{Router, RouterError, RouterParams};
+use routing::{CliSources, Router, RouterError, RouterParams};
 
 use vpcmap::map::VpcMapWriter;
 
@@ -68,8 +68,17 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let portfw_w = PortFwTableWriter::new();
     let portfw_factory = portfw_w.reader().factory();
 
+    // collect readers and the like for cli
+    let cli_sources = CliSources {
+        flow_table: None,
+        flow_filter: None,
+        portfw_table: None,
+        nat_tables: None,
+        flow_filter_table: None,
+    };
+
     // create router
-    let router = Router::new(params)?;
+    let router = Router::new(params, Some(cli_sources))?;
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
     let atabler_factory = router.get_atabler_factory();

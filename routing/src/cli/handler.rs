@@ -19,6 +19,8 @@ use crate::router::revent::ROUTER_EVENTS;
 use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
+use crate::CliSources;
+
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
@@ -476,6 +478,7 @@ pub(crate) fn handle_cli_request(
     peer: &SocketAddr,
     request: CliRequest,
     db: &RoutingDb,
+    _cli_sources: &CliSources,
 ) {
     trace!("Got cli request: {request:#?} from {peer:?}");
 
