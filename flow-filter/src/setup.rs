@@ -127,10 +127,16 @@ impl FlowFilterSubtable {
                             *remote_nat_req,
                         ))
                     }
-                    VpcdLookupResult::MultipleMatches(_) => {
-                        return Err(ConfigError::InternalFailure(
-                            "Unexpected multiple matches for destination VPC when handling local default expose".to_string(),
-                        ));
+                    VpcdLookupResult::MultipleMatches(dst_data) => {
+                        let data = dst_data
+                            .iter()
+                            .cloned()
+                            .map(|mut d| {
+                                d.src_nat_req = get_nat_requirement(local_default_expose);
+                                d
+                            })
+                            .collect();
+                        VpcdLookupResult::MultipleMatches(data)
                     }
                 };
                 self.insert_default_source(
@@ -144,12 +150,18 @@ impl FlowFilterSubtable {
 
         // Handle remote default expose (for all local prefixes)
         if let Some(remote_default_expose) = remote_default_expose {
-            for (local_prefix, _local_vpcd_result, local_nat_req) in &local_prefixes {
-                let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
+            for (local_prefix, local_vpcd_result, local_nat_req) in &local_prefixes {
+                let remote_data = RemoteData::new(
                     dst_vpcd,
                     *local_nat_req,
                     get_nat_requirement(remote_default_expose),
-                ));
+                );
+                let dst_data_result = match local_vpcd_result {
+                    VpcdLookupResult::Single(_) => VpcdLookupResult::Single(remote_data),
+                    VpcdLookupResult::MultipleMatches(_) => {
+                        VpcdLookupResult::MultipleMatches(HashSet::from([remote_data]))
+                    }
+                };
                 self.insert_default_remote(
                     local_vpcd,
                     dst_data_result,

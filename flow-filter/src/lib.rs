@@ -2407,6 +2407,140 @@ mod tests {
         assert!(!packets[0].meta().requires_port_forwarding());
     }
 
+    #[traced_test]
+    #[test]
+    fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap_to_default()
+     {
+        let vni1 = Vni::new_checked(100).unwrap();
+        let vni2 = Vni::new_checked(200).unwrap();
+
+        let mut vpc_table = VpcTable::new();
+        vpc_table
+            .add(Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap())
+            .unwrap();
+        vpc_table
+            .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
+            .unwrap();
+
+        let mut expose_port_forwarding = VpcExpose::empty()
+            .make_port_forwarding(None)
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "1.0.0.1/32".into(),
+                Some(PortRange::new(22, 22).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "10.0.0.1/32".into(),
+                Some(PortRange::new(2222, 2222).unwrap()),
+            ))
+            .unwrap();
+        expose_port_forwarding.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
+
+        let mut peering_table = VpcPeeringTable::new();
+        peering_table
+            .add(VpcPeering::with_default_group(
+                "vpc1-to-vpc2",
+                VpcManifest {
+                    name: "vpc1".to_string(),
+                    exposes: vec![VpcExpose::empty().set_default()],
+                },
+                VpcManifest {
+                    name: "vpc2".to_string(),
+                    exposes: vec![
+                        expose_port_forwarding,
+                        VpcExpose::empty()
+                            .make_stateful_nat(None)
+                            .unwrap()
+                            .ip("1.0.0.0/24".into())
+                            .as_range("10.0.0.0/24".into())
+                            .unwrap(),
+                    ],
+                },
+            ))
+            .unwrap();
+
+        let mut overlay = Overlay::new(vpc_table, peering_table);
+        // Validation is necessary to build overlay.vpc_table's peerings from peering_table
+        overlay.validate().unwrap();
+
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
+
+        let mut writer = FlowFilterTableWriter::new();
+        writer.update_flow_filter_table(table);
+
+        let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
+
+        // Test with packets
+
+        // VPC-1 -> VPC-2, outside of port forwarding range
+        //
+        // Only masquerading applies.
+        let packet = create_test_ipv4_tcp_packet_with_ports(
+            Some(vpcd(vni1.into())),
+            "7.7.7.7".parse().unwrap(),
+            "10.0.0.1".parse().unwrap(),
+            1234,
+            5678,
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+
+        // VPC-1 -> VPC-2, inside port forwarding range
+        //
+        // Given that we have no flow table entry, port forwarding should take precedence in that
+        // direction.
+        let packet = create_test_ipv4_tcp_packet_with_ports(
+            Some(vpcd(vni1.into())),
+            "7.7.7.7".parse().unwrap(),
+            "10.0.0.1".parse().unwrap(),
+            1234,
+            2222,
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
+        assert!(!packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(packets[0].meta().requires_port_forwarding());
+
+        // VPC-2 -> VPC-1, inside port forwarding range
+        //
+        // Given that we have no flow table entry, masquerading should take precedence in that
+        // direction.
+        let packet = create_test_ipv4_tcp_packet_with_ports(
+            Some(vpcd(vni2.into())),
+            "1.0.0.1".parse().unwrap(),
+            "7.7.7.7".parse().unwrap(),
+            22,
+            1234,
+        );
+
+        let packets = flow_filter
+            .process([packet].into_iter())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets.len(), 1);
+        assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
+        assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
+        assert!(packets[0].meta().requires_stateful_nat());
+        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(!packets[0].meta().requires_port_forwarding());
+    }
+
     #[test]
     fn test_flow_filter_batch_processing() {
         // Setup table
