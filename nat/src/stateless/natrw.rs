@@ -38,6 +38,10 @@ impl NatTablesReader {
     pub fn factory(&self) -> NatTablesReaderFactory {
         NatTablesReaderFactory(self.0.factory())
     }
+    #[must_use]
+    pub fn inner(&self) -> ReadHandle<NatTables> {
+        self.0.clone()
+    }
 }
 
 #[derive(Debug)]

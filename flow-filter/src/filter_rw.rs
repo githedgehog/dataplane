@@ -38,6 +38,11 @@ impl FlowFilterTableReader {
     pub fn factory(&self) -> FlowFilterTableReaderFactory {
         FlowFilterTableReaderFactory(self.0.factory())
     }
+
+    #[must_use]
+    pub fn inner(&self) -> ReadHandle<FlowFilterTable> {
+        self.0.clone()
+    }
 }
 
 #[derive(Debug)]

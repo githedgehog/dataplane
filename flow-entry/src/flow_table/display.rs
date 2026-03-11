@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::flow_table::FlowTable;
+use common::cliprovider::{CliData, CliDataProvider};
 use std::fmt::Display;
 
 // Copied from crates "config" and "routing"
@@ -32,5 +33,11 @@ impl Display for FlowTable {
             write!(f, "Failed to lock flow table")?;
         }
         Ok(())
+    }
+}
+
+impl CliDataProvider for FlowTable {
+    fn provide(&self, _dataid: Option<CliData>) -> String {
+        self.to_string()
     }
 }
