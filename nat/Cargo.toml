@@ -15,6 +15,7 @@ bnum = { workspace = true }
 concurrency = { workspace = true, features = [] }
 config = { workspace = true }
 flow-entry = { workspace = true }
+indenter = { workspace = true }
 left-right = { workspace = true }
 linkme = { workspace = true }
 lpm = { workspace = true }

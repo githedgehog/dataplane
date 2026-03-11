@@ -39,6 +39,16 @@ where
         Self(BTreeMap::new())
     }
 
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn insert(&mut self, range: R, value: V) -> Option<V> {
         self.0.insert(range, value)
     }

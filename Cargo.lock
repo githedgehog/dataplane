@@ -1575,6 +1575,7 @@ dependencies = [
  "dataplane-tracectl",
  "etherparse",
  "fixin",
+ "indenter",
  "left-right",
  "linkme",
  "rand 0.10.0",

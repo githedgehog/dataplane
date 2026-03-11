@@ -4,7 +4,7 @@
 use bnum::cast::CastFrom;
 use lpm::prefix::range_map::UpperBoundFrom;
 use lpm::prefix::{IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ops::{Bound, RangeBounds};
 
@@ -99,6 +99,12 @@ impl IpRangeWithPorts for IpPortRange {
 
     fn merge(&self, _other: &Self) -> Option<Self> {
         unimplemented!()
+    }
+}
+
+impl Display for IpPortRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.ip_range, self.port_range)
     }
 }
 
@@ -209,6 +215,12 @@ impl IpRange {
     }
 }
 
+impl Display for IpRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{} .. {}]", self.start, self.end)
+    }
+}
+
 // Used for DisjointRangesBTreeMap
 impl UpperBoundFrom<IpAddr> for IpRange {
     fn upper_bound_from(addr: IpAddr) -> Self {
@@ -242,6 +254,12 @@ pub struct IpPort {
     pub port: u16,
 }
 
+impl Display for IpPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.ip, self.port)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IpPortRangeBounds {
     pub start: IpPort,
@@ -252,6 +270,12 @@ impl IpPortRangeBounds {
     #[must_use]
     pub fn new(start: IpPort, end: IpPort) -> Self {
         Self { start, end }
+    }
+}
+
+impl Display for IpPortRangeBounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{} .. {}]", self.start, self.end)
     }
 }
 
