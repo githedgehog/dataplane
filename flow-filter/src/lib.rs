@@ -1377,7 +1377,7 @@ mod tests {
                             .as_range("100.0.0.0/24".into()) // Stateful NAT
                             .unwrap(),
                         VpcExpose::empty()
-                            .make_port_forwarding(None)
+                            .make_port_forwarding(None, None)
                             .unwrap()
                             .ip(PrefixWithOptionalPorts::new(
                                 "1.0.0.27/32".into(),
@@ -1562,27 +1562,6 @@ mod tests {
             .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
             .unwrap();
 
-        let masq_expose = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("1.0.0.0/24".into())
-            .as_range("100.0.0.0/24".into())
-            .unwrap();
-        // Create a TCP-only port forwarding expose
-        let mut pf_expose = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "1.0.0.27/32".into(),
-                Some(PortRange::new(2000, 2001).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "100.0.0.27/32".into(),
-                Some(PortRange::new(3000, 3001).unwrap()),
-            ))
-            .unwrap();
-        pf_expose.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
-
         let mut peering_table = VpcPeeringTable::new();
         peering_table
             .add(VpcPeering::with_default_group(
@@ -1590,8 +1569,24 @@ mod tests {
                 VpcManifest {
                     name: "vpc1".to_string(),
                     exposes: vec![
-                        masq_expose, // Stateful NAT
-                        pf_expose,   // TCP-only port forwarding
+                        VpcExpose::empty()
+                            .make_stateful_nat(None) // Stateful NAT
+                            .unwrap()
+                            .ip("1.0.0.0/24".into())
+                            .as_range("100.0.0.0/24".into())
+                            .unwrap(),
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Tcp)) // TCP-only port forwarding
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "1.0.0.27/32".into(),
+                                Some(PortRange::new(2000, 2001).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "100.0.0.27/32".into(),
+                                Some(PortRange::new(3000, 3001).unwrap()),
+                            ))
+                            .unwrap(),
                     ],
                 },
                 VpcManifest {
@@ -1702,7 +1697,7 @@ mod tests {
                             .as_range("100.0.0.0/24".into())
                             .unwrap(),
                         VpcExpose::empty()
-                            .make_port_forwarding(None)
+                            .make_port_forwarding(None, None)
                             .unwrap()
                             .ip(PrefixWithOptionalPorts::new(
                                 "1.0.0.27/32".into(),
@@ -1775,48 +1770,6 @@ mod tests {
             .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
             .unwrap();
 
-        let mut expose_port_forwarding_01_tcp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
-                Some(PortRange::new(22, 22).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "20.10.90.100/32".into(),
-                Some(PortRange::new(2222, 2222).unwrap()),
-            ))
-            .unwrap();
-        expose_port_forwarding_01_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
-
-        let mut expose_port_forwarding_01_udp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
-                Some(PortRange::new(53, 53).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "20.10.90.100/32".into(),
-                Some(PortRange::new(2053, 2053).unwrap()),
-            ))
-            .unwrap();
-        expose_port_forwarding_01_udp.nat.as_mut().unwrap().proto = L4Protocol::Udp;
-
-        let mut expose_port_forwarding_02_tcp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
-                Some(PortRange::new(8080, 8080).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "20.10.90.100/32".into(),
-                Some(PortRange::new(80, 80).unwrap()),
-            ))
-            .unwrap();
-        expose_port_forwarding_02_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
-
         let mut peering_table = VpcPeeringTable::new();
         peering_table
             .add(VpcPeering::with_default_group(
@@ -1832,9 +1785,42 @@ mod tests {
                 VpcManifest {
                     name: "vpc2".to_string(),
                     exposes: vec![
-                        expose_port_forwarding_01_tcp,
-                        expose_port_forwarding_01_udp,
-                        expose_port_forwarding_02_tcp,
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
+                                Some(PortRange::new(22, 22).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "20.10.90.100/32".into(),
+                                Some(PortRange::new(2222, 2222).unwrap()),
+                            ))
+                            .unwrap(),
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Udp))
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
+                                Some(PortRange::new(53, 53).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "20.10.90.100/32".into(),
+                                Some(PortRange::new(2053, 2053).unwrap()),
+                            ))
+                            .unwrap(),
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
+                                Some(PortRange::new(8080, 8080).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "20.10.90.100/32".into(),
+                                Some(PortRange::new(80, 80).unwrap()),
+                            ))
+                            .unwrap(),
                         VpcExpose::empty().ip("192.168.80.0/24".into()),
                     ],
                 },
@@ -1992,48 +1978,6 @@ mod tests {
             .add(Vpc::new("vpc3", "VPC03", vni3.as_u32()).unwrap())
             .unwrap();
 
-        let mut expose_port_forwarding_01_tcp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
-                Some(PortRange::new(22, 22).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "20.10.90.0/24".into(),
-                Some(PortRange::new(2222, 2222).unwrap()),
-            ))
-            .unwrap();
-        expose_port_forwarding_01_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
-
-        let mut expose_port_forwarding_01_udp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
-                Some(PortRange::new(53, 53).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "20.10.90.0/24".into(),
-                Some(PortRange::new(2053, 2053).unwrap()),
-            ))
-            .unwrap();
-        expose_port_forwarding_01_udp.nat.as_mut().unwrap().proto = L4Protocol::Udp;
-
-        let mut expose_port_forwarding_02_tcp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "192.168.90.100/32".into(), // 192.168.90.100 used privately from VPC 2
-                Some(PortRange::new(8080, 8080).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "20.10.90.100/32".into(),
-                Some(PortRange::new(80, 80).unwrap()),
-            ))
-            .unwrap();
-        expose_port_forwarding_02_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
-
         let mut peering_table = VpcPeeringTable::new();
         peering_table
             .add(VpcPeering::with_default_group(
@@ -2049,9 +1993,42 @@ mod tests {
                 VpcManifest {
                     name: "vpc2".to_string(),
                     exposes: vec![
-                        expose_port_forwarding_01_tcp,
-                        expose_port_forwarding_01_udp,
-                        expose_port_forwarding_02_tcp,
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
+                                Some(PortRange::new(22, 22).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "20.10.90.0/24".into(),
+                                Some(PortRange::new(2222, 2222).unwrap()),
+                            ))
+                            .unwrap(),
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Udp))
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
+                                Some(PortRange::new(53, 53).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "20.10.90.0/24".into(),
+                                Some(PortRange::new(2053, 2053).unwrap()),
+                            ))
+                            .unwrap(),
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "192.168.90.100/32".into(), // 192.168.90.100 used privately from VPC 2
+                                Some(PortRange::new(8080, 8080).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "20.10.90.100/32".into(),
+                                Some(PortRange::new(80, 80).unwrap()),
+                            ))
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_stateful_nat(None)
                             .unwrap()
@@ -2207,20 +2184,6 @@ mod tests {
             .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
             .unwrap();
 
-        let mut expose_port_forwarding = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "1.0.0.1/32".into(),
-                Some(PortRange::new(22, 22).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "10.0.0.1/32".into(),
-                Some(PortRange::new(2222, 2222).unwrap()),
-            ))
-            .unwrap();
-        expose_port_forwarding.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
-
         let mut peering_table = VpcPeeringTable::new();
         peering_table
             .add(VpcPeering::with_default_group(
@@ -2232,7 +2195,18 @@ mod tests {
                 VpcManifest {
                     name: "vpc2".to_string(),
                     exposes: vec![
-                        expose_port_forwarding,
+                        VpcExpose::empty()
+                            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                            .unwrap()
+                            .ip(PrefixWithOptionalPorts::new(
+                                "1.0.0.1/32".into(),
+                                Some(PortRange::new(22, 22).unwrap()),
+                            ))
+                            .as_range(PrefixWithOptionalPorts::new(
+                                "10.0.0.1/32".into(),
+                                Some(PortRange::new(2222, 2222).unwrap()),
+                            ))
+                            .unwrap(),
                         VpcExpose::empty()
                             .make_stateful_nat(None)
                             .unwrap()

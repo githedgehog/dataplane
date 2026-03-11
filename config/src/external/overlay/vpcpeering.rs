@@ -149,7 +149,11 @@ impl VpcExpose {
         }
     }
 
-    // Make the [`VpcExpose`] use port forwarding.
+    // Make the [`VpcExpose`] use port forwarding, with the given idle timeout, if provided, and the
+    // given L4 protocol, if provided.
+    //
+    // If the [`VpcExpose`] is already in port forwarding mode, the idle timeout and L4 protocol are
+    // overwritten.
     //
     // # Errors
     //
@@ -157,6 +161,7 @@ impl VpcExpose {
     pub fn make_port_forwarding(
         mut self,
         idle_timeout: Option<Duration>,
+        proto: Option<L4Protocol>,
     ) -> Result<Self, ConfigError> {
         let options = idle_timeout
             .map(|to| VpcExposePortForwarding { idle_timeout: to })
@@ -164,18 +169,25 @@ impl VpcExpose {
         match self.nat.as_mut() {
             Some(nat) if nat.is_port_forwarding() => {
                 nat.config = VpcExposeNatConfig::PortForwarding(options);
-                Ok(self)
+                if let Some(proto) = proto {
+                    nat.proto = proto;
+                }
             }
-            Some(_) => Err(ConfigError::Invalid(format!(
-                "refusing to overwrite previous NAT mode with port forwarding for VpcExpose {self}"
-            ))),
+            Some(_) => {
+                return Err(ConfigError::Invalid(format!(
+                    "refusing to overwrite previous NAT mode with port forwarding for VpcExpose {self}"
+                )));
+            }
             None => {
-                self.nat = Some(VpcExposeNat::from_config(
-                    VpcExposeNatConfig::PortForwarding(options),
-                ));
-                Ok(self)
+                let mut nat =
+                    VpcExposeNat::from_config(VpcExposeNatConfig::PortForwarding(options));
+                if let Some(proto) = proto {
+                    nat.proto = proto;
+                }
+                self.nat = Some(nat);
             }
         }
+        Ok(self)
     }
 
     #[must_use]

@@ -141,7 +141,7 @@ fn process_nat_block(
             // Note: We'll need additional processing to handle port mapping rules, see
             // nat_expand_rules()
             vpc_expose
-                .make_port_forwarding(idle_timeout)
+                .make_port_forwarding(idle_timeout, None)
                 .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
         }
         (None, None, Some(_)) => vpc_expose
