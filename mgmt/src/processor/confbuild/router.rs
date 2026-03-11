@@ -3,6 +3,8 @@
 
 //! Functions to build router configurations
 
+use std::sync::Arc;
+
 use netdev::Interface as NetDevInterface;
 use netdev::get_interfaces;
 use netdev::prelude::*;
@@ -181,7 +183,7 @@ fn generate_router_interfaces_config(
 }
 pub(crate) fn generate_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
-    config: &GwConfig,
+    config: Arc<GwConfig>,
 ) -> Result<RouterConfig, ConfigError> {
     let genid = config.genid();
     debug!("Generating router config for genid {genid}...");

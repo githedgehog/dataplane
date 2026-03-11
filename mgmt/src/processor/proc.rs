@@ -28,7 +28,6 @@ use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
 use pipeline::PipelineData;
 
-use crate::processor::display::ConfigHistory;
 use crate::processor::gwconfigdb::GwConfigDatabase;
 use crate::processor::mgmt_client::{
     ConfigChannelRequest, ConfigClient, ConfigRequest, ConfigResponse,
@@ -137,54 +136,49 @@ impl ConfigProcessor {
     /// Main entry point for new configurations
     pub(crate) async fn process_incoming_config(&mut self, mut config: GwConfig) -> ConfigResult {
         config.validate()?;
-
-        // BMP-aware internal builder
         let internal = build_internal_config(&config, self.proc_params.bmp_options.clone())?;
         config.set_internal_config(internal);
-
-        let e = match self.apply(config).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                self.rollback().await;
-                Err(e)
-            }
-        };
-
-        let history = ConfigHistory(&self.config_db);
-        info!("\n{history}");
-        e
-    }
-    /// Apply a blank configuration
-    #[allow(unused)]
-    async fn apply_blank_config(&mut self) -> ConfigResult {
-        let mut blank = GwConfig::blank();
-        // BMP-aware internal builder (even for blank, so FRR reflects BMP if needed)
-        let internal = build_internal_config(&blank, self.proc_params.bmp_options.clone())?;
-        blank.set_internal_config(internal);
-        self.apply(blank).await
+        self.apply(config).await
     }
 
-    /// Apply the provided configuration. On success, store it and update its meta-data.
-    async fn apply(&mut self, mut config: GwConfig) -> ConfigResult {
-        let result = self.apply_gw_config(&mut config).await;
-        config.meta.apply_time();
-        config.meta.error(&result);
-        self.config_db.history_mut().push(config.meta.clone());
+    /// Apply the provided configuration. On success, store it, and update the history
+    /// On failure, roll-back.
+    async fn apply(&mut self, config: GwConfig) -> ConfigResult {
+        let config = Arc::from(config);
+        let result = self.apply_gw_config(config.clone()).await;
+        let guard = config.meta.load();
+        let mut new_meta = guard.as_ref().clone();
+        new_meta.apply_time();
+        new_meta.error(&result);
+        self.config_db.history_mut().push(new_meta.clone());
+        config.meta.store(Arc::from(new_meta));
         if result.is_ok() {
             self.config_db.store(config);
+        } else {
+            self.rollback().await;
         }
+        self.config_db.log();
         result
     }
 
-    /// Attempt to apply the previously applied config. If no config was applied, this
-    /// will apply a blank config as we stored it in the config db.
-    /// Note: when we apply a "rollback" config, the config history is not updated.
-    /// TODO: decide if we want the history to include rollbacks.
+    /// Attempt to apply the previously applied config.
     async fn rollback(&mut self) {
-        if let Some(mut current) = self.config_db.get_current_config_mut().cloned() {
-            info!("Rolling back to config with genid {}...", current.genid());
-            let _ = self.apply_gw_config(&mut current).await;
-        }
+        let active = self.config_db.get_applied();
+        let active_genid = active.genid();
+        info!("Rolling back to config with genid {}...", active.genid());
+        let result = self.apply_gw_config(active.clone()).await.map(drop);
+        match &result {
+            Ok(_) => debug!("Successfully rolled back to config {active_genid}"),
+            Err(e) => error!("Rolling back to config {active_genid} failed: {e}"),
+        };
+        // add entry to history reflecting rollback
+        let guard = active.meta.load();
+        let mut meta = guard.as_ref().clone();
+        meta.apply_time();
+        meta.error(&result);
+        meta.is_rollback = true;
+        self.config_db.history_mut().push(meta);
+        self.config_db.log();
     }
 
     /// RPC handler: store and apply the provided config
@@ -208,7 +202,7 @@ impl ConfigProcessor {
     /// RPC handler: get the currently applied config
     fn handle_get_config(&self) -> ConfigResponse {
         debug!("Handling get running configuration request");
-        let cfg = Box::new(self.config_db.get_current_config().cloned());
+        let cfg = self.config_db.get_current_config().clone();
         ConfigResponse::GetCurrentConfig(cfg)
     }
 
@@ -444,9 +438,11 @@ impl VpcManager<RequiredInformationBase> {
 /// Build router config and apply it over the router control channel
 async fn apply_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
-    config: &GwConfig,
+    config: Arc<GwConfig>,
     router_ctl: &mut RouterCtlSender,
 ) -> ConfigResult {
+    let genid = config.genid();
+
     // build the router config
     let router_config = generate_router_config(kernel_vrfs, config)?;
 
@@ -456,10 +452,7 @@ async fn apply_router_config(
         .await
         .map_err(|e| ConfigError::InternalFailure(format!("Router config error: {e}")))?;
 
-    info!(
-        "Router config for gen {} was successfully applied",
-        config.genid()
-    );
+    info!("Router config for gen {genid} was successfully applied",);
     Ok(())
 }
 
@@ -567,7 +560,7 @@ fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
 
 impl ConfigProcessor {
     /// Main method to apply a config
-    async fn apply_gw_config(&mut self, config: &mut GwConfig) -> ConfigResult {
+    async fn apply_gw_config(&mut self, config: Arc<GwConfig>) -> Result<(), ConfigError> {
         let genid = config.genid();
         debug!("Applying config with genid '{genid}'...");
 
@@ -577,14 +570,9 @@ impl ConfigProcessor {
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
-        let bmp_options = self.proc_params.bmp_options.clone();
         let portfw_w = &mut self.proc_params.portfw_w;
 
-        /* build internal config if it hasn't been built */
-        if config.internal.is_none() {
-            let internal = build_internal_config(config, bmp_options)?;
-            config.set_internal_config(internal);
-        }
+        // internal config should be available
         let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
 
         /* apply device config */
@@ -622,10 +610,10 @@ impl ConfigProcessor {
         apply_port_forwarding_config(&config.external.overlay.vpc_table, portfw_w)?;
 
         /* update stats mappings and seed names to the stats store */
-        let _ = update_stats_vpc_mappings(config, vpcmapw);
+        let _ = update_stats_vpc_mappings(&config, vpcmapw);
 
         /* apply config in router */
-        apply_router_config(&kernel_vrfs, config, router_ctl).await?;
+        apply_router_config(&kernel_vrfs, config.clone(), router_ctl).await?;
 
         /* update the pipeline generation id, iff config was applied */
         self.proc_params.pipeline_data.set_genid(genid);
