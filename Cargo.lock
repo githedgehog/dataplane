@@ -1355,6 +1355,7 @@ dependencies = [
  "ahash",
  "bolero",
  "dashmap",
+ "dataplane-common",
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-pipeline",
@@ -1373,6 +1374,7 @@ dependencies = [
 name = "dataplane-flow-filter"
 version = "0.13.0"
 dependencies = [
+ "dataplane-common",
  "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
@@ -1571,6 +1573,7 @@ dependencies = [
  "arc-swap",
  "bnum",
  "bolero",
+ "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-flow-entry",
@@ -1649,6 +1652,7 @@ dependencies = [
  "chrono",
  "dataplane-args",
  "dataplane-cli",
+ "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-left-right-tlcache",
