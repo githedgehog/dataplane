@@ -20,6 +20,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use tracing::error;
+
 use super::PortFwTableError;
 use super::portforwarder::PortForwarder;
 use super::portrange::PortRange;
@@ -296,8 +298,7 @@ impl PortFwTable {
         let mut ruleset = ruleset.to_vec();
         while let Some(rule) = ruleset.pop().map(Arc::from) {
             if let Err(e) = self.add_entry(rule.clone()) {
-                // FIXME(fredi): these should never fail with the validation
-                unreachable!()
+                error!("Failure adding port-forwarding rule (config validation failed)");
             }
         }
     }
