@@ -145,10 +145,15 @@ pub enum CliAction {
     // Eventlog
     RouterEventLog,
 
+    // flow table
+    ShowFlowTable,
+
+    // flow filter
+    ShowFlowFilter,
+
     // vpcs
     ShowVpc,
-    ShowVpcPifs,
-    ShowVpcPolicies,
+    ShowVpcPeerings,
 
     // pipelines
     ShowPipeline,
@@ -180,8 +185,16 @@ pub enum CliAction {
     ShowKernelInterfaces,
 
     // nat
-    ShowNatRules,
-    ShowNatPortUsage,
+    ShowPortForwarding,
+    ShowStaticNat,
+    ShowMasquerading,
+
+    // gateways
+    ShowGatewayGroups,
+    ShowGatewayCommunities,
+
+    // config
+    ShowConfigSummary,
 }
 
 impl CliAction {
