@@ -225,7 +225,7 @@ jobs:
             push-container "${{matrix.nix-target}}"
 
       - name: "push container for vlab"
-        if: ${{ matrix.nix-target != 'tests.all' && matrix.build.sanitize == "" }}
+        if: ${{ matrix.nix-target != 'tests.all' && matrix.build.sanitize == '' }}
         run: |
           just \
             docker_sock=/run/docker/docker.sock \
