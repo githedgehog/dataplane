@@ -15,6 +15,8 @@ use std::fmt::{Debug, Display, Write};
 use std::net::IpAddr;
 use std::ops::RangeBounds;
 
+use common::cliprovider::{CliData, CliDataProvider};
+
 use tracectl::trace_target;
 use tracing::debug;
 trace_target!("flow-filter-tables", LevelFilter::INFO, &[]);
@@ -647,6 +649,12 @@ impl DstConnectionData {
             self.default_remote_data = Some(PortRangeMap::AllPorts(result));
         }
         Ok(())
+    }
+}
+
+impl CliDataProvider for FlowFilterTable {
+    fn provide(&self, _what: Option<CliData>) -> String {
+        self.to_string()
     }
 }
 
