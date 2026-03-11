@@ -1296,6 +1296,7 @@ dependencies = [
 name = "dataplane-config"
 version = "0.13.0"
 dependencies = [
+ "arc-swap",
  "bolero",
  "caps",
  "chrono",

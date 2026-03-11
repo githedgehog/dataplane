@@ -12,7 +12,7 @@ use config::{ExternalConfig, GenId, GwConfig, GwConfigMeta, InternalConfig};
 
 macro_rules! CONFIGDB_TBL_FMT {
     () => {
-        " {:>6} {:<25} {:<25} {}"
+        " {:>6} {:<25} {:<25} {} {}"
     };
 }
 
@@ -20,7 +20,10 @@ fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Re
     writeln!(
         f,
         "{}",
-        format_args!(CONFIGDB_TBL_FMT!(), "GenId", "created", "applied", "error")
+        format_args!(
+            CONFIGDB_TBL_FMT!(),
+            "GenId", "created", "applied", "error", ""
+        )
     )
 }
 
@@ -39,10 +42,15 @@ fn fmt_gwconfig_summary(meta: &GwConfigMeta, f: &mut std::fmt::Formatter<'_>) ->
         .map(|e| e.to_string())
         .unwrap_or("none".to_string());
 
+    let is_rollback = if meta.is_rollback { "(rollback)" } else { "" };
+
     writeln!(
         f,
         "{}",
-        format_args!(CONFIGDB_TBL_FMT!(), meta.genid, created, apply_time, error)
+        format_args!(
+            CONFIGDB_TBL_FMT!(),
+            meta.genid, created, apply_time, error, is_rollback
+        )
     )
 }
 

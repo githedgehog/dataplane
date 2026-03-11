@@ -6,6 +6,8 @@
 use crate::errors::{ConfigError, ConfigResult};
 use crate::external::{ExternalConfig, GenId};
 use crate::internal::InternalConfig;
+use arc_swap::ArcSwap;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
 
@@ -23,18 +25,22 @@ pub struct GwConfigMeta {
 
     // error if configuration could not be applied
     pub error: Option<ConfigError>,
+
+    // error if we tried to rollback to this config and it failed
+    pub is_rollback: bool,
 }
 impl GwConfigMeta {
     ////////////////////////////////////////////////////////////////////////////////
     /// Build config metadata. This is automatically built when creating a `GwConfig`
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    fn new(genid: GenId) -> Self {
+    pub fn new(genid: GenId) -> Self {
         Self {
             genid,
             create_t: SystemTime::now(),
             apply_t: None,
             error: None,
+            is_rollback: false,
         }
     }
     ////////////////////////////////////////////////////////////////////////////////
@@ -56,9 +62,9 @@ impl GwConfigMeta {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GwConfig {
-    pub meta: GwConfigMeta,               /* config metadata */
+    pub meta: ArcSwap<GwConfigMeta>,      /* config metadata */
     pub external: ExternalConfig,         /* external config: received */
     pub internal: Option<InternalConfig>, /* internal config: built by gw from internal */
 }
@@ -70,7 +76,7 @@ impl GwConfig {
     #[must_use]
     pub fn new(external: ExternalConfig) -> Self {
         Self {
-            meta: GwConfigMeta::new(external.genid),
+            meta: ArcSwap::new(Arc::from(GwConfigMeta::new(external.genid))),
             external,
             internal: None,
         }
