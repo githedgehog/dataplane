@@ -438,7 +438,7 @@ let
       in
       ''
         tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
+        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,var/run/frr/hh,run/netns,home,tmp}
         ln -s /run "$tmp/var/run"
         for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
