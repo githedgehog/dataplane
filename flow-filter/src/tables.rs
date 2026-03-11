@@ -5,12 +5,13 @@
 
 use config::ConfigError;
 use config::external::overlay::vpcpeering::{VpcExposeNat, VpcExposeNatConfig};
+use indenter::indented;
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use lpm::prefix::{L4Protocol, PortRange, Prefix};
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Write};
 use std::net::IpAddr;
 use std::ops::RangeBounds;
 
@@ -660,8 +661,9 @@ impl Display for FlowFilterTable {
             .into_iter()
             .collect::<BTreeMap<_, _>>()
         {
-            writeln!(f, "source VPC {src_vpcd}:")?;
-            writeln!(f, "{table}")?;
+            writeln!(f, "  source VPC {src_vpcd}:")?;
+            write!(indented(f).with_str("    "), "{table}")?;
+            writeln!(f)?;
         }
 
         writeln!(f, "subtable for ICMP:")?;
@@ -672,8 +674,9 @@ impl Display for FlowFilterTable {
             .into_iter()
             .collect::<BTreeMap<_, _>>()
         {
-            writeln!(f, "source VPC {src_vpcd}:")?;
-            writeln!(f, "{table}")?;
+            writeln!(f, "  source VPC {src_vpcd}:")?;
+            write!(indented(f).with_str("    "), "{table}")?;
+            writeln!(f)?;
         }
         Ok(())
     }
@@ -684,32 +687,32 @@ impl Display for VpcConnectionsTable {
         for (prefix, port_range_map) in self.trie.iter() {
             match port_range_map {
                 PortRangeMap::AllPorts(data) => {
-                    writeln!(f, "  source: {prefix}")?;
-                    write!(f, "{data}")?;
+                    writeln!(f, "source: {prefix}")?;
+                    write!(indented(f).with_str("  "), "{data}")?;
                 }
                 PortRangeMap::Ranges(port_ranges) => {
                     for (port_range, data) in port_ranges.iter() {
-                        writeln!(f, "  source: {prefix}:{port_range}")?;
-                        write!(f, "{data}")?;
+                        writeln!(f, "source: {prefix}:{port_range}")?;
+                        write!(indented(f).with_str("  "), "{data}")?;
                     }
                 }
             }
         }
         if let Some(default_source) = &self.default_source {
-            writeln!(f, "  local default:")?;
+            writeln!(f, "local default:")?;
             match default_source {
                 PortRangeMap::AllPorts(data) => {
-                    write!(f, "{data}")?;
+                    write!(indented(f).with_str("  "), "{data}")?;
                 }
                 PortRangeMap::Ranges(port_ranges) => {
                     for (port_range, data) in port_ranges.iter() {
                         writeln!(f, "  ports: {port_range}")?;
-                        write!(f, "{data}")?;
+                        write!(indented(f).with_str("    "), "{data}")?;
                     }
                 }
             }
         } else {
-            writeln!(f, "  no local default")?;
+            writeln!(f, "no local default")?;
         }
         Ok(())
     }
@@ -720,13 +723,13 @@ impl Display for DstConnectionData {
         for (prefix, port_range_map) in self.trie.iter() {
             match port_range_map {
                 PortRangeMap::AllPorts(result) => {
-                    writeln!(f, "    destination: {prefix}, data:")?;
-                    write!(f, "{result}")?;
+                    writeln!(f, "destination: {prefix}, data:")?;
+                    write!(indented(f).with_str("  "), "{result}")?;
                 }
                 PortRangeMap::Ranges(port_ranges) => {
                     for (port_range, result) in port_ranges.iter() {
-                        writeln!(f, "    destination: {prefix}:{port_range}, data:")?;
-                        write!(f, "{result}")?;
+                        writeln!(f, "destination: {prefix}:{port_range}, data:")?;
+                        write!(indented(f).with_str("  "), "{result}")?;
                     }
                 }
             }
@@ -734,19 +737,19 @@ impl Display for DstConnectionData {
         if let Some(port_range_map) = &self.default_remote_data {
             match port_range_map {
                 PortRangeMap::AllPorts(result) => {
-                    writeln!(f, "    remote default data:")?;
-                    write!(f, "{result}")?;
+                    writeln!(f, "remote default data:")?;
+                    write!(indented(f).with_str("  "), "{result}")?;
                 }
                 PortRangeMap::Ranges(port_ranges) => {
-                    writeln!(f, "    remote default:")?;
+                    writeln!(f, "remote default:")?;
                     for (port_range, result) in port_ranges.iter() {
-                        writeln!(f, "    ports: {port_range}, data:")?;
-                        write!(f, "{result}")?;
+                        writeln!(f, "  ports: {port_range}, data:")?;
+                        write!(indented(f).with_str("    "), "{result}")?;
                     }
                 }
             }
         } else {
-            writeln!(f, "    no remote default")?;
+            writeln!(f, "no remote default")?;
         }
         Ok(())
     }
@@ -756,11 +759,11 @@ impl Display for VpcdLookupResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VpcdLookupResult::Single(remote_data) => {
-                writeln!(f, "      {remote_data}")
+                writeln!(f, "{remote_data}")
             }
             VpcdLookupResult::MultipleMatches(remote_data_set) => {
                 for remote_data in remote_data_set {
-                    writeln!(f, "      {remote_data}")?;
+                    writeln!(f, "{remote_data}")?;
                 }
                 Ok(())
             }
