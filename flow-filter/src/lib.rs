@@ -441,6 +441,30 @@ mod tests {
         VpcDiscriminant::from_vni(vni(id))
     }
 
+    fn needs_masquerade<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        packet.meta().requires_stateful_nat()
+            && !packet.meta().requires_stateless_nat()
+            && !packet.meta().requires_port_forwarding()
+    }
+
+    fn needs_static_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        packet.meta().requires_stateless_nat()
+            && !packet.meta().requires_stateful_nat()
+            && !packet.meta().requires_port_forwarding()
+    }
+
+    fn needs_port_forwarding<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        packet.meta().requires_port_forwarding()
+            && !packet.meta().requires_stateful_nat()
+            && !packet.meta().requires_stateless_nat()
+    }
+
+    fn needs_no_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        !packet.meta().requires_stateful_nat()
+            && !packet.meta().requires_stateless_nat()
+            && !packet.meta().requires_port_forwarding()
+    }
+
     fn set_src_addr(packet: &mut Packet<TestBuffer>, addr: IpAddr) {
         let net = packet.headers_mut().try_ip_mut().unwrap();
         match net {
@@ -1125,8 +1149,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(needs_no_nat(&packets[0]));
 
         // VPC-1 -> VPC-2 using default range
         let packet = create_test_packet(
@@ -1387,8 +1410,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(needs_no_nat(&packets[0]));
 
         // src: stateless NAT, dst: stateless NAT
         let packet = create_test_packet(
@@ -1401,8 +1423,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(packets[0].meta().requires_stateless_nat());
+        assert!(needs_static_nat(&packets[0]));
 
         // src: stateful NAT, dst: no NAT
         let packet = create_test_packet(
@@ -1415,8 +1436,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(needs_masquerade(&packets[0]));
 
         // src: no NAT, dst: stateful NAT
         let packet = create_test_packet(
@@ -1429,8 +1449,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(needs_masquerade(&packets[0]));
 
         // src: stateful NAT, dst: default (no NAT)
         let packet = create_test_packet(
@@ -1443,8 +1462,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
+        assert!(needs_masquerade(&packets[0]));
     }
 
     #[traced_test]
@@ -1521,9 +1539,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC 1 to VPC 2, outside of port forwarding port range: stateful NAT
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1539,9 +1555,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC 1 to VPC 2, inside of port forwarding range: still stateful NAT (no existing port
         // forwarding entry in the flow table)
@@ -1558,9 +1572,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC 2 to VPC 1, outside of port forwarding IP range: reverse stateful NAT
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1576,9 +1588,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC 2 to VPC 1, outside of port forwarding port range: reverse stateful NAT
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1594,9 +1604,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC 2 to VPC 1, inside of port forwarding range: port forwarding
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1612,9 +1620,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(packets[0].meta().requires_port_forwarding());
+        assert!(needs_port_forwarding(&packets[0]));
 
         // Back to VPC 1 to VPC 2, inside of port forwarding range, with flow_info attached for
         // stateful NAT: stateful NAT
@@ -1643,9 +1649,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC 1 to VPC 2, inside of port forwarding range, this time with flow_info attached for
         // port forwarding: port forwarding
@@ -1674,9 +1678,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(packets[0].meta().requires_port_forwarding());
+        assert!(needs_port_forwarding(&packets[0]));
     }
 
     #[test]
@@ -1766,8 +1768,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
         // only stateful NAT remains -> stateful NAT
@@ -1784,8 +1785,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni2.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // Destination side: VPC 2 -> VPC 1
 
@@ -1803,8 +1803,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(packets[0].meta().requires_port_forwarding());
+        assert!(needs_port_forwarding(&packets[0]));
 
         // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
         // only stateful NAT remains -> stateful NAT (not dropped!)
@@ -1821,8 +1820,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vni1.into()));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
     }
 
     #[test]
@@ -1899,7 +1897,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert!(packets[0].meta().requires_port_forwarding());
+        assert!(needs_port_forwarding(&packets[0]));
 
         // Destination side: UDP packet -> port forwarding
         let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1914,7 +1912,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
-        assert!(packets[0].meta().requires_port_forwarding());
+        assert!(needs_port_forwarding(&packets[0]));
     }
 
     #[traced_test]
@@ -2084,9 +2082,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC-2 -> VPC-3: 192.168.90.100:2345 -> 192.168.128.7:6789
         let packet = create_test_ipv4_tcp_packet_with_ports(
@@ -2104,9 +2100,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC-2 -> VPC-3: 192.168.90.100:22 -> 192.168.128.7:6789
         //
@@ -2127,9 +2121,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
         //
@@ -2150,9 +2142,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(packets[0].meta().requires_port_forwarding());
+        assert!(needs_port_forwarding(&packets[0]));
     }
 
     // This is close to the previous test: We check that for masquerade and port forwarding on a
@@ -2336,9 +2326,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC-2 -> VPC-3: 192.168.90.100:2345 -> 192.168.128.7:6789
         let packet = create_test_ipv4_tcp_packet_with_ports(
@@ -2356,9 +2344,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC-2 -> VPC-3: 192.168.90.100:22 -> 192.168.128.7:6789
         //
@@ -2379,9 +2365,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni3.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
         //
@@ -2403,9 +2387,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
     }
 
     #[traced_test]
@@ -2491,9 +2473,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
 
         // VPC-1 -> VPC-2, inside port forwarding range
         //
@@ -2514,9 +2494,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni2.into())));
-        assert!(!packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(packets[0].meta().requires_port_forwarding());
+        assert!(needs_port_forwarding(&packets[0]));
 
         // VPC-2 -> VPC-1, inside port forwarding range
         //
@@ -2537,9 +2515,7 @@ mod tests {
         assert_eq!(packets.len(), 1);
         assert!(!packets[0].is_done(), "{:?}", packets[0].get_done());
         assert_eq!(packets[0].meta().dst_vpcd, Some(vpcd(vni1.into())));
-        assert!(packets[0].meta().requires_stateful_nat());
-        assert!(!packets[0].meta().requires_stateless_nat());
-        assert!(!packets[0].meta().requires_port_forwarding());
+        assert!(needs_masquerade(&packets[0]));
     }
 
     #[test]
