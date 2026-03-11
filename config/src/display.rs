@@ -10,8 +10,11 @@ use std::fmt::Display;
 
 use crate::external::overlay::Overlay;
 use crate::external::overlay::vpc::{Peering, VpcId, VpcTable};
-use crate::external::overlay::vpcpeering::VpcManifest;
-use crate::external::overlay::vpcpeering::{VpcExpose, VpcPeering, VpcPeeringTable};
+use crate::external::overlay::vpcpeering::{
+    VpcExpose, VpcExposeNatConfig, VpcExposePortForwarding, VpcExposeStatefulNat,
+    VpcExposeStatelessNat,
+};
+use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
 
 struct Heading(String);
 const LINE_WIDTH: usize = 81;
@@ -25,6 +28,40 @@ impl Display for Heading {
 }
 
 const SEP: &str = "       ";
+
+impl Display for VpcExposeStatefulNat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "masquerade, idle timeout: {}",
+            self.idle_timeout.as_secs()
+        )
+    }
+}
+impl Display for VpcExposeStatelessNat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "static")
+    }
+}
+impl Display for VpcExposePortForwarding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "port-forwarding, idle timeout: {}",
+            self.idle_timeout.as_secs()
+        )
+    }
+}
+
+impl Display for VpcExposeNatConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stateless(config) => config.fmt(f),
+            Self::Stateful(config) => config.fmt(f),
+            Self::PortForwarding(config) => config.fmt(f),
+        }
+    }
+}
 
 impl Display for VpcExpose {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -51,7 +88,7 @@ impl Display for VpcExpose {
             if !nat.as_range.is_empty() {
                 write!(f, "{SEP}       as:")?;
                 nat.as_range.iter().for_each(|x| {
-                    let _ = write!(f, " {x}");
+                    let _ = write!(f, " {x} proto: {:?} NAT: {}", nat.proto, &nat.config);
                 });
                 carriage = true;
             }
