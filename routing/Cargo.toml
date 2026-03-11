@@ -12,6 +12,7 @@ testing = []
 # internal
 args = { workspace = true }
 cli = { workspace = true }
+common = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
 dplane-rpc = { workspace = true }
