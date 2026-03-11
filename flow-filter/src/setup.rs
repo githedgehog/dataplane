@@ -876,39 +876,33 @@ mod tests {
     fn test_get_manifest_ips_overlap_multiple_times() {
         let vpcd = vpcd(100);
 
-        let mut pf_expose_tcp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "1.0.0.1/32".into(),
-                Some(PortRange::new(8080, 8080).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "10.0.0.1/32".into(),
-                Some(PortRange::new(80, 80).unwrap()),
-            ))
-            .unwrap();
-        pf_expose_tcp.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
-
-        let mut pf_expose_udp = VpcExpose::empty()
-            .make_port_forwarding(None)
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "1.0.0.1/32".into(),
-                Some(PortRange::new(9999, 9999).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "10.0.0.1/32".into(),
-                Some(PortRange::new(80, 80).unwrap()),
-            ))
-            .unwrap();
-        pf_expose_udp.nat.as_mut().unwrap().proto = L4Protocol::Udp;
-
         let manifest = VpcManifest {
             name: "manifest2".to_string(),
             exposes: vec![
-                pf_expose_tcp,
-                pf_expose_udp,
+                VpcExpose::empty()
+                    .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                    .unwrap()
+                    .ip(PrefixWithOptionalPorts::new(
+                        "1.0.0.1/32".into(),
+                        Some(PortRange::new(8080, 8080).unwrap()),
+                    ))
+                    .as_range(PrefixWithOptionalPorts::new(
+                        "10.0.0.1/32".into(),
+                        Some(PortRange::new(80, 80).unwrap()),
+                    ))
+                    .unwrap(),
+                VpcExpose::empty()
+                    .make_port_forwarding(None, Some(L4Protocol::Udp))
+                    .unwrap()
+                    .ip(PrefixWithOptionalPorts::new(
+                        "1.0.0.1/32".into(),
+                        Some(PortRange::new(9999, 9999).unwrap()),
+                    ))
+                    .as_range(PrefixWithOptionalPorts::new(
+                        "10.0.0.1/32".into(),
+                        Some(PortRange::new(80, 80).unwrap()),
+                    ))
+                    .unwrap(),
                 VpcExpose::empty()
                     .make_stateful_nat(None)
                     .unwrap()

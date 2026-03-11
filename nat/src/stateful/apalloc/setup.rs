@@ -409,11 +409,11 @@ mod tests {
             .ip("10.0.0.0/16".into())
             .ip("172.16.0.0/16".into());
         let pf_expose1 = VpcExpose::empty()
-            .make_port_forwarding(None)
+            .make_port_forwarding(None, None)
             .unwrap()
             .ip("10.0.1.0/24".into());
         let pf_expose2 = VpcExpose::empty()
-            .make_port_forwarding(None)
+            .make_port_forwarding(None, None)
             .unwrap()
             .ip("172.16.5.0/24".into());
         let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
@@ -434,7 +434,7 @@ mod tests {
             .unwrap()
             .ip("10.0.0.0/24".into());
         let pf_expose = VpcExpose::empty()
-            .make_port_forwarding(None)
+            .make_port_forwarding(None, None)
             .unwrap()
             .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
         let pf_exposes_vec = vec![&pf_expose];
@@ -454,12 +454,10 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("10.0.0.0/24".into());
-        let mut pf_expose = VpcExpose::empty()
-            .make_port_forwarding(None)
+        let pf_expose = VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Tcp)) // TCP only
             .unwrap()
             .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
-        // Make port forwarding for TCP only
-        pf_expose.nat.as_mut().unwrap().proto = L4Protocol::Tcp;
         let pf_exposes_vec = vec![&pf_expose];
         let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
         assert_eq!(
@@ -479,11 +477,11 @@ mod tests {
             .unwrap()
             .ip("10.0.0.0/16".into());
         let pf_expose1 = VpcExpose::empty()
-            .make_port_forwarding(None)
+            .make_port_forwarding(None, None)
             .unwrap()
             .ip("10.0.1.0/24".into());
         let pf_expose2 = VpcExpose::empty()
-            .make_port_forwarding(None)
+            .make_port_forwarding(None, None)
             .unwrap()
             .ip("10.0.1.0/24".into());
         let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
