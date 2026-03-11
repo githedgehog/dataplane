@@ -11,6 +11,7 @@ use crate::fib::fibtable::FibTableWriter;
 use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
 use crate::interfaces::iftablerw::IfTableWriter;
 
+use crate::router::CliSources;
 use crate::router::cpi::{CpiStats, CpiStatus, process_cpi_data, rpc_send_control};
 use crate::router::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent};
@@ -22,6 +23,7 @@ use dplane_rpc::socks::RpcCachedSock;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
+
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -314,9 +316,11 @@ pub(crate) fn start_rio(
     fibtw: FibTableWriter,
     iftw: IfTableWriter,
     atabler: AtableReader,
+    cli_sources: Option<CliSources>,
 ) -> Result<RioHandle, RouterError> {
     let mut rio = Rio::new(conf)?;
     let ctl_tx = rio.ctl_tx.clone();
+    let cli_sources = cli_sources.unwrap_or_default();
 
     /* router IO loop */
     let rio_loop = move || {
@@ -377,7 +381,7 @@ pub(crate) fn start_rio(
                             buf.resize(2048, 0);
                             if let Ok((len, peer)) = rio.clisock.recv_from(buf.as_mut()) {
                                 if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
-                                    handle_cli_request(&mut rio, &peer, request, &db);
+                                    handle_cli_request(&mut rio, &peer, request, &db, &cli_sources);
                                 }
                             } else {
                                 break;
@@ -467,7 +471,7 @@ mod tests {
         let (_atablew, atabler) = AtableWriter::new();
 
         /* start CPI */
-        let mut cpi = start_rio(&conf, fibtw, iftw, atabler).expect("Should succeed");
+        let mut cpi = start_rio(&conf, fibtw, iftw, atabler, None).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
@@ -491,7 +495,7 @@ mod tests {
         let (_atablew, atabler) = AtableWriter::new();
 
         /* start router IO */
-        let rio = start_rio(&conf, fibtw, iftw, atabler);
+        let rio = start_rio(&conf, fibtw, iftw, atabler, None);
         assert!(rio.is_err_and(|e| matches!(e, RouterError::InvalidPath(_))));
     }
 }
