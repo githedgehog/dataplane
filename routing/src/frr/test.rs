@@ -145,7 +145,7 @@ pub mod tests {
             .expect("Should succeed due to defaults");
 
         /* start router */
-        let mut router = Router::new(router_params).unwrap();
+        let mut router = Router::new(router_params, None).unwrap();
         let mut ctl = router.get_ctl_tx();
 
         /* start fake frr agent */
