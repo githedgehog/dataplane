@@ -38,6 +38,12 @@ impl NatTables {
         Self(HashMap::with_hasher(RandomState::with_seed(0)))
     }
 
+    /// Returns true if the table is empty
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Adds a new table for the given `Vni`
     pub fn add_table(&mut self, table: PerVniTable, vni: Vni) {
         self.0.insert(vni.into(), table);
@@ -47,6 +53,11 @@ impl NatTables {
     #[must_use]
     pub fn get_table(&self, vni: Vni) -> Option<&PerVniTable> {
         self.0.get(&vni.as_u32())
+    }
+
+    /// Returns an iterator over all tables in the NAT tables.
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &PerVniTable)> {
+        self.0.iter()
     }
 }
 
@@ -205,6 +216,11 @@ impl NatRuleTable {
     pub fn lookup(&self, addr: &IpAddr, port_opt: Option<u16>) -> Option<(Prefix, &NatTableValue)> {
         self.0.lookup(addr, port_opt)
     }
+
+    /// Returns an iterator over all entries in the table.
+    pub fn iter(&self) -> impl Iterator<Item = (Prefix, &NatTableValue)> {
+        self.0.iter()
+    }
 }
 
 /// This is the struct used as a value for the LPM trie lookup that we use to store the NAT ranges.
@@ -255,6 +271,18 @@ impl AddrTranslationValue {
         }
     }
 
+    /// Returns the number of ranges in the value.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ranges_tree.len()
+    }
+
+    /// Returns `true` if the value contains no ranges.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ranges_tree.is_empty()
+    }
+
     #[cfg(test)]
     #[must_use]
     pub fn ranges(&self) -> Vec<IpRange> {
@@ -274,6 +302,11 @@ impl AddrTranslationValue {
             .sum();
         debug_assert!(sum < PrefixSize::Overflow);
         sum
+    }
+
+    /// Returns an iterator over the ranges in this value.
+    pub fn iter(&self) -> impl Iterator<Item = (&IpRange, &(IpRange, u128))> {
+        self.ranges_tree.iter()
     }
 
     /// Returns the IP address at the given offset in the ranges in this value.
@@ -442,6 +475,18 @@ impl PortAddrTranslationValue {
         self.ranges_tree
             .lookup(&bounds)
             .and_then(|(_, (range, range_offset))| range.get_entry(entry_offset - range_offset))
+    }
+
+    /// Iterate over all prefix port ranges to translate.
+    pub fn iter_prefixes(&self) -> impl Iterator<Item = &PortRange> {
+        self.prefix_port_ranges.iter()
+    }
+
+    /// Iterate over all translation-target ranges in the tree.
+    pub fn iter_tree(
+        &self,
+    ) -> impl Iterator<Item = (&IpPortRangeBounds, &(IpPortRange, PrefixWithPortsSize))> {
+        self.ranges_tree.iter()
     }
 }
 

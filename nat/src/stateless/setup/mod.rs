@@ -6,6 +6,7 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 
+mod display;
 pub mod range_builder;
 pub mod tables;
 
