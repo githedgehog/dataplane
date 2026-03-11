@@ -121,7 +121,7 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
     {{ _setup_docker_env_ }}
     case "{{target}}" in
         "dataplane" | "dataplane-tar")
-            docker import --change "ENV PATH=/bin" --change "ENTRYPOINT /bin/dataplane" ./results/dataplane-tar {{ oci_image_dataplane }}
+            docker import --change "ENV PATH=/bin" --change 'ENTRYPOINT ["/bin/dataplane"]' ./results/dataplane-tar {{ oci_image_dataplane }}
             echo "imported {{ oci_image_dataplane }}"
             ;;
         "frr.dataplane")
