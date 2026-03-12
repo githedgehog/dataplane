@@ -76,7 +76,7 @@ impl Display for VpcExpose {
             });
         }
         if !self.nots.is_empty() {
-            write!(f, ", except")?;
+            write!(f, "\n{SEP}   except:")?;
             self.nots.iter().for_each(|x| {
                 let _ = write!(f, " {x}");
             });
@@ -87,14 +87,14 @@ impl Display for VpcExpose {
         if let Some(nat) = self.nat.as_ref() {
             if !nat.as_range.is_empty() {
                 write!(f, "{SEP}       as:")?;
-                nat.as_range.iter().for_each(|x| {
-                    let _ = write!(f, " {x} proto: {:?} NAT: {}", nat.proto, &nat.config);
+                nat.as_range.iter().for_each(|pfx| {
+                    let _ = write!(f, " {pfx} proto: {:?} NAT:{}", nat.proto, &nat.config);
                 });
                 carriage = true;
             }
 
             if !nat.not_as.is_empty() {
-                write!(f, ", excluding")?;
+                write!(f, "\n{SEP}      but:")?;
                 nat.not_as.iter().for_each(|x| {
                     let _ = write!(f, " {x}");
                 });
@@ -118,7 +118,11 @@ fn fmt_remote_manifest(
     manifest: &VpcManifest,
     remote_id: &VpcId,
 ) -> std::fmt::Result {
-    writeln!(f, "     remote ({}, id {}):", manifest.name, remote_id)?;
+    writeln!(
+        f,
+        "     remote VPC is {} (id:{}):",
+        manifest.name, remote_id
+    )?;
     for e in &manifest.exposes {
         e.fmt(f)?;
     }
@@ -128,7 +132,7 @@ fn fmt_remote_manifest(
 impl Display for Peering {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  ■ {}:", self.name)?;
-        write!(
+        writeln!(
             f,
             "   gwgroup: {}",
             self.gwgroup.as_ref().map_or("none", |v| v)
@@ -140,7 +144,7 @@ impl Display for Peering {
     }
 }
 
-/* ========= VPCs =========*/
+/* ========= VPCs and peerings =========*/
 
 macro_rules! VPC_TBL_FMT {
     () => {
@@ -168,16 +172,18 @@ impl Display for VpcId {
     }
 }
 
-// Auxiliary type to implement detailed VPC display
 pub struct VpcDetailed<'a>(pub &'a Vpc);
 impl Display for VpcDetailed<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let vpc = self.0;
-        Heading(format!("vpc: {}", vpc.name)).fmt(f)?;
-        writeln!(f, " name: {} Id: {}", vpc.name, vpc.id)?;
-        writeln!(f, " vni : {}", vpc.vni)?;
-        writeln!(f, " peerings: {}", vpc.peerings.len())?;
-        Heading(format!("Peerings of {}", vpc.name)).fmt(f)?;
+        Heading(format!(
+            "Peerings of VPC:{} Id:{} vni :{} ({})",
+            vpc.name,
+            vpc.id,
+            vpc.vni,
+            vpc.peerings.len()
+        ))
+        .fmt(f)?;
         for peering in &vpc.peerings {
             peering.fmt(f)?;
         }
@@ -185,24 +191,27 @@ impl Display for VpcDetailed<'_> {
     }
 }
 
-impl Display for Vpc {
+pub struct VpcSummary<'a>(&'a Vpc);
+impl Display for VpcSummary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vpc = self.0;
+
         // VPC that has no peerings
-        if self.peerings.is_empty() {
+        if vpc.peerings.is_empty() {
             writeln!(
                 f,
                 "{}",
-                format_args!(VPC_TBL_FMT!(), &self.name, self.id, self.vni, "", "", "")
+                format_args!(VPC_TBL_FMT!(), &vpc.name, vpc.id, vpc.vni, "", "", "")
             )?;
         } else {
             // VPC that has peerings
-            for (num, peering) in self.peerings.iter().enumerate() {
+            for (num, peering) in vpc.peerings.iter().enumerate() {
                 let (name, id, vni, num_peers) = if num == 0 {
                     (
-                        self.name.as_str(),
-                        self.id.to_string(),
-                        self.vni.to_string(),
-                        self.peerings.len().to_string(),
+                        vpc.name.as_str(),
+                        vpc.id.to_string(),
+                        vpc.vni.to_string(),
+                        vpc.peerings.len().to_string(),
                     )
                 } else {
                     ("", "".to_string(), "".to_string(), "".to_string())
@@ -220,18 +229,52 @@ impl Display for Vpc {
         Ok(())
     }
 }
-impl Display for VpcTable {
+
+pub struct VpcTableSummary<'a>(&'a VpcTable);
+impl Display for VpcTableSummary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!("VPCs ({})", self.len())).fmt(f)?;
+        Heading(format!("VPCs ({})", self.0.len())).fmt(f)?;
         fmt_vpc_table_heading(f)?;
-        for vpc in self.values() {
-            vpc.fmt(f)?;
+        for vpc in self.0.values() {
+            vpc.as_summary().fmt(f)?;
         }
         Ok(())
     }
 }
 
-/* ===== VPC peerings =====*/
+pub struct VpcTablePeerings<'a>(&'a VpcTable);
+impl Display for VpcTablePeerings<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for vpc in self.0.values() {
+            vpc.as_detailed().fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl VpcTable {
+    #[must_use]
+    pub fn as_summary(&self) -> VpcTableSummary<'_> {
+        VpcTableSummary(self)
+    }
+    #[must_use]
+    pub fn as_peerings(&self) -> VpcTablePeerings<'_> {
+        VpcTablePeerings(self)
+    }
+}
+
+impl Vpc {
+    #[must_use]
+    pub fn as_summary(&self) -> VpcSummary<'_> {
+        VpcSummary(self)
+    }
+    #[must_use]
+    pub fn as_detailed(&self) -> VpcDetailed<'_> {
+        VpcDetailed(self)
+    }
+}
+
+/* ===== VPC peerings as received via API =====*/
 
 fn fmt_peering_manifest(
     f: &mut std::fmt::Formatter<'_>,
@@ -265,7 +308,7 @@ impl Display for VpcPeeringTable {
 
 impl Display for Overlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.vpc_table.fmt(f)?;
+        self.vpc_table.as_summary().fmt(f)?;
         self.peering_table.fmt(f)
     }
 }
