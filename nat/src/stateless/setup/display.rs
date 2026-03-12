@@ -12,10 +12,8 @@ use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
 
 fn fmt_static_nat_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    writeln!(
-        f,
-        " ──────────────────────────────────────── Static NAT table ─────────────────────────────────────────"
-    )
+    let heading = " Static NAT table ";
+    writeln!(f, " {heading:─^99}")
 }
 
 impl Display for NatTables {
