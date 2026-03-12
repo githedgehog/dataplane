@@ -14,12 +14,12 @@ use crate::port::NatPort;
 use crate::ranges::IpRange;
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
-use concurrency::sync::{Arc, RwLock, Weak};
+use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use lpm::prefix::{IpPrefix, PortRange, Prefix};
 use roaring::RoaringBitmap;
-use std::collections::{BTreeMap, VecDeque};
-use std::net::Ipv6Addr;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -40,6 +40,12 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         Self {
             pool: Arc::new(RwLock::new(pool)),
         }
+    }
+
+    pub(crate) fn read(&self) -> Result<RwLockReadGuard<'_, NatPool<I>>, AllocatorError> {
+        self.pool.read().map_err(|_| {
+            AllocatorError::InternalIssue("Failed to acquire read lock (poisoned)".to_string())
+        })
     }
 
     pub(crate) fn idle_timeout(&self) -> Option<Duration> {
@@ -196,6 +202,11 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         self.ip
     }
 
+    // Used for Display; should probably not be accessed directly anywhere else
+    pub(crate) fn port_allocator(&self) -> &port_alloc::PortAllocator<I> {
+        &self.port_allocator
+    }
+
     fn has_free_ports(&self) -> bool {
         self.port_allocator.has_free_ports()
     }
@@ -268,12 +279,24 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         self.in_use.retain(|ip| ip.upgrade().is_some());
     }
 
-    fn idle_timeout(&self) -> Duration {
+    pub(crate) fn idle_timeout(&self) -> Duration {
         self.idle_timeout
     }
 
-    fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
+    pub(crate) fn ips_in_use(&self) -> impl Iterator<Item = &Weak<AllocatedIp<I>>> {
         self.in_use.iter()
+    }
+
+    // Used for Display
+    pub(crate) fn reserved_prefixes_ports(
+        &self,
+    ) -> Option<impl Iterator<Item = (IpRange, PortRange)>> {
+        Some(
+            self.reserved_prefixes_ports
+                .as_ref()?
+                .iter()
+                .map(|(&r, &p)| (r, p)),
+        )
     }
 
     fn use_new_ip(
@@ -333,6 +356,56 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator, None, disable_randomness));
         self.add_in_use(&arc_ip);
         Ok(arc_ip)
+    }
+
+    // Returns a set of IP ranges present in the pool (available for new IP address allocation),
+    // based on `self.bitmap`
+    //
+    // Used for Display
+    pub(crate) fn ips_in_bitmap(&self) -> Result<BTreeSet<IpRange>, ()> {
+        fn ip_to_bits(ip: IpAddr) -> u128 {
+            match ip {
+                IpAddr::V4(ip) => u128::from(u32::from(ip)),
+                IpAddr::V6(ip) => u128::from(ip),
+            }
+        }
+        let to_addr = |offset: u32| {
+            I::try_from_offset(offset, &self.bitmap_mapping)
+                .map(|ip| ip.to_ip_addr())
+                .map_err(|_| ())
+        };
+
+        let mut offset_ranges = BTreeSet::new();
+        let mut start_offset: Option<IpAddr> = None;
+        let mut last_addr: Option<IpAddr> = None;
+        for offset in &self.bitmap.0 {
+            match (start_offset, last_addr) {
+                (None, _) => {
+                    // First bitmap entry, start a new range
+                    last_addr = Some(to_addr(offset)?);
+                    start_offset = last_addr;
+                }
+                (Some(start), Some(last)) => {
+                    let addr = to_addr(offset)?;
+                    if ip_to_bits(addr) == ip_to_bits(last) + 1 {
+                        // New offset in the range, just bump last offset
+                        last_addr = Some(addr);
+                    } else {
+                        // Insert previous range, and start a new one
+                        offset_ranges.insert(IpRange::new(start, last));
+                        last_addr = Some(addr);
+                        start_offset = last_addr;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        if let (Some(start), Some(last)) = (start_offset, last_addr) {
+            // Insert last range found
+            offset_ranges.insert(IpRange::new(start, last));
+        }
+
+        Ok(offset_ranges)
     }
 }
 
