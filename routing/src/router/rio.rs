@@ -19,6 +19,7 @@ use crate::routingdb::RoutingDb;
 
 use bytes::BytesMut;
 use cli::cliproto::{CliRequest, CliSerialize};
+use config::GwConfig;
 use dplane_rpc::socks::RpcCachedSock;
 
 use mio::unix::SourceFd;
@@ -28,6 +29,7 @@ use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
@@ -111,6 +113,7 @@ pub(crate) struct Rio {
     pub(crate) ctl_rx: Receiver<RouterCtlMsg>,
     pub(crate) cpistats: CpiStats,
     stale_timeout: Option<Instant>,
+    pub(crate) gwconfig: Option<Arc<GwConfig>>,
 }
 impl Rio {
     fn new(conf: &RioConf) -> Result<Rio, RouterError> {
@@ -180,6 +183,7 @@ impl Rio {
             ctl_rx,
             cpistats: CpiStats::new(),
             stale_timeout: None,
+            gwconfig: None,
         })
     }
     pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {

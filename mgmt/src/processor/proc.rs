@@ -612,6 +612,7 @@ impl ConfigProcessor {
         apply_router_config(&kernel_vrfs, config.clone(), router_ctl).await?;
 
         info!("Successfully applied config for genid {genid}");
+        let _ = router_ctl.send_config(config).await;
         Ok(())
     }
 }

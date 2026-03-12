@@ -3,7 +3,9 @@
 
 //! Control channel for the router
 
+use config::GwConfig;
 use mio::Interest;
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::oneshot;
@@ -49,14 +51,17 @@ pub(crate) enum RouterCtlMsg {
     GuardedUnlock,
     Configure(RouterConfig, RouterCtlReplyTx),
     GetFrrAppliedConfig(RouterCtlReplyTx),
+    Config(Arc<GwConfig>),
 }
 
 /// Object to send control messages to the router
 pub struct RouterCtlSender(tokio::sync::mpsc::Sender<RouterCtlMsg>);
 impl RouterCtlSender {
+    #[must_use]
     pub(crate) fn new(tx: Sender<RouterCtlMsg>) -> Self {
         Self(tx)
     }
+    #[must_use]
     pub(crate) fn as_lock_guard(&self) -> LockGuard {
         LockGuard(Some(self.0.clone()))
     }
@@ -129,6 +134,14 @@ impl RouterCtlSender {
             unreachable!()
         };
         Ok(frr_cfg)
+    }
+    pub async fn send_config(&mut self, config: Arc<GwConfig>) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::Config(config);
+        self.0
+            .send(msg)
+            .await
+            .map_err(|_| RouterError::Internal("Failed to send GwConfig"))?;
+        Ok(())
     }
 }
 
@@ -206,6 +219,10 @@ fn handle_get_frr_applied_config(rio: &Rio, reply_to: RouterCtlReplyTx) {
         });
 }
 
+fn handle_config(rio: &mut Rio, config: Arc<GwConfig>) {
+    rio.gwconfig = Some(config);
+}
+
 /// Handle a request from the control channel
 pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
     match rio.ctl_rx.try_recv() {
@@ -222,6 +239,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
         Ok(RouterCtlMsg::GetFrrAppliedConfig(reply_to)) => {
             handle_get_frr_applied_config(rio, reply_to);
         }
+        Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");
