@@ -16,7 +16,7 @@ use concurrency::concurrency_mode;
 use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};
 use lpm::prefix::PortRange;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::thread::ThreadId;
 
 #[concurrency_mode(std)]
@@ -352,6 +352,15 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         let block = self.find_block_for_port(ip, port)?;
         block.reserve_port_from_block(port)
     }
+
+    pub(crate) fn reserved_port_range(&self) -> Option<PortRange> {
+        self.reserved_port_range
+    }
+
+    // Used for Display
+    pub(crate) fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
+        self.allocated_blocks.allocated_port_ranges()
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -498,6 +507,23 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
 
         Ok(AllocatedPort::new(port, self.clone()))
     }
+
+    // Used for Display
+    fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
+        self.usage_bitmap
+            .lock()
+            .unwrap()
+            .allocated_port_ranges()
+            .iter()
+            .map(|range| {
+                PortRange::new(
+                    range.start() + self.base_port_idx,
+                    range.end() + self.base_port_idx,
+                )
+                .unwrap_or_else(|_| unreachable!())
+            })
+            .collect()
+    }
 }
 
 impl<I: NatIpWithBitmap> Drop for AllocatedPortBlock<I> {
@@ -636,6 +662,80 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
             .find(|block| block.upgrade().is_some_and(|block| block.covers(port)))?
             .upgrade()
     }
+
+    // Used for Display
+    fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
+        let blocks = self.0.read().unwrap();
+        let mut ranges = BTreeSet::<PortRange>::new();
+        for (_, block) in blocks.iter() {
+            if let Some(block) = block.upgrade() {
+                merge_ranges(&mut ranges, block.allocated_port_ranges());
+            }
+        }
+        ranges
+    }
+}
+
+// Extend ranges_left with ranges_right, consuming ranges_right, and merging adjacent ranges when
+// possible. The function assumes port ranges are all disjoint, and that all ranges in ranges_right
+// are contained within an aligned, 256-port block.
+fn merge_ranges(ranges_left: &mut BTreeSet<PortRange>, mut ranges_right: BTreeSet<PortRange>) {
+    if ranges_right.is_empty() {
+        return;
+    }
+    let single_element = ranges_right.len() == 1;
+
+    let mut new_range = ranges_right.pop_first().unwrap_or_else(|| unreachable!());
+    // Try to merge new_range left
+    if new_range.start() > 0
+        && new_range.start().is_multiple_of(256)
+        && let Some(&previous_range) = ranges_left
+            .iter()
+            .find(|r| r.end() == new_range.start() - 1)
+    {
+        let merged_range = previous_range
+            .merge(new_range)
+            .unwrap_or_else(|| unreachable!());
+        ranges_left.remove(&previous_range);
+        if single_element {
+            // If ranges_right contained a single element initially, we'll need to reuse our
+            // new_range to compare it for right-side merge: do not insert it.
+            new_range = merged_range;
+        } else {
+            // If ranges_right has remaining elements, we'll pick the last, we're done with the
+            // current merged_range and we can merge it.
+            ranges_left.insert(merged_range);
+        }
+    } else if !single_element {
+        // If ranges_right has remaining elements, we'll work with a new one. We're done with the
+        // current new_range and we can merge it.
+        ranges_left.insert(new_range);
+    }
+
+    // If ranges_right contained a single element, keep going with new_range, that we may have
+    // merged left but not inserted. If ranges_right still contains elements, we'll now work with
+    // the last range in the set.
+    if !single_element {
+        new_range = ranges_right.pop_last().unwrap_or_else(|| unreachable!());
+    }
+    // Try to merge new_range right
+    if new_range.end() < u16::MAX
+        && new_range.end() % 256 == 255
+        && let Some(&next_range) = ranges_left
+            .iter()
+            .find(|r| r.start() == new_range.end() + 1)
+    {
+        let merged_range = next_range
+            .merge(new_range)
+            .unwrap_or_else(|| unreachable!());
+        ranges_left.remove(&next_range);
+        ranges_left.insert(merged_range);
+    } else {
+        ranges_left.insert(new_range);
+    }
+
+    // Extend with remaining ranges
+    ranges_left.extend(ranges_right);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -777,6 +877,72 @@ impl Bitmap256 {
         self.set_bitmap_range(start, end, 1)?;
         Ok(())
     }
+
+    // Used for Display
+    fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
+        let mut ranges_first_half = collect_ranges_from_u128_bitmap(self.first_half, 0);
+        let mut ranges_second_half = collect_ranges_from_u128_bitmap(self.second_half, 128);
+
+        // Merge consecutive ranges from both halves if they are adjacent
+        let merged_range = if let Some(range_left) = ranges_first_half.last()
+            && let Some(range_right) = ranges_second_half.first()
+            && range_left.end() + 1 == range_right.start()
+        {
+            Some(
+                PortRange::new(range_left.start(), range_right.end())
+                    .unwrap_or_else(|_| unreachable!()),
+            )
+        } else {
+            None
+        };
+        if let Some(range) = merged_range {
+            // Merge the two ranges
+            ranges_first_half.pop_last();
+            ranges_second_half.pop_first();
+            ranges_first_half.insert(range);
+        }
+
+        ranges_first_half.extend(ranges_second_half);
+        ranges_first_half
+    }
+}
+
+fn collect_ranges_from_u128_bitmap(bitmap: u128, base: u16) -> BTreeSet<PortRange> {
+    let mut ranges = BTreeSet::new();
+    let mut start_range: Option<u16> = None;
+    let mut last_offset: Option<u16> = None;
+    for offset in 0..128 {
+        if bitmap & (1 << offset) == 0 {
+            // Port not allocated
+            continue;
+        }
+        match (start_range, last_offset) {
+            (None, _) => {
+                start_range = Some(offset);
+                last_offset = Some(offset);
+            }
+            (Some(start), Some(last)) => {
+                if offset == last + 1 {
+                    // New offset in the range, just bump last offset
+                    last_offset = Some(offset);
+                } else {
+                    // Insert previous range, and start a new one
+                    ranges.insert(
+                        PortRange::new(start + base, last + base)
+                            .unwrap_or_else(|_| unreachable!()),
+                    );
+                    start_range = Some(offset);
+                    last_offset = Some(offset);
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    // Insert last range found, if any range was found
+    if let (Some(start), Some(last)) = (start_range, last_offset) {
+        ranges.insert(PortRange::new(start + base, last + base).unwrap_or_else(|_| unreachable!()));
+    }
+    ranges
 }
 
 #[cfg(test)]
@@ -1021,5 +1187,128 @@ mod tests {
         let reserved = PortRange::new(0, 65535).unwrap();
         let allocator = PortAllocator::<Ipv4Addr>::new_no_randomness(Some(reserved));
         assert!(allocator.pick_available_block().is_err());
+    }
+
+    fn port_range(start: u16, end: u16) -> PortRange {
+        PortRange::new(start, end).unwrap()
+    }
+
+    #[test]
+    fn merge_ranges_right_is_empty() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255)]);
+        let ranges_right = BTreeSet::<PortRange>::new();
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(ranges_left, BTreeSet::from([port_range(1, 255)]));
+    }
+
+    #[test]
+    fn merge_ranges_right_single_elem_no_adjacent() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255)]);
+        let ranges_right = BTreeSet::from([port_range(300, 315)]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([port_range(1, 255), port_range(300, 315)])
+        );
+    }
+
+    #[test]
+    fn merge_ranges_right_single_elem_adjacent_left() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255), port_range(512, 700)]);
+        let ranges_right = BTreeSet::from([port_range(256, 300)]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([port_range(1, 300), port_range(512, 700)])
+        );
+    }
+
+    #[test]
+    fn merge_ranges_right_single_elem_adjacent_right() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255), port_range(512, 700)]);
+        let ranges_right = BTreeSet::from([port_range(300, 511)]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([port_range(1, 255), port_range(300, 700)])
+        );
+    }
+
+    #[test]
+    fn merge_ranges_right_two_elem_no_adjacent() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255), port_range(512, 700)]);
+        let ranges_right = BTreeSet::from([port_range(300, 310), port_range(400, 400)]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([
+                port_range(1, 255),
+                port_range(300, 310),
+                port_range(400, 400),
+                port_range(512, 700)
+            ])
+        );
+    }
+
+    #[test]
+    fn merge_ranges_right_two_elem_adjacent_left() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255), port_range(512, 700)]);
+        let ranges_right = BTreeSet::from([port_range(256, 300), port_range(400, 450)]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([
+                port_range(1, 300),
+                port_range(400, 450),
+                port_range(512, 700)
+            ])
+        );
+    }
+
+    #[test]
+    fn merge_ranges_right_two_elem_adjacent_right() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255), port_range(512, 700)]);
+        let ranges_right = BTreeSet::from([port_range(300, 310), port_range(400, 511)]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([
+                port_range(1, 255),
+                port_range(300, 310),
+                port_range(400, 700)
+            ])
+        );
+    }
+
+    #[test]
+    fn merge_ranges_right_two_elem_adjacent_both() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255), port_range(512, 700)]);
+        let ranges_right = BTreeSet::from([port_range(256, 300), port_range(400, 511)]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([port_range(1, 300), port_range(400, 700)])
+        );
+    }
+
+    #[test]
+    fn merge_ranges_right_four_elem_adjacent_both() {
+        let mut ranges_left = BTreeSet::from([port_range(1, 255), port_range(512, 700)]);
+        let ranges_right = BTreeSet::from([
+            port_range(256, 300),
+            port_range(350, 360),
+            port_range(375, 375),
+            port_range(400, 511),
+        ]);
+        merge_ranges(&mut ranges_left, ranges_right);
+        assert_eq!(
+            ranges_left,
+            BTreeSet::from([
+                port_range(1, 300),
+                port_range(350, 360),
+                port_range(375, 375),
+                port_range(400, 700)
+            ])
+        );
     }
 }

@@ -80,6 +80,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::error;
 
 mod alloc;
+mod display;
 mod natip_with_bitmap;
 mod port_alloc;
 mod setup;
