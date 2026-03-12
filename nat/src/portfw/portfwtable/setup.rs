@@ -12,8 +12,13 @@ use lpm::prefix::{L4Protocol, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
+fn port_fw_proto(expose: &VpcExpose) -> L4Protocol {
+    expose.nat.as_ref().unwrap_or_else(|| unreachable!()).proto
+}
+
 fn expose_to_portfw_rule(
     expose: &VpcExpose,
+    proto: NextHeader,
     src_vpc: VpcDiscriminant,
     dst_vpc: VpcDiscriminant,
 ) -> Result<PortFwEntry, PortFwTableError> {
@@ -31,12 +36,6 @@ fn expose_to_portfw_rule(
     let (ext_prefix, ext_ports) = match as_range {
         PrefixWithOptionalPorts::Prefix(_) => unreachable!(),
         PrefixWithOptionalPorts::PrefixPorts(e) => (e.prefix(), e.ports()),
-    };
-
-    let proto = match nat.proto {
-        L4Protocol::Tcp => NextHeader::TCP,
-        L4Protocol::Udp => NextHeader::UDP,
-        L4Protocol::Any => unreachable!(),
     };
 
     // build the rule
@@ -61,8 +60,23 @@ fn vpc_port_fw_peering(
     for expose in peering.local.port_forwarding_exposes() {
         let remote_vpc_vni = vpc_table.get_remote_vni(peering);
         let src_vpc = VpcDiscriminant::from_vni(remote_vpc_vni);
-        let rule = expose_to_portfw_rule(expose, src_vpc, dst_vpc)?;
-        rules.push(rule);
+        match port_fw_proto(expose) {
+            L4Protocol::Tcp => {
+                let rule = expose_to_portfw_rule(expose, NextHeader::TCP, src_vpc, dst_vpc)?;
+                rules.push(rule);
+            }
+            L4Protocol::Udp => {
+                let rule = expose_to_portfw_rule(expose, NextHeader::UDP, src_vpc, dst_vpc)?;
+                rules.push(rule);
+            }
+            L4Protocol::Any => {
+                let rule = expose_to_portfw_rule(expose, NextHeader::TCP, src_vpc, dst_vpc)?;
+                rules.push(rule);
+
+                let rule = expose_to_portfw_rule(expose, NextHeader::UDP, src_vpc, dst_vpc)?;
+                rules.push(rule);
+            }
+        }
     }
     Ok(rules)
 }
