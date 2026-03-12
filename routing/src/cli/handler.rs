@@ -21,9 +21,11 @@ use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
+use config::GwConfig;
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
+use std::sync::Arc;
 use tracing::{error, trace};
 
 use common::cliprovider::{CliData, CliDataProvider};
@@ -385,6 +387,27 @@ fn show_ext_provider(
     }
 }
 
+fn show_config(
+    request: CliRequest,
+    config: Option<&Arc<GwConfig>>,
+) -> Result<CliResponse, CliError> {
+    let Some(config) = config else {
+        return Ok(CliResponse::from_request_ok(
+            request,
+            "No configuration is applied".to_string(),
+        ));
+    };
+    let vpc_table = &config.external.overlay.vpc_table;
+    let contents = match request.action {
+        CliAction::ShowVpc => format!("{}", vpc_table.as_summary()),
+        CliAction::ShowVpcPeerings => format!("{}", vpc_table.as_peerings()),
+        CliAction::ShowGatewayGroups => format!("{}", config.external.gwgroups),
+        CliAction::ShowGatewayCommunities => format!("{}", config.external.communities),
+        _ => unreachable!(),
+    };
+    Ok(CliResponse::from_request_ok(request, contents))
+}
+
 #[allow(clippy::too_many_lines)]
 fn do_handle_cli_request(
     request: CliRequest,
@@ -395,6 +418,13 @@ fn do_handle_cli_request(
     let cpi_s = &rio.cpistats;
     let frrmi = &rio.frrmi;
     let response = match request.action {
+        CliAction::ShowVpc
+        | CliAction::ShowVpcPeerings
+        | CliAction::ShowGatewayCommunities
+        | CliAction::ShowGatewayGroups => {
+            return show_config(request, rio.gwconfig.as_ref());
+        }
+
         CliAction::ShowTracingTargets => match get_trace_ctl().as_string() {
             Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
             Err(_) => CliResponse::from_request_fail(request, CliError::InternalError),
