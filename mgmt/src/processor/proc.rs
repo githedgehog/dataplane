@@ -619,6 +619,7 @@ impl ConfigProcessor {
         self.proc_params.pipeline_data.set_genid(genid);
 
         info!("Successfully applied config for genid {genid}");
+        let _ = router_ctl.send_config(config).await;
         Ok(())
     }
 }
