@@ -402,7 +402,7 @@ pub mod test {
         if false {
             let vpc_table = &config.external.overlay.vpc_table;
             let peering_table = &config.external.overlay.peering_table;
-            println!("\n{vpc_table}\n{peering_table}");
+            println!("\n{}\n{peering_table}", vpc_table.as_summary());
         }
         let bmp_config = None;
         let internal = build_internal_config(&config, bmp_config).expect("Should succeed");
