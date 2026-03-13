@@ -21,7 +21,7 @@ use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
-use config::GwConfig;
+use config::{ConfigSummary, GwConfig, GwConfigMeta};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
@@ -399,13 +399,22 @@ fn show_config(
     };
     let vpc_table = &config.external.overlay.vpc_table;
     let contents = match request.action {
-        CliAction::ShowVpc => format!("{}", vpc_table.as_summary()),
-        CliAction::ShowVpcPeerings => format!("{}", vpc_table.as_peerings()),
-        CliAction::ShowGatewayGroups => format!("{}", config.external.gwgroups),
-        CliAction::ShowGatewayCommunities => format!("{}", config.external.communities),
+        CliAction::ShowVpc => vpc_table.as_summary().to_string(),
+        CliAction::ShowVpcPeerings => vpc_table.as_peerings().to_string(),
+        CliAction::ShowGatewayGroups => config.external.gwgroups.to_string(),
+        CliAction::ShowGatewayCommunities => config.external.communities.to_string(),
         _ => unreachable!(),
     };
     Ok(CliResponse::from_request_ok(request, contents))
+}
+fn show_config_summary(
+    request: CliRequest,
+    summary: &[GwConfigMeta],
+) -> Result<CliResponse, CliError> {
+    Ok(CliResponse::from_request_ok(
+        request,
+        ConfigSummary(summary).to_string(),
+    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -423,6 +432,9 @@ fn do_handle_cli_request(
         | CliAction::ShowGatewayCommunities
         | CliAction::ShowGatewayGroups => {
             return show_config(request, rio.gwconfig.as_ref());
+        }
+        CliAction::ShowConfigSummary => {
+            return show_config_summary(request, rio.cfg_history.as_ref());
         }
 
         CliAction::ShowTracingTargets => match get_trace_ctl().as_string() {

@@ -15,7 +15,7 @@ k8s-intf = { workspace = true }
 
 # external
 arc-swap = { workspace = true }
-chrono = { workspace = true, features = ["alloc"] }
+chrono = { workspace = true, features = ["alloc", "std"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 ipnet = { workspace = true }
 linkme = { workspace = true }
