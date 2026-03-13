@@ -544,10 +544,7 @@ fn do_handle_cli_request(
             return show_ext_provider(request, cli_sources.nat_tables.as_deref(), None);
         }
         CliAction::ShowMasquerading => {
-            return Ok(CliResponse::from_request_ok(
-                request,
-                "not implemented".to_string(),
-            ));
+            return show_ext_provider(request, cli_sources.masquerade_state.as_deref(), None);
         }
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
