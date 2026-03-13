@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 left-right = { workspace = true }
+arc-swap = { workspace = true }

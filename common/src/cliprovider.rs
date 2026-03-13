@@ -3,6 +3,7 @@
 
 //! A trait for a type that can provide CLI data
 
+use arc_swap::{ArcSwap, ArcSwapOption};
 use left_right::ReadHandle;
 use std::sync::Arc;
 
@@ -32,5 +33,26 @@ where
         } else {
             "inaccessible".to_string()
         }
+    }
+}
+
+impl<T> CliDataProvider for ArcSwap<T>
+where
+    T: Send + Sync + CliDataProvider,
+{
+    fn provide(&self, what: Option<CliData>) -> String {
+        self.load().provide(what)
+    }
+}
+
+impl<T> CliDataProvider for ArcSwapOption<T>
+where
+    T: Send + Sync + CliDataProvider,
+{
+    fn provide(&self, what: Option<CliData>) -> String {
+        self.load()
+            .as_ref()
+            .map(|p: &Arc<T>| p.provide(what))
+            .unwrap_or_else(|| "(none)".to_string())
     }
 }
