@@ -126,7 +126,7 @@ jobs:
       fail-fast: false
       matrix:
         nix-target:
-          # - tests.all
+          - tests.all
           - frr.dataplane
           - frr.host
           - dataplane
