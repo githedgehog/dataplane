@@ -4,7 +4,7 @@
 //! Configuration database
 
 use crate::processor::confbuild::internal::build_internal_config;
-use config::{ConfigSummary, ExternalConfig, GenId, GwConfig, GwConfigMeta};
+use config::{ConfigSummary, GenId, GwConfig, GwConfigMeta};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -55,17 +55,13 @@ impl GwConfigDatabase {
 
     /// Get the generation Id of the currently applied config, if any.
     #[must_use]
-    pub fn get_current_gen(&self) -> Option<GenId> {
-        self.get_current_config().map(|c| c.genid())
+    pub fn get_current_gen(&self) -> GenId {
+        self.applied.genid()
     }
 
     /// Get a reference to the config currently applied, if any.
     #[must_use]
-    pub fn get_current_config(&self) -> Option<Arc<GwConfig>> {
-        if self.applied.genid() == ExternalConfig::BLANK_GENID {
-            None
-        } else {
-            Some(Arc::clone(&self.applied))
-        }
+    pub fn get_current_config(&self) -> Arc<GwConfig> {
+        self.applied.clone()
     }
 }
