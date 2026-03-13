@@ -76,6 +76,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         portfw_table: Some(Box::new(portfw_w.reader().inner())),
         nat_tables: Some(Box::new(nattabler_factory.handle().inner())),
         flow_filter_table: Some(Box::new(flowfiltertablesr_factory.handle().inner())),
+        masquerade_state: Some(Box::new(natallocator_factory.handle().inner())),
     };
 
     // create router
