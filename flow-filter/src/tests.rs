@@ -956,9 +956,9 @@ fn test_flow_filter_table_check_nat_requirements() {
         "70.0.0.10".parse().unwrap(),
     );
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
-    assert!(needs_masquerade(&packet_out));
+    // These are invalid NAT requirements because we cannot currently initiate a connection towards
+    // an expose using masquerading, and here there is no flow info attached to packet.
+    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
 
     // src: stateful NAT, dst: default (no NAT)
     let packet = create_test_packet(
@@ -1081,9 +1081,9 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
         2000,
     );
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
-    assert!(needs_masquerade(&packet_out));
+    // We don't have a flow-info for the packet, and cannot initiate the connection towards an
+    // expose using stateful NAT.
+    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
 
     // VPC 2 to VPC 1, outside of port forwarding port range: reverse stateful NAT
     let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1094,9 +1094,9 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
         123,
     );
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
-    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
-    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
-    assert!(needs_masquerade(&packet_out));
+    // We don't have a flow-info for the packet, and cannot initiate the connection towards an
+    // expose using stateful NAT.
+    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
 
     // VPC 2 to VPC 1, inside of port forwarding range: port forwarding
     let packet = create_test_ipv4_udp_packet_with_ports(
@@ -1140,6 +1140,34 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
     assert!(needs_port_forwarding(&packet_out));
+
+    // VPC 2 to VPC 1, outside of port forwarding port range, with flow_info attached for stateful NAT: reverse stateful NAT
+    let mut packet = create_test_ipv4_udp_packet_with_ports(
+        Some(vni2.into()),
+        "5.0.0.10".parse().unwrap(),
+        "100.0.0.27".parse().unwrap(),
+        456,
+        123,
+    );
+    fake_flow_session(&mut packet, vni1.into(), true, false);
+    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
+    assert!(needs_masquerade(&packet_out));
+
+    // VPC 2 to VPC 1, outside of port forwarding IP range, with flow_info attached for stateful NAT: reverse stateful NAT
+    let mut packet = create_test_ipv4_udp_packet_with_ports(
+        Some(vni2.into()),
+        "5.0.0.10".parse().unwrap(),
+        "100.0.0.4".parse().unwrap(),
+        456,
+        2000,
+    );
+    fake_flow_session(&mut packet, vni1.into(), true, false);
+    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+    assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
+    assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
+    assert!(needs_masquerade(&packet_out));
 }
 
 #[test]
@@ -1253,7 +1281,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
     assert!(needs_port_forwarding(&packet_out));
 
     // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
-    // only stateful NAT remains -> stateful NAT (not dropped!)
+    // only stateful NAT remains (destination NAT), with no flow table entry -> drop packet
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni2.into()),
         "5.0.0.10".parse().unwrap(),
@@ -1261,6 +1289,19 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
         456,
         3000,
     );
+    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
+
+    // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
+    // only stateful NAT remains, with flow table entry -> stateful NAT (not dropped!)
+    let mut packet = create_test_ipv4_udp_packet_with_ports(
+        Some(vni2.into()),
+        "5.0.0.10".parse().unwrap(),
+        "100.0.0.27".parse().unwrap(),
+        456,
+        3000,
+    );
+    fake_flow_session(&mut packet, vni1.into(), true, false);
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
     assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
@@ -1539,8 +1580,9 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
 
     // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
     //
-    // Must use port forwarding even though we have overlap on source IP/port with masquerading
-    // rule, because of unambiguous destination
+    // Overlap on source IP/port with masquerading rule, the destination is unambiguous and we find
+    // a source NAT port forwarding requirement, but there's no associated flow table entry and we
+    // cannot initiate a port forwarding session on the source side, so we drop
     let packet = create_test_ipv4_tcp_packet_with_ports(
         Some(vpcd(vni2.into())),
         "192.168.90.100".parse().unwrap(),
@@ -1548,6 +1590,22 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         22,
         6789,
     );
+    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
+
+    // VPC-2 -> VPC-1: 192.168.90.100:22 -> 192.168.50.7:6789
+    //
+    // Must use port forwarding even though we have overlap on source IP/port with masquerading
+    // rule, because of unambiguous destination, and we have a flow table entry so source-side port
+    // forwarding is allowed
+    let mut packet = create_test_ipv4_tcp_packet_with_ports(
+        Some(vpcd(vni2.into())),
+        "192.168.90.100".parse().unwrap(),
+        "192.168.50.7".parse().unwrap(),
+        22,
+        6789,
+    );
+    fake_flow_session(&mut packet, vni1.into(), false, true);
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
     assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
     assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni1.into())));
@@ -1831,9 +1889,10 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
 
     // Test with packets
 
-    // VPC-1 -> VPC-2, outside of port forwarding range
+    // VPC-1 -> VPC-2, outside of port forwarding range, no flow info attached
     //
-    // Only masquerading applies.
+    // Only masquerading applies but we cannot initiate the connection towards the expose using
+    // masquerading.
     let packet = create_test_ipv4_tcp_packet_with_ports(
         Some(vpcd(vni1.into())),
         "7.7.7.7".parse().unwrap(),
@@ -1841,6 +1900,20 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         1234,
         5678,
     );
+    let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
+    assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
+
+    // VPC-1 -> VPC-2, outside of port forwarding range, with flow info attached
+    //
+    // Only masquerading applies.
+    let mut packet = create_test_ipv4_tcp_packet_with_ports(
+        Some(vpcd(vni1.into())),
+        "7.7.7.7".parse().unwrap(),
+        "10.0.0.1".parse().unwrap(),
+        1234,
+        5678,
+    );
+    fake_flow_session(&mut packet, vni2.into(), true, false);
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
     assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
     assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
