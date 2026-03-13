@@ -179,6 +179,32 @@ fn create_test_icmp_v4_packet(
     packet
 }
 
+fn fake_flow_session<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    dst_vpcd: VpcDiscriminant,
+    set_nat_state: bool,
+    set_port_fw_state: bool,
+) {
+    // Create flow_info with dst_vpcd and NAT info and attach it to the packet
+    let flow_info = FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
+    let mut binding = flow_info.locked.write().unwrap();
+    binding.dst_vpcd = Some(Box::new(dst_vpcd));
+    if set_nat_state {
+        // Content should be a NatFlowState object but we can't include it in this crate without
+        // introducing a circular dependency; just use a bool, as we don't attempt to downcast
+        // it anyway.
+        binding.nat_state = Some(Box::new(true));
+    }
+    if set_port_fw_state {
+        // Content should be a PortFwState object but we can't include it in this crate without
+        // introducing a circular dependency; just use a bool, as we don't attempt to downcast
+        // it anyway.
+        binding.port_fw_state = Some(Box::new(true));
+    }
+    drop(binding);
+    packet.meta_mut().flow_info = Some(Arc::new(flow_info));
+}
+
 #[test]
 fn test_flow_filter_packet_allowed() {
     // Setup table
@@ -1094,17 +1120,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
         2000,
         456,
     );
-    // Create flow_info with dst_vpcd and stateful NAT info and attach it to the packet
-    let flow_info = FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
-    let mut binding = flow_info.locked.write().unwrap();
-    binding.dst_vpcd = Some(Box::new(VpcDiscriminant::from(vni2)));
-    // Content should be a NatFlowState object but we can't include it in this crate without
-    // introducing a circular dependency; just use a bool, as we don't attempt to downcast it
-    // anyway.
-    binding.nat_state = Some(Box::new(true));
-    drop(binding);
-    packet.meta_mut().flow_info = Some(Arc::new(flow_info));
-
+    fake_flow_session(&mut packet, vni2.into(), true, false);
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
     assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
@@ -1119,17 +1135,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
         2000,
         456,
     );
-    // Create flow_info with dst_vpcd and port forwarding info and attach it to the packet
-    let flow_info = FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
-    let mut binding = flow_info.locked.write().unwrap();
-    binding.dst_vpcd = Some(Box::new(VpcDiscriminant::from(vni2)));
-    // Content should be a PortFwState object but we can't include it in this crate without
-    // introducing a circular dependency; just use a bool, as we don't attempt to downcast it
-    // anyway.
-    binding.port_fw_state = Some(Box::new(true));
-    drop(binding);
-    packet.meta_mut().flow_info = Some(Arc::new(flow_info));
-
+    fake_flow_session(&mut packet, vni2.into(), false, true);
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
     assert!(!packet_out.is_done(), "{:?}", packet_out.get_done());
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
