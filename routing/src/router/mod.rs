@@ -86,7 +86,6 @@ pub struct CliSources {
     pub flow_filter: Option<Box<dyn CliDataProvider>>,
     pub portfw_table: Option<Box<dyn CliDataProvider>>,
     pub nat_tables: Option<Box<dyn CliDataProvider>>,
-    pub flow_filter_table: Option<Box<dyn CliDataProvider>>,
     pub masquerade_state: Option<Box<dyn CliDataProvider>>,
 }
 
