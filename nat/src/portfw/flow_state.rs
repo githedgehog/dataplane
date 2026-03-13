@@ -260,9 +260,8 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
 
     // refresh the flow. In general, we only refresh the flow in one direction ...
     if let Some(flow) = packet.meta_mut().flow_info.as_ref() {
-        match flow.reset_expiry_unchecked(extend_by) {
-            Ok(()) => debug!("Extended flow lifetime by {seconds}s"),
-            Err(_) => warn!("Failed to extend flow lifetime by {seconds}s"),
+        if flow.reset_expiry_unchecked(extend_by).is_ok() {
+            debug!("Extended flow lifetime by {seconds}s");
         }
 
         // .. except if we transition to established, as that is a sound indication of legit traffic
@@ -270,9 +269,10 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
             flow.related
                 .as_ref()
                 .and_then(Weak::upgrade)
-                .inspect(|reverse| match reverse.reset_expiry_unchecked(extend_by) {
-                    Ok(()) => debug!("Extended reverse-flow lifetime by {seconds}s"),
-                    Err(_) => warn!("Failed to extend reverse-flow lifetime by {seconds}s"),
+                .inspect(|reverse| {
+                    if reverse.reset_expiry_unchecked(extend_by).is_ok() {
+                        debug!("Extended reverse-flow lifetime by {seconds}s");
+                    }
                 });
         }
     }
