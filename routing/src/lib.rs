@@ -46,8 +46,6 @@ pub use rib::vrf::{RouterVrfConfig, VrfId};
 pub use router::ctl::RouterCtlSender;
 pub use router::{BmpServerParams, CliSources, Router, RouterParams, RouterParamsBuilder};
 
-pub use cli::pretty_utils::Heading;
-
 // main trace target for routing
 use tracectl::trace_target;
 trace_target!("routing", LevelFilter::DEBUG, &["routing-full"]);

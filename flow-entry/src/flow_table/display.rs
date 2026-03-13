@@ -2,21 +2,8 @@
 // Copyright Open Network Fabric Authors
 
 use crate::flow_table::FlowTable;
-use common::cliprovider::{CliData, CliDataProvider};
+use common::cliprovider::{CliData, CliDataProvider, Heading};
 use std::fmt::Display;
-
-// Copied from crates "config" and "routing"
-// TODO: Move to a shared location
-struct Heading(String);
-const LINE_WIDTH: usize = 81;
-impl Display for Heading {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let len = (LINE_WIDTH - (self.0.len() + 2)) / 2;
-        write!(f, " {0:─<width$}", "─", width = len)?;
-        write!(f, " {} ", self.0)?;
-        writeln!(f, " {0:─<width$}", "─", width = len)
-    }
-}
 
 impl Display for FlowTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
