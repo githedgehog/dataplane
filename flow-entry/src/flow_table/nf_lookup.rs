@@ -77,7 +77,6 @@ mod test {
     use std::time::{Duration, Instant};
     use tracing_test::traced_test;
 
-    use crate::flow_table::ExpirationsNF;
     use crate::flow_table::FlowTable;
     use crate::flow_table::nf_lookup::FlowLookup;
 
@@ -111,7 +110,7 @@ mod test {
         assert!(output.meta().flow_info.is_some());
     }
 
-    // A dummy NF that creates a flow entry for each packet, with a lifetime of 2 seconds
+    // A dummy NF that creates a flow entry for each packet, with a configurable lifetime
     struct FlowInfoCreator {
         flow_table: Arc<FlowTable>,
         timeout: Duration,
@@ -139,16 +138,14 @@ mod test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_lookup_nf_with_expiration_nf() {
+    #[tokio::test]
+    async fn test_lookup_nf_with_expiration() {
         let flow_table = Arc::new(FlowTable::default());
         let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
         let flowinfo_creator = FlowInfoCreator::new(flow_table.clone(), Duration::from_secs(1));
-        let expirations_nf = ExpirationsNF::new(flow_table.clone());
         let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
             .add_stage(lookup_nf)
-            .add_stage(flowinfo_creator)
-            .add_stage(expirations_nf);
+            .add_stage(flowinfo_creator);
 
         const NUM_PACKETS: u16 = 1000;
 
@@ -161,29 +158,23 @@ mod test {
         // process the NUM_PACKETS
         let packets_out = pipeline.process(packets_in.clone());
         assert_eq!(packets_out.count(), NUM_PACKETS as usize);
-        let num_entries = flow_table.len().unwrap();
+        let num_entries = flow_table.active_len().unwrap();
         assert_eq!(num_entries, NUM_PACKETS as usize);
 
-        // wait twice as much as entry lifetimes. All flow entries should be gone after this.
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        pipeline
-            .process(std::iter::empty::<Packet<TestBuffer>>())
-            .count();
+        // wait twice as much as entry lifetimes — all flow timers should have fired by now
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Entries are all gone
-        let num_entries = flow_table.len().unwrap();
+        // All flows are now expired (marked by per-flow tokio timers)
+        let num_entries = flow_table.active_len().unwrap();
         assert_eq!(num_entries, 0);
     }
 
     //#[traced_test]
-    #[test]
-    fn test_lookups_with_related_flows() {
+    #[tokio::test]
+    async fn test_lookups_with_related_flows() {
         let flow_table = Arc::new(FlowTable::default());
         let lookup_nf = FlowLookup::new("lookup_nf", flow_table.clone());
-        let expirations_nf = ExpirationsNF::new(flow_table.clone());
-        let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
-            .add_stage(lookup_nf)
-            .add_stage(expirations_nf);
+        let mut pipeline: DynPipeline<TestBuffer> = DynPipeline::new().add_stage(lookup_nf);
 
         {
             let mut packet_1 = build_test_udp_ipv4_packet("10.0.0.1", "20.0.0.1", 80, 500);
@@ -231,16 +222,13 @@ mod test {
             assert!(Arc::ptr_eq(&related_1, flow_2_pkt));
             assert!(Arc::ptr_eq(&related_2, &flow_1));
             assert!(Arc::ptr_eq(&related_2, flow_1_pkt));
-            assert_eq!(flow_table.len().unwrap(), 2);
+            assert_eq!(flow_table.active_len().unwrap(), 2);
         }
 
-        // wait 3 secs. Flow 1 should have been removed
-        std::thread::sleep(Duration::from_secs(3));
-        pipeline
-            .process(std::iter::empty::<Packet<TestBuffer>>())
-            .count();
+        // wait 3 secs. Flow 1 should have been expired by its tokio timer
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
-        assert_eq!(flow_table.len().unwrap(), 1);
+        assert_eq!(flow_table.active_len().unwrap(), 1);
 
         // build identical packets and process them again
         let mut packet_1 = build_test_udp_ipv4_packet("10.0.0.1", "20.0.0.1", 80, 500);

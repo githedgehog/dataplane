@@ -20,14 +20,14 @@ etherparse = { workspace = true }
 linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
-priority-queue = { workspace = true }
 thiserror = { workspace = true }
-thread_local = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
 net = { workspace = true, features = ["bolero"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tracing-test = { workspace = true, features = [] }
 shuttle = { workspace = true }

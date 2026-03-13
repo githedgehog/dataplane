@@ -12,7 +12,7 @@ use super::packet_processor::ipforward::IpForwarder;
 
 use concurrency::sync::Arc;
 
-use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};
+use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterTableWriter};
 
 use nat::portfw::{PortForwarder, PortFwTableWriter};
@@ -91,7 +91,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
         let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
         let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
-        let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
         let portfw = PortForwarder::new(
             "port-forwarder",
             portfw_factory.handle(),
@@ -99,7 +98,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         );
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
-        // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
+        // hard-coded. Flow expiration is handled by per-flow tokio timers; no ExpirationsNF needed.
         DynPipeline::new()
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
@@ -111,7 +110,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(stateful_nat)
             .add_stage(iprouter2)
             .add_stage(stage_egress)
-            .add_stage(flow_expirations_nf)
             .add_stage(pktdump)
             .add_stage(stats_stage)
     };

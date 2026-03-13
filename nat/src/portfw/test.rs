@@ -6,7 +6,7 @@ mod nf_test {
     use crate::portfw::protocol::PortFwFlowStatus;
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
 
-    use flow_entry::flow_table::{ExpirationsNF, FlowLookup, FlowTable};
+    use flow_entry::flow_table::{FlowLookup, FlowTable};
     use net::buffer::TestBuffer;
     use net::flows::FlowStatus;
     use net::flows::flow_info_item::ExtractRef;
@@ -186,14 +186,11 @@ mod nf_test {
     ) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, PortFwTableWriter) {
         // build a pipeline with flow lookup + port forwarder
         let mut writer = PortFwTableWriter::new();
-        let flow_table = Arc::new(FlowTable::new(1024));
+        let flow_table = Arc::new(FlowTable::default());
         let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
         let nf = PortForwarder::new("port-forwarder", writer.reader(), flow_table.clone());
-        let flow_expirations = ExpirationsNF::new(flow_table.clone());
-        let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
-            .add_stage(flow_lookup_nf)
-            .add_stage(nf)
-            .add_stage(flow_expirations);
+        let pipeline: DynPipeline<TestBuffer> =
+            DynPipeline::new().add_stage(flow_lookup_nf).add_stage(nf);
 
         // set port-forwarding rules
         writer.update_table(ruleset).unwrap();

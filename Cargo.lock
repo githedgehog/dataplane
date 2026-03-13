@@ -1354,10 +1354,9 @@ dependencies = [
  "dataplane-tracectl",
  "etherparse",
  "linkme",
- "priority-queue",
  "shuttle",
  "thiserror 2.0.18",
- "thread_local",
+ "tokio",
  "tracing",
  "tracing-test",
 ]
@@ -4349,16 +4348,6 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "priority-queue"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93980406f12d9f8140ed5abe7155acb10bb1e69ea55c88960b9c2f117445ef96"
-dependencies = [
- "equivalent",
- "indexmap 2.13.0",
 ]
 
 [[package]]
