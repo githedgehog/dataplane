@@ -1301,6 +1301,7 @@ dependencies = [
  "bolero",
  "caps",
  "chrono",
+ "dataplane-common",
  "dataplane-hardware",
  "dataplane-k8s-intf",
  "dataplane-lpm",

@@ -5,4 +5,3 @@
 
 mod display;
 pub(crate) mod handler;
-pub(crate) mod pretty_utils;

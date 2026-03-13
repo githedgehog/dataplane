@@ -4,7 +4,7 @@
 //! Display implementations for the forwarding table objects
 
 use crate::portfw::portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable};
-use common::cliprovider::{CliData, CliDataProvider};
+use common::cliprovider::{CliData, CliDataProvider, Heading};
 use std::fmt::Display;
 
 macro_rules! PORTFW_KEY {
@@ -29,7 +29,7 @@ impl Display for PortFwEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}: {}",
+            " {}: {}",
             self.key,
             PORTFW_ENTRY!(
                 self.ext_prefix,
@@ -43,16 +43,10 @@ impl Display for PortFwEntry {
         )
     }
 }
-fn fmt_port_fw_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    writeln!(
-        f,
-        " ────────────────────────────────────── Port forwarding table ──────────────────────────────────────"
-    )
-}
 
 impl Display for PortFwTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_port_fw_table_heading(f)?;
+        Heading("Port forwarding table").fmt(f)?;
         if self.is_empty() {
             return writeln!(f, " (empty)");
         }

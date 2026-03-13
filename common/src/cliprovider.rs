@@ -5,6 +5,7 @@
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use left_right::ReadHandle;
+use std::fmt::Display;
 use std::sync::Arc;
 
 pub enum CliData {}
@@ -54,5 +55,43 @@ where
             .as_ref()
             .map(|p: &Arc<T>| p.provide(what))
             .unwrap_or_else(|| "(none)".to_string())
+    }
+}
+
+trait CliString: AsRef<str> + Display {}
+impl CliString for String {}
+impl CliString for &str {}
+
+pub struct Heading<T>(pub T);
+impl<T: CliString> Display for Heading<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, " {:─^100}", format!(" {} ", self.0))
+    }
+}
+
+pub struct Frame<T>(pub T);
+impl<T: CliString> Display for Frame<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = self.0.as_ref().len() + 2;
+        writeln!(f, "\n┏{:━<width$}┓", "━", width = len)?;
+        writeln!(f, "┃ {} ┃", self.0)?;
+        writeln!(f, "┗{:━<width$}┛", "━", width = len)
+    }
+}
+
+pub fn line(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Heading("─").fmt(f)
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Frame, Heading};
+    #[test]
+    fn test_heading() {
+        println!("{}", Heading("Hi there!"));
+        println!("{}", Heading("Hey ho!".to_string()));
+        println!("{}", Heading(format!("I have {} cents", 5)));
+        println!("{}", Frame("This is a box, not a Box<T> though"));
+        println!("{}", Frame("smaller"));
     }
 }
