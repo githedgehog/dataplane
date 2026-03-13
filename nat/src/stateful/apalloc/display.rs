@@ -7,6 +7,7 @@ use super::NatDefaultAllocator;
 use crate::stateful::apalloc::alloc::{AllocatedIp, IpAllocator, NatPool};
 use crate::stateful::apalloc::port_alloc::PortAllocator;
 use crate::stateful::apalloc::{NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
+use common::cliprovider::CliDataProvider;
 use indenter::indented;
 use std::fmt::{Display, Error, Formatter, Result, Write};
 
@@ -20,6 +21,12 @@ macro_rules! with_indent {
 fn fmt_masquerade_table_heading(f: &mut Formatter<'_>) -> Result {
     let heading = " Masquerade NAT allocator table ";
     writeln!(f, " {heading:─^99}")
+}
+
+impl CliDataProvider for NatDefaultAllocator {
+    fn provide(&self, _what: Option<common::cliprovider::CliData>) -> String {
+        self.to_string()
+    }
 }
 
 impl Display for NatDefaultAllocator {

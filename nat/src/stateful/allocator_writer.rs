@@ -159,6 +159,9 @@ impl NatAllocatorReader {
     pub fn factory(&self) -> NatAllocatorReaderFactory {
         NatAllocatorReaderFactory(self.clone())
     }
+    pub fn inner(&self) -> Arc<ArcSwapOption<NatDefaultAllocator>> {
+        self.0.clone()
+    }
 }
 
 #[derive(Debug)]
