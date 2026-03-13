@@ -21,11 +21,12 @@ use net::flows::FlowStatus;
 use net::flows::flow_info_item::ExtractRef;
 use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use pipeline::NetworkFunction;
+use pipeline::{NetworkFunction, PipelineData};
 use std::collections::HashSet;
 use std::fmt::{Display, Write};
 use std::net::IpAddr;
 use std::num::NonZero;
+use std::sync::Arc;
 use tracing::{debug, error};
 
 mod filter_rw;
@@ -45,6 +46,7 @@ trace_target!("flow-filter", LevelFilter::INFO, &["pipeline"]);
 pub struct FlowFilter {
     name: String,
     tablesr: FlowFilterTableReader,
+    pipeline_data: Arc<PipelineData>,
 }
 
 impl FlowFilter {
@@ -53,6 +55,7 @@ impl FlowFilter {
         Self {
             name: name.to_string(),
             tablesr,
+            pipeline_data: Arc::from(PipelineData::default()),
         }
     }
 
@@ -296,6 +299,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
             }
             packet.enforce()
         })
+    }
+
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        self.pipeline_data = data;
     }
 }
 
