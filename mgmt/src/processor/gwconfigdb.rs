@@ -4,8 +4,7 @@
 //! Configuration database
 
 use crate::processor::confbuild::internal::build_internal_config;
-use crate::processor::display::ConfigHistory;
-use config::{ExternalConfig, GenId, GwConfig, GwConfigMeta};
+use config::{ConfigSummary, ExternalConfig, GenId, GwConfig, GwConfigMeta};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -29,7 +28,7 @@ impl GwConfigDatabase {
     }
 
     pub fn log(&self) {
-        let history = ConfigHistory(self);
+        let history = ConfigSummary(self.history());
         info!("\n{history}");
     }
 
