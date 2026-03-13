@@ -11,7 +11,7 @@ use net::flows::{ExtractMut, ExtractRef, FlowInfo};
 use net::headers::{TryIp, TryTcp, TryTransport};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use pipeline::NetworkFunction;
+use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
 use std::sync::Arc;
 use std::time::Instant;
@@ -36,6 +36,7 @@ pub struct PortForwarder {
     name: String,
     flow_table: Arc<FlowTable>,
     fwtable: PortFwTableReader,
+    pipeline_data: Arc<PipelineData>,
 }
 
 impl PortForwarder {
@@ -46,6 +47,7 @@ impl PortForwarder {
             name: name.to_string(),
             flow_table,
             fwtable,
+            pipeline_data: Arc::from(PipelineData::default()),
         }
     }
 
@@ -368,5 +370,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
             }
             packet.enforce()
         })
+    }
+
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        self.pipeline_data = data;
     }
 }
