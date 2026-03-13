@@ -44,7 +44,7 @@ version:
 oci_repo := "127.0.0.1:30000"
 oci_insecure := ""
 oci_name := "githedgehog/dataplane"
-oci_frr_prefix := "githedgehog/dataplane/frr"
+oci_frr_prefix := "githedgehog/dpdk-sys/frr"
 oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
