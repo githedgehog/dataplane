@@ -1,0 +1,17 @@
+#!/bin/sh
+
+. /libexec/frr/frrcommon.sh
+
+ip -j -d nexthop show | \
+  jq --raw-output '.[] | select(.protocol="zebra").id' | \
+  while read -r id; do ip nexthop del id "${id}"; done
+
+# shellcheck disable=SC2046
+/libexec/frr/watchfrr $(daemon_list) &
+
+/bin/frr-agent "${@}" &
+
+# shellcheck disable=SC3045
+wait -n
+
+exit $?

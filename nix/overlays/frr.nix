@@ -68,6 +68,7 @@ let
 in
 {
   fancy = prev.fancy // {
+    inherit sources;
     xxHash = (dep prev.xxHash).overrideAttrs (orig: {
       cmakeFlags = (orig.cmakeFlags or [ ]) ++ [
         "-DBUILD_SHARED_LIBS=OFF"
@@ -203,6 +204,10 @@ in
         ];
       })
     );
+    frr-agent = dep (final.callPackage ../pkgs/frr-agent final.fancy);
+    frr-config = dep (final.callPackage ../pkgs/frr-config final.fancy);
+    dplane-rpc = dep (final.callPackage ../pkgs/dplane-rpc final.fancy);
+    dplane-plugin = dep (final.callPackage ../pkgs/dplane-plugin final.fancy);
     frr.host = frr-build sources.frr;
     frr.dataplane = frr-build sources.frr-dp;
   };

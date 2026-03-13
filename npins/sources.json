@@ -29,6 +29,32 @@
       "url": "https://github.com/githedgehog/dpdk/archive/6736a6e32f5b3a8d16b2bd0e84b73af32540de77.tar.gz",
       "hash": "sha256-aVtrmUtFkkC2SsnfWJmRN/Klwfb/EGLG+YYtSLm5tBY="
     },
+    "dplane-plugin": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "dplane-plugin"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "9252c6fb354fb02ab9864cddf6207c6f9eda80bc",
+      "url": "https://github.com/githedgehog/dplane-plugin/archive/9252c6fb354fb02ab9864cddf6207c6f9eda80bc.tar.gz",
+      "hash": "sha256-zVCb/yIBxpY+Vm1pXrGfFwRdI/MC9LerV92NFxC3tUU="
+    },
+    "dplane-rpc": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "dplane-rpc"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "e8fc33db10e1d00785f2a2b90cbadcad7900f200",
+      "url": "https://github.com/githedgehog/dplane-rpc/archive/e8fc33db10e1d00785f2a2b90cbadcad7900f200.tar.gz",
+      "hash": "sha256-tjN4qSbKrWfosOV3wt2AnQxmVL0BPZYBjAHG3X00+aM="
+    },
     "frr": {
       "type": "Git",
       "repository": {
@@ -41,6 +67,19 @@
       "revision": "2152ffef605fe0b7787f762c236f7ea7013f9545",
       "url": "https://github.com/FRRouting/frr/archive/2152ffef605fe0b7787f762c236f7ea7013f9545.tar.gz",
       "hash": "sha256-qvYv6osjx9ckYAlFj8gSSval3qkwfHIK2X6PFh0CTkY="
+    },
+    "frr-agent": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "frr-agent"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "16fc0c715d6c83125e51ef68959a6dfe8e8fd847",
+      "url": "https://github.com/githedgehog/frr-agent/archive/16fc0c715d6c83125e51ef68959a6dfe8e8fd847.tar.gz",
+      "hash": "sha256-h32eJSnLB2U3tKGp/Uk30XeOVvHelR7n9EN3stOoYGE="
     },
     "frr-dp": {
       "type": "Git",

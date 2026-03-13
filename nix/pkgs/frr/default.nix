@@ -25,9 +25,6 @@
   rtrlib,
   libgccjit,
 
-  # tests
-  nixosTests,
-
   # other general options besides snmp support
   numMultipath ? 8,
 

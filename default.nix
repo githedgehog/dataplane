@@ -606,13 +606,13 @@ let
       name = "frr-dataplane-env";
       pathsToLink = [ "/" ];
       paths = with frr-pkgs; [
-        # dplane-plugin
-        # dplane-rpc
-        # frr-agent
-        # frr-config
         bash
         coreutils
-        dockerTools.fakeNss
+        dockerTools.usrBinEnv
+        fancy.dplane-plugin
+        fancy.dplane-rpc
+        fancy.frr-agent
+        fancy.frr-config
         fancy.frr.dataplane
         findutils
         gnugrep
@@ -621,14 +621,18 @@ let
         prometheus-frr-exporter
         python3Minimal
         tini
-        dockerTools.usrBinEnv
       ];
     };
 
     fakeRootCommands = ''
       #!${frr-pkgs.bash}/bin/bash
       set -euxo pipefail
-      mkdir -p /tmp
+      mkdir /tmp
+      mkdir -p /run/frr/hh
+      chown -R frr:frr /run/frr
+      mkdir -p /var
+      ln -s /run /var/run
+      chown -R frr:frr /var/run/frr
     '';
 
     enableFakechroot = true;
