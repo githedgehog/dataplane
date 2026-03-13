@@ -5,11 +5,11 @@
 
 #![allow(clippy::manual_string_new)]
 
-use crate::external::overlay::vpc::Vpc;
 use std::fmt::Display;
 
 use crate::GwConfigMeta;
 use crate::external::overlay::Overlay;
+use crate::external::overlay::vpc::Vpc;
 use crate::external::overlay::vpc::{Peering, VpcId, VpcTable};
 use crate::external::overlay::vpcpeering::{
     VpcExpose, VpcExposeNatConfig, VpcExposePortForwarding, VpcExposeStatefulNat,
@@ -18,17 +18,7 @@ use crate::external::overlay::vpcpeering::{
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
 use chrono::{DateTime, Utc};
 
-struct Heading(String);
-const LINE_WIDTH: usize = 81;
-impl Display for Heading {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let len = (LINE_WIDTH - (self.0.len() + 2)) / 2;
-        write!(f, " {0:─<width$}", "─", width = len)?;
-        write!(f, " {} ", self.0)?;
-        writeln!(f, " {0:─<width$}", "─", width = len)
-    }
-}
-
+use common::cliprovider::Heading;
 const SEP: &str = "       ";
 
 impl Display for VpcExposeStatefulNat {

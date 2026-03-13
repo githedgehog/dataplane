@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 # internal
+common = { workspace = true }
 hardware = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }

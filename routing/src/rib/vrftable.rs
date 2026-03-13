@@ -11,9 +11,6 @@ use crate::fib::fibtype::FibKey;
 use crate::interfaces::iftablerw::IfTableWriter;
 use crate::rib::vrf::{RouterVrfConfig, Vrf, VrfId};
 
-#[cfg(test)]
-use crate::rib::vrf::VrfStatus;
-
 use ahash::RandomState;
 use net::vxlan::Vni;
 use std::collections::HashMap;
@@ -422,11 +419,11 @@ impl VrfTable {
 #[allow(clippy::match_same_arms)]
 mod tests {
     use super::*;
-    use crate::cli::pretty_utils::Frame;
     use crate::fib::fibobjects::{EgressObject, PktInstruction};
     use crate::fib::fibtype::FibKey;
     use crate::interfaces::tests::build_test_iftable_left_right;
     use crate::rib::encapsulation::Encapsulation;
+    use crate::rib::vrf::VrfStatus;
     use crate::rib::vrf::tests::{build_test_vrf, mk_addr};
     use crate::rib::vrf::tests::{
         build_test_vrf_nhops_partially_resolved, init_test_vrf, mod_test_vrf_1, mod_test_vrf_2,
@@ -434,6 +431,7 @@ mod tests {
     use crate::{
         evpn::rmac::tests::build_sample_rmac_store, rib::encapsulation::VxlanEncapsulation,
     };
+    use common::cliprovider::Frame;
     use net::interface::InterfaceIndex;
     use tracing_test::traced_test;
 
@@ -820,7 +818,7 @@ mod tests {
         // vrf.refresh_fib(&rstore, None);
         // refresh_fib() won't work because add_route() does not build the packet instructions
 
-        print!("{}", Frame("Initial fibgroups".to_string()));
+        print!("{}", Frame("Initial fibgroups"));
         show_fibgroups(&vrf, "8.0.0.1");
         show_fibgroups(&vrf, "8.0.0.2");
         show_fibgroups(&vrf, "7.0.0.1");
