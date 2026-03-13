@@ -116,7 +116,7 @@ pub(crate) mod test_utils;
 #[allow(unused)]
 pub use dyn_nf::{DynNetworkFunction, nf_dyn};
 #[allow(unused)]
-pub use pipeline::{DynPipeline, StageId};
+pub use pipeline::{DynPipeline, PipelineData, StageId};
 #[allow(unused)]
 pub use static_nf::{NetworkFunction, StaticChain};
 
