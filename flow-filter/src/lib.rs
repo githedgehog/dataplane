@@ -102,6 +102,17 @@ impl FlowFilter {
                 None
             }
             Some(VpcdLookupResult::Single(dst_data)) => {
+                // Check NAT requirements are sensible
+                if self
+                    .check_nat_requirements(packet, &dst_data, true)
+                    .is_err()
+                {
+                    debug!(
+                        "{nfi}: Invalid NAT requirements found for flow {tuple}, dropping packet"
+                    );
+                    packet.done(DoneReason::Filtered);
+                    return;
+                }
                 Self::set_nat_requirements(packet, &dst_data);
                 Some(dst_data.vpcd)
             }
@@ -270,6 +281,14 @@ impl FlowFilter {
         // requirement.
         if data_set.len() == 1 {
             let dst_data = data_set.iter().next().unwrap_or_else(|| unreachable!());
+            // Check NAT requirements are sensible - no need to check flow availability, we know we
+            // don't have an active flow if we reached that point.
+            if self
+                .check_nat_requirements(packet, dst_data, false)
+                .is_err()
+            {
+                return None;
+            }
             Self::set_nat_requirements(packet, dst_data);
             return Some(first_vpcd);
         }
@@ -311,6 +330,38 @@ impl FlowFilter {
 
         debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
         None
+    }
+
+    /// Check if the packet has valid NAT requirements.
+    fn check_nat_requirements<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+        dst_data: &RemoteData,
+        needs_flow_verif: bool,
+    ) -> Result<(), ()> {
+        if needs_flow_verif && packet.active_flow_info().is_some() {
+            return Ok(());
+        }
+
+        // We have no valid flow table entry for the packet: in this case, some NAT requirements are
+        // not supported.
+        let nfi = &self.name;
+        if matches!(dst_data.dst_nat_req, Some(NatRequirement::Stateful)) {
+            debug!(
+                "{nfi}: Packet requires destination NAT with masquerade, but packet does not contain flow-info"
+            );
+            return Err(());
+        }
+        if matches!(
+            dst_data.src_nat_req,
+            Some(NatRequirement::PortForwarding(_))
+        ) {
+            debug!(
+                "{nfi}: Packet requires source NAT with port forwarding, but packet does not contain flow-info"
+            );
+            return Err(());
+        }
+        Ok(())
     }
 
     /// Set NAT requirements on the packet based on the remote data object.
