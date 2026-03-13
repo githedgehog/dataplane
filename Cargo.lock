@@ -1271,6 +1271,7 @@ dependencies = [
 name = "dataplane-common"
 version = "0.13.0"
 dependencies = [
+ "arc-swap",
  "left-right",
 ]
 
