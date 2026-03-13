@@ -132,6 +132,13 @@ impl FlowFilter {
                 None
             }
             Some(VpcdLookupResult::Single(dst_data)) => {
+                if check_nat_requirements(packet, &dst_data).is_err() {
+                    debug!(
+                        "{nfi}: Invalid NAT requirements found for flow {tuple}, dropping packet"
+                    );
+                    packet.done(DoneReason::Filtered);
+                    return;
+                }
                 set_nat_requirements(packet, &dst_data);
                 Some(dst_data.vpcd)
             }
@@ -186,6 +193,33 @@ impl FlowFilter {
         debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
     }
+}
+
+fn check_nat_requirements<Buf: PacketBufferMut>(
+    packet: &Packet<Buf>,
+    dst_data: &RemoteData,
+) -> Result<(), ()> {
+    if packet.meta().flow_info.is_some() {
+        return Ok(());
+    }
+
+    debug!("Packet does not contain any flow-info");
+    if matches!(dst_data.dst_nat_req, Some(NatRequirement::Stateful)) {
+        debug!(
+            "Packet requires destination NAT with masquerade, but packet does not contain flow-info"
+        );
+        return Err(());
+    }
+    if matches!(
+        dst_data.src_nat_req,
+        Some(NatRequirement::PortForwarding(_))
+    ) {
+        debug!(
+            "Packet requires source NAT with port forwarding, but packet does not contain flow-info"
+        );
+        return Err(());
+    }
+    Ok(())
 }
 
 fn deal_with_multiple_matches<Buf: PacketBufferMut>(
