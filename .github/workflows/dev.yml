@@ -225,7 +225,7 @@ jobs:
             push-container "${{matrix.nix-target}}"
 
       - name: "push container for vlab"
-        if: ${{ matrix.nix-target != 'tests.all' && matrix.build.sanitize == '' }}
+        if: ${{ matrix.nix-target != 'tests.all' }}
         run: |
           just \
             docker_sock=/run/docker/docker.sock \
@@ -278,7 +278,9 @@ jobs:
           && matrix.hybrid
         }}
       fabricatorref: master
-      prebuild: "just bump dataplane ${{ needs.version.outputs.version }}-release"
+      prebuild: |
+        just bump dataplane ${{ needs.version.outputs.version }}-release
+        just bump frr ${{ needs.version.outputs.version }}-release
       fabricmode: ${{ matrix.fabricmode }}
       gateway: ${{ matrix.gateway }}
       includeonie: ${{ matrix.includeonie }}
