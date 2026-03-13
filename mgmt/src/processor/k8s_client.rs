@@ -19,7 +19,7 @@ use k8s_intf::gateway_agent_crd::{
 };
 use tracing::{debug, error, info};
 
-use crate::processor::mgmt_client::{ConfigClient, ConfigProcessorError};
+use crate::processor::mgmt_client::ConfigClient;
 
 #[derive(Debug, thiserror::Error)]
 pub enum K8sClientError {
@@ -156,7 +156,6 @@ impl K8sClient {
                     let genid = external_config.genid;
                     let applied_genid = match k8s_client.client.get_generation().await {
                         Ok(genid) => genid,
-                        Err(ConfigProcessorError::NoConfigApplied) => 0,
                         Err(e) => {
                             error!("Failed to get current config generation: {e}");
                             return;

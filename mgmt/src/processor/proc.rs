@@ -205,7 +205,7 @@ impl ConfigProcessor {
     /// RPC handler: get the currently applied config
     fn handle_get_config(&self) -> ConfigResponse {
         debug!("Handling get running configuration request");
-        let cfg = self.config_db.get_current_config().clone();
+        let cfg = self.config_db.get_current_config();
         ConfigResponse::GetCurrentConfig(cfg)
     }
 

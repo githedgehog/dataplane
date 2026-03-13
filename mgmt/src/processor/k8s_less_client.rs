@@ -13,7 +13,7 @@ use tokio::fs::create_dir_all;
 use tracing::{error, info};
 
 use crate::processor::k8s_client::{build_gateway_status, build_init_status};
-use crate::processor::mgmt_client::{ConfigClient, ConfigProcessorError};
+use crate::processor::mgmt_client::ConfigClient;
 use k8s_intf::utils::save;
 
 #[derive(Debug, thiserror::Error)]
@@ -89,7 +89,6 @@ impl K8sLess {
                     let genid = external_config.genid;
                     let applied_genid = match k8sless.client.get_generation().await {
                         Ok(genid) => genid,
-                        Err(ConfigProcessorError::NoConfigApplied) => 0,
                         Err(e) => {
                             error!("Failed to get current config generation: {e}");
                             return;
