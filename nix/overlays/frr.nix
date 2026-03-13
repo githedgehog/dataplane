@@ -48,7 +48,7 @@ let
           configureFlags = orig.configureFlags ++ [
             "--enable-shared"
             "--enable-static"
-            "--enable-static-bin"
+            "--disable-static-bin"
           ];
           nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.nukeReferences ];
           # disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
@@ -60,6 +60,7 @@ let
                 -e ${final.stdenv'.cc.libc} \
                 -e ${final.python3Minimal} \
                 -e ${final.fancy.readline} \
+                -e ${final.fancy.libgccjit} \
                 -e ${final.fancy.json_c} \
                 '{}' +;
           '';
@@ -192,8 +193,8 @@ in
       }).overrideAttrs
         (orig: {
           configureFlags = (orig.configureFlags or [ ]) ++ [
-            "--enable-static"
-            "--disable-shared"
+            "--disable-static"
+            "--enable-shared"
           ];
         });
     c-ares = dep (
