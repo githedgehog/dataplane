@@ -137,23 +137,37 @@ impl ConfigProcessor {
         self.apply(config).await
     }
 
-    /// Apply the provided configuration. On success, store it, and update the history
-    /// On failure, roll-back.
+    async fn update_history(
+        &mut self,
+        config: &GwConfig,
+        result: &ConfigResult,
+        is_rollback: bool,
+    ) {
+        let guard = config.meta.load();
+        let mut meta = guard.as_ref().clone();
+        meta.apply_time();
+        meta.error(result);
+        meta.is_rollback = is_rollback;
+        self.config_db.history_mut().push(meta.clone());
+        if !is_rollback {
+            config.meta.store(Arc::from(meta));
+        }
+        let history = Arc::from(self.config_db.history().clone());
+        let router_ctl = &mut self.proc_params.router_ctl;
+        let _ = router_ctl.send_config_history(history).await;
+        self.config_db.log();
+    }
+
+    /// Apply a configuration. On success, store it. On failure, roll-back. Update the history in either case.
     async fn apply(&mut self, config: GwConfig) -> ConfigResult {
         let config = Arc::from(config);
         let result = self.apply_gw_config(config.clone()).await;
-        let guard = config.meta.load();
-        let mut new_meta = guard.as_ref().clone();
-        new_meta.apply_time();
-        new_meta.error(&result);
-        self.config_db.history_mut().push(new_meta.clone());
-        config.meta.store(Arc::from(new_meta));
+        self.update_history(&config, &result, false).await;
         if result.is_ok() {
             self.config_db.store(config);
         } else {
             self.rollback().await;
         }
-        self.config_db.log();
         result
     }
 
@@ -163,18 +177,11 @@ impl ConfigProcessor {
         let active_genid = active.genid();
         info!("Rolling back to config with genid {}...", active.genid());
         let result = self.apply_gw_config(active.clone()).await.map(drop);
+        self.update_history(&active, &result, true).await;
         match &result {
             Ok(_) => debug!("Successfully rolled back to config {active_genid}"),
             Err(e) => error!("Rolling back to config {active_genid} failed: {e}"),
         };
-        // add entry to history reflecting rollback
-        let guard = active.meta.load();
-        let mut meta = guard.as_ref().clone();
-        meta.apply_time();
-        meta.error(&result);
-        meta.is_rollback = true;
-        self.config_db.history_mut().push(meta);
-        self.config_db.log();
     }
 
     /// RPC handler: store and apply the provided config

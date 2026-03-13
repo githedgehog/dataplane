@@ -28,11 +28,13 @@ pub mod gwconfig;
 pub mod internal;
 pub mod utils;
 
-pub use errors::{ConfigError, ConfigResult, stringify}; // re-export
-pub use external::{ExternalConfig, GenId}; // re-export
-pub use gwconfig::{GwConfig, GwConfigMeta}; // re-export
-pub use internal::InternalConfig; // re-export
-pub use internal::device::DeviceConfig; // re-export
+// re-exports
+pub use display::ConfigSummary;
+pub use errors::{ConfigError, ConfigResult, stringify};
+pub use external::{ExternalConfig, GenId};
+pub use gwconfig::{GwConfig, GwConfigMeta};
+pub use internal::InternalConfig;
+pub use internal::device::DeviceConfig;
 
 use tracectl::trace_target;
 trace_target!("mgmt", LevelFilter::DEBUG, &["management"]);

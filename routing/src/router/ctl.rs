@@ -3,7 +3,7 @@
 
 //! Control channel for the router
 
-use config::GwConfig;
+use config::{GwConfig, GwConfigMeta};
 use mio::Interest;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -52,6 +52,7 @@ pub(crate) enum RouterCtlMsg {
     Configure(RouterConfig, RouterCtlReplyTx),
     GetFrrAppliedConfig(RouterCtlReplyTx),
     Config(Arc<GwConfig>),
+    ConfigHistory(Arc<Vec<GwConfigMeta>>),
 }
 
 /// Object to send control messages to the router
@@ -143,6 +144,17 @@ impl RouterCtlSender {
             .map_err(|_| RouterError::Internal("Failed to send GwConfig"))?;
         Ok(())
     }
+    pub async fn send_config_history(
+        &mut self,
+        history: Arc<Vec<GwConfigMeta>>,
+    ) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::ConfigHistory(history);
+        self.0
+            .send(msg)
+            .await
+            .map_err(|_| RouterError::Internal("Failed to send config history"))?;
+        Ok(())
+    }
 }
 
 /// Handle a lock request for the indicated CPI
@@ -222,6 +234,9 @@ fn handle_get_frr_applied_config(rio: &Rio, reply_to: RouterCtlReplyTx) {
 fn handle_config(rio: &mut Rio, config: Arc<GwConfig>) {
     rio.gwconfig = Some(config);
 }
+fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
+    rio.cfg_history = history;
+}
 
 /// Handle a request from the control channel
 pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
@@ -240,6 +255,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             handle_get_frr_applied_config(rio, reply_to);
         }
         Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
+        Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");

@@ -19,7 +19,7 @@ use crate::routingdb::RoutingDb;
 
 use bytes::BytesMut;
 use cli::cliproto::{CliRequest, CliSerialize};
-use config::GwConfig;
+use config::{GwConfig, GwConfigMeta};
 use dplane_rpc::socks::RpcCachedSock;
 
 use mio::unix::SourceFd;
@@ -114,6 +114,7 @@ pub(crate) struct Rio {
     pub(crate) cpistats: CpiStats,
     stale_timeout: Option<Instant>,
     pub(crate) gwconfig: Option<Arc<GwConfig>>,
+    pub(crate) cfg_history: Arc<Vec<GwConfigMeta>>,
 }
 impl Rio {
     fn new(conf: &RioConf) -> Result<Rio, RouterError> {
@@ -184,6 +185,7 @@ impl Rio {
             cpistats: CpiStats::new(),
             stale_timeout: None,
             gwconfig: None,
+            cfg_history: Arc::from(vec![]),
         })
     }
     pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {

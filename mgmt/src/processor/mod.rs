@@ -5,7 +5,6 @@
 //! This module implements the core logic to determine and build internal configurations.
 
 pub(crate) mod confbuild;
-mod display;
 pub(crate) mod gwconfigdb;
 pub(crate) mod k8s_client;
 pub(crate) mod k8s_less_client;

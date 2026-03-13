@@ -8,6 +8,7 @@
 use crate::external::overlay::vpc::Vpc;
 use std::fmt::Display;
 
+use crate::GwConfigMeta;
 use crate::external::overlay::Overlay;
 use crate::external::overlay::vpc::{Peering, VpcId, VpcTable};
 use crate::external::overlay::vpcpeering::{
@@ -15,6 +16,7 @@ use crate::external::overlay::vpcpeering::{
     VpcExposeStatelessNat,
 };
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
+use chrono::{DateTime, Utc};
 
 struct Heading(String);
 const LINE_WIDTH: usize = 81;
@@ -310,5 +312,62 @@ impl Display for Overlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.vpc_table.as_summary().fmt(f)?;
         self.peering_table.fmt(f)
+    }
+}
+
+/* ===== Configuration history ===== */
+
+macro_rules! CONFIGDB_TBL_FMT {
+    () => {
+        " {:>6} {:<25} {:<25} {} {}"
+    };
+}
+fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        "{}",
+        format_args!(
+            CONFIGDB_TBL_FMT!(),
+            "GenId", "created", "applied", "error", ""
+        )
+    )
+}
+impl Display for GwConfigMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let created = DateTime::<Utc>::from(self.create_t).format("%H:%M:%S on %Y/%m/%d");
+        let apply_time = if let Some(time) = self.apply_t {
+            let time = DateTime::<Utc>::from(time).format("%H:%M:%S on %Y/%m/%d");
+            format!("{time}")
+        } else {
+            "--".to_string()
+        };
+
+        let error = self
+            .error
+            .as_ref()
+            .map_or("none".to_string(), |e| e.to_string());
+
+        let is_rollback = if self.is_rollback { "(rollback)" } else { "" };
+
+        writeln!(
+            f,
+            "{}",
+            format_args!(
+                CONFIGDB_TBL_FMT!(),
+                self.genid, created, apply_time, error, is_rollback
+            )
+        )
+    }
+}
+
+pub struct ConfigSummary<'a>(pub &'a [GwConfigMeta]);
+impl Display for ConfigSummary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("Configuration summary".to_string()).fmt(f)?;
+        fmt_configdb_summary_heading(f)?;
+        for meta in self.0 {
+            meta.fmt(f)?;
+        }
+        Ok(())
     }
 }
