@@ -29,6 +29,7 @@ use std::num::NonZero;
 use std::sync::Arc;
 use tracing::{debug, error};
 
+mod display;
 mod filter_rw;
 mod setup;
 mod tables;
