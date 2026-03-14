@@ -6,40 +6,45 @@
 use crate::errors::{ConfigError, ConfigResult};
 use crate::external::{ExternalConfig, GenId};
 use crate::internal::InternalConfig;
+use arc_swap::ArcSwap;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
 
 /// Metadata associated to a gateway configuration
 #[derive(Clone, Debug)]
 pub struct GwConfigMeta {
-    // generation Id of a config
+    /// generation Id of a config
     pub genid: GenId,
 
-    // time when a config was learnt
+    /// time when a config was created/learnt
     pub create_t: SystemTime,
 
-    // time when a config was applied
+    /// time when a config was applied
     pub apply_t: Option<SystemTime>,
 
-    // error if configuration could not be applied
+    /// error if configuration could not be applied
     pub error: Option<ConfigError>,
+
+    /// whether this config was applied as a rollback
+    pub is_rollback: bool,
 }
 impl GwConfigMeta {
     ////////////////////////////////////////////////////////////////////////////////
     /// Build config metadata. This is automatically built when creating a `GwConfig`
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    fn new(genid: GenId) -> Self {
+    pub fn new(genid: GenId) -> Self {
         Self {
             genid,
             create_t: SystemTime::now(),
             apply_t: None,
             error: None,
+            is_rollback: false,
         }
     }
     ////////////////////////////////////////////////////////////////////////////////
-    /// Set the time when attempting to apply a configuration finished, whether it
-    /// succeeded or not.
+    /// Set the time when attempting to apply a configuration finished.
     ////////////////////////////////////////////////////////////////////////////////
     pub fn apply_time(&mut self) {
         self.apply_t = Some(SystemTime::now());
@@ -56,11 +61,16 @@ impl GwConfigMeta {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GwConfig {
-    pub meta: GwConfigMeta,               /* config metadata */
-    pub external: ExternalConfig,         /* external config: received */
-    pub internal: Option<InternalConfig>, /* internal config: built by gw from internal */
+    /// Configuration metadata
+    pub meta: ArcSwap<GwConfigMeta>,
+
+    /// Configuration, as received
+    pub external: ExternalConfig,
+
+    /// Configuration built from the external
+    pub internal: Option<InternalConfig>,
 }
 
 impl GwConfig {
@@ -70,7 +80,7 @@ impl GwConfig {
     #[must_use]
     pub fn new(external: ExternalConfig) -> Self {
         Self {
-            meta: GwConfigMeta::new(external.genid),
+            meta: ArcSwap::new(Arc::from(GwConfigMeta::new(external.genid))),
             external,
             internal: None,
         }
@@ -78,7 +88,6 @@ impl GwConfig {
 
     //////////////////////////////////////////////////////////////////
     /// Create a blank [`GwConfig`] with an empty [`ExternalConfig`].
-    /// Such a config has generation id 0
     //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn blank() -> Self {

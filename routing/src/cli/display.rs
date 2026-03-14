@@ -29,10 +29,10 @@ use crate::interfaces::interface::Attachment;
 use crate::interfaces::interface::{IfDataDot1q, IfDataEthernet};
 use crate::interfaces::interface::{IfState, IfType, Interface};
 
-use super::pretty_utils::{Heading, line};
 use crate::evpn::{RmacEntry, RmacStore, Vtep};
 
 use chrono::DateTime;
+use common::cliprovider::{Heading, line};
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap};
 use net::vxlan::Vni;
@@ -364,7 +364,7 @@ pub struct VrfV4Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV4Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fmt_vrf_oneline(self.0, f)?;
-        Heading("Ipv4 Next-hops".to_string()).fmt(f)?;
+        Heading("Ipv4 Next-hops").fmt(f)?;
         let iter =
             self.0.nhstore.iter().filter(|nh| {
                 nh.key.address.is_some_and(|a| a.is_ipv4()) || nh.key.address.is_none()
@@ -380,7 +380,7 @@ pub struct VrfV6Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV6Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fmt_vrf_oneline(self.0, f)?;
-        Heading("Ipv6 Next-hops".to_string()).fmt(f)?;
+        Heading("Ipv6 Next-hops").fmt(f)?;
         let iter =
             self.0.nhstore.iter().filter(|nh| {
                 nh.key.address.is_some_and(|a| a.is_ipv6()) || nh.key.address.is_none()
@@ -570,7 +570,7 @@ fn fmt_interface_addresses(f: &mut std::fmt::Formatter<'_>, iface: &Interface) -
 }
 impl Display for IfTableAddress<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading("interface addresses".to_string()).fmt(f)?;
+        Heading("interface addresses").fmt(f)?;
         fmt_interface_addr_heading(f)?;
         for iface in self.0.values() {
             fmt_interface_addresses(f, iface)?;
@@ -841,7 +841,7 @@ impl Display for FibGroups<'_> {
         let vrf_name = &self.0.name;
         let vrfid = self.0.vrfid;
         let fibid = fibr.get_id();
-        Heading("FIB groups".to_string()).fmt(f)?;
+        Heading("FIB groups").fmt(f)?;
 
         writeln!(f, " vrf: {vrf_name}, Id: {vrfid}")?;
         writeln!(f, " fib: {fibid}")?;
@@ -947,7 +947,7 @@ impl Display for CpiStats {
             None => "--".to_string(),
         };
 
-        Heading("Control-plane interface".to_string()).fmt(f)?;
+        Heading("Control-plane interface").fmt(f)?;
         writeln!(f, " STATUS: {}", self.status)?;
         writeln!(f, " last connect: {connect_t} pid: {pid} peer: {peer}")?;
         writeln!(f, " last msg rx : {last_msg_rx_t}")?;
@@ -1003,7 +1003,7 @@ impl Display for FrrmiStats {
 
 impl Display for Frrmi {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading("FRR Management interface".to_string()).fmt(f)?;
+        Heading("FRR Management interface").fmt(f)?;
         let status = if self.has_sock() {
             "connected"
         } else {
@@ -1017,7 +1017,7 @@ impl Display for Frrmi {
 
 impl Display for FrrAppliedConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading("Last FRR config applied".to_string()).fmt(f)?;
+        Heading("Last FRR config applied").fmt(f)?;
         writeln!(f, " genid: {}", self.genid)?;
         writeln!(f, " \n{}", self.cfg)
     }

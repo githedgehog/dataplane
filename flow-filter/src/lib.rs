@@ -28,6 +28,7 @@ use std::net::IpAddr;
 use std::num::NonZero;
 use tracing::{debug, error};
 
+mod display;
 mod filter_rw;
 mod setup;
 mod tables;

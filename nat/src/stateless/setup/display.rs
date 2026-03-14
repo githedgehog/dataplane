@@ -7,18 +7,14 @@ use crate::stateless::setup::tables::{
     AddrTranslationValue, NatRuleTable, NatTableValue, NatTables, PerVniTable,
     PortAddrTranslationValue,
 };
+use common::cliprovider::{CliData, CliDataProvider, Heading};
 use indenter::indented;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
 
-fn fmt_static_nat_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let heading = " Static NAT table ";
-    writeln!(f, " {heading:─^99}")
-}
-
 impl Display for NatTables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_static_nat_table_heading(f)?;
+        Heading("Static NAT table").fmt(f)?;
         if self.is_empty() {
             return writeln!(f, " (empty)");
         }
@@ -107,5 +103,11 @@ impl Display for PortAddrTranslationValue {
             )?;
         }
         Ok(())
+    }
+}
+
+impl CliDataProvider for NatTables {
+    fn provide(&self, _what: Option<CliData>) -> String {
+        self.to_string()
     }
 }

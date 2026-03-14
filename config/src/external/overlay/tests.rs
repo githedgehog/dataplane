@@ -8,7 +8,6 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test {
-    use crate::display::VpcDetailed;
     use crate::external::ConfigError;
     use crate::external::overlay::Overlay;
     use crate::external::overlay::VpcIdMap;
@@ -705,11 +704,11 @@ pub mod test {
         vpc_table.collect_peerings(&peering_table, &id_map);
 
         /* display VPC table */
-        println!("{vpc_table}");
+        println!("{}", vpc_table.as_summary());
 
         /* get vpc VPC1 */
         if let Some(vpc) = vpc_table.get_vpc("VPC-1") {
-            println!("{}", VpcDetailed(vpc));
+            println!("{}", vpc.as_detailed());
         }
     }
 

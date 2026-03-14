@@ -382,8 +382,6 @@ pub fn build_internal_config(
         } else {
             debug!("The configuration does not specify any VPCs...");
         }
-    } else if config.genid() != ExternalConfig::BLANK_GENID {
-        warn!("Config has no BGP configuration");
     }
 
     debug!("Successfully built internal config for genid {genid}");

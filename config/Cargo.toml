@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 # internal
+common = { workspace = true }
 hardware = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }
@@ -14,7 +15,8 @@ tracectl = { workspace = true }
 k8s-intf = { workspace = true }
 
 # external
-chrono = { workspace = true, features = ["alloc"] }
+arc-swap = { workspace = true }
+chrono = { workspace = true, features = ["alloc", "std"] }
 derive_builder = { workspace = true, default-features = false, features = ["default"] }
 ipnet = { workspace = true }
 linkme = { workspace = true }

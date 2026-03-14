@@ -45,6 +45,19 @@ fn cmd_show_router() -> Node {
     root
 }
 
+fn cmd_show_gateway() -> Node {
+    let mut root = Node::new("gateway");
+
+    root += Node::new("groups")
+        .desc("Show gateway group settings")
+        .action(CliAction::ShowGatewayGroups as u16);
+
+    root += Node::new("communities")
+        .desc("Show BGP communities used by gateways")
+        .action(CliAction::ShowGatewayCommunities as u16);
+
+    root
+}
 fn cmd_show_pipelines() -> Node {
     let mut root = Node::new("pipeline")
         .desc("Show packet-processing pipelines")
@@ -60,23 +73,15 @@ fn cmd_show_pipelines() -> Node {
 
     root
 }
-fn cmd_show_peering() -> Node {
-    let mut root = Node::new("peering");
-
-    root += Node::new("interfaces")
-        .desc("show details about the peering interfaces")
-        .action(CliAction::ShowVpcPifs as u16);
-
-    root += Node::new("policies")
-        .desc("show the peering policies")
-        .action(CliAction::ShowVpcPolicies as u16);
-    root
-}
 fn cmd_show_vpc() -> Node {
-    let mut root = Node::new("vpc")
-        .desc("Show VPCs")
+    let mut root = Node::new("vpc");
+    root += Node::new("summary")
+        .desc("Show a summary of VPCs")
         .action(CliAction::ShowVpc as u16);
-    root += cmd_show_peering();
+
+    root += Node::new("peerings")
+        .desc("Show the peerings of each vpc")
+        .action(CliAction::ShowVpcPeerings as u16);
     root
 }
 fn cmd_show_ip() -> Node {
@@ -205,12 +210,6 @@ fn cmd_show_routing() -> Node {
 
     root
 }
-fn cmd_show_nat() -> Node {
-    let mut root = Node::new("nat").desc("Show NAT (network address translation)");
-    root += Node::new("rules").desc("Dump the current NAT mappings");
-    root += Node::new("port-usage").desc("Usage of transport ports");
-    root
-}
 fn cmd_show_dpdk() -> Node {
     let mut root = Node::new("dpdk");
     let mut ports = Node::new("port").desc("DPDK port information");
@@ -233,6 +232,61 @@ fn cmd_show_tracing() -> Node {
         .action(CliAction::ShowTracingTagGroups as u16);
     root
 }
+fn cmd_show_flow_table() -> Node {
+    let mut root = Node::new("flow-table");
+    root += Node::new("entries")
+        .desc("Show entries in the flow table")
+        .action(CliAction::ShowFlowTable as u16);
+
+    root
+}
+fn cmd_show_flow_filter() -> Node {
+    let mut root = Node::new("flow-filter");
+    root += Node::new("table")
+        .desc("Show the flow-filter table")
+        .action(CliAction::ShowFlowFilter as u16);
+
+    root
+}
+fn cmd_show_port_forwarding_rules() -> Node {
+    let mut root = Node::new("port-forwarding");
+    root += Node::new("rules")
+        .desc("Show configured port-forwarding rules")
+        .action(CliAction::ShowPortForwarding as u16);
+    root
+}
+fn cmd_show_masquerading() -> Node {
+    let mut root = Node::new("masquerading");
+    root += Node::new("state")
+        .desc("Show the state of IP and port allocation for masquerading")
+        .action(CliAction::ShowMasquerading as u16);
+    root
+}
+fn cmd_show_static_nat() -> Node {
+    let mut root = Node::new("static-nat");
+    root += Node::new("rules")
+        .desc("Show configured static NAT rules")
+        .action(CliAction::ShowStaticNat as u16);
+    root
+}
+fn cmd_show_nat() -> Node {
+    let mut root = Node::new("");
+    root += cmd_show_static_nat();
+    root += cmd_show_port_forwarding_rules();
+    root += cmd_show_masquerading();
+    root
+}
+fn cmd_show_config_summary() -> Node {
+    let mut root = Node::new("config");
+    root += Node::new("summary")
+        .desc("Show a summary of configuration changes")
+        .action(CliAction::ShowConfigSummary as u16);
+    root += Node::new("internal")
+        .desc("Show a summary of configuration changes")
+        .action(CliAction::ShowConfigInternal as u16);
+    root
+}
+
 fn cmd_show() -> Node {
     let mut root: Node = Node::new("show");
     root += cmd_show_router();
@@ -243,6 +297,10 @@ fn cmd_show() -> Node {
     root += cmd_show_dpdk();
     root += cmd_show_kernel();
     root += cmd_show_tracing();
+    root += cmd_show_flow_table();
+    root += cmd_show_flow_filter();
+    root += cmd_show_gateway();
+    root += cmd_show_config_summary();
     root
 }
 fn cmd_loglevel() -> Node {
@@ -330,5 +388,6 @@ pub fn gw_cmd_tree() -> Node {
     root += cmd_show();
     root += cmd_frrmi();
     root += cmd_cpi();
+
     root
 }

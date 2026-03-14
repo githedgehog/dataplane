@@ -10,7 +10,7 @@ use std::rc::Rc;
 use tracing::debug;
 
 #[cfg(test)]
-use crate::cli::pretty_utils::Frame;
+use common::cliprovider::Frame;
 
 use super::nexthop::{FwAction, Nhop, NhopKey, NhopStore};
 use crate::evpn::{RmacStore, Vtep};
@@ -710,6 +710,7 @@ impl Vrf {
 #[allow(clippy::cast_sign_loss)]
 pub mod tests {
     use net::interface::InterfaceIndex;
+    use common::cliprovider::Frame;
 
     use super::*;
     use std::str::FromStr;
@@ -1017,7 +1018,7 @@ pub mod tests {
 
     // Initialize test vrf with test routes
     pub fn init_test_vrf(vrf: &mut Vrf) {
-        println!("{}", Frame("Initializing VRF routes".to_string()));
+        println!("{}", Frame("Initializing VRF routes"));
         {
             let route: Route = build_test_route(RouteOrigin::Connected, 0, 1);
             let nhop = build_test_nhop(None, Some(1), 0, None);

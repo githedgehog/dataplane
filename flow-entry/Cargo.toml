@@ -14,6 +14,7 @@ bolero = ["dep:bolero", "net/bolero"]
 [dependencies]
 ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, optional = true }
+common = { workspace = true }
 concurrency = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
 etherparse = { workspace = true }

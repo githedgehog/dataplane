@@ -77,6 +77,10 @@ impl PortFwTableReader {
     pub fn factory(&self) -> PortFwTableReaderFactory {
         PortFwTableReaderFactory(self.0.factory())
     }
+    #[must_use]
+    pub fn inner(&self) -> ReadHandle<PortFwTable> {
+        self.0.clone()
+    }
 }
 
 #[cfg(test)]

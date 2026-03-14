@@ -10,6 +10,7 @@ pub(crate) mod revent;
 pub(crate) mod rio;
 pub(crate) mod rpc_adapt;
 
+use common::cliprovider::CliDataProvider;
 use derive_builder::Builder;
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -77,6 +78,17 @@ pub struct RouterParams {
     pub dp_status: Arc<RwLock<DataplaneStatus>>,
 }
 
+/// Optional struct containing accessors to state outside of routing,
+/// for the CLI to be able to display them.
+#[derive(Default)]
+pub struct CliSources {
+    pub flow_table: Option<Box<dyn CliDataProvider>>,
+    pub flow_filter: Option<Box<dyn CliDataProvider>>,
+    pub portfw_table: Option<Box<dyn CliDataProvider>>,
+    pub nat_tables: Option<Box<dyn CliDataProvider>>,
+    pub masquerade_state: Option<Box<dyn CliDataProvider>>,
+}
+
 impl Display for RouterParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         writeln!(f, "Router config")?;
@@ -130,11 +142,11 @@ impl Router {
 
     /// Start a `Router`
     #[allow(clippy::new_without_default)]
-    pub fn new(params: RouterParams) -> Result<Router, RouterError> {
+    pub fn new(
+        params: RouterParams,
+        cli_sources: Option<CliSources>,
+    ) -> Result<Router, RouterError> {
         let name = &params.name;
-
-        debug!("{name}: Building RIO config...");
-        let rioconf = Self::build_rio_config(&params)?;
 
         debug!("{name}: Creating interface table...");
         let (iftw, iftr) = IfTableWriter::new();
@@ -146,8 +158,11 @@ impl Router {
         let (mut resolver, atabler) = AtResolver::new(true);
         resolver.start(3);
 
+        debug!("{name}: Building router IO config...");
+        let rioconf = Self::build_rio_config(&params)?;
+
         debug!("{name}: Starting router IO...");
-        let rio_handle = start_rio(&rioconf, fibtw, iftw, atabler)?;
+        let rio_handle = start_rio(&rioconf, fibtw, iftw, atabler, cli_sources)?;
 
         // Start BMP server in background if configured, always with mandatory dp_status
         let bmp_handle = if let Some(bmp_params) = &params.bmp {

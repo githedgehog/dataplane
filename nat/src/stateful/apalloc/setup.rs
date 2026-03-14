@@ -22,6 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tracing::debug;
 
+const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
 impl NatDefaultAllocator {
     /// Build a [`NatDefaultAllocator`] from information collected from a [`VpcTable`] object. This
     /// information is passed as a [`StatefulNatConfig`].
@@ -151,7 +153,9 @@ where
             find_masquerade_portfw_overlap(&port_forwarding_exposes, expose);
 
         // We should always have an idle timeout if we process this expose for stateful NAT.
-        let idle_timeout = expose.idle_timeout().unwrap_or_else(|| unreachable!());
+        let idle_timeout = expose
+            .idle_timeout()
+            .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT);
 
         let tcp_ip_allocator = ip_allocator_for_prefixes(
             original_prefixes_from_expose(expose),
