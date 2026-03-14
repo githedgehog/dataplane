@@ -8,7 +8,7 @@ use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
 use std::fmt::{Debug, Display};
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{AtomicInstant, FlowInfoItem};
@@ -142,6 +142,7 @@ pub struct FlowInfoLocked {
 pub struct FlowInfo {
     expires_at: AtomicInstant,
     flowkey: Option<FlowKey>,
+    genid: AtomicI64,
     status: AtomicFlowStatus,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
@@ -156,6 +157,7 @@ impl FlowInfo {
         Self {
             expires_at: AtomicInstant::new(expires_at),
             flowkey: None,
+            genid: AtomicI64::new(0),
             status: AtomicFlowStatus::from(FlowStatus::Active),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
@@ -169,6 +171,16 @@ impl FlowInfo {
     #[must_use]
     pub fn flowkey(&self) -> Option<&FlowKey> {
         self.flowkey.as_ref()
+    }
+
+    /// Set the generation Id of a flow
+    pub fn set_genid(&self, genid: i64) {
+        self.genid.store(genid, Ordering::Relaxed);
+    }
+
+    /// Read the generation Id of a flow.
+    pub fn genid(&self) -> i64 {
+        self.genid.load(Ordering::Relaxed)
     }
 
     /// We want to create a pair of `FlowInfo`s that are mutually related via a `Weak` references so that no lookup
@@ -224,6 +236,7 @@ impl FlowInfo {
             one_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
                 flowkey: Some(key1),
+                genid: AtomicI64::new(0),
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(two_weak),
@@ -231,6 +244,7 @@ impl FlowInfo {
             two_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
                 flowkey: Some(key2),
+                genid: AtomicI64::new(0),
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(one_weak),
@@ -369,6 +383,7 @@ impl Display for FlowInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let expires_at = self.expires_at.load(Ordering::Relaxed);
         let expires_in = expires_at.saturating_duration_since(Instant::now());
+        let genid = self.genid();
         writeln!(f)?;
         if let Ok(info) = self.locked.try_read() {
             write!(f, "{info}")?;
@@ -383,7 +398,7 @@ impl Display for FlowInfo {
 
         writeln!(
             f,
-            "      status: {:?}, expires in {}s, related: {has_related}",
+            "      status: {:?}, expires in {}s, related: {has_related}, genid: {genid}",
             self.status,
             expires_in.as_secs(),
         )
