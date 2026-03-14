@@ -17,6 +17,7 @@ pub mod test {
     use nat::stateless::NatTablesWriter;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
+    use pipeline::PipelineData;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
     use std::str::FromStr;
@@ -465,9 +466,13 @@ pub mod test {
         /* create VPC stats store (Arc) */
         let vpc_stats_store = VpcStatsStore::new();
 
+        /* pipeline data */
+        let pipeline_data = Arc::from(PipelineData::default());
+
         /* build configuration of mgmt config processor */
         let processor_config = ConfigProcessorParams {
             router_ctl,
+            pipeline_data,
             vpcmapw,
             nattablesw,
             natallocatorw,
