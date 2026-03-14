@@ -26,6 +26,7 @@ use nat::portfw::build_port_forwarding_configuration;
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
+use pipeline::PipelineData;
 
 use crate::processor::display::ConfigHistory;
 use crate::processor::gwconfigdb::GwConfigDatabase;
@@ -76,6 +77,9 @@ pub(crate) struct ConfigProcessor {
 pub struct ConfigProcessorParams {
     // channel to router
     pub router_ctl: RouterCtlSender,
+
+    // access data associated to pipeline
+    pub pipeline_data: Arc<PipelineData>,
 
     // writer for vpc mapping table
     pub vpcmapw: VpcMapWriter<VpcMapName>,
@@ -622,6 +626,9 @@ impl ConfigProcessor {
 
         /* apply config in router */
         apply_router_config(&kernel_vrfs, config, router_ctl).await?;
+
+        /* update the pipeline generation id, iff config was applied */
+        self.proc_params.pipeline_data.set_genid(genid);
 
         info!("Successfully applied config for genid {genid}");
         Ok(())
