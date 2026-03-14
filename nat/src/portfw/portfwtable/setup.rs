@@ -38,6 +38,8 @@ fn expose_to_portfw_rule(
         PrefixWithOptionalPorts::PrefixPorts(e) => (e.prefix(), e.ports()),
     };
 
+    let idle_timeout = expose.idle_timeout();
+
     // build the rule
     let key = PortFwKey::new(src_vpc, proto);
     PortFwEntry::new(
@@ -48,7 +50,7 @@ fn expose_to_portfw_rule(
         (ext_ports.start(), ext_ports.end()),
         (ports.start(), ports.end()),
         None,
-        None,
+        idle_timeout, // intended
     )
 }
 fn vpc_port_fw_peering(
