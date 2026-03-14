@@ -403,6 +403,7 @@ fn show_config(
         CliAction::ShowVpcPeerings => vpc_table.as_peerings().to_string(),
         CliAction::ShowGatewayGroups => config.external.gwgroups.to_string(),
         CliAction::ShowGatewayCommunities => config.external.communities.to_string(),
+        CliAction::ShowConfigInternal => format!("{:#?}", config.internal),
         _ => unreachable!(),
     };
     Ok(CliResponse::from_request_ok(request, contents))
@@ -430,7 +431,8 @@ fn do_handle_cli_request(
         CliAction::ShowVpc
         | CliAction::ShowVpcPeerings
         | CliAction::ShowGatewayCommunities
-        | CliAction::ShowGatewayGroups => {
+        | CliAction::ShowGatewayGroups
+        | CliAction::ShowConfigInternal => {
             return show_config(request, rio.gwconfig.as_ref());
         }
         CliAction::ShowConfigSummary => {
