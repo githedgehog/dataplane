@@ -19,3 +19,6 @@ pub use portfwtable::access::{PortFwTableReader, PortFwTableReaderFactory, PortF
 pub use portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable};
 pub use portfwtable::portrange::PortRange;
 pub use portfwtable::setup::build_port_forwarding_configuration;
+
+use tracectl::trace_target;
+trace_target!("port-forwarding", LevelFilter::INFO, &["nat", "pipeline"]);
