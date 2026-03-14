@@ -21,8 +21,8 @@ use nat::stateless::NatTablesWriter;
 use nat::{IcmpErrorHandler, StatefulNat, StatelessNat};
 
 use net::buffer::PacketBufferMut;
-use pipeline::DynPipeline;
 use pipeline::sample_nfs::PacketDumper;
+use pipeline::{DynPipeline, PipelineData};
 
 use routing::{Router, RouterError, RouterParams};
 
@@ -73,8 +73,10 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let nattabler_factory = nattablesw.get_reader_factory();
     let natallocator_factory = natallocatorw.get_reader_factory();
     let portfw_factory = portfw_w.reader().factory();
+    let pdata = Arc::from(PipelineData::new(0));
 
     let pipeline_builder = move || {
+        let pdata_clone = pdata.clone();
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
@@ -101,6 +103,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
         DynPipeline::new()
+            .set_data(pdata_clone)
             .add_stage(stage_ingress)
             .add_stage(iprouter1)
             .add_stage(flow_lookup)
