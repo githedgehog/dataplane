@@ -38,6 +38,9 @@ fn expose_to_portfw_rule(
         PrefixWithOptionalPorts::PrefixPorts(e) => (e.prefix(), e.ports()),
     };
 
+    // the idle timeout of the api gets mapped to the established timeout in port-forwarding
+    let idle_timeout = expose.idle_timeout();
+
     // build the rule
     let key = PortFwKey::new(src_vpc, proto);
     PortFwEntry::new(
@@ -48,7 +51,7 @@ fn expose_to_portfw_rule(
         (ext_ports.start(), ext_ports.end()),
         (ports.start(), ports.end()),
         None,
-        None,
+        idle_timeout,
     )
 }
 fn vpc_port_fw_peering(
