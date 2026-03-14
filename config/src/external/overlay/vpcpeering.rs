@@ -173,12 +173,10 @@ impl VpcExpose {
 
     #[must_use]
     pub fn idle_timeout(&self) -> Option<Duration> {
-        self.nat.as_ref().and_then(|nat| {
-            if let VpcExposeNatConfig::Stateful(config) = &nat.config {
-                config.idle_timeout
-            } else {
-                None
-            }
+        self.nat.as_ref().and_then(|nat| match &nat.config {
+            VpcExposeNatConfig::Stateful(config) => config.idle_timeout,
+            VpcExposeNatConfig::PortForwarding(config) => config.idle_timeout,
+            VpcExposeNatConfig::Stateless(_) => None,
         })
     }
 
