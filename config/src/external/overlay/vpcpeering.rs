@@ -16,30 +16,14 @@ use tracing::warn;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStatelessNat;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStatefulNat {
-    pub idle_timeout: Duration,
+    pub idle_timeout: Option<Duration>,
 }
 
-impl Default for VpcExposeStatefulNat {
-    fn default() -> Self {
-        VpcExposeStatefulNat {
-            idle_timeout: Duration::from_secs(120),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposePortForwarding {
-    pub idle_timeout: Duration,
-}
-
-impl Default for VpcExposePortForwarding {
-    fn default() -> Self {
-        VpcExposePortForwarding {
-            idle_timeout: Duration::from_secs(120),
-        }
-    }
+    pub idle_timeout: Option<Duration>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,9 +113,7 @@ impl VpcExpose {
         mut self,
         idle_timeout: Option<Duration>,
     ) -> Result<Self, ConfigError> {
-        let options = idle_timeout
-            .map(|to| VpcExposeStatefulNat { idle_timeout: to })
-            .unwrap_or_default();
+        let options = VpcExposeStatefulNat { idle_timeout };
         match self.nat.as_mut() {
             Some(nat) if nat.is_stateful() => {
                 nat.config = VpcExposeNatConfig::Stateful(options);
@@ -164,9 +146,7 @@ impl VpcExpose {
         idle_timeout: Option<Duration>,
         proto: Option<L4Protocol>,
     ) -> Result<Self, ConfigError> {
-        let options = idle_timeout
-            .map(|to| VpcExposePortForwarding { idle_timeout: to })
-            .unwrap_or_default();
+        let options = VpcExposePortForwarding { idle_timeout };
         match self.nat.as_mut() {
             Some(nat) if nat.is_port_forwarding() => {
                 nat.config = VpcExposeNatConfig::PortForwarding(options);
@@ -195,7 +175,7 @@ impl VpcExpose {
     pub fn idle_timeout(&self) -> Option<Duration> {
         self.nat.as_ref().and_then(|nat| {
             if let VpcExposeNatConfig::Stateful(config) = &nat.config {
-                Some(config.idle_timeout)
+                config.idle_timeout
             } else {
                 None
             }

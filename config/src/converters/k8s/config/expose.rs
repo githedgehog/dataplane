@@ -632,9 +632,7 @@ mod test {
                             panic!("Stateful NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
                         };
                         if let Some(k8s_idle_timeout) = k8s_masquerade.idle_timeout {
-                            assert_eq!(config.idle_timeout, k8s_idle_timeout);
-                        } else {
-                            assert_eq!(config.idle_timeout, std::time::Duration::new(2 * 60, 0));
+                            assert_eq!(config.idle_timeout, Some(k8s_idle_timeout.into()));
                         }
                     },
                     (Some(VpcExposeNatConfig::PortForwarding(config)), Some(k8s_nat)) => {
@@ -642,9 +640,7 @@ mod test {
                             panic!("Port forwarding configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
                         };
                         if let Some(k8s_idle_timeout) = k8s_port_forward.idle_timeout {
-                            assert_eq!(config.idle_timeout, k8s_idle_timeout);
-                        } else {
-                            assert_eq!(config.idle_timeout, std::time::Duration::new(2 * 60, 0));
+                            assert_eq!(config.idle_timeout, Some(k8s_idle_timeout.into()));
                         }
                         // Verify port ranges from port forwarding config are applied
                         if let Some(ports) = k8s_port_forward.ports.as_ref() {

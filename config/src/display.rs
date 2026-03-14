@@ -23,11 +23,10 @@ const SEP: &str = "       ";
 
 impl Display for VpcExposeStatefulNat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "masquerade, idle timeout: {}",
-            self.idle_timeout.as_secs()
-        )
+        let idle_timeout = self
+            .idle_timeout
+            .map_or("default".to_string(), |t| t.as_secs().to_string());
+        write!(f, "masquerade, idle timeout: {idle_timeout}")
     }
 }
 impl Display for VpcExposeStatelessNat {
@@ -37,11 +36,10 @@ impl Display for VpcExposeStatelessNat {
 }
 impl Display for VpcExposePortForwarding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "port-forwarding, idle timeout: {}",
-            self.idle_timeout.as_secs()
-        )
+        let idle_timeout = self
+            .idle_timeout
+            .map_or("default".to_string(), |t| t.as_secs().to_string());
+        write!(f, "port-forwarding, idle timeout: {idle_timeout}")
     }
 }
 
