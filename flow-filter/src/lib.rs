@@ -98,6 +98,43 @@ impl FlowFilter {
         Ok(Some(*dst_vpcd))
     }
 
+    fn bypass_with_flow_info<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        genid: i64,
+    ) -> bool {
+        let Some(flow_info) = &packet.meta().flow_info else {
+            debug!("Packet does not contain any flow-info");
+            return false;
+        };
+        let flow_genid = flow_info.genid();
+        if flow_genid < genid {
+            debug!("Packet has flow-info ({flow_genid} < {genid}). Need to re-evaluate...");
+            return false;
+        }
+        let status = flow_info.status();
+        if status != FlowStatus::Active {
+            debug!("Found flow-info but its status is {status}. Need to re-evaluate...");
+            return false;
+        }
+
+        let vpcd = flow_info
+            .locked
+            .read()
+            .unwrap()
+            .dst_vpcd
+            .as_ref()
+            .and_then(|d| d.extract_ref::<VpcDiscriminant>())
+            .copied();
+
+        if set_nat_requirements_from_flow_info(packet).is_err() {
+            debug!("Failed to set nat requirements");
+            return false;
+        }
+        packet.meta_mut().dst_vpcd = vpcd;
+        true
+    }
+
     /// Process a packet.
     fn process_packet<Buf: PacketBufferMut>(
         &self,
@@ -105,6 +142,13 @@ impl FlowFilter {
         packet: &mut Packet<Buf>,
     ) {
         let nfi = &self.name;
+        let genid = self.pipeline_data.genid();
+
+        // bypass flow-filter if packet has flow-info and it is not outdated
+        if self.bypass_with_flow_info(packet, genid) {
+            debug!("Bypassing flow-filter..");
+            return;
+        }
 
         let Some(net) = packet.try_ip() else {
             debug!("{nfi}: No IP headers found, dropping packet");
@@ -182,9 +226,28 @@ impl FlowFilter {
         // Drop the packet since we don't know destination and it is not an icmp error
         let Some(dst_vpcd) = dst_vpcd else {
             debug!("Could not determine dst vpcd. Dropping packet");
+            // if packet referred to a flow, invalidate it
+            if let Some(flow_info) = packet.meta().flow_info.as_ref() {
+                flow_info.invalidate();
+                flow_info
+                    .related
+                    .as_ref()
+                    .and_then(|r| r.upgrade())
+                    .inspect(|r| r.invalidate());
+            }
             packet.done(DoneReason::Filtered);
             return;
         };
+
+        //  packet is allowed and it refers to a flow: update its genid, and that of the related flow if any
+        if let Some(flow_info) = &packet.meta().flow_info {
+            flow_info.set_genid(genid);
+            flow_info
+                .related
+                .as_ref()
+                .and_then(|r| r.upgrade())
+                .inspect(|r| r.set_genid(genid));
+        }
 
         debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
