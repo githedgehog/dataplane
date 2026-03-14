@@ -195,6 +195,7 @@ pub enum CliAction {
 
     // config
     ShowConfigSummary,
+    ShowConfigInternal,
 }
 
 impl CliAction {
