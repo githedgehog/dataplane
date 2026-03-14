@@ -4,6 +4,9 @@
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use std::marker::PhantomData;
+use std::sync::Arc;
+
+use crate::PipelineData;
 
 /// Trait for an object that processes a stream of packets.
 pub trait NetworkFunction<Buf: PacketBufferMut> {
@@ -23,6 +26,9 @@ pub trait NetworkFunction<Buf: PacketBufferMut> {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a;
+
+    /// Let NFs access some `PipelineData` if they wish on their creation
+    fn set_data(&mut self, _data: Arc<PipelineData>) {}
 }
 
 struct StaticChainImpl<Buf: PacketBufferMut, NF1: NetworkFunction<Buf>, NF2: NetworkFunction<Buf>> {

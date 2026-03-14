@@ -11,7 +11,7 @@ use net::flows::{ExtractMut, ExtractRef, FlowInfo};
 use net::headers::{TryIp, TryTcp, TryTransport};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use pipeline::NetworkFunction;
+use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,14 +28,12 @@ use crate::portfw::packet::{dnat_packet, nat_packet};
 #[allow(unused)]
 use tracing::{debug, error, trace, warn};
 
-use tracectl::trace_target;
-trace_target!("port-forwarding", LevelFilter::INFO, &["nat", "pipeline"]);
-
 /// A port-forwarding network function
 pub struct PortForwarder {
     name: String,
     flow_table: Arc<FlowTable>,
     fwtable: PortFwTableReader,
+    pipeline_data: Arc<PipelineData>,
 }
 
 impl PortForwarder {
@@ -46,6 +44,7 @@ impl PortForwarder {
             name: name.to_string(),
             flow_table,
             fwtable,
+            pipeline_data: Arc::from(PipelineData::default()),
         }
     }
 
@@ -115,6 +114,11 @@ impl PortForwarder {
         // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
         let timeout = Instant::now() + entry.init_timeout();
         let (fw_flow, rev_flow) = FlowInfo::related_pair(timeout, fw_key, rev_key);
+
+        // label the flows with the current generation id
+        let genid = self.pipeline_data.genid();
+        fw_flow.set_genid(genid);
+        rev_flow.set_genid(genid);
 
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
@@ -368,5 +372,9 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PortForwarder {
             }
             packet.enforce()
         })
+    }
+
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        self.pipeline_data = data;
     }
 }

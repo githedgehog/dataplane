@@ -23,7 +23,7 @@ use net::flows::{ExtractRef, FlowInfo};
 use net::headers::{Net, Transport, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, FlowKeyData, IpProtoKey};
-use pipeline::NetworkFunction;
+use pipeline::{NetworkFunction, PipelineData};
 use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
@@ -84,6 +84,7 @@ pub struct StatefulNat {
     name: String,
     sessions: Arc<FlowTable>,
     allocator: NatAllocatorReader,
+    pipeline_data: Arc<PipelineData>,
 }
 
 impl StatefulNat {
@@ -94,6 +95,7 @@ impl StatefulNat {
             name: name.to_string(),
             sessions,
             allocator,
+            pipeline_data: Arc::from(PipelineData::default()),
         }
     }
 
@@ -193,6 +195,10 @@ impl StatefulNat {
         );
 
         let flow_info = FlowInfo::new(Self::session_timeout_time(idle_timeout));
+
+        // label the flow with the current generation id
+        flow_info.set_genid(self.pipeline_data.genid());
+
         if let Ok(mut write_guard) = flow_info.locked.write() {
             write_guard.nat_state = Some(Box::new(state));
             write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
@@ -578,6 +584,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
             }
             packet.enforce()
         })
+    }
+
+    fn set_data(&mut self, data: Arc<PipelineData>) {
+        self.pipeline_data = data;
     }
 }
 

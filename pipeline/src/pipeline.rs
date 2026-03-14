@@ -11,9 +11,36 @@ use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use ordermap::OrderMap;
 use std::any::Any;
+use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 
 /// A type that represents an Id for a stage or NF
 pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
+
+/// Data associated to a `Pipeline`
+#[derive(Default, Debug)]
+pub struct PipelineData {
+    /// Current generation Id
+    pub genid: AtomicI64,
+}
+impl PipelineData {
+    #[must_use]
+    /// Build a new `PipelineData` object
+    pub fn new(genid: i64) -> Self {
+        Self {
+            genid: AtomicI64::new(genid),
+        }
+    }
+    /// Read the generation id
+    pub fn genid(&self) -> i64 {
+        self.genid.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Set the geneation id
+    pub fn set_genid(&self, genid: i64) {
+        self.genid
+            .store(genid, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 /// A dynamic pipeline that can be updated at runtime.
 ///
@@ -25,6 +52,7 @@ pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
 #[derive(Default)]
 pub struct DynPipeline<Buf: PacketBufferMut> {
     nfs: OrderMap<StageId<Buf>, Box<dyn DynNetworkFunction<Buf>>>,
+    data: Arc<PipelineData>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +67,21 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     pub fn new() -> Self {
         Self {
             nfs: OrderMap::new(),
+            data: Arc::from(PipelineData::default()),
         }
+    }
+
+    #[must_use]
+    /// Set `PipelineData` to a `DynPipeline`
+    pub fn set_data(mut self, data: Arc<PipelineData>) -> Self {
+        self.data = data;
+        self
+    }
+
+    #[must_use]
+    /// Get `PipelineData` from a pipeline
+    pub fn get_data(&self) -> Arc<PipelineData> {
+        self.data.clone()
     }
 
     /// Add a static network function to the pipeline.
@@ -47,7 +89,8 @@ impl<Buf: PacketBufferMut> DynPipeline<Buf> {
     /// This method takes a [`NetworkFunction`] and adds it to the pipeline.
     ///
     #[must_use]
-    pub fn add_stage<NF: NetworkFunction<Buf> + 'static>(self, nf: NF) -> Self {
+    pub fn add_stage<NF: NetworkFunction<Buf> + 'static>(self, mut nf: NF) -> Self {
+        nf.set_data(self.data.clone());
         self.add_stage_dyn(nf_dyn(nf))
     }
 

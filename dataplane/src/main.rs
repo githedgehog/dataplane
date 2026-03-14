@@ -208,6 +208,7 @@ fn main() {
         hostname: gwname.clone(),
         processor_params: ConfigProcessorParams {
             router_ctl: setup.router.get_ctl_tx(),
+            pipeline_data: pipeline_factory().get_data(),
             vpcmapw: setup.vpcmapw,
             nattablesw: setup.nattablesw,
             natallocatorw: setup.natallocatorw,
