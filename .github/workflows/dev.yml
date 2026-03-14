@@ -425,10 +425,11 @@ jobs:
           path: fab-repo
           persist-credentials: false
 
-      - name: Bump dataplane in fabricator
+      - name: Bump dataplane+frr in fabricator
         working-directory: fab-repo
         run: |
           sed -i "s/^\tDataplaneVersion.*/\tDataplaneVersion=meta.Version(\"${{ github.ref_name }}\")/" pkg/fab/versions.go
+          sed -i "s/^\tFRRVersion.*/\tFRRVersion=meta.Version(\"${{ github.ref_name }}\")/" pkg/fab/versions.go
           go fmt pkg/fab/versions.go
 
       - name: Generate token for the fabricator repository
@@ -448,12 +449,12 @@ jobs:
           path: fab-repo
           branch: pr/auto/dataplane-bump
           commit-message: |
-            bump: dataplane to ${{ github.ref_name }}
+            bump: dataplane/frr to ${{ github.ref_name }}
 
             This is an automated commit created by GitHub Actions workflow,
             in the dataplane repository.
           signoff: true
-          title: "bump: dataplane to ${{ github.ref_name }}"
+          title: "bump: dataplane/frr to ${{ github.ref_name }}"
           body: |
             This is an automated Pull Request created by GitHub Actions workflow,
             in the dataplane repository.
