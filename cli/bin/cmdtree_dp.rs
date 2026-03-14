@@ -281,6 +281,9 @@ fn cmd_show_config_summary() -> Node {
     root += Node::new("summary")
         .desc("Show a summary of configuration changes")
         .action(CliAction::ShowConfigSummary as u16);
+    root += Node::new("internal")
+        .desc("Show the internal configuration")
+        .action(CliAction::ShowConfigInternal as u16);
     root
 }
 
