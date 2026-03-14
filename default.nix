@@ -505,6 +505,9 @@ let
           . \
           ${pkgs.pkgsHostHost.libc.out} \
           ${pkgs.pkgsHostHost.glibc.libgcc} \
+          ${pkgs.pkgsHostHost.bash.out} \
+          ${pkgs.pkgsHostHost.ncurses} \
+          ${pkgs.pkgsHostHost.readline} \
       '';
 
   };
@@ -522,7 +525,8 @@ let
       cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
       cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
       cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
-      ln -s cli "$tmp/bin/sh"
+      ln -s "${pkgs.pkgsHostHost.bash.out}/bin/bash" "$tmp/bin/bash"
+      ln -s "/bin/bash" "$tmp/bin/sh"
       cd "$tmp"
       # we take some care to make the tar file reproducible here
       tar \
