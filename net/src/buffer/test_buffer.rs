@@ -14,16 +14,14 @@ use crate::buffer::{
 };
 use tracing::trace;
 
-// only included for doc ref
-#[cfg(doc)]
-use crate::buffer::PacketBuffer;
-
 // Caution: do not implement Clone for `TestBuffer`.
 // Clone would significantly deviate from the actual mechanics of a DPDK mbuf.
 /// Toy data structure which implements [`PacketBuffer`]
 ///
 /// The core function of this structure is to facilitate testing by "faking" many useful properties
 /// of a real DPDK mbuf (without the need to spin up a full EAL).
+///
+/// [`PacketBuffer`]: crate::buffer::PacketBuffer
 #[derive(Debug, Clone)]
 pub struct TestBuffer {
     buffer: Vec<u8>,

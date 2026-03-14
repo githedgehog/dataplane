@@ -16,3 +16,10 @@ result*/**
 /bin
 sysroot
 devroot
+creds.json
+key.pem
+cert.pem
+*.pem
+*.crt
+*.key
+*.csr
