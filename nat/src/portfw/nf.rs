@@ -28,9 +28,6 @@ use crate::portfw::packet::{dnat_packet, nat_packet};
 #[allow(unused)]
 use tracing::{debug, error, trace, warn};
 
-use tracectl::trace_target;
-trace_target!("port-forwarding", LevelFilter::INFO, &["nat", "pipeline"]);
-
 /// A port-forwarding network function
 pub struct PortForwarder {
     name: String,
