@@ -229,12 +229,7 @@ impl FlowFilter {
             debug!("Could not determine dst vpcd. Dropping packet");
             // if packet referred to a flow, invalidate it
             if let Some(flow_info) = packet.meta().flow_info.as_ref() {
-                flow_info.invalidate();
-                flow_info
-                    .related
-                    .as_ref()
-                    .and_then(|r| r.upgrade())
-                    .inspect(|r| r.invalidate());
+                flow_info.invalidate_pair();
             }
             packet.done(DoneReason::Filtered);
             return;
@@ -242,12 +237,7 @@ impl FlowFilter {
 
         // packet is allowed. If it refers to a flow, update its genid, and that of the related flow if any
         if let Some(flow_info) = &packet.meta().flow_info {
-            flow_info.set_genid(genid);
-            flow_info
-                .related
-                .as_ref()
-                .and_then(|r| r.upgrade())
-                .inspect(|r| r.set_genid(genid));
+            flow_info.set_genid_pair(genid);
         }
 
         debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");

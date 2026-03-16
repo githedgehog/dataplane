@@ -185,6 +185,15 @@ impl FlowInfo {
         self.genid.store(genid, Ordering::Relaxed);
     }
 
+    /// Set the generation Id of a flow and that of its related flow if any
+    pub fn set_genid_pair(&self, genid: i64) {
+        self.genid.store(genid, Ordering::Relaxed);
+        self.related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .inspect(|r| r.set_genid(genid));
+    }
+
     /// Read the generation Id of a flow.
     pub fn genid(&self) -> i64 {
         self.genid.load(Ordering::Relaxed)
@@ -358,6 +367,19 @@ impl FlowInfo {
     /// This method is thread-safe.
     pub fn invalidate(&self) {
         self.update_status(FlowStatus::Cancelled);
+    }
+
+    /// Invalidate a flow and also its related flow if any.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe.
+    pub fn invalidate_pair(&self) {
+        self.invalidate();
+        self.related
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .inspect(|related| related.invalidate());
     }
 
     /// Update the flow status.
