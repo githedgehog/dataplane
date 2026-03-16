@@ -545,12 +545,17 @@ depgraph:
 
 # Bump the minor version in Cargo.toml and reset patch version to 0
 [script]
-bump_minor_version:
-    CURRENT_VERSION=$(yq '.workspace.package.version' Cargo.toml)
+bump_minor_version yq_flags="":
+    CURRENT_VERSION=$(yq -r {{ yq_flags }} '.workspace.package.version' Cargo.toml)
     echo "Current version: ${CURRENT_VERSION}"
     MAJOR_VNUM=$(echo ${CURRENT_VERSION} | cut -d. -f1)
     MINOR_VNUM=$(echo ${CURRENT_VERSION} | cut -d. -f2)
     NEW_VERSION="${MAJOR_VNUM}.$((MINOR_VNUM + 1)).0"
-    echo "New version: ${NEW_VERSION}"
-    sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+    just bump_version "${NEW_VERSION}"
+
+# Bump the version in Cargo.toml to the specified version (for example, "1.2.3")
+[script]
+bump_version version:
+    echo "New version: {{ version }}"
+    sed -i "s/^version = \".*\"/version = \"{{ version }}\"/" Cargo.toml
     just cargo update -w
