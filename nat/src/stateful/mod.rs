@@ -22,7 +22,7 @@ use net::flow_key::{IcmpProtoKey, Uni};
 use net::flows::{ExtractRef, FlowInfo};
 use net::headers::{Net, Transport, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::{FlowKey, FlowKeyData, IpProtoKey};
+use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
 use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -173,28 +173,13 @@ impl StatefulNat {
         Instant::now() + timeout
     }
 
-    fn create_session<I: NatIpWithBitmap>(
-        &self,
-        flow_key: &FlowKey,
+    fn setup_flow_nat_state<I: NatIpWithBitmap>(
+        flow_info: &FlowInfo,
         state: NatFlowState<I>,
         dst_vpcd: VpcDiscriminant,
-        idle_timeout: Duration,
     ) {
-        // Clear the destination VPC so we can make lookups without knowing it
-        let new_flow_key = FlowKey::Unidirectional(FlowKeyData::new(
-            flow_key.data().src_vpcd(),
-            *flow_key.data().src_ip(),
-            *flow_key.data().dst_ip(),
-            *flow_key.data().proto_key_info(),
-        ));
-        debug!(
-            "{}: Creating new flow session entry: {} -> {}",
-            self.name(),
-            new_flow_key.data(),
-            state
-        );
-
-        let flow_info = FlowInfo::new(Self::session_timeout_time(idle_timeout));
+        let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!());
+        debug!("Setting up new flow: {flow_key} -> {state}");
         if let Ok(mut write_guard) = flow_info.locked.write() {
             write_guard.nat_state = Some(Box::new(state));
             write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
@@ -202,7 +187,39 @@ impl StatefulNat {
             // flow info is just locally created
             unreachable!()
         }
-        self.sessions.insert(new_flow_key, flow_info);
+    }
+
+    fn create_flow_pair<Buf: PacketBufferMut, I: NatIpWithBitmap>(
+        &self,
+        packet: &mut Packet<Buf>,
+        flow_key: &FlowKey,
+        alloc: AllocationResult<AllocatedIpPort<I>>,
+    ) -> Result<(), StatefulNatError> {
+        // Given that at least one of alloc.src or alloc.dst is set, we should always have at least one timeout set.
+        let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
+
+        // src and dst vpc of this packet
+        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
+        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+
+        // build key for reverse flow
+        let reverse_key = Self::new_reverse_session(flow_key, &alloc, dst_vpc_id)?;
+
+        // build NAT state for both flows
+        let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
+
+        // build a flow pair from the keys (without NAT state)
+        let expires_at = Self::session_timeout_time(idle_timeout);
+        let (forward, reverse) = FlowInfo::related_pair(expires_at, *flow_key, reverse_key);
+
+        // set up their NAT state
+        Self::setup_flow_nat_state(&forward, forward_state, dst_vpc_id);
+        Self::setup_flow_nat_state(&reverse, reverse_state, src_vpc_id);
+
+        // insert in flow-table
+        self.sessions.insert_from_arc(*flow_key, &forward);
+        self.sessions.insert_from_arc(reverse_key, &reverse);
+        Ok(())
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -433,7 +450,6 @@ impl StatefulNat {
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
 
-        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
         let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
         // build extended flow key, with the dst vpc discriminant
@@ -449,22 +465,9 @@ impl StatefulNat {
 
         debug!("{}: Allocated translation data: {alloc}", self.name());
 
-        // Given that at least one of alloc.src or alloc.dst is set, we should always have at
-        // least one timeout set.
-        let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
-
         let translation_data = Self::get_translation_data(&alloc.src, &alloc.dst);
 
-        let reverse_flow_key = Self::new_reverse_session(&flow_key, &alloc, dst_vpc_id)?;
-        let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
-
-        self.create_session(&flow_key, forward_state, dst_vpc_id, idle_timeout);
-        self.create_session(
-            &reverse_flow_key,
-            reverse_state.clone(),
-            src_vpc_id,
-            idle_timeout,
-        );
+        self.create_flow_pair(packet, &flow_key, alloc)?;
 
         Self::stateful_translate::<Buf>(self.name(), packet, &translation_data).and(Ok(true))
     }
