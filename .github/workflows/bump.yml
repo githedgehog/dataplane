@@ -37,7 +37,7 @@ jobs:
       # Use a GitHub App token so that the generated PR can trigger CI
       - name: "Generate GitHub App token"
         id: "app-token"
-        uses: "actions/create-github-app-token@v2"
+        uses: "actions/create-github-app-token@v3"
         with:
           app-id: "${{ secrets.DP_APP_ID }}"
           private-key: "${{ secrets.DP_PRIVATE_KEY }}"
