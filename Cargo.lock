@@ -126,7 +126,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -137,7 +137,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -877,7 +877,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1656,7 +1656,7 @@ dependencies = [
  "linkme",
  "mio",
  "netdev",
- "netgauze-bgp-pkt 0.10.0",
+ "netgauze-bgp-pkt",
  "netgauze-bmp-pkt",
  "procfs",
  "rand 0.10.0",
@@ -2082,7 +2082,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc 0.2.183",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3641,33 +3641,16 @@ dependencies = [
 
 [[package]]
 name = "netgauze-bgp-pkt"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "976c96f06769f989f41c99f11c06165cfb6b5d9fe0d6fee18d5369804186a590"
-dependencies = [
- "byteorder",
- "ipnet",
- "netgauze-iana 0.9.3",
- "netgauze-locate 0.9.3",
- "netgauze-parse-utils 0.9.3",
- "netgauze-serde-macros 0.9.3",
- "nom",
- "serde",
- "strum_macros 0.27.2",
-]
-
-[[package]]
-name = "netgauze-bgp-pkt"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2832ec2113ac83b2b6efd857752fa74c32845332b298a43154bcc3a8fbbb7a1"
 dependencies = [
  "byteorder",
  "ipnet",
- "netgauze-iana 0.10.0",
- "netgauze-locate 0.10.0",
- "netgauze-parse-utils 0.10.0",
- "netgauze-serde-macros 0.10.0",
+ "netgauze-iana",
+ "netgauze-locate",
+ "netgauze-parse-utils",
+ "netgauze-serde-macros",
  "nom",
  "serde",
  "strum_macros 0.27.2",
@@ -3675,9 +3658,9 @@ dependencies = [
 
 [[package]]
 name = "netgauze-bmp-pkt"
-version = "0.9.3"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e559ed37796b9d4116a2eb8f6b4bb64ddc143e6e9b30461838248f569badd51b"
+checksum = "da15c9e450dd1cace29137554361318b314b870aada084c2cb0518d29a0fb4eb"
 dependencies = [
  "bitflags 2.11.0",
  "byteorder",
@@ -3685,25 +3668,15 @@ dependencies = [
  "chrono",
  "either",
  "ipnet",
- "netgauze-bgp-pkt 0.9.3",
- "netgauze-iana 0.9.3",
- "netgauze-locate 0.9.3",
- "netgauze-parse-utils 0.9.3",
- "netgauze-serde-macros 0.9.3",
+ "netgauze-bgp-pkt",
+ "netgauze-iana",
+ "netgauze-locate",
+ "netgauze-parse-utils",
+ "netgauze-serde-macros",
  "nom",
  "serde",
  "strum_macros 0.27.2",
  "tokio-util",
-]
-
-[[package]]
-name = "netgauze-iana"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d927104bf8eb4c0c4fa62f6089da2ae76cbb6632fa29c712494bf6b00ceeec05"
-dependencies = [
- "serde",
- "strum_macros 0.27.2",
 ]
 
 [[package]]
@@ -3718,15 +3691,6 @@ dependencies = [
 
 [[package]]
 name = "netgauze-locate"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef7b2913ed285eb74b86fde33a6e69525009008f694777b1d892853c17012366"
-dependencies = [
- "nom",
-]
-
-[[package]]
-name = "netgauze-locate"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0748a906adc84c95ffb078a26a012e667883e2dd208e32feb72e019a5fabdcd"
@@ -3736,34 +3700,13 @@ dependencies = [
 
 [[package]]
 name = "netgauze-parse-utils"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1d87bded02d6ee3d949886f38fe3170df3ea60366c96e69617476532ade293c"
-dependencies = [
- "netgauze-locate 0.9.3",
- "nom",
- "serde",
-]
-
-[[package]]
-name = "netgauze-parse-utils"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6c852fc3731d8890545b1a84a7dec07e31da204291a71c7994a2fcadb22d7d6"
 dependencies = [
- "netgauze-locate 0.10.0",
+ "netgauze-locate",
  "nom",
  "serde",
-]
-
-[[package]]
-name = "netgauze-serde-macros"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c71c31f7611ff298060ea8d1e4f0f3e90390a15ea4d8be52b299253cf2731e"
-dependencies = [
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -3945,7 +3888,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4959,7 +4902,7 @@ dependencies = [
  "errno",
  "libc 0.2.183",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5475,7 +5418,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc 0.2.183",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5661,7 +5604,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
