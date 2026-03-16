@@ -106,7 +106,6 @@ jobs:
 
   check:
     env:
-      CACHE_REGISTRY: "run.h.hhdev.io:30000"
       UPSTREAM_REGISTRY: "ghcr.io"
     needs:
       - check_changes
@@ -148,11 +147,8 @@ jobs:
           password: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: "login to image cache"
-        uses: "docker/login-action@v4"
-        with:
-          registry: "${{ env.CACHE_REGISTRY }}"
-          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
-          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL"
 
       # it's temporarily needed to install skopeo
       - name: Setup Go
@@ -185,7 +181,7 @@ jobs:
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
-            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            dpdp_sys_registry="$REGISTRY_URL" \
             refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
@@ -194,7 +190,7 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
-            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            dpdp_sys_registry="$REGISTRY_URL" \
             ${{matrix.profile.sterile}} cargo deny check
 
       - name: "push container"
@@ -252,7 +248,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
-              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              dpdp_sys_registry="$REGISTRY_URL" \
               ${{matrix.profile.sterile}} coverage \
                 --status-level=none \
                 --final-status-level=skip \
@@ -263,7 +259,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
-              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              dpdp_sys_registry="$REGISTRY_URL" \
               ${{matrix.profile.sterile}} cargo nextest run \
                 --cargo-profile=${{matrix.profile.name}} \
                 --status-level=none \
@@ -282,7 +278,7 @@ jobs:
               debug_justfile="${{matrix.debug_justfile}}" \
               profile=${{matrix.profile.name}} \
               target=x86_64-unknown-linux-gnu \
-              dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+              dpdp_sys_registry="$REGISTRY_URL" \
               ${{matrix.profile.sterile}} cargo nextest run \
                 --cargo-profile=${{matrix.profile.name}} \
                 --status-level=none \
@@ -511,7 +507,6 @@ jobs:
 
   publish:
     env:
-      CACHE_REGISTRY: "run.h.hhdev.io:30000"
       UPSTREAM_REGISTRY: "ghcr.io"
     runs-on: lab
     if: startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push'
@@ -542,11 +537,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: "login to image cache"
-        uses: "docker/login-action@v4"
-        with:
-          registry: "${{ env.CACHE_REGISTRY }}"
-          username: "${{ secrets.LAB_REGISTRY_USERNAME }}"
-          password: "${{ secrets.LAB_REGISTRY_TOKEN }}"
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL"
 
       - name: "set up build environment"
         run: |
@@ -559,7 +551,7 @@ jobs:
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
-            dpdp_sys_registry="${{env.CACHE_REGISTRY}}" \
+            dpdp_sys_registry="$REGISTRY_URL" \
             refresh-compile-env
           just --yes debug_justfile="${{matrix.debug_justfile}}" fake-nix
 
