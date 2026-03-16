@@ -115,11 +115,6 @@ impl PortForwarder {
         let timeout = Instant::now() + entry.init_timeout();
         let (fw_flow, rev_flow) = FlowInfo::related_pair(timeout, fw_key, rev_key);
 
-        // label the flows with the current generation id
-        let genid = self.pipeline_data.genid();
-        fw_flow.set_genid(genid);
-        rev_flow.set_genid(genid);
-
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);

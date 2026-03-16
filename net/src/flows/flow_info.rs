@@ -138,6 +138,13 @@ pub struct FlowInfoLocked {
     pub port_fw_state: Option<Box<dyn FlowInfoItem>>,
 }
 
+/// Object that represents a flow of packets.
+/// `related` is a `Weak` reference to another flow that is related to this one (e.g.
+/// a flow in the reverse direction). `FlowKey` is optional, but any flow we store in
+/// the flow table gets a key automatically. `genid` is the last generation id where
+/// this flow is valid (accepted by the flow-filter). As such, it increases on config
+/// changes (if the flow is acceptable under a new configuration), or the flow should
+/// no longer have status `Active`.
 #[derive(Debug)]
 pub struct FlowInfo {
     expires_at: AtomicInstant,

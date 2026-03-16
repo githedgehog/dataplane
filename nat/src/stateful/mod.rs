@@ -195,10 +195,6 @@ impl StatefulNat {
         );
 
         let flow_info = FlowInfo::new(Self::session_timeout_time(idle_timeout));
-
-        // label the flow with the current generation id
-        flow_info.set_genid(self.pipeline_data.genid());
-
         if let Ok(mut write_guard) = flow_info.locked.write() {
             write_guard.nat_state = Some(Box::new(state));
             write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
