@@ -217,15 +217,9 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
 
 /// Invalidate the flow that this packet matched and the related one if any.
 pub(crate) fn invalidate_flow_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
-    let Some(flow_info) = packet.meta().flow_info.as_ref() else {
-        return;
-    };
-    flow_info.invalidate();
-    flow_info
-        .related
-        .as_ref()
-        .and_then(Weak::upgrade)
-        .inspect(|related| related.invalidate());
+    if let Some(flow_info) = packet.meta().flow_info.as_ref() {
+        flow_info.invalidate_pair();
+    }
 }
 
 /// Update the port-forwarding state of a flow entry after processing a packet.
