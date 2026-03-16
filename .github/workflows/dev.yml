@@ -105,8 +105,6 @@ jobs:
           echo "ref=${commit_sha}" >> "$GITHUB_OUTPUT"
 
   check:
-    env:
-      UPSTREAM_REGISTRY: "ghcr.io"
     needs:
       - check_changes
       - version
@@ -142,7 +140,7 @@ jobs:
       - name: "login to ghcr.io"
         uses: "docker/login-action@v4"
         with:
-          registry: "${{ env.UPSTREAM_REGISTRY }}"
+          registry: ghcr.io
           username: "${{ github.actor }}"
           password: "${{ secrets.GITHUB_TOKEN }}"
 
@@ -177,7 +175,7 @@ jobs:
           OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
           docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
           docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
-          docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
+          docker pull "$REGISTRY_URL/githedgehog/testn/n-vm:v0.0.9"
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
@@ -199,7 +197,7 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
-            dpdp_sys_registry="${{env.UPSTREAM_REGISTRY}}" \
+            dpdp_sys_registry="$REGISTRY_URL" \
             target=x86_64-unknown-linux-gnu \
             version=${{ needs.version.outputs.version }}-${{ matrix.profile.name }} \
             oci_repo="ghcr.io" \
@@ -506,8 +504,6 @@ jobs:
           exit 1
 
   publish:
-    env:
-      UPSTREAM_REGISTRY: "ghcr.io"
     runs-on: lab
     if: startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push'
     needs:
@@ -547,7 +543,7 @@ jobs:
           OVERCOMMIT_HUGEPAGES_PATH=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_overcommit_hugepages
           docker run --privileged --rm busybox:latest sh -c "echo $((6 * REQUIRED_HUGEPAGES)) > $OVERCOMMIT_HUGEPAGES_PATH"
           docker run --privileged --rm busybox:latest sh -c "echo $((2 * REQUIRED_HUGEPAGES)) > $HUGEPAGES_PATH"
-          docker pull "${{env.UPSTREAM_REGISTRY}}/githedgehog/testn/n-vm:v0.0.9"
+          docker pull "$REGISTRY_URL/githedgehog/testn/n-vm:v0.0.9"
           just --yes \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=${{matrix.profile.name}} \
@@ -560,7 +556,7 @@ jobs:
           just \
             debug_justfile="${{matrix.debug_justfile}}" \
             profile=release \
-            dpdp_sys_registry="${{env.UPSTREAM_REGISTRY}}" \
+            dpdp_sys_registry="$REGISTRY_URL" \
             target=x86_64-unknown-linux-gnu \
             oci_repo="ghcr.io" \
             push
