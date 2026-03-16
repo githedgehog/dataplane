@@ -332,7 +332,7 @@ jobs:
         run: |
           rm -f codecov codecov.SHA256SUM codecov.SHA256SUM.sig
 
-      - uses: "marocchino/sticky-pull-request-comment@v2"
+      - uses: "marocchino/sticky-pull-request-comment@v3"
         if: ${{ always() }}
         with:
           header: "flakes_${{matrix.profile.name}}_${{matrix.profile.sterile}}"
