@@ -72,7 +72,7 @@ jobs:
           persist-credentials: "false"
           fetch-depth: "0"
       - name: "Check code changes"
-        uses: "dorny/paths-filter@v3"
+        uses: "dorny/paths-filter@v4"
         id: "changes"
         with:
           filters: |
