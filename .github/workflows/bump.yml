@@ -3,18 +3,15 @@
 
 name: "bump.yml"
 
+# Only run on manual triggers
 on:
   workflow_dispatch:
     inputs:
-      debug_enabled:
-        type: "boolean"
-        description: "Run with tmate enabled"
+      new_version:
+        type: "string"
+        description: "The new version to set in Cargo.toml (e.g. '0.1.0'). Defaults to bumping the minor version if not provided."
         required: false
-        default: false
-  schedule:
-    # Check for updates at 3:18 am every Monday
-    # (Avoid midnight so we don't contribute to load spikes)
-    - cron: "18 3 * * 1"
+        default: ""
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.ref }}"
@@ -22,141 +19,98 @@ concurrency:
 
 permissions:
   contents: "write"
-  packages: "read"
   id-token: "write"
   pull-requests: "write"
 
 jobs:
-  cargo-upgrades:
+  bump_version:
+    name: "Bump version in Cargo.toml and create Pull Request"
     runs-on: "lab"
     steps:
-      - name: "login to image cache"
+      - name: "Validate new version input"
+        if: ${{ inputs.new_version != '' }}
         run: |
-          echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL"
+          set -euo pipefail
+          new_version="${{ inputs.new_version }}"
+          semver_regex='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if ! [[ "${new_version}" =~ ${semver_regex} ]]; then
+            echo "::error::'new_version' input ('${new_version}') is not a valid SemVer string (e.g. 1.2.3, 1.2.3-alpha.1+build.5)."
+            exit 1
+          fi
+
+      - name: "Install rust"
+        uses: "dtolnay/rust-toolchain@stable"
+
+      - name: "Install binstall"
+        uses: "cargo-bins/cargo-binstall@main"
 
       # Use a GitHub App token so that the generated PR can trigger CI
       - name: "Generate GitHub App token"
         id: "app-token"
-        uses: "actions/create-github-app-token@v3"
+        uses: "actions/create-github-app-token@v2"
         with:
           app-id: "${{ secrets.DP_APP_ID }}"
           private-key: "${{ secrets.DP_PRIVATE_KEY }}"
-      - name: "install rust"
-        uses: "dtolnay/rust-toolchain@stable"
-      - name: "install ansi2txt"
+
+      - name: "Install whyq"
         run: |
-          # this keeps our GH actions logs from getting messed up with color codes
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends jq
+          cargo binstall --no-confirm whyq
+
+      - name: "Install just"
+        run: |
+          # This keeps our GH actions logs from getting messed up with color codes
           echo 'deb [trusted=yes] https://apt.gabe565.com /' | sudo tee /etc/apt/sources.list.d/gabe565.list
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ansi2txt
-      - name: "install binstall"
-        uses: "cargo-bins/cargo-binstall@main"
-      - name: "install upgrade tools"
-        run: |
-          cargo binstall -y cargo-edit # required to make `cargo upgrade` edit the Cargo.toml file
-          cargo binstall -y just
-          cargo binstall -y cargo-deny
+          sudo apt-get install --yes --no-install-recommends just
+
       - name: "Checkout"
         uses: "actions/checkout@v6"
-      - name: "refresh compile-env"
+        with:
+          persist-credentials: "false"
+          fetch-depth: "0"
+
+      - name: "Login to image cache"
         run: |
-          just --yes dpdp_sys_registry="$REGISTRY_URL" refresh-compile-env
-          just --yes fake-nix
-      - name: "deny check (pre)"
-        # Confirm that upstream licenses have not changed in some way that prevents us from using them.
-        # We want to do this both before and after we run cargo upgrade to make it easier to decide if
-        # the problem existed before the upgrade ran, or if the license issue was introduced by the
-        # upgrade itself.
-        # Similar logic applies to security vulnerabilities but even more so since those, almost by definition, were
-        # not detected at release time by the upstream project.
-        # We run our "pre" check with `continue-on-error` set to true because it is equally possible that the upgrade
-        # _resolves_ the license / security issue we have had / would have had without the upgrade.
+          echo "${REGISTRY_PASSWORD}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY_URL}"
+
+      - name: "Install compile-env"
         run: |
-          just cargo deny check
-        continue-on-error: true
-      - name: "cargo upgrade"
-        id: upgrade
+         just --yes dpdp_sys_registry="${REGISTRY_URL}" refresh-compile-env
+         just --yes fake-nix
+
+      - name: "Bump version"
         run: |
+          if [ -n "${{ inputs.new_version }}" ]; then
+            just bump_version "${{ inputs.new_version }}"
+          else
+            just bump_minor_version --input=toml
+          fi
+          new_version="$(yq -r --input=toml '.workspace.package.version' Cargo.toml)"
+          echo "new_version=${new_version}" >> "${GITHUB_ENV}"
+
+      - name: "Commit changes"
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '<41898282+github-actions[bot]@users.noreply.github.com>'
-          BASE="$(git rev-parse HEAD)"
+          git commit -sam "bump: Bump dataplane version"
 
-          # Run "cargo update"
-          echo "::notice::Running cargo update"
-          just cargo update
-          if ! git diff --quiet; then
-              echo "Found changes after cargo update, creating commit"
-              git add Cargo.lock
-              git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
-          fi
-
-          # Check updates available with "cargo upgrade",
-          # then bump each package individually through separate commits
-          echo "::notice::Looking for depencies to upgrade"
-          just cargo upgrade --incompatible=allow --dry-run | tee upgrade_output.txt
-          sed '/^====/d; /^name .*old req .*new req/d; s/ .*//' upgrade_output.txt > list_packages.txt
-          nb_upgrades=$(wc -l < list_packages.txt)
-
-          echo "Found the following ${nb_upgrades} upgrade(s) available:"
-          cat list_packages.txt
-
-          echo "::notice::Upgrading packages that need an upgrade (if any), one by one"
-          while read -r package; do
-              echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
-              echo '' | tee -a commit_msg.txt
-              just cargo upgrade --incompatible=allow --package "$package" | tee -a commit_msg.txt
-              git add Cargo.lock Cargo.toml cli/Cargo.toml
-              git commit -sF commit_msg.txt
-          done < list_packages.txt
-
-          # If we didn't create any commits, we don't need to create a PR message
-          if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
-              rm -f -- upgrade_output.txt list_packages.txt commit_msg.txt
-              exit 0
-          fi
-          echo '::notice::We created the following commits:'
-          git log --reverse -p "${BASE}"..
-
-          # Create Pull Request description
-          echo '### :rocket: Upgrades available' | tee upgrade.log
-          if [[ "${nb_upgrades}" -ge 1 ]]; then
-              echo '' | tee -a upgrade.log
-              echo '```' | tee -a upgrade.log
-              tee -a upgrade.log < upgrade_output.txt
-              echo '```' | tee -a upgrade.log
-          fi
-
-          echo '' | tee -a upgrade.log
-          echo ':warning: This Pull Request was automatically generated and should be carefully reviewed before acceptance. It may introduce **breaking changes**.' | tee -a upgrade.log
-
-          cat upgrade.log > "${GITHUB_STEP_SUMMARY}"
-          {
-            echo 'upgrade<<EOF';
-            cat upgrade.log;
-            echo 'EOF';
-          } >> "${GITHUB_OUTPUT}"
-
-          rm -f -- upgrade.log upgrade_output.txt list_packages.txt commit_msg.txt
-      - name: "deny check (post)"
-        run: |
-          just cargo deny check
       - name: "Create Pull Request"
         uses: "peter-evans/create-pull-request@v8"
         with:
           token: "${{ steps.app-token.outputs.token }}"
-          branch: "bump/cargo-upgrades"
-          title: "bump(cargo)!: :rocket: upgrades available"
+          branch: "bump/bump_dataplane_version"
+          title: "Bump dataplane version"
+          body: |
+            Bump dataplane version to ${{ env.new_version }}.
+
+            Triggered by @${{ github.actor }}.
           labels: |
             automated
-            dependencies
-          signoff: "true"
           sign-commits: "true"
-          body: |
-            ${{ steps.upgrade.outputs.upgrade }}
-
-      - name: "Setup tmate session for debug"
-        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: "mxschmitt/action-tmate@v3"
-        timeout-minutes: 60
-        with:
-          limit-access-to-actor: true
