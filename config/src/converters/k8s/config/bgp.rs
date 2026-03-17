@@ -6,9 +6,7 @@ use std::net::IpAddr;
 use k8s_intf::gateway_agent_crd::GatewayAgentGatewayNeighbors;
 
 use crate::converters::k8s::{FromK8sConversionError, ToK8sConversionError};
-use crate::internal::routing::bgp::{
-    BgpNeighCapabilities, BgpNeighType, BgpNeighbor, BgpUpdateSource, NeighSendCommunities,
-};
+use crate::internal::routing::bgp::{BgpNeighType, BgpNeighbor, BgpUpdateSource};
 
 impl TryFrom<&GatewayAgentGatewayNeighbors> for BgpNeighbor {
     type Error = FromK8sConversionError;
@@ -35,18 +33,8 @@ impl TryFrom<&GatewayAgentGatewayNeighbors> for BgpNeighbor {
                 "Missing ASN in BGP neighbor with ip {neighbor_addr}"
             )))?;
 
-        let ipv4_unicast = true;
-        let ipv6_unicast = false;
-        let l2vpn_evpn = true;
-
         // Create the neighbor config
-        let mut neigh = BgpNeighbor::new_host(neighbor_addr)
-            .set_remote_as(remote_as)
-            .set_capabilities(BgpNeighCapabilities::default())
-            .set_send_community(NeighSendCommunities::Both)
-            .ipv4_unicast_activate(ipv4_unicast)
-            .ipv6_unicast_activate(ipv6_unicast)
-            .l2vpn_evpn_activate(l2vpn_evpn);
+        let mut neigh = BgpNeighbor::new_host(neighbor_addr).set_remote_as(remote_as);
 
         // set update source
         if let Some(update_source) = &neighbor.source {

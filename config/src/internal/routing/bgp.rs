@@ -96,6 +96,28 @@ pub enum BgpNeighType {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct BgpNeighAF {
+    pub route_map_in: Option<String>,
+    pub route_map_out: Option<String>,
+}
+impl BgpNeighAF {
+    #[must_use]
+    pub fn with_rmap_in(rmap: &str) -> Self {
+        Self {
+            route_map_in: Some(rmap.to_owned()),
+            route_map_out: None,
+        }
+    }
+    #[must_use]
+    pub fn with_rmap_out(rmap: &str) -> Self {
+        Self {
+            route_map_in: None,
+            route_map_out: Some(rmap.to_owned()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 /// A BGP neighbor config
 pub struct BgpNeighbor {
     pub ntype: BgpNeighType,
@@ -131,9 +153,9 @@ pub struct BgpNeighbor {
     pub bfd: bool,
 
     /* Address families */
-    pub ipv4_unicast: bool,
-    pub ipv6_unicast: bool,
-    pub l2vpn_evpn: bool,
+    pub ipv4_unicast: Option<BgpNeighAF>,
+    pub ipv6_unicast: Option<BgpNeighAF>,
+    pub l2vpn_evpn: Option<BgpNeighAF>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -373,6 +395,10 @@ impl BgpNeighbor {
         self
     }
 
+    pub fn update_capabilities(&mut self, capas: BgpNeighCapabilities) {
+        self.capabilities = capas;
+    }
+
     /* === options == */
     #[must_use]
     pub fn set_route_map_in(mut self, rmap_name: &str) -> Self {
@@ -424,6 +450,11 @@ impl BgpNeighbor {
         self.send_community = Some(comm);
         self
     }
+
+    pub fn update_send_community(&mut self, comm: NeighSendCommunities) {
+        self.send_community = Some(comm);
+    }
+
     #[must_use]
     pub fn set_ebgp_multihop(mut self, max_hops: u8) -> Self {
         self.ebgp_multihop = Some(max_hops);
@@ -523,20 +554,51 @@ impl BgpNeighbor {
     }
 
     /* AFs: activated explicitly */
+    pub fn ipv4_unicast_activate(&mut self, value: BgpNeighAF) {
+        self.ipv4_unicast = Some(value);
+    }
+    pub fn ipv6_unicast_activate(&mut self, value: BgpNeighAF) {
+        self.ipv6_unicast = Some(value);
+    }
+    pub fn l2vpn_evpn_activate(&mut self, value: BgpNeighAF) {
+        self.l2vpn_evpn = Some(value);
+    }
+
     #[must_use]
-    pub fn ipv4_unicast_activate(mut self, value: bool) -> Self {
-        self.ipv4_unicast = value;
-        self
+    pub fn ipv4_unicast_rmap_in(&self) -> Option<&String> {
+        self.ipv4_unicast
+            .as_ref()
+            .and_then(|af| af.route_map_in.as_ref())
     }
     #[must_use]
-    pub fn ipv6_unicast_activate(mut self, value: bool) -> Self {
-        self.ipv6_unicast = value;
-        self
+    pub fn ipv4_unicast_rmap_out(&self) -> Option<&String> {
+        self.ipv4_unicast
+            .as_ref()
+            .and_then(|af| af.route_map_out.as_ref())
     }
     #[must_use]
-    pub fn l2vpn_evpn_activate(mut self, value: bool) -> Self {
-        self.l2vpn_evpn = value;
-        self
+    pub fn ipv6_unicast_rmap_in(&self) -> Option<&String> {
+        self.ipv6_unicast
+            .as_ref()
+            .and_then(|af| af.route_map_in.as_ref())
+    }
+    #[must_use]
+    pub fn ipv6_unicast_rmap_out(&self) -> Option<&String> {
+        self.ipv6_unicast
+            .as_ref()
+            .and_then(|af| af.route_map_out.as_ref())
+    }
+    #[must_use]
+    pub fn l2vpn_evpn_rmap_in(&self) -> Option<&String> {
+        self.l2vpn_evpn
+            .as_ref()
+            .and_then(|af| af.route_map_in.as_ref())
+    }
+    #[must_use]
+    pub fn l2vpn_evpn_rmap_out(&self) -> Option<&String> {
+        self.l2vpn_evpn
+            .as_ref()
+            .and_then(|af| af.route_map_out.as_ref())
     }
 }
 
@@ -630,9 +692,11 @@ impl BgpConfig {
     pub fn set_af_ipv6unicast(&mut self, af_ipv6unicast: AfIpv6Ucast) {
         self.af_ipv6unicast = Some(af_ipv6unicast);
     }
-
     pub fn set_bmp_options(&mut self, bmp: BmpOptions) -> &Self {
         self.bmp = Some(bmp);
         self
+    }
+    pub fn neighbors_mut(&mut self) -> impl Iterator<Item = &mut BgpNeighbor> {
+        self.neighbors.iter_mut()
     }
 }
