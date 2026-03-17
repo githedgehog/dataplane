@@ -322,9 +322,9 @@ fn fmt_configdb_summary_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Re
 }
 impl Display for GwConfigMeta {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let created = DateTime::<Utc>::from(self.create_t).format("%H:%M:%S on %Y/%m/%d");
+        let created = DateTime::<Utc>::from(self.create_t).format("%Y/%m/%d %H:%M:%S");
         let apply_time = if let Some(time) = self.apply_t {
-            let time = DateTime::<Utc>::from(time).format("%H:%M:%S on %Y/%m/%d");
+            let time = DateTime::<Utc>::from(time).format("%Y/%m/%d %H:%M:%S");
             format!("{time}")
         } else {
             "--".to_string()
