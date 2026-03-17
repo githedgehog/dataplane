@@ -342,8 +342,16 @@ impl Render for AfIpv4Ucast {
         /* activate neighbors in AF */
         bgp.neighbors
             .iter()
-            .filter(|neigh| neigh.ipv4_unicast)
-            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype.rendered()));
+            .filter(|neigh| neigh.ipv4_unicast.is_some())
+            .for_each(|neigh| {
+                cfg += format!(" neighbor {} activate", neigh.ntype.rendered());
+                if let Some(rmap) = neigh.ipv4_unicast_rmap_in() {
+                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype.rendered());
+                }
+                if let Some(rmap) = neigh.ipv4_unicast_rmap_out() {
+                    cfg += format!(" neighbor {} route-map {rmap} out", neigh.ntype.rendered());
+                }
+            });
 
         /* redistribution */
         self.redistribute
@@ -378,8 +386,16 @@ impl Render for AfIpv6Ucast {
         /* activate neighbors in AF */
         bgp.neighbors
             .iter()
-            .filter(|neigh| neigh.ipv6_unicast)
-            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype.rendered()));
+            .filter(|neigh| neigh.ipv6_unicast.is_some())
+            .for_each(|neigh| {
+                cfg += format!(" neighbor {} activate", neigh.ntype.rendered());
+                if let Some(rmap) = neigh.ipv6_unicast_rmap_in() {
+                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype.rendered());
+                }
+                if let Some(rmap) = neigh.ipv6_unicast_rmap_out() {
+                    cfg += format!(" neighbor {} route-map {rmap} out", neigh.ntype.rendered());
+                }
+            });
 
         /* redistribution */
         self.redistribute
@@ -414,8 +430,16 @@ impl Render for AfL2vpnEvpn {
         /* activate neighbors in AF */
         bgp.neighbors
             .iter()
-            .filter(|neigh| neigh.l2vpn_evpn)
-            .for_each(|neigh| cfg += format!(" neighbor {} activate", neigh.ntype.rendered()));
+            .filter(|neigh| neigh.l2vpn_evpn.is_some())
+            .for_each(|neigh| {
+                cfg += format!(" neighbor {} activate", neigh.ntype.rendered());
+                if let Some(rmap) = neigh.l2vpn_evpn_rmap_in() {
+                    cfg += format!(" neighbor {} route-map {rmap} in", neigh.ntype.rendered());
+                }
+                if let Some(rmap) = neigh.l2vpn_evpn_rmap_out() {
+                    cfg += format!(" neighbor {} route-map {rmap} out", neigh.ntype.rendered());
+                }
+            });
 
         if self.adv_all_vni {
             cfg += " advertise-all-vni";
@@ -568,8 +592,8 @@ impl Render for BgpConfig {
 pub mod tests {
     use super::*;
     use config::internal::routing::bgp::{
-        AfL2vpnEvpn, BgpConfig, BgpNeighbor, NeighSendCommunities, Protocol, Redistribute,
-        VrfImports,
+        AfL2vpnEvpn, BgpConfig, BgpNeighAF, BgpNeighbor, NeighSendCommunities, Protocol,
+        Redistribute, VrfImports,
     };
     use config::internal::routing::bmp::{BmpOptions, BmpSource};
     use lpm::prefix::Prefix;
@@ -624,13 +648,13 @@ pub mod tests {
             .set_update_source_interface("lo");
 
         /* a peer group */
-        let group = BgpNeighbor::new_peer_group("SPINES")
+        let mut group = BgpNeighbor::new_peer_group("SPINES")
             .set_peer_group("Spines")
             .set_remote_as(65002)
             .set_description("Fabric spine nodes")
-            .set_update_source_interface("lo")
-            .ipv4_unicast_activate(true)
-            .ipv6_unicast_activate(false);
+            .set_update_source_interface("lo");
+
+        group.ipv4_unicast_activate(BgpNeighAF::default());
 
         /* neighbor capabilities */
         let capas = BgpNeighCapabilities {
@@ -670,10 +694,9 @@ pub mod tests {
             .set_default_originate(true);
 
         /* Activate AFs for neighbor */
-        full = full
-            .ipv4_unicast_activate(true)
-            .ipv6_unicast_activate(true)
-            .l2vpn_evpn_activate(true);
+        full.ipv4_unicast_activate(BgpNeighAF::default());
+        full.ipv6_unicast_activate(BgpNeighAF::default());
+        full.l2vpn_evpn_activate(BgpNeighAF::default());
 
         /* add neighs */
         bgp.add_neighbor(n1);

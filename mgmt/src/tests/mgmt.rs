@@ -211,16 +211,15 @@ pub mod test {
             .software_ver(true);
 
         /* add neighbor */
-        let neigh = BgpNeighbor::new_host(IpAddr::from_str("7.0.0.2").expect("Bad address"))
+        let mut neigh = BgpNeighbor::new_host(IpAddr::from_str("7.0.0.2").expect("Bad address"))
             .set_remote_as(65000)
             .set_description("Spine switch")
             .set_update_source_address(loopback)
             .set_send_community(NeighSendCommunities::All)
-            .l2vpn_evpn_activate(true)
-            .ipv4_unicast_activate(false)
             .set_allow_as_in(false)
             .set_capabilities(capabilities)
             .set_default_originate(false);
+        neigh.l2vpn_evpn_activate(BgpNeighAF::default());
 
         bgp.add_neighbor(neigh);
         bgp
