@@ -369,33 +369,21 @@ fn show_ip_fib_groups(
     }
 }
 
-fn show_ext_provider(
+fn show_provider(
     request: CliRequest,
     provider: Option<&dyn CliDataProvider>,
     dataid: Option<CliData>,
-) -> Result<CliResponse, CliError> {
-    if let Some(provider) = provider {
-        Ok(CliResponse::from_request_ok(
-            request,
-            provider.provide(dataid),
-        ))
-    } else {
-        Ok(CliResponse::from_request_ok(
-            request,
-            "no data is available".to_string(),
-        ))
-    }
+) -> CliResponse {
+    let data = provider.map_or_else(
+        || "no data is available".to_string(),
+        |provider| provider.provide(dataid),
+    );
+    CliResponse::from_request_ok(request, data)
 }
 
-fn show_config(
-    request: CliRequest,
-    config: Option<&Arc<GwConfig>>,
-) -> Result<CliResponse, CliError> {
+fn show_config(request: CliRequest, config: Option<&Arc<GwConfig>>) -> CliResponse {
     let Some(config) = config else {
-        return Ok(CliResponse::from_request_ok(
-            request,
-            "No configuration is applied".to_string(),
-        ));
+        return CliResponse::from_request_ok(request, "No configuration is applied".to_string());
     };
     let vpc_table = &config.external.overlay.vpc_table;
     let contents = match request.action {
@@ -406,16 +394,10 @@ fn show_config(
         CliAction::ShowConfigInternal => format!("{:#?}", config.internal),
         _ => unreachable!(),
     };
-    Ok(CliResponse::from_request_ok(request, contents))
+    CliResponse::from_request_ok(request, contents)
 }
-fn show_config_summary(
-    request: CliRequest,
-    summary: &[GwConfigMeta],
-) -> Result<CliResponse, CliError> {
-    Ok(CliResponse::from_request_ok(
-        request,
-        ConfigSummary(summary).to_string(),
-    ))
+fn show_config_summary(request: CliRequest, summary: &[GwConfigMeta]) -> CliResponse {
+    CliResponse::from_request_ok(request, ConfigSummary(summary).to_string())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -423,7 +405,7 @@ fn do_handle_cli_request(
     request: CliRequest,
     db: &RoutingDb,
     rio: &mut Rio,
-    cli_sources: &CliSources,
+    sources: &CliSources,
 ) -> Result<CliResponse, CliError> {
     let cpi_s = &rio.cpistats;
     let frrmi = &rio.frrmi;
@@ -432,13 +414,8 @@ fn do_handle_cli_request(
         | CliAction::ShowVpcPeerings
         | CliAction::ShowGatewayCommunities
         | CliAction::ShowGatewayGroups
-        | CliAction::ShowConfigInternal => {
-            return show_config(request, rio.gwconfig.as_ref());
-        }
-        CliAction::ShowConfigSummary => {
-            return show_config_summary(request, rio.cfg_history.as_ref());
-        }
-
+        | CliAction::ShowConfigInternal => show_config(request, rio.gwconfig.as_ref()),
+        CliAction::ShowConfigSummary => show_config_summary(request, rio.cfg_history.as_ref()),
         CliAction::ShowTracingTargets => match get_trace_ctl().as_string() {
             Ok(out) => CliResponse::from_request_ok(request, format!("\n {out}")),
             Err(_) => CliResponse::from_request_fail(request, CliError::InternalError),
@@ -450,8 +427,8 @@ fn do_handle_cli_request(
         CliAction::ShowCpiStats => CliResponse::from_request_ok(request, format!("\n {cpi_s}")),
         CliAction::ShowFrrmiStats => CliResponse::from_request_ok(request, format!("\n{frrmi}")),
         CliAction::ShowFrrmiLastConfig => match frrmi.get_applied_cfg() {
-            None => CliResponse::from_request_ok(request, "\n No config is applied".to_string()),
             Some(cfg) => CliResponse::from_request_ok(request, format!("\n{cfg}")),
+            None => CliResponse::from_request_ok(request, "\n No config is applied".to_string()),
         },
         CliAction::FrrmiApplyLastConfig => {
             if let Some(genid) = db.current_config() {
@@ -479,19 +456,13 @@ fn do_handle_cli_request(
             CliResponse::from_request_ok(request, format!("{el}"))
         }),
         CliAction::ShowRouterInterfaces => {
-            if let Some(iftable) = db.iftw.enter() {
-                CliResponse::from_request_ok(request, format!("\n{}", *iftable))
-            } else {
-                CliResponse::from_request_fail(request, CliError::InternalError)
-            }
+            let iftable = db.iftw.enter().ok_or(CliError::InternalError)?;
+            CliResponse::from_request_ok(request, format!("\n{}", *iftable))
         }
         CliAction::ShowRouterInterfaceAddresses => {
-            if let Some(iftable) = db.iftw.enter() {
-                let iftable_addrs = IfTableAddress(&iftable);
-                CliResponse::from_request_ok(request, format!("\n{iftable_addrs}"))
-            } else {
-                CliResponse::from_request_fail(request, CliError::InternalError)
-            }
+            let iftable = db.iftw.enter().ok_or(CliError::InternalError)?;
+            let iftable_addrs = IfTableAddress(&iftable);
+            CliResponse::from_request_ok(request, format!("\n{iftable_addrs}"))
         }
         CliAction::ShowRouterVrfs => return show_vrfs(request, db),
         CliAction::ShowRouterEvpnRmacStore => {
@@ -503,50 +474,25 @@ fn do_handle_cli_request(
             CliResponse::from_request_ok(request, format!("{vtep}"))
         }
         CliAction::ShowAdjacencies => {
-            if let Some(atable) = db.atabler.enter() {
-                CliResponse::from_request_ok(request, format!("\n{}", *atable))
-            } else {
-                CliResponse::from_request_fail(request, CliError::InternalError)
-            }
+            let atable = db.atabler.enter().ok_or(CliError::InternalError)?;
+            CliResponse::from_request_ok(request, format!("\n{}", *atable))
         }
-        CliAction::ShowRouterIpv4Routes => {
-            return show_vrf_routes(request, db, true);
-        }
-        CliAction::ShowRouterIpv6Routes => {
-            return show_vrf_routes(request, db, false);
-        }
-        CliAction::ShowRouterIpv4NextHops => {
-            return show_vrf_nexthops(request, db, true);
-        }
-        CliAction::ShowRouterIpv6NextHops => {
-            return show_vrf_nexthops(request, db, false);
-        }
-        CliAction::ShowRouterIpv4FibEntries => {
-            return show_ip_fib(request, db, true);
-        }
-        CliAction::ShowRouterIpv6FibEntries => {
-            return show_ip_fib(request, db, false);
-        }
-        CliAction::ShowRouterIpv4FibGroups => {
-            return show_ip_fib_groups(request, db, true);
-        }
-        CliAction::ShowRouterIpv6FibGroups => {
-            return show_ip_fib_groups(request, db, false);
-        }
-        CliAction::ShowFlowTable => {
-            return show_ext_provider(request, cli_sources.flow_table.as_deref(), None);
-        }
-        CliAction::ShowFlowFilter => {
-            return show_ext_provider(request, cli_sources.flow_filter.as_deref(), None);
-        }
+        CliAction::ShowRouterIpv4Routes => show_vrf_routes(request, db, true)?,
+        CliAction::ShowRouterIpv6Routes => show_vrf_routes(request, db, false)?,
+        CliAction::ShowRouterIpv4NextHops => show_vrf_nexthops(request, db, true)?,
+        CliAction::ShowRouterIpv6NextHops => show_vrf_nexthops(request, db, false)?,
+        CliAction::ShowRouterIpv4FibEntries => show_ip_fib(request, db, true)?,
+        CliAction::ShowRouterIpv6FibEntries => show_ip_fib(request, db, false)?,
+        CliAction::ShowRouterIpv4FibGroups => show_ip_fib_groups(request, db, true)?,
+        CliAction::ShowRouterIpv6FibGroups => show_ip_fib_groups(request, db, false)?,
+        CliAction::ShowFlowTable => show_provider(request, sources.flow_table.as_deref(), None),
+        CliAction::ShowFlowFilter => show_provider(request, sources.flow_filter.as_deref(), None),
         CliAction::ShowPortForwarding => {
-            return show_ext_provider(request, cli_sources.portfw_table.as_deref(), None);
+            show_provider(request, sources.portfw_table.as_deref(), None)
         }
-        CliAction::ShowStaticNat => {
-            return show_ext_provider(request, cli_sources.nat_tables.as_deref(), None);
-        }
+        CliAction::ShowStaticNat => show_provider(request, sources.nat_tables.as_deref(), None),
         CliAction::ShowMasquerading => {
-            return show_ext_provider(request, cli_sources.masquerade_state.as_deref(), None);
+            show_provider(request, sources.masquerade_state.as_deref(), None)
         }
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
