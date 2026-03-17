@@ -34,7 +34,7 @@ use config::internal::routing::routemap::{
 };
 use config::internal::routing::statics::StaticRoute;
 use config::internal::routing::vrf::VrfConfig;
-use config::{ExternalConfig, GwConfig, InternalConfig};
+use config::{GwConfig, InternalConfig};
 
 /// Build a drop route
 #[must_use]
@@ -383,10 +383,6 @@ pub fn build_internal_config(
             debug!("The configuration does not specify any VPCs...");
         }
     }
-
     debug!("Successfully built internal config for genid {genid}");
-    if genid != ExternalConfig::BLANK_GENID {
-        debug!("Internal config is:\n{internal:#?}");
-    }
     Ok(internal)
 }

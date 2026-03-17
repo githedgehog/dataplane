@@ -198,13 +198,11 @@ impl ConfigProcessor {
 
     /// RPC handler: get current config generation id
     fn handle_get_generation(&self) -> ConfigResponse {
-        debug!("Handling get generation request");
         ConfigResponse::GetGeneration(self.config_db.get_current_gen())
     }
 
     /// RPC handler: get the currently applied config
     fn handle_get_config(&self) -> ConfigResponse {
-        debug!("Handling get running configuration request");
         let cfg = self.config_db.get_current_config();
         ConfigResponse::GetCurrentConfig(cfg)
     }
@@ -492,6 +490,7 @@ fn apply_stateless_nat_config(
 ) -> ConfigResult {
     let nat_table = build_nat_configuration(vpc_table)?;
     nattablesw.update_nat_tables(nat_table);
+    debug!("Successfully updated the stateless NAT configuration");
     Ok(())
 }
 
@@ -515,6 +514,7 @@ fn apply_stateful_nat_config(
     // Side note: session table and allocator may need to be updated at the same time, so we might
     // need a lock around them in the StatefulNat stage and we may need to update them both from
     // .update_allocator().
+    debug!("Successfully updated the stateful NAT allocator");
     Ok(())
 }
 
@@ -524,6 +524,7 @@ fn apply_flow_filtering_config(
 ) -> ConfigResult {
     let flow_filter_table = FlowFilterTable::build_from_overlay(overlay)?;
     flowfilterw.update_flow_filter_table(flow_filter_table);
+    debug!("Successfully updated flow-filter table");
     Ok(())
 }
 
@@ -537,8 +538,7 @@ fn apply_port_forwarding_config(
         .update_table(&ruleset)
         .map_err(|e| ConfigError::PortForwarding(e.to_string()))?;
 
-    let pfw_table = portfw_w.enter().unwrap_or_else(|| unreachable!());
-    debug!("Port-forwarding table is:\n{}", pfw_table.as_ref());
+    debug!("Successfully updated the port-forwarding table");
     Ok(())
 }
 
@@ -553,6 +553,7 @@ fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
             .iter()
             .map(|(tag, level)| (tag.as_str(), *level)),
     )?;
+    debug!("Successfully reconfigured tracing");
     Ok(())
 }
 
