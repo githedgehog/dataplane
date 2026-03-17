@@ -21,10 +21,9 @@ use net::vxlan::Vni;
 use std::net::Ipv4Addr;
 
 use crate::processor::confbuild::namegen::{VpcConfigNames, VpcInterfacesNames};
-
 use config::internal::routing::bfd::peers_from_bgp_neighbors;
-use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn};
-use config::internal::routing::bgp::{BgpConfig, BgpOptions, VrfImports};
+use config::internal::routing::bgp::{AfIpv4Ucast, AfL2vpnEvpn, BgpNeighAF, NeighSendCommunities};
+use config::internal::routing::bgp::{BgpConfig, BgpNeighCapabilities, BgpOptions, VrfImports};
 use config::internal::routing::bmp::BmpOptions;
 use config::internal::routing::prefixlist::{
     IpVer, PrefixList, PrefixListAction, PrefixListEntry, PrefixListMatchLen, PrefixListPrefix,
@@ -339,6 +338,37 @@ fn build_internal_overlay_config(
     Ok(())
 }
 
+const EVPN_RMAP_NO_ADV_COMM: &str = "EVPN-ROUTE-MAP-NO-ADV-COMM";
+
+/// Create a route-map that adds community "no-advertise" to all routes
+fn route_map_add_noadv_comm() -> RouteMap {
+    let mut rmap = RouteMap::new(EVPN_RMAP_NO_ADV_COMM);
+    let entry = RouteMapEntry::new(MatchingPolicy::Permit).add_action(
+        RouteMapSetAction::Community(vec![Community::NoAdvertise], true),
+    );
+    rmap.add_entry(Some(1), entry)
+        .unwrap_or_else(|_| unreachable!());
+    rmap
+}
+
+fn configure_bgp_peers(vrf: &mut VrfConfig, internal: &mut InternalConfig) {
+    // build and store route-map to add "no-advertise" community to learnt routes
+    let rmap_in = route_map_add_noadv_comm();
+    internal.rmap_table.add_route_map(rmap_in.clone());
+
+    // apply rmap to neighbors in l2vpn evpn AF and activate other AFs
+    if let Some(bgp) = &mut vrf.bgp {
+        bgp.neighbors_mut().for_each(|neigh| {
+            let af_l2vp_evpn = BgpNeighAF::with_rmap_in(EVPN_RMAP_NO_ADV_COMM);
+            neigh.ipv4_unicast_activate(BgpNeighAF::default());
+            neigh.update_capabilities(BgpNeighCapabilities::default());
+            neigh.update_send_community(NeighSendCommunities::Both);
+            neigh.ipv6_unicast_activate(BgpNeighAF::default());
+            neigh.l2vpn_evpn_activate(af_l2vp_evpn);
+        });
+    }
+}
+
 /// Public entry — build with BMP (global options injected into default VRF and import views)
 pub fn build_internal_config(
     config: &GwConfig,
@@ -363,6 +393,9 @@ pub fn build_internal_config(
 
     // Build internal config: device and underlay configs are copied as received (with adjusted default_vrf)
     let mut internal = InternalConfig::new(&external.gwname, external.device.clone());
+
+    configure_bgp_peers(&mut default_vrf, &mut internal);
+
     internal.add_vrf_config(default_vrf)?;
     internal.set_vtep(external.underlay.vtep.clone());
     internal.gwgrouptable = external.gwgroups.sorted();
