@@ -5,6 +5,7 @@
 
 use crate::control::{TargetCfg, TargetCfgDb};
 use crate::targets::TRACING_TAG_ALL;
+use common::cliprovider::Heading;
 use std::fmt::Display;
 
 macro_rules! TARGET_FMT {
@@ -41,11 +42,7 @@ impl Display for TargetCfg {
 impl Display for TargetCfgDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f)?;
-        let sep = " ".repeat(34);
-        writeln!(
-            f,
-            "{sep}───────────── Tracing configuration per target ─────────────"
-        )?;
+        Heading("Tracing configuration per target").fmt(f)?;
         fmt_target_heading(f)?;
         self.targets.values().for_each(|unit| {
             let _ = writeln!(f, "{unit}");
@@ -63,8 +60,7 @@ pub(crate) struct TargetCfgDbByTag<'a>(pub(crate) &'a TargetCfgDb);
 impl Display for TargetCfgDbByTag<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f)?;
-        let sep = " ".repeat(34);
-        writeln!(f, "{sep}──────── Tracing targets tags ────────")?;
+        Heading("Tracing tags").fmt(f)?;
         let db = self.0;
         fmt_target_heading(f)?;
 

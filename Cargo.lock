@@ -1736,6 +1736,7 @@ name = "dataplane-tracectl"
 version = "0.14.0"
 dependencies = [
  "color-eyre",
+ "dataplane-common",
  "linkme",
  "ordermap",
  "serial_test",
