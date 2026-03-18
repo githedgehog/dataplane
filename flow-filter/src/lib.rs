@@ -14,7 +14,6 @@
 //!   peerings, get dropped.
 
 use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
-use indenter::indented;
 use lpm::prefix::L4Protocol;
 use net::buffer::PacketBufferMut;
 use net::flows::FlowInfo;
@@ -23,7 +22,7 @@ use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::collections::HashSet;
-use std::fmt::{Display, Write};
+use std::fmt::Display;
 use std::net::IpAddr;
 use std::num::NonZero;
 use std::sync::Arc;
@@ -438,17 +437,6 @@ impl Display for FlowTuple {
             "srcVpc={} src={}{} dst={}{}",
             self.src_vpcd, self.src_addr, self.src_port, self.dst_addr, self.dst_port
         )
-    }
-}
-
-impl Display for FlowFilter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}:", self.name)?;
-        if let Some(table) = self.tablesr.enter() {
-            write!(indented(f).with_str("  "), "{}", *table)
-        } else {
-            writeln!(f, "  [no table]")
-        }
     }
 }
 
