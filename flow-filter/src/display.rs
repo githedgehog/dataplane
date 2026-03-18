@@ -3,7 +3,7 @@
 
 //! Display implementations
 
-use common::cliprovider::{CliData, CliDataProvider};
+use common::cliprovider::{CliData, CliDataProvider, Heading};
 use indenter::indented;
 
 use std::collections::BTreeMap;
@@ -21,6 +21,8 @@ impl CliDataProvider for FlowFilterTable {
 
 impl Display for FlowFilterTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading("Flow filter").fmt(f)?;
+
         // Collect into a BTreeMap to get a deterministic order when dumping the entries
         writeln!(f, "subtable for TCP/UDP:")?;
         for (src_vpcd, table) in self
