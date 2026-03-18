@@ -20,15 +20,19 @@ use crate::router::revent::ROUTER_EVENTS;
 use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
-use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, CliSerialize, RouteProtocol};
+use chrono::Local;
+use cli::cliproto::{
+    CliAction, CliError, CliRequest, CliResponse, CliSerialize, RequestArgs, RouteProtocol,
+};
 use config::{ConfigSummary, GwConfig, GwConfigMeta};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
 use std::sync::Arc;
+use strum::IntoEnumIterator;
 use tracing::{error, trace};
 
-use common::cliprovider::{CliData, CliDataProvider};
+use common::cliprovider::{CliData, CliDataProvider, Heading};
 
 use tracectl::{get_trace_ctl, trace_target};
 trace_target!("cli", LevelFilter::OFF, &[]);
@@ -391,13 +395,41 @@ fn show_config(request: CliRequest, config: Option<&Arc<GwConfig>>) -> CliRespon
         CliAction::ShowVpcPeerings => vpc_table.as_peerings().to_string(),
         CliAction::ShowGatewayGroups => config.external.gwgroups.to_string(),
         CliAction::ShowGatewayCommunities => config.external.communities.to_string(),
-        CliAction::ShowConfigInternal => format!("{:#?}", config.internal),
+        CliAction::ShowConfigInternal => {
+            let heading = Heading("Internal configuration").to_string();
+            format!("{heading}{:#?}", config.internal)
+        }
         _ => unreachable!(),
     };
     CliResponse::from_request_ok(request, contents)
 }
 fn show_config_summary(request: CliRequest, summary: &[GwConfigMeta]) -> CliResponse {
     CliResponse::from_request_ok(request, ConfigSummary(summary).to_string())
+}
+
+fn show_tech(
+    request: CliRequest,
+    db: &RoutingDb,
+    rio: &mut Rio,
+    sources: &CliSources,
+) -> CliResponse {
+    let excluded = [
+        CliAction::ShowTech,
+        CliAction::CpiRequestRefresh,
+        CliAction::FrrmiApplyLastConfig,
+    ];
+    let time = Local::now();
+    let mut data = format!("time: {}\n", time.format("%Y-%m-%d %H:%M:%S"));
+    for action in CliAction::iter().filter(|a| !excluded.contains(a)) {
+        let request = CliRequest::new(action, RequestArgs::default());
+        if let Ok(response) = do_handle_cli_request(request, db, rio, sources) {
+            if let Ok(output) = response.result {
+                data += output.as_str();
+                data += "\n";
+            }
+        }
+    }
+    CliResponse::from_request_ok(request, data)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -410,6 +442,7 @@ fn do_handle_cli_request(
     let cpi_s = &rio.cpistats;
     let frrmi = &rio.frrmi;
     let response = match request.action {
+        CliAction::ShowTech => show_tech(request, db, rio, sources),
         CliAction::ShowVpc
         | CliAction::ShowVpcPeerings
         | CliAction::ShowGatewayCommunities
