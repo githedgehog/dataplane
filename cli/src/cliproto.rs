@@ -121,7 +121,7 @@ impl CliResponse {
 
 #[repr(u16)]
 #[allow(unused)]
-#[derive(Debug, Clone, Serialize, Deserialize, EnumIter)]
+#[derive(Debug, Clone, Serialize, Deserialize, EnumIter, PartialEq)]
 pub enum CliAction {
     Clear = 0,
     Connect,
