@@ -5,6 +5,7 @@
 
 use chrono::DateTime;
 use chrono::Local;
+use common::cliprovider::Heading;
 use std::fmt::Display;
 
 /// An `Event` is a wrapper over a generic type T that represents something that happened.
@@ -74,14 +75,12 @@ impl<T: Display> Display for Event<T> {
 
 impl<T: Display> Display for EventLog<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, " {}", self.name)?;
+        Heading(self.name.as_str()).fmt(f)?;
         writeln!(
             f,
-            " generated: {} stored: {} capacity: {}",
+            " generated: {} stored: {} capacity: {}\n",
             self.ord, self.count, self.max
         )?;
-        writeln!(f, " ━━━━━━━━━━━━━")?;
-
         for num in 0..self.count {
             let index = (self.next + num) % self.max;
             let event = &self.items[index];

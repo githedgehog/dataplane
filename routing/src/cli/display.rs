@@ -271,7 +271,7 @@ fn fmt_vrf_oneline(vrf: &Vrf, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Resu
     let description = vrf.description.clone().unwrap_or_else(|| "--".to_string());
     writeln!(
         f,
-        "\n ━━━━━━━━━\n Vrf: '{}' (id: {}) description: {description}",
+        " Vrf: '{}' (id: {}) description: {description}\n",
         vrf.name, vrf.vrfid
     )?;
     Ok(())
@@ -308,8 +308,9 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &Route)) -> bool> Display for VrfViewV4<'_,
         // displayed routes
         let mut displayed = 0;
 
-        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv4 routes ({total_routes})")).fmt(f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
+
         for (prefix, route) in rt_iter {
             write!(f, " {}  {prefix:?} {route}", route.flags)?;
             displayed += 1;
@@ -342,8 +343,9 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
         // displayed routes
         let mut displayed = 0;
 
-        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv6 routes ({total_routes})")).fmt(f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
+
         for (prefix, route) in rt_iter {
             write!(f, " {}  {prefix:?} {route}", route.flags)?;
             displayed += 1;
@@ -363,8 +365,9 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &Route)) -> bool> Display for VrfViewV6<'_,
 pub struct VrfV4Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV4Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_vrf_oneline(self.0, f)?;
         Heading("Ipv4 Next-hops").fmt(f)?;
+        fmt_vrf_oneline(self.0, f)?;
+
         let iter =
             self.0.nhstore.iter().filter(|nh| {
                 nh.key.address.is_some_and(|a| a.is_ipv4()) || nh.key.address.is_none()
@@ -379,8 +382,9 @@ impl Display for VrfV4Nexthops<'_> {
 pub struct VrfV6Nexthops<'a>(pub &'a Vrf);
 impl Display for VrfV6Nexthops<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_vrf_oneline(self.0, f)?;
         Heading("Ipv6 Next-hops").fmt(f)?;
+        fmt_vrf_oneline(self.0, f)?;
+
         let iter =
             self.0.nhstore.iter().filter(|nh| {
                 nh.key.address.is_some_and(|a| a.is_ipv6()) || nh.key.address.is_none()
@@ -604,7 +608,7 @@ impl Display for RmacEntry {
 }
 impl Display for RmacStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Heading(format!("Rmac store ({})", self.len())).fmt(f)?;
+        Heading(format!("Router macs ({})", self.len())).fmt(f)?;
         fmt_rmac_heading(f)?;
         for rmac in self.values() {
             writeln!(f, "{rmac}")?;
@@ -616,7 +620,7 @@ impl Display for RmacStore {
 //========================= Rmac Store ================================//
 impl Display for Vtep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n ───────── Local VTEP configuration ─────────")?;
+        Heading("Local VTEP configuration").fmt(f)?;
         fmt_opt_value(f, " ip address", self.get_ip().as_ref(), true)?;
         fmt_opt_value(f, " Mac address", self.get_mac().as_ref(), true)
     }
@@ -768,8 +772,9 @@ impl<F: for<'a> Fn(&'a (&Ipv4Prefix, &FibRoute)) -> bool> Display for FibViewV4<
         let total_entries = fibr.len_v4();
         let mut displayed = 0;
 
-        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv4 FIB ({total_entries} destinations)")).fmt(f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
+
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} {route}")?;
             displayed += 1;
@@ -805,8 +810,9 @@ impl<F: for<'a> Fn(&'a (&Ipv6Prefix, &FibRoute)) -> bool> Display for FibViewV6<
         let total_entries = fibr.len_v6();
         let mut displayed = 0;
 
-        fmt_vrf_oneline(self.vrf, f)?;
         Heading(format!("Ipv6 FIB ({total_entries} destinations)")).fmt(f)?;
+        fmt_vrf_oneline(self.vrf, f)?;
+
         for (prefix, route) in rt_iter {
             write!(f, "  {prefix:?} {route}")?;
             displayed += 1;
