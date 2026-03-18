@@ -488,6 +488,14 @@ impl FlowKeyData {
     }
 
     #[must_use]
+    pub fn icmp_id(&self) -> Option<u16> {
+        match &self.proto_key_info {
+            IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub fn src_port(&self) -> Option<NonZero<u16>> {
         match self.proto_key_info {
             IpProtoKey::Tcp(tcp) => Some(tcp.src_port.into()),
