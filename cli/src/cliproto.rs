@@ -129,38 +129,34 @@ pub enum CliAction {
     Help,
     Quit,
 
+    // config
+    ShowConfigSummary,
+
+    // config: gateways & communities
+    ShowGatewayGroups,
+    ShowGatewayCommunities,
+
+    // config: tracing
     ShowTracingTargets,
     ShowTracingTagGroups,
-    SetLoglevel,
 
-    // cpi
+    // config: vpcs & peerings
+    ShowVpc,
+    ShowVpcPeerings,
+
+    // router: Eventlog
+    RouterEventLog,
+
+    // router: cpi
     ShowCpiStats,
     CpiRequestRefresh,
 
-    // frrmi
+    // router: frrmi
     ShowFrrmiStats,
     ShowFrrmiLastConfig,
     FrrmiApplyLastConfig,
 
-    // Eventlog
-    RouterEventLog,
-
-    // flow table
-    ShowFlowTable,
-
-    // flow filter
-    ShowFlowFilter,
-
-    // vpcs
-    ShowVpc,
-    ShowVpcPeerings,
-
-    // pipelines
-    ShowPipeline,
-    ShowPipelineStages,
-    ShowPipelineStats,
-
-    // router
+    // router: internal state
     ShowRouterInterfaces,
     ShowRouterInterfaceAddresses,
     ShowRouterVrfs,
@@ -177,25 +173,37 @@ pub enum CliAction {
     ShowRouterIpv4FibGroups,
     ShowRouterIpv6FibGroups,
 
-    // DPDK
-    ShowDpdkPort,
-    ShowDpdkPortStats,
-
-    // kernel
-    ShowKernelInterfaces,
-
-    // nat
+    // NF: nat
     ShowPortForwarding,
     ShowStaticNat,
     ShowMasquerading,
 
-    // gateways
-    ShowGatewayGroups,
-    ShowGatewayCommunities,
+    // NF: flow table
+    ShowFlowTable,
 
-    // config
-    ShowConfigSummary,
+    // NF: flow filter
+    ShowFlowFilter,
+
+    // internal config
     ShowConfigInternal,
+
+    ShowTech,
+
+    /* == Not supported yet == */
+    // pipelines
+    ShowPipeline,
+    ShowPipelineStages,
+    ShowPipelineStats,
+
+    // kernel
+    ShowKernelInterfaces,
+
+    // DPDK
+    ShowDpdkPort,
+    ShowDpdkPortStats,
+
+    // loglevel
+    SetLoglevel,
 }
 
 impl CliAction {
