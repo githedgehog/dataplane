@@ -287,6 +287,12 @@ fn cmd_show_config_summary() -> Node {
     root
 }
 
+fn cmd_show_tech() -> Node {
+    Node::new("tech")
+        .desc("Dump dataplanes state")
+        .action(CliAction::ShowTech as u16)
+}
+
 fn cmd_show() -> Node {
     let mut root: Node = Node::new("show");
     root += cmd_show_router();
@@ -301,6 +307,7 @@ fn cmd_show() -> Node {
     root += cmd_show_flow_filter();
     root += cmd_show_gateway();
     root += cmd_show_config_summary();
+    root += cmd_show_tech();
     root
 }
 fn cmd_loglevel() -> Node {
