@@ -12,8 +12,8 @@ impl Display for FlowTable {
             for entry in table.iter() {
                 let key = entry.key();
                 match entry.value().upgrade() {
-                    Some(value) => writeln!(f, "key = {key}\ndata = {value}")?,
-                    None => writeln!(f, "key = {key} NONE")?,
+                    Some(value) => writeln!(f, "{key}\n{value}")?,
+                    None => writeln!(f, "{key}: NONE")?,
                 }
             }
         } else {
