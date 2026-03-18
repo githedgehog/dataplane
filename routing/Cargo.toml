@@ -37,6 +37,7 @@ mio = { workspace = true, features = ["os-ext", "net"] }
 netgauze-bgp-pkt = { workspace = true }
 netgauze-bmp-pkt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+strum =  { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "rt", "sync", "net", "macros"] }
 tokio-util = { workspace = true, features = ["codec"] }
