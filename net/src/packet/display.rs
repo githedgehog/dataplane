@@ -16,7 +16,7 @@ use crate::vlan::Vlan;
 use crate::buffer::PacketBufferMut;
 use crate::checksum::Checksum;
 #[allow(deprecated)]
-use crate::packet::{BridgeDomain, DoneReason, InvalidPacket, Packet, PacketMeta};
+use crate::packet::{BridgeDomain, InvalidPacket, Packet, PacketMeta};
 use std::fmt::{Display, Formatter};
 
 impl Display for Eth {
@@ -226,12 +226,6 @@ impl Display for Headers {
 }
 
 /* ============= METADATA =============== */
-impl Display for DoneReason {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // using Debug at the moment since the enum may soon change
-        write!(f, "{self:?}")
-    }
-}
 
 fn fmt_opt<T: Display>(
     f: &mut Formatter<'_>,

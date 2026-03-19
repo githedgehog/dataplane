@@ -76,6 +76,7 @@ impl Display for VpcDiscriminant {
     }
 }
 
+#[repr(u8)]
 #[allow(unused)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum DoneReason {
@@ -106,6 +107,15 @@ pub enum DoneReason {
     InternalDrop,         /* the packet was dropped internally due to a queue being full */
     InvalidChecksum,      /* the validation of a checksum for this packet failed */
     IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
+}
+
+impl From<u8> for DoneReason {
+    fn from(value: u8) -> Self {
+        #[allow(unsafe_code)]
+        unsafe {
+            std::mem::transmute(value)
+        }
+    }
 }
 
 bitflags! {

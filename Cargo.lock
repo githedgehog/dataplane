@@ -1536,6 +1536,7 @@ dependencies = [
  "bitflags 2.11.1",
  "bolero",
  "bytecheck",
+ "dataplane-common",
  "dataplane-concurrency",
  "dataplane-id",
  "derive_builder",
