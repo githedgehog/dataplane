@@ -103,7 +103,7 @@ impl FlowFilter {
                 None
             }
             Some(VpcdLookupResult::Single(dst_data)) => {
-                set_nat_requirements(packet, &dst_data);
+                Self::set_nat_requirements(packet, &dst_data);
                 Some(dst_data.vpcd)
             }
             Some(VpcdLookupResult::MultipleMatches(data_set)) => {
@@ -113,7 +113,7 @@ impl FlowFilter {
 
                 match self.check_packet_flow_info(packet) {
                     Ok(Some(dst_vpcd)) => {
-                        if set_nat_requirements_from_flow_info(packet).is_ok() {
+                        if Self::set_nat_requirements_from_flow_info(packet).is_ok() {
                             Some(dst_vpcd)
                         } else {
                             debug!("{nfi}: Failed to set NAT requirements from flow info");
@@ -201,7 +201,7 @@ impl FlowFilter {
 
         debug!("{nfi}: Packet can bypass filter due to flow {flow_info}");
 
-        if set_nat_requirements_from_flow_info(packet).is_err() {
+        if Self::set_nat_requirements_from_flow_info(packet).is_err() {
             debug!("{nfi}: Failed to set nat requirements");
             return false;
         }
@@ -301,7 +301,7 @@ impl FlowFilter {
         // requirement.
         if data_set.len() == 1 {
             let dst_data = data_set.iter().next().unwrap_or_else(|| unreachable!());
-            set_nat_requirements(packet, dst_data);
+            Self::set_nat_requirements(packet, dst_data);
             return Some(first_vpcd);
         }
 
@@ -322,7 +322,7 @@ impl FlowFilter {
                 requirement_proto.intersection(&packet_proto).is_some()
             })
         {
-            set_nat_requirements(packet, dst_data);
+            Self::set_nat_requirements(packet, dst_data);
             return Some(first_vpcd);
         }
         // If we have stateful NAT and port masquerading on the destination side, given that we haven't
@@ -336,12 +336,54 @@ impl FlowFilter {
             .iter()
             .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
         {
-            set_nat_requirements(packet, dst_data);
+            Self::set_nat_requirements(packet, dst_data);
             return Some(first_vpcd);
         }
 
         debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
         None
+    }
+
+    /// Set NAT requirements on the packet based on the remote data object.
+    fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &RemoteData) {
+        if data.requires_stateful_nat() {
+            packet.meta_mut().set_stateful_nat(true);
+        }
+        if data.requires_stateless_nat() {
+            packet.meta_mut().set_stateless_nat(true);
+        }
+        if data.requires_port_forwarding(get_l4_proto(packet)) {
+            packet.meta_mut().set_port_forwarding(true);
+        }
+    }
+
+    /// Set NAT requirements on the packet based on packet's flow-info, if any.
+    fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+    ) -> Result<(), ()> {
+        let locked_info = packet
+            .meta()
+            .flow_info
+            .as_ref()
+            .ok_or(())?
+            .locked
+            .read()
+            .map_err(|_| ())?;
+        let needs_stateful_nat = locked_info.nat_state.is_some();
+        let needs_port_forwarding = locked_info.port_fw_state.is_some();
+        drop(locked_info);
+
+        match (needs_stateful_nat, needs_port_forwarding) {
+            (true, false) => {
+                packet.meta_mut().set_stateful_nat(true);
+                Ok(())
+            }
+            (false, true) => {
+                packet.meta_mut().set_port_forwarding(true);
+                Ok(())
+            }
+            _ => Err(()),
+        }
     }
 }
 
@@ -424,46 +466,6 @@ impl Display for FlowFilter {
         } else {
             writeln!(f, "  [no table]")
         }
-    }
-}
-
-fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &RemoteData) {
-    if data.requires_stateful_nat() {
-        packet.meta_mut().set_stateful_nat(true);
-    }
-    if data.requires_stateless_nat() {
-        packet.meta_mut().set_stateless_nat(true);
-    }
-    if data.requires_port_forwarding(get_l4_proto(packet)) {
-        packet.meta_mut().set_port_forwarding(true);
-    }
-}
-
-fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
-) -> Result<(), ()> {
-    let locked_info = packet
-        .meta()
-        .flow_info
-        .as_ref()
-        .ok_or(())?
-        .locked
-        .read()
-        .map_err(|_| ())?;
-    let needs_stateful_nat = locked_info.nat_state.is_some();
-    let needs_port_forwarding = locked_info.port_fw_state.is_some();
-    drop(locked_info);
-
-    match (needs_stateful_nat, needs_port_forwarding) {
-        (true, false) => {
-            packet.meta_mut().set_stateful_nat(true);
-            Ok(())
-        }
-        (false, true) => {
-            packet.meta_mut().set_port_forwarding(true);
-            Ok(())
-        }
-        _ => Err(()),
     }
 }
 
