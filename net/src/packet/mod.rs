@@ -16,6 +16,7 @@ pub mod test_utils;
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::Eth;
 use crate::eth::EthError;
+use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     AbstractEmbeddedHeaders, AbstractEmbeddedHeadersMut, AbstractHeaders, AbstractHeadersMut,
     Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryHeaders, TryHeadersMut,
@@ -27,11 +28,13 @@ use crate::udp::{Udp, UdpChecksum};
 
 use crate::checksum::Checksum;
 use crate::vxlan::{Vxlan, VxlanEncap};
+use concurrency::sync::Arc;
 #[allow(unused_imports)] // re-export
 pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
 use std::num::NonZero;
+use tracing::debug;
 
 pub mod utils;
 
@@ -110,6 +113,20 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     #[must_use]
     pub fn total_len(&self) -> u16 {
         self.payload_len() + self.header_len().get()
+    }
+
+    /// Return the active flow-info for the packet, if any.
+    pub fn active_flow_info(&self) -> Option<&Arc<FlowInfo>> {
+        let Some(flow_info) = &self.meta().flow_info else {
+            debug!("Packet does not contain any flow-info");
+            return None;
+        };
+        let status = flow_info.status();
+        if status != FlowStatus::Active {
+            debug!("Found flow-info but its status is {status}, cannot use it");
+            return None;
+        }
+        Some(flow_info)
     }
 
     #[inline]
