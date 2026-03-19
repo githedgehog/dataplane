@@ -29,6 +29,8 @@ linux-raw-sys = { workspace = true, features = ["std", "if_ether"] }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 rapidhash = { workspace = true }
 rkyv = { workspace = true, features = ["alloc", "bytecheck"]}
+strum = { workspace = true }
+strum_macros = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -362,7 +362,7 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
         StatelessNatError::NoIpHeader
         | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::BadIpHeader) => DoneReason::NotIp,
 
-        StatelessNatError::UnsupportedTranslation => DoneReason::UnsupportedTransport,
+        StatelessNatError::UnsupportedTranslation => DoneReason::NatUnsupportedProto,
 
         StatelessNatError::MissingTable(_) => DoneReason::Unroutable,
 
@@ -379,7 +379,7 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
 
         StatelessNatError::IcmpErrorMsg(
             IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_),
-        ) => DoneReason::Filtered,
+        ) => DoneReason::InvalidChecksum,
     }
 }
 
