@@ -527,6 +527,7 @@ fn do_handle_cli_request(
         CliAction::ShowMasquerading => {
             show_provider(request, sources.masquerade_state.as_deref(), None)
         }
+        CliAction::ShowPacketStats => show_provider(request, sources.pkt_stats.as_deref(), None),
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
     Ok(response)

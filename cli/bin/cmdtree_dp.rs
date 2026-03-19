@@ -287,6 +287,14 @@ fn cmd_show_config_summary() -> Node {
     root
 }
 
+fn cmd_show_packet_stats() -> Node {
+    let mut root = Node::new("packet");
+    root += Node::new("stats")
+        .desc("Show packet stats")
+        .action(CliAction::ShowPacketStats as u16);
+    root
+}
+
 fn cmd_show_tech() -> Node {
     Node::new("tech")
         .desc("Dump dataplanes state")
@@ -307,6 +315,7 @@ fn cmd_show() -> Node {
     root += cmd_show_flow_filter();
     root += cmd_show_gateway();
     root += cmd_show_config_summary();
+    root += cmd_show_packet_stats();
     root += cmd_show_tech();
     root
 }

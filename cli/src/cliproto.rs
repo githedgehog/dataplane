@@ -184,6 +184,9 @@ pub enum CliAction {
     // NF: flow filter
     ShowFlowFilter,
 
+    // NF: Packet stats
+    ShowPacketStats,
+
     // internal config
     ShowConfigInternal,
 
