@@ -13,25 +13,12 @@ of the Fabric.
 ### Prerequisites
 
 - A recent `x86_64` linux machine is required for development
-- Bash (you very likely have this)
-- [Docker][docker] (install through your package manager)
-- Cargo / Rust (install via [`rustup`][rustup])
-  - :warning: You need a recent version of rust (1.86.0 or better) to build the project.
+- [Nix][nix] (the nix-shell provides the full toolchain, including Rust, Cargo, and all required libraries).
+  The single-user installation is recommended unless you are familiar with nix and prefer the multi-user installation;
+  both will work.
+- [just][just] (task runner — install through your package manager or `nix-env -i just`)
 
-    ```bash
-    rustup update
-    ```
-
-  - :warning: You need to install (at least) the glibc target to use the default builds.
-
-    ```bash
-    rustup target add x86_64-unknown-linux-gnu
-    ```
-
-- [just][just] (install through your package manager or cargo)
-
-[docker]: https://www.docker.com/
-[rustup]: https://rustup.rs/
+[nix]: https://nixos.org/download/#nix-install-linux
 [just]: https://github.com/casey/just
 
 ### Step 0. Clone the repository
@@ -41,141 +28,205 @@ git clone git@github.com:githedgehog/dataplane.git
 cd dataplane
 ```
 
-### Step 1. Get the sysroot
+### Step 1. Enter the nix-shell
 
-In the source directory, run
-
-```bash
-just refresh-compile-env
-```
-
-You should now have a directory called `compile-env` which contains the tools needed to build `dpdk-sys` such as
-`clang` and `lld` .
-You should also have `./compile-env/sysroot` which contains the libraries that `dpdk-sys` needs to link against.
-Only the `x86_64-unknown-linux-gnu` target is currently supported.
-
-### Step 2. Fake nix
-
-The sysroot is currently built using nix, but you don't need nix to build the project.
-The idea is to symlink `/nix` to `./compile-env/nix` so that the build scripts can find the libraries they need.
-This is a compromise between requiring the developer to understand nix (which can be non-trivial) and requiring the
-developer to have a bunch of libraries installed on their system.
-
-> [!WARNING]
-> This is a hack!
-> It works fine but the plan won't work if you already have /nix.
-> If you already have /nix talk to me, and we will make it work.
-> It should be pretty easy (we will just need to export some stuff from `dpdk-sys`)
+From the source directory, enter the development shell:
 
 ```bash
-just fake-nix
+just shell
 ```
 
-> [!NOTE]
-> If you move your project directory, you will need to run `just fake-nix refake` to update the symlinks.
+This provides the full development toolchain, including Rust, Cargo, Clippy, `cargo-nextest`, and all required
+libraries and system dependencies.
 
-### Step 3. Build the project
+### Step 2. Build the project
 
-At this point you should be able to run
+To build the dataplane with default settings
 
 ```bash
-cargo build
+just build
 ```
 
-to build default workspace members (dpdk-sysroot-helper, errno, and net), or
+is sufficient.
+
+If you wish to build a specific package from this workspace, such as the init system or the cli
 
 ```bash
-just cargo build --package="$package"
+just build workspace.init
+just build workspace.cli
 ```
 
-to build workspace members which are not compiled by default (dataplane, dpdk, dpdk-sys).
-
-These members are not enabled by default to help developers which develop on ARM machines, and which can't run (or even
-compile) packages reliant on the sysroot.
-
-After running
+Most just recipes are impacted by the `profile` argument which selects the cargo profile to use.
+For instance, to build in release mode
 
 ```bash
-just cargo build --package=dataplane
+just profile=release build
 ```
 
-You should now have an ELF executable in `target/x86_64-unknown-linux-gnu/debug/dataplane`.
-
-You can build in release mode with
+You can also select a target platform via the `platform` argument.
+The default is `x86-64-v3`.
 
 ```bash
-just cargo build --package=dataplane --profile=release
+just platform=zen4 build
 ```
 
-at which point you should have an executable in `target/x86_64-unknown-linux-gnu/release/dataplane`.
+### Step 3. Run the tests
 
-### Step 4. Run the tests (debug mode)
-
-To run the test suite, you can run
+To run the full test suite
 
 ```bash
-just cargo test
+just test
 ```
 
-To run the test suite under release mode
+To run tests in release mode
 
 ```bash
-just cargo test --profile=release
+just profile=release test
 ```
 
-> [!NOTE]
-> Why the `just` in `just cargo build ...`?
->
-> `just` is computing the correct `RUSTFLAGS` for us depending on the profile.
-> After that it simply calls `cargo build`.
-> Normally we would include those kinds of setting in `Cargo.toml` but `cargo` can not currently express all the
-> `RUSTFLAGS` we are using (thus the `just` wrapper).
+You can enable a comma separated list of sanitizers via the `sanitize` argument.
+You don't strictly need to use the fuzz profile with the sanitizers, but it is recommended.
+
+```bash
+just sanitize=address,leak profile=fuzz test
+just sanitize=safe-stack profile=fuzz test
+just sanitize=thread profile=fuzz test
+```
+
+You can also build and run the tests for a specific package from within this workspace.
+For example, to run the `dataplane-net` package's tests
+
+```bash
+just test net
+```
 
 This covers basic testing and building of dataplane, but [there is more to testing dataplane](./testing.md).
 
+### Step 4. Build container images
+
+Note that running `just build dataplane` only builds the binary, not the container.
+To build the dataplane container
+
+```bash
+just build-container dataplane
+```
+
+Or, if you wish to build in release mode
+
+```bash
+just profile=release build-container dataplane
+```
+
+You can build the FRR container as well
+
+```bash
+just build-container frr.dataplane
+```
+
+Sanitizers work with the container builds too
+
+```bash
+just sanitize=address,leak profile=fuzz build-container dataplane
+just sanitize=address,leak profile=fuzz build-container frr.dataplane
+just sanitize=thread profile=fuzz build-container dataplane
+just sanitize=thread profile=fuzz build-container frr.dataplane
+```
+
+### Step 5. Push container images
+
+To build and push a container image to the configured OCI registry
+
+```bash
+just push-container dataplane
+just push-container frr.dataplane
+```
+
+By default, images are pushed to `127.0.0.1:30000`.
+You can override this with the `oci_repo` argument
+
+```bash
+just oci_repo=my-registry.example.com:5000 push-container dataplane
+```
+
+## Common build arguments
+
+Most just recipes accept the following arguments, which can be combined freely:
+
+| Argument     | Default     | Description                                                                           |
+| ------------ | ----------- | ------------------------------------------------------------------------------------- |
+| `profile`    | `debug`     | Cargo build profile (`debug`, `release`, or `fuzz`)                                   |
+| `sanitize`   | (none)      | Comma-separated list of sanitizers (`address`, `leak`, `thread`, `safe-stack`, `cfi`) |
+| `instrument` | `none`      | Instrumentation mode (`none` or `coverage`)                                           |
+| `platform`   | `x86-64-v3` | Target platform (`x86-64-v3` or `zen3`, `zen4`, `zen5`, `bluefield2`, `bluefield3`)   |
+| `jobs`       | `1`         | Number of nix jobs to run in parallel                                                 |
+
+## Additional recipes
+
+### Run linters
+
+```bash
+just lint
+```
+
+### Build documentation
+
+```bash
+just docs
+```
+
+To build docs for a specific package
+
+```bash
+just docs net
+```
+
+### Set up local development roots
+
+Create the `devroot` and `sysroot` symlinks needed for local IDE integration and development
+
+```bash
+just setup-roots
+```
+
+## Updating the gateway-agent version
+
+The gateway pin in `npins/sources.json` is frozen to prevent accidental updates.
+To update it to a specific version:
+
+```bash
+npins unfreeze gateway
+npins add github githedgehog gateway --at <version>
+npins freeze gateway
+```
+
+After updating, exit and restart `nix-shell` for the changes to take effect.
+
 ## IDE Setup
 
-Because this repository uses a custom sysroot with custom libraries and binaries, you need to set up your environment
-accordingly.
+The nix-shell provides the full toolchain, so IDE setup is straightforward.
 Here are the suggested configurations for various IDEs:
 
 ### VSCode Setup
+
+Launch VSCode from within the nix-shell so that rust-analyzer and other tools can find the correct toolchain:
+
+```bash
+nix-shell --run "code ."
+```
+
+> [!NOTE]
+> VSCode must be started from within the nix-shell, otherwise the correct rust-analyzer will not be found.
 
 Add the following to your `.vscode/settings.json` file:
 
 ```json
 {
-  "rust-analyzer.server.path": "./compile-env/bin/rust-analyzer",
-  "rust-analyzer.cargo.sysroot": "./compile-env",
-  "rust-analyzer.server.extraEnv": {
-    "RUSTC_BOOTSTRAP": "1",
-    "RUSTC": "<absolute path to dataplane directory>/compile-env/bin/rustc",
-    "CARGO": "<absolute path to dataplane directory>/compile-env/bin/cargo"
-  }
-}
-```
-
-You'll also want to run `cargo clippy` on save.
-To do this, add the following to your `.vscode/settings.json` file:
-
-```json
-"rust-analyzer.check.command": "clippy"
-```
-
-> [!NOTE]
-> Please submit a PR if you have a way to avoid the absolute path.
-> `${workspaceRoot}` and `${workspaceFolder}` won't work since rust-analyzer has a custom function that implements env
-> var substitution in `extraEnv`.
-> `${env:xxx}` susbstitutions only work if the variable is set in `extraEnv` itself.
-
-Finally, you want to format code using rust analyzer, and to format on save to make sure your code is always formatted.
-To do this, add the following to your `.vscode/settings.json` file:
-
-```json
-"[rust]": {
+  "rust-analyzer.check.command": "clippy",
+  "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.formatOnSave": true
-},
+  }
+}
 ```
 
 ### Zed Setup
@@ -193,11 +244,8 @@ Save the following to the `.zed/settings.json` file:
   "lsp": {
     "rust-analyzer": {
       "binary": {
-        "path": "<absolute path to dataplane directory>/compile-env/bin/rust-analyzer",
-        "env": {
-          "RUSTC_BOOTSTRAP": "1",
-          "PATH": "<absolute path to dataplane directory>/compile-env/bin"
-        }
+        "path": "nix-shell",
+        "arguments": ["--run", "rust-analyzer"]
       },
       "initialization_options": {
         "check": {
@@ -205,9 +253,23 @@ Save the following to the `.zed/settings.json` file:
         }
       }
     }
+  },
+  "dap": {
+    "CodeLLDB": {
+      "binary": "nix-shell",
+      "args": ["--run", "lldb-dap"]
+    }
+  },
+  "terminal": {
+    "shell": {
+      "program": "nix-shell"
+    }
   }
 }
 ```
+
+Zed wraps rust-analyzer and the debugger with `nix-shell --run`, so it does not need to be launched from the
+nix-shell.
 
 ## Code organization
 
