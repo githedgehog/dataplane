@@ -81,7 +81,7 @@ build target="dataplane.tar" *args:
 test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
-    nix-shell --run "cargo nextest run --archive-file results/${target}/"*.tar.zst --workspace-remap $(pwd)"
+    nix-shell --run "cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd)"
 
 [script]
 docs package="" *args: (build (if package == "" { "docs.all" } else { "docs.pkg." + package }) args)
