@@ -173,18 +173,20 @@ impl FlowFilter {
         packet: &mut Packet<Buf>,
         genid: i64,
     ) -> bool {
+        let nfi = &self.name;
+
         let Some(flow_info) = &packet.meta().flow_info else {
-            debug!("Packet does not contain any flow-info");
+            debug!("{nfi}: Packet does not contain any flow-info");
             return false;
         };
         let flow_genid = flow_info.genid();
         if flow_genid < genid {
-            debug!("Packet has flow-info ({flow_genid} < {genid}). Need to re-evaluate...");
+            debug!("{nfi}: Packet has flow-info ({flow_genid} < {genid}). Need to re-evaluate...");
             return false;
         }
         let status = flow_info.status();
         if status != FlowStatus::Active {
-            debug!("Found flow-info but its status is {status}. Need to re-evaluate...");
+            debug!("{nfi}: Found flow-info but its status is {status}. Need to re-evaluate...");
             return false;
         }
 
@@ -197,10 +199,10 @@ impl FlowFilter {
             .and_then(|d| d.extract_ref::<VpcDiscriminant>())
             .copied();
 
-        debug!("Packet can bypass filter due to flow {flow_info}");
+        debug!("{nfi}: Packet can bypass filter due to flow {flow_info}");
 
         if set_nat_requirements_from_flow_info(packet).is_err() {
-            debug!("Failed to set nat requirements");
+            debug!("{nfi}: Failed to set nat requirements");
             return false;
         }
         packet.meta_mut().dst_vpcd = vpcd;
