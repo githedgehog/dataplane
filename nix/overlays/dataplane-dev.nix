@@ -7,7 +7,7 @@
 final: prev:
 let
   override-packages = {
-    stdenv = final.llvmPackages.stdenv;
+    stdenv = final.llvmPackages'.stdenv;
     rustPlatform = final.rustPlatform'-dev;
   };
 in
@@ -34,4 +34,16 @@ in
       executable = false;
       destination = "/src/gateway/${p}";
     };
+
+  gdb' = prev.gdb.overrideAttrs (orig: {
+    CFLAGS = "-Os -flto";
+    CXXFLAGS = "-Os -flto";
+    LDFLAGS = "-flto -Wl,--as-needed,--gc-sections -static-libstdc++ -static-libgcc";
+    buildInputs = (orig.buildInputs or [ ]);
+    configureFlags = (orig.configureFlags or [ ]) ++ [
+      "--enable-static"
+      "--disable-inprocess-agent"
+      "--disable-source-highlight" # breaks static compile
+    ];
+  });
 }
