@@ -19,9 +19,10 @@ use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::stateless::NatTablesWriter;
 use nat::{IcmpErrorHandler, StatefulNat, StatelessNat};
+use net::packet::PacketStats;
 
 use net::buffer::PacketBufferMut;
-use pipeline::sample_nfs::PacketDumper;
+use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
 use pipeline::{DynPipeline, PipelineData};
 
 use routing::{CliSources, Router, RouterError, RouterParams};
@@ -68,6 +69,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let portfw_w = PortFwTableWriter::new();
     let portfw_factory = portfw_w.reader().factory();
     let pdata = Arc::from(PipelineData::new(0));
+    let pkt_stats = Arc::from(PacketStats::new());
 
     // collect readers and the like for cli
     let cli_sources = CliSources {
@@ -76,6 +78,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         portfw_table: Some(Box::new(portfw_w.reader().inner())),
         nat_tables: Some(Box::new(nattabler_factory.handle().inner())),
         masquerade_state: Some(Box::new(natallocator_factory.handle().inner())),
+        pkt_stats: Some(Box::new(pkt_stats.clone())),
     };
 
     // create router
@@ -109,6 +112,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             portfw_factory.handle(),
             flow_table.clone(),
         );
+        let pkt_stats_nf = PacketStatsNF::new(pkt_stats.clone());
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
         // hard-coded. In any pipeline, the Stats and ExpirationsNF stages should go last
@@ -126,6 +130,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(stage_egress)
             .add_stage(flow_expirations_nf)
             .add_stage(pktdump)
+            .add_stage(pkt_stats_nf)
             .add_stage(stats_stage)
     };
 
