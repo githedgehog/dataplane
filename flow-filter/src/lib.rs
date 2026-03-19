@@ -17,7 +17,6 @@ use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use indenter::indented;
 use lpm::prefix::L4Protocol;
 use net::buffer::PacketBufferMut;
-use net::flows::FlowStatus;
 use net::flows::flow_info_item::ExtractRef;
 use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -175,18 +174,12 @@ impl FlowFilter {
     ) -> bool {
         let nfi = &self.name;
 
-        let Some(flow_info) = &packet.meta().flow_info else {
-            debug!("{nfi}: Packet does not contain any flow-info");
+        let Some(flow_info) = packet.active_flow_info() else {
             return false;
         };
         let flow_genid = flow_info.genid();
         if flow_genid < genid {
             debug!("{nfi}: Packet has flow-info ({flow_genid} < {genid}). Need to re-evaluate...");
-            return false;
-        }
-        let status = flow_info.status();
-        if status != FlowStatus::Active {
-            debug!("{nfi}: Found flow-info but its status is {status}. Need to re-evaluate...");
             return false;
         }
 
@@ -216,16 +209,9 @@ impl FlowFilter {
     ) -> Result<Option<VpcDiscriminant>, DoneReason> {
         let nfi = &self.name;
 
-        let Some(flow_info) = &packet.meta().flow_info else {
-            debug!("{nfi}: Packet does not contain any flow-info");
+        let Some(flow_info) = packet.active_flow_info() else {
             return Ok(None);
         };
-
-        let status = flow_info.status();
-        if status != FlowStatus::Active {
-            debug!("{nfi}: Found flow-info but its status is {status}, cannot use it");
-            return Ok(None);
-        }
 
         let Ok(locked_info) = flow_info.locked.read() else {
             debug!("{nfi}: Warning! failed to lock flow-info for packet, dropping packet");
