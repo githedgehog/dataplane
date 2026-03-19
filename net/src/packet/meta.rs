@@ -14,6 +14,7 @@ use concurrency::sync::Arc;
 use serde::Serialize;
 use std::fmt::Display;
 use std::net::IpAddr;
+use strum_macros::EnumCount;
 use tracing::error;
 
 /// Every VRF is univocally identified with a numerical VRF id
@@ -78,35 +79,36 @@ impl Display for VpcDiscriminant {
 
 #[repr(u8)]
 #[allow(unused)]
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, EnumCount)]
 pub enum DoneReason {
     InternalFailure,      /* catch-all for internal issues */
-    NotEthernet,          /* could not get eth header */
-    NotIp,                /* could not get IP header - maybe it's not ip */
-    UnsupportedTransport, /* unsupported transport layer */
-    MacNotForUs,          /* frame is not broadcast nor for us */
+    InterfaceUnknown,     /* the interface cannot be found */
     InterfaceDetached,    /* interface has not been attached to any VRF */
     InterfaceAdmDown,     /* interface is admin down */
     InterfaceOperDown,    /* interface is oper down : no link */
-    InterfaceUnknown,     /* the interface cannot be found */
     InterfaceUnsupported, /* the operation is not supported on the interface */
-    NatOutOfResources,    /* can't do NAT due to lack of resources */
+    NotEthernet,          /* could not get eth header */
+    Unhandled,            /* there exists no support to handle this type of packet */
+    MacNotForUs,          /* frame is not broadcast nor for us */
+    InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
+    MissingEtherType,     /* couldn't determine ethertype to use */
+    Filtered,             /* The packet was administratively filtered */
+    NotIp,                /* could not get IP header or packet is not IP */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
-    Filtered,             /* The packet was administratively filtered */
-    Unhandled,            /* there exists no support to handle this type of packet */
     MissL2resolution,     /* adjacency failure: we don't know mac of some ip next-hop */
-    InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
-    Malformed,            /* the packet does not conform / is malformed */
-    MissingEtherType,     /* can't determine ethertype to use */
-    Unroutable,           /* we don't have state to forward the packet */
+    NatOutOfResources,    /* can't do NAT due to lack of resources */
+    NatUnsupportedProto,  /* unsupported transport protocol for NATing */
     NatFailure,           /* It was not possible to NAT the packet */
-    Local,                /* the packet has to be locally consumed by kernel */
-    Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
-    InternalDrop,         /* the packet was dropped internally due to a queue being full */
+    NatNotPortForwarded,  /* Packet was sent to port forwarder and it rejected it */
+    Malformed,            /* the packet does not conform / is malformed */
+    Unroutable,           /* we don't have state to forward the packet */
     InvalidChecksum,      /* the validation of a checksum for this packet failed */
     IcmpErrorIncomplete,  /* the packet is an ICMP error but it does not contain data it should */
+    InternalDrop,         /* the packet was dropped internally due to a queue being full */
+    Local,                /* the packet has to be locally consumed by kernel */
+    Delivered,            /* the packet buffer was delivered by the NF - e.g. for xmit */
 }
 
 impl From<u8> for DoneReason {

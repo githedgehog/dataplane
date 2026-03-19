@@ -84,7 +84,7 @@ impl PortForwarder {
             && (!tcp.syn() || tcp.ack())
         {
             debug!("Dropping TCP segment: it has no SYN (or ack) and we have no state for it");
-            packet.done(DoneReason::Filtered);
+            packet.done(DoneReason::NatNotPortForwarded);
             return None;
         }
         let Some(dst_port) = transport.dst_port() else {
@@ -146,7 +146,7 @@ impl PortForwarder {
 
         // check if the packet can be port forwarded at all
         let Some((key, dst_ip, dst_port)) = Self::can_be_port_forwarded(packet) else {
-            packet.done(DoneReason::Filtered);
+            packet.done(DoneReason::NatNotPortForwarded);
             let reason = packet.get_done().unwrap_or_else(|| unreachable!());
             debug!("{nfi}: packet cannot be port-forwarded. Dropping it (reason:{reason})");
             return;
@@ -155,7 +155,7 @@ impl PortForwarder {
         // lookup the port-forwarding rule, using the given key, that contains the destination port
         let Some(entry) = pfwtable.lookup_matching_rule(key, dst_ip.inner(), dst_port) else {
             debug!("{nfi}: no rule found for port-forwarding key {key}. Dropping packet.");
-            packet.done(DoneReason::Filtered);
+            packet.done(DoneReason::NatNotPortForwarded);
             return;
         };
 
@@ -163,7 +163,7 @@ impl PortForwarder {
         let Some((new_dst_ip, new_dst_port)) = entry.map_address_port(dst_ip.inner(), dst_port)
         else {
             debug!("{nfi}: Unable to build usable address and port"); // FIXME:
-            packet.done(DoneReason::Filtered);
+            packet.done(DoneReason::InternalFailure);
             return;
         };
 
@@ -319,7 +319,7 @@ impl PortForwarder {
                 debug!("Packet hit Active flow referring to STALE port-forwarding rule.");
                 let Some(entry) = Self::get_rule_from_pkt(packet, pfwtable, &state) else {
                     debug!("Packet should no longer be forwarded. Will drop and invalidate state");
-                    packet.done(DoneReason::Filtered);
+                    packet.done(DoneReason::NatNotPortForwarded);
                     invalidate_flow_state(packet);
                     return;
                 };
