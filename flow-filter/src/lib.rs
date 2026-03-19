@@ -221,6 +221,12 @@ impl FlowFilter {
             return Ok(None);
         };
 
+        let status = flow_info.status();
+        if status != FlowStatus::Active {
+            debug!("{nfi}: Found flow-info but its status is {status}, cannot use it");
+            return Ok(None);
+        }
+
         let Ok(locked_info) = flow_info.locked.read() else {
             debug!("{nfi}: Warning! failed to lock flow-info for packet, dropping packet");
             return Err(DoneReason::InternalFailure);
@@ -235,14 +241,6 @@ impl FlowFilter {
             debug!("{nfi}: No VPC discriminant found, dropping packet");
             return Err(DoneReason::Unroutable);
         };
-
-        let status = flow_info.status();
-        if status != FlowStatus::Active {
-            debug!(
-                "{nfi}: Found flow-info with dst_vpcd {dst_vpcd} but status {status}, dropping packet"
-            );
-            return Err(DoneReason::Unroutable);
-        }
 
         debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
         Ok(Some(*dst_vpcd))
