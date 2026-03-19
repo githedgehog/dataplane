@@ -60,84 +60,6 @@ impl FlowFilter {
         }
     }
 
-    /// Attempt to determine destination vpc from packet's flow-info
-    fn check_packet_flow_info<Buf: PacketBufferMut>(
-        &self,
-        packet: &mut Packet<Buf>,
-    ) -> Result<Option<VpcDiscriminant>, DoneReason> {
-        let nfi = &self.name;
-
-        let Some(flow_info) = &packet.meta().flow_info else {
-            debug!("{nfi}: Packet does not contain any flow-info");
-            return Ok(None);
-        };
-
-        let Ok(locked_info) = flow_info.locked.read() else {
-            debug!("{nfi}: Warning! failed to lock flow-info for packet, dropping packet");
-            return Err(DoneReason::InternalFailure);
-        };
-
-        let vpcd = locked_info
-            .dst_vpcd
-            .as_ref()
-            .and_then(|d| d.extract_ref::<VpcDiscriminant>());
-
-        let Some(dst_vpcd) = vpcd else {
-            debug!("{nfi}: No VPC discriminant found, dropping packet");
-            return Err(DoneReason::Unroutable);
-        };
-
-        let status = flow_info.status();
-        if status != FlowStatus::Active {
-            debug!(
-                "{nfi}: Found flow-info with dst_vpcd {dst_vpcd} but status {status}, dropping packet"
-            );
-            return Err(DoneReason::Unroutable);
-        }
-
-        debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
-        Ok(Some(*dst_vpcd))
-    }
-
-    fn bypass_with_flow_info<Buf: PacketBufferMut>(
-        &self,
-        packet: &mut Packet<Buf>,
-        genid: i64,
-    ) -> bool {
-        let Some(flow_info) = &packet.meta().flow_info else {
-            debug!("Packet does not contain any flow-info");
-            return false;
-        };
-        let flow_genid = flow_info.genid();
-        if flow_genid < genid {
-            debug!("Packet has flow-info ({flow_genid} < {genid}). Need to re-evaluate...");
-            return false;
-        }
-        let status = flow_info.status();
-        if status != FlowStatus::Active {
-            debug!("Found flow-info but its status is {status}. Need to re-evaluate...");
-            return false;
-        }
-
-        let vpcd = flow_info
-            .locked
-            .read()
-            .unwrap()
-            .dst_vpcd
-            .as_ref()
-            .and_then(|d| d.extract_ref::<VpcDiscriminant>())
-            .copied();
-
-        debug!("Packet can bypass filter due to flow {flow_info}");
-
-        if set_nat_requirements_from_flow_info(packet).is_err() {
-            debug!("Failed to set nat requirements");
-            return false;
-        }
-        packet.meta_mut().dst_vpcd = vpcd;
-        true
-    }
-
     /// Process a packet.
     fn process_packet<Buf: PacketBufferMut>(
         &self,
@@ -243,6 +165,85 @@ impl FlowFilter {
 
         debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+    }
+
+    /// Check if flow-info is up-to-date and allows bypassing the main filtering logic.
+    fn bypass_with_flow_info<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        genid: i64,
+    ) -> bool {
+        let Some(flow_info) = &packet.meta().flow_info else {
+            debug!("Packet does not contain any flow-info");
+            return false;
+        };
+        let flow_genid = flow_info.genid();
+        if flow_genid < genid {
+            debug!("Packet has flow-info ({flow_genid} < {genid}). Need to re-evaluate...");
+            return false;
+        }
+        let status = flow_info.status();
+        if status != FlowStatus::Active {
+            debug!("Found flow-info but its status is {status}. Need to re-evaluate...");
+            return false;
+        }
+
+        let vpcd = flow_info
+            .locked
+            .read()
+            .unwrap()
+            .dst_vpcd
+            .as_ref()
+            .and_then(|d| d.extract_ref::<VpcDiscriminant>())
+            .copied();
+
+        debug!("Packet can bypass filter due to flow {flow_info}");
+
+        if set_nat_requirements_from_flow_info(packet).is_err() {
+            debug!("Failed to set nat requirements");
+            return false;
+        }
+        packet.meta_mut().dst_vpcd = vpcd;
+        true
+    }
+
+    /// Attempt to determine destination VPC from packet's flow-info.
+    fn check_packet_flow_info<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+    ) -> Result<Option<VpcDiscriminant>, DoneReason> {
+        let nfi = &self.name;
+
+        let Some(flow_info) = &packet.meta().flow_info else {
+            debug!("{nfi}: Packet does not contain any flow-info");
+            return Ok(None);
+        };
+
+        let Ok(locked_info) = flow_info.locked.read() else {
+            debug!("{nfi}: Warning! failed to lock flow-info for packet, dropping packet");
+            return Err(DoneReason::InternalFailure);
+        };
+
+        let vpcd = locked_info
+            .dst_vpcd
+            .as_ref()
+            .and_then(|d| d.extract_ref::<VpcDiscriminant>());
+
+        let Some(dst_vpcd) = vpcd else {
+            debug!("{nfi}: No VPC discriminant found, dropping packet");
+            return Err(DoneReason::Unroutable);
+        };
+
+        let status = flow_info.status();
+        if status != FlowStatus::Active {
+            debug!(
+                "{nfi}: Found flow-info with dst_vpcd {dst_vpcd} but status {status}, dropping packet"
+            );
+            return Err(DoneReason::Unroutable);
+        }
+
+        debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
+        Ok(Some(*dst_vpcd))
     }
 }
 
