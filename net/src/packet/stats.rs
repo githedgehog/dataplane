@@ -8,6 +8,7 @@ use common::cliprovider::{CliDataProvider, Heading};
 use std::fmt::Display;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use strum::EnumCount;
 
 /// A tiny table of packet counts per `DoneReason`
 pub struct PacketStats {
@@ -15,20 +16,15 @@ pub struct PacketStats {
 }
 impl PacketStats {
     #[must_use]
+    #[allow(clippy::new_without_default)]
     /// Build an instance of `PacketStats`
     pub fn new() -> Self {
         Self {
-            counts: (DoneReason::InternalFailure as u8..=DoneReason::IcmpErrorIncomplete as u8)
-                .map(|_| AtomicU64::new(0))
-                .collect(),
+            counts: (0..DoneReason::COUNT).map(|_| AtomicU64::new(0)).collect(),
         }
     }
     /// Increment the count for a given `DoneReason`
     pub fn incr(&self, done_reason: DoneReason) {
-        debug_assert_eq!(
-            self.counts.len(),
-            DoneReason::IcmpErrorIncomplete as usize + 1
-        );
         self.counts[done_reason as usize].fetch_add(1, Ordering::Relaxed);
     }
     /// Provide a snapshot of the `PacketStats`
@@ -46,39 +42,47 @@ impl Display for DoneReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InternalFailure => write!(f, "Internal failure"),
-            Self::NotEthernet => write!(f, "Non-Ethernet"),
-            Self::NotIp => write!(f, "Non-IP"),
-            Self::UnsupportedTransport => write!(f, "Unsupported transport"),
-            Self::MacNotForUs => write!(f, "Frame not for us"),
-            Self::InterfaceDetached => write!(f, "Detached interface"),
-            Self::InterfaceAdmDown => write!(f, "Interface admin down"),
-            Self::InterfaceOperDown => write!(f, "Interface oper down"),
-            Self::InterfaceUnknown => write!(f, "Unknown interface"),
-            Self::InterfaceUnsupported => write!(f, "Interface unsupported"),
-            Self::NatOutOfResources => write!(f, "NAT out of resources"),
-            Self::RouteFailure => write!(f, "Route failure"),
-            Self::RouteDrop => write!(f, "Route drop"),
-            Self::HopLimitExceeded => write!(f, "TTL exceeded"),
-            Self::Filtered => write!(f, "Filtered"),
+
+            Self::InterfaceDetached => write!(f, "Interface: detached"),
+            Self::InterfaceAdmDown => write!(f, "Interface: admin down"),
+            Self::InterfaceOperDown => write!(f, "Interface: oper down"),
+            Self::InterfaceUnknown => write!(f, "Interface: unknown"),
+            Self::InterfaceUnsupported => write!(f, "Interface: unsupported"),
+
+            Self::NotEthernet => write!(f, "Not Ethernet"),
             Self::Unhandled => write!(f, "Unhandled"),
-            Self::MissL2resolution => write!(f, "L2 resolution failure"),
-            Self::InvalidDstMac => write!(f, "Invalid dst MAC"),
-            Self::Malformed => write!(f, "Malformed packet"),
+            Self::MacNotForUs => write!(f, "Frame not for us"),
             Self::MissingEtherType => write!(f, "Missing ether type"),
+            Self::InvalidDstMac => write!(f, "Invalid dst MAC"),
+
+            Self::NotIp => write!(f, "IP:  packet is not IP"),
+            Self::RouteFailure => write!(f, "IP:  missing routing info"),
+            Self::RouteDrop => write!(f, "IP:  route drop"),
+            Self::HopLimitExceeded => write!(f, "IP:  TTL exceeded"),
+            Self::MissL2resolution => write!(f, "IP:  L2 resolution failure"),
+
+            Self::Filtered => write!(f, "Filtered"),
+
+            Self::NatOutOfResources => write!(f, "NAT: out of resources"),
+            Self::NatFailure => write!(f, "NAT: failure"),
+            Self::NatUnsupportedProto => write!(f, "NAT: Unsupported protocol"),
+            Self::NatNotPortForwarded => write!(f, "NAT: not port-forwarded"),
+
+            Self::Malformed => write!(f, "Malformed packet"),
             Self::Unroutable => write!(f, "Unroutable"),
-            Self::NatFailure => write!(f, "NAT failure"),
-            Self::Local => write!(f, "Locally delivered"),
-            Self::Delivered => write!(f, "Delivered"),
-            Self::InternalDrop => write!(f, "Internal drop"),
             Self::InvalidChecksum => write!(f, "Invalid checksum"),
             Self::IcmpErrorIncomplete => write!(f, "Incomplete ICMP error"),
+
+            Self::InternalDrop => write!(f, "Internal drop"),
+            Self::Local => write!(f, "Locally delivered"),
+            Self::Delivered => write!(f, "Delivered"),
         }
     }
 }
 
 macro_rules! PKT_STATS {
     () => {
-        "    {:<22} {:>10}"
+        "    {:<30} {}"
     };
 }
 
@@ -94,7 +98,7 @@ impl Display for PacketStats {
 }
 
 impl CliDataProvider for PacketStats {
-    fn provide(&self, _what: Option<common::cliprovider::CliData>) -> String {
+    fn provide(&self) -> String {
         self.to_string()
     }
 }

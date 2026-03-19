@@ -265,7 +265,7 @@ mod nf_test {
         let tcp = packet.try_tcp_mut().unwrap();
         tcp.set_syn(false);
         let output = process_packet(&mut pipeline, packet);
-        assert_eq!(output.get_done(), Some(DoneReason::Filtered));
+        assert_eq!(output.get_done(), Some(DoneReason::NatNotPortForwarded));
 
         // process a packet in reverse direction: no flow info should have been found
         let packet = tcp_packet_reverse_reply();
@@ -525,8 +525,7 @@ mod nf_test {
 
         let packet = tcp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
-        assert_eq!(output.get_done(), Some(DoneReason::Filtered));
-        //        assert!(get_pfw_flow_status(&output).is_none());
+        assert_eq!(output.get_done(), Some(DoneReason::NatNotPortForwarded));
 
         println!("{flow_table}");
 
@@ -535,7 +534,7 @@ mod nf_test {
 
         let packet = tcp_packet_to_port_forward();
         let output = process_packet(&mut pipeline, packet);
-        assert_eq!(output.get_done(), Some(DoneReason::Filtered)); // should be filtered
+        assert_eq!(output.get_done(), Some(DoneReason::NatNotPortForwarded));
         assert_eq!(get_flow_status(&output), None); // expiration NF should have removed the flow
         assert!(get_pfw_flow_status(&output).is_none());
         println!("{flow_table}");
@@ -814,7 +813,7 @@ mod nf_test {
         );
         let rule_referenced = get_pfw_flow_state_rule(&output);
         assert!(rule_referenced.is_none()); // flow did not get a new reference to a rule
-        assert_eq!(output.get_done(), Some(DoneReason::Filtered)); // packet was dropped
+        assert_eq!(output.get_done(), Some(DoneReason::NatNotPortForwarded)); // packet was dropped
 
         println!("{flow_table}");
     }

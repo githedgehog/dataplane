@@ -474,7 +474,7 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
 
         StatefulNatError::BadTransportHeader
         | StatefulNatError::AllocationFailure(AllocatorError::UnsupportedProtocol(_)) => {
-            DoneReason::UnsupportedTransport
+            DoneReason::NatUnsupportedProto
         }
 
         StatefulNatError::TupleParseError | StatefulNatError::InvalidPort(_) => {
