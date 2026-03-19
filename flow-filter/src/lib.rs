@@ -17,6 +17,7 @@ use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use indenter::indented;
 use lpm::prefix::L4Protocol;
 use net::buffer::PacketBufferMut;
+use net::flows::FlowInfo;
 use net::flows::flow_info_item::ExtractRef;
 use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -183,14 +184,7 @@ impl FlowFilter {
             return false;
         }
 
-        let vpcd = flow_info
-            .locked
-            .read()
-            .unwrap()
-            .dst_vpcd
-            .as_ref()
-            .and_then(|d| d.extract_ref::<VpcDiscriminant>())
-            .copied();
+        let vpcd = Self::dst_vpcd_from_flow_info(flow_info);
 
         debug!("{nfi}: Packet can bypass filter due to flow {flow_info}");
 
@@ -213,15 +207,7 @@ impl FlowFilter {
             return Ok(None);
         };
 
-        let Ok(locked_info) = flow_info.locked.read() else {
-            debug!("{nfi}: Warning! failed to lock flow-info for packet, dropping packet");
-            return Err(DoneReason::InternalFailure);
-        };
-
-        let vpcd = locked_info
-            .dst_vpcd
-            .as_ref()
-            .and_then(|d| d.extract_ref::<VpcDiscriminant>());
+        let vpcd = Self::dst_vpcd_from_flow_info(flow_info);
 
         let Some(dst_vpcd) = vpcd else {
             debug!("{nfi}: No VPC discriminant found, dropping packet");
@@ -229,7 +215,7 @@ impl FlowFilter {
         };
 
         debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
-        Ok(Some(*dst_vpcd))
+        Ok(Some(dst_vpcd))
     }
 
     /// Handle destination VPC retrieval and NAT requirements setting when multiple matches were
@@ -368,6 +354,19 @@ impl FlowFilter {
             }
             _ => Err(()),
         }
+    }
+
+    /// Extract the destination VPC discriminant from a flow-info entry.
+    /// Panic if the lock has been poisoned.
+    fn dst_vpcd_from_flow_info(flow_info: &Arc<FlowInfo>) -> Option<VpcDiscriminant> {
+        flow_info
+            .locked
+            .read()
+            .unwrap()
+            .dst_vpcd
+            .as_ref()
+            .and_then(|d| d.extract_ref::<VpcDiscriminant>())
+            .copied()
     }
 }
 
