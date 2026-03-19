@@ -22,6 +22,7 @@ arrayvec = { workspace = true, features = ["serde", "std"] }
 bitflags = { workspace = true }
 bolero = { workspace = true, features = ["std"], optional = true }
 bytecheck = { workspace = true }
+common = { workspace = true }
 concurrency = { workspace = true }
 derive_builder = { workspace = true, features = ["alloc"] }
 downcast-rs = { workspace = true, features = ["sync"] }

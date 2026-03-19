@@ -8,6 +8,9 @@
 mod display;
 mod hash;
 mod meta;
+mod stats;
+
+pub use stats::PacketStats;
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
