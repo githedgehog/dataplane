@@ -131,6 +131,7 @@ let
       pkg-config
       rust-toolchain
       skopeo
+      yq
     ]);
   };
   devenv = pkgs.mkShell {
