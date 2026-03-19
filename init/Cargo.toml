@@ -5,6 +5,10 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+default = ["sysroot"]
+sysroot = ["dep:dpdk-sysroot-helper"]
+
 [dependencies]
 # internal
 hardware = { workspace = true, features = ["serde", "scan"] }
@@ -27,6 +31,6 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [build-dependencies]
 # internal
-dpdk-sysroot-helper = { workspace = true }
+dpdk-sysroot-helper = { workspace = true, optional = true }
 
 # external
