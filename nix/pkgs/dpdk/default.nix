@@ -12,17 +12,11 @@
   rdma-core,
   libnl,
   python3,
-  build-params ? {
-    lto = "true";
-    build-type = "release"; # "debug" | "release"
-    platform = "bluefield3";
-  },
   writeText,
 
   platform,
   ...
 }:
-
 stdenv.mkDerivation {
   pname = "dpdk";
   version = src.branch;
@@ -270,19 +264,18 @@ stdenv.mkDerivation {
         cpu = '${cpu}'
         endian = '${endian}'
         [properties]
-        platform = '${build-params.platform}'
+        platform = '${platform.name}'
         libc = '${libc-vendor}'
       '';
     in
-    with build-params;
     [
-      "--buildtype=${build-type}"
-      "-Dauto_features=disabled"
-      "-Db_colorout=never"
-      "-Db_lto=${lto}"
-      "-Db_lundef=false"
+      "--buildtype=release"
+      "-Db_lto=true"
+      "-Db_lundef=false" # normally I would enable undef symbol checks, but it breaks sanitizer builds
       "-Db_pgo=off"
       "-Db_pie=true"
+      "-Dauto_features=disabled"
+      "-Db_colorout=never"
       "-Dbackend=ninja"
       "-Ddefault_library=static"
       "-Denable_docs=false"
@@ -290,14 +283,13 @@ stdenv.mkDerivation {
       "-Dmax_numa_nodes=${toString platform.numa.max-nodes}"
       "-Dtests=false" # Running DPDK tests in CI is usually silly
       "-Duse_hpet=false"
-      "-Ddebug=false"
       ''-Ddisable_drivers=${lib.concatStringsSep "," disabledDrivers}''
       ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
       ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
       ''-Ddisable_apps=*''
       ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
     ]
-    ++ (if isCrossCompile then [ ''--cross-file=${cross-file}'' ] else [ ]);
+    ++ (if isCrossCompile then [ "--cross-file=${cross-file}" ] else [ ]);
 
   outputs = [
     "dev"
