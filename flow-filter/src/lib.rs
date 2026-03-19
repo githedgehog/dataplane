@@ -310,8 +310,8 @@ impl FlowFilter {
             return None;
         }
 
-        // If we have stateful NAT and port masquerading on the source side, given that we haven't found
-        // a valid NAT entry, stateful NAT should take precedence so the packet can come out.
+        // If we have masquerading and port forwarding on the source side, given that we haven't
+        // found a valid NAT entry, stateful NAT should take precedence so the packet can come out.
         if let Some(dst_data) = data_set
             .iter()
             .find(|d| d.src_nat_req == Some(NatRequirement::Stateful))
@@ -325,8 +325,8 @@ impl FlowFilter {
             Self::set_nat_requirements(packet, dst_data);
             return Some(first_vpcd);
         }
-        // If we have stateful NAT and port masquerading on the destination side, given that we haven't
-        // found a valid NAT entry, port forwarding should take precedence.
+        // If we have masquerading and port forwarding on the destination side, given that we
+        // haven't found a valid NAT entry, port forwarding should take precedence.
         if let Some(dst_data) = data_set.iter().find(|d| {
             let Some(NatRequirement::PortForwarding(req_proto)) = d.dst_nat_req else {
                 return false;
