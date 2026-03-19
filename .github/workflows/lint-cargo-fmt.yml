@@ -1,4 +1,7 @@
 # Make sure Rust source code is consistently formatted with rustfmt.
+#
+# Uses the nix-shell environment to ensure the same rustfmt version
+# that developers use locally.
 
 name: "lint-cargo-fmt.yml"
 
@@ -14,26 +17,36 @@ concurrency:
 jobs:
   format-check:
     name: "Check formatting for Rust code"
-    runs-on: "ubuntu-latest"
+    runs-on: "lab"
     # Skip this job in merge group checks; but we need the workflow to run,
     # given that the status check is required for merging.
     if: "${{ github.event.pull_request }}"
+    env:
+      USER: "runner"
     steps:
-      - name: "Install Rust toolchain"
-        uses: "dtolnay/rust-toolchain@master"
-        with:
-          toolchain: "nightly"
-          components: "rustfmt"
-
       - name: "Checkout"
         uses: "actions/checkout@v6"
         with:
           fetch-depth: "1"
           persist-credentials: "false"
 
+      - name: "Install nix"
+        uses: "cachix/install-nix-action@v31"
+        with:
+          github_access_token: "${{ secrets.GITHUB_TOKEN }}"
+          nix_path: "nixpkgs=channel:nixpkgs-unstable"
+
+      - uses: "cachix/cachix-action@v14"
+        with:
+          name: "hedgehog"
+          # prettier-ignore
+          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
+          # prettier-ignore
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
       - name: "Check formatting"
         run: |
-          cargo fmt --check
+          nix-shell --run "just fmt --check"
 
       - name: "How to fix"
         if: ${{ failure() }}
