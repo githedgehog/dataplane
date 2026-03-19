@@ -6,6 +6,7 @@
   profile ? "debug",
   instrumentation ? "none",
   sanitize ? "",
+  tag ? "dev",
 }:
 let
   sources = import ./npins;
@@ -29,6 +30,7 @@ let
     {
       "debug" = "dev";
       "release" = "release";
+      "fuzz" = "fuzz";
     }
     .${profile};
   overlays = import ./nix/overlays {
@@ -54,11 +56,20 @@ let
         overlays.dataplane
       ];
     }).pkgsCross.${platform'.info.nixarch};
+  frr-pkgs =
+    (import sources.nixpkgs {
+      overlays = [
+        overlays.rust
+        overlays.llvm
+        overlays.dataplane
+        overlays.frr
+      ];
+    }).pkgsCross.${platform'.info.nixarch};
   sysroot = pkgs.pkgsHostHost.symlinkJoin {
     name = "sysroot";
     paths = with pkgs.pkgsHostHost; [
-      pkgs.pkgsHostHost.libc.dev
-      pkgs.pkgsHostHost.libc.out
+      pkgs.pkgsHostHost.libc.dev # fully qualified: bare `libc` resolves to the "gnu" function argument, not pkgs.pkgsHostHost.libc
+      pkgs.pkgsHostHost.libc.out # (same as above)
       fancy.dpdk-wrapper.dev
       fancy.dpdk-wrapper.out
       fancy.dpdk.dev
@@ -118,23 +129,34 @@ let
       npins
       pkg-config
       rust-toolchain
+      skopeo
     ]);
   };
   devenv = pkgs.mkShell {
     name = "dataplane-dev-shell";
     packages = [ devroot ];
     inputsFrom = [ sysroot ];
-    shellHook = ''
-      export RUSTC_BOOTSTRAP=1
-    '';
+    env = {
+      RUSTC_BOOTSTRAP = "1";
+      DATAPLANE_SYSROOT = "${sysroot}";
+      C_INCLUDE_PATH = "${sysroot}/include";
+      LIBRARY_PATH = "${sysroot}/lib";
+      PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
+      LIBCLANG_PATH = "${devroot}/lib";
+      GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+    };
   };
+  justfileFilter = p: _type: builtins.match ".*\.justfile$" p != null;
   markdownFilter = p: _type: builtins.match ".*\.md$" p != null;
+  jsonFilter = p: _type: builtins.match ".*\.json$" p != null;
   cHeaderFilter = p: _type: builtins.match ".*\.h$" p != null;
   outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
       p: t:
-      (markdownFilter p t)
+      (justfileFilter p t)
+      || (markdownFilter p t)
+      || (jsonFilter p t)
       || (cHeaderFilter p t)
       || ((outputsFilter p t) && (craneLib.filterCargoSources p t));
     src = ./.;
@@ -147,7 +169,7 @@ let
   };
   target = pkgs.stdenv'.targetPlatform.rust.rustcTarget;
   is-cross-compile = dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
-  cc = if is-cross-compile then "${target}-clang" else "clang";
+  cxx = if is-cross-compile then "${target}-clang++" else "clang++";
   strip = if is-cross-compile then "${target}-strip" else "strip";
   objcopy = if is-cross-compile then "${target}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
@@ -168,18 +190,9 @@ let
   cargo-cmd-prefix = [
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
     "--target=${target}"
-  ]
-  ++ (
-    if builtins.elem "thread" sanitizers then
-      [
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
-      ]
-    else
-      [
-        "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
-      ]
-  );
+  ];
   invoke =
     {
       builder,
@@ -204,9 +217,8 @@ let
         strictDeps = true;
         dontStrip = true;
         doRemapPathPrefix = false; # TODO: this setting may be wrong, test with debugger
-        doNotRemoveReferencesToRustToolchain = true;
-        doNotRemoveReferencesToVendorDir = true;
-        separateDebugInfo = true;
+        removeReferencesToRustToolchain = true;
+        removeReferencesToVendorDir = true;
 
         nativeBuildInputs = [
           (dev-pkgs.kopium)
@@ -221,6 +233,7 @@ let
         ];
 
         env = {
+          VERSION = tag;
           CARGO_PROFILE = cargo-profile;
           DATAPLANE_SYSROOT = "${sysroot}";
           LIBCLANG_PATH = "${pkgs.pkgsBuildHost.llvmPackages'.libclang.lib}/lib";
@@ -232,7 +245,7 @@ let
           RUSTFLAGS = builtins.concatStringsSep " " (
             profile'.RUSTFLAGS
             ++ [
-              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cc}"
+              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
               "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
               "-Clink-arg=-L${sysroot}/lib"
               # NOTE: this is basically a trick to make our source code available to debuggers.
@@ -248,15 +261,6 @@ let
               # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
               "--remap-path-prefix==${src}"
             ]
-            ++ (
-              if ((builtins.elem "thread" sanitizers) || (builtins.elem "safe-stack" sanitizers)) then
-                [
-                  # "-Zexternal-clangrt"
-                  # "-Clink-arg=--rtlib=compiler-rt"
-                ]
-              else
-                [ ]
-            )
           );
         };
       }
@@ -286,7 +290,7 @@ let
           rm -f $out/target.tar.zst
         '';
       });
-  package-builder =
+  workspace-builder =
     {
       pname ? null,
       cargoArtifacts ? null,
@@ -313,16 +317,19 @@ let
 
   workspace = builtins.mapAttrs (
     dir: pname:
-    package-builder {
+    workspace-builder {
       inherit pname;
     }
   ) package-list;
 
   test-builder =
     {
-      pname ? null,
+      package ? null,
       cargoArtifacts ? null,
     }:
+    let
+      pname = if package != null then package else "all";
+    in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
       args = {
@@ -336,19 +343,22 @@ let
             "--archive-file"
             "$out/${pname}.tar.zst"
             "--cargo-profile=${cargo-profile}"
-            "--package=${pname}"
           ]
+          ++ (if package != null then [ "--package=${pname}" ] else [ ])
           ++ cargo-cmd-prefix
         );
       };
     };
 
-  tests = builtins.mapAttrs (
-    dir: pname:
-    test-builder {
-      inherit pname;
-    }
-  ) package-list;
+  tests = {
+    all = test-builder { };
+    pkg = builtins.mapAttrs (
+      dir: package:
+      test-builder {
+        inherit package;
+      }
+    ) package-list;
+  };
 
   clippy-builder =
     {
@@ -472,10 +482,11 @@ in
 {
   inherit
     clippy
-    dataplane-tar
     dev-pkgs
-    devroot
     devenv
+    devroot
+    frr-pkgs
+    dataplane-tar
     package-list
     pkgs
     sources
