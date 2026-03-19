@@ -3,6 +3,8 @@
 {
   sources,
   sanitizers,
+  platform,
+  profile,
   ...
 }:
 final: prev:
@@ -17,8 +19,6 @@ in
   # is a solid plan.
   fancy.libmd = (dataplane-dep prev.libmd).overrideAttrs (orig: {
     outputs = (orig.outputs or [ "out" ]) ++ [
-      "man"
-      "dev"
       "static"
     ];
     # we need to enable shared libs (in addition to static) to make dpdk's build happy. Basically, DPDK's build has no
@@ -114,8 +114,6 @@ in
   fancy.rdma-core =
     ((dataplane-dep prev.rdma-core).override {
       docutils = null;
-      ethtool = null;
-      iproute2 = null;
       libnl = final.fancy.libnl;
       pandoc = null;
       udev = null;
@@ -193,7 +191,13 @@ in
   # Also, while this library has a respectable security track record, this is also a very strong candidate for
   # cfi, safe-stack, and cf-protection.
   fancy.dpdk = dataplane-dep (
-    final.callPackage ../pkgs/dpdk (final.fancy // { src = sources.dpdk; })
+    final.callPackage ../pkgs/dpdk (
+      final.fancy
+      // {
+        inherit platform profile;
+        src = sources.dpdk;
+      }
+    )
   );
 
   # DPDK is largely composed of static-inline functions.
@@ -203,7 +207,6 @@ in
   # these methods anyway.
   fancy.dpdk-wrapper = dataplane-dep (final.callPackage ../pkgs/dpdk-wrapper final.fancy);
 
-  # TODO: consistent packages
   fancy.pciutils = dataplane-dep (
     final.pciutils.override {
       static = true;
@@ -212,9 +215,8 @@ in
     }
   );
 
-  fancy.libunwind = (dataplane-dep final.llvmPackages.libunwind).override { enableShared = false; };
+  fancy.libunwind = (dataplane-dep final.llvmPackages'.libunwind).override { enableShared = false; };
 
-  # TODO: consistent packages, min deps
   fancy.hwloc =
     ((dataplane-dep prev.hwloc).override {
       inherit (final.fancy) numactl;
@@ -222,7 +224,7 @@ in
       cudaPackages = null;
       enableCuda = false;
       expat = null;
-      libX11 = null;
+      libx11 = null;
       ncurses = null;
       x11Support = false;
     }).overrideAttrs
@@ -238,7 +240,5 @@ in
       });
 
   # This isn't directly required by dataplane,
-  fancy.perftest = dataplane-dep (
-    final.callPackage ../pkgs/perftest final.fancy // { src = sources.perftest; }
-  );
+  fancy.perftest = dataplane-dep (final.callPackage ../pkgs/perftest { src = sources.perftest; });
 }
