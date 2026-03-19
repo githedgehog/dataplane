@@ -427,27 +427,32 @@ let
     ) package-list;
   };
 
-  dataplane-tar = pkgs.stdenv'.mkDerivation {
-    pname = "dataplane-tar";
+  dataplane.tar = pkgs.stdenv'.mkDerivation {
+    pname = "dataplane.tar";
     inherit version;
     dontUnpack = true;
     src = null;
+    dontPatchShebangs = true;
+    dontFixup = true;
+    dontPatchElf = true;
     buildPhase =
       let
         libc = pkgs.pkgsHostHost.libc;
       in
       ''
         tmp="$(mktemp -d)"
-        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns}
+        mkdir -p "$tmp/"{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
         ln -s /run "$tmp/var/run"
-        cp --dereference "${workspace.dataplane}/bin/dataplane" "$tmp/bin"
-        cp --dereference "${workspace.cli}/bin/cli" "$tmp/bin"
-        cp --dereference "${workspace.init}/bin/dataplane-init" "$tmp/bin"
-        ln -s cli "$tmp/bin/sh"
         for f in "${pkgs.pkgsHostHost.dockerTools.fakeNss}/etc/"* ; do
           cp --archive "$(readlink -e "$f")" "$tmp/etc/$(basename "$f")"
         done
         cd "$tmp"
+        ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
+        ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
+        ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
+        for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
+            ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
+        done
         # we take some care to make the tar file reproducible here
         tar \
           --create \
@@ -463,8 +468,8 @@ let
           --group=0 \
           \
           `# anybody editing the files shipped in the container image is up to no good, block all of that.` \
-          `# More, we expressly forbid setuid / setgid anything.  May as well toss in the sticky bit as well.` \
-          --mode='u-sw,go=' \
+          `# More, we expressly forbid setuid / setgid anything.` \
+          --mode='ugo-sw' \
           \
           `# acls / setcap / selinux isn't going to be reliably copied into the image; skip to make more reproducible` \
           --no-acls \
@@ -479,7 +484,7 @@ let
           `# None of this applies to musl (if we ever decide to ship with musl).  That said, these filters will` \
           `# just not do anything in that case. ` \
            \
-          `# First up, anybody even trying to access the glibc audit functionality in our container environment is ` \
+          `# Anybody even trying to access the glibc audit functionality in our container environment is ` \
           `# 100% up to no good.` \
           `# Intercepting and messing with dynamic library loading is _absolutely_ not on our todo list, and this ` \
           `# stuff has a history of causing security issues (arbitrary code execution).  Just disarm this.` \
@@ -507,10 +512,13 @@ let
           --file "$out" \
           \
           . \
-          ${pkgs.pkgsHostHost.libc.out} \
-          ${if builtins.elem "thread" sanitizers then pkgs.pkgsHostHost.glibc.libgcc or "" else ""} \
+          ${libc.out} \
+          ${pkgs.pkgsHostHost.glibc.libgcc} \
+          ${workspace.dataplane} \
+          ${workspace.init} \
+          ${workspace.cli} \
+          ${pkgs.pkgsHostHost.busybox}
       '';
-
   };
 
 in
@@ -522,7 +530,7 @@ in
     devroot
     docs
     frr-pkgs
-    dataplane-tar
+    dataplane
     package-list
     pkgs
     sources
