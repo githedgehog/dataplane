@@ -12,7 +12,6 @@ use crate::vxlan::Vni;
 use bitflags::bitflags;
 use concurrency::sync::Arc;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::IpAddr;
 use tracing::error;
@@ -254,65 +253,5 @@ impl Drop for PacketMeta {
         if self.done.is_none() && self.is_initialized() {
             error!("Attempted to drop packet with unspecified verdict!");
         }
-    }
-}
-
-#[derive(Default, Debug)]
-#[allow(unused)]
-pub struct PacketDropStats {
-    pub name: String,
-    reasons: HashMap<DoneReason, u64>,
-    //Fredi: Todo: replace by ahash or use a small vec indexed by the DropReason value
-}
-
-impl PacketDropStats {
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_owned(),
-            reasons: HashMap::default(),
-        }
-    }
-    #[allow(dead_code)]
-    pub fn incr(&mut self, reason: DoneReason, value: u64) {
-        self.reasons
-            .entry(reason)
-            .and_modify(|counter| *counter += value)
-            .or_insert(value);
-    }
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn get_stat(&self, reason: DoneReason) -> Option<u64> {
-        self.reasons.get(&reason).copied()
-    }
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn get_stats(&self) -> &HashMap<DoneReason, u64> {
-        &self.reasons
-    }
-}
-
-#[cfg(test)]
-pub mod test {
-    use super::DoneReason;
-    use super::PacketDropStats;
-
-    #[test]
-    fn test_packet_drop_stats() {
-        let mut stats = PacketDropStats::new("Stats:pipeline-FOO-stage-BAR");
-        stats.incr(DoneReason::InterfaceAdmDown, 10);
-        stats.incr(DoneReason::InterfaceAdmDown, 1);
-        stats.incr(DoneReason::RouteFailure, 9);
-        stats.incr(DoneReason::Unroutable, 13);
-
-        // look up some particular stats
-        assert_eq!(stats.get_stat(DoneReason::InterfaceAdmDown), Some(11));
-        assert_eq!(stats.get_stat(DoneReason::Unroutable), Some(13));
-        assert_eq!(stats.get_stat(DoneReason::InterfaceUnsupported), None);
-
-        // access the whole stats map
-        let read = stats.get_stats();
-        assert_eq!(read.get(&DoneReason::InterfaceAdmDown), Some(11).as_ref());
     }
 }
