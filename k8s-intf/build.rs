@@ -31,16 +31,11 @@ fn fixup_types(raw: String) -> String {
         )
 }
 
-fn gen_version_const(version: &Option<String>) -> String {
-    let version = version
-        .as_ref()
-        .map(|v| format!("Some(\"{v}\")"))
-        .unwrap_or("None".to_string());
-
-    format!("pub const GW_API_VERSION: Option<&str> = {version};\n\n")
+fn gen_version_const(version: String) -> String {
+    format!("pub const GW_API_VERSION: Option<&str> = Some(\"{version}\");\n\n")
 }
 
-fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String {
+fn generate_rust_for_crd(crd_content: &str, version: String) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
         .args(["-D", "PartialEq", "-Af", "-"])
@@ -72,22 +67,8 @@ fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String 
     gen_version_const(version) + &fixup_types(raw)
 }
 
-fn get_gateway_version() -> Option<String> {
-    Some(std::env::var("VERSION").unwrap())
-    // let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    // let sources_path = manifest_dir.join("../npins/sources.json");
-    // println!(
-    //     "cargo:rerun-if-changed={}",
-    //     sources_path.to_str().expect("non unicode sources_path")
-    // );
-
-    // let sources = fs::read_to_string(&sources_path)
-    //     .unwrap_or_else(|e| panic!("failed to read {}: {e}", sources_path.display()));
-    // let json: serde_json::Value =
-    //     serde_json::from_str(&sources).expect("failed to parse npins/sources.json");
-    // json["pins"]["gateway"]["version"]
-    //     .as_str()
-    //     .map(String::from)
+fn get_gateway_version() -> String {
+    std::env::var("VERSION").unwrap_or("dev".into())
 }
 
 const KOPIUM_OUTPUT_FILE: &str = "gateway_agent_crd.rs";
@@ -143,7 +124,7 @@ fn main() {
             .unwrap_or_else(|e| panic!("unable to read crd data into string: {e}"));
         contents
     };
-    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents, &version);
+    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents, version);
 
     if !code_needs_regen(&agent_generated_code) {
         println!("cargo:note=No changes to code generated from CRD");
