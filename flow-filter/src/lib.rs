@@ -124,7 +124,7 @@ impl FlowFilter {
                         debug!(
                             "{nfi}: No flow table entry found for flow {tuple}, trying to figure out destination VPC anyway"
                         );
-                        deal_with_multiple_matches(packet, &data_set, nfi, &tuple)
+                        self.deal_with_multiple_matches(packet, &data_set, &tuple)
                     }
                     Err(reason) => {
                         debug!("Will drop packet. Reason: {reason}");
@@ -247,98 +247,102 @@ impl FlowFilter {
         debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
         Ok(Some(*dst_vpcd))
     }
-}
 
-fn deal_with_multiple_matches<Buf: PacketBufferMut>(
-    packet: &mut Packet<Buf>,
-    data_set: &HashSet<RemoteData>,
-    nfi: &str,
-    tuple: &FlowTuple,
-) -> Option<VpcDiscriminant> {
-    // We should always have at least one matching RemoteData object applying to our packet.
-    debug_assert!(
-        !data_set.is_empty(),
-        "{nfi}: No matching RemoteData objects left for flow {tuple}"
-    );
+    /// Handle destination VPC retrieval and NAT requirements setting when multiple matches were
+    /// found, with no accompanying flow-info for the packet.
+    fn deal_with_multiple_matches<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        data_set: &HashSet<RemoteData>,
+        tuple: &FlowTuple,
+    ) -> Option<VpcDiscriminant> {
+        let nfi = &self.name;
 
-    // Do all matches have the same destination VPC?
-    let Some(first_vpcd) = data_set.iter().next().map(|d| d.vpcd) else {
-        debug!("{nfi}: Missing destination VPC information for flow {tuple}, dropping packet");
-        return None;
-    };
-    if data_set.iter().any(|d| d.vpcd != first_vpcd) {
-        debug!(
-            "{nfi}: Unable to decide what destination VPC to use for flow {tuple}, dropping packet"
+        // We should always have at least one matching RemoteData object applying to our packet.
+        debug_assert!(
+            !data_set.is_empty(),
+            "{nfi}: No matching RemoteData objects left for flow {tuple}"
         );
-        return None;
-    };
 
-    // data_set may actually contain RemoteData objects that do not apply to our packet, because the
-    // table lookup does not account for TCP vs. UDP, we only deal with the protocol when looking at
-    // NAT requirements. Here we filter out RemoteData objects that do not apply to our packet.
+        // Do all matches have the same destination VPC?
+        let Some(first_vpcd) = data_set.iter().next().map(|d| d.vpcd) else {
+            debug!("{nfi}: Missing destination VPC information for flow {tuple}, dropping packet");
+            return None;
+        };
+        if data_set.iter().any(|d| d.vpcd != first_vpcd) {
+            debug!(
+                "{nfi}: Unable to decide what destination VPC to use for flow {tuple}, dropping packet"
+            );
+            return None;
+        };
 
-    let packet_proto = get_l4_proto(packet);
-    let data_set = data_set
-        .iter()
-        .filter(|d| d.applies_to(packet_proto))
-        .collect::<HashSet<_>>();
+        // data_set may actually contain RemoteData objects that do not apply to our packet, because the
+        // table lookup does not account for TCP vs. UDP, we only deal with the protocol when looking at
+        // NAT requirements. Here we filter out RemoteData objects that do not apply to our packet.
 
-    if data_set.is_empty() {
-        debug!(
-            "{nfi}: No NAT requirement found for flow {tuple} after filtering by protocol, dropping packet"
-        );
-        return None;
-    }
+        let packet_proto = get_l4_proto(packet);
+        let data_set = data_set
+            .iter()
+            .filter(|d| d.applies_to(packet_proto))
+            .collect::<HashSet<_>>();
 
-    // Can we do something sensible from the NAT requirements? At the moment we allow prefix overlap
-    // only when port forwarding is used in conjunction with stateful NAT, so if we reach this case
-    // this is what we should have.
+        if data_set.is_empty() {
+            debug!(
+                "{nfi}: No NAT requirement found for flow {tuple} after filtering by protocol, dropping packet"
+            );
+            return None;
+        }
 
-    // Note: if data_set.len() == 1 we can trivially figure out the destination VPC and NAT
-    // requirement.
-    if data_set.len() == 1 {
-        let dst_data = data_set.iter().next().unwrap_or_else(|| unreachable!());
-        set_nat_requirements(packet, dst_data);
-        return Some(first_vpcd);
-    }
+        // Can we do something sensible from the NAT requirements? At the moment we allow prefix overlap
+        // only when port forwarding is used in conjunction with stateful NAT, so if we reach this case
+        // this is what we should have.
 
-    if data_set.len() > 2 {
-        debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
-        return None;
-    }
+        // Note: if data_set.len() == 1 we can trivially figure out the destination VPC and NAT
+        // requirement.
+        if data_set.len() == 1 {
+            let dst_data = data_set.iter().next().unwrap_or_else(|| unreachable!());
+            set_nat_requirements(packet, dst_data);
+            return Some(first_vpcd);
+        }
 
-    // If we have stateful NAT and port masquerading on the source side, given that we haven't found
-    // a valid NAT entry, stateful NAT should take precedence so the packet can come out.
-    if let Some(dst_data) = data_set
-        .iter()
-        .find(|d| d.src_nat_req == Some(NatRequirement::Stateful))
-        && data_set.iter().any(|d| {
-            let Some(NatRequirement::PortForwarding(requirement_proto)) = d.src_nat_req else {
+        if data_set.len() > 2 {
+            debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
+            return None;
+        }
+
+        // If we have stateful NAT and port masquerading on the source side, given that we haven't found
+        // a valid NAT entry, stateful NAT should take precedence so the packet can come out.
+        if let Some(dst_data) = data_set
+            .iter()
+            .find(|d| d.src_nat_req == Some(NatRequirement::Stateful))
+            && data_set.iter().any(|d| {
+                let Some(NatRequirement::PortForwarding(requirement_proto)) = d.src_nat_req else {
+                    return false;
+                };
+                requirement_proto.intersection(&packet_proto).is_some()
+            })
+        {
+            set_nat_requirements(packet, dst_data);
+            return Some(first_vpcd);
+        }
+        // If we have stateful NAT and port masquerading on the destination side, given that we haven't
+        // found a valid NAT entry, port forwarding should take precedence.
+        if let Some(dst_data) = data_set.iter().find(|d| {
+            let Some(NatRequirement::PortForwarding(req_proto)) = d.dst_nat_req else {
                 return false;
             };
-            requirement_proto.intersection(&packet_proto).is_some()
-        })
-    {
-        set_nat_requirements(packet, dst_data);
-        return Some(first_vpcd);
-    }
-    // If we have stateful NAT and port masquerading on the destination side, given that we haven't
-    // found a valid NAT entry, port forwarding should take precedence.
-    if let Some(dst_data) = data_set.iter().find(|d| {
-        let Some(NatRequirement::PortForwarding(req_proto)) = d.dst_nat_req else {
-            return false;
-        };
-        req_proto.intersection(&packet_proto).is_some()
-    }) && data_set
-        .iter()
-        .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
-    {
-        set_nat_requirements(packet, dst_data);
-        return Some(first_vpcd);
-    }
+            req_proto.intersection(&packet_proto).is_some()
+        }) && data_set
+            .iter()
+            .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
+        {
+            set_nat_requirements(packet, dst_data);
+            return Some(first_vpcd);
+        }
 
-    debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
-    None
+        debug!("{nfi}: Unsupported NAT requirements for flow {tuple}");
+        None
+    }
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
