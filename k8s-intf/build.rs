@@ -31,16 +31,11 @@ fn fixup_types(raw: String) -> String {
         )
 }
 
-fn gen_version_const(version: &Option<String>) -> String {
-    let version = version
-        .as_ref()
-        .map(|v| format!("Some(\"{v}\")"))
-        .unwrap_or("None".to_string());
-
-    format!("pub const GW_API_VERSION: Option<&str> = {version};\n\n")
+fn gen_version_const(version: String) -> String {
+    format!("pub const GW_API_VERSION: Option<&str> = Some(\"{version}\");\n\n")
 }
 
-fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String {
+fn generate_rust_for_crd(crd_content: &str, version: String) -> String {
     // Run kopium with stdin input
     let mut child = std::process::Command::new("kopium")
         .args(["-D", "PartialEq", "-Af", "-"])
@@ -72,22 +67,9 @@ fn generate_rust_for_crd(crd_content: &str, version: &Option<String>) -> String 
     gen_version_const(version) + &fixup_types(raw)
 }
 
-fn get_gateway_version() -> Option<String> {
-    Some(std::env::var("VERSION").unwrap())
-    // let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    // let sources_path = manifest_dir.join("../npins/sources.json");
-    // println!(
-    //     "cargo:rerun-if-changed={}",
-    //     sources_path.to_str().expect("non unicode sources_path")
-    // );
-
-    // let sources = fs::read_to_string(&sources_path)
-    //     .unwrap_or_else(|e| panic!("failed to read {}: {e}", sources_path.display()));
-    // let json: serde_json::Value =
-    //     serde_json::from_str(&sources).expect("failed to parse npins/sources.json");
-    // json["pins"]["gateway"]["version"]
-    //     .as_str()
-    //     .map(String::from)
+fn get_gateway_version() -> String {
+    println!("cargo:rerun-if-env-changed=VERSION");
+    std::env::var("VERSION").unwrap_or("dev".into())
 }
 
 const KOPIUM_OUTPUT_FILE: &str = "gateway_agent_crd.rs";
@@ -112,16 +94,31 @@ fn code_needs_regen(new_code: &str) -> bool {
 
 fn main() {
     let version = get_gateway_version();
-    let agent_crd_contents = {
-        let agent_crd_path =
-            PathBuf::from(std::env::var("GW_CRD_PATH").expect("GW_CRD_PATH var unset"))
-                .join("gwint.githedgehog.com_gatewayagents.yaml");
-        println!("cargo:rerun-if-env-changed=GW_CRD_PATH");
-        println!(
-            "cargo:rerun-if-changed={}",
-            agent_crd_path.to_str().expect("non unicode crd path")
-        );
 
+    let agent_crd_path =
+        PathBuf::from(std::env::var("GW_CRD_PATH").expect("GW_CRD_PATH var unset"))
+            .join("gwint.githedgehog.com_gatewayagents.yaml");
+
+    let sysroot = dpdk_sysroot_helper::get_sysroot();
+    let output_file = kopium_output_path();
+
+    // Emit all rerun directives unconditionally so Cargo always knows what to
+    // watch, even when we take the early-return (no-regen-needed) path below.
+    println!("cargo:rerun-if-env-changed=GW_CRD_PATH");
+    println!("cargo:rerun-if-env-changed=DATAPLANE_SYSROOT");
+    println!(
+        "cargo:rerun-if-changed={}",
+        agent_crd_path.to_str().expect("non unicode crd path")
+    );
+    for file in [
+        "build.rs",
+        sysroot.as_str(),
+        output_file.to_str().expect("non unicode output path"),
+    ] {
+        println!("cargo:rerun-if-changed={file}");
+    }
+
+    let agent_crd_contents = {
         let mut agent_crd_file = std::fs::OpenOptions::new()
             .read(true)
             .write(false)
@@ -143,30 +140,15 @@ fn main() {
             .unwrap_or_else(|e| panic!("unable to read crd data into string: {e}"));
         contents
     };
-    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents, &version);
+    let agent_generated_code = generate_rust_for_crd(&agent_crd_contents, version);
 
     if !code_needs_regen(&agent_generated_code) {
         println!("cargo:note=No changes to code generated from CRD");
         return;
     }
 
-    let output_file = kopium_output_path();
     fs::write(&output_file, agent_generated_code)
         .expect("Failed to write generated agent CRD code");
-
-    let sysroot = dpdk_sysroot_helper::get_sysroot();
-    // get_sysroot uses DATAPLANE_SYSROOT, so rerun if it changes
-    println!("cargo:rerun-if-env-changed=DATAPLANE_SYSROOT");
-
-    let rerun_if_changed = [
-        "build.rs",
-        sysroot.as_str(),
-        output_file.to_str().expect("non unicode crd path"),
-    ];
-    for file in rerun_if_changed {
-        println!("cargo:rerun-if-changed={file}");
-    }
-    println!("cargo:rerun-if-changed={}", sysroot.as_str());
 
     println!(
         "cargo:note=Generated gateway agent CRD types written to {:?}",
