@@ -87,6 +87,7 @@ pub struct CliSources {
     pub portfw_table: Option<Box<dyn CliDataProvider + Send>>,
     pub nat_tables: Option<Box<dyn CliDataProvider + Send>>,
     pub masquerade_state: Option<Box<dyn CliDataProvider + Send>>,
+    pub pkt_stats: Option<Box<dyn CliDataProvider + Send>>,
 }
 
 impl Display for RouterParams {
