@@ -522,10 +522,154 @@ let
       '';
   };
 
+  containers.dataplane = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/githedgehog/dataplane";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "dataplane-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [
+        pkgs.pkgsHostHost.dockerTools.fakeNss
+        pkgs.pkgsHostHost.busybox
+        pkgs.pkgsHostHost.dockerTools.usrBinEnv
+        workspace.cli
+        workspace.dataplane
+        workspace.init
+      ];
+    };
+    config.Entrypoint = [ "/bin/dataplane" ];
+  };
+
+  containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/githedgehog/dataplane/debugger";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "dataplane-debugger-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/var"
+        "/lib"
+      ];
+      paths = [
+        pkgs.pkgsBuildHost.gdb
+        pkgs.pkgsBuildHost.rr
+        pkgs.pkgsBuildHost.coreutils
+        pkgs.pkgsBuildHost.bashInteractive
+        pkgs.pkgsBuildHost.iproute2
+        pkgs.pkgsBuildHost.ethtool
+        pkgs.pkgsHostHost.dockerTools.usrBinEnv
+
+        pkgs.pkgsHostHost.libc.debug
+        workspace.cli.debug
+        workspace.dataplane.debug
+        workspace.init.debug
+      ];
+    };
+  };
+
+  containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/githedgehog/dpdk-sys/frr";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "dataplane-frr-env";
+      pathsToLink = [ "/" ];
+      paths = with frr-pkgs; [
+        bash
+        coreutils
+        dockerTools.usrBinEnv
+        fancy.dplane-plugin
+        fancy.dplane-rpc
+        fancy.frr-agent
+        fancy.frr-config
+        fancy.frr.dataplane
+        findutils
+        gnugrep
+        iproute2
+        jq
+        prometheus-frr-exporter
+        python3Minimal
+        tini
+      ];
+    };
+
+    fakeRootCommands = ''
+      #!${frr-pkgs.bash}/bin/bash
+      set -euxo pipefail
+      mkdir /tmp
+      mkdir -p /run/frr/hh
+      chown -R frr:frr /run/frr
+      mkdir -p /var
+      ln -s /run /var/run
+      chown -R frr:frr /var/run/frr
+    '';
+
+    enableFakechroot = true;
+
+    config.Entrypoint = [
+      "/bin/tini"
+      "--"
+    ];
+    config.Cmd = [ "/libexec/frr/docker-start" ];
+  };
+
+  containers.frr.host = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/githedgehog/dpdk-sys/frr-host";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "dataplane-frr-host-env";
+      pathsToLink = [
+        "/"
+      ];
+      paths = with frr-pkgs; [
+        bash
+        coreutils
+        dockerTools.fakeNss
+        dockerTools.usrBinEnv
+        # TODO: frr-config's docker-start launches /bin/frr-agent which is not
+        # present in the host container.  A host-specific entrypoint script may
+        # be needed once this container is actively deployed.
+        fancy.frr-config
+        fancy.frr.host
+        findutils
+        gnugrep
+        iproute2
+        jq
+        prometheus-frr-exporter
+        python3Minimal
+        tini
+      ];
+    };
+    fakeRootCommands = ''
+      #!${frr-pkgs.bash}/bin/bash
+      set -euxo pipefail
+      mkdir /tmp
+      mkdir -p /run/frr/hh
+      chown -R frr:frr /run/frr
+      mkdir -p /var
+      ln -s /run /var/run
+      chown -R frr:frr /var/run/frr
+    '';
+
+    enableFakechroot = true;
+
+    config.Entrypoint = [
+      "/bin/tini"
+      "--"
+    ];
+    config.Cmd = [ "/libexec/frr/docker-start" ];
+  };
+
 in
 {
   inherit
     clippy
+    containers
     dev-pkgs
     devenv
     devroot
