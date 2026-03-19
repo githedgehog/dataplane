@@ -26,6 +26,7 @@ use tracing::info;
 use tracing_test::traced_test;
 
 #[test]
+#[n_vm::in_vm]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
 #[traced_test]
 fn reconcile_fuzz() {
