@@ -8,7 +8,7 @@ use net::eth::mac::{DestinationMac, Mac};
 use net::headers::TryIcmp4;
 use net::headers::TryUdp;
 use net::headers::{TryEthMut, TryHeaders, TryIpv4Mut, TryIpv6Mut};
-use net::packet::Packet;
+use net::packet::{Packet, PacketStats};
 use net::vxlan::Vxlan;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -218,5 +218,30 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Passthrough {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input
+    }
+}
+
+/// Network function that collects packet stats
+pub struct PacketStatsNF {
+    pkt_stats: Arc<PacketStats>,
+}
+impl PacketStatsNF {
+    #[must_use]
+    /// Create a `PacketStatsNF`
+    pub fn new(pkt_stats: Arc<PacketStats>) -> Self {
+        Self { pkt_stats }
+    }
+}
+
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketStatsNF {
+    fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<Buf>> + 'a {
+        input.inspect(|packet| {
+            if let Some(reason) = packet.get_done() {
+                self.pkt_stats.incr(reason);
+            }
+        })
     }
 }
