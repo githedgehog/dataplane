@@ -216,6 +216,9 @@ impl StatefulNat {
         Self::setup_flow_nat_state(&forward, forward_state, dst_vpc_id);
         Self::setup_flow_nat_state(&reverse, reverse_state, src_vpc_id);
 
+        // set the genid of the flows
+        forward.set_genid_pair(self.pipeline_data.genid());
+
         // insert in flow-table
         self.sessions.insert_from_arc(*flow_key, &forward);
         self.sessions.insert_from_arc(reverse_key, &reverse);

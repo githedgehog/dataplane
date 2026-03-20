@@ -57,6 +57,96 @@ impl FlowFilter {
         }
     }
 
+    /// Invalidate the flow that a packet refers to if any
+    fn invalidate_packet_flow<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
+        if let Some(flow_info) = packet.meta().flow_info.as_ref() {
+            let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!());
+            debug!("Invalidating flow {flow_key}:{flow_info}");
+            flow_info.invalidate_pair();
+        }
+    }
+
+    /// Once a packet has been validated, if it refers to a flow, check that the flow
+    /// is consistent with the annotations set for the packet. This is needed to invalidate
+    /// flows on configuration changes since the flow a packet refers to may have been created with
+    /// a prior config and no longer be valid with a newer configuration.
+    /// The flow filter can't validate all cases since it does not have sufficient information and that
+    /// is something that the NFs annotated by the flow-filter should do. However, there are cases where
+    /// it can invalidate and it should, since no other NF may do so. For example, when transitioning
+    /// from a configuration that for a given flow of traffic would require state into one where the same
+    /// flow wouldn't, like moving from masquerade to static NAT or no NAT at all. It can also invalidate
+    /// flows if the dst VPC indicated by the flow filter differs from that of the flow.
+    fn should_invalidate_flow<Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+        dst_vpcd: VpcDiscriminant,
+        genid: i64,
+    ) -> bool {
+        let Some(flow_info) = &packet.meta().flow_info else {
+            return false;
+        };
+        if flow_info.genid() == genid {
+            return false;
+        }
+        let locked_info = flow_info.locked.read().unwrap();
+        let flow_port_fw = locked_info.port_fw_state.is_some();
+        let flow_masquerade = locked_info.nat_state.is_some();
+        let flowkey = flow_info.flowkey().unwrap_or_else(|| unreachable!());
+        if locked_info.dst_vpcd != Some(dst_vpcd) {
+            debug!("Flow-info is out-dated. New dst VPC is {dst_vpcd}");
+            return true;
+        }
+        if !packet.meta().requires_port_forwarding() && !packet.meta().requires_stateful_nat() {
+            debug!("Flow {flowkey} no longer requires state. Will invalidate...");
+            return true;
+        }
+        if packet.meta().requires_port_forwarding() && !flow_port_fw {
+            debug!("Flow {flowkey} requires port-forwarding, but flow-info lacks such a state");
+            return true;
+        }
+        if packet.meta().requires_stateful_nat() && !flow_masquerade {
+            debug!("Flow {flowkey} requires masquerading, but flow-info lacks such a state");
+            return true;
+        }
+        // we could not invalidate despite the config change. This does not mean that the flow is
+        // valid (nor invalid). The NFs annotated in the requirements must determine. E.g. if we were
+        // masquerading with address A and, a new config, requires masquerading with address B, the above
+        // won't invalidate the flow, but the NF should (or update it accordingly).
+        false
+    }
+
+    /// Check if flow-info is up-to-date and allows bypassing the main filtering logic.
+    fn bypass_with_flow_info<Buf: PacketBufferMut>(
+        &self,
+        packet: &mut Packet<Buf>,
+        genid: i64,
+    ) -> bool {
+        let nfi = &self.name;
+        let Some(flow_info) = packet.active_flow_info() else {
+            return false;
+        };
+        let Some(vpcd) = flow_info.get_dst_vpcd() else {
+            debug!(
+                "{nfi}: Flow-info does not specify destination VPC. This is a bug. Ignoring flow"
+            );
+            flow_info.invalidate_pair();
+            return false;
+        };
+        let flow_genid = flow_info.genid();
+        if flow_genid < genid {
+            debug!("{nfi}: Packet has flow-info but from a prior config ({flow_genid} < {genid})");
+            return false;
+        }
+        // The flow has the same generation id as the current config. Small transient state aside
+        // this means that the flow is up-to-date and we can bypass the filter
+        debug!("{nfi}: Packet can bypass filter due to flow {flow_info}");
+        if Self::set_nat_requirements_from_flow_info(packet).is_err() {
+            debug!("{nfi}: Failed to set nat requirements");
+            return false;
+        }
+        packet.meta_mut().dst_vpcd = Some(vpcd);
+        true
+    }
+
     /// Process a packet.
     fn process_packet<Buf: PacketBufferMut>(
         &self,
@@ -108,6 +198,7 @@ impl FlowFilter {
                     debug!(
                         "{nfi}: Invalid NAT requirements found for flow {tuple}, dropping packet"
                     );
+                    Self::invalidate_packet_flow(packet);
                     packet.done(DoneReason::Filtered);
                     return;
                 }
@@ -136,6 +227,7 @@ impl FlowFilter {
                     }
                     Err(reason) => {
                         debug!("Will drop packet. Reason: {reason}");
+                        Self::invalidate_packet_flow(packet);
                         packet.done(reason);
                         return;
                     }
@@ -151,57 +243,27 @@ impl FlowFilter {
         // for an icmp error packet is known, the icmp handler will transparently let the static NAT NF deal with it.
         if packet.is_icmp_error() {
             debug!("Letting ICMP error handler process this packet. dst-vpcd is {dst_vpcd:?}");
-            packet.meta_mut().dst_vpcd = dst_vpcd; // wether we discovered the vpcd or not
+            packet.meta_mut().dst_vpcd = dst_vpcd; // whether we discovered the vpcd or not
             return;
         }
 
         // Drop the packet since we don't know destination and it is not an icmp error
         let Some(dst_vpcd) = dst_vpcd else {
-            debug!("Could not determine dst vpcd. Dropping packet");
-            // if packet referred to a flow, invalidate it
-            if let Some(flow_info) = packet.meta().flow_info.as_ref() {
-                flow_info.invalidate_pair();
-            }
+            debug!("Could not determine dst vpcd for packet. Dropping it...");
+            Self::invalidate_packet_flow(packet);
             packet.done(DoneReason::Filtered);
             return;
         };
-
-        // packet is allowed. If it refers to a flow, update its genid, and that of the related flow if any
-        if let Some(flow_info) = &packet.meta().flow_info {
-            flow_info.set_genid_pair(genid);
-        }
-
-        debug!("{nfi}: Flow {tuple} is allowed, setting packet dst_vpcd to {dst_vpcd}");
+        debug!("{nfi}: Flow {tuple} is allowed. Dst VPC is {dst_vpcd}");
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
-    }
 
-    /// Check if flow-info is up-to-date and allows bypassing the main filtering logic.
-    fn bypass_with_flow_info<Buf: PacketBufferMut>(
-        &self,
-        packet: &mut Packet<Buf>,
-        genid: i64,
-    ) -> bool {
-        let nfi = &self.name;
-
-        let Some(flow_info) = packet.active_flow_info() else {
-            return false;
-        };
-        let flow_genid = flow_info.genid();
-        if flow_genid < genid {
-            debug!("{nfi}: Packet has flow-info ({flow_genid} < {genid}). Need to re-evaluate...");
-            return false;
+        // The packet is ALLOWED. However, if it refers to a flow, the flow may no longer be
+        // valid and a new one be required. The flow-filter cannot tell in many cases, as it
+        // does not have enough information, nor should it upgrade flows to newer gen ids.
+        // It should, however, invalidate flows in some cases.
+        if Self::should_invalidate_flow(packet, dst_vpcd, genid) {
+            Self::invalidate_packet_flow(packet);
         }
-
-        let vpcd = flow_info.get_dst_vpcd();
-
-        debug!("{nfi}: Packet can bypass filter due to flow {flow_info}");
-
-        if Self::set_nat_requirements_from_flow_info(packet).is_err() {
-            debug!("{nfi}: Failed to set nat requirements");
-            return false;
-        }
-        packet.meta_mut().dst_vpcd = vpcd;
-        true
     }
 
     /// Attempt to determine destination VPC from packet's flow-info.
