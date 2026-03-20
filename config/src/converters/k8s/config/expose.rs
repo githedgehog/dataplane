@@ -238,7 +238,7 @@ fn set_port_ranges(
             nat.as_range.remove(target_prefix);
         }
 
-        nat.proto = match proto {
+        nat.proto_restriction = match proto {
             Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp) => L4Protocol::Tcp,
             Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp) => L4Protocol::Udp,
             Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::KopiumEmpty) | None => {

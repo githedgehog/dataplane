@@ -13,7 +13,11 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
 fn port_fw_proto(expose: &VpcExpose) -> L4Protocol {
-    expose.nat.as_ref().unwrap_or_else(|| unreachable!()).proto
+    expose
+        .nat
+        .as_ref()
+        .unwrap_or_else(|| unreachable!())
+        .proto_restriction
 }
 
 fn expose_to_portfw_rule(

@@ -199,7 +199,10 @@ fn find_masquerade_portfw_overlap<'a>(
 
     for pf_expose in port_forwarding_exposes {
         let pf_nat = pf_expose.nat.as_ref().unwrap_or_else(|| unreachable!());
-        let Some(relevant_proto) = expose_nat.proto.intersection(&pf_nat.proto) else {
+        let Some(relevant_proto) = expose_nat
+            .proto_restriction
+            .intersection(&pf_nat.proto_restriction)
+        else {
             // No overlap on L4 protocols, so no overlap for prefixes and ports.
             continue;
         };

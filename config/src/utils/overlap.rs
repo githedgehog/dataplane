@@ -52,7 +52,7 @@ fn port_forwarding_with_distinct_l4_protocols(
         && expose_right.has_port_forwarding()
         && let Some(nat_left) = expose_left.nat.as_ref()
         && let Some(nat_right) = expose_right.nat.as_ref()
-        && nat_left.proto.intersection(&nat_right.proto).is_none()
+        && nat_left.proto_restriction.intersection(&nat_right.proto_restriction).is_none()
     {
         true
     } else {

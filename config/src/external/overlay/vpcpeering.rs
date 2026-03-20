@@ -38,7 +38,7 @@ pub struct VpcExposeNat {
     pub as_range: PrefixPortsSet,
     pub not_as: PrefixPortsSet,
     pub config: VpcExposeNatConfig,
-    pub proto: L4Protocol,
+    pub proto_restriction: L4Protocol,
 }
 
 impl VpcExposeNat {
@@ -48,7 +48,7 @@ impl VpcExposeNat {
             as_range: PrefixPortsSet::new(),
             not_as: PrefixPortsSet::new(),
             config,
-            proto: L4Protocol::default(),
+            proto_restriction: L4Protocol::default(),
         }
     }
 
@@ -151,7 +151,7 @@ impl VpcExpose {
             Some(nat) if nat.is_port_forwarding() => {
                 nat.config = VpcExposeNatConfig::PortForwarding(options);
                 if let Some(proto) = proto {
-                    nat.proto = proto;
+                    nat.proto_restriction = proto;
                 }
             }
             Some(_) => {
@@ -163,7 +163,7 @@ impl VpcExpose {
                 let mut nat =
                     VpcExposeNat::from_config(VpcExposeNatConfig::PortForwarding(options));
                 if let Some(proto) = proto {
-                    nat.proto = proto;
+                    nat.proto_restriction = proto;
                 }
                 self.nat = Some(nat);
             }
