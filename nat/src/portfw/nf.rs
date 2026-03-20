@@ -7,7 +7,7 @@ use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTabl
 use flow_entry::flow_table::FlowTable;
 
 use net::buffer::PacketBufferMut;
-use net::flows::{ExtractMut, ExtractRef, FlowInfo};
+use net::flows::{ExtractMut, FlowInfo};
 use net::headers::{TryIp, TryTcp, TryTransport};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -264,12 +264,7 @@ impl PortForwarder {
         state: &PortFwState,
     ) -> Option<Arc<PortFwEntry>> {
         let flow_info = packet.meta().flow_info.as_ref()?;
-        let flow_info_locked = flow_info.locked.read().unwrap();
-        let dst_vpcd = *flow_info_locked
-            .dst_vpcd
-            .as_ref()
-            .extract_ref::<VpcDiscriminant>()?;
-        drop(flow_info_locked);
+        let dst_vpcd = flow_info.get_dst_vpcd()?;
 
         // find compatible rule depending on the path this packet lives, forward or reverse
         let entry = match state.action() {

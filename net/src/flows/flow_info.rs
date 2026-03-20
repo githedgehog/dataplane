@@ -3,6 +3,7 @@
 
 #![allow(clippy::expect_used)]
 
+use crate::packet::VpcDiscriminant;
 use concurrency::sync::Arc;
 use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
@@ -129,7 +130,7 @@ pub struct FlowInfoLocked {
     // We need this to use downcast to avoid circular dependencies between crates.
 
     // VpcDiscriminant
-    pub dst_vpcd: Option<Box<dyn FlowInfoItem>>,
+    pub dst_vpcd: Option<VpcDiscriminant>,
 
     // State information for stateful NAT, (see NatFlowState)
     pub nat_state: Option<Box<dyn FlowInfoItem>>,
@@ -178,6 +179,18 @@ impl FlowInfo {
     #[must_use]
     pub fn flowkey(&self) -> Option<&FlowKey> {
         self.flowkey.as_ref()
+    }
+
+    #[must_use]
+    /// Retrieve the dst `VpcDiscriminant` from a flow info
+    /// # Panics
+    ///
+    /// This method panics if the inner lock is poisoned
+    pub fn get_dst_vpcd(&self) -> Option<VpcDiscriminant> {
+        self.locked
+            .read()
+            .expect("Failure locking flow-info for reading")
+            .dst_vpcd
     }
 
     /// Set the generation Id of a flow

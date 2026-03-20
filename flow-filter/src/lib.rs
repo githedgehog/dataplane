@@ -16,8 +16,6 @@
 use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use lpm::prefix::L4Protocol;
 use net::buffer::PacketBufferMut;
-use net::flows::FlowInfo;
-use net::flows::flow_info_item::ExtractRef;
 use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
@@ -194,7 +192,7 @@ impl FlowFilter {
             return false;
         }
 
-        let vpcd = Self::dst_vpcd_from_flow_info(flow_info);
+        let vpcd = flow_info.get_dst_vpcd();
 
         debug!("{nfi}: Packet can bypass filter due to flow {flow_info}");
 
@@ -217,7 +215,7 @@ impl FlowFilter {
             return Ok(None);
         };
 
-        let vpcd = Self::dst_vpcd_from_flow_info(flow_info);
+        let vpcd = flow_info.get_dst_vpcd();
 
         let Some(dst_vpcd) = vpcd else {
             debug!("{nfi}: No VPC discriminant found, dropping packet");
@@ -404,19 +402,6 @@ impl FlowFilter {
             }
             _ => Err(()),
         }
-    }
-
-    /// Extract the destination VPC discriminant from a flow-info entry.
-    /// Panic if the lock has been poisoned.
-    fn dst_vpcd_from_flow_info(flow_info: &Arc<FlowInfo>) -> Option<VpcDiscriminant> {
-        flow_info
-            .locked
-            .read()
-            .unwrap()
-            .dst_vpcd
-            .as_ref()
-            .and_then(|d| d.extract_ref::<VpcDiscriminant>())
-            .copied()
     }
 }
 
