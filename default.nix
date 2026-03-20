@@ -125,6 +125,7 @@ let
       gateway-crd
       just
       kopium
+      llvmPackages'.llvm # needed for coverage
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       npins
       pkg-config
