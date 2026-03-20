@@ -53,8 +53,8 @@ fn port_forwarding_with_distinct_l4_protocols(
         && let Some(nat_left) = expose_left.nat.as_ref()
         && let Some(nat_right) = expose_right.nat.as_ref()
         && VpcExposeNat::l4_proto_common_restrictions(
-            &nat_left.proto_restriction,
-            &nat_right.proto_restriction,
+            &nat_left.proto_restriction(),
+            &nat_right.proto_restriction(),
         )
         .is_none()
     {

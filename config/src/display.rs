@@ -78,7 +78,12 @@ impl Display for VpcExpose {
             if !nat.as_range.is_empty() {
                 write!(f, "{SEP}       as:")?;
                 nat.as_range.iter().for_each(|pfx| {
-                    let _ = write!(f, " {pfx} proto: {:?} NAT:{}", nat.proto_restriction, &nat.config);
+                    let _ = write!(
+                        f,
+                        " {pfx} proto: {:?} NAT:{}",
+                        nat.proto_restriction(),
+                        &nat.config
+                    );
                 });
                 carriage = true;
             }

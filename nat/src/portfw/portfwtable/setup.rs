@@ -17,7 +17,7 @@ fn port_fw_proto(expose: &VpcExpose) -> Option<NextHeader> {
         .nat
         .as_ref()
         .unwrap_or_else(|| unreachable!())
-        .proto_restriction
+        .proto_restriction()
 }
 
 fn expose_to_portfw_rule(

@@ -472,7 +472,7 @@ pub(crate) enum NatRequirement {
 
 impl NatRequirement {
     pub(crate) fn from_nat(nat: &VpcExposeNat) -> NatRequirement {
-        match (&nat.config, nat.proto_restriction) {
+        match (&nat.config, nat.proto_restriction()) {
             (VpcExposeNatConfig::Stateful(_), _) => NatRequirement::Stateful,
             (VpcExposeNatConfig::Stateless(_), _) => NatRequirement::Stateless,
             (VpcExposeNatConfig::PortForwarding(_), proto_restriction) => {

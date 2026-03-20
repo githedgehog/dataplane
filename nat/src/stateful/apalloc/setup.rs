@@ -198,8 +198,8 @@ fn find_masquerade_portfw_overlap<'a>(
     for pf_expose in port_forwarding_exposes {
         let pf_nat = pf_expose.nat.as_ref().unwrap_or_else(|| unreachable!());
         let Some(relevant_protos) = VpcExposeNat::l4_proto_common_restrictions(
-            &expose_nat.proto_restriction,
-            &pf_nat.proto_restriction,
+            &expose_nat.proto_restriction(),
+            &pf_nat.proto_restriction(),
         ) else {
             // No overlap on L4 protocols, so no overlap for prefixes and ports.
             continue;

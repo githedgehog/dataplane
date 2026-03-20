@@ -4,6 +4,7 @@
 //! Dataplane configuration model: vpc peering
 
 use crate::utils::{check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap};
+use crate::{ConfigError, ConfigResult};
 use lpm::prefix::{
     IpRangeWithPorts, Prefix, PrefixPortsSet, PrefixWithOptionalPorts, PrefixWithPortsSize,
 };
@@ -38,7 +39,7 @@ pub struct VpcExposeNat {
     pub as_range: PrefixPortsSet,
     pub not_as: PrefixPortsSet,
     pub config: VpcExposeNatConfig,
-    pub proto_restriction: Option<NextHeader>,
+    proto_restriction: Option<NextHeader>,
 }
 
 impl VpcExposeNat {
@@ -68,10 +69,39 @@ impl VpcExposeNat {
     }
 
     #[must_use]
+    pub fn proto_restriction(&self) -> Option<NextHeader> {
+        self.proto_restriction
+    }
+
+    pub fn set_proto_restriction(&mut self, proto_restriction: Option<NextHeader>) -> ConfigResult {
+        match proto_restriction {
+            Some(NextHeader::TCP | NextHeader::UDP) => {
+                self.proto_restriction = proto_restriction;
+                Ok(())
+            }
+            None => {
+                self.proto_restriction = None;
+                Ok(())
+            }
+            Some(_) => Err(ConfigError::InternalFailure(format!(
+                "Trying to set invalid L4 protocol restriction for NAT: {proto_restriction:?}"
+            ))),
+        }
+    }
+
+    /// Returns the common L4 protocol restrictions between two NAT configurations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either `left` or `right` contains a protocol other than TCP or UDP.
+    #[must_use]
     pub fn l4_proto_common_restrictions(
         left: &Option<NextHeader>,
         right: &Option<NextHeader>,
     ) -> Option<Vec<NextHeader>> {
+        assert!(left.is_none_or(|pr| matches!(pr, NextHeader::TCP | NextHeader::UDP)));
+        assert!(right.is_none_or(|pr| matches!(pr, NextHeader::TCP | NextHeader::UDP)));
+
         match (left, right) {
             (Some(left), Some(right)) if left == right => Some(vec![*left]),
             (Some(_), Some(_)) => None,
@@ -81,10 +111,17 @@ impl VpcExposeNat {
     }
 
     #[must_use]
+    /// Returns whether the L4 protocol restriction applies to the given protocol.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `restriction` contains a protocol other than TCP or UDP.
     pub fn l4_proto_restriction_applies_to_proto(
         restriction: &Option<NextHeader>,
         proto: &Option<NextHeader>,
     ) -> bool {
+        assert!(restriction.is_none_or(|pr| matches!(pr, NextHeader::TCP | NextHeader::UDP)));
+
         match (restriction, proto) {
             (None, _) => true,
             (Some(_), None) => false,
@@ -99,7 +136,6 @@ fn empty_set() -> &'static PrefixPortsSet {
     &EMPTY_SET
 }
 
-use crate::{ConfigError, ConfigResult};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExpose {
     pub default: bool,
@@ -171,6 +207,12 @@ impl VpcExpose {
         idle_timeout: Option<Duration>,
         proto_restriction: Option<NextHeader>,
     ) -> Result<Self, ConfigError> {
+        if proto_restriction.is_some_and(|pr| !matches!(pr, NextHeader::TCP | NextHeader::UDP)) {
+            return Err(ConfigError::Invalid(format!(
+                "Trying to set invalid L4 protocol restriction for NAT: {proto_restriction:?}"
+            )));
+        }
+
         let options = VpcExposePortForwarding { idle_timeout };
         match self.nat.as_mut() {
             Some(nat) if nat.is_port_forwarding() => {

@@ -239,7 +239,7 @@ fn set_port_ranges(
             nat.as_range.remove(target_prefix);
         }
 
-        nat.proto_restriction = match proto {
+        let proto_restriction = match proto {
             Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp) => {
                 Some(NextHeader::TCP)
             }
@@ -250,6 +250,7 @@ fn set_port_ranges(
                 None
             }
         };
+        nat.set_proto_restriction(proto_restriction)?;
 
         vpc_exposes.push(vpc_expose_clone);
     }
