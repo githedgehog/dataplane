@@ -115,6 +115,9 @@ impl PortForwarder {
         let timeout = Instant::now() + entry.init_timeout();
         let (fw_flow, rev_flow) = FlowInfo::related_pair(timeout, fw_key, rev_key);
 
+        // set the generation id for the flow
+        fw_flow.set_genid_pair(self.pipeline_data.genid());
+
         // set the flows in the FORWARD & REVERSE direction for subsequent packets
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
@@ -299,6 +302,8 @@ impl PortForwarder {
         packet: &mut Packet<Buf>,
         pfwtable: &PortFwTable,
     ) {
+        let genid = self.pipeline_data.genid();
+
         // fast-path based on the flow table
         if let Some(state) = get_packet_port_fw_state(packet) {
             // packet hit an Active flow with port-forwarding state. Even in that case, it may
@@ -330,7 +335,7 @@ impl PortForwarder {
             }
 
             // refresh flow state and status
-            refresh_port_fw_entry(packet, entry.as_ref(), &state);
+            refresh_port_fw_entry(packet, entry.as_ref(), &state, genid);
         } else {
             // Slow path: we did not hit a flow, or, if we did, it was not Active or did not contain port-forwarding state.
             self.try_port_forwarding(packet, pfwtable);

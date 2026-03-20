@@ -236,6 +236,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     entry: &PortFwEntry,
     state: &PortFwState, // (*)
+    genid: i64,
 ) {
     //(*) Note: atm, this is a clone of the state found by the packet
     // That's fine for updating the status since it's an arc'ed atomic
@@ -275,5 +276,8 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
                     }
                 });
         }
+
+        // update flow info generation
+        flow.set_genid(genid);
     }
 }
