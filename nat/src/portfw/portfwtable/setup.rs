@@ -8,11 +8,11 @@ use crate::portfw::{PortFwEntry, PortFwKey, PortFwTableError};
 use config::ConfigError;
 use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
 use config::external::overlay::vpcpeering::VpcExpose;
-use lpm::prefix::{L4Protocol, PrefixWithOptionalPorts};
+use lpm::prefix::PrefixWithOptionalPorts;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
-fn port_fw_proto(expose: &VpcExpose) -> L4Protocol {
+fn port_fw_proto(expose: &VpcExpose) -> Option<NextHeader> {
     expose
         .nat
         .as_ref()
@@ -67,16 +67,22 @@ fn vpc_port_fw_peering(
     for expose in peering.local.port_forwarding_exposes() {
         let remote_vpc_vni = vpc_table.get_remote_vni(peering);
         let src_vpc = VpcDiscriminant::from_vni(remote_vpc_vni);
-        match port_fw_proto(expose) {
-            L4Protocol::Tcp => {
+        let proto = port_fw_proto(expose);
+        match proto {
+            Some(NextHeader::TCP) => {
                 let rule = expose_to_portfw_rule(expose, NextHeader::TCP, src_vpc, dst_vpc)?;
                 rules.push(rule);
             }
-            L4Protocol::Udp => {
+            Some(NextHeader::UDP) => {
                 let rule = expose_to_portfw_rule(expose, NextHeader::UDP, src_vpc, dst_vpc)?;
                 rules.push(rule);
             }
-            L4Protocol::Any => {
+            Some(_) => {
+                return Err(PortFwTableError::Unsupported(format!(
+                    "Unsupported protocol {proto:?}",
+                )));
+            }
+            None => {
                 let rule = expose_to_portfw_rule(expose, NextHeader::TCP, src_vpc, dst_vpc)?;
                 rules.push(rule);
 

@@ -10,12 +10,10 @@ use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::{NatAllocator, NatIp};
 use config::ConfigError;
 use config::external::overlay::vpc::Peering;
-use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
+use config::external::overlay::vpcpeering::{VpcExpose, VpcExposeNat, VpcManifest};
 use config::utils::collapse_prefixes_peering;
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{
-    IpPrefix, L4Protocol, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
-};
+use lpm::prefix::{IpPrefix, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
@@ -199,21 +197,19 @@ fn find_masquerade_portfw_overlap<'a>(
 
     for pf_expose in port_forwarding_exposes {
         let pf_nat = pf_expose.nat.as_ref().unwrap_or_else(|| unreachable!());
-        let Some(relevant_proto) = expose_nat
-            .proto_restriction
-            .intersection(&pf_nat.proto_restriction)
-        else {
+        let Some(relevant_protos) = VpcExposeNat::l4_proto_common_restrictions(
+            &expose_nat.proto_restriction,
+            &pf_nat.proto_restriction,
+        ) else {
             // No overlap on L4 protocols, so no overlap for prefixes and ports.
             continue;
         };
         let ranges_intersection = pf_expose.ips.intersection_prefixes_and_ports(&expose.ips);
-        match relevant_proto {
-            L4Protocol::Tcp => reserve_sets.tcp.extend(ranges_intersection),
-            L4Protocol::Udp => reserve_sets.udp.extend(ranges_intersection),
-            L4Protocol::Any => {
-                reserve_sets.tcp.extend(ranges_intersection.clone());
-                reserve_sets.udp.extend(ranges_intersection);
-            }
+        if relevant_protos.contains(&NextHeader::TCP) {
+            reserve_sets.tcp.extend(ranges_intersection.clone());
+        }
+        if relevant_protos.contains(&NextHeader::UDP) {
+            reserve_sets.udp.extend(ranges_intersection);
         }
     }
     reserve_sets
@@ -398,7 +394,8 @@ fn create_ipv6_bitmap_mappings(
 mod tests {
     use super::{ReserveSets, find_masquerade_portfw_overlap};
     use config::external::overlay::vpcpeering::VpcExpose;
-    use lpm::prefix::{L4Protocol, PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+    use lpm::prefix::{PortRange, PrefixPortsSet, PrefixWithOptionalPorts};
+    use net::ip::NextHeader;
 
     fn prefix_with_ports(s: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
         PrefixWithOptionalPorts::new(s.into(), Some(PortRange::new(start, end).unwrap()))
@@ -460,7 +457,7 @@ mod tests {
             .unwrap()
             .ip("10.0.0.0/24".into());
         let pf_expose = VpcExpose::empty()
-            .make_port_forwarding(None, Some(L4Protocol::Tcp)) // TCP only
+            .make_port_forwarding(None, Some(NextHeader::TCP)) // TCP only
             .unwrap()
             .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
         let pf_exposes_vec = vec![&pf_expose];

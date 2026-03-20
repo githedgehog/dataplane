@@ -8,7 +8,8 @@ use k8s_intf::gateway_agent_crd::{
     GatewayAgentPeeringsPeeringExposeIps, GatewayAgentPeeringsPeeringExposeNat,
     GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto,
 };
-use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixString, PrefixWithOptionalPorts};
+use lpm::prefix::{PortRange, Prefix, PrefixString, PrefixWithOptionalPorts};
+use net::ip::NextHeader;
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::SubnetMap;
@@ -239,10 +240,14 @@ fn set_port_ranges(
         }
 
         nat.proto_restriction = match proto {
-            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp) => L4Protocol::Tcp,
-            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp) => L4Protocol::Udp,
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Tcp) => {
+                Some(NextHeader::TCP)
+            }
+            Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::Udp) => {
+                Some(NextHeader::UDP)
+            }
             Some(GatewayAgentPeeringsPeeringExposeNatPortForwardPortsProto::KopiumEmpty) | None => {
-                L4Protocol::Any
+                None
             }
         };
 

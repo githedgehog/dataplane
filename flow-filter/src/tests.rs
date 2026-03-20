@@ -8,7 +8,7 @@ use crate::{
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
-use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
+use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::flows::FlowInfo;
 use net::headers::{Net, TryHeadersMut, TryIpMut};
@@ -312,12 +312,12 @@ fn test_flow_filter_multiple_matches_no_dst_vpcd() {
                 RemoteData::new(
                     vpcd(200),
                     None,
-                    Some(NatRequirement::PortForwarding(L4Protocol::Tcp)), // This rule is for TCP
+                    Some(NatRequirement::PortForwarding(Some(NextHeader::TCP))), // This rule is for TCP
                 ),
                 RemoteData::new(
                     vpcd(300),
                     None,
-                    Some(NatRequirement::PortForwarding(L4Protocol::Tcp)), // This rule is for TCP
+                    Some(NatRequirement::PortForwarding(Some(NextHeader::TCP))), // This rule is for TCP
                 ),
             ])),
             Prefix::from("10.0.0.0/24"),
@@ -1171,7 +1171,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
                         .as_range("100.0.0.0/24".into())
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp)) // TCP-only port forwarding
+                        .make_port_forwarding(None, Some(NextHeader::TCP)) // TCP-only port forwarding
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "1.0.0.27/32".into(),
@@ -1264,7 +1264,8 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
 #[test]
 #[traced_test]
 fn test_flow_filter_protocol_any_port_forwarding() {
-    // Test that L4Protocol::Any port forwarding works for both TCP and UDP packets.
+    // Test that port forwarding with None as protocol restriction works for both TCP and UDP
+    // packets.
 
     let vni1 = vni(100);
     let vni2 = vni(200);
@@ -1277,7 +1278,7 @@ fn test_flow_filter_protocol_any_port_forwarding() {
         .add(Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap())
         .unwrap();
 
-    // Port forwarding with L4Protocol::Any (default)
+    // Port forwarding with None as protocol restriction (default)
     let mut peering_table = VpcPeeringTable::new();
     peering_table
         .add(VpcPeering::with_default_group(
@@ -1381,7 +1382,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 name: "vpc2".to_string(),
                 exposes: vec![
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                        .make_port_forwarding(None, Some(NextHeader::TCP))
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
@@ -1393,7 +1394,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         ))
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Udp))
+                        .make_port_forwarding(None, Some(NextHeader::UDP))
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
@@ -1405,7 +1406,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         ))
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                        .make_port_forwarding(None, Some(NextHeader::TCP))
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "192.168.90.100/32".into(), // 192.168.90.100 used privately for VPC02
@@ -1589,7 +1590,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 name: "vpc2".to_string(),
                 exposes: vec![
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                        .make_port_forwarding(None, Some(NextHeader::TCP))
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
@@ -1601,7 +1602,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         ))
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Udp))
+                        .make_port_forwarding(None, Some(NextHeader::UDP))
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "192.168.90.0/24".into(), // Contains 192.168.90.100 used privately from VPC 2
@@ -1613,7 +1614,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         ))
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                        .make_port_forwarding(None, Some(NextHeader::TCP))
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "192.168.90.100/32".into(), // 192.168.90.100 used privately from VPC 2
@@ -1790,7 +1791,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 name: "vpc2".to_string(),
                 exposes: vec![
                     VpcExpose::empty()
-                        .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                        .make_port_forwarding(None, Some(NextHeader::TCP))
                         .unwrap()
                         .ip(PrefixWithOptionalPorts::new(
                             "1.0.0.1/32".into(),

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::ConfigError;
 use crate::external::overlay::vpcpeering::VpcExpose;
+use crate::{ConfigError, external::overlay::vpcpeering::VpcExposeNat};
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithPortsSize};
 
 pub fn check_private_prefixes_dont_overlap(
@@ -52,7 +52,11 @@ fn port_forwarding_with_distinct_l4_protocols(
         && expose_right.has_port_forwarding()
         && let Some(nat_left) = expose_left.nat.as_ref()
         && let Some(nat_right) = expose_right.nat.as_ref()
-        && nat_left.proto_restriction.intersection(&nat_right.proto_restriction).is_none()
+        && VpcExposeNat::l4_proto_common_restrictions(
+            &nat_left.proto_restriction,
+            &nat_right.proto_restriction,
+        )
+        .is_none()
     {
         true
     } else {

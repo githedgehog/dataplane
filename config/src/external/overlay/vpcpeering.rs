@@ -5,9 +5,9 @@
 
 use crate::utils::{check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap};
 use lpm::prefix::{
-    IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
-    PrefixWithPortsSize,
+    IpRangeWithPorts, Prefix, PrefixPortsSet, PrefixWithOptionalPorts, PrefixWithPortsSize,
 };
+use net::ip::NextHeader;
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
@@ -38,7 +38,7 @@ pub struct VpcExposeNat {
     pub as_range: PrefixPortsSet,
     pub not_as: PrefixPortsSet,
     pub config: VpcExposeNatConfig,
-    pub proto_restriction: L4Protocol,
+    pub proto_restriction: Option<NextHeader>,
 }
 
 impl VpcExposeNat {
@@ -48,7 +48,7 @@ impl VpcExposeNat {
             as_range: PrefixPortsSet::new(),
             not_as: PrefixPortsSet::new(),
             config,
-            proto_restriction: L4Protocol::default(),
+            proto_restriction: None,
         }
     }
 
@@ -65,6 +65,31 @@ impl VpcExposeNat {
     #[must_use]
     pub fn is_port_forwarding(&self) -> bool {
         matches!(self.config, VpcExposeNatConfig::PortForwarding(_))
+    }
+
+    #[must_use]
+    pub fn l4_proto_common_restrictions(
+        left: &Option<NextHeader>,
+        right: &Option<NextHeader>,
+    ) -> Option<Vec<NextHeader>> {
+        match (left, right) {
+            (Some(left), Some(right)) if left == right => Some(vec![*left]),
+            (Some(_), Some(_)) => None,
+            (None, Some(single)) | (Some(single), None) => Some(vec![*single]),
+            (None, None) => Some(vec![NextHeader::TCP, NextHeader::UDP]),
+        }
+    }
+
+    #[must_use]
+    pub fn l4_proto_restriction_applies_to_proto(
+        restriction: &Option<NextHeader>,
+        proto: &Option<NextHeader>,
+    ) -> bool {
+        match (restriction, proto) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(restriction), Some(proto)) => restriction == proto,
+        }
     }
 }
 
@@ -144,15 +169,13 @@ impl VpcExpose {
     pub fn make_port_forwarding(
         mut self,
         idle_timeout: Option<Duration>,
-        proto: Option<L4Protocol>,
+        proto_restriction: Option<NextHeader>,
     ) -> Result<Self, ConfigError> {
         let options = VpcExposePortForwarding { idle_timeout };
         match self.nat.as_mut() {
             Some(nat) if nat.is_port_forwarding() => {
                 nat.config = VpcExposeNatConfig::PortForwarding(options);
-                if let Some(proto) = proto {
-                    nat.proto_restriction = proto;
-                }
+                nat.proto_restriction = proto_restriction;
             }
             Some(_) => {
                 return Err(ConfigError::Invalid(format!(
@@ -162,9 +185,7 @@ impl VpcExpose {
             None => {
                 let mut nat =
                     VpcExposeNat::from_config(VpcExposeNatConfig::PortForwarding(options));
-                if let Some(proto) = proto {
-                    nat.proto_restriction = proto;
-                }
+                nat.proto_restriction = proto_restriction;
                 self.nat = Some(nat);
             }
         }

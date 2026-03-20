@@ -6,8 +6,9 @@
 use config::ConfigError;
 use config::external::overlay::vpcpeering::{VpcExposeNat, VpcExposeNatConfig};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{L4Protocol, PortRange, Prefix};
+use lpm::prefix::{PortRange, Prefix};
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
+use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -466,7 +467,7 @@ impl PortRangeMap<DstConnectionData> {
 pub(crate) enum NatRequirement {
     Stateless,
     Stateful,
-    PortForwarding(L4Protocol),
+    PortForwarding(Option<NextHeader>),
 }
 
 impl NatRequirement {
@@ -474,7 +475,9 @@ impl NatRequirement {
         match (&nat.config, nat.proto_restriction) {
             (VpcExposeNatConfig::Stateful(_), _) => NatRequirement::Stateful,
             (VpcExposeNatConfig::Stateless(_), _) => NatRequirement::Stateless,
-            (VpcExposeNatConfig::PortForwarding(_), proto) => NatRequirement::PortForwarding(proto),
+            (VpcExposeNatConfig::PortForwarding(_), proto_restriction) => {
+                NatRequirement::PortForwarding(proto_restriction)
+            }
         }
     }
 }
@@ -509,10 +512,13 @@ impl RemoteData {
             || self.dst_nat_req == Some(NatRequirement::Stateless)
     }
 
-    pub(crate) fn requires_port_forwarding(&self, packet_proto: L4Protocol) -> bool {
+    pub(crate) fn requires_port_forwarding(&self, packet_proto: Option<NextHeader>) -> bool {
         for requirement in [self.src_nat_req, self.dst_nat_req] {
-            if let Some(NatRequirement::PortForwarding(req_proto)) = requirement
-                && packet_proto.intersection(&req_proto).is_some()
+            if let Some(NatRequirement::PortForwarding(req_proto_restriction)) = requirement
+                && VpcExposeNat::l4_proto_restriction_applies_to_proto(
+                    &req_proto_restriction,
+                    &packet_proto,
+                )
             {
                 return true;
             }
@@ -521,10 +527,13 @@ impl RemoteData {
     }
 
     // Determines whether the NAT requirements object covers a given L4 protocol.
-    pub(crate) fn applies_to(&self, packet_proto: L4Protocol) -> bool {
+    pub(crate) fn applies_to(&self, packet_proto: Option<NextHeader>) -> bool {
         for requirement in [self.src_nat_req, self.dst_nat_req] {
-            if let Some(NatRequirement::PortForwarding(req_proto)) = requirement
-                && req_proto.intersection(&packet_proto).is_none()
+            if let Some(NatRequirement::PortForwarding(req_proto_restriction)) = requirement
+                && !VpcExposeNat::l4_proto_restriction_applies_to_proto(
+                    &req_proto_restriction,
+                    &packet_proto,
+                )
             {
                 return false;
             }

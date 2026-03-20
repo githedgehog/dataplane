@@ -14,12 +14,13 @@
 //!   peerings, get dropped.
 
 use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
+use config::external::overlay::vpcpeering::VpcExposeNat;
 use indenter::indented;
-use lpm::prefix::L4Protocol;
 use net::buffer::PacketBufferMut;
 use net::flows::FlowStatus;
 use net::flows::flow_info_item::ExtractRef;
 use net::headers::{Transport, TryIp, TryTransport};
+use net::ip::NextHeader;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::collections::HashSet;
@@ -313,7 +314,7 @@ fn deal_with_multiple_matches<Buf: PacketBufferMut>(
             let Some(NatRequirement::PortForwarding(requirement_proto)) = d.src_nat_req else {
                 return false;
             };
-            requirement_proto.intersection(&packet_proto).is_some()
+            VpcExposeNat::l4_proto_restriction_applies_to_proto(&requirement_proto, &packet_proto)
         })
     {
         set_nat_requirements(packet, dst_data);
@@ -325,7 +326,7 @@ fn deal_with_multiple_matches<Buf: PacketBufferMut>(
         let Some(NatRequirement::PortForwarding(req_proto)) = d.dst_nat_req else {
             return false;
         };
-        req_proto.intersection(&packet_proto).is_some()
+        VpcExposeNat::l4_proto_restriction_applies_to_proto(&req_proto, &packet_proto)
     }) && data_set
         .iter()
         .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
@@ -460,10 +461,10 @@ fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
     }
 }
 
-pub(crate) fn get_l4_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> L4Protocol {
+pub(crate) fn get_l4_proto<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NextHeader> {
     match packet.try_transport() {
-        Some(Transport::Tcp(_)) => L4Protocol::Tcp,
-        Some(Transport::Udp(_)) => L4Protocol::Udp,
-        _ => L4Protocol::Any,
+        Some(Transport::Tcp(_)) => Some(NextHeader::TCP),
+        Some(Transport::Udp(_)) => Some(NextHeader::UDP),
+        _ => None,
     }
 }

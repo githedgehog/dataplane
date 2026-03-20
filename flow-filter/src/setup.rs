@@ -541,7 +541,8 @@ mod tests {
     use super::*;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeeringTable};
-    use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithPortsSize};
+    use lpm::prefix::{PortRange, Prefix, PrefixWithPortsSize};
+    use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
     use net::vxlan::Vni;
     use std::collections::BTreeSet;
@@ -876,7 +877,7 @@ mod tests {
             name: "manifest2".to_string(),
             exposes: vec![
                 VpcExpose::empty()
-                    .make_port_forwarding(None, Some(L4Protocol::Tcp))
+                    .make_port_forwarding(None, Some(NextHeader::TCP))
                     .unwrap()
                     .ip(PrefixWithOptionalPorts::new(
                         "1.0.0.1/32".into(),
@@ -888,7 +889,7 @@ mod tests {
                     ))
                     .unwrap(),
                 VpcExpose::empty()
-                    .make_port_forwarding(None, Some(L4Protocol::Udp))
+                    .make_port_forwarding(None, Some(NextHeader::UDP))
                     .unwrap()
                     .ip(PrefixWithOptionalPorts::new(
                         "1.0.0.1/32".into(),
@@ -950,7 +951,7 @@ mod tests {
             set.contains(&RemoteData::new(
                 vpcd,
                 None,
-                Some(NatRequirement::PortForwarding(L4Protocol::Tcp)),
+                Some(NatRequirement::PortForwarding(Some(NextHeader::TCP))),
             )),
             "{set:?}"
         );
@@ -958,7 +959,7 @@ mod tests {
             set.contains(&RemoteData::new(
                 vpcd,
                 None,
-                Some(NatRequirement::PortForwarding(L4Protocol::Udp)),
+                Some(NatRequirement::PortForwarding(Some(NextHeader::UDP))),
             )),
             "{set:?}"
         );
@@ -1054,7 +1055,7 @@ mod tests {
             HashSet::from([RemoteData::new(
                 vpcd(200),
                 None,
-                Some(NatRequirement::PortForwarding(L4Protocol::Any)),
+                Some(NatRequirement::PortForwarding(None)),
             )]),
         );
 
