@@ -6,14 +6,13 @@
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
 use net::checksum::Checksum;
-use net::flows::ExtractRef;
 use net::headers::{
     EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp,
     TryInnerIpv4, TryIp,
 };
 use net::icmp_any::{IcmpAnyChecksumPayload, TruncatedIcmpAny};
 use net::ip::NextHeader;
-use net::packet::{DoneReason, Packet, VpcDiscriminant};
+use net::packet::{DoneReason, Packet};
 use net::{FlowKey, IcmpProtoKey, IpProtoKey, TcpProtoKey, UdpProtoKey};
 
 use pipeline::NetworkFunction;
@@ -182,12 +181,7 @@ impl IcmpErrorHandler {
         };
         debug!("Found flow for key={rev_flow_key}");
         let flow_info_locked = flow.locked.read().unwrap();
-        let Some(dst_vpcd) = flow_info_locked
-            .dst_vpcd
-            .as_ref()
-            .extract_ref::<VpcDiscriminant>()
-            .copied()
-        else {
+        let Some(dst_vpcd) = flow_info_locked.dst_vpcd else {
             warn!("Flow-info for {rev_flow_key} has no dst VPC discriminant. This is a bug");
             packet.done(DoneReason::InternalFailure);
             return;

@@ -156,7 +156,7 @@ pub(crate) fn setup_forward_flow(
     // set the port forwarding state in the flow
     if let Ok(mut write_guard) = forward_flow.locked.write() {
         write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(Box::new(entry.dst_vpcd));
+        write_guard.dst_vpcd = Some(entry.dst_vpcd);
     } else {
         unreachable!()
     }
@@ -178,7 +178,7 @@ pub(crate) fn setup_reverse_flow(
     // set the port forwarding state in the flow
     if let Ok(mut write_guard) = reverse_flow.locked.write() {
         write_guard.port_fw_state = Some(Box::new(port_fw_state));
-        write_guard.dst_vpcd = Some(Box::new(entry.key.src_vpcd()));
+        write_guard.dst_vpcd = Some(entry.key.src_vpcd());
     } else {
         unreachable!()
     }

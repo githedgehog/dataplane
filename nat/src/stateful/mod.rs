@@ -182,7 +182,7 @@ impl StatefulNat {
         debug!("Setting up new flow: {flow_key} -> {state}");
         if let Ok(mut write_guard) = flow_info.locked.write() {
             write_guard.nat_state = Some(Box::new(state));
-            write_guard.dst_vpcd = Some(Box::new(dst_vpcd));
+            write_guard.dst_vpcd = Some(dst_vpcd);
         } else {
             // flow info is just locally created
             unreachable!()

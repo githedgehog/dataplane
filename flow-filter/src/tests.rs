@@ -188,7 +188,7 @@ fn fake_flow_session<Buf: PacketBufferMut>(
     // Create flow_info with dst_vpcd and NAT info and attach it to the packet
     let flow_info = FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
     let mut binding = flow_info.locked.write().unwrap();
-    binding.dst_vpcd = Some(Box::new(dst_vpcd));
+    binding.dst_vpcd = Some(dst_vpcd);
     if set_nat_state {
         // Content should be a NatFlowState object but we can't include it in this crate without
         // introducing a circular dependency; just use a bool, as we don't attempt to downcast
