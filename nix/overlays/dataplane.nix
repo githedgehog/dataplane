@@ -9,7 +9,30 @@
 }:
 final: prev:
 let
-  dataplane-dep = pkg: pkg.override { stdenv = final.stdenv'; };
+  helpers.addToEnv =
+    new: orig:
+    orig
+    // (
+      with builtins; (mapAttrs (var: val: (toString (orig.${var} or "")) + " " + (toString val)) new)
+    );
+  dataplane-dep =
+    pkg:
+    (pkg.override { stdenv = final.stdenv'; }).overrideAttrs (orig: {
+      env = helpers.addToEnv (orig.env or { }) (
+        let
+          # -ffile-prefix-map is a simple trick to map /build to /nix/store paths for code coverage data.
+          # This trick does not work well for .tar packages or source code generated during the build, but it's
+          # the best I can do without massively increasing build system complexity.
+          extra-cflags = "-ffile-prefix-map=/build=${orig.src} -ffile-prefix-map=/build/source=${orig.src}";
+          extra-cxxflags = extra-cflags;
+        in
+        {
+          NIX_CFLAGS_COMPILE = extra-cflags;
+          NIX_CXXFLAGS_COMPILE = extra-cxxflags;
+        }
+      );
+    });
+
 in
 {
   # libmd is used by libbsd (et al) which is an optional dependency of dpdk.
@@ -230,6 +253,7 @@ in
     }).overrideAttrs
       (orig: {
         outputs = (orig.outputs or [ ]) ++ [ "static" ];
+        CFLAGS = "-ffile-prefix-map=/build/hwloc=${orig.src}";
         configureFlags = (orig.configureFlags or [ ]) ++ [
           "--enable-static"
         ];

@@ -5,6 +5,11 @@ LIBRARY_PATH = { value = "sysroot/lib", relative = true, force = false }
 GW_CRD_PATH = { value = "devroot/src/gateway/config/crd/bases", relative = true, force = false }
 PKG_CONFIG_PATH = { value = "sysroot/lib/pkgconfig", relative = true, force = false }
 LIBCLANG_PATH = { value = "devroot/lib", relative = true, force = false }
+CLANG_PATH = { value = "devroot/bin/clang", relative = true, force = false }
+LLVM_COV = { value = "devroot/bin/llvm-cov", relative = true, force = false }
+LLVM_PROFDATA = { value = "devroot/bin/llvm-profdata", relative = true, force = false }
+CARGO_LLVM_COV_TARGET_DIR = { value = "target/llvm-cov/build", relative = true, force = false }
+CARGO_LLVM_COV_BUILD_DIR = { value = "target/llvm-cov/target", relative = true, force = false }
 
 [build]
 rustflags = ["--cfg=tokio_unstable"]
