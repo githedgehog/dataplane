@@ -6,6 +6,8 @@
   profile ? "debug",
   instrumentation ? "none",
   sanitize ? "",
+  features ? "",
+  default-features ? "true",
   tag ? "dev",
 }:
 let
@@ -22,6 +24,7 @@ let
     inherit lib platform libc;
   };
   sanitizers = split-str ",+" sanitize;
+  cargo-features = split-str ",+" features;
   profile' = import ./nix/profiles.nix {
     inherit sanitizers instrumentation profile;
     inherit (platform') arch;
@@ -194,7 +197,14 @@ let
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
     "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
     "--target=${target}"
-  ];
+  ]
+  ++ (if default-features == "false" then [ "--no-default-features" ] else [ ])
+  ++ (
+    if cargo-features != [ ] then
+      [ "--features=${builtins.concatStringsSep "," cargo-features}" ]
+    else
+      [ ]
+  );
   invoke =
     {
       builder,
