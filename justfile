@@ -26,6 +26,12 @@ profile := "debug"
 # sanitizer to use (address/thread/safe-stack/cfi/"")
 sanitize := ""
 
+# comma-separated list of cargo features to enable (e.g. "shuttle")
+features := ""
+
+# filters for nextest
+filter := ""
+
 # instrumentation mode (none/coverage)
 instrument := "none"
 
@@ -36,7 +42,8 @@ version_extra := ""
 version_platform := if platform == "x86-64-v3" { "" } else { "-" + platform }
 version_profile := if profile == "release" { "" } else { "-" + profile }
 version_san := if sanitize == "" { "" } else { "-san." + replace(sanitize, ",", ".") }
-version := env("VERSION", "") || `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_extra
+version_feat := if features == "" { "" } else { "-feat." + replace(features, ",", ".") }
+version := env("VERSION", "") || `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_feat + version_extra
 
 # Print version that will be used in the build
 version:
@@ -68,6 +75,8 @@ build target="dataplane.tar" *args:
     nix build -f default.nix "${target}" \
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \
+      --argstr features '{{ features }}' \
+      --argstr default-features '{{ default_features }}' \
       --argstr instrumentation '{{ instrument }}' \
       --argstr platform '{{ platform }}' \
       --argstr tag '{{version}}' \
