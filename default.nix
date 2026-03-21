@@ -122,6 +122,7 @@ let
       cargo-bolero
       cargo-deny
       cargo-depgraph
+      cargo-edit
       cargo-llvm-cov
       cargo-nextest
       direnv
