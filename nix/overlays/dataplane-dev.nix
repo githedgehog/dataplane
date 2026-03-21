@@ -20,6 +20,7 @@ in
   );
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
+  cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
   cargo-llvm-cov = prev.cargo-llvm-cov.override override-packages;
   cargo-nextest = prev.cargo-nextest.override override-packages;
   just = prev.just.override override-packages;
