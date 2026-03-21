@@ -31,9 +31,9 @@ in
     in
     final.writeTextFile {
       name = "gateway-crd";
-      text = builtins.readFile "${sources.gateway}/${p}";
+      text = builtins.readFile "${sources.fabric}/${p}";
       executable = false;
-      destination = "/src/gateway/${p}";
+      destination = "/src/fabric/${p}";
     };
 
   gdb' = prev.gdb.overrideAttrs (orig: {

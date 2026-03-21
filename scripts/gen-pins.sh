@@ -50,12 +50,12 @@ npins add github linux-rdma perftest --branch master
 # Will pick highest tag on pin bump.
 npins add github kube-rs kopium
 
-# The gateway is needed to define the CRD we use for code generation at build time.
-# The gateway should be pinned to a specific an manually changed version, the best way to reach this goal is to pin the
+# The fabric is needed to define the CRD we use for code generation at build time.
+# The fabric should be pinned to a specific and manually changed version, the best way to reach this goal is to pin the
 # release and freeze it with npins. Then you can manually update with `npins update --frozen` instead of repeatedly
 # editing the script or otherwise fighting the update process.
-npins add github githedgehog gateway # Will pick highest tagged version on pin bump
-npins freeze gateway
+npins add github githedgehog fabric # Will pick highest tagged version on pin bump
+npins freeze fabric
 
 npins add github FRRouting frr --branch stable/10.5 # floats with branch on pin bump
 npins add github --name frr-dp githedgehog frr --branch hh-master-10.5 # floats with branch on pin bump
