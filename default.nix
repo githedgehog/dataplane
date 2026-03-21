@@ -149,7 +149,7 @@ let
       LIBRARY_PATH = "${sysroot}/lib";
       PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
       LIBCLANG_PATH = "${devroot}/lib";
-      GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+      GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/fabric/config/crd/bases";
     };
   };
   justfileFilter = p: _type: builtins.match ".*\.justfile$" p != null;
@@ -253,7 +253,7 @@ let
           C_INCLUDE_PATH = "${sysroot}/include";
           LIBRARY_PATH = "${sysroot}/lib";
           PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
-          GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/gateway/config/crd/bases";
+          GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/fabric/config/crd/bases";
           RUSTC_BOOTSTRAP = "1";
           RUSTFLAGS = builtins.concatStringsSep " " (
             profile'.RUSTFLAGS
