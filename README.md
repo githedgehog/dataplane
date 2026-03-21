@@ -188,15 +188,15 @@ Create the `devroot` and `sysroot` symlinks needed for local IDE integration and
 just setup-roots
 ```
 
-## Updating the gateway-agent version
+## Updating the Gateway API version
 
-The gateway pin in `npins/sources.json` is frozen to prevent accidental updates.
+The fabric pin in `npins/sources.json` is frozen to prevent accidental updates.
 To update it to a specific version:
 
 ```bash
-npins unfreeze gateway
-npins add github githedgehog gateway --at <version>
-npins freeze gateway
+npins unfreeze fabric
+npins add github githedgehog fabric --at <version>
+npins freeze fabric
 ```
 
 After updating, exit and restart `nix-shell` for the changes to take effect.

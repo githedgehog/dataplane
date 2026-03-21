@@ -55,6 +55,23 @@
       "url": "https://github.com/githedgehog/dplane-rpc/archive/e8fc33db10e1d00785f2a2b90cbadcad7900f200.tar.gz",
       "hash": "sha256-tjN4qSbKrWfosOV3wt2AnQxmVL0BPZYBjAHG3X00+aM="
     },
+    "fabric": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "githedgehog",
+        "repo": "fabric"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.113.2",
+      "revision": "6d4438e4ddde8079f879e90f603080a1fd027ef8",
+      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.113.2",
+      "hash": "sha256-vGv9yXunQ+jTbsycZ3ppVpndSuCESBmPcUiLm2X0nfY=",
+      "frozen": true
+    },
     "frr": {
       "type": "Git",
       "repository": {
@@ -93,23 +110,6 @@
       "revision": "d6cbff16e2261a7e1a88c6369de9e5c1d1bdb4f7",
       "url": "https://github.com/githedgehog/frr/archive/d6cbff16e2261a7e1a88c6369de9e5c1d1bdb4f7.tar.gz",
       "hash": "sha256-dUjnWQFcP+iUcYl1vetWbawL9HZt8FmMzC0cJdUJrxI="
-    },
-    "gateway": {
-      "type": "GitRelease",
-      "repository": {
-        "type": "GitHub",
-        "owner": "githedgehog",
-        "repo": "gateway"
-      },
-      "pre_releases": false,
-      "version_upper_bound": null,
-      "release_prefix": null,
-      "submodules": false,
-      "version": "v0.43.5",
-      "revision": "beda6dc74d2787f56fa6d861f30db367bf3bd574",
-      "url": "https://api.github.com/repos/githedgehog/gateway/tarball/refs/tags/v0.43.5",
-      "hash": "sha256-mAzCowie/IU5+xBl6o9SMB1yw+ESRw4trdRe8GRauYg=",
-      "frozen": true
     },
     "kopium": {
       "type": "GitRelease",
