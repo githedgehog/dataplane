@@ -29,8 +29,21 @@ sanitize := ""
 # comma-separated list of cargo features to enable (e.g. "shuttle")
 features := ""
 
+# whether to include default cargo features for this workspace (set to "false" to disable)
+default_features := "true"
+
+# Private computed cargo flag groups for consistent invocations.
+# Recipes should compose these as needed (not all cargo subcommands accept all flags).
+[private]
+_cargo_feature_flags := \
+    (if default_features == "false" { "--no-default-features " } else { "" }) \
+    + (if features != "" { "--features " + features } else { "" })
+
+[private]
+_cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profile }
+
 # filters for nextest
-filter := ""
+filter := if features == "shuttle" { "shuttle" } else { "" }
 
 # instrumentation mode (none/coverage)
 instrument := "none"
@@ -198,11 +211,23 @@ push:
 print-container-tags:
     echo "{{ oci_image_dataplane }}"
 
+# Check dependency licenses and security advisories
+[script]
+check-dependencies *args:
+    {{ _just_debuggable_ }}
+    nix-shell --run "cargo deny {{ _cargo_feature_flags }} check {{ args }}"
+
 # Run linters
 [script]
 lint *args:
     {{ _just_debuggable_ }}
-    nix-shell --run "cargo clippy --all-targets --all-features {{ args }} -- -D warnings"
+    nix-shell --run "cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings"
+
+# Run doctests
+[script]
+doctest *args:
+    {{ _just_debuggable_ }}
+    nix-shell --run "cargo test --doc {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }}"
 
 # Run tests with code coverage. Args will be forwarded to nextest
 [script]
