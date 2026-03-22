@@ -13,3 +13,7 @@ CARGO_LLVM_COV_BUILD_DIR = { value = "target/llvm-cov/target", relative = true, 
 
 [build]
 rustflags = ["--cfg=tokio_unstable"]
+
+[unstable]
+build-std = ["compiler_builtins","core","alloc","std","panic_unwind","panic_abort","sysroot","unwind"]
+build-std-features = ["panic-unwind", "llvm-libunwind"]

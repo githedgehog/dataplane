@@ -196,7 +196,7 @@ let
   cargo-cmd-prefix = [
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
-    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem,llvm-libunwind"
     "--target=${target}"
   ]
   ++ (if default-features == "false" then [ "--no-default-features" ] else [ ])
