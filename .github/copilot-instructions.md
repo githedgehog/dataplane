@@ -59,8 +59,7 @@ This comment should
 2. an array which suggests links to any other open and relevant issues or pull requests you find
    - in this repository
    - in the [dpdk-sys repository][dpdk-sys]
-   - in the [gateway-proto repository][gateway-proto]
-   - in the [gateway repository][gateway]
+   - in the [fabric repository][fabric]
    - in the [testn repository][testn]
    - in the [dplane-rpc repository][dplane-rpc]
 3. followed by a fenced code block in markdown format describing the suggested work to be done.
@@ -99,7 +98,6 @@ The `other` tag should only be used if no other tag is appropriate.
 
 [dev-guide]: ../development/README.md
 [dpdk-sys]: https://github.com/githedgehog/dpdk-sys
-[gateway-proto]: https://github.com/githedgehog/gateway-proto
-[gateway]: https://github.com/githedgehog/gateway
+[fabric]: https://github.com/githedgehog/fabric
 [testn]: https://github.com/githedgehog/testn
 [dplane-rpc]: https://github.com/githedgehog/dplane-rpc
