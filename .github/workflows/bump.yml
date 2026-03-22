@@ -70,11 +70,29 @@ jobs:
           nix-shell --run "just check-dependencies"
         continue-on-error: true
 
-      - name: "cargo upgrade"
-        id: upgrade
+      - name: "bump npins"
+        id: "bump-pins"
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '<41898282+github-actions[bot]@users.noreply.github.com>'
+
+          echo "::notice::Running just npins"
+          nix-shell --run "just bump-pins"
+          if ! git diff --quiet; then
+              echo "Found changes after bump-pins, creating commit"
+              git add -A
+              git commit -sm "bump(nix)!: bump nix pins (just bump-pins)"
+              echo "changed=true" >> "${GITHUB_OUTPUT}"
+          else
+              echo "No nix pin changes detected"
+              echo "changed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: "cargo upgrade"
+        id: upgrade
+        env:
+          NIX_PINS_CHANGED: "${{ steps.bump-pins.outputs.changed }}"
+        run: |
           BASE="$(git rev-parse HEAD)"
 
           # Run "cargo update"
@@ -105,8 +123,8 @@ jobs:
               git commit -sF commit_msg.txt
           done < list_packages.txt
 
-          # If we didn't create any commits, we don't need to create a PR message
-          if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
+          # If we didn't create any commits (cargo or nix), we don't need to create a PR message
+          if [[ "$(git rev-parse HEAD)" = "${BASE}" && "${NIX_PINS_CHANGED}" != "true" ]]; then
               rm -f -- upgrade_output.txt list_packages.txt commit_msg.txt
               exit 0
           fi
@@ -115,6 +133,10 @@ jobs:
 
           # Create Pull Request description
           echo '### :rocket: Upgrades available' | tee upgrade.log
+          if [[ "${NIX_PINS_CHANGED}" = "true" ]]; then
+              echo '' | tee -a upgrade.log
+              echo ':package: **Nix pins** were updated via `just bump-pins`.' | tee -a upgrade.log
+          fi
           if [[ "${nb_upgrades}" -ge 1 ]]; then
               echo '' | tee -a upgrade.log
               echo '```' | tee -a upgrade.log
@@ -142,8 +164,8 @@ jobs:
         uses: "peter-evans/create-pull-request@v8"
         with:
           token: "${{ steps.app-token.outputs.token }}"
-          branch: "bump/cargo-upgrades"
-          title: "bump(cargo)!: :rocket: upgrades available"
+          branch: "bump/dependency-upgrades"
+          title: "bump(deps)!: :rocket: dependency upgrades available"
           labels: |
             automated
             dependencies
