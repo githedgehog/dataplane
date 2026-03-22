@@ -164,6 +164,13 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             docker tag "ghcr.io/githedgehog/dataplane/debugger:{{version}}" "{{oci_image_dataplane_debugger}}"
             echo "imported {{ oci_image_dataplane_debugger }}"
             ;;
+        "debug-tools")
+            # Uses nix only to produce a base image with the runtime closure (glibc, bash, etc.)
+            # then layers locally-compiled cargo binaries on top via Dockerfile.
+            # See the `build-container-quick` recipe.
+            docker load < ./results/containers.debug-tools
+            echo "imported debug-tools:dev"
+            ;;
         "frr.dataplane")
             docker load < ./results/containers.frr.dataplane
             docker tag "ghcr.io/githedgehog/dpdk-sys/frr:{{version}}" "{{oci_image_frr_dataplane}}"
@@ -182,6 +189,21 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             exit 99
     esac
 
+# WARNING: The resulting image must NEVER be pushed to a shared registry.
+# NOTE: this recipe intentionally does not depend on build-container "debug-tools" to make the call fast.
+# Quick (non-sterile) container build using local cargo artifacts
+[script]
+build-container-quick:
+    {{ _just_debuggable_ }}
+    docker build \
+        --file ./Dockerfile \
+        --build-arg PROFILE="{{profile}}" \
+        --label sterile="false" \
+        --annotation sterile="false" \
+        --tag "dataplane:dev" \
+        .
+    echo "imported dataplane:dev"
+
 # Build and push the dataplane container
 [script]
 push-container target="dataplane" *args: (build-container target args) && version
@@ -195,6 +217,10 @@ push-container target="dataplane" *args: (build-container target args) && versio
         "dataplane-debugger")
             skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} docker-daemon:{{ oci_image_dataplane_debugger }} docker://{{ oci_image_dataplane_debugger }}
             echo "Pushed {{ oci_image_dataplane_debugger }}"
+            ;;
+        "debug-tools")
+            >&2 echo "do not push the debug tools!"
+            exit 1
             ;;
         "frr.dataplane")
             skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} docker-daemon:{{oci_image_frr_dataplane}} docker://{{oci_image_frr_dataplane}}
