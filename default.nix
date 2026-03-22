@@ -628,6 +628,82 @@ let
     };
   };
 
+  debug-tools = pkgs: [
+    ## Packages which might be helpful for debugging but aren't enabled by default.
+    ## Uncomment them as needed, but be mindful of container size please.
+    # pkgs.dmidecode
+    # pkgs.emacs
+    # pkgs.gdb # TODO: consider a way to let the user pick gdb' from dev-pkgs (works better in vm)
+    # pkgs.neovim
+    # pkgs.rr
+    # pkgs.valgrind
+    # pkgs.wireshark-cli
+
+    pkgs.bashInteractive
+    pkgs.coreutils
+    pkgs.curl
+    pkgs.debianutils
+    pkgs.dockerTools.usrBinEnv
+    pkgs.ethtool
+    pkgs.findutils
+    pkgs.gawk
+    pkgs.gnugrep
+    pkgs.gnused
+    pkgs.gnutar
+    pkgs.gzip
+    pkgs.htop
+    pkgs.iproute2
+    pkgs.iptables
+    pkgs.iputils
+    pkgs.jq
+    pkgs.less
+    pkgs.libc.bin
+    pkgs.libc.out
+    pkgs.libgcc.libgcc
+    pkgs.man
+    pkgs.nano
+    pkgs.procps
+    pkgs.tcpdump
+    pkgs.util-linux
+    pkgs.vim
+    pkgs.wget
+    pkgs.yq
+    pkgs.zstd
+  ];
+
+  containers.debug-tools = pkgs.dockerTools.buildLayeredImage {
+    name = "debug-tools";
+    tag = "dev"; # don't push or tag this with anything that might end up in the production repo
+    contents = pkgs.buildEnv {
+      name = "debug-tools-env";
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/lib"
+        "/libexec"
+        "/share"
+        "/tmp"
+        "/usr"
+        "/var"
+      ];
+      paths = debug-tools pkgs;
+    };
+
+    fakeRootCommands = ''
+      #!${pkgs.bash}/bin/bash
+      set -euo pipefail
+      mkdir -p /{bin,lib,var,etc,run/dataplane,run/frr/hh,run/netns,home,tmp}
+      ln -s /run /var/run
+      # symlinks to help imitate the real image
+      ln -s /bin/dataplane /dataplane
+      ln -s /bin/cli /dataplane-cli
+      ln -s /bin/dataplane-init /dataplane-init
+    '';
+
+    enableFakechroot = true;
+
+  };
+
   containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dpdk-sys/frr";
     inherit tag;
