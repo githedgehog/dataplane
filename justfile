@@ -273,6 +273,13 @@ bump_version version:
     sed -i "s/^version = \".*\"/version = \"{{ version }}\"/" Cargo.toml
     cargo update --workspace
 
+[script]
+bump-pins:
+    nix-shell --run '
+        rm ./npins/sources.json || true
+        ./scripts/bump.sh
+    '
+
 # Enter nix-shell
 [script]
 shell:
