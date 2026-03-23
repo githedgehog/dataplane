@@ -15,7 +15,6 @@
     clippy::expect_used,
     clippy::panic
 )]
-#![allow(clippy::struct_excessive_bools)]
 
 pub mod converters;
 pub mod display;
