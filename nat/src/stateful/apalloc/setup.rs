@@ -36,7 +36,7 @@ impl NatDefaultAllocator {
     /// # Errors
     ///
     /// [`ConfigError::FailureApply`] if adding a peering fails.
-    pub(crate) fn build_nat_allocator(config: &StatefulNatConfig) -> Result<Self, ConfigError> {
+    pub(crate) fn from_config(config: &StatefulNatConfig) -> Result<Self, ConfigError> {
         debug!(
             "Building allocator for stateful NAT, from config: {:?}",
             config
