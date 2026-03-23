@@ -3,7 +3,8 @@
 
 use crate::prefix::range_map::UpperBoundFrom;
 use crate::prefix::{Prefix, PrefixSize};
-use bnum::BUint;
+use bnum::cast::CastFrom;
+use bnum::{n, t};
 use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
@@ -12,18 +13,18 @@ use std::str::FromStr;
 /// A type for the size of IP/port combinations for IP prefixes with associated port ranges.
 /// We need something larger than u128 to cover all possible combinations: the maximum value is
 /// `(u128::MAX + 1) * (u16::MAX + 1)`.
-pub type PrefixWithPortsSize = BUint<3>;
+pub type PrefixWithPortsSize = t!(U145s);
 
 pub fn ppsize_from<T>(val: T) -> PrefixWithPortsSize
 where
-    PrefixWithPortsSize: From<T>,
+    PrefixWithPortsSize: CastFrom<T>,
 {
-    PrefixWithPortsSize::from(val)
+    PrefixWithPortsSize::cast_from(val)
 }
 
 #[must_use]
 pub fn ppsize_zero() -> PrefixWithPortsSize {
-    PrefixWithPortsSize::from(0u8)
+    n!(0)
 }
 
 /// Trait for IP ranges (CIDR prefix or simple ranges) with associated port ranges.
