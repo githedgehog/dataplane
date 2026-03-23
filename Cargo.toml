@@ -21,6 +21,7 @@ members = [
     "k8s-intf",
     "k8s-less",
     "left-right-tlcache",
+    "lpm",
     "mgmt",
     "nat",
     "net",
