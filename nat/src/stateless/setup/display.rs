@@ -99,7 +99,7 @@ impl Display for PortAddrTranslationValue {
         for (bounds, (range, offset)) in self.iter_tree() {
             writeln!(
                 indented(f).with_str("  "),
-                "{bounds} -> {range}  (offset: {offset})"
+                "{bounds} -> {range}  (offset: {offset:?})"
             )?;
         }
         Ok(())
