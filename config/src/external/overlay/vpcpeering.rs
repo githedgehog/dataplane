@@ -83,11 +83,11 @@ pub struct VpcExpose {
     pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
-    // Make the [`VpcExpose`] use stateless NAT.
-    //
-    // # Errors
-    //
-    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
+    /// Make the [`VpcExpose`] use stateless NAT.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the [`VpcExpose`] already has a different NAT mode.
     pub fn make_stateless_nat(mut self) -> Result<Self, ConfigError> {
         match self.nat.as_mut() {
             Some(nat) if nat.is_stateless() => Ok(self),
@@ -103,12 +103,12 @@ impl VpcExpose {
         }
     }
 
-    // Make the [`VpcExpose`] use stateful NAT, with the given idle timeout, if provided.
-    // If the [`VpcExpose`] is already in stateful mode, the idle timeout is overwritten.
-    //
-    // # Errors
-    //
-    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
+    /// Make the [`VpcExpose`] use stateful NAT, with the given idle timeout, if provided.
+    /// If the [`VpcExpose`] is already in stateful mode, the idle timeout is overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the [`VpcExpose`] already has a different NAT mode.
     pub fn make_stateful_nat(
         mut self,
         idle_timeout: Option<Duration>,
@@ -132,15 +132,15 @@ impl VpcExpose {
         }
     }
 
-    // Make the [`VpcExpose`] use port forwarding, with the given idle timeout, if provided, and the
-    // given L4 protocol, if provided.
-    //
-    // If the [`VpcExpose`] is already in port forwarding mode, the idle timeout and L4 protocol are
-    // overwritten.
-    //
-    // # Errors
-    //
-    // Returns an error if the [`VpcExpose`] already has a different NAT mode.
+    /// Make the [`VpcExpose`] use port forwarding, with the given idle timeout, if provided, and the
+    /// given L4 protocol, if provided.
+    ///
+    /// If the [`VpcExpose`] is already in port forwarding mode, the idle timeout and L4 protocol are
+    /// overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the [`VpcExpose`] already has a different NAT mode.
     pub fn make_port_forwarding(
         mut self,
         idle_timeout: Option<Duration>,
@@ -223,6 +223,11 @@ impl VpcExpose {
         self.nots.insert(prefix);
         self
     }
+    /// Add a prefix to the NAT `as` range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the expose has no NAT configuration.
     pub fn as_range(mut self, prefix: PrefixWithOptionalPorts) -> Result<Self, ConfigError> {
         let nat = self.nat.as_mut().ok_or(ConfigError::MissingParameter(
             "'as' block requires NAT configuration for the expose",
@@ -230,6 +235,11 @@ impl VpcExpose {
         nat.as_range.insert(prefix);
         Ok(self)
     }
+    /// Add a prefix to the NAT `not as` exclusion set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the expose has no NAT configuration.
     pub fn not_as(mut self, prefix: PrefixWithOptionalPorts) -> Result<Self, ConfigError> {
         let nat = self.nat.as_mut().ok_or(ConfigError::MissingParameter(
             "'not' prefix for 'as' block requires NAT configuration for the expose",
@@ -367,7 +377,11 @@ impl VpcExpose {
         Ok(())
     }
 
-    /// Validate the [`VpcExpose`]:
+    /// Validate the [`VpcExpose`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the expose configuration is invalid.
     #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> ConfigResult {
         // Check default exposes and prefixes
@@ -608,6 +622,11 @@ impl VpcManifest {
     pub fn add_exposes(&mut self, exposes: impl IntoIterator<Item = VpcExpose>) {
         self.exposes.extend(exposes);
     }
+    /// Validate the [`VpcManifest`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest configuration is invalid.
     pub fn validate(&self) -> ConfigResult {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Manifest name"));
@@ -750,7 +769,11 @@ impl VpcPeeringTable {
         self.0.is_empty()
     }
 
-    /// Add a [`VpcPeering`] to a [`VpcPeeringTable`]
+    /// Add a [`VpcPeering`] to a [`VpcPeeringTable`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peering name is missing or a duplicate peering exists.
     pub fn add(&mut self, peering: VpcPeering) -> ConfigResult {
         if peering.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Peering name"));

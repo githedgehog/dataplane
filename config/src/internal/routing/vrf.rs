@@ -137,6 +137,10 @@ impl VrfConfigTable {
 
     //////////////////////////////////////////////////////////
     /// Store a `VrfConfig` object in this `VrfConfigTable`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the VRF has duplicate fields (name, table ID, or VNI).
     //////////////////////////////////////////////////////////
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) -> ConfigResult {
         let name = vrf_cfg.name.clone();

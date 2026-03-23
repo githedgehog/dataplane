@@ -72,6 +72,11 @@ impl Underlay {
         }
     }
 
+    /// Validate the underlay configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any interface is invalid or VTEP configuration is wrong.
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating underlay configuration...");
 

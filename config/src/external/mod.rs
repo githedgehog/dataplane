@@ -93,6 +93,11 @@ impl ExternalConfig {
         }
         Ok(())
     }
+    /// Validate the external configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConfigError`] if validation fails.
     pub fn validate(&mut self) -> ConfigResult {
         self.device.validate()?;
         self.underlay.validate()?;

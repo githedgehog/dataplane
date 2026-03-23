@@ -156,6 +156,11 @@ impl InterfaceConfig {
         matches!(self.iftype, InterfaceType::Vtep(_))
     }
 
+    /// Validate the interface configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface name is empty.
     pub fn validate(&self) -> ConfigResult {
         // name is mandatory
         if self.name.is_empty() {

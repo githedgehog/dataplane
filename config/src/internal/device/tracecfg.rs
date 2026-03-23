@@ -35,6 +35,11 @@ impl TracingConfig {
     pub fn add_tag(&mut self, tag: &str, level: LevelFilter) {
         let _ = self.tags.insert(tag.to_string(), level);
     }
+    /// Validate the tracing configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any configured trace tag is unknown.
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating tracing configuration..");
         let tags: Vec<&str> = self.tags.keys().map(String::as_str).collect();
