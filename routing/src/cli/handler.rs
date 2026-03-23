@@ -32,7 +32,7 @@ use std::sync::Arc;
 use strum::IntoEnumIterator;
 use tracing::{error, trace};
 
-use common::cliprovider::{CliData, CliDataProvider, Heading};
+use common::cliprovider::{CliDataProvider, Heading};
 
 use tracectl::{get_trace_ctl, trace_target};
 trace_target!("cli", LevelFilter::OFF, &[]);
@@ -373,14 +373,10 @@ fn show_ip_fib_groups(
     }
 }
 
-fn show_provider(
-    request: CliRequest,
-    provider: Option<&dyn CliDataProvider>,
-    dataid: Option<CliData>,
-) -> CliResponse {
+fn show_provider(request: CliRequest, provider: Option<&dyn CliDataProvider>) -> CliResponse {
     let data = provider.map_or_else(
         || "no data is available".to_string(),
-        |provider| provider.provide(dataid),
+        CliDataProvider::provide,
     );
     CliResponse::from_request_ok(request, data)
 }
@@ -518,15 +514,11 @@ fn do_handle_cli_request(
         CliAction::ShowRouterIpv6FibEntries => show_ip_fib(request, db, false)?,
         CliAction::ShowRouterIpv4FibGroups => show_ip_fib_groups(request, db, true)?,
         CliAction::ShowRouterIpv6FibGroups => show_ip_fib_groups(request, db, false)?,
-        CliAction::ShowFlowTable => show_provider(request, sources.flow_table.as_deref(), None),
-        CliAction::ShowFlowFilter => show_provider(request, sources.flow_filter.as_deref(), None),
-        CliAction::ShowPortForwarding => {
-            show_provider(request, sources.portfw_table.as_deref(), None)
-        }
-        CliAction::ShowStaticNat => show_provider(request, sources.nat_tables.as_deref(), None),
-        CliAction::ShowMasquerading => {
-            show_provider(request, sources.masquerade_state.as_deref(), None)
-        }
+        CliAction::ShowFlowTable => show_provider(request, sources.flow_table.as_deref()),
+        CliAction::ShowFlowFilter => show_provider(request, sources.flow_filter.as_deref()),
+        CliAction::ShowPortForwarding => show_provider(request, sources.portfw_table.as_deref()),
+        CliAction::ShowStaticNat => show_provider(request, sources.nat_tables.as_deref()),
+        CliAction::ShowMasquerading => show_provider(request, sources.masquerade_state.as_deref()),
         _ => Err(CliError::NotSupported("Not implemented yet".to_string()))?,
     };
     Ok(response)

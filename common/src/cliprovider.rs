@@ -8,19 +8,17 @@ use left_right::ReadHandle;
 use std::fmt::Display;
 use std::sync::Arc;
 
-pub enum CliData {}
-
 /// A trait for types that can produce contents for the cli
 pub trait CliDataProvider: Send {
-    fn provide(&self, what: Option<CliData>) -> String;
+    fn provide(&self) -> String;
 }
 
 impl<T> CliDataProvider for Arc<T>
 where
     T: Send + Sync + CliDataProvider,
 {
-    fn provide(&self, what: Option<CliData>) -> String {
-        self.as_ref().provide(what)
+    fn provide(&self) -> String {
+        self.as_ref().provide()
     }
 }
 
@@ -28,9 +26,9 @@ impl<T> CliDataProvider for ReadHandle<T>
 where
     T: Send + Sync + CliDataProvider,
 {
-    fn provide(&self, what: Option<CliData>) -> String {
+    fn provide(&self) -> String {
         if let Some(data) = &self.enter() {
-            data.provide(what)
+            data.provide()
         } else {
             "inaccessible".to_string()
         }
@@ -41,8 +39,8 @@ impl<T> CliDataProvider for ArcSwap<T>
 where
     T: Send + Sync + CliDataProvider,
 {
-    fn provide(&self, what: Option<CliData>) -> String {
-        self.load().provide(what)
+    fn provide(&self) -> String {
+        self.load().provide()
     }
 }
 
@@ -50,10 +48,10 @@ impl<T> CliDataProvider for ArcSwapOption<T>
 where
     T: Send + Sync + CliDataProvider,
 {
-    fn provide(&self, what: Option<CliData>) -> String {
+    fn provide(&self) -> String {
         self.load()
             .as_ref()
-            .map(|p: &Arc<T>| p.provide(what))
+            .map(|p: &Arc<T>| p.provide())
             .unwrap_or_else(|| "(none)".to_string())
     }
 }
