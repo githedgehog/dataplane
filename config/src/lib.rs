@@ -15,7 +15,6 @@
     clippy::expect_used,
     clippy::panic
 )]
-#![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::struct_excessive_bools)]
 

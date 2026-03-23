@@ -701,7 +701,7 @@ impl VpcPeering {
         }
     }
 
-    /// Create a VpcPeering mapped to a group called "default".
+    /// Create a `VpcPeering` mapped to a group called "default".
     /// This should only be used for tests
     #[must_use]
     pub fn with_default_group(name: &str, left: VpcManifest, right: VpcManifest) -> Self {
