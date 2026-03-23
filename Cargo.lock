@@ -457,9 +457,9 @@ dependencies = [
 
 [[package]]
 name = "bnum"
-version = "0.13.0"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "119771309b95163ec7aaf79810da82f7cd0599c19722d48b9c03894dca833966"
+checksum = "acf40f6d425354fe40ff439c2a4a2733f583e49379eb8601a4c79e50c4a3c579"
 
 [[package]]
 name = "bolero"
