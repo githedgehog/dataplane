@@ -21,6 +21,7 @@ pub(crate) struct StatefulNatPeering {
 pub(crate) struct StatefulNatConfig(Vec<StatefulNatPeering>);
 
 impl StatefulNatConfig {
+    #[must_use]
     pub(crate) fn new(vpc_table: &VpcTable) -> Self {
         let mut config = Vec::new();
         for vpc in vpc_table.values() {
@@ -34,7 +35,6 @@ impl StatefulNatConfig {
         }
         Self(config)
     }
-
     pub(crate) fn iter(&self) -> impl Iterator<Item = &StatefulNatPeering> {
         self.0.iter()
     }
@@ -77,9 +77,9 @@ impl NatAllocatorWriter {
             // No existing allocator, build a new one
             #[cfg(test)]
             let new_allocator =
-                Self::build_new_allocator(&new_config)?.set_disable_randomness(disable_randomness);
+                NatAllocator::from_config(&new_config)?.set_disable_randomness(disable_randomness);
             #[cfg(not(test))]
-            let new_allocator = Self::build_new_allocator(&new_config)?;
+            let new_allocator = NatAllocator::from_config(&new_config)?;
 
             self.allocator.store(Some(Arc::new(new_allocator)));
             self.config = new_config;
@@ -112,10 +112,6 @@ impl NatAllocatorWriter {
         self.update_allocator_and_set_randomness(vpc_table, true)
     }
 
-    fn build_new_allocator(config: &StatefulNatConfig) -> Result<NatAllocator, ConfigError> {
-        NatAllocator::build_nat_allocator(config)
-    }
-
     fn update_existing_allocator(
         _allocator: &NatAllocator,
         _old_config: &StatefulNatConfig,
@@ -138,7 +134,7 @@ impl NatAllocatorWriter {
         // configuration (or the new allocator entries) to see if they're still valid, and then
         // report them to the new allocator. However, the old allocator keeps being updated during
         // this process.
-        Self::build_new_allocator(new_config)
+        NatAllocator::from_config(new_config)
     }
 }
 
