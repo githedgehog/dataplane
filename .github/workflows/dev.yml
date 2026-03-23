@@ -347,11 +347,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # used to run go fmt after patching dp/frr versions in the fabricator
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version: stable
-          cache: true
+          cache: false
 
       - name: Login to ghcr.io
         uses: docker/login-action@v4
