@@ -95,6 +95,7 @@ impl FlowFilter {
             debug!("Flow-info is out-dated. New dst VPC is {dst_vpcd}");
             return true;
         }
+        drop(locked_info);
         if !packet.meta().requires_port_forwarding() && !packet.meta().requires_stateful_nat() {
             debug!("Flow {flowkey} no longer requires state. Will invalidate...");
             return true;
@@ -125,9 +126,7 @@ impl FlowFilter {
             return false;
         };
         let Some(vpcd) = flow_info.get_dst_vpcd() else {
-            debug!(
-                "{nfi}: Flow-info does not specify destination VPC. This is a bug. Ignoring flow"
-            );
+            debug!("{nfi}: Flow-info does not specify dst VPC. This is a bug. Ignoring it...");
             flow_info.invalidate_pair();
             return false;
         };
@@ -138,132 +137,13 @@ impl FlowFilter {
         }
         // The flow has the same generation id as the current config. Small transient state aside
         // this means that the flow is up-to-date and we can bypass the filter
-        debug!("{nfi}: Packet can bypass filter due to flow {flow_info}");
+        debug!("{nfi}: Packet can bypass flow filter due to flow {flow_info}");
         if Self::set_nat_requirements_from_flow_info(packet).is_err() {
             debug!("{nfi}: Failed to set nat requirements");
             return false;
         }
         packet.meta_mut().dst_vpcd = Some(vpcd);
         true
-    }
-
-    /// Process a packet.
-    fn process_packet<Buf: PacketBufferMut>(
-        &self,
-        tablesr: &left_right::ReadGuard<'_, FlowFilterTable>,
-        packet: &mut Packet<Buf>,
-    ) {
-        let nfi = &self.name;
-        let genid = self.pipeline_data.genid();
-
-        // bypass flow-filter if packet has flow-info and it is not outdated
-        if self.bypass_with_flow_info(packet, genid) {
-            return;
-        }
-
-        let Some(net) = packet.try_ip() else {
-            debug!("{nfi}: No IP headers found, dropping packet");
-            packet.done(DoneReason::NotIp);
-            return;
-        };
-
-        let Some(src_vpcd) = packet.meta().src_vpcd else {
-            debug!("{nfi}: Missing source VPC discriminant, dropping packet");
-            packet.done(DoneReason::Unroutable);
-            return;
-        };
-
-        let src_ip = net.src_addr();
-        let dst_ip = net.dst_addr();
-        let ports = packet.try_transport().and_then(|t| {
-            t.src_port()
-                .map(NonZero::get)
-                .zip(t.dst_port().map(NonZero::get))
-        });
-
-        // For Display
-        let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
-
-        let dst_vpcd = match tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
-            None => {
-                debug!("{nfi}: No valid destination VPC found for flow {tuple}");
-                None
-            }
-            Some(VpcdLookupResult::Single(dst_data)) => {
-                // Check NAT requirements are sensible
-                if self
-                    .check_nat_requirements(packet, &dst_data, true)
-                    .is_err()
-                {
-                    debug!(
-                        "{nfi}: Invalid NAT requirements found for flow {tuple}, dropping packet"
-                    );
-                    Self::invalidate_packet_flow(packet);
-                    packet.done(DoneReason::Filtered);
-                    return;
-                }
-                Self::set_nat_requirements(packet, &dst_data);
-                Some(dst_data.vpcd)
-            }
-            Some(VpcdLookupResult::MultipleMatches(data_set)) => {
-                debug!(
-                    "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
-                );
-
-                match self.check_packet_flow_info(packet) {
-                    Ok(Some(dst_vpcd)) => {
-                        if Self::set_nat_requirements_from_flow_info(packet).is_ok() {
-                            Some(dst_vpcd)
-                        } else {
-                            debug!("{nfi}: Failed to set NAT requirements from flow info");
-                            None
-                        }
-                    }
-                    Ok(None) => {
-                        debug!(
-                            "{nfi}: No flow table entry found for flow {tuple}, trying to figure out destination VPC anyway"
-                        );
-                        self.deal_with_multiple_matches(packet, &data_set, &tuple)
-                    }
-                    Err(reason) => {
-                        debug!("Will drop packet. Reason: {reason}");
-                        Self::invalidate_packet_flow(packet);
-                        packet.done(reason);
-                        return;
-                    }
-                }
-            }
-        };
-
-        // At this point, we may have determined the destination VPC for a packet or not. If we haven't, we
-        // should drop the packet. However, if it is an ICMP error packet, let the icmp-error handler deal with it.
-        // Now, the icmp-error handler works for masquerading and port-forwarding, but not stateless NAT,
-        // nor the absence of NAT, and here we don't know if the icmp error corresponds to traffic that
-        // was masqueraded, port-forwarded, statically nated or neither of the previous. If the dst-vpcd
-        // for an icmp error packet is known, the icmp handler will transparently let the static NAT NF deal with it.
-        if packet.is_icmp_error() {
-            debug!("Letting ICMP error handler process this packet. dst-vpcd is {dst_vpcd:?}");
-            packet.meta_mut().dst_vpcd = dst_vpcd; // whether we discovered the vpcd or not
-            return;
-        }
-
-        // Drop the packet since we don't know destination and it is not an icmp error
-        let Some(dst_vpcd) = dst_vpcd else {
-            debug!("Could not determine dst vpcd for packet. Dropping it...");
-            Self::invalidate_packet_flow(packet);
-            packet.done(DoneReason::Filtered);
-            return;
-        };
-        debug!("{nfi}: Flow {tuple} is allowed. Dst VPC is {dst_vpcd}");
-        packet.meta_mut().dst_vpcd = Some(dst_vpcd);
-
-        // The packet is ALLOWED. However, if it refers to a flow, the flow may no longer be
-        // valid and a new one be required. The flow-filter cannot tell in many cases, as it
-        // does not have enough information, nor should it upgrade flows to newer gen ids.
-        // It should, however, invalidate flows in some cases.
-        if Self::should_invalidate_flow(packet, dst_vpcd, genid) {
-            Self::invalidate_packet_flow(packet);
-        }
     }
 
     /// Attempt to determine destination VPC from packet's flow-info.
@@ -463,6 +343,125 @@ impl FlowFilter {
                 Ok(())
             }
             _ => Err(()),
+        }
+    }
+
+    /// Process a packet.
+    fn process_packet<Buf: PacketBufferMut>(
+        &self,
+        tablesr: &left_right::ReadGuard<'_, FlowFilterTable>,
+        packet: &mut Packet<Buf>,
+    ) {
+        let nfi = &self.name;
+        let genid = self.pipeline_data.genid();
+
+        // bypass flow-filter if packet has flow-info and it is not outdated
+        if self.bypass_with_flow_info(packet, genid) {
+            return;
+        }
+
+        let Some(net) = packet.try_ip() else {
+            debug!("{nfi}: No IP headers found, dropping packet");
+            packet.done(DoneReason::NotIp);
+            return;
+        };
+
+        let Some(src_vpcd) = packet.meta().src_vpcd else {
+            debug!("{nfi}: Missing source VPC discriminant, dropping packet");
+            packet.done(DoneReason::Unroutable);
+            return;
+        };
+
+        let src_ip = net.src_addr();
+        let dst_ip = net.dst_addr();
+        let ports = packet.try_transport().and_then(|t| {
+            t.src_port()
+                .map(NonZero::get)
+                .zip(t.dst_port().map(NonZero::get))
+        });
+
+        // For Display
+        let tuple = FlowTuple::new(src_vpcd, src_ip, dst_ip, ports);
+
+        let dst_vpcd = match tablesr.lookup(src_vpcd, &src_ip, &dst_ip, ports) {
+            None => {
+                debug!("{nfi}: No valid destination VPC found for flow {tuple}");
+                None
+            }
+            Some(VpcdLookupResult::Single(dst_data)) => {
+                // Check NAT requirements are sensible
+                if self
+                    .check_nat_requirements(packet, &dst_data, true)
+                    .is_err()
+                {
+                    debug!(
+                        "{nfi}: Invalid NAT requirements found for flow {tuple}, dropping packet"
+                    );
+                    Self::invalidate_packet_flow(packet);
+                    packet.done(DoneReason::Filtered);
+                    return;
+                }
+                Self::set_nat_requirements(packet, &dst_data);
+                Some(dst_data.vpcd)
+            }
+            Some(VpcdLookupResult::MultipleMatches(data_set)) => {
+                debug!(
+                    "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
+                );
+
+                match self.check_packet_flow_info(packet) {
+                    Ok(Some(dst_vpcd)) => {
+                        if Self::set_nat_requirements_from_flow_info(packet).is_ok() {
+                            Some(dst_vpcd)
+                        } else {
+                            debug!("{nfi}: Failed to set NAT requirements from flow info");
+                            None
+                        }
+                    }
+                    Ok(None) => {
+                        debug!(
+                            "{nfi}: No flow table entry found for flow {tuple}, trying to figure out destination VPC anyway"
+                        );
+                        self.deal_with_multiple_matches(packet, &data_set, &tuple)
+                    }
+                    Err(reason) => {
+                        debug!("Will drop packet. Reason: {reason}");
+                        Self::invalidate_packet_flow(packet);
+                        packet.done(reason);
+                        return;
+                    }
+                }
+            }
+        };
+
+        // At this point, we may have determined the destination VPC for a packet or not. If we haven't, we
+        // should drop the packet. However, if it is an ICMP error packet, let the icmp-error handler deal with it.
+        // Now, the icmp-error handler works for masquerading and port-forwarding, but not stateless NAT,
+        // nor the absence of NAT, and here we don't know if the icmp error corresponds to traffic that
+        // was masqueraded, port-forwarded, statically nated or neither of the previous. If the dst-vpcd
+        // for an icmp error packet is known, the icmp handler will transparently let the static NAT NF deal with it.
+        if packet.is_icmp_error() {
+            debug!("Letting ICMP error handler process this packet. dst-vpcd is {dst_vpcd:?}");
+            packet.meta_mut().dst_vpcd = dst_vpcd; // whether we discovered the vpcd or not
+            return;
+        }
+
+        // Drop the packet since we don't know destination and it is not an icmp error
+        let Some(dst_vpcd) = dst_vpcd else {
+            debug!("Could not determine dst vpcd for packet. Dropping it...");
+            Self::invalidate_packet_flow(packet);
+            packet.done(DoneReason::Filtered);
+            return;
+        };
+        debug!("{nfi}: Flow {tuple} is allowed. Dst VPC is {dst_vpcd}");
+        packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+
+        // The packet is ALLOWED. However, if it refers to a flow, the flow may no longer be valid and a new one
+        // be needed. The flow-filter cannot always tell if a flow is valid or not, as it lacks the context and state
+        // to do so. Therefore, it should not upgrade flow to newer gen ids. However, it can (and must) invalidate
+        // flows in some cases, because no other NF would do so otherwise.
+        if Self::should_invalidate_flow(packet, dst_vpcd, genid) {
+            Self::invalidate_packet_flow(packet);
         }
     }
 }
