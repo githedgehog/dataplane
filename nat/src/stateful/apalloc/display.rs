@@ -19,7 +19,7 @@ macro_rules! with_indent {
 }
 
 impl CliDataProvider for NatDefaultAllocator {
-    fn provide(&self, _what: Option<common::cliprovider::CliData>) -> String {
+    fn provide(&self) -> String {
         self.to_string()
     }
 }

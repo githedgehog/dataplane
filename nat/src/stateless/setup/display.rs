@@ -7,7 +7,7 @@ use crate::stateless::setup::tables::{
     AddrTranslationValue, NatRuleTable, NatTableValue, NatTables, PerVniTable,
     PortAddrTranslationValue,
 };
-use common::cliprovider::{CliData, CliDataProvider, Heading};
+use common::cliprovider::{CliDataProvider, Heading};
 use indenter::indented;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Write};
@@ -107,7 +107,7 @@ impl Display for PortAddrTranslationValue {
 }
 
 impl CliDataProvider for NatTables {
-    fn provide(&self, _what: Option<CliData>) -> String {
+    fn provide(&self) -> String {
         self.to_string()
     }
 }

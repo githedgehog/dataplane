@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use crate::flow_table::FlowTable;
-use common::cliprovider::{CliData, CliDataProvider, Heading};
+use common::cliprovider::{CliDataProvider, Heading};
 use std::fmt::Display;
 
 impl Display for FlowTable {
@@ -24,7 +24,7 @@ impl Display for FlowTable {
 }
 
 impl CliDataProvider for FlowTable {
-    fn provide(&self, _dataid: Option<CliData>) -> String {
+    fn provide(&self) -> String {
         self.to_string()
     }
 }
