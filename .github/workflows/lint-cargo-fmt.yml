@@ -36,7 +36,7 @@ jobs:
           github_access_token: "${{ secrets.GITHUB_TOKEN }}"
           nix_path: "nixpkgs=channel:nixpkgs-unstable"
 
-      - uses: "cachix/cachix-action@v14"
+      - uses: "cachix/cachix-action@v17"
         with:
           name: "hedgehog"
           # prettier-ignore
