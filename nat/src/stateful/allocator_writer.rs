@@ -24,7 +24,7 @@ impl StatefulNatConfig {
     pub(crate) fn new(vpc_table: &VpcTable) -> Self {
         let mut config = Vec::new();
         for vpc in vpc_table.values() {
-            for peering in &vpc.peerings {
+            for peering in vpc.stateful_nat_peerings() {
                 config.push(StatefulNatPeering {
                     src_vpc_id: VpcDiscriminant::from_vni(vpc.vni),
                     dst_vpc_id: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
