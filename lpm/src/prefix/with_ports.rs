@@ -14,6 +14,18 @@ use std::str::FromStr;
 /// `(u128::MAX + 1) * (u16::MAX + 1)`.
 pub type PrefixWithPortsSize = BUint<3>;
 
+pub fn ppsize_from<T>(val: T) -> PrefixWithPortsSize
+where
+    PrefixWithPortsSize: From<T>,
+{
+    PrefixWithPortsSize::from(val)
+}
+
+#[must_use]
+pub fn ppsize_zero() -> PrefixWithPortsSize {
+    PrefixWithPortsSize::from(0u8)
+}
+
 /// Trait for IP ranges (CIDR prefix or simple ranges) with associated port ranges.
 pub trait IpRangeWithPorts {
     /// Returns the address range length.
@@ -39,11 +51,11 @@ pub trait IpRangeWithPorts {
     /// Returns the total number of (IP, port) combinations covered by the IP and port ranges.
     fn size(&self) -> PrefixWithPortsSize {
         let ip_len = match self.addr_range_len() {
-            PrefixSize::U128(len) => PrefixWithPortsSize::from(len),
-            PrefixSize::Ipv6MaxAddrs => PrefixWithPortsSize::from(u128::MAX) + 1,
+            PrefixSize::U128(len) => ppsize_from(len),
+            PrefixSize::Ipv6MaxAddrs => ppsize_from(u128::MAX) + ppsize_from(1u8),
             PrefixSize::Overflow => unreachable!(),
         };
-        ip_len * PrefixWithPortsSize::from(self.port_range_len())
+        ip_len * ppsize_from(self.port_range_len())
     }
 }
 

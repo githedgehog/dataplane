@@ -541,7 +541,7 @@ mod tests {
     use super::*;
     use config::external::overlay::vpc::{Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeeringTable};
-    use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithPortsSize};
+    use lpm::prefix::{L4Protocol, PortRange, Prefix, ppsize_zero};
     use net::packet::VpcDiscriminant;
     use net::vxlan::Vni;
     use std::collections::BTreeSet;
@@ -590,9 +590,7 @@ mod tests {
         // Verify all results together are the same size as the original prefix
         let total_ips = result
             .iter()
-            .fold(PrefixWithPortsSize::from(0u8), |sum, prefix| {
-                sum + prefix.size()
-            });
+            .fold(ppsize_zero(), |sum, prefix| sum + prefix.size());
         let original_ips = prefix_to_split.size();
         assert_eq!(total_ips, original_ips);
 

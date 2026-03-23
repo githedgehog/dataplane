@@ -3,7 +3,7 @@
 
 use crate::ConfigError;
 use crate::external::overlay::vpcpeering::VpcExpose;
-use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithPortsSize};
+use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, ppsize_zero};
 
 pub fn check_private_prefixes_dont_overlap(
     expose_left: &VpcExpose,
@@ -109,7 +109,7 @@ fn check_prefixes_dont_overlap(
 
         // We need to compute the size of the union of the excluded prefixes. Start by adding the
         // sizes of all exclusion prefixes, from both sides.
-        let mut union_excludes_size = PrefixWithPortsSize::from(0u8);
+        let mut union_excludes_size = ppsize_zero();
 
         // Now we remove once the size of the intersection of each pair of excluded prefixes, to
         // avoid double-counting some ranges. We know that all exclusion prefixes on the left side
@@ -141,7 +141,7 @@ fn check_prefixes_dont_overlap(
                 // Remove size of intersection, to avoid double-counting for a given range
                 union_excludes_size -= exclude_covering_allowed_left
                     .intersection(&exclude_covering_allowed_right)
-                    .map_or(PrefixWithPortsSize::from(0u8), |p| p.size());
+                    .map_or(ppsize_zero(), |p| p.size());
             }
         }
 

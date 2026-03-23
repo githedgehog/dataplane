@@ -16,7 +16,8 @@ pub mod test {
     use crate::external::overlay::vpcpeering::VpcManifest;
     use crate::external::overlay::vpcpeering::{VpcPeering, VpcPeeringTable};
 
-    use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
+    use lpm::prefix::ppsize_from;
+    use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts};
 
     /* Build sample manifests for a peering */
     fn build_manifest_vpc1() -> VpcManifest {
@@ -251,8 +252,8 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::MismatchedPrefixSizes(
-                PrefixWithPortsSize::from((65536 - 256u32) * (u32::from(u16::MAX) + 1)),
-                PrefixWithPortsSize::from(256u32 * (u32::from(u16::MAX) + 1)),
+                ppsize_from((65536 - 256u32) * (u32::from(u16::MAX) + 1)),
+                ppsize_from(256u32 * (u32::from(u16::MAX) + 1)),
             ))
         );
     }
@@ -947,8 +948,8 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::MismatchedPrefixSizes(
-                PrefixWithPortsSize::from(65536u32 * 1000 - 256u32 * 500),
-                PrefixWithPortsSize::from(256u32 * 1000),
+                ppsize_from(65536u32 * 1000 - 256u32 * 500),
+                ppsize_from(256u32 * 1000),
             ))
         );
 
