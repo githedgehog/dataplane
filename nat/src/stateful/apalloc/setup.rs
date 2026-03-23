@@ -216,6 +216,20 @@ fn find_masquerade_portfw_overlap<'a>(
     reserve_sets
 }
 
+fn pool_table_key_for_expose<I: NatIp>(
+    prefix: &PrefixWithOptionalPorts,
+    protocol: NextHeader,
+    dst_vpc_id: VpcDiscriminant,
+) -> Result<PoolTableKey<I>, AllocatorError> {
+    let (addr, addr_range_end) = prefix_bounds(prefix)?;
+    Ok(PoolTableKey::new(
+        protocol,
+        dst_vpc_id,
+        addr,
+        addr_range_end,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     table: &mut PoolTable<I, J>,
@@ -227,43 +241,20 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     icmp_proto: NextHeader,
 ) -> Result<(), AllocatorError> {
     for prefix in prefixes {
-        let key = pool_table_tcp_key_for_expose(prefix, dst_vpc_id)?;
-        insert_per_proto_entries(
-            table,
-            key,
-            tcp_allocator,
-            udp_allocator,
-            icmp_allocator,
-            icmp_proto,
-        );
+        // We insert three times the entry, once for TCP, once for UDP and once for ICMP (v4 or v6
+        // depending on the case). Allocations for TCP, for example, do not affect allocations for UDP
+        // or for ICMP, the space defined by the combination of IP addresses and L4 ports/id is distinct
+        // for each protocol.
+
+        let tcp_key = pool_table_key_for_expose(prefix, NextHeader::TCP, dst_vpc_id)?;
+        let udp_key = pool_table_key_for_expose(prefix, NextHeader::UDP, dst_vpc_id)?;
+        let icmp_key = pool_table_key_for_expose(prefix, icmp_proto, dst_vpc_id)?;
+
+        table.add_entry(tcp_key, tcp_allocator.clone());
+        table.add_entry(udp_key, udp_allocator.clone());
+        table.add_entry(icmp_key, icmp_allocator.clone());
     }
     Ok(())
-}
-
-fn insert_per_proto_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
-    table: &mut PoolTable<I, J>,
-    key: PoolTableKey<I>,
-    tcp_allocator: &IpAllocator<J>,
-    udp_allocator: &IpAllocator<J>,
-    icmp_allocator: &IpAllocator<J>,
-    icmp_proto: NextHeader,
-) {
-    // We insert three times the entry, once for TCP, once for UDP and once for ICMP (v4 or v6
-    // depending on the case). Allocations for TCP, for example, do not affect allocations for UDP
-    // or for ICMP, the space defined by the combination of IP addresses and L4 ports/id is distinct
-    // for each protocol.
-
-    let mut tcp_key = key.clone();
-    tcp_key.protocol = NextHeader::TCP;
-    table.add_entry(tcp_key, tcp_allocator.clone());
-
-    let mut udp_key = key.clone();
-    udp_key.protocol = NextHeader::UDP;
-    table.add_entry(udp_key, udp_allocator.clone());
-
-    let mut icmp_key = key;
-    icmp_key.protocol = icmp_proto;
-    table.add_entry(icmp_key, icmp_allocator.clone());
 }
 
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
@@ -329,19 +320,6 @@ fn build_reserved_prefixes_ports(
         );
     }
     Ok(Some(reserved_prefixes_ports))
-}
-
-fn pool_table_tcp_key_for_expose<I: NatIp>(
-    prefix: &PrefixWithOptionalPorts,
-    dst_vpc_id: VpcDiscriminant,
-) -> Result<PoolTableKey<I>, AllocatorError> {
-    let (addr, addr_range_end) = prefix_bounds(prefix)?;
-    Ok(PoolTableKey::new(
-        NextHeader::TCP,
-        dst_vpc_id,
-        addr,
-        addr_range_end,
-    ))
 }
 
 fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> Result<(I, I), AllocatorError> {
