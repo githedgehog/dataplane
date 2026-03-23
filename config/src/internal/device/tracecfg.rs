@@ -37,7 +37,7 @@ impl TracingConfig {
     }
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating tracing configuration..");
-        let tags: Vec<&str> = self.tags.keys().map(|k| k.as_str()).collect();
+        let tags: Vec<&str> = self.tags.keys().map(String::as_str).collect();
         Ok(get_trace_ctl().check_tags(&tags)?)
     }
 }

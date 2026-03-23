@@ -333,7 +333,7 @@ impl Display for GwConfigMeta {
         let error = self
             .error
             .as_ref()
-            .map_or("none".to_string(), |e| e.to_string());
+            .map_or("none".to_string(), std::string::ToString::to_string);
 
         let is_rollback = if self.is_rollback { "(rollback)" } else { "" };
 

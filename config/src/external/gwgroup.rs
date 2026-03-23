@@ -332,7 +332,7 @@ mod test {
     fn test_bgp_community_setup() {
         let comtable = sample_community_table();
         let mut gwtable = build_sample_gw_groups();
-        gwtable.iter_mut().for_each(|group| group.sort_members());
+        gwtable.iter_mut().for_each(GwGroup::sort_members);
 
         println!("{gwtable}");
         println!("{comtable}");
