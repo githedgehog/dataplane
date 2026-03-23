@@ -160,7 +160,7 @@ mod context {
     pub fn build_allocator() -> Result<NatAllocator, ConfigError> {
         let vpc_table = build_context();
         let config = StatefulNatConfig::new(&vpc_table);
-        NatAllocator::build_nat_allocator(&config)
+        NatAllocator::from_config(&config)
     }
 }
 
