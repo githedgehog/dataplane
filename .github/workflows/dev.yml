@@ -155,13 +155,6 @@ jobs:
         run: |
           echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL"
 
-      # it's temporarily needed to install skopeo
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          cache: true
-
       - name: "Checkout"
         uses: "actions/checkout@v6"
         with:
