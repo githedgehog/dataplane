@@ -6,7 +6,7 @@
 use crate::utils::{check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap};
 use lpm::prefix::{
     IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
-    PrefixWithPortsSize,
+    PrefixWithPortsSize, ppsize_zero,
 };
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
@@ -445,7 +445,7 @@ impl VpcExpose {
                 .map(|p| p.size())
                 .sum::<PrefixWithPortsSize>()
         }
-        let zero_size = PrefixWithPortsSize::from(0u8);
+        let zero_size = ppsize_zero();
 
         // Ensure we don't exclude all of the allowed prefixes
         let ips_sizes = prefixes_size(&self.ips);

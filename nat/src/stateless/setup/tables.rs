@@ -5,7 +5,10 @@ use crate::ranges::{IpPort, IpPortRange, IpPortRangeBounds, IpRange};
 use ahash::RandomState;
 use bnum::cast::CastFrom;
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
-use lpm::prefix::{IpPrefix, IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize};
+use lpm::prefix::{
+    IpPrefix, IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize, ppsize_from,
+    ppsize_zero,
+};
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
 use net::vxlan::Vni;
 use std::collections::{BTreeSet, HashMap};
@@ -148,7 +151,7 @@ impl PerVniTable {
                     port,
                 )?;
                 debug!(
-                    "Mapping {addr}:{port:?} from prefix {prefix} to ranges {ranges:?}: found offset {offset}"
+                    "Mapping {addr}:{port:?} from prefix {prefix} to ranges {ranges:?}: found offset {offset:?}"
                 );
                 ranges
                     .get_entry(addr, port, offset)
@@ -180,7 +183,7 @@ fn addr_offset_in_prefix_with_ports(
     }
     let ip_offset = addr_offset_in_prefix(prefix, addr)?;
     let port_offset = port - port_range.start();
-    Some(PrefixWithPortsSize::from(
+    Some(ppsize_from(
         ip_offset
             * u128::try_from(port_range.len()).unwrap_or_else(|_| {
                 // Assume conversion from usize to u128 never fails
@@ -520,8 +523,7 @@ impl From<AddrTranslationValue> for PortAddrTranslationValue {
                             // count IP multiplied by the number of ports covered by the associated
                             // port range. We use the full space of ports everywhere, so just
                             // multiply accordingly to obtain the new offset.
-                            PrefixWithPortsSize::from(*offset)
-                                * PrefixWithPortsSize::from(PortRange::new_max_range().len()),
+                            ppsize_from(*offset) * ppsize_from(PortRange::new_max_range().len()),
                         ),
                     )
                 })
@@ -550,7 +552,7 @@ impl TryFrom<PortAddrTranslationValue> for AddrTranslationValue {
             bounds.start.port != 0
                 || bounds.end.port != u16::MAX
                 || !range.port_range.is_max_range()
-                || *offset % (size_max_port_range) != 0
+                || *offset % ppsize_from(size_max_port_range) != ppsize_zero()
         }) {
             return Err(NatTablesError::NeedsPortRange);
         }
@@ -560,8 +562,8 @@ impl TryFrom<PortAddrTranslationValue> for AddrTranslationValue {
                 .ranges_tree
                 .iter()
                 .map(|(bounds, (range, offset))| {
-                    let addr_offset_big = *offset / size_max_port_range;
-                    debug_assert!(addr_offset_big <= u128::MAX.into());
+                    let addr_offset_big = *offset / ppsize_from(size_max_port_range);
+                    debug_assert!(addr_offset_big <= ppsize_from(u128::MAX));
                     let addr_offset = u128::cast_from(addr_offset_big);
                     (
                         // Keep only IPs, discard port ranges

@@ -16,7 +16,7 @@ mod test {
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
 
-    use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts, PrefixWithPortsSize};
+    use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts, ppsize_from};
 
     // Helper: create a PrefixWithOptionalPorts with a port range
     fn prefix_with_ports(prefix_str: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
@@ -502,8 +502,8 @@ mod test {
         assert_eq!(
             result,
             Err(ConfigError::MismatchedPrefixSizes(
-                PrefixWithPortsSize::from((65536 - 256u32) * (u32::from(u16::MAX) + 1)),
-                PrefixWithPortsSize::from(256u32 * (u32::from(u16::MAX) + 1)),
+                ppsize_from((65536 - 256u32) * (u32::from(u16::MAX) + 1)),
+                ppsize_from(256u32 * (u32::from(u16::MAX) + 1)),
             )),
             "{result:?}",
         );

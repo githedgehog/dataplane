@@ -7,14 +7,13 @@ use crate::ranges::{IpPort, IpPortRange, IpPortRangeBounds, IpRange};
 use bnum::cast::CastFrom;
 use lpm::prefix::{
     IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithOptionalPorts, PrefixWithPorts,
-    PrefixWithPortsSize,
+    PrefixWithPortsSize, ppsize_from, ppsize_zero,
 };
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 fn max_theoretical_size() -> PrefixWithPortsSize {
-    (PrefixWithPortsSize::from(u128::MAX) + 1)
-        * (PrefixWithPortsSize::from(PortRange::MAX_LENGTH as u64))
+    (ppsize_from(u128::MAX) + ppsize_from(1u8)) * (ppsize_from(PortRange::MAX_LENGTH as u64))
 }
 
 // Within the IP space, move a given IP address "forward" (increment its binary representation) by a
@@ -73,8 +72,8 @@ fn add_offset_to_address_and_port(
     port_range: PortRange,
     offset: PrefixWithPortsSize,
 ) -> Result<(IpAddr, u16), NatPeeringError> {
-    let covered_ips_big = offset / PrefixWithPortsSize::from(port_range.len()); // example: 6 ips
-    let offset_in_port_range_big = offset % PrefixWithPortsSize::from(port_range.len()); // example: 400 ports
+    let covered_ips_big = offset / ppsize_from(port_range.len()); // example: 6 ips
+    let offset_in_port_range_big = offset % ppsize_from(port_range.len()); // example: 400 ports
 
     debug_assert!(
         port_range.start() <= port && port <= port_range.end(),
@@ -83,7 +82,7 @@ fn add_offset_to_address_and_port(
         port_range.start(),
         port_range.end()
     );
-    debug_assert!(covered_ips_big <= PrefixWithPortsSize::from(u128::MAX));
+    debug_assert!(covered_ips_big <= ppsize_from(u128::MAX));
 
     let mut covered_ips = PrefixSize::U128(u128::cast_from(covered_ips_big));
     let offset_in_port_range = u16::cast_from(offset_in_port_range_big);
@@ -142,7 +141,7 @@ impl<'a> RangeBuilder<'a> {
             prefix_iter_target: prefixes_to_point_to.iter(),
             prefix_cursor: None,
             addr_port_cursor: None,
-            offset_cursor: PrefixWithPortsSize::from(0u8),
+            offset_cursor: ppsize_zero(),
         };
 
         builder.prefix_cursor = builder
@@ -197,8 +196,8 @@ impl Iterator for RangeBuilder<'_> {
             orig_prefix.prefix().as_address(),
             orig_prefix.ports().map_or(0, |ports| ports.start()),
         );
-        let mut orig_offset_cursor = PrefixWithPortsSize::from(0u8);
-        let mut processed_ranges_size = PrefixWithPortsSize::from(0u8);
+        let mut orig_offset_cursor = ppsize_zero();
+        let mut processed_ranges_size = ppsize_zero();
 
         // Add ranges until we've covered the number of elements in the original prefix
         while processed_ranges_size < orig_prefix_size {
@@ -232,7 +231,7 @@ impl Iterator for RangeBuilder<'_> {
                 &addr_port_cursor.0,
                 addr_port_cursor.1,
                 target_prefix.ports(),
-                range_size - PrefixWithPortsSize::from(1u8),
+                range_size - ppsize_from(1u8),
             ) else {
                 return Some(Err(NatPeeringError::MalformedPeering));
             };
@@ -280,7 +279,7 @@ impl Iterator for RangeBuilder<'_> {
                         prefix_and_ports.ports().start(),
                     )
                 });
-                self.offset_cursor = PrefixWithPortsSize::from(0u8);
+                self.offset_cursor = ppsize_zero();
             } else {
                 let Ok(new_addr_cursor) = add_offset_to_address_and_port(
                     &addr_port_cursor.0,
@@ -444,7 +443,7 @@ fn add_new_ranges(
             &cursor.0,
             cursor.1,
             orig_port_range,
-            range.size().saturating_sub(PrefixWithPortsSize::from(1u8)),
+            range.size().saturating_sub(ppsize_from(1u8)),
         )?;
         let prefix_portion = IpPortRangeBounds::new(
             IpPort {
@@ -546,7 +545,7 @@ mod tests {
                 &addr_v4("1.0.0.0"),
                 4200,
                 PortRange::new(4000, 4999).unwrap(),
-                PrefixWithPortsSize::from(15_428u16)
+                ppsize_from(15_428u16)
             )
             .unwrap(),
             (addr_v4("1.0.0.15"), 4628)
@@ -556,7 +555,7 @@ mod tests {
                 &addr_v6("::"),
                 0,
                 PortRange::new(0, u16::MAX).unwrap(),
-                max_theoretical_size() - PrefixWithPortsSize::from(1u16)
+                max_theoretical_size() - ppsize_from(1u16)
             )
             .unwrap(),
             (addr_v6("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), u16::MAX)

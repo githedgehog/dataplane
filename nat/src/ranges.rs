@@ -3,7 +3,9 @@
 
 use bnum::cast::CastFrom;
 use lpm::prefix::range_map::UpperBoundFrom;
-use lpm::prefix::{IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize};
+use lpm::prefix::{
+    IpRangeWithPorts, PortRange, Prefix, PrefixSize, PrefixWithPortsSize, ppsize_from,
+};
 use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ops::{Bound, RangeBounds};
@@ -21,9 +23,9 @@ impl IpPortRange {
             return None;
         }
 
-        let port_range_len = PrefixWithPortsSize::from(self.port_range.len());
+        let port_range_len = ppsize_from(self.port_range.len());
         let ip_offset_tmp = offset / port_range_len;
-        debug_assert!(ip_offset_tmp <= PrefixWithPortsSize::from(u128::MAX));
+        debug_assert!(ip_offset_tmp <= ppsize_from(u128::MAX));
         let ip_offset = u128::cast_from(ip_offset_tmp);
         let port_offset = (offset % port_range_len)
             .try_into()
