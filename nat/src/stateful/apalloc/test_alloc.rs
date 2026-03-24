@@ -73,8 +73,7 @@ mod context {
                 "<none>".to_string()
             }
         };
-        println!("src: {}", format_ip_port(&allocation.src));
-        println!("return_dst: {}", format_ip_port(&allocation.return_dst));
+        println!("allocation: {allocation}");
     }
 
     pub fn get_ip_allocator_v4(
@@ -310,12 +309,15 @@ mod std_tests {
 
         assert_eq!(allocation.src.as_ref().unwrap().ip(), addr_v4("10.1.0.0"));
         assert_eq!(
-            allocation.return_dst.as_ref().unwrap().ip(),
-            addr_v4("1.1.0.0")
+            allocation.return_dst.as_ref().map(|(ip, _)| ip),
+            Some(&ipaddr("1.1.0.0"))
         );
         assert_eq!(
-            allocation.return_dst.as_ref().unwrap().port().as_u16(),
-            1234
+            allocation
+                .return_dst
+                .as_ref()
+                .map(|(_, port)| port.as_u16()),
+            Some(1234)
         );
 
         let (bitmap, in_use) = get_ip_allocator_v4(
