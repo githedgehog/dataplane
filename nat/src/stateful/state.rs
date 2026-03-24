@@ -19,8 +19,23 @@ impl<I: NatIpWithBitmap> NatFlowState<I> {
         alloc: AllocationResult<AllocatedIpPort<I>>,
         idle_timeout: Duration,
     ) -> (Self, Self) {
-        let (src_state, dst_state) = AllocatedFlowState::new_pair_from_alloc(alloc, idle_timeout);
-        (Self::Allocated(src_state), Self::Allocated(dst_state))
+        (
+            Self::Allocated(AllocatedFlowState {
+                src_alloc: alloc.src,
+                dst_alloc: None,
+                idle_timeout,
+            }),
+            Self::Computed(ComputedFlowState {
+                src: None,
+                dst: alloc.return_dst.map(|(addr, port)| {
+                    (
+                        I::try_from_addr(addr).unwrap_or_else(|()| unreachable!()),
+                        port,
+                    )
+                }),
+                idle_timeout,
+            }),
+        )
     }
 
     pub(crate) fn idle_timeout(&self) -> Duration {
@@ -53,24 +68,6 @@ pub(crate) struct AllocatedFlowState<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> AllocatedFlowState<I> {
-    fn new_pair_from_alloc(
-        alloc: AllocationResult<AllocatedIpPort<I>>,
-        idle_timeout: Duration,
-    ) -> (Self, Self) {
-        (
-            Self {
-                src_alloc: alloc.src,
-                dst_alloc: None,
-                idle_timeout,
-            },
-            Self {
-                src_alloc: None,
-                dst_alloc: alloc.return_dst,
-                idle_timeout,
-            },
-        )
-    }
-
     fn build_translation_data(
         src: Option<&AllocatedIpPort<I>>,
         dst: Option<&AllocatedIpPort<I>>,

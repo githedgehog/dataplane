@@ -3,10 +3,12 @@
 
 //! NAT allocator trait: a trait to build allocators to manage IP addresses and ports for stateful NAT.
 
+use crate::NatPort;
 use crate::port::NatPortError;
 use net::ExtendedFlowKey;
 use net::ip::NextHeader;
 use std::fmt::{Debug, Display};
+use std::net::IpAddr;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
@@ -38,14 +40,12 @@ pub enum AllocatorError {
 /// `AllocationResult` is a struct to represent the result of an allocation.
 ///
 /// It contains the allocated IP addresses and ports for source NAT for the packet forwarded. In
-/// addition, it "reserves" IP addresses and ports for packets on the return path for this flow, and
-/// returns them so that the stateful NAT pipeline stage can update the flow table to prepare for
-/// the reply. It is necessary to "reserve" the IP and ports at this stage, to limit the risk of
-/// another flow accidentally getting the same resources assigned.
+/// addition, it contains IP addresses and ports for packets on the return path for this flow, so
+/// that the stateful NAT pipeline stage can update the flow table to prepare for the reply.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllocationResult<T: Debug> {
     pub src: Option<T>,
-    pub return_dst: Option<T>,
+    pub return_dst: Option<(IpAddr, NatPort)>,
     pub idle_timeout: Option<Duration>,
 }
 
@@ -57,7 +57,11 @@ impl<T: Debug + Display> Display for AllocationResult<T> {
             self.src.as_ref().map_or("None".to_string(), T::to_string),
             self.return_dst
                 .as_ref()
-                .map_or("None".to_string(), T::to_string),
+                .map_or("None".to_string(), |(ip, port)| format!(
+                    "{}:{}",
+                    ip,
+                    port.as_u16()
+                )),
             self.idle_timeout,
         )
     }
