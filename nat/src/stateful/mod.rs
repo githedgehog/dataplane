@@ -200,7 +200,7 @@ impl StatefulNat {
         alloc: AllocationResult<AllocatedIpPort<I>>,
     ) -> Result<(), StatefulNatError> {
         // Given that at least one of alloc.src or alloc.dst is set, we should always have at least one timeout set.
-        let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
+        let idle_timeout = alloc.idle_timeout.unwrap_or_else(|| unreachable!());
 
         // src and dst vpc of this packet
         let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
@@ -335,11 +335,11 @@ impl StatefulNat {
     ) -> (NatFlowState<I>, NatFlowState<I>) {
         let forward_state = NatFlowState {
             src_alloc: alloc.src,
-            dst_alloc: alloc.dst,
+            dst_alloc: None,
             idle_timeout,
         };
         let reverse_state = NatFlowState {
-            src_alloc: alloc.return_src,
+            src_alloc: None,
             dst_alloc: alloc.return_dst,
             idle_timeout,
         };
@@ -361,18 +361,14 @@ impl StatefulNat {
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
 
-        let (reverse_src_addr, allocated_src_port_to_use) =
-            match alloc.dst.as_ref().map(|a| (a.ip(), a.port())) {
-                Some((ip, port)) => (ip.to_ip_addr(), Some(port)),
-                // No destination NAT for forward session:
-                // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
-                //
-                // Reverse session will be:
-                // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
-                //
-                // Use destination IP and port from forward tuple.
-                None => (*flow_key.data().dst_ip(), None),
-            };
+        // No destination NAT for forward session:
+        // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
+        //
+        // Reverse session will be:
+        // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
+        //
+        // Use destination IP and port from forward tuple.
+        let reverse_src_addr = *flow_key.data().dst_ip();
         let (reverse_dst_addr, allocated_dst_port_to_use) =
             match alloc.src.as_ref().map(|a| (a.ip(), a.port())) {
                 Some((ip, port)) => (ip.to_ip_addr(), Some(port)),
@@ -382,31 +378,6 @@ impl StatefulNat {
         // Reverse the forward protocol key...
         let mut reverse_proto_key = flow_key.data().proto_key_info().reverse();
         // ... but adjust ports as necessary (use allocated ports for the reverse session)
-        if let Some(src_port) = allocated_src_port_to_use {
-            match reverse_proto_key {
-                IpProtoKey::Tcp(_) | IpProtoKey::Udp(_) => {
-                    reverse_proto_key
-                        .try_set_src_port(
-                            src_port
-                                .try_into()
-                                .map_err(|_| StatefulNatError::InvalidPort(src_port.as_u16()))?,
-                        )
-                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                }
-                IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(_)) => {
-                    // For ICMP, we only need to set the identifier once. Use the "dst_port" below if
-                    // available, otherwise, use the "src_port" here.
-                    if allocated_dst_port_to_use.is_none() {
-                        reverse_proto_key
-                            .try_set_identifier(src_port.as_u16())
-                            .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                    }
-                }
-                IpProtoKey::Icmp(_) => {
-                    return Err(StatefulNatError::UnexpectedKeyVariant);
-                }
-            }
-        }
         if let Some(dst_port) = allocated_dst_port_to_use {
             match reverse_proto_key {
                 IpProtoKey::Tcp(_) | IpProtoKey::Udp(_) => {
@@ -474,7 +445,7 @@ impl StatefulNat {
 
         debug!("{}: Allocated translation data: {alloc}", self.name());
 
-        let translation_data = Self::get_translation_data(&alloc.src, &alloc.dst);
+        let translation_data = Self::get_translation_data(&alloc.src, &None);
 
         self.create_flow_pair(packet, &flow_key, alloc)?;
 
