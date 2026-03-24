@@ -43,8 +43,18 @@ struct NatTranslationData {
 }
 impl NatTranslationData {
     #[must_use]
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(
+        src_addr: Option<IpAddr>,
+        dst_addr: Option<IpAddr>,
+        src_port: Option<NatPort>,
+        dst_port: Option<NatPort>,
+    ) -> Self {
+        Self {
+            src_addr,
+            dst_addr,
+            src_port,
+            dst_port,
+        }
     }
     #[must_use]
     pub(crate) fn src_addr(mut self, address: IpAddr) -> Self {
