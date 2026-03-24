@@ -464,6 +464,9 @@ let
         ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
         ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
         ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
+        ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
+        ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
+        ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
         for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
             ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
         done
