@@ -1599,6 +1599,7 @@ dependencies = [
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-flow-entry",
  "dataplane-flow-filter",
  "dataplane-id",
  "dataplane-interface-manager",
