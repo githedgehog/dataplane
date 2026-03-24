@@ -38,6 +38,7 @@ use rekon::{Observe, Reconcile};
 use tracectl::get_trace_ctl;
 use tracing::{debug, error, info, warn};
 
+use flow_entry::flow_table::FlowTable;
 use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
 use routing::{FrrAppliedConfig, RouterCtlSender};
@@ -79,6 +80,9 @@ pub struct ConfigProcessorParams {
 
     // access data associated to pipeline
     pub pipeline_data: Arc<PipelineData>,
+
+    // flow table
+    pub flow_table: Arc<FlowTable>,
 
     // writer for vpc mapping table
     pub vpcmapw: VpcMapWriter<VpcMapName>,
@@ -501,6 +505,7 @@ fn apply_stateless_nat_config(
 /// Update the config for stateful NAT
 fn apply_stateful_nat_config(
     vpc_table: &VpcTable,
+    _flow_table: &FlowTable,
     natallocatorw: &mut NatAllocatorWriter,
 ) -> ConfigResult {
     natallocatorw.update_allocator(vpc_table)?;
@@ -579,6 +584,7 @@ impl ConfigProcessor {
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
         let portfw_w = &mut self.proc_params.portfw_w;
+        let flow_table = &self.proc_params.flow_table;
 
         // internal config should be available
         let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
@@ -609,7 +615,11 @@ impl ConfigProcessor {
         apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
 
         /* apply stateful NAT config */
-        apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
+        apply_stateful_nat_config(
+            &config.external.overlay.vpc_table,
+            flow_table.as_ref(),
+            natallocatorw,
+        )?;
 
         /* apply flow filtering config */
         apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;

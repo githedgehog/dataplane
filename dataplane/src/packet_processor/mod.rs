@@ -36,6 +36,7 @@ where
 {
     pub router: Router,
     pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    pub flow_table: Arc<FlowTable>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
@@ -85,8 +86,10 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let atabler_factory = router.get_atabler_factory();
 
     // create pipeline builder
+    let flow_table_clone = flow_table.clone();
     let pipeline_builder = move || {
         let pdata_clone = pdata.clone();
+
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
@@ -95,19 +98,19 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattabler_factory.handle());
         let stateful_nat = StatefulNat::new(
             "stateful-NAT",
-            flow_table.clone(),
+            flow_table_clone.clone(),
             natallocator_factory.handle(),
         );
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", stats_w.clone());
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
-        let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
-        let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
-        let flow_expirations_nf = ExpirationsNF::new(flow_table.clone());
+        let icmp_error_handler = IcmpErrorHandler::new(flow_table_clone.clone());
+        let flow_lookup = FlowLookup::new("flow-lookup", flow_table_clone.clone());
+        let flow_expirations_nf = ExpirationsNF::new(flow_table_clone.clone());
         let portfw = PortForwarder::new(
             "port-forwarder",
             portfw_factory.handle(),
-            flow_table.clone(),
+            flow_table_clone.clone(),
         );
 
         // Build the pipeline for a router. The composition of the pipeline (in stages) is currently
@@ -132,6 +135,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     Ok(InternalSetup {
         router,
         pipeline: Arc::new(pipeline_builder),
+        flow_table,
         vpcmapw,
         nattablesw,
         natallocatorw,
