@@ -57,84 +57,34 @@ impl NatDefaultAllocator {
     ) -> Result<(), AllocatorError> {
         let new_peering = collapse_prefixes_peering(peering);
 
-        // Update tables for source NAT
-        self.build_src_nat_pool_for_expose(&new_peering, dst_vpc_id)?;
-
-        // Update table for destination NAT
-        self.build_dst_nat_pool_for_expose(&new_peering, dst_vpc_id)?;
-
-        Ok(())
-    }
-
-    fn build_src_nat_pool_for_expose(
-        &mut self,
-        peering: &Peering,
-        dst_vpc_id: VpcDiscriminant,
-    ) -> Result<(), AllocatorError> {
         build_nat_pool_generic(
-            &peering.local,
+            &new_peering.local,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_44,
             VpcManifest::port_forwarding_exposes_44,
-            VpcExpose::as_range_or_empty,
-            |expose| &expose.ips,
             &mut self.pools_src44,
             NextHeader::ICMP,
         )?;
 
         build_nat_pool_generic(
-            &peering.local,
+            &new_peering.local,
             dst_vpc_id,
             VpcManifest::stateful_nat_exposes_66,
             VpcManifest::port_forwarding_exposes_66,
-            VpcExpose::as_range_or_empty,
-            |expose| &expose.ips,
             &mut self.pools_src66,
-            NextHeader::ICMP6,
-        )
-    }
-
-    fn build_dst_nat_pool_for_expose(
-        &mut self,
-        peering: &Peering,
-        dst_vpc_id: VpcDiscriminant,
-    ) -> Result<(), AllocatorError> {
-        build_nat_pool_generic(
-            &peering.remote,
-            dst_vpc_id,
-            VpcManifest::stateful_nat_exposes_44,
-            VpcManifest::port_forwarding_exposes_44,
-            |expose| &expose.ips,
-            VpcExpose::as_range_or_empty,
-            &mut self.pools_dst44,
-            NextHeader::ICMP,
-        )?;
-
-        build_nat_pool_generic(
-            &peering.remote,
-            dst_vpc_id,
-            VpcManifest::stateful_nat_exposes_66,
-            VpcManifest::port_forwarding_exposes_66,
-            |expose| &expose.ips,
-            VpcExpose::as_range_or_empty,
-            &mut self.pools_dst66,
             NextHeader::ICMP6,
         )
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, G, H, P, PIter>(
+fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, P, PIter>(
     manifest: &'a VpcManifest,
     dst_vpc_id: VpcDiscriminant,
     // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
     exposes_filter: F,
     // A filter to select other exposes with port forwarding, for the relevant IP version
     port_forwarding_exposes_filter: P,
-    // A function to get the list of prefixes to translate into
-    original_prefixes_from_expose: G,
-    // A function to get the list of prefixes to translate from
-    target_prefixes_from_expose: H,
     table: &mut PoolTable<I, J>,
     icmp_proto: NextHeader,
 ) -> Result<(), AllocatorError>
@@ -143,8 +93,6 @@ where
     FIter: Iterator<Item = &'a VpcExpose>,
     P: FnOnce(&'a VpcManifest) -> PIter,
     PIter: Iterator<Item = &'a VpcExpose>,
-    G: Fn(&'a VpcExpose) -> &'a PrefixPortsSet,
-    H: Fn(&'a VpcExpose) -> &'a PrefixPortsSet,
 {
     let port_forwarding_exposes: Vec<&'a VpcExpose> =
         port_forwarding_exposes_filter(manifest).collect();
@@ -157,24 +105,24 @@ where
             .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT);
 
         let tcp_ip_allocator = ip_allocator_for_prefixes(
-            original_prefixes_from_expose(expose),
+            expose.as_range_or_empty(),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.tcp,
         )?;
         let udp_ip_allocator = ip_allocator_for_prefixes(
-            original_prefixes_from_expose(expose),
+            expose.as_range_or_empty(),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.udp,
         )?;
         let icmp_ip_allocator = ip_allocator_for_prefixes(
-            original_prefixes_from_expose(expose),
+            expose.as_range_or_empty(),
             idle_timeout,
             &PrefixPortsSet::default(),
         )?;
 
         add_pool_entries(
             table,
-            target_prefixes_from_expose(expose),
+            &expose.ips,
             dst_vpc_id,
             &tcp_ip_allocator,
             &udp_ip_allocator,
