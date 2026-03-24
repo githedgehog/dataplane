@@ -37,60 +37,28 @@ pub enum AllocatorError {
 
 /// `AllocationResult` is a struct to represent the result of an allocation.
 ///
-/// It contains the allocated IP addresses and ports for both source and destination NAT for the
-/// packet forwarded. In addition, it "reserves" IP addresses and ports for packets on the return
-/// path for this flow, and returns them so that the stateful NAT pipeline stage can update the flow
-/// table to prepare for the reply. It is necessary to "reserve" the IP and ports at this stage, to
-/// limit the risk of another flow accidentally getting the same resources assigned.
+/// It contains the allocated IP addresses and ports for source NAT for the packet forwarded. In
+/// addition, it "reserves" IP addresses and ports for packets on the return path for this flow, and
+/// returns them so that the stateful NAT pipeline stage can update the flow table to prepare for
+/// the reply. It is necessary to "reserve" the IP and ports at this stage, to limit the risk of
+/// another flow accidentally getting the same resources assigned.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllocationResult<T: Debug> {
     pub src: Option<T>,
-    pub dst: Option<T>,
-    pub return_src: Option<T>,
     pub return_dst: Option<T>,
-    pub src_flow_idle_timeout: Option<Duration>,
-    pub dst_flow_idle_timeout: Option<Duration>,
-}
-
-impl<T: Debug> AllocationResult<T> {
-    /// Returns the idle timeout for the flow.
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Duration)` if at least one of `src_flow_idle_timeout` or `dst_flow_idle_timeout` is set.
-    /// * `None` if both `src_flow_idle_timeout` and `dst_flow_idle_timeout` are `None`.
-    #[must_use]
-    pub fn idle_timeout(&self) -> Option<Duration> {
-        // Use the minimum of the two timeouts (source/destination).
-        //
-        // FIXME: We shouldn't use just one of the two timeouts, but doing otherwise will require
-        //        uncoupling entry creation for source and destination NAT.
-        match (self.src_flow_idle_timeout, self.dst_flow_idle_timeout) {
-            (Some(src), Some(dst)) => Some(src.min(dst)),
-            (Some(src), None) => Some(src),
-            (None, Some(dst)) => Some(dst),
-            // Given that at least one of alloc.src or alloc.dst is set, we should always have at
-            // least one timeout set.
-            (None, None) => None,
-        }
-    }
+    pub idle_timeout: Option<Duration>,
 }
 
 impl<T: Debug + Display> Display for AllocationResult<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "src: {}, dst: {}, return_src: {}, return_dst: {}, src_flow_idle_timeout: {:?}, dst_flow_idle_timeout: {:?}",
+            "src: {}, return_dst: {}, idle_timeout: {:?}",
             self.src.as_ref().map_or("None".to_string(), T::to_string),
-            self.dst.as_ref().map_or("None".to_string(), T::to_string),
-            self.return_src
-                .as_ref()
-                .map_or("None".to_string(), T::to_string),
             self.return_dst
                 .as_ref()
                 .map_or("None".to_string(), T::to_string),
-            self.src_flow_idle_timeout,
-            self.dst_flow_idle_timeout
+            self.idle_timeout,
         )
     }
 }
