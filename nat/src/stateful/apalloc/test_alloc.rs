@@ -75,8 +75,6 @@ mod context {
             }
         };
         println!("src: {}", format_ip_port(&allocation.src));
-        println!("dst: {}", format_ip_port(&allocation.dst));
-        println!("return_src: {}", format_ip_port(&allocation.return_src));
         println!("return_dst: {}", format_ip_port(&allocation.return_dst));
     }
 
@@ -107,12 +105,7 @@ mod context {
             .unwrap()
             .not_as("10.1.0.3/32".into())
             .unwrap();
-        let expose2 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("2.0.0.0/16".into())
-            .as_range("10.2.0.0/29".into())
-            .unwrap();
+        let expose2 = VpcExpose::empty().ip("2.0.0.0/16".into());
 
         let manifest1 = VpcManifest {
             name: "VPC-1".into(),
@@ -126,14 +119,7 @@ mod context {
             .ip("3.0.1.0/24".into())
             .as_range("10.3.0.0/30".into())
             .unwrap();
-        let expose4 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("4.0.0.0/16".into())
-            .as_range("10.4.0.0/31".into())
-            .unwrap()
-            .as_range("10.4.1.0/30".into())
-            .unwrap();
+        let expose4 = VpcExpose::empty().ip("4.0.0.0/16".into());
 
         let manifest2 = VpcManifest {
             name: "VPC-2".into(),
@@ -219,7 +205,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::TCP)
                 .count(),
-            7
+            5
         );
         assert_eq!(
             allocator
@@ -228,7 +214,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::UDP)
                 .count(),
-            7
+            5
         );
 
         assert!(
@@ -247,7 +233,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::TCP)
                 .count(),
-            6
+            3
         );
         assert_eq!(
             allocator
@@ -256,7 +242,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::UDP)
                 .count(),
-            6
+            3
         );
 
         assert_eq!(allocator.pools_src66.0.len(), 0);
@@ -321,20 +307,9 @@ mod std_tests {
         print_allocation(&allocation);
 
         assert!(allocation.src.is_some());
-        assert!(allocation.dst.is_some());
-        assert!(allocation.return_src.is_some());
         assert!(allocation.return_dst.is_some());
 
         assert_eq!(allocation.src.as_ref().unwrap().ip(), addr_v4("10.1.0.0"));
-        assert_eq!(allocation.dst.as_ref().unwrap().ip(), addr_v4("3.0.0.0"));
-        assert_eq!(
-            allocation.return_src.as_ref().unwrap().ip(),
-            addr_v4("10.3.0.2")
-        );
-        assert_eq!(
-            allocation.return_src.as_ref().unwrap().port().as_u16(),
-            5678
-        );
         assert_eq!(
             allocation.return_dst.as_ref().unwrap().ip(),
             addr_v4("1.1.0.0")
@@ -553,19 +528,12 @@ mod tests_shuttle {
             .extend_with_dst_vpcd(vpcd2());
             let flow_key2 = FlowKey::uni(
                 Some(vpcd1()),
-                ipaddr("2.0.1.3"),
-                ipaddr("10.4.1.1"),
-                tcp_proto_key(2222, 2223),
-            )
-            .extend_with_dst_vpcd(vpcd2());
-            let flow_key3 = FlowKey::uni(
-                Some(vpcd1()),
                 ipaddr("1.1.0.0"),
                 ipaddr("10.3.0.2"),
                 tcp_proto_key(3333, 3334),
             )
             .extend_with_dst_vpcd(vpcd2());
-            let flow_key4 = FlowKey::uni(
+            let flow_key3 = FlowKey::uni(
                 Some(vpcd1()),
                 ipaddr("1.1.0.0"),
                 ipaddr("10.3.0.3"),
@@ -578,7 +546,6 @@ mod tests_shuttle {
             let allocator1 = allocator_arc.clone();
             let allocator2 = allocator_arc.clone();
             let allocator3 = allocator_arc.clone();
-            let allocator4 = allocator_arc.clone();
 
             let mut handles = vec![];
 
@@ -586,32 +553,18 @@ mod tests_shuttle {
                 let allocation1 = allocator1.allocate_v4(&flow_key1);
                 let res = allocation1.unwrap();
                 assert!(res.src.is_some());
-                assert!(res.dst.is_some());
-                assert!(res.return_src.is_some());
                 assert!(res.return_dst.is_some());
             }));
             handles.push(thread::spawn(move || {
                 let allocation2 = allocator2.allocate_v4(&flow_key2);
                 let res = allocation2.unwrap();
                 assert!(res.src.is_some());
-                assert!(res.dst.is_some());
-                assert!(res.return_src.is_some());
                 assert!(res.return_dst.is_some());
             }));
             handles.push(thread::spawn(move || {
                 let allocation3 = allocator3.allocate_v4(&flow_key3);
                 let res = allocation3.unwrap();
                 assert!(res.src.is_some());
-                assert!(res.dst.is_some());
-                assert!(res.return_src.is_some());
-                assert!(res.return_dst.is_some());
-            }));
-            handles.push(thread::spawn(move || {
-                let allocation4 = allocator4.allocate_v4(&flow_key4);
-                let res = allocation4.unwrap();
-                assert!(res.src.is_some());
-                assert!(res.dst.is_some());
-                assert!(res.return_src.is_some());
                 assert!(res.return_dst.is_some());
             }));
 
