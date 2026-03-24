@@ -179,9 +179,7 @@ impl<I: NatIpWithBitmap> Display for AllocatedIpPort<I> {
 #[derive(Debug)]
 pub struct NatDefaultAllocator {
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
-    pools_dst44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
-    pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
     randomize: bool,
 }
 
@@ -189,9 +187,7 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
     fn new() -> Self {
         Self {
             pools_src44: PoolTable::new(),
-            pools_dst44: PoolTable::new(),
             pools_src66: PoolTable::new(),
-            pools_dst66: PoolTable::new(),
             randomize: true,
         }
     }
@@ -200,14 +196,14 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src44, &self.pools_dst44)
+        Self::allocate_from_tables(eflow_key, &self.pools_src44)
     }
 
     fn allocate_v6(
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src66, &self.pools_dst66)
+        Self::allocate_from_tables(eflow_key, &self.pools_src66)
     }
 }
 
@@ -215,18 +211,11 @@ impl NatDefaultAllocator {
     fn allocate_from_tables<I: NatIpWithBitmap>(
         eflow_key: &ExtendedFlowKey,
         pools_src: &PoolTable<I, I>,
-        _pools_dst: &PoolTable<I, I>,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         // get flow key from extended flow key
         let flow_key = eflow_key.flow_key();
         let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
-
-        let _src_vpc_id = eflow_key
-            .flow_key()
-            .data()
-            .src_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?;
 
         let dst_vpc_id = eflow_key
             .dst_vpcd()

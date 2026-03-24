@@ -30,10 +30,6 @@ impl Display for NatDefaultAllocator {
         writeln!(with_indent!(f), "{}", self.pools_src44)?;
         writeln!(f, "source pools (IPv6):")?;
         writeln!(with_indent!(f), "{}", self.pools_src66)?;
-        writeln!(f, "destination pools (IPv4):")?;
-        writeln!(with_indent!(f), "{}", self.pools_dst44)?;
-        writeln!(f, "destination pools (IPv6):")?;
-        writeln!(with_indent!(f), "{}", self.pools_dst66)?;
         Ok(())
     }
 }

@@ -215,36 +215,7 @@ mod std_tests {
             5
         );
 
-        assert!(
-            allocator
-                .pools_dst44
-                .0
-                .keys()
-                .all(|k| k.dst_id == vpcd2() || k.dst_id == vpcd1())
-        );
-        // One entry for each ".as_range()" from the VPCExpose objects,
-        // after exclusion ranges have been applied
-        assert_eq!(
-            allocator
-                .pools_dst44
-                .0
-                .keys()
-                .filter(|k| k.protocol == NextHeader::TCP)
-                .count(),
-            3
-        );
-        assert_eq!(
-            allocator
-                .pools_dst44
-                .0
-                .keys()
-                .filter(|k| k.protocol == NextHeader::UDP)
-                .count(),
-            3
-        );
-
         assert_eq!(allocator.pools_src66.0.len(), 0);
-        assert_eq!(allocator.pools_dst66.0.len(), 0);
 
         let ip_allocator = allocator
             .pools_src44
@@ -259,21 +230,6 @@ mod std_tests {
 
         assert!(bitmap.contains_range(addr_v4_bits("10.1.0.0")..=addr_v4_bits("10.1.0.2")));
         assert_eq!(bitmap.len(), 3);
-        assert_eq!(in_use.len(), 0);
-
-        let ip_allocator = allocator
-            .pools_dst44
-            .get(&PoolTableKey::new(
-                NextHeader::TCP,
-                vpcd2(),
-                addr_v4("10.3.0.0"),
-                addr_v4("255.255.255.255"),
-            ))
-            .unwrap();
-        let (bitmap, in_use) = ip_allocator.get_pool_clone_for_tests();
-
-        assert!(bitmap.contains_range(addr_v4_bits("3.0.0.0")..=addr_v4_bits("3.0.1.255")));
-        assert_eq!(bitmap.len(), 512);
         assert_eq!(in_use.len(), 0);
     }
 
