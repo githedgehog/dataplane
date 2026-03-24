@@ -37,6 +37,7 @@ where
 {
     pub router: Router,
     pub pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<Buf>>,
+    pub flow_table: Arc<FlowTable>,
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
@@ -44,7 +45,6 @@ where
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
-    pub flow_table: Arc<FlowTable>,
 }
 
 /// Start a router and provide the associated pipeline
@@ -61,7 +61,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     // create entities shared by management and data-path NFs
     let flow_table = Arc::new(FlowTable::default());
-    let flow_table_for_setup = flow_table.clone();
     let flowfiltertablesw = FlowFilterTableWriter::new();
     let flowfiltertablesr_factory = flowfiltertablesw.get_reader_factory();
     let nattablesw = NatTablesWriter::new();
@@ -90,8 +89,10 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     let atabler_factory = router.get_atabler_factory();
 
     // create pipeline builder
+    let flow_table_clone = flow_table.clone();
     let pipeline_builder = move || {
         let pdata_clone = pdata.clone();
+
         // Build network functions
         let stage_ingress = Ingress::new("Ingress", iftr_factory.handle());
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
@@ -100,18 +101,18 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattabler_factory.handle());
         let stateful_nat = StatefulNat::new(
             "stateful-NAT",
-            flow_table.clone(),
+            flow_table_clone.clone(),
             natallocator_factory.handle(),
         );
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", stats_w.clone());
         let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
-        let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
-        let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
+        let icmp_error_handler = IcmpErrorHandler::new(flow_table_clone.clone());
+        let flow_lookup = FlowLookup::new("flow-lookup", flow_table_clone.clone());
         let portfw = PortForwarder::new(
             "port-forwarder",
             portfw_factory.handle(),
-            flow_table.clone(),
+            flow_table_clone.clone(),
         );
         let pkt_stats_nf = PacketStatsNF::new(pkt_stats.clone());
 
@@ -137,6 +138,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     Ok(InternalSetup {
         router,
         pipeline: Arc::new(pipeline_builder),
+        flow_table,
         vpcmapw,
         nattablesw,
         natallocatorw,
@@ -144,6 +146,5 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         stats,
         vpc_stats_store,
         portfw_w,
-        flow_table: flow_table_for_setup,
     })
 }
