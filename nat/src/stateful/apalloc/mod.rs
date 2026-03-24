@@ -75,7 +75,7 @@ use net::{ExtendedFlowKey, FlowKey};
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use tracing::error;
+use tracing::{debug, error};
 
 mod alloc;
 mod display;
@@ -324,6 +324,46 @@ impl NatAllocator {
             )),
             IcmpProtoKey::Unsupported => Err(AllocatorError::UnsupportedIcmpCategory),
         }
+    }
+
+    pub(crate) fn reserve_ipv4_port(
+        &self,
+        protocol: NextHeader,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: Ipv4Addr,
+        ip: Ipv4Addr,
+        port: NatPort,
+    ) -> Result<AllocatedIpPort<Ipv4Addr>, AllocatorError> {
+        let port_u16 = port.as_u16();
+        debug!("Re-reserving {ip} port/Id {port_u16} for ({protocol}), dst_vpcd: {dst_vpcd}");
+        let pool = self
+            .pools_src44
+            .get_entry(protocol, dst_vpcd, src_ip)
+            .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
+
+        debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
+        pool.reserve(ip, port, false)
+            .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
+    }
+
+    pub(crate) fn reserve_ipv6_port(
+        &self,
+        protocol: NextHeader,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: Ipv6Addr,
+        ip: Ipv6Addr,
+        port: NatPort,
+    ) -> Result<AllocatedIpPort<Ipv6Addr>, AllocatorError> {
+        let port_u16 = port.as_u16();
+        debug!("Re-reserving {ip} port/Id {port_u16} for ({protocol}), dst_vpcd: {dst_vpcd}");
+        let pool = self
+            .pools_src66
+            .get_entry(protocol, dst_vpcd, src_ip)
+            .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
+
+        debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
+        pool.reserve(ip, port, false)
+            .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
     }
 
     #[cfg(test)]
