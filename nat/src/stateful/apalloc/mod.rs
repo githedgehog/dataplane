@@ -76,7 +76,7 @@ use net::packet::VpcDiscriminant;
 use net::{ExtendedFlowKey, FlowKey};
 use std::collections::BTreeMap;
 use std::fmt::Display;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::error;
 
 mod alloc;
@@ -227,14 +227,14 @@ impl NatDefaultAllocator {
     fn allocate_from_tables<I: NatIpWithBitmap>(
         eflow_key: &ExtendedFlowKey,
         pools_src: &PoolTable<I, I>,
-        pools_dst: &PoolTable<I, I>,
+        _pools_dst: &PoolTable<I, I>,
         disable_randomness: bool,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         // get flow key from extended flow key
         let flow_key = eflow_key.flow_key();
         let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
-        let (src_vpc_id, dst_vpc_id) = Self::get_vpc_discriminants(eflow_key)?;
+        let (_src_vpc_id, dst_vpc_id) = Self::get_vpc_discriminants(eflow_key)?;
 
         // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
@@ -263,19 +263,7 @@ impl NatDefaultAllocator {
         // Allocate IP and ports from pools, for source and destination NAT
         let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
         let src_mapping = Self::get_mapping(pool_src_opt, allow_null, disable_randomness)?;
-
-        // Now based on the previous allocation, we need to "reserve" IP and ports for the reverse
-        // path for the flow. First retrieve the relevant address pools.
-
-        let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
-            pools_dst.get_entry(next_header, src_vpc_id, mapping.ip())
-        } else {
-            None
-        };
-
-        // Reserve IP and ports for the reverse path for the flow.
-        let reverse_dst_mapping =
-            Self::get_reverse_mapping(flow_key, reverse_pool_dst_opt, disable_randomness)?;
+        let reverse_dst_mapping = Self::get_reverse_mapping(flow_key)?;
 
         Ok(AllocationResult {
             src: src_mapping,
@@ -348,31 +336,16 @@ impl NatDefaultAllocator {
         Ok(src_mapping)
     }
 
-    fn get_reverse_mapping<I: NatIpWithBitmap>(
+    fn get_reverse_mapping(
         flow_key: &FlowKey,
-        reverse_pool_dst_opt: Option<&alloc::IpAllocator<I>>,
-        disable_randomness: bool,
-    ) -> Result<Option<AllocatedIpPort<I>>, AllocatorError> {
-        match reverse_pool_dst_opt {
-            Some(pool_dst) => {
-                let reservation_dst_port_number = match flow_key.data().proto_key_info() {
-                    IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
-                    IpProtoKey::Udp(udp) => udp.src_port.into(),
-                    IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
-                };
-
-                Ok(Some(pool_dst.reserve(
-                    NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
-                        AllocatorError::InternalIssue(
-                            "Failed to convert IP address to Ipv4Addr".to_string(),
-                        )
-                    })?,
-                    reservation_dst_port_number,
-                    disable_randomness,
-                )?))
-            }
-            None => Ok(None),
-        }
+    ) -> Result<Option<(IpAddr, NatPort)>, AllocatorError> {
+        let reverse_target_ip = *flow_key.data().src_ip();
+        let reverse_target_port = match flow_key.data().proto_key_info() {
+            IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
+            IpProtoKey::Udp(udp) => udp.src_port.into(),
+            IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
+        };
+        Ok(Some((reverse_target_ip, reverse_target_port)))
     }
 
     fn get_icmp_query_id(key: &IcmpProtoKey) -> Result<u16, AllocatorError> {
