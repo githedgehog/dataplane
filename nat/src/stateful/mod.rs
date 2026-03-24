@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-mod allocator;
+pub(crate) mod allocator;
 mod allocator_writer;
 pub mod apalloc;
 pub(crate) mod flows;
 pub(crate) mod icmp_handling;
 mod natip;
+mod state;
 mod test;
 
 // re exports
@@ -16,9 +17,9 @@ pub use allocator_writer::StatefulNatConfig;
 use super::NatTranslationData;
 use crate::stateful::allocator::{AllocationResult, AllocatorError, NatAllocator};
 use crate::stateful::allocator_writer::NatAllocatorReader;
-use crate::stateful::apalloc::AllocatedIpPort;
-use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
+use crate::stateful::apalloc::{AllocatedIpPort, NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
+use crate::stateful::state::NatFlowState;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
@@ -28,7 +29,7 @@ use net::headers::{Net, Transport, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -58,27 +59,6 @@ enum StatefulNatError {
     InvalidPort(u16),
     #[error("unexpected IP protocol key variant")]
     UnexpectedKeyVariant,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NatFlowState<I: NatIpWithBitmap> {
-    src_alloc: Option<AllocatedIpPort<I>>,
-    dst_alloc: Option<AllocatedIpPort<I>>,
-    idle_timeout: Duration,
-}
-
-impl<I: NatIpWithBitmap> Display for NatFlowState<I> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.src_alloc.as_ref() {
-            Some(a) => write!(f, "({}:{}, ", a.ip(), a.port().as_u16()),
-            None => write!(f, "(unchanged, "),
-        }?;
-        match self.dst_alloc.as_ref() {
-            Some(a) => write!(f, "{}:{})", a.ip(), a.port().as_u16()),
-            None => write!(f, "unchanged)"),
-        }?;
-        write!(f, "[{}s]", self.idle_timeout.as_secs())
-    }
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -148,9 +128,8 @@ impl StatefulNat {
         let flow_info = packet.meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
-        flow_info.reset_expiry(state.idle_timeout).ok()?;
-        let translation_data = Self::get_translation_data(&state.src_alloc, &state.dst_alloc);
-        Some(translation_data)
+        flow_info.reset_expiry(state.idle_timeout()).ok()?;
+        Some(state.translation_data())
     }
 
     // Look up for a session by passing the parameters that make up a flow key.
@@ -169,8 +148,7 @@ impl StatefulNat {
         let flow_info = self.flow_table.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
-        let translation_data = Self::get_translation_data(&state.src_alloc, &state.dst_alloc);
-        Some((translation_data, state.idle_timeout))
+        Some((state.translation_data(), state.idle_timeout()))
     }
 
     fn session_timeout_time(timeout: Duration) -> Instant {
@@ -210,7 +188,7 @@ impl StatefulNat {
         let reverse_key = Self::new_reverse_session(flow_key, &alloc, dst_vpc_id)?;
 
         // build NAT state for both flows
-        let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
+        let (forward_state, reverse_state) = NatFlowState::new_pair_from_alloc(alloc, idle_timeout);
 
         // build a flow pair from the keys (without NAT state)
         let expires_at = Self::session_timeout_time(idle_timeout);
@@ -327,23 +305,6 @@ impl StatefulNat {
             src_port: src_alloc.as_ref().map(AllocatedIpPort::port),
             dst_port: dst_alloc.as_ref().map(AllocatedIpPort::port),
         }
-    }
-
-    fn new_states_from_alloc<I: NatIpWithBitmap>(
-        alloc: AllocationResult<AllocatedIpPort<I>>,
-        idle_timeout: Duration,
-    ) -> (NatFlowState<I>, NatFlowState<I>) {
-        let forward_state = NatFlowState {
-            src_alloc: alloc.src,
-            dst_alloc: None,
-            idle_timeout,
-        };
-        let reverse_state = NatFlowState {
-            src_alloc: None,
-            dst_alloc: alloc.return_dst,
-            idle_timeout,
-        };
-        (forward_state, reverse_state)
     }
 
     fn new_reverse_session<I: NatIpWithBitmap>(
