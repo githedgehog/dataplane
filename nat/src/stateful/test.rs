@@ -847,9 +847,9 @@ async fn test_default_expose() {
         orig_dst_port,
     );
     assert_eq!(done_reason, None);
-
     assert_eq!(output_src, addr_v4(target_src));
     assert_eq!(output_dst, addr_v4(orig_dst));
+
     // Reverse path
     let (
         return_output_src,
@@ -866,11 +866,11 @@ async fn test_default_expose() {
         output_dst_port,
         output_src_port,
     );
+    assert_eq!(done_reason, None);
     assert_eq!(return_output_src, addr_v4(orig_dst));
     assert_eq!(return_output_dst, addr_v4(orig_src));
     assert_eq!(return_output_src_port, orig_dst_port);
     assert_eq!(return_output_dst_port, orig_src_port);
-    assert_eq!(done_reason, None);
 
     // Using the default expose
     let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.1.0.1", "10.11.12.13", 9999, 443);
@@ -885,9 +885,9 @@ async fn test_default_expose() {
         orig_dst_port,
     );
     assert_eq!(done_reason, None);
-
     assert_eq!(output_src, addr_v4(target_src));
     assert_eq!(output_dst, addr_v4(orig_dst));
+
     // Reverse path
     let (
         return_output_src,
@@ -904,11 +904,11 @@ async fn test_default_expose() {
         output_dst_port,
         output_src_port,
     );
+    assert_eq!(done_reason, None);
     assert_eq!(return_output_src, addr_v4(orig_dst));
     assert_eq!(return_output_dst, addr_v4(orig_src));
     assert_eq!(return_output_src_port, orig_dst_port);
     assert_eq!(return_output_dst_port, orig_src_port);
-    assert_eq!(done_reason, None);
 }
 
 fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
