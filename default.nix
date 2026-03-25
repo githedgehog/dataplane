@@ -8,6 +8,7 @@
   sanitize ? "",
   features ? "",
   default-features ? "true",
+  kernel ? "linux",
   tag ? "dev",
 }:
 let
@@ -21,7 +22,12 @@ let
       builtins.filter (elm: builtins.isString elm) (builtins.split split-on string);
   lib = (import sources.nixpkgs { }).lib;
   platform' = import ./nix/platforms.nix {
-    inherit lib platform libc;
+    inherit
+      lib
+      platform
+      libc
+      kernel
+      ;
   };
   sanitizers = split-str ",+" sanitize;
   cargo-features = split-str ",+" features;
@@ -44,54 +50,53 @@ let
     profile = profile';
     platform = platform';
   };
-  dev-pkgs = import sources.nixpkgs {
-    overlays = [
-      overlays.rust
-      overlays.llvm
-      overlays.dataplane-dev
-    ];
-  };
   pkgs =
-    (import sources.nixpkgs {
-      overlays = [
-        overlays.rust
-        overlays.llvm
-        overlays.dataplane
-      ];
-    }).pkgsCross.${platform'.info.nixarch};
-  frr-pkgs =
-    (import sources.nixpkgs {
-      overlays = [
-        overlays.rust
-        overlays.llvm
-        overlays.dataplane
-        overlays.frr
-      ];
-    }).pkgsCross.${platform'.info.nixarch};
-  sysroot = pkgs.pkgsHostHost.symlinkJoin {
-    name = "sysroot";
-    paths = with pkgs.pkgsHostHost; [
-      pkgs.pkgsHostHost.libc.dev # fully qualified: bare `libc` resolves to the "gnu" function argument, not pkgs.pkgsHostHost.libc
-      pkgs.pkgsHostHost.libc.out # (same as above)
-      fancy.dpdk-wrapper.dev
-      fancy.dpdk-wrapper.out
-      fancy.dpdk.dev
-      fancy.dpdk.static
-      fancy.hwloc.dev
-      fancy.hwloc.static
-      fancy.libbsd.dev
-      fancy.libbsd.static
-      fancy.libmd.dev
-      fancy.libmd.static
-      fancy.libnl.dev
-      fancy.libnl.static
-      fancy.libunwind.out
-      fancy.numactl.dev
-      fancy.numactl.static
-      fancy.rdma-core.dev
-      fancy.rdma-core.static
-    ];
-  };
+    let
+      over = import sources.nixpkgs {
+        overlays = [
+          overlays.rust
+          overlays.llvm
+          overlays.dataplane
+          overlays.dataplane-dev
+          overlays.frr
+        ];
+      };
+    in
+    if platform != "wasm32-wasip1" then over.pkgsCross.${platform'.info.nixarch} else over;
+  sysroot =
+    if platform != "wasm32-wasip1" then
+      pkgs.symlinkJoin {
+        name = "sysroot";
+        paths = with pkgs.pkgsHostHost; [
+          pkgs.pkgsHostHost.libc.dev # fully qualified: bare `libc` resolves to the "gnu" function argument, not pkgs.pkgsHostHost.libc
+          pkgs.pkgsHostHost.libc.out # (same as above)
+          fancy.dpdk-wrapper.dev
+          fancy.dpdk-wrapper.out
+          fancy.dpdk.dev
+          fancy.dpdk.static
+          fancy.hwloc.dev
+          fancy.hwloc.static
+          fancy.libbsd.dev
+          fancy.libbsd.static
+          fancy.libmd.dev
+          fancy.libmd.static
+          fancy.libnl.dev
+          fancy.libnl.static
+          fancy.libunwind.out
+          fancy.numactl.dev
+          fancy.numactl.static
+          fancy.rdma-core.dev
+          fancy.rdma-core.static
+        ];
+      }
+    else
+      pkgs.symlinkJoin {
+        name = "sysroot";
+        paths = with pkgs.pkgsHostHost; [
+          fancy.hwloc.dev
+          fancy.hwloc.static
+        ];
+      };
   clangd-config = pkgs.writeTextFile {
     name = ".clangd";
     text = ''
@@ -104,7 +109,7 @@ let
     executable = false;
     destination = "/.clangd";
   };
-  crane = import sources.crane { pkgs = pkgs; };
+  crane = import sources.crane { };
   craneLib = crane.craneLib.overrideToolchain pkgs.rust-toolchain;
   devroot = pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
@@ -117,7 +122,7 @@ let
       libclang.lib
       lld
     ])
-    ++ (with dev-pkgs; [
+    ++ (with pkgs.pkgsBuildHost; [
       bash
       cargo-bolero
       cargo-deny
@@ -132,6 +137,7 @@ let
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
       npins
+      oras
       pkg-config
       rust-toolchain
       skopeo
@@ -149,7 +155,7 @@ let
       LIBRARY_PATH = "${sysroot}/lib";
       PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
       LIBCLANG_PATH = "${devroot}/lib";
-      GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/fabric/config/crd/bases";
+      GW_CRD_PATH = "${pkgs.pkgsBuildHost.gateway-crd}/src/fabric/config/crd/bases";
     };
   };
   justfileFilter = p: _type: builtins.match ".*\.justfile$" p != null;
@@ -159,13 +165,17 @@ let
   outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
-      p: t:
+      full-path: t:
+      let
+        p = baseNameOf full-path;
+      in
       (justfileFilter p t)
       || (markdownFilter p t)
       || (jsonFilter p t)
       || (cHeaderFilter p t)
-      || ((outputsFilter p t) && (craneLib.filterCargoSources p t));
-    src = ./.;
+      || ((outputsFilter p t) && (craneLib.filterCargoSources full-path t));
+    src = lib.cleanSource ./.;
+    name = "source";
   };
   cargoVendorDir = craneLib.vendorMultipleCargoDeps {
     cargoLockList = [
@@ -173,17 +183,22 @@ let
       "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
     ];
   };
-  target = pkgs.stdenv'.targetPlatform.rust.rustcTarget;
-  is-cross-compile = dev-pkgs.stdenv.hostPlatform.rust.rustcTarget != target;
-  cxx = if is-cross-compile then "${target}-clang++" else "clang++";
-  strip = if is-cross-compile then "${target}-strip" else "strip";
-  objcopy = if is-cross-compile then "${target}-objcopy" else "objcopy";
+  ctarget = pkgs.stdenv'.targetPlatform.rust.rustcTarget;
+  rustc-target =
+    if platform == "wasm32-wasip1" then
+      "wasm32-wasip1"
+    else
+      pkgs.stdenv'.targetPlatform.rust.rustcTarget;
+  is-cross-compile = pkgs.stdenv'.hostPlatform.rust.rustcTarget != ctarget;
+  cxx = if is-cross-compile then "${ctarget}-clang++" else "clang++";
+  strip = if is-cross-compile then "${ctarget}-strip" else "strip";
+  objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
   package-list = builtins.fromJSON (
     builtins.readFile (
       pkgs.runCommandLocal "package-list"
         {
-          TOMLQ = "${dev-pkgs.yq}/bin/tomlq";
-          JQ = "${dev-pkgs.jq}/bin/jq";
+          TOMLQ = "${pkgs.pkgsBuildHost.yq}/bin/tomlq";
+          JQ = "${pkgs.pkgsBuildHost.jq}/bin/jq";
         }
         ''
           $TOMLQ -r '.workspace.members | sort[]' ${src}/Cargo.toml | while read -r p; do
@@ -197,7 +212,7 @@ let
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
     "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
-    "--target=${target}"
+    "--target=${rustc-target}"
   ]
   ++ (if default-features == "false" then [ "--no-default-features" ] else [ ])
   ++ (
@@ -207,6 +222,7 @@ let
       [ ]
   );
   invoke =
+    # if platform != "wasm32-wasip1" then
     {
       builder,
       args ? {
@@ -234,7 +250,7 @@ let
         removeReferencesToVendorDir = true;
 
         nativeBuildInputs = [
-          (dev-pkgs.kopium)
+          (pkgs.pkgsBuildHost.kopium)
           cargo-nextest
           llvmPackages'.clang
           llvmPackages'.lld
@@ -253,28 +269,32 @@ let
           C_INCLUDE_PATH = "${sysroot}/include";
           LIBRARY_PATH = "${sysroot}/lib";
           PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
-          GW_CRD_PATH = "${dev-pkgs.gateway-crd}/src/fabric/config/crd/bases";
+          GW_CRD_PATH = "${pkgs.pkgsBuildHost.gateway-crd}/src/fabric/config/crd/bases";
           RUSTC_BOOTSTRAP = "1";
-          RUSTFLAGS = builtins.concatStringsSep " " (
-            profile'.RUSTFLAGS
-            ++ [
-              "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
-              "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
-              "-Clink-arg=-L${sysroot}/lib"
-              # NOTE: this is basically a trick to make our source code available to debuggers.
-              # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
-              # This is intended to map source code paths to generic, relative, or redacted paths.
-              # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
-              # source code in the debug info from the current working directory to ${src} (the nix store path where we
-              # have copied our source code).
-              #
-              # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
-              # we strip out of the final binaries we cook and include a gdbserver binary in some
-              # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
-              # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
-              "--remap-path-prefix==${src}"
-            ]
-          );
+          RUSTFLAGS =
+            if rustc-target != "wasm32-wasip1" then
+              builtins.concatStringsSep " " (
+                profile'.RUSTFLAGS
+                ++ [
+                  "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
+                  "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
+                  "-Clink-arg=-L${sysroot}/lib"
+                  # NOTE: this is basically a trick to make our source code available to debuggers.
+                  # Normally remap-path-prefix takes the form --remap-path-prefix=FROM=TO where FROM and TO are directories.
+                  # This is intended to map source code paths to generic, relative, or redacted paths.
+                  # We are sorta using that mechanism in reverse here in that the empty FROM in the next expression maps our
+                  # source code in the debug info from the current working directory to ${src} (the nix store path where we
+                  # have copied our source code).
+                  #
+                  # This is nice in that it should allow us to include ${src} in a container with gdb / lldb + the debug files
+                  # we strip out of the final binaries we cook and include a gdbserver binary in some
+                  # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
+                  # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
+                  "--remap-path-prefix==${src}"
+                ]
+              )
+            else
+              "";
         };
       }
       // args
@@ -291,14 +311,28 @@ let
         postBuild = (orig.postBuild or "") + ''
           unset RUSTFLAGS;
         '';
-        postInstall = (orig.postInstall or "") + ''
-          mkdir -p $debug/bin
-          for f in $out/bin/*; do
-            mv "$f" "$debug/bin/$(basename "$f")"
-            ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
-            ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
-          done
-        '';
+        postInstall =
+          (orig.postInstall or "")
+          + (
+            if rustc-target != "wasm32-wasip1" then
+              ''
+                mkdir -p $debug/bin
+                for f in $out/bin/*; do
+                  mv "$f" "$debug/bin/$(basename "$f")"
+                  ${strip} --strip-debug "$debug/bin/$(basename "$f")" -o "$f"
+                  ${objcopy} --add-gnu-debuglink="$debug/bin/$(basename "$f")" "$f"
+                done
+              ''
+            else
+              ''
+                mkdir -p $debug/bin
+                for f in $out/bin/*; do
+                  mv "$f" "$debug/bin/$(basename "$f")"
+                  ${pkgs.pkgsBuildHost.binaryen}/bin/wasm-opt "$debug/bin/$(basename "$f")" --strip-debug -O4 -o "$f"
+                  # sadly there is no equivalent of gnu-debuglink in wasm world yet
+                done
+              ''
+          );
         postFixup = (orig.postFixup or "") + ''
           rm -f $out/target.tar.zst
         '';
@@ -331,6 +365,38 @@ let
   workspace = builtins.mapAttrs (
     dir: pname:
     workspace-builder {
+      inherit pname;
+    }
+  ) package-list;
+
+  workspace-builder-wasm =
+    {
+      pname ? null,
+      cargoArtifacts ? null,
+    }:
+    pkgs.callPackage invoke {
+      builder = craneLib.buildPackage;
+      args = {
+        inherit pname cargoArtifacts;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargoBuildLog=$(mktemp cargoBuildLogXXXX.json);"
+            "cargo"
+            "build"
+            "--package=${pname}"
+            "--profile=${cargo-profile}"
+          ]
+          ++ cargo-cmd-prefix
+          ++ [
+            "--message-format json-render-diagnostics > $cargoBuildLog"
+          ]
+        );
+      };
+    };
+
+  workspace-wasm = builtins.mapAttrs (
+    dir: pname:
+    workspace-builder-wasm {
       inherit pname;
     }
   ) package-list;
@@ -464,12 +530,12 @@ let
         ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/bin/dataplane"
         ln -s "${workspace.cli}/bin/cli" "$tmp/bin/cli"
         ln -s "${workspace.init}/bin/dataplane-init" "$tmp/bin/dataplane-init"
-        ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
-        ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
-        ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
         for i in "${pkgs.pkgsHostHost.busybox}/bin/"*; do
             ln -s "${pkgs.pkgsHostHost.busybox}/bin/busybox" "$tmp/bin/$(basename "$i")"
         done
+        ln -s "${workspace.dataplane}/bin/dataplane" "$tmp/dataplane"
+        ln -s "${workspace.init}/bin/dataplane-init" "$tmp/dataplane-init"
+        ln -s "${workspace.cli}/bin/cli" "$tmp/dataplane-cli"
         # we take some care to make the tar file reproducible here
         tar \
           --create \
@@ -595,7 +661,7 @@ let
     contents = pkgs.buildEnv {
       name = "dataplane-frr-env";
       pathsToLink = [ "/" ];
-      paths = with frr-pkgs; [
+      paths = with pkgs; [
         bash
         coreutils
         dockerTools.usrBinEnv
@@ -615,7 +681,7 @@ let
     };
 
     fakeRootCommands = ''
-      #!${frr-pkgs.bash}/bin/bash
+      #!${pkgs.bash}/bin/bash
       set -euxo pipefail
       mkdir /tmp
       mkdir -p /run/frr/hh
@@ -642,10 +708,9 @@ let
       pathsToLink = [
         "/"
       ];
-      paths = with frr-pkgs; [
+      paths = with pkgs; [
         bash
         coreutils
-        dockerTools.fakeNss
         dockerTools.usrBinEnv
         # TODO: frr-config's docker-start launches /bin/frr-agent which is not
         # present in the host container.  A host-specific entrypoint script may
@@ -662,7 +727,7 @@ let
       ];
     };
     fakeRootCommands = ''
-      #!${frr-pkgs.bash}/bin/bash
+      #!${pkgs.bash}/bin/bash
       set -euxo pipefail
       mkdir /tmp
       mkdir -p /run/frr/hh
@@ -686,11 +751,9 @@ in
   inherit
     clippy
     containers
-    dev-pkgs
     devenv
     devroot
     docs
-    frr-pkgs
     dataplane
     package-list
     pkgs
@@ -698,6 +761,7 @@ in
     sysroot
     tests
     workspace
+    workspace-wasm
     ;
   profile = profile';
   platform = platform';
