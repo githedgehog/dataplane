@@ -65,7 +65,7 @@ hardware = { path = "./hardware", package = "dataplane-hardware", features = [] 
 id = { path = "./id", package = "dataplane-id", features = [] }
 init = { path = "./init", package = "dataplane-init", features = [] }
 interface-manager = { path = "./interface-manager", package = "dataplane-interface-manager", features = [] }
-k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", features = [] }
+k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", default-features = false, features = [] }
 k8s-less = { path = "./k8s-less", package = "dataplane-k8s-less", features = [] }
 left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
@@ -129,7 +129,6 @@ kube-core = { version = "3.1.0", default-features = false, features = [] }
 left-right = { version = "0.11.7", default-features = false, features = [] }
 libc = { version = "1.0.0-alpha.3", default-features = false, features = [] }
 linkme = { version = "0.3.35", default-features = false, features = [] }
-linux-raw-sys = { version = "0.12.1", default-features = false, features = [] }
 log = { version = "0.4.29", default-features = false, features = [] } # TODO: try to remove this
 loom = { version = "0.7.2", default-features = false, features = [] }
 memmap2 = { version = "0.9.10", default-features = false, features = [] }
@@ -141,7 +140,7 @@ multi_index_map = { version = "0.15.1", default-features = false, features = [] 
 n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.9", default-features = false, features = [], package = "n-vm" }
 netdev = { version = "0.41.0", default-features = false, features = [] }
 nix = { version = "0.31.2", default-features = false, features = [] }
-netgauze-bgp-pkt = { version = "0.10.0", features = [] } 
+netgauze-bgp-pkt = { version = "0.10.0", features = [] }
 netgauze-bmp-pkt = { version = "0.10.0", features = ["codec"] }
 num-derive = { version = "0.4.2", default-features = false, features = [] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
@@ -178,9 +177,9 @@ strum_macros = { version = "0.28.0", default-features = false, features = [] }
 syn = { version = "2.0.117", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
-tokio = { version = "1.50.0", default-features = false, features = ["rt-multi-thread"] }
+tokio = { version = "1.50.0", default-features = false, features = [] }
 tracing = { version = "0.1.44", default-features = false, features = [] }
-tokio-util = { version = "0.7.18", default-features = false, features = ["codec"] }
+tokio-util = { version = "0.7.18", default-features = false, features = [] }
 tonic = { version = "0.14.5", default-features = false, features = [] }
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [] }
