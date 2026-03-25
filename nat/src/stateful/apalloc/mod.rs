@@ -8,9 +8,9 @@
 //! Here is an attempt to visualize the allocator structure:
 //!
 //! ```text
-//! ┌───────────────────┐
-//! │NatDefaultAllocator├─────────────────────┬──────┬──────┐
-//! └────────┬──────────┘                     │      │      │
+//! ┌────────────┐
+//! │NatAllocator├────────────────────────────┬──────┬──────┐
+//! └────────┬───┘                            │      │      │
 //!          │                                │      │      │
 //! ┌────────▼────────┐         ┌─────────────▼──────▼──────▼───┐
 //! │PoolTable (src44)│         │PoolTable (src66, dst44, dst66)│
@@ -155,7 +155,7 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// NatDefaultAllocator
+// NatAllocator
 ///////////////////////////////////////////////////////////////////////////////
 
 /// [`AllocatedIpPort`] is the public type for the object returned by our allocator.
@@ -170,21 +170,20 @@ impl<I: NatIpWithBitmap> Display for AllocatedIpPort<I> {
     }
 }
 
-/// [`NatDefaultAllocator`] is our default IP addresses and ports allocator for stateful NAT,
-/// implementing the [`NatAllocator`] trait.
+/// [`NatAllocator`] is the IP addresses and ports allocator for stateful NAT.
 ///
 /// Internally, it contains various bitmap-based IP pools, and each IP address allocated from these
 /// pools contains a port allocator.
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
-pub struct NatDefaultAllocator {
+pub struct NatAllocator {
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
     #[cfg(test)]
     disable_randomness: bool,
 }
 
-impl NatDefaultAllocator {
+impl NatAllocator {
     fn new() -> Self {
         Self {
             pools_src44: PoolTable::new(),

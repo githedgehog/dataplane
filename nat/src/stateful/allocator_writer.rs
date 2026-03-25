@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateful::apalloc::NatDefaultAllocator;
+use crate::stateful::apalloc::NatAllocator;
 use arc_swap::ArcSwapOption;
 use config::ConfigError;
 use config::external::overlay::vpc::Peering;
@@ -43,7 +43,7 @@ impl StatefulNatConfig {
 #[derive(Debug)]
 pub struct NatAllocatorWriter {
     config: StatefulNatConfig,
-    allocator: Arc<ArcSwapOption<NatDefaultAllocator>>,
+    allocator: Arc<ArcSwapOption<NatAllocator>>,
 }
 
 impl NatAllocatorWriter {
@@ -112,15 +112,15 @@ impl NatAllocatorWriter {
         self.update_allocator_and_set_randomness(vpc_table, true)
     }
 
-    fn build_new_allocator(config: &StatefulNatConfig) -> Result<NatDefaultAllocator, ConfigError> {
-        NatDefaultAllocator::build_nat_allocator(config)
+    fn build_new_allocator(config: &StatefulNatConfig) -> Result<NatAllocator, ConfigError> {
+        NatAllocator::build_nat_allocator(config)
     }
 
     fn update_existing_allocator(
-        _allocator: &NatDefaultAllocator,
+        _allocator: &NatAllocator,
         _old_config: &StatefulNatConfig,
         new_config: &StatefulNatConfig,
-    ) -> Result<NatDefaultAllocator, ConfigError> {
+    ) -> Result<NatAllocator, ConfigError> {
         // TODO: Report state from old allocator to new allocator
         //
         // This means reporting all allocated IPs (and ports for these IPs) from the old allocator
@@ -149,17 +149,17 @@ impl Default for NatAllocatorWriter {
 }
 
 #[derive(Debug, Clone)]
-pub struct NatAllocatorReader(Arc<ArcSwapOption<NatDefaultAllocator>>);
+pub struct NatAllocatorReader(Arc<ArcSwapOption<NatAllocator>>);
 
 impl NatAllocatorReader {
-    pub fn get(&self) -> Option<Arc<NatDefaultAllocator>> {
+    pub fn get(&self) -> Option<Arc<NatAllocator>> {
         self.0.load().clone()
     }
     #[must_use]
     pub fn factory(&self) -> NatAllocatorReaderFactory {
         NatAllocatorReaderFactory(self.clone())
     }
-    pub fn inner(&self) -> Arc<ArcSwapOption<NatDefaultAllocator>> {
+    pub fn inner(&self) -> Arc<ArcSwapOption<NatAllocator>> {
         self.0.clone()
     }
 }
