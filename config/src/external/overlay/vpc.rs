@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use tracing::{debug, error, warn};
 
-use crate::converters::k8s::config::peering;
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;

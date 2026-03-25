@@ -15,7 +15,6 @@
     clippy::expect_used,
     clippy::panic
 )]
-#![allow(clippy::redundant_closure_for_method_calls)]
 
 pub mod converters;
 pub mod display;
