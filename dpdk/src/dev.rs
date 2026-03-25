@@ -225,7 +225,7 @@ pub struct DevConfig {
 /// Errors that can occur when configuring a DPDK ethernet device.
 pub enum DevConfigError {
     /// A driver-specific error occurred when configuring the ethernet device.
-    DriverSpecificError(&'static str),
+    DriverSpecificError(String),
 }
 
 impl DevConfig {
@@ -275,9 +275,13 @@ impl DevConfig {
             // NOTE: it is not clear from the docs if `ret` is going to be a valid errno value.
             // I am assuming it is for now.
             // TODO: see if we can determine if `ret` is a valid errno value.
+            //
+            // We must copy the string into an owned String because rte_strerror
+            // may return a pointer to a thread-local buffer that can be
+            // overwritten by the next call to rte_strerror on this thread.
             let rte_error = unsafe { CStr::from_ptr(rte_strerror(ret)) }
-                .to_str()
-                .unwrap_or("Unknown error");
+                .to_string_lossy()
+                .into_owned();
             return Err(DevConfigError::DriverSpecificError(rte_error));
         }
         Ok(Dev {
