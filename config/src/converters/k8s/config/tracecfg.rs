@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#[cfg(unix)]
 use tracectl::LevelFilter;
+#[cfg(not(unix))]
+use tracing::metadata::LevelFilter;
 
 use k8s_intf::gateway_agent_crd::GatewayAgentGatewayLogs;
 
