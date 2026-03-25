@@ -225,6 +225,7 @@ fn main() {
         error!("Failed to start mgmt: {e}. Stopping dataplane...");
         std::process::exit(-1);
     }
+    info!("Management is running now");
 
     /* start driver with the provided pipeline builder */
     let e = match args.driver_name() {
