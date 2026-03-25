@@ -6,7 +6,7 @@
 //! (`Ipv4Addr` and `Ipv6Addr`) that it works with.
 
 use super::super::NatIp;
-use super::super::allocator::{AllocationResult, AllocatorError};
+use super::super::allocation::{AllocationResult, AllocatorError};
 use super::AllocatedIpPort;
 use crate::stateful::apalloc::NatAllocator;
 use crate::stateful::apalloc::alloc::{map_address, map_offset};

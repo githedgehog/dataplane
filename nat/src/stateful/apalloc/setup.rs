@@ -6,7 +6,7 @@ use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatAllocator, PoolTable, PoolTableKey};
 use crate::ranges::IpRange;
 use crate::stateful::NatIp;
-use crate::stateful::allocator::AllocatorError;
+use crate::stateful::allocation::AllocatorError;
 use crate::stateful::allocator_writer::StatefulNatConfig;
 use config::ConfigError;
 use config::external::overlay::vpc::Peering;
