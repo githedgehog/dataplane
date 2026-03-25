@@ -101,6 +101,11 @@ impl RouteMap {
             entries: BTreeMap::new(),
         }
     }
+    /// Add an entry to the route map.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sequence number is a duplicate.
     pub fn add_entry(&mut self, seq: Option<u32>, entry: RouteMapEntry) -> ConfigResult {
         let seq = if let Some(n) = seq {
             n

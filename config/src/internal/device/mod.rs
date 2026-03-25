@@ -22,6 +22,11 @@ impl DeviceConfig {
     pub fn set_tracing(&mut self, tracing: TracingConfig) {
         self.tracing = Some(tracing);
     }
+    /// Validate the device configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device configuration is invalid.
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating device configuration..");
         if let Some(tracing) = &self.tracing {
