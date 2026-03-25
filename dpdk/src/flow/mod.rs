@@ -17,7 +17,11 @@ use core::ffi::c_void;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
-use net;
+use net::eth::ethtype::EthType;
+use net::eth::mac::Mac;
+use net::ip::dscp::Dscp;
+use net::ip::ecn::Ecn;
+use net::vlan::Vid;
 use tracing::error;
 
 /// Flow manager
@@ -641,22 +645,16 @@ impl<T> FlowSpec<T> {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub struct MacAddr(pub [u8; 6]);
-
-#[derive(Debug, Clone, Copy)]
-pub struct EtherType(pub u16);
-
 pub struct EthHeader {
-    src: MacAddr,
-    dst: MacAddr,
-    ether_type: EtherType,
+    src: Mac,
+    dst: Mac,
+    ether_type: EthType,
 }
 
 impl EthHeader {
     /// Create a new Ethernet header specification.
     #[must_use]
-    pub fn new(src: MacAddr, dst: MacAddr, ether_type: EtherType) -> Self {
+    pub fn new(src: Mac, dst: Mac, ether_type: EthType) -> Self {
         Self {
             src,
             dst,
@@ -666,19 +664,19 @@ impl EthHeader {
 
     /// Source MAC address.
     #[must_use]
-    pub fn src(&self) -> MacAddr {
+    pub fn src(&self) -> Mac {
         self.src
     }
 
     /// Destination MAC address.
     #[must_use]
-    pub fn dst(&self) -> MacAddr {
+    pub fn dst(&self) -> Mac {
         self.dst
     }
 
     /// Ethernet type field.
     #[must_use]
-    pub fn ether_type(&self) -> EtherType {
+    pub fn ether_type(&self) -> EthType {
         self.ether_type
     }
 }
@@ -694,11 +692,11 @@ impl From<EthHeader> for dpdk_sys::rte_flow_item_eth {
             src_addr: dpdk_sys::rte_ether_addr {
                 addr_bytes: header.src.0,
             },
-            ether_type: hton_16(header.ether_type.0),
+            ether_type: hton_16(header.ether_type.as_u16()),
         };
-        if header.ether_type.0 == 0x8100
-            || header.ether_type.0 == 0x88a8
-            || header.ether_type.0 == 0x9100
+        if header.ether_type == EthType::VLAN
+            || header.ether_type == EthType::VLAN_QINQ
+            || header.ether_type == EthType::VLAN_DOUBLE_TAGGED
         {
             eth.set_has_vlan(1);
         }
@@ -709,9 +707,9 @@ impl From<EthHeader> for dpdk_sys::rte_flow_item_eth {
 pub struct VlanTci(pub u16);
 
 pub struct VlanHeader {
-    pub ether_type: EtherType,
+    pub ether_type: EthType,
     pub tci: VlanTci,
-    pub inner_ether_type: EtherType,
+    pub inner_ether_type: EthType,
     // TODO: figure out why DPDK lets you spec TCI twice
 }
 
@@ -918,13 +916,13 @@ pub enum FlowAction {
     // Security  // TODO: expose security as an action
     PopVlan,
     PushVlan {
-        ethertype: EtherType,
+        ethertype: EthType,
     },
     SetVlanVid {
-        vlan_id: net::vlan::Vid,
+        vlan_id: Vid,
     },
     // SetVlanPcp { // TODO: expose PCP as an action
-    //     pcp: net::vlan::Pcp,
+    //     pcp: net::vlan::Pcp, // TODO: import Pcp when exposed
     // },
     // PopMpls // TODO: expose MPLS as an action
     // PushMpls // TODO: expose MPLS as an action
@@ -1084,17 +1082,17 @@ pub enum FlowFieldId {
 #[derive(Debug, Clone, Copy)]
 pub enum SetFlowField {
     /// Dest mac
-    MacDst(MacAddr),
+    MacDst(Mac),
     /// Source mac
-    MacSrc(MacAddr),
+    MacSrc(Mac),
     /// Vlan ethertype
-    VlanType(EtherType),
+    VlanType(EthType),
     /// Vlan VID
-    VlanVid(net::vlan::Vid),
+    VlanVid(Vid),
     /// Ethertype
-    EtherType(EtherType),
+    EtherType(EthType),
     /// IPv4 DSCP
-    Ipv4Dscp(u8),
+    Ipv4Dscp(Dscp),
     /// IPv4 TTL
     Ipv4Ttl(u8),
     /// Ipv4 source
@@ -1102,7 +1100,7 @@ pub enum SetFlowField {
     /// Ipv4 dest
     Ipv4Dst(core::net::Ipv4Addr),
     /// Ipv6 DSCP
-    Ipv6Dscp(u8),
+    Ipv6Dscp(Dscp),
     /// Ipv6 hop limit (ttl)
     Ipv6HopLimit(u8),
     /// Ipv6 source
@@ -1130,9 +1128,9 @@ pub enum SetFlowField {
     /// Metadata
     Meta(MatchMeta),
     /// Ipv4 ECN
-    IpV4Ecn(u8),
+    IpV4Ecn(Ecn),
     /// IPv6 ECN
-    IpV6Ecn(u8),
+    IpV6Ecn(Ecn),
 }
 
 /// A wrapper around a `rte_flow_action_modify_field` that specifies the
@@ -1183,23 +1181,23 @@ impl SetFlowField {
 
         let conf = match self {
             SetFlowField::MacDst(mac) => {
-                set_field(FlowFieldId::MacDst, pack(&mac.0), size_of::<MacAddr>() as u32)
+                set_field(FlowFieldId::MacDst, pack(&mac.0), size_of::<Mac>() as u32)
             }
             SetFlowField::MacSrc(mac) => {
-                set_field(FlowFieldId::MacSrc, pack(&mac.0), size_of::<MacAddr>() as u32)
+                set_field(FlowFieldId::MacSrc, pack(&mac.0), size_of::<Mac>() as u32)
             }
             SetFlowField::VlanType(et) => {
-                set_field(FlowFieldId::VlanType, pack(&et.0.to_be_bytes()), size_of::<u16>() as u32)
+                set_field(FlowFieldId::VlanType, pack(&et.as_u16().to_be_bytes()), size_of::<u16>() as u32)
             }
             SetFlowField::VlanVid(vid) => {
                 let raw: u16 = (*vid).into();
                 set_field(FlowFieldId::VlanVid, pack(&raw.to_be_bytes()), size_of::<u16>() as u32)
             }
             SetFlowField::EtherType(et) => {
-                set_field(FlowFieldId::EtherType, pack(&et.0.to_be_bytes()), size_of::<u16>() as u32)
+                set_field(FlowFieldId::EtherType, pack(&et.as_u16().to_be_bytes()), size_of::<u16>() as u32)
             }
             SetFlowField::Ipv4Dscp(dscp) => {
-                set_field(FlowFieldId::Ipv4Dscp, pack(&[*dscp]), size_of::<u8>() as u32)
+                set_field(FlowFieldId::Ipv4Dscp, pack(&[dscp.value()]), size_of::<u8>() as u32)
             }
             SetFlowField::Ipv4Ttl(ttl) => {
                 set_field(FlowFieldId::Ipv4Ttl, pack(&[*ttl]), size_of::<u8>() as u32)
@@ -1211,7 +1209,7 @@ impl SetFlowField {
                 set_field(FlowFieldId::Ipv4Dst, pack(&addr.octets()), 4)
             }
             SetFlowField::Ipv6Dscp(dscp) => {
-                set_field(FlowFieldId::Ipv6Dscp, pack(&[*dscp]), size_of::<u8>() as u32)
+                set_field(FlowFieldId::Ipv6Dscp, pack(&[dscp.value()]), size_of::<u8>() as u32)
             }
             SetFlowField::Ipv6HopLimit(hl) => {
                 set_field(FlowFieldId::Ipv6HopLimit, pack(&[*hl]), size_of::<u8>() as u32)
@@ -1258,10 +1256,10 @@ impl SetFlowField {
                 set_field(FlowFieldId::Meta, pack(&meta.data.to_be_bytes()), size_of::<u32>() as u32)
             }
             SetFlowField::IpV4Ecn(ecn) => {
-                set_field(FlowFieldId::Ipv4Ecn, pack(&[*ecn]), size_of::<u8>() as u32)
+                set_field(FlowFieldId::Ipv4Ecn, pack(&[ecn.value()]), size_of::<u8>() as u32)
             }
             SetFlowField::IpV6Ecn(ecn) => {
-                set_field(FlowFieldId::Ipv6Ecn, pack(&[*ecn]), size_of::<u8>() as u32)
+                set_field(FlowFieldId::Ipv6Ecn, pack(&[ecn.value()]), size_of::<u8>() as u32)
             }
         };
         SetFieldAction { rule: *self, conf }
@@ -1409,11 +1407,11 @@ fn eth_to_c(header: &EthHeader) -> dpdk_sys::rte_flow_item_eth {
         src_addr: dpdk_sys::rte_ether_addr {
             addr_bytes: header.src.0,
         },
-        ether_type: hton_16(header.ether_type.0),
+        ether_type: hton_16(header.ether_type.as_u16()),
     };
-    if header.ether_type.0 == 0x8100
-        || header.ether_type.0 == 0x88a8
-        || header.ether_type.0 == 0x9100
+    if header.ether_type == EthType::VLAN
+        || header.ether_type == EthType::VLAN_QINQ
+        || header.ether_type == EthType::VLAN_DOUBLE_TAGGED
     {
         eth.set_has_vlan(1);
     }
@@ -1741,7 +1739,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
             }
             FlowAction::PushVlan { ethertype } => {
                 let conf = dpdk_sys::rte_flow_action_of_push_vlan {
-                    ethertype: ethertype.0.to_be(),
+                    ethertype: ethertype.as_u16().to_be(),
                 };
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
