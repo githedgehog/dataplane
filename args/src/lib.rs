@@ -1106,7 +1106,11 @@ mod tests {
     use hardware::pci::function::Function;
     use net::interface::InterfaceName;
 
-    use crate::{InterfaceArg, PortArg};
+    use crate::{
+        CmdArgs, DriverConfigSection, InterfaceArg, InvalidCmdArguments, LaunchConfiguration,
+        PortArg, TracingDisplayOption, UnsupportedByDriver,
+    };
+    use clap::Parser;
     use std::str::FromStr;
 
     #[test]
@@ -1240,5 +1244,247 @@ mod tests {
                     "expected UnknownDiscriminant, got {err:?}"
                 );
             });
+    }
+
+    // -------------------------------------------------------------------
+    // CmdArgs → LaunchConfiguration conversion tests
+    // -------------------------------------------------------------------
+
+    /// Helper to parse a command line into [`CmdArgs`] without process exit on
+    /// error.
+    fn parse_args(args: &[&str]) -> CmdArgs {
+        let mut full_args = vec!["dataplane"];
+        full_args.extend_from_slice(args);
+        CmdArgs::parse_from(full_args)
+    }
+
+    #[test]
+    fn try_from_kernel_driver_with_interface() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert!(matches!(config.driver, DriverConfigSection::Kernel(_)));
+        if let DriverConfigSection::Kernel(ref k) = config.driver {
+            assert_eq!(k.interfaces.len(), 1);
+            assert_eq!(k.interfaces[0].interface.as_ref(), "eth0");
+        }
+    }
+
+    #[test]
+    fn try_from_kernel_driver_multiple_interfaces() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1,eth1=kernel@enp3s0",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        if let DriverConfigSection::Kernel(ref k) = config.driver {
+            assert_eq!(k.interfaces.len(), 2);
+        } else {
+            panic!("expected kernel driver config");
+        }
+    }
+
+    #[test]
+    fn try_from_dpdk_driver_with_pci_interface() {
+        let args = parse_args(&[
+            "--driver",
+            "dpdk",
+            "--interface",
+            "eth0=pci@0000:02:01.0",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert!(matches!(config.driver, DriverConfigSection::Dpdk(_)));
+        if let DriverConfigSection::Dpdk(ref d) = config.driver {
+            assert_eq!(d.interfaces.len(), 1);
+            // Two EAL args per interface: "--allow" and the PCI address.
+            assert_eq!(d.eal_args.len(), 2);
+            assert_eq!(d.eal_args[0], "--allow");
+            assert_eq!(d.eal_args[1], "0000:02:01.0");
+        }
+    }
+
+    #[test]
+    fn try_from_no_driver_is_error() {
+        let args = parse_args(&["--interface", "eth0=kernel@enp2s1"]);
+        let err = LaunchConfiguration::try_from(args).unwrap_err();
+        assert!(matches!(err, InvalidCmdArguments::NoDriverSpecified));
+    }
+
+    #[test]
+    fn try_from_invalid_driver_is_error() {
+        let args = parse_args(&[
+            "--driver",
+            "foobar",
+            "--interface",
+            "eth0=kernel@enp2s1",
+        ]);
+        let err = LaunchConfiguration::try_from(args).unwrap_err();
+        assert!(
+            matches!(err, InvalidCmdArguments::InvalidDriver(ref d) if d == "foobar"),
+            "expected InvalidDriver, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn try_from_dpdk_with_kernel_port_is_error() {
+        let args = parse_args(&[
+            "--driver",
+            "dpdk",
+            "--interface",
+            "eth0=kernel@enp2s1",
+        ]);
+        let err = LaunchConfiguration::try_from(args).unwrap_err();
+        assert!(
+            matches!(err, InvalidCmdArguments::UnsupportedByDriver(UnsupportedByDriver::Dpdk(_))),
+            "expected UnsupportedByDriver::Dpdk, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn try_from_dpdk_with_missing_port_is_error() {
+        let args = parse_args(&["--driver", "dpdk", "--interface", "eth0"]);
+        let err = LaunchConfiguration::try_from(args).unwrap_err();
+        assert!(
+            matches!(err, InvalidCmdArguments::MissingPortSpecifier(_)),
+            "expected MissingPortSpecifier, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn try_from_bmp_disabled_by_default() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert!(config.bmp.is_none());
+    }
+
+    #[test]
+    fn try_from_bmp_enabled() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+            "--bmp-enable",
+            "--bmp-address",
+            "127.0.0.1:5555",
+            "--bmp-interval",
+            "2000",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        let bmp = config.bmp.unwrap();
+        assert_eq!(bmp.address.port(), 5555);
+        assert_eq!(bmp.interval, std::time::Duration::from_millis(2000));
+    }
+
+    #[test]
+    fn try_from_tracing_show_flags() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+            "--show-tracing-tags",
+            "--show-tracing-targets",
+            "--tracing",
+            "default=info,nat=debug",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert_eq!(config.tracing.show.tags, TracingDisplayOption::Show);
+        assert_eq!(config.tracing.show.targets, TracingDisplayOption::Show);
+        assert_eq!(
+            config.tracing.config.as_deref(),
+            Some("default=info,nat=debug")
+        );
+    }
+
+    #[test]
+    fn try_from_tracing_defaults_to_hide() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert_eq!(config.tracing.show.tags, TracingDisplayOption::Hide);
+        assert_eq!(config.tracing.show.targets, TracingDisplayOption::Hide);
+        assert!(config.tracing.config.is_none());
+    }
+
+    #[test]
+    fn try_from_socket_path_defaults() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert_eq!(
+            config.routing.control_plane_socket,
+            crate::DEFAULT_DP_UX_PATH
+        );
+        assert_eq!(config.cli.cli_sock_path, crate::DEFAULT_DP_UX_PATH_CLI);
+        assert_eq!(
+            config.routing.frr_agent_socket,
+            crate::DEFAULT_FRR_AGENT_PATH
+        );
+    }
+
+    #[test]
+    fn try_from_custom_socket_paths() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+            "--cpi-sock-path",
+            "/tmp/cpi.sock",
+            "--cli-sock-path",
+            "/tmp/cli.sock",
+            "--frr-agent-path",
+            "/tmp/frr.sock",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert_eq!(config.routing.control_plane_socket, "/tmp/cpi.sock");
+        assert_eq!(config.cli.cli_sock_path, "/tmp/cli.sock");
+        assert_eq!(config.routing.frr_agent_socket, "/tmp/frr.sock");
+    }
+
+    #[test]
+    fn try_from_gateway_name() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+            "--name",
+            "my-gateway",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert_eq!(config.general.name.as_deref(), Some("my-gateway"));
+    }
+
+    #[test]
+    fn try_from_no_name_is_none() {
+        let args = parse_args(&[
+            "--driver",
+            "kernel",
+            "--interface",
+            "eth0=kernel@enp2s1",
+        ]);
+        let config = LaunchConfiguration::try_from(args).unwrap();
+        assert!(config.general.name.is_none());
     }
 }

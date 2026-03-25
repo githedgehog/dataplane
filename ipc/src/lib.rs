@@ -93,6 +93,7 @@ pub struct MemFile(std::fs::File);
 /// The (unsafe) method [`FinalizedMemFile::from_fd`] takes this action
 /// automatically, and is the recommended way to receive and read the file from
 /// child processes.
+#[derive(Debug)]
 pub struct FinalizedMemFile(MemFile);
 
 impl MemFile {
