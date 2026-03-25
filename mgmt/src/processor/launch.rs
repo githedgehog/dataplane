@@ -41,7 +41,27 @@ pub struct MgmtParams {
     pub processor_params: ConfigProcessorParams,
 }
 
-const STATUS_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+use std::time::Duration;
+const STATUS_UPDATE_INTERVAL: Duration = Duration::from_secs(15);
+const K8S_INIT_RETRY_TIME: Duration = Duration::from_secs(5);
+const K8S_INIT_MAX_ATTEMPTS: u8 = 10;
+
+async fn k8s_mgmt_init(k8s_client: &K8sClient) -> Result<(), LaunchError> {
+    let mut retries = K8S_INIT_MAX_ATTEMPTS;
+
+    debug!("Initializing k8s client...");
+    while let Err(e) = k8s_client.init().await {
+        warn!("Could not initialize k8s state: {e}. Will retry up to {retries} more times");
+        tokio::time::sleep(K8S_INIT_RETRY_TIME).await;
+        retries -= 1;
+        if retries == 0 {
+            error!("Maximum k8s initialization attempts reached. Giving up...");
+            return Err(LaunchError::K8sClientError(e));
+        }
+    }
+    debug!("K8s initialization succeeded");
+    Ok(())
+}
 
 /// Start the mgmt service with either type of socket
 pub fn start_mgmt(
@@ -79,10 +99,8 @@ pub fn start_mgmt(
                     let k8s_client = Arc::new(K8sClient::new(params.hostname.as_str(), client));
                     let k8s_client1 = k8s_client.clone();
 
-                    k8s_client.init().await.map_err(|e| {
-                        error!("Failed to initialize k8s state: {}", e);
-                        LaunchError::K8sClientError(e)
-                    })?;
+                    k8s_mgmt_init(&k8s_client).await?;
+
                     let mut processor_handle = Some(tokio::spawn(async { processor.run().await }));
                     let mut k8s_config_handle = Some(tokio::spawn(async move { K8sClient::k8s_start_config_watch(k8s_client).await }));
                     let mut k8s_status_handle = Some(tokio::spawn(async move {
@@ -124,6 +142,7 @@ pub fn start_mgmt(
                             break;
                         }
                     }
+                    debug!("Mgmt components successfully started");
                     Ok(())
                 })
             }
