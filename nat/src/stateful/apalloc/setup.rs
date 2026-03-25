@@ -3,7 +3,7 @@
 
 use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
-use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
+use super::{NatAllocator, PoolTable, PoolTableKey};
 use crate::ranges::IpRange;
 use crate::stateful::NatIp;
 use crate::stateful::allocator::AllocatorError;
@@ -24,14 +24,14 @@ use tracing::debug;
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-impl NatDefaultAllocator {
-    /// Build a [`NatDefaultAllocator`] from information collected from a [`VpcTable`] object. This
+impl NatAllocator {
+    /// Build a [`NatAllocator`] from information collected from a [`VpcTable`] object. This
     /// information is passed as a [`StatefulNatConfig`].
     ///
     /// # Returns
     ///
-    /// A [`NatDefaultAllocator`] that can be used to allocate NAT addresses, or a [`ConfigError`]
-    /// if building the allocator fails.
+    /// A [`NatAllocator`] that can be used to allocate NAT addresses, or a [`ConfigError`] if
+    /// building the allocator fails.
     ///
     /// # Errors
     ///
@@ -41,7 +41,7 @@ impl NatDefaultAllocator {
             "Building allocator for stateful NAT, from config: {:?}",
             config
         );
-        let mut allocator = NatDefaultAllocator::new();
+        let mut allocator = NatAllocator::new();
         for peering_data in config.iter() {
             allocator
                 .add_peering_addresses(&peering_data.peering, peering_data.dst_vpc_id)

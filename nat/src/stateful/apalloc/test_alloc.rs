@@ -12,7 +12,7 @@ mod context {
     use crate::stateful::allocator_writer::StatefulNatConfig;
     use crate::stateful::apalloc::alloc::IpAllocator;
     use crate::stateful::apalloc::port_alloc::AllocatedPort;
-    use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
+    use crate::stateful::apalloc::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
     use config::ConfigError;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
@@ -157,10 +157,10 @@ mod context {
         vpctable
     }
 
-    pub fn build_allocator() -> Result<NatDefaultAllocator, ConfigError> {
+    pub fn build_allocator() -> Result<NatAllocator, ConfigError> {
         let vpc_table = build_context();
         let config = StatefulNatConfig::new(&vpc_table);
-        NatDefaultAllocator::build_nat_allocator(&config)
+        NatAllocator::build_nat_allocator(&config)
     }
 }
 
