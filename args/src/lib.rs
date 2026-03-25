@@ -543,11 +543,11 @@ impl LaunchConfiguration {
     pub fn inherit() -> LaunchConfiguration {
         let integrity_check_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_INTEGRITY_CHECK_FD) };
         let launch_configuration_fd = unsafe { OwnedFd::from_raw_fd(Self::STANDARD_CONFIG_FD) };
-        let integrity_check_file = unsafe { FinalizedMemFile::from_fd(integrity_check_fd) };
+        let mut integrity_check_file = unsafe { FinalizedMemFile::from_fd(integrity_check_fd) };
         let mut launch_configuration_file =
             unsafe { FinalizedMemFile::from_fd(launch_configuration_fd) };
         launch_configuration_file
-            .validate(integrity_check_file)
+            .validate(&mut integrity_check_file)
             .wrap_err("checksum validation failed for launch configuration")
             .unwrap();
 
