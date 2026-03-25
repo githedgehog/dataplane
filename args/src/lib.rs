@@ -39,7 +39,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 #[derive(
-    Debug, PartialEq, Eq, Clone, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+    Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum PortArg {
@@ -48,7 +48,7 @@ pub enum PortArg {
 }
 
 #[derive(
-    Debug, PartialEq, Eq, Clone, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+    Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct InterfaceArg {
@@ -177,6 +177,7 @@ pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -212,7 +213,7 @@ pub struct GeneralConfigSection {
 /// [`InterfaceName`] which does not yet implement `CheckBytes`.
 /// Adding that derive to `InterfaceName` in the `net` crate would unblock this.
 #[derive(
-    Debug, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+    Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
 #[serde(tag = "driver")]
 #[serde(rename_all = "snake_case")]
@@ -234,6 +235,7 @@ pub enum DriverConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -257,6 +259,7 @@ pub struct DpdkDriverConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -277,6 +280,7 @@ pub struct KernelDriverConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -298,6 +302,7 @@ pub struct CliConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -315,6 +320,7 @@ pub struct MetricsConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -337,6 +343,7 @@ pub struct TracingConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -362,6 +369,7 @@ pub enum TracingDisplayOption {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -384,6 +392,7 @@ pub struct TracingShowSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -406,6 +415,7 @@ pub struct RoutingConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -422,6 +432,7 @@ pub struct ConfigServerSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -457,6 +468,7 @@ pub struct BmpConfigSection {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -490,6 +502,7 @@ pub struct LaunchConfiguration {
     PartialEq,
     Eq,
     serde::Serialize,
+    serde::Deserialize,
     rkyv::Serialize,
     rkyv::Deserialize,
     rkyv::Archive,
@@ -705,7 +718,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
 /// Selects which networking stack the dataplane uses for packet processing.
 /// Invalid values are rejected at parse time by clap's [`ValueEnum`](clap::ValueEnum),
 /// eliminating the need for runtime string validation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum)]
 pub enum DriverKind {
     /// DPDK userspace driver for kernel-bypass networking
     Dpdk,
