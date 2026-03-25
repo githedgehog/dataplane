@@ -64,8 +64,8 @@
 #![allow(clippy::ip_constant)]
 #![allow(rustdoc::private_intra_doc_links)]
 
+use super::NatIp;
 use super::allocator::{AllocationResult, AllocatorError};
-use super::{NatAllocator, NatIp};
 use crate::NatPort;
 use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
@@ -183,7 +183,7 @@ pub struct NatDefaultAllocator {
     randomize: bool,
 }
 
-impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatDefaultAllocator {
+impl NatDefaultAllocator {
     fn new() -> Self {
         Self {
             pools_src44: PoolTable::new(),
@@ -205,9 +205,7 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
         Self::allocate_from_tables(eflow_key, &self.pools_src66)
     }
-}
 
-impl NatDefaultAllocator {
     fn allocate_from_tables<I: NatIpWithBitmap>(
         eflow_key: &ExtendedFlowKey,
         pools_src: &PoolTable<I, I>,

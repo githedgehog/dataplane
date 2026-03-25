@@ -166,7 +166,6 @@ mod context {
 #[concurrency_mode(std)]
 mod std_tests {
     use super::context::*;
-    use crate::stateful::allocator::NatAllocator;
     use crate::stateful::apalloc::PoolTableKey;
     use concurrency::sync::Arc;
     use concurrency::thread;

@@ -2,8 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use crate::NatPort;
+use crate::stateful::NatFlowState;
 use crate::stateful::allocator_writer::StatefulNatConfig;
-use crate::stateful::{NatDefaultAllocator, NatFlowState};
+use crate::stateful::apalloc::NatDefaultAllocator;
 
 use config::GenId;
 use flow_entry::flow_table::FlowTable;
