@@ -58,15 +58,14 @@
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock), to deallocate the ports when the
 //! [`AllocatedPort`](port_alloc::AllocatedPort) is dropped;
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock) has a back reference to
-//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`], to deallocate the IP address
-//! when they are dropped.
+//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`](alloc::IpAllocator), to
+//! deallocate the IP address when they are dropped.
 
 #![allow(rustdoc::private_intra_doc_links)]
 
 use super::NatIp;
 use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
-use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::IcmpProtoKey;
 use net::IpProtoKey;
@@ -249,7 +248,7 @@ impl NatAllocator {
         Ok(AllocationResult {
             src: src_mapping,
             return_dst: reverse_dst_mapping,
-            idle_timeout: pool_src_opt.and_then(IpAllocator::idle_timeout),
+            idle_timeout: pool_src_opt.and_then(alloc::IpAllocator::idle_timeout),
         })
     }
 

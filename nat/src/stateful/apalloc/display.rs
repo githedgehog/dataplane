@@ -3,10 +3,9 @@
 
 //! Display implementations for allocator types
 
-use super::NatAllocator;
-use crate::stateful::apalloc::alloc::{AllocatedIp, IpAllocator, NatPool};
-use crate::stateful::apalloc::port_alloc::PortAllocator;
-use crate::stateful::apalloc::{NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
+use super::alloc::{AllocatedIp, IpAllocator, NatPool};
+use super::port_alloc::PortAllocator;
+use super::{NatAllocator, NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
 use common::cliprovider::{CliSource, Heading};
 use indenter::indented;
 use std::fmt::{Display, Error, Formatter, Result, Write};
