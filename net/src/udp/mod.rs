@@ -22,7 +22,7 @@ use std::num::NonZero;
 use tracing::debug;
 
 /// A UDP header.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Udp(UdpHeader);
 
 /// A UDP encapsulation.
@@ -52,25 +52,15 @@ impl Udp {
     #[allow(clippy::unwrap_used)] // safe due to const-eval
     pub const MIN_LENGTH: NonZero<u16> = NonZero::new(8).unwrap();
 
-    /// Build an empty UDP header, without checksum and with the length equal to the header only length
-    #[allow(clippy::cast_possible_truncation)]
+    /// Build a new `Udp` header with the given source and destination ports.
     #[must_use]
-    pub fn empty() -> Self {
-        Udp(UdpHeader {
-            source_port: 0,
-            destination_port: 0,
-            length: (UdpHeader::LEN as u16),
-            checksum: 0,
-        })
-    }
-
-    #[allow(missing_docs)] // TODO
-    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // UdpHeader::LEN is 8, trivially fits in u16
     pub fn new(source: UdpPort, destination: UdpPort) -> Udp {
         let header = UdpHeader {
             source_port: source.into(),
             destination_port: destination.into(),
-            ..Default::default()
+            length: UdpHeader::LEN as u16,
+            checksum: 0,
         };
         Udp(header)
     }
@@ -79,7 +69,8 @@ impl Udp {
     #[must_use]
     pub const fn source(&self) -> UdpPort {
         debug_assert!(self.0.source_port != 0);
-        #[allow(unsafe_code)] // non-zero checked in [`Parse`] and `new`.
+        #[allow(unsafe_code)]
+        // non-zero enforced by [`Parse`] and [`Udp::new`] (both require non-zero ports)
         unsafe {
             UdpPort::new_unchecked(self.0.source_port)
         }
@@ -89,7 +80,8 @@ impl Udp {
     #[must_use]
     pub const fn destination(&self) -> UdpPort {
         debug_assert!(self.0.destination_port != 0);
-        #[allow(unsafe_code)] // non-zero checked in [`Parse`] and `new`.
+        #[allow(unsafe_code)]
+        // non-zero enforced by [`Parse`] and [`Udp::new`] (both require non-zero ports)
         unsafe {
             UdpPort::new_unchecked(self.0.destination_port)
         }
