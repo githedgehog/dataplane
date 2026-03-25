@@ -10,6 +10,7 @@ version.workspace = true
 dpdk-sys = { workspace = true }
 errno = { workspace = true }
 net = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
 
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }

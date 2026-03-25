@@ -187,8 +187,12 @@ pub enum FlowError {
     },
 }
 
-/// TODO: convert numbers to constant references to `rte_flow_item_type`
-#[derive(Debug)]
+/// Catalog of DPDK flow item types (`rte_flow_item_type`).
+///
+/// This enum provides documented, IDE-friendly access to the full set of match item types
+/// supported by DPDK's `rte_flow` API.  Each variant maps 1:1 to its `RTE_FLOW_ITEM_TYPE_*`
+/// constant and carries the documentation from the DPDK headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::FromRepr, strum::IntoStaticStr)]
 #[repr(u32)]
 pub enum MatchType {
     /// \[META\]
@@ -1486,8 +1490,6 @@ fn eth_to_c(header: &RawEthHeader) -> dpdk_sys::rte_flow_item_eth {
 /// Returns [`FlowError::UnsupportedMatchType`] if a match variant lacks
 /// a C-level conversion.
 fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
-    use dpdk_sys::rte_flow_item_type::*;
-
     let mut items: Vec<dpdk_sys::rte_flow_item> = Vec::with_capacity(pattern.len() + 1);
     let mut storage: Vec<Box<dyn Any>> = Vec::with_capacity(pattern.len() * 2);
 
@@ -1515,7 +1517,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
         match m {
             FlowMatch::End => {
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_END,
+                    type_: MatchType::End as u32,
                     spec: ptr::null(),
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1523,7 +1525,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
             }
             FlowMatch::Void => {
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_VOID,
+                    type_: MatchType::Void as u32,
                     spec: ptr::null(),
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1531,7 +1533,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
             }
             FlowMatch::Any => {
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_ANY,
+                    type_: MatchType::Any as u32,
                     spec: ptr::null(),
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1542,7 +1544,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let mask_c = fs.mask().map(eth_to_c);
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec_c, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_ETH,
+                    type_: MatchType::Eth as u32,
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1567,7 +1569,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 });
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_IPV4,
+                    type_: MatchType::Ipv4 as u32,
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1582,7 +1584,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let (spec_ptr, spec_box) = heap_ptr(spec);
                 storage.push(spec_box);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_IPV6,
+                    type_: MatchType::Ipv6 as u32,
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1607,7 +1609,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 });
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_UDP,
+                    type_: MatchType::Udp as u32,
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1632,7 +1634,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 });
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_TCP,
+                    type_: MatchType::Tcp as u32,
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1649,7 +1651,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let (spec_ptr, spec_box) = heap_ptr(spec);
                 storage.push(spec_box);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_META,
+                    type_: MatchType::Meta as u32,
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1664,7 +1666,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let (spec_ptr, spec_box) = heap_ptr(spec);
                 storage.push(spec_box);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: RTE_FLOW_ITEM_TYPE_TAG,
+                    type_: MatchType::Tag as u32,
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1679,7 +1681,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
 
     // Terminate the pattern with an END sentinel.
     items.push(dpdk_sys::rte_flow_item {
-        type_: RTE_FLOW_ITEM_TYPE_END,
+        type_: MatchType::End as u32,
         spec: ptr::null(),
         last: ptr::null(),
         mask: ptr::null(),
