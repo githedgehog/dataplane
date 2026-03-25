@@ -70,8 +70,8 @@ use std::time::Duration;
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum PortArg {
-    PCI(PciAddress),       // DPDK driver
-    KERNEL(InterfaceName), // kernel driver
+    Pci(PciAddress),       // DPDK driver
+    Kernel(InterfaceName), // kernel driver
 }
 
 #[derive(
@@ -94,12 +94,12 @@ impl FromStr for PortArg {
         match disc {
             "pci" => {
                 let pciaddr = PciAddress::try_from(value).map_err(|e| e.to_string())?;
-                Ok(PortArg::PCI(pciaddr))
+                Ok(PortArg::Pci(pciaddr))
             }
             "kernel" => {
                 let kernelif = InterfaceName::try_from(value)
                     .map_err(|e| format!("Bad kernel interface name: {e}"))?;
-                Ok(PortArg::KERNEL(kernelif))
+                Ok(PortArg::Kernel(kernelif))
             }
             _ => Err(format!(
                 "Unknown discriminant '{disc}': allowed values are pci|kernel"
@@ -1098,10 +1098,10 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                     let eal_args = value
                         .interfaces()
                         .map(|nic| match nic.port {
-                            Some(PortArg::PCI(pci_address)) => {
+                            Some(PortArg::Pci(pci_address)) => {
                                 Ok(["--allow".to_string(), format!("{pci_address}")])
                             }
-                            Some(PortArg::KERNEL(interface_name)) => {
+                            Some(PortArg::Kernel(interface_name)) => {
                                 Err(InvalidCmdArguments::UnsupportedByDriver(
                                     UnsupportedByDriver::Dpdk(interface_name.clone()),
                                 ))
@@ -1488,7 +1488,7 @@ mod tests {
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
         assert_eq!(
             spec.port,
-            Some(PortArg::PCI(PciAddress::new(
+            Some(PortArg::Pci(PciAddress::new(
                 Domain::from(0),
                 Bus::new(2),
                 Device::try_from(1).unwrap(),
@@ -1501,7 +1501,7 @@ mod tests {
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
         assert_eq!(
             spec.port,
-            Some(PortArg::KERNEL(
+            Some(PortArg::Kernel(
                 InterfaceName::try_from("enp2s1.100").unwrap()
             ))
         );
