@@ -1068,6 +1068,35 @@ impl CmdArgs {
     }
 }
 
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::{InterfaceArg, PortArg};
+    use bolero::{Driver, TypeGenerator};
+    use net::interface::InterfaceName;
+
+    impl TypeGenerator for PortArg {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            if driver.produce::<bool>()? {
+                Some(PortArg::Pci(driver.produce()?))
+            } else {
+                Some(PortArg::Kernel(driver.produce()?))
+            }
+        }
+    }
+
+    impl TypeGenerator for InterfaceArg {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let interface: InterfaceName = driver.produce()?;
+            let port = if driver.produce::<bool>()? {
+                Some(driver.produce::<PortArg>()?)
+            } else {
+                None
+            };
+            Some(InterfaceArg { interface, port })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hardware::pci::address::PciAddress;
@@ -1118,5 +1147,98 @@ mod tests {
 
         // bad discriminant
         assert!(InterfaceArg::from_str("GbEth1.9000=foo@0000:02:01.7").is_err());
+    }
+
+    // -------------------------------------------------------------------
+    // Property-based tests (bolero)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn port_arg_display_parse_roundtrip_pci() {
+        bolero::check!()
+            .with_type::<PciAddress>()
+            .for_each(|pci| {
+                let original = PortArg::Pci(pci.clone());
+                let serialized = format!("pci@{pci}");
+                let parsed = PortArg::from_str(&serialized).unwrap();
+                assert_eq!(original, parsed);
+            });
+    }
+
+    #[test]
+    fn port_arg_display_parse_roundtrip_kernel() {
+        bolero::check!()
+            .with_type::<InterfaceName>()
+            .for_each(|name| {
+                let original = PortArg::Kernel(name.clone());
+                let serialized = format!("kernel@{name}");
+                let parsed = PortArg::from_str(&serialized).unwrap();
+                assert_eq!(original, parsed);
+            });
+    }
+
+    #[test]
+    fn interface_arg_parse_roundtrip_with_pci_port() {
+        bolero::check!()
+            .with_type::<(InterfaceName, PciAddress)>()
+            .for_each(|(iface, pci)| {
+                let serialized = format!("{iface}=pci@{pci}");
+                let parsed = InterfaceArg::from_str(&serialized).unwrap();
+                assert_eq!(parsed.interface, *iface);
+                assert_eq!(parsed.port, Some(PortArg::Pci(pci.clone())));
+            });
+    }
+
+    #[test]
+    fn interface_arg_parse_roundtrip_with_kernel_port() {
+        bolero::check!()
+            .with_type::<(InterfaceName, InterfaceName)>()
+            .for_each(|(iface, port_name)| {
+                let serialized = format!("{iface}=kernel@{port_name}");
+                let parsed = InterfaceArg::from_str(&serialized).unwrap();
+                assert_eq!(parsed.interface, *iface);
+                assert_eq!(parsed.port, Some(PortArg::Kernel(port_name.clone())));
+            });
+    }
+
+    #[test]
+    fn interface_arg_parse_roundtrip_no_port() {
+        bolero::check!()
+            .with_type::<InterfaceName>()
+            .for_each(|name| {
+                // An interface name without '=' should parse as port-less.
+                let name_str: &str = name.as_ref();
+                // Skip names that happen to contain '=' (not generated, but be safe).
+                if !name_str.contains('=') {
+                    let parsed = InterfaceArg::from_str(name_str).unwrap();
+                    assert_eq!(parsed.interface, *name);
+                    assert!(parsed.port.is_none());
+                }
+            });
+    }
+
+    #[test]
+    fn port_arg_rejects_missing_separator() {
+        bolero::check!()
+            .with_type::<InterfaceName>()
+            .for_each(|name| {
+                let input = format!("pci{name}");
+                // No '@' separator, so this should fail.
+                assert!(PortArg::from_str(&input).is_err());
+            });
+    }
+
+    #[test]
+    fn port_arg_rejects_unknown_discriminant() {
+        bolero::check!()
+            .with_type::<PciAddress>()
+            .for_each(|pci| {
+                let input = format!("unknown@{pci}");
+                let err = PortArg::from_str(&input).unwrap_err();
+                assert!(
+                    matches!(err, crate::PortArgParseError::UnknownDiscriminant(_)),
+                    "expected UnknownDiscriminant, got {err:?}"
+                );
+            });
     }
 }

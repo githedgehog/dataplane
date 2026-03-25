@@ -1225,6 +1225,7 @@ dependencies = [
 name = "dataplane-args"
 version = "0.16.1"
 dependencies = [
+ "bolero",
  "bytecheck",
  "clap",
  "dataplane-hardware",

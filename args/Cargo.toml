@@ -5,11 +5,18 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+default = []
+bolero = ["dep:bolero", "hardware/bolero", "net/bolero"]
+
 [dependencies]
 # internal
 hardware = { workspace = true, features = ["serde"] }
 net = { workspace = true, features = [] }
 ipc = { workspace = true, features = [] }
+
+# optional
+bolero = { workspace = true, optional = true, features = ["alloc"] }
 
 # external
 bytecheck = { workspace = true, features = [] }
@@ -25,9 +32,10 @@ uuid = { workspace = true, features = [] }
 
 [dev-dependencies]
 # internal
-hardware = { workspace = true, features = ["serde"] }
-net = { workspace = true, features = ["test_buffer"] }
+hardware = { workspace = true, features = ["serde", "bolero"] }
+net = { workspace = true, features = ["test_buffer", "bolero"] }
 # external
+bolero = { workspace = true, features = ["alloc"] }
 serde_yaml_ng = { workspace = true, features = [] }
 tokio = { workspace = true, features = [] }
 tracing = { workspace = true, features = [] }
