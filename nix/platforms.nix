@@ -76,6 +76,11 @@ let
         NIX_CFLAGS_LINK = [ ];
       };
     };
+    wasm32-wasip1 = {
+      arch = "wasm32";
+      march = "wasm32";
+      override.stdenv.env = { };
+    };
   };
 in
 lib.fix (
@@ -123,6 +128,15 @@ lib.fix (
               machine = "aarch64";
               nixarch = "aarch64-multiplatform-musl";
               libc = "musl";
+            };
+          };
+        };
+        wasm32 = {
+          wasip1 = {
+            unknown = {
+              target = "wasm32-wasip1";
+              machine = "wasm32";
+              nixarch = "wasi32";
             };
           };
         };
