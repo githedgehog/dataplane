@@ -74,7 +74,7 @@ jobs:
         id: upgrade
         run: |
           git config user.name 'github-actions[bot]'
-          git config user.email '<41898282+github-actions[bot]@users.noreply.github.com>'
+          git config user.email '<224724778+hedgehog-dataplane-update[bot]@users.noreply.github.com>'
           BASE="$(git rev-parse HEAD)"
 
           # Run "cargo update"
