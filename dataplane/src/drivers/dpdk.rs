@@ -6,7 +6,7 @@
 #![cfg(feature = "dpdk")]
 #![allow(unused)]
 
-use dpdk::dev::{Dev, TxOffloadConfig};
+use dpdk::dev::{Dev, RxOffloadConfig, StartedDev, TxOffloadConfig};
 use dpdk::eal::Eal;
 use dpdk::lcore::{LCoreId, WorkerThread};
 use dpdk::mem::{Mbuf, Pool, PoolConfig, PoolParams, RteAllocator};
@@ -38,7 +38,7 @@ fn init_eal(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     rte
 }
 
-fn init_devices(eal: &Eal) -> Vec<Dev> {
+fn init_devices(eal: &Eal) -> Vec<StartedDev> {
     eal.dev
         .iter()
         .map(|dev| {
@@ -46,7 +46,7 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
                 num_rx_queues: 2,
                 num_tx_queues: 2,
                 num_hairpin_queues: 0,
-                rx_offloads: None,
+                rx_offloads: Some(RxOffloadConfig::default()),
                 tx_offloads: Some(TxOffloadConfig::default()),
             };
             let mut dev = match config.apply(dev) {
@@ -86,13 +86,17 @@ fn init_devices(eal: &Eal) -> Vec<Dev> {
                 };
                 dev.new_tx_queue(tx_queue_config).unwrap();
             });
-            dev.start().unwrap();
-            dev
+            match dev.start() {
+                Ok(started) => started,
+                Err(e) => {
+                    Eal::fatal_error(format!("Failed to start device: {e}"));
+                }
+            }
         })
         .collect()
 }
 
-fn start_rte_workers(devices: &[Dev], setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>)) {
+fn start_rte_workers(devices: &[StartedDev], setup_pipeline: &(impl Sync + Fn() -> DynPipeline<Mbuf>)) {
     LCoreId::iter().enumerate().for_each(|(i, lcore_id)| {
         info!("Starting RTE Worker on {lcore_id:?}");
         WorkerThread::launch(lcore_id, move || {
