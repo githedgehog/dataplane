@@ -119,13 +119,12 @@ fn execute_remote_action(
 }
 
 fn execute_action(
-    action: u16,    // action to perform
-    args: &CliArgs, // action arguments
+    action: CliAction,       // action to perform
+    args: &CliArgs,          // action arguments
     cmdline: &Cmdline,
     terminal: &mut Terminal, // this terminal
 ) {
-    let cli_action = action.try_into().expect("Bad action code");
-    match cli_action {
+    match action {
         CliAction::Clear => terminal.clear(),
         CliAction::Quit => terminal.stop(),
         CliAction::Help => terminal.get_cmd_tree().dump(),
@@ -143,7 +142,7 @@ fn execute_action(
             terminal.connect(&bind_addr, &path);
         }
         // all others are remote
-        _ => execute_remote_action(cli_action, args, terminal),
+        _ => execute_remote_action(action, args, terminal),
     }
 }
 
