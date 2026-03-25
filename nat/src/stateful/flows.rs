@@ -4,7 +4,7 @@
 use crate::NatPort;
 use crate::stateful::NatFlowState;
 use crate::stateful::allocator_writer::StatefulNatConfig;
-use crate::stateful::apalloc::NatDefaultAllocator;
+use crate::stateful::apalloc::NatAllocator;
 
 use config::GenId;
 use flow_entry::flow_table::FlowTable;
@@ -88,7 +88,7 @@ fn get_flow_src_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr,
 }
 
 fn re_reserve_ip_and_port(
-    new_allocator: &mut NatDefaultAllocator,
+    new_allocator: &mut NatAllocator,
     flow_info: &FlowInfo,
     ip: IpAddr,
     port: NatPort,
@@ -167,7 +167,7 @@ fn re_reserve_ip_and_port(
 pub(crate) fn check_masquerading_flows(
     flow_table: &FlowTable,
     new_config: &StatefulNatConfig,
-    new_allocator: &mut NatDefaultAllocator,
+    new_allocator: &mut NatAllocator,
 ) {
     debug!("CHECKING masquerading flows with new configuration...");
     let genid = new_config.genid();
