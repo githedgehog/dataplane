@@ -870,7 +870,7 @@ impl CmdArgs {
                 // TODO: adjust command line to specify lcore usage more flexibly in next PR
                 let eal_args = self
                     .interfaces()
-                    .map(|nic| match nic.port {
+                    .map(|nic| match &nic.port {
                         Some(PortArg::Pci(pci_address)) => {
                             Ok(["--allow".to_string(), format!("{pci_address}")])
                         }
@@ -888,13 +888,13 @@ impl CmdArgs {
                     .flatten()
                     .collect();
                 Ok(DriverConfigSection::Dpdk(DpdkDriverConfigSection {
-                    interfaces: self.interfaces().collect(),
+                    interfaces: self.interfaces().cloned().collect(),
                     eal_args,
                 }))
             }
             DriverKind::Kernel => {
                 Ok(DriverConfigSection::Kernel(KernelDriverConfigSection {
-                    interfaces: self.interfaces().collect(),
+                    interfaces: self.interfaces().cloned().collect(),
                 }))
             }
         }
@@ -1015,25 +1015,22 @@ impl CmdArgs {
     ///
     /// # Returns
     ///
-    /// A vector of interface name strings (e.g., `vec!["eth0", "eth1"]`).
+    /// An iterator of [`InterfaceName`] references.
     ///
     /// # Note
     ///
     /// This is only used with the kernel driver.
     #[must_use]
-    pub fn kernel_interfaces(&self) -> Vec<String> {
-        self.interface
-            .iter()
-            .map(|spec| spec.interface.to_string())
-            .collect()
+    pub fn kernel_interfaces(&self) -> impl Iterator<Item = &InterfaceName> {
+        self.interface.iter().map(|spec| &spec.interface)
     }
 
     /// Get all configured network interfaces.
     ///
     /// This is the primary interface getter and should be used by all drivers.
     #[must_use]
-    pub fn interfaces(&self) -> impl Iterator<Item = InterfaceArg> {
-        self.interface.iter().cloned()
+    pub fn interfaces(&self) -> impl Iterator<Item = &InterfaceArg> {
+        self.interface.iter()
     }
 
     /// Get the control plane interface socket path.
