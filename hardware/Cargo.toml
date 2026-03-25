@@ -18,7 +18,6 @@ serde = ["dep:serde", "id/serde"]
 [dependencies]
 # internal
 id = { workspace = true, features = ["rkyv"] }
-sysfs = { workspace = true }
 
 # external
 bolero = { workspace = true, optional = true, features = ["alloc"] }
@@ -32,6 +31,9 @@ serde = { workspace = true, optional = true, features = ["std"] }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true, features = ["std"] }
 tracing = { workspace = true, features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+sysfs = { workspace = true }
 
 [dev-dependencies]
 # internal
