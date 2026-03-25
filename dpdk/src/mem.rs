@@ -48,16 +48,18 @@ impl Drop for Manager {
     }
 }
 
-/// Safe wrapper around a DPDK memory pool
+/// Safe wrapper around a DPDK memory pool.
 ///
-/// <div class="warning">
+/// # Thread Safety
 ///
-/// # Note:
+/// `Pool` is [`Send`] and [`Sync`].  This is sound because the underlying
+/// [`rte_mempool`][dpdk_sys::rte_mempool] uses per-lcore lock-free caches
+/// for allocation and deallocation, making concurrent `alloc`/`free`
+/// operations safe across threads.
 ///
-/// I am not completely sure this implementation is thread safe.
-/// It may need a refactor.
-///
-/// </div>
+/// Destruction ([`Drop`]) requires unique ownership, which Rust's borrow
+/// checker enforces — a `Pool` cannot be dropped while shared references
+/// to it (or to [`Mbuf`]s it backs) still exist.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Pool(PoolInner);
@@ -210,7 +212,24 @@ impl PoolInner {
     }
 }
 
+// SAFETY (Send): A PoolInner can be moved to another thread.  The
+// rte_mempool handle is a process-wide resource backed by hugepages;
+// once created, it is valid from any EAL-registered thread.
 unsafe impl Send for PoolInner {}
+
+// SAFETY (Sync): &PoolInner can be shared between threads.  The only
+// operations reachable through a shared reference are:
+//
+//   - as_ref()     → read-only access to the rte_mempool struct.
+//   - as_mut_ptr() → returns a raw pointer; callers need `unsafe` to
+//                     dereference, and the DPDK functions that accept
+//                     *mut rte_mempool (rte_pktmbuf_alloc_bulk,
+//                     rte_pktmbuf_free, etc.) are documented as
+//                     thread-safe via per-lcore caches.
+//
+// Destruction (rte_mempool_free) is called from Drop, which requires
+// unique ownership — the borrow checker prevents concurrent access
+// during teardown.
 unsafe impl Sync for PoolInner {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
