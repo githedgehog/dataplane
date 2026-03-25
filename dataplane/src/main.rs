@@ -205,8 +205,8 @@ fn main() {
     // pipeline builder
     let pipeline_factory = setup.pipeline;
 
-    /* start management */
-    start_mgmt(MgmtParams {
+    /* start management: main thread will be blocked until ready or failure */
+    if let Err(e) = start_mgmt(MgmtParams {
         config_dir: args.config_dir().cloned(),
         hostname: gwname.clone(),
         processor_params: ConfigProcessorParams {
@@ -221,8 +221,10 @@ fn main() {
             dp_status_r: dp_status.clone(),
             bmp_options: bmp_client_opts,
         },
-    })
-    .expect("Failed to start management");
+    }) {
+        error!("Failed to start mgmt: {e}. Stopping dataplane...");
+        std::process::exit(-1);
+    }
 
     /* start driver with the provided pipeline builder */
     let e = match args.driver_name() {
