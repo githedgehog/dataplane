@@ -628,219 +628,21 @@ impl DeParse for EmbeddedTransport {
     }
 }
 
-// AbstractEmbeddedHeaders, AbstractEmbeddedHeadersMut, and related traits
+// ---------------------------------------------------------------------------
+// Try* accessor traits — definitions + concrete impls on EmbeddedHeaders
+// ---------------------------------------------------------------------------
 
-// IPv4 traits
+// Field accessors (Option<T> -> as_ref / as_mut)
+define_field_accessor!(TryInnerIp::try_inner_ip / TryInnerIpMut::try_inner_ip_mut -> Net, for EmbeddedHeaders => self.net);
+define_field_accessor!(TryEmbeddedTransport::try_embedded_transport / TryEmbeddedTransportMut::try_embedded_transport_mut -> EmbeddedTransport, for EmbeddedHeaders => self.transport);
 
-pub trait TryInnerIpv4 {
-    fn try_inner_ipv4(&self) -> Option<&Ipv4>;
-}
-
-pub trait TryInnerIpv4Mut {
-    fn try_inner_ipv4_mut(&mut self) -> Option<&mut Ipv4>;
-}
-
-impl TryInnerIpv4 for EmbeddedHeaders {
-    fn try_inner_ipv4(&self) -> Option<&Ipv4> {
-        match &self.net {
-            Some(Net::Ipv4(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-impl TryInnerIpv4Mut for EmbeddedHeaders {
-    fn try_inner_ipv4_mut(&mut self) -> Option<&mut Ipv4> {
-        match &mut self.net {
-            Some(Net::Ipv4(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-// IPv6 traits
-
-pub trait TryInnerIpv6 {
-    fn try_inner_ipv6(&self) -> Option<&Ipv6>;
-}
-
-pub trait TryInnerIpv6Mut {
-    fn try_inner_ipv6_mut(&mut self) -> Option<&mut Ipv6>;
-}
-
-impl TryInnerIpv6 for EmbeddedHeaders {
-    fn try_inner_ipv6(&self) -> Option<&Ipv6> {
-        match &self.net {
-            Some(Net::Ipv6(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-impl TryInnerIpv6Mut for EmbeddedHeaders {
-    fn try_inner_ipv6_mut(&mut self) -> Option<&mut Ipv6> {
-        match &mut self.net {
-            Some(Net::Ipv6(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-// IP version-agnostic traits
-
-pub trait TryInnerIp {
-    fn try_inner_ip(&self) -> Option<&Net>;
-}
-
-pub trait TryInnerIpMut {
-    fn try_inner_ip_mut(&mut self) -> Option<&mut Net>;
-}
-
-impl TryInnerIp for EmbeddedHeaders {
-    fn try_inner_ip(&self) -> Option<&Net> {
-        self.net.as_ref()
-    }
-}
-
-impl TryInnerIpMut for EmbeddedHeaders {
-    fn try_inner_ip_mut(&mut self) -> Option<&mut Net> {
-        self.net.as_mut()
-    }
-}
-
-// TCP traits
-
-pub trait TryTruncatedTcp {
-    fn try_truncated_tcp(&self) -> Option<&TruncatedTcp>;
-}
-
-pub trait TryTruncatedTcpMut {
-    fn try_truncated_tcp_mut(&mut self) -> Option<&mut TruncatedTcp>;
-}
-
-impl TryTruncatedTcp for EmbeddedHeaders {
-    fn try_truncated_tcp(&self) -> Option<&TruncatedTcp> {
-        match &self.transport {
-            Some(EmbeddedTransport::Tcp(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-impl TryTruncatedTcpMut for EmbeddedHeaders {
-    fn try_truncated_tcp_mut(&mut self) -> Option<&mut TruncatedTcp> {
-        match &mut self.transport {
-            Some(EmbeddedTransport::Tcp(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-// UDP traits
-
-pub trait TryTruncatedUdp {
-    fn try_truncated_udp(&self) -> Option<&TruncatedUdp>;
-}
-
-pub trait TryTruncatedUdpMut {
-    fn try_truncated_udp_mut(&mut self) -> Option<&mut TruncatedUdp>;
-}
-
-impl TryTruncatedUdp for EmbeddedHeaders {
-    fn try_truncated_udp(&self) -> Option<&TruncatedUdp> {
-        match &self.transport {
-            Some(EmbeddedTransport::Udp(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-impl TryTruncatedUdpMut for EmbeddedHeaders {
-    fn try_truncated_udp_mut(&mut self) -> Option<&mut TruncatedUdp> {
-        match &mut self.transport {
-            Some(EmbeddedTransport::Udp(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-// ICMPv4 traits
-
-pub trait TryTruncatedIcmp4 {
-    fn try_truncated_icmp4(&self) -> Option<&TruncatedIcmp4>;
-}
-
-pub trait TryTruncatedIcmp4Mut {
-    fn try_truncated_icmp4_mut(&mut self) -> Option<&mut TruncatedIcmp4>;
-}
-
-impl TryTruncatedIcmp4 for EmbeddedHeaders {
-    fn try_truncated_icmp4(&self) -> Option<&TruncatedIcmp4> {
-        match &self.transport {
-            Some(EmbeddedTransport::Icmp4(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-impl TryTruncatedIcmp4Mut for EmbeddedHeaders {
-    fn try_truncated_icmp4_mut(&mut self) -> Option<&mut TruncatedIcmp4> {
-        match &mut self.transport {
-            Some(EmbeddedTransport::Icmp4(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-// ICMPv6 traits
-
-pub trait TryTruncatedIcmp6 {
-    fn try_truncated_icmp6(&self) -> Option<&TruncatedIcmp6>;
-}
-
-pub trait TryTruncatedIcmp6Mut {
-    fn try_truncated_icmp6_mut(&mut self) -> Option<&mut TruncatedIcmp6>;
-}
-
-impl TryTruncatedIcmp6 for EmbeddedHeaders {
-    fn try_truncated_icmp6(&self) -> Option<&TruncatedIcmp6> {
-        match &self.transport {
-            Some(EmbeddedTransport::Icmp6(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-impl TryTruncatedIcmp6Mut for EmbeddedHeaders {
-    fn try_truncated_icmp6_mut(&mut self) -> Option<&mut TruncatedIcmp6> {
-        match &mut self.transport {
-            Some(EmbeddedTransport::Icmp6(header)) => Some(header),
-            _ => None,
-        }
-    }
-}
-
-// Generic Transport traits
-
-pub trait TryEmbeddedTransport {
-    fn try_embedded_transport(&self) -> Option<&EmbeddedTransport>;
-}
-
-pub trait TryEmbeddedTransportMut {
-    fn try_embedded_transport_mut(&mut self) -> Option<&mut EmbeddedTransport>;
-}
-
-impl TryEmbeddedTransport for EmbeddedHeaders {
-    fn try_embedded_transport(&self) -> Option<&EmbeddedTransport> {
-        self.transport.as_ref()
-    }
-}
-
-impl TryEmbeddedTransportMut for EmbeddedHeaders {
-    fn try_embedded_transport_mut(&mut self) -> Option<&mut EmbeddedTransport> {
-        self.transport.as_mut()
-    }
-}
+// Variant accessors (Option<Enum> -> match variant)
+define_variant_accessor!(TryInnerIpv4::try_inner_ipv4 / TryInnerIpv4Mut::try_inner_ipv4_mut -> Ipv4, for EmbeddedHeaders => self.net, match Net::Ipv4);
+define_variant_accessor!(TryInnerIpv6::try_inner_ipv6 / TryInnerIpv6Mut::try_inner_ipv6_mut -> Ipv6, for EmbeddedHeaders => self.net, match Net::Ipv6);
+define_variant_accessor!(TryTruncatedTcp::try_truncated_tcp / TryTruncatedTcpMut::try_truncated_tcp_mut -> TruncatedTcp, for EmbeddedHeaders => self.transport, match EmbeddedTransport::Tcp);
+define_variant_accessor!(TryTruncatedUdp::try_truncated_udp / TryTruncatedUdpMut::try_truncated_udp_mut -> TruncatedUdp, for EmbeddedHeaders => self.transport, match EmbeddedTransport::Udp);
+define_variant_accessor!(TryTruncatedIcmp4::try_truncated_icmp4 / TryTruncatedIcmp4Mut::try_truncated_icmp4_mut -> TruncatedIcmp4, for EmbeddedHeaders => self.transport, match EmbeddedTransport::Icmp4);
+define_variant_accessor!(TryTruncatedIcmp6::try_truncated_icmp6 / TryTruncatedIcmp6Mut::try_truncated_icmp6_mut -> TruncatedIcmp6, for EmbeddedHeaders => self.transport, match EmbeddedTransport::Icmp6);
 
 pub trait AbstractEmbeddedHeaders:
     Debug
@@ -904,147 +706,22 @@ pub trait TryEmbeddedHeadersMut {
     fn embedded_headers_mut(&mut self) -> Option<&mut impl AbstractEmbeddedHeadersMut>;
 }
 
-impl<T> TryInnerIpv4 for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_inner_ipv4(&self) -> Option<&Ipv4> {
-        self.embedded_headers()?.try_inner_ipv4()
-    }
-}
+// ---------------------------------------------------------------------------
+// Blanket delegation impls — forward through TryEmbeddedHeaders / TryEmbeddedHeadersMut
+// ---------------------------------------------------------------------------
 
-impl<T> TryInnerIpv6 for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_inner_ipv6(&self) -> Option<&Ipv6> {
-        self.embedded_headers()?.try_inner_ipv6()
-    }
-}
-
-impl<T> TryInnerIp for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_inner_ip(&self) -> Option<&Net> {
-        self.embedded_headers()?.try_inner_ip()
-    }
-}
-
-impl<T> TryTruncatedTcp for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_truncated_tcp(&self) -> Option<&TruncatedTcp> {
-        self.embedded_headers()?.try_truncated_tcp()
-    }
-}
-
-impl<T> TryTruncatedUdp for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_truncated_udp(&self) -> Option<&TruncatedUdp> {
-        self.embedded_headers()?.try_truncated_udp()
-    }
-}
-
-impl<T> TryTruncatedIcmp4 for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_truncated_icmp4(&self) -> Option<&TruncatedIcmp4> {
-        self.embedded_headers()?.try_truncated_icmp4()
-    }
-}
-
-impl<T> TryTruncatedIcmp6 for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_truncated_icmp6(&self) -> Option<&TruncatedIcmp6> {
-        self.embedded_headers()?.try_truncated_icmp6()
-    }
-}
-
-impl<T> TryEmbeddedTransport for T
-where
-    T: TryEmbeddedHeaders,
-{
-    fn try_embedded_transport(&self) -> Option<&EmbeddedTransport> {
-        self.embedded_headers()?.try_embedded_transport()
-    }
-}
-
-impl<T> TryInnerIpv4Mut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_inner_ipv4_mut(&mut self) -> Option<&mut Ipv4> {
-        self.embedded_headers_mut()?.try_inner_ipv4_mut()
-    }
-}
-
-impl<T> TryInnerIpv6Mut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_inner_ipv6_mut(&mut self) -> Option<&mut Ipv6> {
-        self.embedded_headers_mut()?.try_inner_ipv6_mut()
-    }
-}
-
-impl<T> TryInnerIpMut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_inner_ip_mut(&mut self) -> Option<&mut Net> {
-        self.embedded_headers_mut()?.try_inner_ip_mut()
-    }
-}
-
-impl<T> TryTruncatedTcpMut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_truncated_tcp_mut(&mut self) -> Option<&mut TruncatedTcp> {
-        self.embedded_headers_mut()?.try_truncated_tcp_mut()
-    }
-}
-
-impl<T> TryTruncatedUdpMut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_truncated_udp_mut(&mut self) -> Option<&mut TruncatedUdp> {
-        self.embedded_headers_mut()?.try_truncated_udp_mut()
-    }
-}
-
-impl<T> TryTruncatedIcmp4Mut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_truncated_icmp4_mut(&mut self) -> Option<&mut TruncatedIcmp4> {
-        self.embedded_headers_mut()?.try_truncated_icmp4_mut()
-    }
-}
-
-impl<T> TryTruncatedIcmp6Mut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_truncated_icmp6_mut(&mut self) -> Option<&mut TruncatedIcmp6> {
-        self.embedded_headers_mut()?.try_truncated_icmp6_mut()
-    }
-}
-
-impl<T> TryEmbeddedTransportMut for T
-where
-    T: TryEmbeddedHeadersMut,
-{
-    fn try_embedded_transport_mut(&mut self) -> Option<&mut EmbeddedTransport> {
-        self.embedded_headers_mut()?.try_embedded_transport_mut()
+impl_delegated_accessors! {
+    try via TryEmbeddedHeaders::embedded_headers
+         / TryEmbeddedHeadersMut::embedded_headers_mut
+    {
+        TryInnerIpv4::try_inner_ipv4 / TryInnerIpv4Mut::try_inner_ipv4_mut -> Ipv4,
+        TryInnerIpv6::try_inner_ipv6 / TryInnerIpv6Mut::try_inner_ipv6_mut -> Ipv6,
+        TryInnerIp::try_inner_ip / TryInnerIpMut::try_inner_ip_mut -> Net,
+        TryTruncatedTcp::try_truncated_tcp / TryTruncatedTcpMut::try_truncated_tcp_mut -> TruncatedTcp,
+        TryTruncatedUdp::try_truncated_udp / TryTruncatedUdpMut::try_truncated_udp_mut -> TruncatedUdp,
+        TryTruncatedIcmp4::try_truncated_icmp4 / TryTruncatedIcmp4Mut::try_truncated_icmp4_mut -> TruncatedIcmp4,
+        TryTruncatedIcmp6::try_truncated_icmp6 / TryTruncatedIcmp6Mut::try_truncated_icmp6_mut -> TruncatedIcmp6,
+        TryEmbeddedTransport::try_embedded_transport / TryEmbeddedTransportMut::try_embedded_transport_mut -> EmbeddedTransport,
     }
 }
 
