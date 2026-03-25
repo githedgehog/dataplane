@@ -542,3 +542,234 @@ impl AsFinalizedMemFile for IntegrityCheck {
         memfd.finalize()
     }
 }
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    // -----------------------------------------------------------------------
+    // MemFile basics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn memfile_new_creates_valid_fd() {
+        let memfile = MemFile::new();
+        // The underlying file should have a non-negative fd.
+        assert!(memfile.as_fd().as_raw_fd() >= 0);
+    }
+
+    #[test]
+    fn memfile_default_creates_valid_fd() {
+        let memfile = MemFile::default();
+        assert!(memfile.as_fd().as_raw_fd() >= 0);
+    }
+
+    #[test]
+    fn memfile_write_and_finalize_roundtrip() {
+        let payload = b"hello, sealed memfd";
+        let mut memfile = MemFile::new();
+        memfile.as_mut().write_all(payload).unwrap();
+
+        let mut finalized = memfile.finalize();
+        let mut buf = Vec::new();
+        finalized.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, payload);
+    }
+
+    #[test]
+    fn memfile_empty_finalize_roundtrip() {
+        let memfile = MemFile::new();
+        let mut finalized = memfile.finalize();
+        let mut buf = Vec::new();
+        finalized.read_to_end(&mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn memfile_from_into_finalized() {
+        let payload = b"via From trait";
+        let mut memfile = MemFile::new();
+        memfile.as_mut().write_all(payload).unwrap();
+
+        let mut finalized: FinalizedMemFile = memfile.into();
+        let mut buf = Vec::new();
+        finalized.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, payload);
+    }
+
+    #[test]
+    fn memfile_large_payload_roundtrip() {
+        // Exercise multi-chunk reads in IntegrityCheck::from_reader (128-byte chunks).
+        let payload: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let mut memfile = MemFile::new();
+        memfile.as_mut().write_all(&payload).unwrap();
+
+        let mut finalized = memfile.finalize();
+        let mut buf = Vec::new();
+        finalized.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, payload);
+    }
+
+    // -----------------------------------------------------------------------
+    // IntegrityCheck
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn integrity_check_serialize_deserialize_roundtrip() {
+        let payload = b"some data to hash";
+        let mut cursor = std::io::Cursor::new(payload.as_slice());
+        let check = IntegrityCheck::from_reader(&mut cursor);
+
+        let bytes = check.serialize();
+        let recovered = IntegrityCheck::deserialize(bytes);
+        assert_eq!(check, recovered);
+    }
+
+    #[test]
+    fn integrity_check_deterministic() {
+        let payload = b"determinism test";
+        let mut c1 = std::io::Cursor::new(payload.as_slice());
+        let mut c2 = std::io::Cursor::new(payload.as_slice());
+        let check1 = IntegrityCheck::from_reader(&mut c1);
+        let check2 = IntegrityCheck::from_reader(&mut c2);
+        assert_eq!(check1, check2);
+    }
+
+    #[test]
+    fn integrity_check_differs_for_different_data() {
+        let mut c1 = std::io::Cursor::new(b"aaa".as_slice());
+        let mut c2 = std::io::Cursor::new(b"bbb".as_slice());
+        let check1 = IntegrityCheck::from_reader(&mut c1);
+        let check2 = IntegrityCheck::from_reader(&mut c2);
+        assert_ne!(check1, check2);
+    }
+
+    #[test]
+    fn integrity_check_empty_input() {
+        let mut cursor = std::io::Cursor::new(b"".as_slice());
+        let check = IntegrityCheck::from_reader(&mut cursor);
+        let bytes = check.serialize();
+        let recovered = IntegrityCheck::deserialize(bytes);
+        assert_eq!(check, recovered);
+    }
+
+    #[test]
+    fn integrity_check_byte_len_is_48() {
+        // SHA-384 produces 48 bytes; confirm the constant is correct.
+        assert_eq!(INTEGRITY_CHECK_BYTE_LEN, 48);
+        assert_eq!(std::mem::size_of::<IntegrityCheckBytes>(), 48);
+    }
+
+    // -----------------------------------------------------------------------
+    // IntegrityCheck via FinalizedMemFile
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn finalized_memfile_integrity_check_is_deterministic() {
+        let payload = b"integrity payload";
+        let mut memfile = MemFile::new();
+        memfile.as_mut().write_all(payload).unwrap();
+        let mut finalized = memfile.finalize();
+
+        let check1 = finalized.integrity_check();
+        let check2 = finalized.integrity_check();
+        assert_eq!(check1, check2);
+    }
+
+    #[test]
+    fn finalized_memfile_integrity_check_differs_for_different_content() {
+        let mut m1 = MemFile::new();
+        m1.as_mut().write_all(b"content A").unwrap();
+        let mut f1 = m1.finalize();
+
+        let mut m2 = MemFile::new();
+        m2.as_mut().write_all(b"content B").unwrap();
+        let mut f2 = m2.finalize();
+
+        assert_ne!(f1.integrity_check(), f2.integrity_check());
+    }
+
+    // -----------------------------------------------------------------------
+    // FinalizedMemFile::validate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_succeeds_with_matching_check() {
+        let payload = b"validate me";
+        let mut memfile = MemFile::new();
+        memfile.as_mut().write_all(payload).unwrap();
+        let mut finalized = memfile.finalize();
+
+        let check = finalized.integrity_check();
+        let check_file = check.finalize();
+
+        finalized.validate(check_file).unwrap();
+    }
+
+    #[test]
+    fn validate_fails_with_mismatched_check() {
+        let mut m1 = MemFile::new();
+        m1.as_mut().write_all(b"real content").unwrap();
+        let mut finalized = m1.finalize();
+
+        // Compute a check over different data.
+        let mut m2 = MemFile::new();
+        m2.as_mut().write_all(b"wrong content").unwrap();
+        let mut f2 = m2.finalize();
+        let wrong_check = f2.integrity_check();
+        let check_file = wrong_check.finalize();
+
+        assert!(finalized.validate(check_file).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // AsFinalizedMemFile for IntegrityCheck
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn integrity_check_finalize_roundtrip() {
+        let payload = b"finalize roundtrip";
+        let mut cursor = std::io::Cursor::new(payload.as_slice());
+        let original = IntegrityCheck::from_reader(&mut cursor);
+        let original_bytes = original.serialize();
+
+        // Finalize into a memfd, then read the bytes back.
+        let finalized = IntegrityCheck::deserialize(original_bytes).finalize();
+        let mut buf = Vec::new();
+        // Read via AsRef<File>.
+        finalized.as_ref().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf.len(), INTEGRITY_CHECK_BYTE_LEN);
+        assert_eq!(buf.as_slice(), original_bytes.as_slice());
+    }
+
+    // -----------------------------------------------------------------------
+    // FinalizedMemFile::from_fd roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn from_fd_accepts_properly_sealed_memfile() {
+        let payload = b"fd roundtrip";
+        let mut memfile = MemFile::new();
+        memfile.as_mut().write_all(payload).unwrap();
+        let finalized = memfile.finalize();
+
+        let fd = finalized.to_owned_fd();
+        let mut recovered = unsafe { FinalizedMemFile::from_fd(fd) };
+        let mut buf = Vec::new();
+        recovered.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, payload);
+    }
+
+    #[test]
+    #[should_panic(expected = "supplied file descriptor is not a memfd")]
+    fn from_fd_rejects_non_memfd() {
+        // /dev/null is not a memfd.
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let fd = OwnedFd::from(file);
+        unsafe {
+            FinalizedMemFile::from_fd(fd);
+        }
+    }
+}
