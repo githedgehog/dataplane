@@ -283,7 +283,10 @@ mod tests {
         ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
         ipv4.set_next_header(NextHeader::TCP);
 
-        let tcp = net::tcp::Tcp::default();
+        let tcp = net::tcp::Tcp::new(
+            net::tcp::TcpPort::new_checked(1).unwrap(),
+            net::tcp::TcpPort::new_checked(2).unwrap(),
+        );
 
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Tcp(tcp)));

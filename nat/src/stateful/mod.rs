@@ -608,12 +608,10 @@ mod tests {
 
     #[test]
     fn test_set_tcp_ports() {
-        let mut transport = Transport::Tcp(
-            Tcp::default()
-                .set_source(TcpPort::try_from(80).expect("Invalid port"))
-                .set_destination(TcpPort::try_from(443).expect("Invalid port"))
-                .clone(),
-        );
+        let mut transport = Transport::Tcp(Tcp::new(
+            TcpPort::try_from(80).expect("Invalid port"),
+            TcpPort::try_from(443).expect("Invalid port"),
+        ));
         let target_port = NatPort::new_port_checked(1234).expect("Invalid port");
 
         transport
@@ -635,12 +633,10 @@ mod tests {
 
     #[test]
     fn test_set_udp_port() {
-        let mut transport = Transport::Udp(
-            Udp::default()
-                .set_source(UdpPort::try_from(80).expect("Invalid port"))
-                .set_destination(UdpPort::try_from(443).expect("Invalid port"))
-                .clone(),
-        );
+        let mut transport = Transport::Udp(Udp::new(
+            UdpPort::try_from(80).expect("Invalid port"),
+            UdpPort::try_from(443).expect("Invalid port"),
+        ));
         let target_port = NatPort::new_port_checked(1234).expect("Invalid port");
 
         transport

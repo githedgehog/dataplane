@@ -180,16 +180,12 @@ pub(crate) fn tcp_reset<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> Resul
 
     // build TCP header without options and RST|ACK flags, with the proper ack number and seq number
     let tcp = packet.try_tcp_mut().unwrap_or_else(|| unreachable!());
-    *tcp = Tcp::new();
+    *tcp = Tcp::new(dst_port, src_port);
     tcp.set_ack(true);
     tcp.set_rst(true);
     tcp.set_ack_number(seqn + u32::from(data_len));
     tcp.set_sequence_number(ackn);
     tcp.set_window_size(0);
-
-    // ports
-    tcp.set_source(dst_port);
-    tcp.set_destination(src_port);
 
     // we need to recompute the checksum
     packet.meta_mut().set_checksum_refresh(true);

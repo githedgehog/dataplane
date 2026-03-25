@@ -1626,10 +1626,8 @@ mod test {
         }
 
         pub(super) fn tcp() -> Tcp {
-            let mut tcp = Tcp::default();
-            tcp.set_source(123.try_into().unwrap())
-                .set_destination(456.try_into().unwrap())
-                .set_syn(true)
+            let mut tcp = Tcp::new(123.try_into().unwrap(), 456.try_into().unwrap());
+            tcp.set_syn(true)
                 .set_sequence_number(1)
                 .set_checksum(1234.into())
                 .unwrap();
@@ -1637,11 +1635,8 @@ mod test {
         }
 
         pub(super) fn udp() -> Udp {
-            let mut udp = Udp::default();
-            udp.set_source(123.try_into().unwrap())
-                .set_destination(456.try_into().unwrap())
-                .set_checksum(1234.into())
-                .unwrap();
+            let mut udp = Udp::new(123.try_into().unwrap(), 456.try_into().unwrap());
+            udp.set_checksum(1234.into()).unwrap();
             udp
         }
 
@@ -1983,22 +1978,22 @@ mod test {
         let comparisons = [
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(31319),
+                good_udp: UdpChecksum::new(31303),
                 payload: &[],
             },
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(31063),
+                good_udp: UdpChecksum::new(31047),
                 payload: &[1],
             },
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(31061),
+                good_udp: UdpChecksum::new(31045),
                 payload: &[1, 2],
             },
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(14863),
+                good_udp: UdpChecksum::new(14847),
                 payload: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
             },
         ];
@@ -2125,19 +2120,19 @@ mod test {
         }
         let comparisons = [
             Comparison {
-                good_udp: UdpChecksum::new(64172),
+                good_udp: UdpChecksum::new(64156),
                 payload: &[],
             },
             Comparison {
-                good_udp: UdpChecksum::new(63916),
+                good_udp: UdpChecksum::new(63900),
                 payload: &[1],
             },
             Comparison {
-                good_udp: UdpChecksum::new(63914),
+                good_udp: UdpChecksum::new(63898),
                 payload: &[1, 2],
             },
             Comparison {
-                good_udp: UdpChecksum::new(47712),
+                good_udp: UdpChecksum::new(47696),
                 payload: &[1, 2, 3, 6, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 15, 16],
             },
         ];
