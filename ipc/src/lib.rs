@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Sealed memory file descriptors for secure inter-process data transfer.
+//! Inter-process communication primitives for the dataplane.
 //!
-//! This crate provides abstractions over Linux [memfd] file descriptors with
-//! strong immutability guarantees enforced by kernel-level file sealing.
+//! This crate provides secure IPC building blocks, starting with abstractions
+//! over Linux [memfd] file descriptors with strong immutability guarantees
+//! enforced by kernel-level file sealing.
 //! These primitives are suitable for zero-copy deserialization of data
 //! serialized by one process and consumed by another.
 //!
