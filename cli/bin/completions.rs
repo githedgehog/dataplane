@@ -15,11 +15,11 @@ use std::rc::Rc;
 pub struct CmdCompleter {
     cmdtree: Rc<Node>,
 }
-#[allow(unused)]
 impl CmdCompleter {
     pub fn new(cmdtree: Rc<Node>) -> Self {
         Self { cmdtree }
     }
+    // TODO: this method is never called — remove it or document intended use.
     #[allow(unused)]
     pub fn get_commands(&self) -> &Node {
         &self.cmdtree

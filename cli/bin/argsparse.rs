@@ -40,7 +40,6 @@ pub struct CliArgs {
     pub remote: RequestArgs,          /* args to send to remote */
 }
 
-#[allow(unused)]
 impl CliArgs {
     pub fn new() -> Self {
         Self::default()
