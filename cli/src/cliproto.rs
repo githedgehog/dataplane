@@ -70,7 +70,6 @@ pub enum RouteProtocol {
 
 /// Arguments to a cli request
 #[derive(Debug, Default, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-#[allow(unused)]
 pub struct RequestArgs {
     pub address: Option<IpAddr>,         /* an IP address */
     pub prefix: Option<(IpAddr, u8)>,    /* an IP prefix */
@@ -83,7 +82,6 @@ pub struct RequestArgs {
 
 /// A Cli request
 #[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-#[allow(unused)]
 pub struct CliRequest {
     pub action: CliAction,
     pub args: RequestArgs,
@@ -152,14 +150,12 @@ pub struct CliResponse {
     pub result: Result<String, CliError>,
 }
 
-#[allow(unused)]
 impl CliRequest {
     pub fn new(action: CliAction, args: RequestArgs) -> Self {
         Self { action, args }
     }
 }
 
-#[allow(unused)]
 impl CliResponse {
     pub fn from_request_ok(request: CliRequest, data: String) -> Self {
         Self {
