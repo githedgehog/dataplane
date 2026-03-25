@@ -1614,7 +1614,6 @@ dependencies = [
  "derive_builder 0.20.2",
  "downcast-rs",
  "etherparse",
- "linux-raw-sys",
  "multi_index_map",
  "rapidhash",
  "rkyv",
