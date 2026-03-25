@@ -37,6 +37,3 @@ tracing = { workspace = true }
 ahash = { workspace = true, features = ["no-rng"] }
 bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
 etherparse = { workspace = true, default-features = false, features = ["std"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

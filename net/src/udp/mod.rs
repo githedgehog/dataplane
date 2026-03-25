@@ -283,7 +283,6 @@ mod test {
     const MIN_LENGTH_USIZE: usize = 8;
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|input: &Udp| {
             let mut buffer = [0u8; MIN_LENGTH_USIZE];
@@ -306,7 +305,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
@@ -335,7 +333,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn too_short_buffer_parse_fails_gracefully() {
         bolero::check!()
             .with_type()
@@ -353,7 +350,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn longer_buffer_parses_ok() {
         bolero::check!()
             .with_type()
@@ -385,7 +381,6 @@ mod test {
 
     // evolve an arbitrary source towards an arbitrary target to make sure mutation methods work
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn arbitrary_mutation() {
         bolero::check!()
             .with_type()

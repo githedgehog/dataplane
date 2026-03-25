@@ -115,7 +115,6 @@ mod test {
     use crate::ipv6::addr::UnicastIpv6Addr;
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn generated_unicast_ipv6_address_is_unicast() {
         bolero::check!()
             .with_type()
