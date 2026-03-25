@@ -28,6 +28,7 @@ members = [
     "pipeline",
     "rekon",
     "routing",
+    "ipc",
     "stats",
     "sysfs",
     "test-utils",
@@ -49,6 +50,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 
 # Internal
 args = { path = "./args", package = "dataplane-args", features = [] }
+ipc = { path = "./ipc", package = "dataplane-ipc", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
 concurrency = { path = "./concurrency", package = "dataplane-concurrency", features = [] }
