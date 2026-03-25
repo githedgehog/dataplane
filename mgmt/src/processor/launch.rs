@@ -9,7 +9,7 @@ use crate::processor::proc::ConfigProcessor;
 
 use crate::processor::proc::ConfigProcessorParams;
 use concurrency::sync::Arc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
@@ -49,15 +49,15 @@ async fn k8s_mgmt_init(k8s_client: &K8sClient) -> Result<(), K8sClientError> {
 
     debug!("Initializing k8s client...");
     while let Err(e) = k8s_client.init().await {
-        warn!("Could not initialize k8s state. Will retry up to {retries} more times");
+        warn!("Could not initialize k8s state. Will retry {retries} more times");
         tokio::time::sleep(K8S_INIT_RETRY_TIME).await;
-        retries -= 1;
         if retries == 0 {
             error!("Maximum k8s initialization attempts reached. Giving up...");
             return Err(e);
         }
+        retries -= 1;
     }
-    debug!("K8s initialization succeeded");
+    info!("K8s initialization succeeded");
     Ok(())
 }
 
@@ -78,7 +78,7 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Lau
                 .build()
                 .expect("Tokio runtime creation failed");
 
-            let result = if let Some(config_dir) = &params.config_dir {
+            if let Some(config_dir) = &params.config_dir {
                 warn!("Running in k8s-less mode....");
                 rt.block_on(async {
                     let (processor, client) = ConfigProcessor::new(params.processor_params);
@@ -86,11 +86,16 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Lau
                         Arc::new(K8sLess::new(params.hostname.as_str(), config_dir, client));
                     let k8sless1 = k8sless.clone();
 
-                    k8sless.init().await?;
+                    let init_result = k8sless.init().await.map_err(LaunchError::K8LessError);
+                    let init_failed = init_result.is_err();
+                    tx.send(init_result).expect("Main thread gone");
+                    if init_failed {
+                        return;
+                    }
+
                     tokio::spawn(async { processor.run().await });
                     tokio::spawn(async move { k8sless.start_status_update(&K8S_STATUS_UPD).await });
-                    tokio::spawn(async move { K8sLess::start_config_watch(k8sless1).await });
-                    Ok(())
+                    let _ = K8sLess::start_config_watch(k8sless1).await;
                 })
             } else {
                 debug!("Will start watching k8s for configuration changes");
@@ -99,20 +104,26 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Lau
                     let k8s_client = Arc::new(K8sClient::new(params.hostname.as_str(), client));
                     let k8s_client1 = k8s_client.clone();
 
-                    k8s_mgmt_init(&k8s_client)
+                    let init_result = k8s_mgmt_init(&k8s_client)
                         .await
-                        .map_err(LaunchError::K8sClientError)?;
+                        .map_err(LaunchError::K8sClientError);
+
+                    let init_failed = init_result.is_err();
+                    tx.send(init_result).expect("Main thread gone");
+                    if init_failed {
+                        return;
+                    }
 
                     tokio::spawn(async { processor.run().await });
                     tokio::spawn(async move {
                         k8s_client1.k8s_start_status_update(&K8S_STATUS_UPD).await
                     });
-                    tokio::spawn(async { K8sClient::k8s_start_config_watch(k8s_client).await });
-                    Ok(())
+                    let _ =
+                        tokio::spawn(async { K8sClient::k8s_start_config_watch(k8s_client).await })
+                            .await;
                 })
-            };
-            debug!("Notifying launcher. Result = {result:#?}");
-            tx.send(result).expect("Main thread gone");
+            }
+            unreachable!()
         })
         .map_err(LaunchError::IoError)?;
 

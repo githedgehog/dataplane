@@ -7,13 +7,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use chrono::{TimeZone, Utc};
-use config::converters::k8s::ToK8sConversionError;
 
 use config::converters::k8s::status::dataplane_status::DataplaneStatusForK8sConversion;
 use config::{ExternalConfig, GwConfig};
-use k8s_intf::client::{
-    ReplaceStatusError, WatchError, replace_gateway_status, watch_gateway_agent_crd,
-};
+use k8s_intf::client::{ReplaceStatusError, replace_gateway_status, watch_gateway_agent_crd};
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateDataplane,
 };
@@ -23,12 +20,6 @@ use crate::processor::mgmt_client::ConfigClient;
 
 #[derive(Debug, thiserror::Error)]
 pub enum K8sClientError {
-    #[error("K8s client exited early")]
-    EarlyTermination,
-    #[error("K8s watch failed: {0}")]
-    WatchError(#[from] WatchError),
-    #[error("Failed to convert dataplane status to k8s format: {0}")]
-    StatusConversionError(#[from] ToK8sConversionError),
     #[error("Failed to patch k8s gateway status: {0}")]
     ReplaceStatusError(#[from] ReplaceStatusError),
 }
@@ -147,10 +138,11 @@ impl K8sClient {
         }
     }
 
-    pub async fn k8s_start_config_watch(k8s_client: Arc<Self>) -> Result<(), K8sClientError> {
-        watch_gateway_agent_crd(&k8s_client.hostname.clone(), async move |ga| {
-            let external_config = ExternalConfig::try_from(ga);
-            match external_config {
+    pub async fn k8s_start_config_watch(k8s_client: Arc<Self>) {
+        let k8s_client2 = k8s_client.clone();
+
+        let callback = async move |ga: &k8s_intf::gateway_agent_crd::GatewayAgent| {
+            match ExternalConfig::try_from(ga) {
                 Err(e) => error!("Failed to convert K8sGatewayAgent to ExternalConfig: {e}"),
                 Ok(external_config) => {
                     let genid = external_config.genid;
@@ -162,25 +154,26 @@ impl K8sClient {
                         }
                     };
                     if applied_genid == genid {
-                        debug!("Not applying config, configuration generation unchanged (old={applied_genid}, new={genid})");
+                        debug!("Config generation unchanged (old={applied_genid}, new={genid})");
                         return;
                     }
 
                     let gwconfig = GwConfig::new(external_config);
 
                     // request the config processor to apply the config and update status on success
-                    match k8s_client.client.apply_config(gwconfig).await {
-                        Ok(()) => {
-                            info!("Config for generation {genid} was successfully applied. Updating status...");
-                            k8s_client.update_gateway_status().await;
-                        },
-                        Err(e) => error!("Failed to apply the config for generation {genid}: {e}"),
+                    if let Err(e) = k8s_client.client.apply_config(gwconfig).await {
+                        error!("Failed to apply the config for genid {genid}: {e}");
+                    } else {
+                        info!("Config for genid {genid} successfully applied. Updating status...");
+                        k8s_client.update_gateway_status().await;
                     }
                 }
             }
-        })
-        .await?;
-        Err(K8sClientError::EarlyTermination)
+        };
+        let callback = Arc::from(callback);
+
+        // infinite loop
+        watch_gateway_agent_crd(&k8s_client2.hostname, callback.clone()).await;
     }
 
     pub async fn k8s_start_status_update(&self, status_update_interval: &std::time::Duration) {

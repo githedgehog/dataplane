@@ -5,21 +5,15 @@ use futures::{StreamExt, TryStreamExt};
 use kube::api::PostParams;
 use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
+use std::sync::Arc;
+use std::time::Duration;
 
 use tracectl::trace_target;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::gateway_agent_crd::{GW_API_VERSION, GatewayAgent, GatewayAgentStatus};
+use crate::gateway_agent_crd::{GatewayAgent, GatewayAgentStatus};
 
 trace_target!("k8s-client", LevelFilter::INFO, &["management"]);
-
-#[derive(Debug, thiserror::Error)]
-pub enum WatchError {
-    #[error("Client error: {0}")]
-    ClientError(#[from] kube::Error),
-    #[error("Watcher error: {0}")]
-    WatcherError(#[from] kube::runtime::watcher::Error),
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReplaceStatusError {
@@ -31,22 +25,36 @@ pub enum ReplaceStatusError {
     MaxConflictRetriesExceeded,
 }
 
-/// Watch `GatewayAgent` CRD and call callback for all changes
-///
-/// # Errors
-/// Returns an error if the watch fails to start
-pub async fn watch_gateway_agent_crd(
+const KUBE_CLIENT_RETRY_TIME: Duration = Duration::from_secs(10);
+
+/// Loop forever until we connect to K8s
+async fn init_kube_client() -> Client {
+    loop {
+        match Client::try_default().await {
+            Ok(client) => {
+                info!("Kube client successfully initialized");
+                return client;
+            }
+            Err(e) => {
+                warn!("Kube client not ready: {e}. Will retry...");
+                tokio::time::sleep(KUBE_CLIENT_RETRY_TIME).await;
+            }
+        }
+    }
+}
+
+/// Connect a kube client to the K8s infra, retrying indefinitely.
+/// On success, watch for `GatewayAgent` CRD and call callback for all changes.
+async fn run_watcher(
     gateway_object_name: &str,
-    callback: impl AsyncFn(&GatewayAgent),
-) -> Result<(), WatchError> {
-    let client = Client::try_default().await?;
+    callback: Arc<impl AsyncFn(&GatewayAgent)>,
+) -> Result<(), crate::client::watcher::Error> {
+    info!("Starting K8s GatewayAgent watcher...");
+
+    let client = init_kube_client().await;
+
     // Relevant gateway agent objects are in the "default" namespace
     let gws: Api<GatewayAgent> = Api::namespaced(client.clone(), "default");
-
-    info!(
-        "Starting K8s GatewayAgent watcher. GW_API_VERSION = {}",
-        GW_API_VERSION.unwrap_or("EXPERIMENTAL")
-    );
 
     let watch_config = watcher::Config {
         // The service account for this gateway only has access to its corresponding
@@ -70,11 +78,19 @@ pub async fn watch_gateway_agent_crd(
         match stream.try_next().await {
             Ok(Some(ga)) => callback(&ga).await,
             Ok(None) => {}
-            // Should we check for retriable vs non-retriable errors here?
-            Err(err) => {
-                error!("Watcher error: {err}");
-            }
+            Err(e) => return Err(e),
         }
+    }
+}
+
+/// Watch `GatewayAgent` CRD and call callback for all changes
+pub async fn watch_gateway_agent_crd(
+    gateway_object_name: &str,
+    callback: Arc<impl AsyncFn(&GatewayAgent)>,
+) {
+    while let Err(e) = run_watcher(gateway_object_name, callback.clone()).await {
+        error!("Watcher error: {e}. Restarting kube client in 1s...");
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
