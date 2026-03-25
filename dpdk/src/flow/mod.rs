@@ -177,6 +177,14 @@ pub enum FlowError {
     /// A flow action type is not yet supported by this wrapper.
     #[error("unsupported flow action type")]
     UnsupportedActionType,
+    /// A `RawEncap` action was supplied with a mask whose length differs from the data.
+    #[error("RawEncap mask length ({mask_len}) does not match data length ({data_len})")]
+    RawEncapMaskLengthMismatch {
+        /// Length of the data buffer.
+        data_len: usize,
+        /// Length of the mask buffer.
+        mask_len: usize,
+    },
 }
 
 /// TODO: convert numbers to constant references to `rte_flow_item_type`
@@ -1831,6 +1839,13 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 });
             }
             FlowAction::RawEncap { data, mask } => {
+                if let Some(m) = mask && m.len() != data.len() {
+                    return Err(FlowError::RawEncapMaskLengthMismatch {
+                        data_len: data.len(),
+                        mask_len: m.len(),
+                    });
+                }
+
                 // Keep the data/mask buffers alive via cloned Vecs in storage.
                 let data_clone = data.clone();
                 let data_ptr = data_clone.as_ptr();
