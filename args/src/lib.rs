@@ -766,17 +766,8 @@ impl LaunchConfiguration {
             "invalid size for inherited memfd"
         );
 
-        // we slightly abuse the access method here just to get byte level validation.
-        // The actual objective here is to ensure all enums are valid and that all pointers point within the
-        // archive.
-        rkyv::access::<ArchivedLaunchConfiguration, rkyv::rancor::Failure>(
-            launch_config_memmap.as_ref(),
-        )
-        .into_diagnostic()
-        .wrap_err("failed to validate ArchivedLaunchConfiguration")
-        .unwrap();
-
-        // here we actually deserialize the data
+        // from_bytes internally calls access(), which performs CheckBytes validation
+        // (alignment, bounds, enum discriminants) before deserializing.
         rkyv::from_bytes::<LaunchConfiguration, rkyv::rancor::Error>(launch_config_memmap.as_ref())
             .into_diagnostic()
             .wrap_err("failed to deserialize launch configuration")
@@ -823,13 +814,12 @@ impl FinalizedMemFile {
     ///
     /// Panics if the backing memfd file can not be `seek`ed to the start.
     pub fn integrity_check(&mut self) -> IntegrityCheck {
-        self.0
-            .0
-            .seek(SeekFrom::Start(0))
+        let file = &mut self.0.0;
+        file.seek(SeekFrom::Start(0))
             .into_diagnostic()
             .wrap_err("failed to seek to start of memfd when computing integrity check")
             .unwrap();
-        IntegrityCheck::from_reader(&mut self.as_ref())
+        IntegrityCheck::from_reader(file)
     }
 
     /// Consume the memfd and return an owned file descriptor.
@@ -963,19 +953,6 @@ impl FinalizedMemFile {
     }
 }
 
-/// Errors that can occur during integrity check validation.
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-pub enum IntegrityCheckError {
-    /// The integrity check file has an incorrect size.
-    ///
-    /// This typically indicates file corruption or an attempt to use an incompatible
-    /// hash algorithm. The expected size is [`INTEGRITY_CHECK_BYTE_LEN`].
-    #[error(
-        "wrong check file length for hash type; received {0} bytes, expected {SHA384_BYTE_LEN} bytes"
-    )]
-    WrongCheckFileLength(u64),
-}
-
 /// Size of SHA-384 hash in bytes (384 bits / 8 = 48 bytes).
 const SHA384_BYTE_LEN: usize = 384 / 8;
 
@@ -1066,12 +1043,6 @@ impl AsFinalizedMemFile for IntegrityCheck {
     fn finalize(self) -> FinalizedMemFile {
         let bytes = self.serialize();
         let mut memfd = MemFile::new();
-        memfd
-            .as_mut()
-            .set_len(bytes.len() as u64)
-            .into_diagnostic()
-            .wrap_err("failed to set length of integrity check memfd")
-            .unwrap();
         memfd
             .as_mut()
             .write_all(bytes.as_slice())
@@ -1447,7 +1418,10 @@ impl CmdArgs {
             .collect()
     }
 
-    // interface getter. This should be used by all drivers
+    /// Get all configured network interfaces.
+    ///
+    /// This is the primary interface getter and should be used by all drivers.
+    #[must_use]
     pub fn interfaces(&self) -> impl Iterator<Item = InterfaceArg> {
         self.interface.iter().cloned()
     }
