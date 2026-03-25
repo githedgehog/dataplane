@@ -11,7 +11,7 @@ sysroot = ["dep:dpdk-sysroot-helper"]
 
 [dependencies]
 # internal
-hardware = { workspace = true, features = ["serde", "scan"] }
+hardware = { workspace = true, features = ["serde", "scan", "sysfs"] }
 id = { workspace = true }
 sysfs = { workspace = true }
 

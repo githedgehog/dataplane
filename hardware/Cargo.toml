@@ -7,18 +7,20 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-default = []
+default = ["sysfs"]
 # Enables property testing / fuzzing support for testing.
 bolero = ["dep:bolero"]
 # Enables hardware topology scanning using the `hwlocality` crate.
 scan = ["dep:hwlocality", "dep:pci-ids"]
 # Adds serialization support for all types using serde.
 serde = ["dep:serde", "id/serde"]
+# Enables sysfs/procfs support (linux-only; disable for WASM targets).
+sysfs = ["dep:sysfs"]
 
 [dependencies]
 # internal
 id = { workspace = true, features = ["rkyv"] }
-sysfs = { workspace = true }
+sysfs = { workspace = true, optional = true }
 
 # external
 bolero = { workspace = true, optional = true, features = ["alloc"] }

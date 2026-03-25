@@ -7,7 +7,7 @@ version.workspace = true
 
 [dependencies]
 # internal
-hardware = { workspace = true, features = ["serde"] }
+hardware = { workspace = true, features = ["serde", "sysfs"] }
 id = { workspace = true, features = [] }
 net = { workspace = true, features = [] }
 
@@ -27,7 +27,7 @@ uuid = { workspace = true, features = [] }
 
 [dev-dependencies]
 # internal
-hardware = { workspace = true, features = ["serde"] }
+hardware = { workspace = true, features = ["serde", "sysfs"] }
 net = { workspace = true, features = ["test_buffer"] }
 # external
 serde_yaml_ng = { workspace = true, features = [] }
