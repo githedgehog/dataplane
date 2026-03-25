@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 //! Definition of [`Headers`] and related methods and types.
-#![allow(missing_docs, clippy::pedantic)] // temporary
+#![allow(missing_docs)] // temporary
 
 use crate::checksum::Checksum;
 use crate::eth::ethtype::EthType;
@@ -65,6 +65,7 @@ pub enum Net {
 }
 
 impl Net {
+    #[must_use]
     pub fn dst_addr(&self) -> IpAddr {
         match self {
             Net::Ipv4(ip) => IpAddr::V4(ip.destination()),
@@ -72,6 +73,7 @@ impl Net {
         }
     }
 
+    #[must_use]
     pub fn src_addr(&self) -> IpAddr {
         match self {
             Net::Ipv4(ip) => IpAddr::V4(ip.source().inner()),
@@ -79,6 +81,7 @@ impl Net {
         }
     }
 
+    #[must_use]
     pub fn next_header(&self) -> NextHeader {
         match self {
             Net::Ipv4(ip) => ip.protocol().into(),
@@ -86,6 +89,12 @@ impl Net {
         }
     }
 
+    /// Sets the source address of the network header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError::InvalidIpVersion`] if the IP version of `addr` does not match the
+    /// IP version of the network header.
     pub fn try_set_source(&mut self, addr: UnicastIpAddr) -> Result<(), NetError> {
         match (self, addr) {
             (Net::Ipv4(ip), UnicastIpAddr::V4(addr)) => {
@@ -101,6 +110,12 @@ impl Net {
         Ok(())
     }
 
+    /// Sets the destination address of the network header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError::InvalidIpVersion`] if the IP version of `addr` does not match the
+    /// IP version of the network header.
     pub fn try_set_destination(&mut self, addr: IpAddr) -> Result<(), NetError> {
         match (self, addr) {
             (Net::Ipv4(ip), IpAddr::V4(addr)) => {
@@ -195,7 +210,7 @@ impl Transport {
                     icmp4
                         .update_checksum(payload.as_ref())
                         .unwrap_or_else(|()| unreachable!()); // Updating ICMPv4 checksum never fails
-                };
+                }
             }
             (Net::Ipv6(ip), Transport::Icmp6(icmp6)) => {
                 if icmp6.is_error_message() && embedded_headers.is_some() {
@@ -315,6 +330,12 @@ impl Transport {
         Ok(())
     }
 
+    /// Sets the ICMP identifier field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError::UnsupportedIdentifier`] if the transport header does not
+    /// support identifiers (i.e., TCP or UDP).
     pub fn try_set_identifier(&mut self, identifier: u16) -> Result<(), TransportError> {
         match self {
             Transport::Icmp4(icmp4) => icmp4
@@ -467,7 +488,7 @@ impl DeParse for Headers {
 
     fn size(&self) -> NonZero<u16> {
         // TODO(blocking): Deal with ip{v4,v6} extensions
-        let eth = self.eth.as_ref().map(|x| x.size().get()).unwrap_or(0);
+        let eth = self.eth.as_ref().map_or(0, |x| x.size().get());
         let vlan = self.vlan.iter().map(|v| v.size().get()).sum::<u16>();
         let net = match self.net {
             None => {
@@ -482,7 +503,7 @@ impl DeParse for Headers {
         };
         let encap = match self.udp_encap {
             None => 0,
-            Some(UdpEncap::Vxlan(vxlan)) => vxlan.size().get(),
+            Some(UdpEncap::Vxlan(vx)) => vx.size().get(),
         };
         let embedded_ip = self
             .embedded_ip
@@ -582,6 +603,7 @@ pub enum PopVlanError {
 
 impl Headers {
     /// Create a new [`Headers`] with the supplied `Eth` header.
+    #[must_use]
     pub fn new() -> Headers {
         Headers::default()
     }
@@ -622,6 +644,12 @@ impl Headers {
     ///
     /// This method will ensure that the `eth` field has its [`EthType`] adjusted to
     /// [`EthType::VLAN`] if there are no [`Vlan`]s on the stack at the time this method was called.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushVlanError::TooManyVlans`] if there are already [`MAX_VLANS`] VLANs on the
+    /// stack.
+    /// Returns [`PushVlanError::NoEthernetHeader`] if no Ethernet header is present.
     pub fn push_vlan(&mut self, vid: Vid) -> Result<(), PushVlanError> {
         if self.vlan.len() >= MAX_VLANS {
             return Err(PushVlanError::TooManyVlans);
@@ -646,6 +674,10 @@ impl Headers {
     /// preserve the structure.
     ///
     /// If `None` is returned, the [`Headers`] is not modified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PopVlanError::NoEthernetHeader`] if no Ethernet header is present.
     pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
         match &mut self.eth {
             None => Err(PopVlanError::NoEthernetHeader),
@@ -1371,6 +1403,7 @@ mod contract {
     impl ValueGenerator for CommonHeaders {
         type Output = Headers;
 
+        #[allow(clippy::too_many_lines)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let common_eth_type: CommonEthType = driver.produce()?;
             let eth = GenWithEthType(common_eth_type.into()).generate(driver)?;
@@ -1384,9 +1417,9 @@ mod contract {
                             let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: Default::default(),
+                                vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: Default::default(),
+                                net_ext: ArrayVec::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                                 embedded_ip: None,
@@ -1403,9 +1436,9 @@ mod contract {
                             };
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: Default::default(),
+                                vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: Default::default(),
+                                net_ext: ArrayVec::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                                 embedded_ip: None,
@@ -1418,7 +1451,7 @@ mod contract {
                                 eth: Some(eth),
                                 vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv4(ipv4)),
-                                net_ext: Default::default(),
+                                net_ext: ArrayVec::default(),
                                 transport: Some(Transport::Icmp4(icmp)),
                                 udp_encap: None,
                                 embedded_ip: None,
@@ -1436,9 +1469,9 @@ mod contract {
                             let tcp: Tcp = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: Default::default(),
+                                vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: Default::default(),
+                                net_ext: ArrayVec::default(),
                                 transport: Some(Transport::Tcp(tcp)),
                                 udp_encap: None,
                                 embedded_ip: None,
@@ -1455,9 +1488,9 @@ mod contract {
                             };
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: Default::default(),
+                                vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: Default::default(),
+                                net_ext: ArrayVec::default(),
                                 transport: Some(Transport::Udp(udp)),
                                 udp_encap,
                                 embedded_ip: None,
@@ -1468,9 +1501,9 @@ mod contract {
                             let icmp6: Icmp6 = driver.produce()?;
                             let headers = Headers {
                                 eth: Some(eth),
-                                vlan: Default::default(),
+                                vlan: ArrayVec::default(),
                                 net: Some(Net::Ipv6(ipv6)),
-                                net_ext: Default::default(),
+                                net_ext: ArrayVec::default(),
                                 transport: Some(Transport::Icmp6(icmp6)),
                                 udp_encap: None,
                                 embedded_ip: None,
@@ -1484,21 +1517,22 @@ mod contract {
     }
 }
 
-#[cfg(any(test, kani))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // fine to unwarp in tests
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // fine to unwrap in tests
 mod test {
     use std::net::Ipv4Addr;
 
+    use crate::checksum::Checksum;
     use crate::headers::Headers;
     use crate::headers::contract::CommonHeaders;
     use crate::icmp4::Icmp4Checksum;
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
 
-    use super::*;
+    use super::{Net, Transport};
     use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
     use crate::ipv4::{Ipv4Checksum, UnicastIpv4Addr};
-    use crate::tcp::{TcpChecksum, TcpChecksumPayload};
-    use crate::udp::{UdpChecksum, UdpChecksumPayload};
+    use crate::tcp::{TcpChecksum, TcpChecksumPayload, TcpPort};
+    use crate::udp::{UdpChecksum, UdpChecksumPayload, UdpPort};
 
     fn parse_back_test(headers: &Headers) {
         let mut buffer = [0_u8; 1024];
@@ -1521,17 +1555,15 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
-        bolero::check!().with_type().for_each(parse_back_test)
+        bolero::check!().with_type().for_each(parse_back_test);
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back_common() {
         bolero::check!()
             .with_generator(CommonHeaders)
-            .for_each(parse_back_test)
+            .for_each(parse_back_test);
     }
 
     mod sample {
@@ -1696,6 +1728,7 @@ mod test {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn test_checksum(mut headers: Headers) {
         match &headers.transport {
             None => {}
@@ -1794,7 +1827,7 @@ mod test {
 
         // Check incremental updates
         match &mut headers.transport {
-            None => {}
+            None | Some(Transport::Icmp6(_)) => {}
             Some(Transport::Udp(transport)) => {
                 let net = headers.net.clone().unwrap();
                 let old_value = transport.source().into();
@@ -1845,9 +1878,8 @@ mod test {
                             .expect("expected valid checksum");
                     }
                     Net::Ipv6(_) => panic!("unexpected ipv6"),
-                };
+                }
             }
-            Some(Transport::Icmp6(_)) => {}
         }
     }
 
@@ -1927,7 +1959,7 @@ mod test {
                             _ => unreachable!(),
                         }
                     }
-                    _ => unreachable!(),
+                    Net::Ipv6(_) => unreachable!(),
                 },
                 _ => unreachable!(),
             }
@@ -1980,7 +2012,7 @@ mod test {
                             _ => unreachable!(),
                         }
                     }
-                    _ => unreachable!(),
+                    Net::Ipv6(_) => unreachable!(),
                 },
                 _ => unreachable!(),
             }
