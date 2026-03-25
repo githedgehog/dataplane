@@ -673,6 +673,9 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
     type Error = InvalidCmdArguments;
 
     fn try_from(value: CmdArgs) -> Result<Self, InvalidCmdArguments> {
+        if value.interface.is_empty() {
+            return Err(InvalidCmdArguments::NoInterfacesSpecified);
+        }
         Ok(LaunchConfiguration {
             general: GeneralConfigSection {
                 name: value.get_name().cloned(),
@@ -1339,6 +1342,16 @@ mod tests {
         let args = parse_args(&["--interface", "eth0=kernel@enp2s1"]);
         let err = LaunchConfiguration::try_from(args).unwrap_err();
         assert!(matches!(err, InvalidCmdArguments::NoDriverSpecified));
+    }
+
+    #[test]
+    fn try_from_no_interfaces_is_error() {
+        let args = parse_args(&["--driver", "kernel"]);
+        let err = LaunchConfiguration::try_from(args).unwrap_err();
+        assert!(
+            matches!(err, InvalidCmdArguments::NoInterfacesSpecified),
+            "expected NoInterfacesSpecified, got {err:?}"
+        );
     }
 
     #[test]
