@@ -1271,6 +1271,7 @@ dependencies = [
  "dataplane-dpdk-sysroot-helper",
  "dataplane-errno",
  "dataplane-net",
+ "strum 0.28.0",
  "thiserror 2.0.18",
  "tracing",
 ]

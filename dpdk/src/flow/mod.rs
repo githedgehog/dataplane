@@ -771,6 +771,7 @@ fn hton_16<T: Debug + Into<u16>>(x: T) -> u16 {
     u16::to_be(x.into())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::FromRepr, strum::IntoStaticStr)]
 #[repr(u32)]
 pub enum FlowActionType {
     /// End marker for action lists.
@@ -1016,6 +1017,7 @@ pub enum FlowAction {
 }
 
 /// Modify a field
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::FromRepr, strum::IntoStaticStr)]
 #[repr(u32)]
 pub enum FieldModificationOperation {
     /// Set a field
@@ -1028,6 +1030,7 @@ pub enum FieldModificationOperation {
 
 /// A wrapper around a `rte_flow_action_modify_field` that specifies the
 /// field to modify and its new value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::FromRepr, strum::IntoStaticStr)]
 #[repr(u32)]
 pub enum FlowFieldId {
     /// Start with a packet.
@@ -1134,6 +1137,35 @@ pub enum FlowFieldId {
     Random = dpdk_sys::rte_flow_field_id::RTE_FLOW_FIELD_RANDOM,
     /// VXLAN last reserved byte.
     VxlanLastReserved = dpdk_sys::rte_flow_field_id::RTE_FLOW_FIELD_VXLAN_LAST_RSVD,
+}
+
+// -- repr(u32) → u32 conversions ------------------------------------------------
+//
+// Centralised `From` impls for every `#[repr(u32)]` enum so call-sites can
+// write `.into()` instead of bare `as u32` casts.
+
+impl From<MatchType> for u32 {
+    fn from(v: MatchType) -> Self {
+        v as Self
+    }
+}
+
+impl From<FlowActionType> for u32 {
+    fn from(v: FlowActionType) -> Self {
+        v as Self
+    }
+}
+
+impl From<FieldModificationOperation> for u32 {
+    fn from(v: FieldModificationOperation) -> Self {
+        v as Self
+    }
+}
+
+impl From<FlowFieldId> for u32 {
+    fn from(v: FlowFieldId) -> Self {
+        v as Self
+    }
 }
 
 /// A field modification action (`RTE_FLOW_ACTION_TYPE_MODIFY_FIELD`).
