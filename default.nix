@@ -104,7 +104,7 @@ let
     executable = false;
     destination = "/.clangd";
   };
-  crane = import sources.crane { pkgs = pkgs; };
+  crane = import sources.crane { };
   craneLib = crane.craneLib.overrideToolchain pkgs.rust-toolchain;
   devroot = pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
@@ -159,13 +159,17 @@ let
   outputsFilter = p: _type: (p != "target") && (p != "sysroot") && (p != "devroot") && (p != ".git");
   src = pkgs.lib.cleanSourceWith {
     filter =
-      p: t:
+      full-path: t:
+      let
+        p = baseNameOf full-path;
+      in
       (justfileFilter p t)
       || (markdownFilter p t)
       || (jsonFilter p t)
       || (cHeaderFilter p t)
-      || ((outputsFilter p t) && (craneLib.filterCargoSources p t));
-    src = ./.;
+      || ((outputsFilter p t) && (craneLib.filterCargoSources full-path t));
+    src = lib.cleanSource ./.;
+    name = "source";
   };
   cargoVendorDir = craneLib.vendorMultipleCargoDeps {
     cargoLockList = [
