@@ -39,8 +39,8 @@ custom_target!("hyper", LevelFilter::WARN, &["third-party"]);
 custom_target!("tower", LevelFilter::WARN, &["third-party"]);
 
 fn init_name(args: &CmdArgs) -> Result<String, String> {
-    if let Some(name) = args.get_name() {
-        Ok(name.clone())
+    if let Some(name) = args.name() {
+        Ok(name.to_owned())
     } else {
         let hostname =
             gethostname().map_err(|errno| format!("Failed to get hostname: {}", errno.desc()))?;

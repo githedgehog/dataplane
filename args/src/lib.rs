@@ -185,7 +185,7 @@ pub const DEFAULT_FRR_AGENT_PATH: &str = "/var/run/frr/frr-agent.sock";
 #[rkyv(attr(derive(Debug, PartialEq, Eq)))]
 pub struct GeneralConfigSection {
     /// Name to give to this dataplane/gateway
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
 /// Configuration for the packet processing driver used by the dataplane.
@@ -674,7 +674,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
         }
         Ok(LaunchConfiguration {
             general: GeneralConfigSection {
-                name: value.get_name().cloned(),
+                name: value.name().map(str::to_owned),
             },
             config_server: Some(ConfigServerSection {
                 config_dir: value.config_dir().cloned(),
@@ -1076,8 +1076,8 @@ impl CmdArgs {
 
     /// Get the name to configure this gateway with.
     #[must_use]
-    pub fn get_name(&self) -> Option<&String> {
-        self.name.as_ref()
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
     #[must_use]
     pub fn bmp_enabled(&self) -> bool {
