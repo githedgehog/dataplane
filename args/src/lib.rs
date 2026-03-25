@@ -378,6 +378,12 @@ pub struct GeneralConfigSection {
 ///   environments with dedicated NICs.
 /// - Use **Kernel** for development, testing, or environments without DPDK-compatible
 ///   hardware.
+///
+/// # Note
+///
+/// This type does not derive `CheckBytes` because its inner types contain
+/// [`InterfaceName`] which does not yet implement `CheckBytes`.
+/// Adding that derive to `InterfaceName` in the `net` crate would unblock this.
 #[derive(
     Debug, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
@@ -547,7 +553,14 @@ pub struct TracingShowSection {
 /// Defines how the dataplane communicates with FRR (Free Range Routing) and
 /// related routing components.
 #[derive(
-    Debug, PartialEq, Eq, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    rkyv::Archive,
+    CheckBytes,
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct RoutingConfigSection {
