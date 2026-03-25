@@ -1094,6 +1094,12 @@ pub enum InvalidCmdArguments {
     NoDriverSpecified,
     #[error("No network interfaces specified")]
     NoInterfacesSpecified,
+    /// A DPDK interface was specified without a port (PCI address) mapping.
+    ///
+    /// DPDK requires each interface to have an explicit PCI address binding
+    /// via the `pci@ADDR` syntax.
+    #[error("DPDK interface '{0}' is missing a port specifier (expected pci@ADDR)")]
+    MissingPortSpecifier(InterfaceName),
     #[error(transparent)]
     UnsupportedByDriver(#[from] UnsupportedByDriver),
 }
@@ -1136,7 +1142,9 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                                     UnsupportedByDriver::Dpdk(interface_name.clone()),
                                 ))
                             }
-                            None => Err(InvalidCmdArguments::NoInterfacesSpecified),
+                            None => Err(InvalidCmdArguments::MissingPortSpecifier(
+                                nic.interface.clone(),
+                            )),
                         })
                         .collect::<Result<Vec<_>, _>>()?
                         .into_iter()
@@ -1336,11 +1344,8 @@ impl CmdArgs {
     /// Returns `"dpdk"` if no driver was explicitly specified (the default),
     /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
     #[must_use]
-    pub fn driver_name(&self) -> &str {
-        match &self.driver {
-            None => "dpdk",
-            Some(name) => name,
-        }
+    pub fn driver_name(&self) -> Option<&str> {
+        self.driver.as_deref()
     }
 
     /// Check if the `--show-tracing-tags` flag was set.
