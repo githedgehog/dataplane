@@ -63,6 +63,11 @@ fn ask_user(question: &str) -> bool {
 /// message (as 8 octets|u64) and then the message itself, in two writes.
 /// Therefore, here, we'll do 2 reads; one to figure out the length and a second
 /// one to received the actual message (response).
+/// Upper bound on a single CLI response payload.  Anything larger than this is
+/// almost certainly a bug or corrupt framing, so we reject it rather than
+/// attempting an unbounded allocation.
+const MAX_CLI_RESPONSE_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
+
 fn process_cli_response(sock: &UnixDatagram) {
     let mut rx_buff = vec![0u8; 1024];
     let mut msg_size_wire = [0u8; 8];
@@ -72,6 +77,12 @@ fn process_cli_response(sock: &UnixDatagram) {
         return;
     }
     let msg_size = u64::from_ne_bytes(msg_size_wire);
+    if msg_size > MAX_CLI_RESPONSE_SIZE {
+        print_err!(
+            "Response size {msg_size} exceeds maximum ({MAX_CLI_RESPONSE_SIZE}), dropping"
+        );
+        return;
+    }
     #[allow(clippy::cast_possible_truncation)]
     if msg_size as usize > rx_buff.capacity() {
         rx_buff.resize(msg_size as usize, 0);
