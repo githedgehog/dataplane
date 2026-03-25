@@ -42,17 +42,13 @@ use crate::vxlan::{Vni, Vxlan};
 fn make_default_for_transport(transport_type: Option<NextHeader>) -> Option<Transport> {
     match transport_type {
         Some(NextHeader::TCP) => {
-            let mut tcp = Tcp::default();
-            tcp.set_source(123.try_into().unwrap());
-            tcp.set_destination(456.try_into().unwrap());
+            let mut tcp = Tcp::new(123.try_into().unwrap(), 456.try_into().unwrap());
             tcp.set_syn(true);
             tcp.set_sequence_number(1);
             Some(Transport::Tcp(tcp))
         }
         Some(NextHeader::UDP) => {
-            let mut udp = Udp::empty();
-            udp.set_source(123.try_into().unwrap());
-            udp.set_destination(456.try_into().unwrap());
+            let udp = Udp::new(123.try_into().unwrap(), 456.try_into().unwrap());
             Some(Transport::Udp(udp))
         }
         Some(transport_type) => {
@@ -328,15 +324,17 @@ pub fn build_test_icmp4_destination_unreachable_packet(
     let mut inner_transport;
     match next_header {
         NextHeader::TCP => {
-            let mut tcp = Tcp::default();
-            tcp.set_source(inner_param_1.try_into().unwrap());
-            tcp.set_destination(inner_param_2.try_into().unwrap());
+            let tcp = Tcp::new(
+                inner_param_1.try_into().unwrap(),
+                inner_param_2.try_into().unwrap(),
+            );
             inner_transport = EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp));
         }
         NextHeader::UDP => {
-            let mut udp = Udp::default();
-            udp.set_source(inner_param_1.try_into().unwrap());
-            udp.set_destination(inner_param_2.try_into().unwrap());
+            let udp = Udp::new(
+                inner_param_1.try_into().unwrap(),
+                inner_param_2.try_into().unwrap(),
+            );
             inner_transport = EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp));
         }
         NextHeader::ICMP => {
