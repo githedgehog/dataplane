@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 inotify = { workspace = true, features = ["stream"] }
-k8s-intf = { workspace = true }
+k8s-intf = { workspace = true, features = ["client"] }
 tokio = { workspace = true, features = ["macros", "rt", "fs"] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
