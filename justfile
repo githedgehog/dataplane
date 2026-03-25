@@ -12,7 +12,13 @@ debug_justfile := "false"
 _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 
 # number of nix jobs to run in parallel
-jobs := "1"
+jobs := "8"
+
+# libc
+libc := if platform == "wasm32-wasip1" { "unknown" } else { "gnu" }
+
+# kernel (linux or wasip1)
+kernel := if platform == "wasm32-wasip1" { "wasip1" } else { "linux" }
 
 # List out the available commands
 [private]
@@ -70,6 +76,7 @@ oci_name := "githedgehog/dataplane"
 oci_frr_prefix := "githedgehog/dpdk-sys/frr"
 oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
 oci_image_dataplane_debugger := oci_repo + "/" + oci_name + "/debugger:" + version
+oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
 
@@ -88,6 +95,8 @@ build target="dataplane.tar" *args:
     nix build -f default.nix "${target}" \
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \
+      --argstr libc '{{ libc }}' \
+      --argstr kernel '{{ kernel }}' \
       --argstr features '{{ features }}' \
       --argstr default-features '{{ default_features }}' \
       --argstr instrumentation '{{ instrument }}' \
@@ -139,7 +148,7 @@ setup-roots *args:
 
 # Build the dataplane container image
 [script]
-build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane.tar" } else { "containers." + target }) args)
+build-container target="dataplane" *args: (build (if target == "dataplane" { "dataplane.tar" } else if target == "validator" { "workspace.validator" } else { "containers." + target }) args)
     {{ _just_debuggable_ }}
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
     case "{{target}}" in
@@ -164,6 +173,9 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             docker load < ./results/containers.frr.host
             docker tag "ghcr.io/githedgehog/dpdk-sys/frr-host:{{version}}" "{{oci_image_frr_host}}"
             echo "imported {{oci_image_frr_host}}"
+            ;;
+        "validator")
+            echo "NOTE: validator image is wasm and not containerized"
             ;;
         *)
             >&2 echo "{{target}}" not a valid container
@@ -192,18 +204,33 @@ push-container target="dataplane" *args: (build-container target args) && versio
             skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} docker-daemon:{{oci_image_frr_host}} docker://{{oci_image_frr_host}}
             echo "Pushed {{ oci_image_frr_host }}"
             ;;
+        "validator")
+            if [ "{{platform}}" != "wasm32-wasip1" ]; then
+              >&2 echo "Pushing non wasm32-wasip1 validator images is not supported, set platform=wasm32-wasip1"
+              exit 1
+            fi
+            pushd ./results/workspace.validator/bin
+            oras push --annotation version="{{ version }}" "{{ oci_image_dataplane_validator }}" ./validator.wasm
+            popd
+            echo "Pushed {{ oci_image_dataplane_validator }}"
+            ;;
         *)
             >&2 echo "{{target}}" not a valid container
             exit 99
     esac
 
+# Note: deliberately ignores all recipe parameters save version, debug_justfile, and oci_repo.
 # Pushes all release container images.
-# Note: deliberately ignores all recipe parameters save version and debug_justfile.
 [script]
 push:
     {{ _just_debuggable_ }}
-    for container in dataplane frr.dataplane; do
-        nix-shell --run "just debug_justfile={{debug_justfile}} oci_repo={{oci_repo}} version={{version}} profile=release platform=x86-64-v3 sanitize= instrument=none push-container ${container}"
+    for container in dataplane frr.dataplane validator; do
+        if [ "${container}" = "validator" ]; then
+          platform="wasm32-wasip1"
+        else
+          platform="x86-64-v3"
+        fi
+        nix-shell --run "just debug_justfile={{debug_justfile}} oci_repo={{oci_repo}} version={{version}} profile=release platform=${platform} sanitize= instrument=none push-container ${container}"
     done
 
 # Print names of container images to build or push
