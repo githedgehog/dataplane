@@ -103,4 +103,5 @@ jobs:
             Do not forget to tag after merging!
           labels: |
             automated
+          draft: "true"
           sign-commits: "true"
