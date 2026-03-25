@@ -5,17 +5,12 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
-[features]
-default = ["serde"]
-serde = ["dep:serde"]
-
 [dependencies]
 
 dpdk-sys = { workspace = true }
 errno = { workspace = true }
 net = { workspace = true }
 
-serde = { workspace = true, optional = true, features = ["std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 

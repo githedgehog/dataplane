@@ -1271,7 +1271,6 @@ dependencies = [
  "dataplane-dpdk-sysroot-helper",
  "dataplane-errno",
  "dataplane-net",
- "serde",
  "thiserror 2.0.18",
  "tracing",
 ]
