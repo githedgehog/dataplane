@@ -45,11 +45,6 @@ impl NextHeader {
     /// ICMP6 next header
     pub const ICMP6: NextHeader = NextHeader(IpNumber::IPV6_ICMP);
 
-    /// Get the inner (wrapped) `etherparse` [`IpNumber`] type
-    pub(crate) fn inner(self) -> IpNumber {
-        self.0
-    }
-
     /// Generate a new [`NextHeader`]
     #[must_use]
     pub fn new(inner: u8) -> Self {

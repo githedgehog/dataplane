@@ -23,7 +23,6 @@ use arrayvec::ArrayVec;
 use core::fmt::Debug;
 use derive_builder::Builder;
 use std::num::NonZero;
-use tracing::debug;
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
@@ -453,15 +452,7 @@ impl EmbeddedHeader {
             IpAuth(auth) => auth
                 .parse_embedded_payload(cursor)
                 .map(EmbeddedHeader::from),
-            IpV6Ext(ext) => {
-                if let Ipv6(ipv6) = self {
-                    ext.parse_embedded_payload(ipv6.next_header(), cursor)
-                        .map(EmbeddedHeader::from)
-                } else {
-                    debug!("ipv6 extension header outside ipv6 header");
-                    None
-                }
-            }
+            IpV6Ext(ext) => ext.parse_embedded_payload(cursor).map(EmbeddedHeader::from),
             Tcp(_) | Udp(_) | Icmp4(_) | Icmp6(_) => None,
         }
     }

@@ -416,15 +416,7 @@ impl Header {
             Ipv4(ipv4) => ipv4.parse_payload(cursor).map(Header::from),
             Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
             IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
-            IpV6Ext(ext) => {
-                if let Ipv6(ipv6) = self {
-                    ext.parse_payload(ipv6.next_header(), cursor)
-                        .map(Header::from)
-                } else {
-                    debug!("ipv6 extension header outside ipv6 header");
-                    None
-                }
-            }
+            IpV6Ext(ext) => ext.parse_payload(cursor).map(Header::from),
             Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
             Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
             Udp(udp) => udp.parse_payload(cursor).map(Header::from),

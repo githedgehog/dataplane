@@ -454,18 +454,14 @@ impl Ipv6Ext {
     ///
     /// * `Some(Ipv6ExtNext)` variant if the payload was successfully parsed as a next header.
     /// * `None` if the next header is not supported.
-    pub(crate) fn parse_payload(
-        &self,
-        first_ip_number: NextHeader,
-        cursor: &mut Reader,
-    ) -> Option<Ipv6ExtNext> {
+    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<Ipv6ExtNext> {
         use etherparse::ip_number::{
             AUTHENTICATION_HEADER, IPV6_DESTINATION_OPTIONS, IPV6_FRAGMENTATION_HEADER,
             IPV6_HEADER_HOP_BY_HOP, IPV6_ICMP, IPV6_ROUTE_HEADER, TCP, UDP,
         };
         let next_header = self
             .inner
-            .next_header(first_ip_number.inner())
+            .next_header(self.first_ip_number)
             .map_err(|e| debug!("failed to parse: {e:?}"))
             .ok()?;
         match next_header {
@@ -497,7 +493,6 @@ impl Ipv6Ext {
     /// * `None` if the next header is not supported.
     pub(crate) fn parse_embedded_payload(
         &self,
-        first_ip_number: NextHeader,
         cursor: &mut Reader,
     ) -> Option<EmbeddedIpv6ExtNext> {
         use etherparse::ip_number::{
@@ -506,7 +501,7 @@ impl Ipv6Ext {
         };
         let next_header = self
             .inner
-            .next_header(first_ip_number.inner())
+            .next_header(self.first_ip_number)
             .map_err(|e| debug!("failed to parse: {e:?}"))
             .ok()?;
         match next_header {
