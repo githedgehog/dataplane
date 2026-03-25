@@ -142,12 +142,31 @@ impl TxQueue {
 
     #[tracing::instrument(level = "trace", skip(packets))]
     pub fn transmit(&self, packets: impl IntoIterator<Item = Mbuf>) {
-        let mut packets: Vec<_> = packets.into_iter().collect();
-        let mut offset = 0;
-        if packets.is_empty() {
+        // Convert Mbufs into raw pointers, relinquishing Rust's ownership.
+        //
+        // rte_eth_tx_burst takes ownership of every mbuf it successfully
+        // transmits (freeing it internally or recycling it into a pool).
+        // If we kept the Mbufs in a Vec, Rust's Drop would free them again
+        // when the Vec goes out of scope — a double-free.
+        //
+        // By extracting the raw pointers and forgetting the Mbufs, we ensure
+        // Rust never runs Mbuf::drop on transmitted buffers.  Un-transmitted
+        // buffers are freed explicitly at the end of this function.
+        let mut ptrs: Vec<*mut dpdk_sys::rte_mbuf> = packets
+            .into_iter()
+            .map(|mbuf| {
+                let ptr = mbuf.raw.as_ptr();
+                std::mem::forget(mbuf);
+                ptr
+            })
+            .collect();
+
+        if ptrs.is_empty() {
             return;
         }
-        while offset < packets.len() {
+
+        let mut offset = 0;
+        while offset < ptrs.len() {
             trace!(
                 "Transmitting packets to tx queue {queue} on dev {dev}",
                 queue = self.config.queue_index.as_u16(),
@@ -157,8 +176,8 @@ impl TxQueue {
                 dpdk_sys::rte_eth_tx_burst(
                     self.dev.as_u16(),
                     self.config.queue_index.as_u16(),
-                    packets.as_mut_ptr().add(offset) as *mut _,
-                    min(Self::PKT_BURST_SIZE, packets.len() - offset) as u16,
+                    ptrs.as_mut_ptr().add(offset),
+                    min(Self::PKT_BURST_SIZE, ptrs.len() - offset) as u16,
                 )
             };
             offset += nb_tx as usize;
@@ -167,6 +186,19 @@ impl TxQueue {
                 queue = self.config.queue_index.as_u16(),
                 dev = self.dev.as_u16()
             );
+        }
+
+        // Free any un-transmitted mbufs.  With the current retry loop this
+        // slice is always empty (the loop spins until all are transmitted),
+        // but this guard prevents resource leaks if future changes introduce
+        // early-exit logic or a retry limit.
+        for &ptr in &ptrs[offset..] {
+            // SAFETY: These mbufs were *not* passed to rte_eth_tx_burst (or
+            // were passed but not accepted), so DPDK has not taken ownership.
+            // We are responsible for freeing them.
+            unsafe {
+                dpdk_sys::rte_pktmbuf_free(ptr);
+            }
         }
     }
 }
