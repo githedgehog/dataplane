@@ -4,6 +4,7 @@
 //! Defines a command tree of Nodes
 
 use colored::Colorize;
+use dataplane_cli::cliproto::CliAction;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
@@ -50,7 +51,7 @@ pub struct Node {
     pub depth: u16,
     pub children: BTreeMap<String, Node>,
     pub(crate) description: Option<&'static str>,
-    pub action: Option<u16>,
+    pub action: Option<CliAction>,
     pub(crate) args: Vec<NodeArg>,
     pub(crate) hidden: bool,
 }
@@ -63,7 +64,7 @@ impl Node {
             ..Default::default()
         }
     }
-    pub fn action(mut self, action: u16) -> Self {
+    pub fn action(mut self, action: CliAction) -> Self {
         self.action = Some(action);
         self
     }
