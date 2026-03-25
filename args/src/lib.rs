@@ -84,36 +84,67 @@ pub struct InterfaceArg {
     pub port: Option<PortArg>,
 }
 
+/// Errors that can occur when parsing a [`PortArg`] from a string.
+///
+/// Port arguments follow the syntax `DISCRIMINANT@VALUE`, where the discriminant
+/// is either `pci` (followed by a PCI address) or `kernel` (followed by a kernel
+/// interface name).
+#[derive(Debug, thiserror::Error)]
+pub enum PortArgParseError {
+    /// The input string is missing the `@` separator between discriminant and value.
+    #[error("bad syntax: expected DISCRIMINANT@VALUE, missing '@' separator")]
+    MissingSeparator,
+    /// The PCI address following `pci@` could not be parsed.
+    #[error("invalid PCI address: {0}")]
+    InvalidPciAddress(#[from] InvalidPciAddress),
+    /// The kernel interface name following `kernel@` is not a valid interface name.
+    #[error("invalid kernel interface name: {0}")]
+    InvalidInterfaceName(#[from] IllegalInterfaceName),
+    /// The discriminant is not one of the recognized values (`pci` or `kernel`).
+    #[error("unknown port type '{0}': expected 'pci' or 'kernel'")]
+    UnknownDiscriminant(String),
+}
+
+/// Errors that can occur when parsing an [`InterfaceArg`] from a string.
+///
+/// Interface arguments follow the syntax `INTERFACE=DISCRIMINANT@VALUE` or simply
+/// `INTERFACE` when no port mapping is provided.
+#[derive(Debug, thiserror::Error)]
+pub enum InterfaceArgParseError {
+    /// The interface name portion of the argument is not a valid interface name.
+    #[error("invalid interface name: {0}")]
+    InvalidInterfaceName(#[from] IllegalInterfaceName),
+    /// The port specifier following the `=` could not be parsed.
+    #[error("invalid port specifier: {0}")]
+    InvalidPort(#[from] PortArgParseError),
+}
+
 impl FromStr for PortArg {
-    type Err = String;
+    type Err = PortArgParseError;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let (disc, value) = input
             .split_once('@')
-            .ok_or("Bad syntax: missing @".to_string())?;
+            .ok_or(PortArgParseError::MissingSeparator)?;
 
         match disc {
             "pci" => {
-                let pciaddr = PciAddress::try_from(value).map_err(|e| e.to_string())?;
+                let pciaddr = PciAddress::try_from(value)?;
                 Ok(PortArg::Pci(pciaddr))
             }
             "kernel" => {
-                let kernelif = InterfaceName::try_from(value)
-                    .map_err(|e| format!("Bad kernel interface name: {e}"))?;
+                let kernelif = InterfaceName::try_from(value)?;
                 Ok(PortArg::Kernel(kernelif))
             }
-            _ => Err(format!(
-                "Unknown discriminant '{disc}': allowed values are pci|kernel"
-            )),
+            _ => Err(PortArgParseError::UnknownDiscriminant(disc.to_string())),
         }
     }
 }
 
 impl FromStr for InterfaceArg {
-    type Err = String;
+    type Err = InterfaceArgParseError;
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         if let Some((first, second)) = input.split_once('=') {
-            let interface =
-                InterfaceName::try_from(first).map_err(|e| format!("Bad interface name: {e}"))?;
+            let interface = InterfaceName::try_from(first)?;
 
             let port = PortArg::from_str(second)?;
             Ok(InterfaceArg {
@@ -121,8 +152,7 @@ impl FromStr for InterfaceArg {
                 port: Some(port),
             })
         } else {
-            let interface =
-                InterfaceName::try_from(input).map_err(|e| format!("Bad interface name: {e}"))?;
+            let interface = InterfaceName::try_from(input)?;
             Ok(InterfaceArg {
                 interface,
                 port: None,
