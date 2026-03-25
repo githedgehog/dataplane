@@ -399,17 +399,13 @@ impl FinalizedMemFile {
     ///
     /// 1. Unable to read the integrity check file.
     /// 2. Invalid file (checksum mismatch).
-    pub fn validate(&mut self, check_file: FinalizedMemFile) -> Result<(), miette::Report> {
-        let mut check_file = check_file;
+    pub fn validate(&mut self, check_file: &mut FinalizedMemFile) -> Result<(), miette::Report> {
         check_file
-            .0
-             .0
             .seek(SeekFrom::Start(0))
             .into_diagnostic()
             .wrap_err("failed to seek to start of check_file")?;
         let mut given_bytes: IntegrityCheckBytes = [0; _];
         check_file
-            .as_ref()
             .read_exact(&mut given_bytes)
             .into_diagnostic()
             .wrap_err("unable to read check file")?;
@@ -709,9 +705,9 @@ mod tests {
         let mut finalized = memfile.finalize();
 
         let check = finalized.integrity_check();
-        let check_file = check.finalize();
+        let mut check_file = check.finalize();
 
-        finalized.validate(check_file).unwrap();
+        finalized.validate(&mut check_file).unwrap();
     }
 
     #[test]
@@ -725,9 +721,9 @@ mod tests {
         m2.as_mut().write_all(b"wrong content").unwrap();
         let mut f2 = m2.finalize();
         let wrong_check = f2.integrity_check();
-        let check_file = wrong_check.finalize();
+        let mut check_file = wrong_check.finalize();
 
-        assert!(finalized.validate(check_file).is_err());
+        assert!(finalized.validate(&mut check_file).is_err());
     }
 
     // -----------------------------------------------------------------------
