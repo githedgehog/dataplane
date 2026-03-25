@@ -1177,11 +1177,11 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                 None => Err(InvalidCmdArguments::NoDriverSpecified)?,
             },
             cli: CliConfigSection {
-                cli_sock_path: value.cli_sock_path(),
+                cli_sock_path: value.cli_sock_path().to_owned(),
             },
             routing: RoutingConfigSection {
-                control_plane_socket: value.cpi_sock_path(),
-                frr_agent_socket: value.frr_agent_path(),
+                control_plane_socket: value.cpi_sock_path().to_owned(),
+                frr_agent_socket: value.frr_agent_path().to_owned(),
             },
             tracing: TracingConfigSection {
                 show: TracingShowSection {
@@ -1456,24 +1456,24 @@ impl CmdArgs {
     ///
     /// Returns the path where FRR (Free Range Routing) sends route updates to the dataplane.
     #[must_use]
-    pub fn cpi_sock_path(&self) -> String {
-        self.cpi_sock_path.clone()
+    pub fn cpi_sock_path(&self) -> &str {
+        &self.cpi_sock_path
     }
 
     /// Get the CLI socket path.
     ///
     /// Returns the path where the dataplane CLI server listens for client connections.
     #[must_use]
-    pub fn cli_sock_path(&self) -> String {
-        self.cli_sock_path.clone()
+    pub fn cli_sock_path(&self) -> &str {
+        &self.cli_sock_path
     }
 
     /// Get the FRR agent socket path.
     ///
     /// Returns the path to connect to the FRR agent that controls FRR configuration reloads.
     #[must_use]
-    pub fn frr_agent_path(&self) -> String {
-        self.frr_agent_path.clone()
+    pub fn frr_agent_path(&self) -> &str {
+        &self.frr_agent_path
     }
 
     /// Get the Prometheus metrics HTTP endpoint address.
