@@ -18,7 +18,6 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_errors_doc)]
-#![allow(clippy::struct_excessive_bools)]
 
 pub mod converters;
 pub mod display;

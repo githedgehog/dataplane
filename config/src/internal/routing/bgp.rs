@@ -51,6 +51,7 @@ pub struct AfIpv6Ucast {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AfL2vpnEvpn {
     pub adv_all_vni: bool,
     pub adv_default_gw: bool,
@@ -64,6 +65,7 @@ pub struct AfL2vpnEvpn {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BgpNeighCapabilities {
     pub dynamic: bool,
     pub ext_nhop: bool,
@@ -119,6 +121,7 @@ impl BgpNeighAF {
 
 #[derive(Clone, Debug, Default)]
 /// A BGP neighbor config
+#[allow(clippy::struct_excessive_bools)]
 pub struct BgpNeighbor {
     pub ntype: BgpNeighType,
     pub remote_as: Option<u32>,
@@ -159,6 +162,7 @@ pub struct BgpNeighbor {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BgpDefaultsAF {
     flow_spec: bool,
     labeled_unicast: bool,
@@ -178,6 +182,7 @@ pub struct BgpDefaults {
 
 #[derive(Clone, Debug)]
 /// BGP global configuration options
+#[allow(clippy::struct_excessive_bools)]
 pub struct BgpOptions {
     pub network_import_check: bool,
     pub ebgp_requires_policy: bool,
