@@ -50,6 +50,7 @@ pub struct EmbeddedHeaders {
 
 impl EmbeddedHeaders {
     #[cfg(any(test, feature = "bolero"))]
+    #[must_use]
     pub fn new(
         net: Option<Net>,
         transport: Option<EmbeddedTransport>,
@@ -58,8 +59,8 @@ impl EmbeddedHeaders {
     ) -> Self {
         Self {
             net,
-            transport,
             net_ext,
+            transport,
             full_payload_length,
         }
     }
@@ -95,25 +96,29 @@ impl EmbeddedHeaders {
         }
     }
 
+    #[must_use]
     pub fn net_headers_len(&self) -> u16 {
-        self.net.as_ref().map(|net| net.size().get()).unwrap_or(0)
+        self.net.as_ref().map_or(0, |net| net.size().get())
     }
 
+    #[must_use]
     pub fn transport_headers_len(&self) -> u16 {
         self.transport
             .as_ref()
-            .map(|transport| transport.size().get())
-            .unwrap_or(0)
+            .map_or(0, |transport| transport.size().get())
     }
 
+    #[must_use]
     pub fn is_full_payload(&self) -> bool {
         self.full_payload_length.is_some()
     }
 
+    #[must_use]
     pub fn payload_length(&self) -> Option<u16> {
         self.full_payload_length
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     pub fn check_full_payload(
         &mut self,
         buf: &[u8],
@@ -125,18 +130,22 @@ impl EmbeddedHeaders {
 
         match &mut self.transport {
             None
-            | Some(EmbeddedTransport::Tcp(TruncatedTcp::PartialHeader(_)))
-            | Some(EmbeddedTransport::Udp(TruncatedUdp::PartialHeader(_)))
-            | Some(EmbeddedTransport::Icmp4(TruncatedIcmp4::PartialHeader(_)))
-            | Some(EmbeddedTransport::Icmp6(TruncatedIcmp6::PartialHeader(_))) => {
+            | Some(
+                EmbeddedTransport::Tcp(TruncatedTcp::PartialHeader(_))
+                | EmbeddedTransport::Udp(TruncatedUdp::PartialHeader(_))
+                | EmbeddedTransport::Icmp4(TruncatedIcmp4::PartialHeader(_))
+                | EmbeddedTransport::Icmp6(TruncatedIcmp6::PartialHeader(_)),
+            ) => {
                 // We couldn't parse the full transport header, of course we don't have the full,
                 // valid payload
                 return;
             }
-            Some(EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(_)))
-            | Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(_)))
-            | Some(EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(_)))
-            | Some(EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(_))) => {
+            Some(
+                EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(_))
+                | EmbeddedTransport::Udp(TruncatedUdp::FullHeader(_))
+                | EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(_))
+                | EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(_)),
+            ) => {
                 // There's a chance payload is full, keep going
             }
         }
@@ -467,6 +476,7 @@ pub enum EmbeddedTransport {
 }
 
 impl EmbeddedTransport {
+    #[must_use]
     pub fn icmp_identifier(&self) -> Option<u16> {
         match self {
             EmbeddedTransport::Icmp4(icmp) => icmp.identifier(),
@@ -475,6 +485,7 @@ impl EmbeddedTransport {
         }
     }
 
+    #[must_use]
     pub fn source(&self) -> Option<NonZero<u16>> {
         match self {
             EmbeddedTransport::Tcp(tcp) => Some(tcp.source().into()),
@@ -483,6 +494,7 @@ impl EmbeddedTransport {
         }
     }
 
+    #[must_use]
     pub fn destination(&self) -> Option<NonZero<u16>> {
         match self {
             EmbeddedTransport::Tcp(tcp) => Some(tcp.destination().into()),
@@ -491,6 +503,12 @@ impl EmbeddedTransport {
         }
     }
 
+    /// Set the source port of the embedded transport header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddedHeaderError::NoPorts`] if the transport header does not have ports
+    /// (i.e., ICMP).
     pub fn set_source(&mut self, port: NonZero<u16>) -> Result<(), EmbeddedHeaderError> {
         match self {
             EmbeddedTransport::Tcp(tcp) => {
@@ -505,6 +523,12 @@ impl EmbeddedTransport {
         }
     }
 
+    /// Set the destination port of the embedded transport header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddedHeaderError::NoPorts`] if the transport header does not have ports
+    /// (i.e., ICMP).
     pub fn set_destination(&mut self, port: NonZero<u16>) -> Result<(), EmbeddedHeaderError> {
         match self {
             EmbeddedTransport::Tcp(tcp) => {
@@ -1145,6 +1169,7 @@ mod tests {
     // Basic parsing, deparsing checks
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn test_parse_ipv4_with_truncated_tcp() {
         let buf = create_truncated_ipv4_tcp_packet();
 
@@ -1162,6 +1187,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn test_parse_ipv4_with_full_udp() {
         let buf = create_full_ipv4_udp_packet();
 
@@ -1179,6 +1205,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn test_parse_ipv6_with_truncated_tcp() {
         let buf = create_truncated_ipv6_tcp_packet();
 
@@ -1196,6 +1223,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn test_parse_ipv6_with_full_udp() {
         let buf = create_full_ipv6_udp_packet();
 
@@ -1592,7 +1620,7 @@ mod tests {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::*;
+    use super::{EmbeddedHeaders, EmbeddedTransport};
     use crate::headers::Net;
     use crate::ipv4;
     use crate::ipv6;
@@ -1606,17 +1634,18 @@ mod contract {
         type Output = EmbeddedHeaders;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
-            let (ipv4_next_header, ipv6_next_header, transport) = match driver.produce::<bool>()? {
-                true => (
+            let (ipv4_next_header, ipv6_next_header, transport) = if driver.produce::<bool>()? {
+                (
                     ipv4::CommonNextHeader::Tcp,
                     ipv6::CommonNextHeader::Tcp,
                     EmbeddedTransport::Tcp(driver.produce::<TruncatedTcp>()?),
-                ),
-                false => (
+                )
+            } else {
+                (
                     ipv4::CommonNextHeader::Udp,
                     ipv6::CommonNextHeader::Udp,
                     EmbeddedTransport::Udp(driver.produce::<TruncatedUdp>()?),
-                ),
+                )
             };
 
             let is_ipv4 = driver.produce::<bool>()?;
@@ -1680,6 +1709,6 @@ mod tests_fuzzing {
                 None => {
                     unreachable!()
                 }
-            })
+            });
     }
 }
