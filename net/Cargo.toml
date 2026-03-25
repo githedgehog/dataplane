@@ -13,9 +13,11 @@ netdevsim = []
 bolero = ["dep:bolero", "id/bolero"]
 test_buffer = []
 
+[target.'cfg(unix)'.dependencies]
+atomic-instant-full = { workspace = true }
+
 [dependencies]
 arrayvec = { workspace = true, features = ["serde", "std"] }
-atomic-instant-full = { workspace = true }
 bitflags = { workspace = true }
 bolero = { workspace = true, features = ["std"], optional = true }
 bytecheck = { workspace = true }
@@ -24,7 +26,6 @@ derive_builder = { workspace = true, features = ["alloc"] }
 downcast-rs = { workspace = true, features = ["sync"] }
 etherparse = { workspace = true, features = ["std"] }
 id = { workspace = true }
-linux-raw-sys = { workspace = true, features = ["std", "if_ether"] }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 rapidhash = { workspace = true }
 rkyv = { workspace = true, features = ["alloc", "bytecheck"]}

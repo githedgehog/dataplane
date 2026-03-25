@@ -3,6 +3,8 @@
 
 //! Packet struct and methods
 
+#![cfg(unix)]
+
 mod display;
 mod hash;
 mod meta;
