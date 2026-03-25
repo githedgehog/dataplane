@@ -525,7 +525,6 @@ mod test {
     const MAX_LEN_USIZE: usize = 60;
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|header: &Ipv4| {
             let mut buffer = [0u8; MIN_LEN_USIZE];
@@ -540,14 +539,12 @@ mod test {
             assert_eq!(header.protocol(), parse_back.protocol());
             assert_eq!(header.ecn(), parse_back.ecn());
             assert_eq!(header.dscp(), parse_back.dscp());
-            #[cfg(not(kani))] // remove when we fix options generation
             assert_eq!(header, &parse_back);
             assert_eq!(bytes_written, bytes_read);
         });
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
@@ -561,7 +558,6 @@ mod test {
                         // reserved bit in ipv4 flags should serialize to zero
                         assert_eq!(slice[6] & 0b0111_1111, buf[6]);
                         assert_eq!(&slice[7..MIN_LEN_USIZE], &buf.as_slice()[7..MIN_LEN_USIZE]);
-                        #[cfg(not(kani))] // remove when we fix options generation
                         assert_eq!(
                             &slice[MIN_LEN_USIZE..consumed.into_non_zero_usize().get()],
                             &buf.as_slice()[MIN_LEN_USIZE..consumed.into_non_zero_usize().get()]

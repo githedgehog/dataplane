@@ -651,7 +651,6 @@ mod test {
     const MIN_LEN: usize = Ipv6::MIN_LEN.get() as usize;
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|header: &Ipv6| {
             let mut buf = [0u8; MIN_LEN];
@@ -664,7 +663,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()
@@ -697,7 +695,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes_too_short() {
         bolero::check!()
             .with_type()
@@ -711,7 +708,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes_above_minimum() {
         bolero::check!()
             .with_type()
