@@ -259,9 +259,15 @@ impl VpcExpose {
             // only V4 atm
             vec![Prefix::root_v4()]
         } else if let Some(nat) = self.nat.as_ref() {
-            nat.as_range.iter().map(|p| p.prefix()).collect::<Vec<_>>()
+            nat.as_range
+                .iter()
+                .map(PrefixWithOptionalPorts::prefix)
+                .collect::<Vec<_>>()
         } else {
-            self.ips.iter().map(|p| p.prefix()).collect::<Vec<_>>()
+            self.ips
+                .iter()
+                .map(PrefixWithOptionalPorts::prefix)
+                .collect::<Vec<_>>()
         }
     }
 
@@ -456,7 +462,7 @@ impl VpcExpose {
         fn prefixes_size(prefixes: &PrefixPortsSet) -> PrefixWithPortsSize {
             prefixes
                 .iter()
-                .map(|p| p.size())
+                .map(PrefixWithOptionalPorts::size)
                 .sum::<PrefixWithPortsSize>()
         }
         let zero_size = ppsize_zero();
@@ -542,7 +548,7 @@ impl VpcManifest {
     }
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
-        self.exposes.iter().any(|expose| expose.has_host_prefixes())
+        self.exposes.iter().any(VpcExpose::has_host_prefixes)
     }
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes

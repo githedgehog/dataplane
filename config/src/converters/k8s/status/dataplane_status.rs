@@ -136,7 +136,7 @@ mod tests {
             let last_applied_time = time_gen.generate(d)?;
             let status = d
                 .produce::<Option<LegalValue<DataplaneStatus>>>()?
-                .map(|v| v.take());
+                .map(LegalValue::take);
             let last_collected_time_raw = time_gen.generate(d)?;
             let last_collected_time = status.as_ref().map(|_| last_collected_time_raw);
             let last_heartbeat_raw = time_gen.generate(d)?;
