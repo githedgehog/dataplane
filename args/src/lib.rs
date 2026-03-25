@@ -640,10 +640,6 @@ pub enum InvalidCmdArguments {
     /// (e.g., `eth0`, `ens3`)
     #[error(transparent)]
     InvalidInterfaceName(#[from] IllegalInterfaceName),
-    #[error("\"{0}\" is not a valid driver.  Must be dpdk or kernel")]
-    InvalidDriver(String),
-    #[error("Must specify driver as dpdk or kernel")]
-    NoDriverSpecified,
     #[error("No network interfaces specified")]
     NoInterfacesSpecified,
     /// A DPDK interface was specified without a port (PCI address) mapping.
@@ -704,14 +700,36 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
     }
 }
 
+/// Packet processing driver backend.
+///
+/// Selects which networking stack the dataplane uses for packet processing.
+/// Invalid values are rejected at parse time by clap's [`ValueEnum`](clap::ValueEnum),
+/// eliminating the need for runtime string validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, clap::ValueEnum)]
+pub enum DriverKind {
+    /// DPDK userspace driver for kernel-bypass networking
+    Dpdk,
+    /// Standard Linux kernel networking stack
+    Kernel,
+}
+
+impl std::fmt::Display for DriverKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DriverKind::Dpdk => write!(f, "dpdk"),
+            DriverKind::Kernel => write!(f, "kernel"),
+        }
+    }
+}
+
 #[derive(Parser, serde::Serialize)]
 #[command(name = "Hedgehog Gateway dataplane version:")]
 #[command(version = option_env!("VERSION").unwrap_or("dev"))]
 #[command(about = "A dataplane for hedgehog's fabric gateway", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CmdArgs {
-    #[arg(long, value_name = "packet driver to use: kernel or dpdk")]
-    driver: Option<String>,
+    #[arg(long, value_enum)]
+    driver: DriverKind,
     #[arg(
         long,
         value_name = "interface name",
@@ -844,13 +862,11 @@ impl CmdArgs {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - No driver was specified.
-    /// - The driver name is not recognized.
     /// - A DPDK interface is missing a PCI address binding.
     /// - A kernel interface name was given to the DPDK driver (or vice-versa).
     fn build_driver_config(&self) -> Result<DriverConfigSection, InvalidCmdArguments> {
-        match &self.driver {
-            Some(driver) if driver == "dpdk" => {
+        match self.driver {
+            DriverKind::Dpdk => {
                 // TODO: adjust command line to specify lcore usage more flexibly in next PR
                 let eal_args = self
                     .interfaces()
@@ -876,13 +892,11 @@ impl CmdArgs {
                     eal_args,
                 }))
             }
-            Some(driver) if driver == "kernel" => {
+            DriverKind::Kernel => {
                 Ok(DriverConfigSection::Kernel(KernelDriverConfigSection {
                     interfaces: self.interfaces().collect(),
                 }))
             }
-            Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone())),
-            None => Err(InvalidCmdArguments::NoDriverSpecified),
         }
     }
 
@@ -920,13 +934,12 @@ impl CmdArgs {
         }
     }
 
-    /// Get the configured driver name.
+    /// Get the configured driver kind.
     ///
-    /// Returns `"dpdk"` if no driver was explicitly specified (the default),
-    /// otherwise returns the specified driver name (`"dpdk"` or `"kernel"`).
+    /// Returns the [`DriverKind`] selected via the `--driver` command-line argument.
     #[must_use]
-    pub fn driver_name(&self) -> Option<&str> {
-        self.driver.as_deref()
+    pub fn driver(&self) -> DriverKind {
+        self.driver
     }
 
     /// Check if the `--show-tracing-tags` flag was set.
@@ -1338,34 +1351,12 @@ mod tests {
     }
 
     #[test]
-    fn try_from_no_driver_is_error() {
-        let args = parse_args(&["--interface", "eth0=kernel@enp2s1"]);
-        let err = LaunchConfiguration::try_from(args).unwrap_err();
-        assert!(matches!(err, InvalidCmdArguments::NoDriverSpecified));
-    }
-
-    #[test]
     fn try_from_no_interfaces_is_error() {
         let args = parse_args(&["--driver", "kernel"]);
         let err = LaunchConfiguration::try_from(args).unwrap_err();
         assert!(
             matches!(err, InvalidCmdArguments::NoInterfacesSpecified),
             "expected NoInterfacesSpecified, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn try_from_invalid_driver_is_error() {
-        let args = parse_args(&[
-            "--driver",
-            "foobar",
-            "--interface",
-            "eth0=kernel@enp2s1",
-        ]);
-        let err = LaunchConfiguration::try_from(args).unwrap_err();
-        assert!(
-            matches!(err, InvalidCmdArguments::InvalidDriver(ref d) if d == "foobar"),
-            "expected InvalidDriver, got {err:?}"
         );
     }
 

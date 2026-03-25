@@ -11,7 +11,7 @@ mod statistics;
 
 use crate::packet_processor::start_router;
 use crate::statistics::MetricsServer;
-use args::{CmdArgs, Parser};
+use args::{CmdArgs, DriverKind, Parser};
 
 use drivers::kernel::DriverKernel;
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
@@ -228,12 +228,12 @@ fn main() {
     info!("Management is running now");
 
     /* start driver with the provided pipeline builder */
-    let e = match args.driver_name() {
-        Some("dpdk") => {
+    let e = match args.driver() {
+        DriverKind::Dpdk => {
             info!("Using driver DPDK...");
             todo!();
         }
-        Some("kernel") => {
+        DriverKind::Kernel => {
             info!("Using driver kernel...");
             DriverKernel::start(
                 stop_tx.clone(),
@@ -241,14 +241,6 @@ fn main() {
                 args.kernel_num_workers(),
                 &pipeline_factory,
             )
-        }
-        Some(other) => {
-            error!("Unknown driver '{other}'. Aborting...");
-            panic!("Packet processing pipeline failed to start. Aborting...");
-        }
-        None => {
-            error!("No driver specified. Aborting...");
-            panic!("Packet processing pipeline failed to start. Aborting...");
         }
     };
 
