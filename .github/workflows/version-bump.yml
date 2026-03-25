@@ -73,7 +73,7 @@ jobs:
             if [ -n '${{ inputs.new_version }}' ]; then
               just bump_version '${{ inputs.new_version }}'
             else
-              just bump_minor_version --input=toml
+              just bump_minor_version
             fi
           "
           new_version="$(nix-shell --run "tomlq --raw-output '.workspace.package.version' Cargo.toml")"

@@ -285,8 +285,8 @@ depgraph:
 
 # Bump the minor version in Cargo.toml and reset patch version to 0
 [script]
-bump_minor_version yq_flags="":
-    CURRENT_VERSION="$(yq -r {{ yq_flags }} '.workspace.package.version' Cargo.toml)"
+bump_minor_version:
+    CURRENT_VERSION="$(tomlq --raw-output '.workspace.package.version' Cargo.toml)"
     echo "Current version: ${CURRENT_VERSION}"
     MAJOR_VNUM="$(cut -d. -f1 <<<"${CURRENT_VERSION}")"
     MINOR_VNUM="$(cut -d. -f2 <<<"${CURRENT_VERSION}")"
