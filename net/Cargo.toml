@@ -17,7 +17,7 @@ test_buffer = []
 arrayvec = { workspace = true, features = ["serde", "std"] }
 atomic-instant-full = { workspace = true }
 bitflags = { workspace = true }
-bolero = { workspace = true, features = ["alloc", "arbitrary", "std"], optional = true }
+bolero = { workspace = true, features = ["std"], optional = true }
 bytecheck = { workspace = true }
 concurrency = { workspace = true }
 derive_builder = { workspace = true, features = ["alloc"] }
@@ -35,5 +35,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 ahash = { workspace = true, features = ["no-rng"] }
-bolero = { workspace = true, features = ["alloc", "arbitrary", "std"] }
-etherparse = { workspace = true, default-features = false, features = ["std"] }
+bolero = { workspace = true, features = ["std"] }
