@@ -1,0 +1,17 @@
+[package]
+name = "dataplane-ipc"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+# internal
+id = { workspace = true, features = [] }
+
+# external
+miette = { workspace = true, features = ["derive", "fancy"] }
+nix = { workspace = true, features = ["fs"] }
+sha2 = { workspace = true, features = [] }
+thiserror = { workspace = true, features = [] }
+tracing = { workspace = true, features = ["std", "attributes"] }
