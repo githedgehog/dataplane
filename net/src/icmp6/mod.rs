@@ -475,7 +475,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!()
             .with_type()
@@ -483,7 +482,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_arbitrary_bytes() {
         bolero::check!()
             .with_type()

@@ -152,7 +152,6 @@ mod test {
     const MIN_LENGTH_USIZE: usize = 8;
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|vxlan: &Vxlan| {
             assert_eq!(vxlan.size(), Vxlan::MIN_LENGTH);
@@ -167,7 +166,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn creation_identity_check() {
         bolero::check!().with_type().for_each(|vxlan: &Vxlan| {
             assert_eq!(vxlan, &Vxlan::new(vxlan.vni()));
@@ -176,7 +174,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_noise() {
         bolero::check!()
             .with_type()
@@ -223,7 +220,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn write_to_insufficient_buffer_fails_gracefully() {
         bolero::check!().with_type().for_each(|vni: &Vxlan| {
             let mut too_small_buffer = [0u8; MIN_LENGTH_USIZE - 1];
@@ -238,7 +234,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_of_insufficient_buffer_fails_gracefully() {
         bolero::check!()
             .with_type()
@@ -254,7 +249,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn mutation_of_header_preserves_contract() {
         bolero::check!()
             .with_type()

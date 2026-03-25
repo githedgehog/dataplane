@@ -500,7 +500,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn pcp_bounds_respected() {
         bolero::check!()
             .with_type()
@@ -519,7 +518,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_back() {
         bolero::check!().with_type().for_each(|vlan: &Vlan| {
             let mut buf = [0u8; MIN_LENGTH_USIZE]; // vlan headers are always 4 bytes long
@@ -538,7 +536,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_noise() {
         bolero::check!().with_type().for_each(|buf: &[u8; MIN_LENGTH_USIZE]| {
             let (vlan, consumed) = match Vlan::parse(buf) {
@@ -561,7 +558,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn parse_noise_too_short() {
         bolero::check!().with_type().for_each(
             |buf: &[u8; MIN_LENGTH_USIZE - 1]| match Vlan::parse(buf) {
@@ -575,7 +571,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn arbitrary_mutation() {
         bolero::check!()
             .with_type()
@@ -595,7 +590,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(kani, kani::proof)]
     fn deparse_to_insufficient_buffer_is_graceful() {
         bolero::check!().with_type().for_each(|vlan: &Vlan| {
             let mut buf = [0u8; MIN_LENGTH_USIZE - 1];
