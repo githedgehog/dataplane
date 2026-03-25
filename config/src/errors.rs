@@ -95,8 +95,12 @@ pub enum ConfigError {
     Invalid(String),
 
     // tracing
+    #[cfg(unix)]
     #[error("Failed to set tracing configuration: {0}")]
     Tracing(#[from] tracectl::TraceCtlError),
+    #[cfg(not(unix))]
+    #[error("Failed to set tracing configuration: {0}")]
+    Tracing(String),
 
     // Community mappings
     #[error("Could not assign BGP community to VPC peering {0}")]

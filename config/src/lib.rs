@@ -32,5 +32,7 @@ pub use gwconfig::{GwConfig, GwConfigMeta};
 pub use internal::InternalConfig;
 pub use internal::device::DeviceConfig;
 
+#[cfg(unix)]
 use tracectl::trace_target;
+#[cfg(unix)]
 trace_target!("mgmt", LevelFilter::DEBUG, &["management"]);
