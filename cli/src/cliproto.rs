@@ -4,13 +4,61 @@
 //! Defines the cli protocol for the dataplane
 
 use log::Level;
-use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use strum::IntoEnumIterator;
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
-#[derive(AsRefStr, EnumString, Debug, Clone, Serialize, Deserialize, EnumIter)]
+/// A log level for use in CLI protocol messages.
+///
+/// This mirrors [`log::Level`] but implements the [`rkyv`] serialization
+/// traits that `Level` itself does not provide.  Use the [`From`] /
+/// [`Into`] conversions to interoperate with [`log::Level`].
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+pub enum CliLogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<Level> for CliLogLevel {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::Error => Self::Error,
+            Level::Warn => Self::Warn,
+            Level::Info => Self::Info,
+            Level::Debug => Self::Debug,
+            Level::Trace => Self::Trace,
+        }
+    }
+}
+
+impl From<CliLogLevel> for Level {
+    fn from(level: CliLogLevel) -> Self {
+        match level {
+            CliLogLevel::Error => Self::Error,
+            CliLogLevel::Warn => Self::Warn,
+            CliLogLevel::Info => Self::Info,
+            CliLogLevel::Debug => Self::Debug,
+            CliLogLevel::Trace => Self::Trace,
+        }
+    }
+}
+
+#[derive(
+    AsRefStr,
+    EnumString,
+    Debug,
+    Clone,
+    EnumIter,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum RouteProtocol {
     Local,
@@ -22,7 +70,7 @@ pub enum RouteProtocol {
 }
 
 /// Arguments to a cli request
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[allow(unused)]
 pub struct RequestArgs {
     pub address: Option<IpAddr>,         /* an IP address */
@@ -30,12 +78,12 @@ pub struct RequestArgs {
     pub vrfid: Option<u32>,              /* Id of a VRF */
     pub vni: Option<u32>,                /* Vxlan vni */
     pub ifname: Option<String>,          /* name of interface */
-    pub loglevel: Option<Level>,         /* loglevel, from crate log */
+    pub loglevel: Option<CliLogLevel>,   /* loglevel – see [`CliLogLevel`] */
     pub protocol: Option<RouteProtocol>, /* a type of route or routing protocol */
 }
 
 /// A Cli request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[allow(unused)]
 pub struct CliRequest {
     pub action: CliAction,
@@ -50,31 +98,40 @@ pub enum CliSerdeError {
     Deserialize,
 }
 
-pub trait CliSerialize {
-    fn serialize(&self) -> Result<Vec<u8>, CliSerdeError>
-    where
-        Self: Serialize,
-    {
-        bincode2::serialize(self).map_err(|_| CliSerdeError::Serialize)
-    }
-    fn serialized_size(&self) -> Result<u64, CliSerdeError>
-    where
-        Self: Serialize,
-    {
-        bincode2::serialized_size(self).map_err(|_| CliSerdeError::Serialize)
-    }
-    fn deserialize<'a>(buf: &'a [u8]) -> Result<Self, CliSerdeError>
-    where
-        Self: Deserialize<'a>,
-    {
-        bincode2::deserialize(buf).map_err(|_| CliSerdeError::Deserialize)
-    }
+/// Convenience trait for serializing / deserializing CLI protocol messages
+/// using [`rkyv`].
+pub trait CliSerialize: Sized {
+    /// Serialize `self` into a byte vector.
+    fn serialize(&self) -> Result<Vec<u8>, CliSerdeError>;
+
+    /// Deserialize an instance from a byte slice.
+    fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError>;
 }
 
-impl CliSerialize for CliRequest {}
-impl CliSerialize for CliResponse {}
+/// Implement [`CliSerialize`] for one or more types that already derive the
+/// required `rkyv` traits.
+macro_rules! impl_cli_serialize {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl CliSerialize for $t {
+                fn serialize(&self) -> Result<Vec<u8>, CliSerdeError> {
+                    rkyv::to_bytes::<rkyv::rancor::Error>(self)
+                        .map(|aligned| aligned.to_vec())
+                        .map_err(|_| CliSerdeError::Serialize)
+                }
 
-#[derive(Error, Debug, Serialize, Deserialize)]
+                fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
+                    rkyv::from_bytes::<Self, rkyv::rancor::Error>(buf)
+                        .map_err(|_| CliSerdeError::Deserialize)
+                }
+            }
+        )+
+    };
+}
+
+impl_cli_serialize!(CliRequest, CliResponse);
+
+#[derive(Error, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CliError {
     #[error("Internal error")]
     InternalError,
@@ -85,7 +142,7 @@ pub enum CliError {
 }
 
 /// A Cli response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct CliResponse {
     pub request: CliRequest,
     // here we would add a union for the distinct objects which
@@ -121,7 +178,7 @@ impl CliResponse {
 
 #[repr(u16)]
 #[allow(unused)]
-#[derive(Debug, Clone, Serialize, Deserialize, EnumIter, PartialEq)]
+#[derive(Debug, Clone, EnumIter, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CliAction {
     Clear = 0,
     Connect,

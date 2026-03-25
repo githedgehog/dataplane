@@ -111,7 +111,7 @@ impl CliArgs {
             }
             let level = level.to_uppercase();
             args.remote.loglevel = Some(
-                Level::from_str(level.as_str()).map_err(|_| ArgsError::UnknownLogLevel(level))?,
+                Level::from_str(level.as_str()).map_err(|_| ArgsError::UnknownLogLevel(level))?.into(),
             );
         }
         if let Some(protocol) = args_map.remove("protocol") {
