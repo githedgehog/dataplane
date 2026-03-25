@@ -17,7 +17,7 @@ use super::{NatIpWithBitmap, port_alloc};
 use crate::port::NatPort;
 use crate::ranges::IpRange;
 use crate::stateful::NatIp;
-use crate::stateful::allocator::AllocatorError;
+use crate::stateful::allocation::AllocatorError;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use lpm::prefix::{IpPrefix, PortRange, Prefix};

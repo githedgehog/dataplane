@@ -15,7 +15,7 @@
 use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
 use crate::port::NatPort;
-use crate::stateful::allocator::AllocatorError;
+use crate::stateful::allocation::AllocatorError;
 use concurrency::concurrency_mode;
 use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};

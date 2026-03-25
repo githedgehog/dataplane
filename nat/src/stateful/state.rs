@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatIpWithBitmap;
-use super::allocator::AllocationResult;
+use super::allocation::AllocationResult;
 use super::apalloc::AllocatedIpPort;
 use crate::{NatPort, NatTranslationData};
 use std::fmt::Display;

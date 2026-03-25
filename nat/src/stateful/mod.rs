@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-pub(crate) mod allocator;
+pub(crate) mod allocation;
 mod allocator_writer;
 pub mod apalloc;
 pub(crate) mod icmp_handling;
@@ -10,7 +10,7 @@ mod state;
 mod test;
 
 use super::NatTranslationData;
-use crate::stateful::allocator::{AllocationResult, AllocatorError};
+use crate::stateful::allocation::{AllocationResult, AllocatorError};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::{AllocatedIpPort, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
