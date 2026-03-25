@@ -18,7 +18,6 @@ pub struct NodeArg {
     pub prefetcher: Option<Prefetcher>,
 }
 
-#[allow(unused)]
 impl NodeArg {
     pub fn new(name: &str) -> Self {
         Self {
@@ -36,6 +35,8 @@ impl NodeArg {
         self.choices.push(choice.to_owned());
         self
     }
+    // TODO: this method is never called -- is it part of a planned feature?
+    #[allow(unused)]
     pub fn multi(mut self) -> Self {
         self.multi = true;
         self
@@ -55,7 +56,6 @@ pub struct Node {
     pub(crate) args: Vec<NodeArg>,
     pub(crate) hidden: bool,
 }
-#[allow(unused)]
 impl Node {
     pub fn new(name: &str) -> Self {
         Self {
@@ -114,6 +114,8 @@ impl Node {
     // Returns the last matched cmd node. So, if tokens remain
     // that means that there was no full match. This is used for
     // the command completion.
+    // TODO: this method is never called -- is it part of a planned feature?
+    #[allow(unused)]
     pub(crate) fn lookup<'a>(
         &self,
         tokens: &mut VecDeque<&'a str>,
@@ -142,6 +144,8 @@ impl Node {
             Some(self)
         }
     }
+    // TODO: this method is never called -- is it part of a planned feature?
+    #[allow(unused)]
     pub fn get_node(&self, tokens: &mut VecDeque<String>) -> Option<&Self> {
         if let Some(word) = tokens.pop_front() {
             match self.children.get(word.as_str()) {

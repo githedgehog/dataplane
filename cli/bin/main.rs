@@ -4,7 +4,6 @@
 //! Adds main parser for command arguments
 
 #![deny(clippy::all, clippy::pedantic)]
-#![allow(clippy::collapsible_if)]
 
 use argsparse::{ArgsError, CliArgs};
 use clap::Parser;
@@ -31,6 +30,7 @@ fn greetings() {
     println!("© 2025 Hedgehog Open Network Fabric.\n");
 }
 
+// TODO: `ask_user` is never called -- remove or wire up to a confirmation flow.
 #[allow(unused)]
 fn ask_user(question: &str) -> bool {
     let mut answer = String::new();
@@ -81,6 +81,7 @@ fn process_cli_response(sock: &UnixDatagram) {
         print_err!("Response size {msg_size} exceeds maximum ({MAX_CLI_RESPONSE_SIZE}), dropping");
         return;
     }
+    // Truncation is safe: `msg_size` is bounded by `MAX_CLI_RESPONSE_SIZE` (16 MiB) above.
     #[allow(clippy::cast_possible_truncation)]
     if msg_size as usize > rx_buff.capacity() {
         rx_buff.resize(msg_size as usize, 0);

@@ -62,7 +62,6 @@ pub struct TermInput {
     tokens: VecDeque<String>,
     args: HashMap<String, String>,
 }
-#[allow(unused)]
 impl TermInput {
     pub fn get_line(&self) -> &str {
         &self.line
@@ -75,7 +74,6 @@ impl TermInput {
     }
 }
 
-#[allow(unused)]
 impl Terminal {
     pub fn new(prompt: &str, cmdtree: &Rc<Node>) -> Self {
         let mut term = Self {
@@ -112,21 +110,27 @@ impl Terminal {
         self
     }
     pub fn add_history_entry<S: AsRef<str> + Into<String>>(&mut self, line: S) {
-        self.editor.add_history_entry(line);
+        // Failure only means the line duplicates the previous entry (when
+        // `history_ignore_dups` is set) or the history is full -- neither
+        // case is worth surfacing to the user.
+        let _ = self.editor.add_history_entry(line);
     }
 
+    // TODO: get_helper is never called -- remove or wire up.
     #[allow(unused)]
     pub fn get_helper(&self) -> Option<&CmdCompleter> {
         self.editor.helper()
     }
     #[allow(clippy::unused_self)]
     pub fn clear(&self) {
+        // \x1b[H  -- move cursor to row 1, column 1 (Home)
+        // \x1b[2J -- erase the entire screen
         print!("\x1b[H\x1b[2J");
         let _ = stdout().flush();
     }
     #[allow(clippy::unused_self)]
     pub fn proc_line(&self, line: &str) -> Option<TermInput> {
-        let mut split = line.split_whitespace();
+        let split = line.split_whitespace();
         let mut tokens: VecDeque<String> = VecDeque::new();
         let mut args = HashMap::new();
         for word in split {
