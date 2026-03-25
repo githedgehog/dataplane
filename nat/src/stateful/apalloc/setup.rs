@@ -3,7 +3,7 @@
 
 use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
-use super::{NatDefaultAllocator, PoolTable, PoolTableKey};
+use super::{NatAllocator, PoolTable, PoolTableKey};
 use crate::ranges::IpRange;
 use crate::stateful::NatIp;
 use crate::stateful::allocator_writer::StatefulNatConfig;
@@ -22,11 +22,11 @@ use tracing::{debug, error};
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-impl NatDefaultAllocator {
-    /// Build a [`NatDefaultAllocator`] from a [`StatefulNatConfig`]
+impl NatAllocator {
+    /// Build a [`NatAllocator`] from a [`StatefulNatConfig`]
     pub(crate) fn from_config(config: &StatefulNatConfig) -> Self {
         debug!("Building NAT allocator from config:\n{config:#?}");
-        let mut allocator = NatDefaultAllocator::new();
+        let mut allocator = NatAllocator::new();
         for peering_data in config.iter() {
             allocator.add_peering_addresses(&peering_data.peering, peering_data.dst_vpcd);
         }

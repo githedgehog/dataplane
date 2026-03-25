@@ -3,7 +3,7 @@
 
 //! Display implementations for allocator types
 
-use super::NatDefaultAllocator;
+use super::NatAllocator;
 use crate::stateful::apalloc::alloc::{AllocatedIp, IpAllocator, NatPool};
 use crate::stateful::apalloc::port_alloc::PortAllocator;
 use crate::stateful::apalloc::{NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
@@ -18,9 +18,9 @@ macro_rules! with_indent {
     };
 }
 
-impl CliSource for NatDefaultAllocator {}
+impl CliSource for NatAllocator {}
 
-impl Display for NatDefaultAllocator {
+impl Display for NatAllocator {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         Heading("Masquerade NAT allocator table").fmt(f)?;
 
