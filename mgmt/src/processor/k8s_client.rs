@@ -183,10 +183,7 @@ impl K8sClient {
         Err(K8sClientError::EarlyTermination)
     }
 
-    pub async fn k8s_start_status_update(
-        &self,
-        status_update_interval: &std::time::Duration,
-    ) -> Result<(), K8sClientError> {
+    pub async fn k8s_start_status_update(&self, status_update_interval: &std::time::Duration) {
         loop {
             self.update_gateway_status().await;
             tokio::time::sleep(*status_update_interval).await;
