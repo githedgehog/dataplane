@@ -61,7 +61,6 @@
 //! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`], to deallocate the IP address
 //! when they are dropped.
 
-#![allow(clippy::ip_constant)]
 #![allow(rustdoc::private_intra_doc_links)]
 
 use super::NatIp;
@@ -378,6 +377,8 @@ fn max_range<I: NatIp>() -> I {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::ip_constant)]
+
     use super::*;
     use net::vxlan::Vni;
 
