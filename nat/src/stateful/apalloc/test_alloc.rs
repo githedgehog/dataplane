@@ -8,7 +8,7 @@ use concurrency::concurrency_mode;
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
 mod context {
-    use crate::stateful::allocator::AllocationResult;
+    use crate::stateful::allocation::AllocationResult;
     use crate::stateful::allocator_writer::StatefulNatConfig;
     use crate::stateful::apalloc::alloc::IpAllocator;
     use crate::stateful::apalloc::port_alloc::AllocatedPort;
@@ -430,7 +430,7 @@ mod std_tests {
 #[concurrency_mode(shuttle)]
 mod tests_shuttle {
     use super::context::*;
-    use crate::stateful::allocator::NatAllocator;
+    use crate::stateful::allocation::NatAllocator;
     use net::FlowKey;
     use net::ip::NextHeader;
     use shuttle::sync::{Arc, Mutex};
