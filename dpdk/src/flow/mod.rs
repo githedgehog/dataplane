@@ -3,9 +3,36 @@
 
 #![deny(clippy::all)]
 
-//! Flow rules for DPDK
+//! Flow rules for DPDK.
 //!
 //! Basically everything that starts with `rte_flow_` in DPDK.
+//!
+//! # Type design
+//!
+//! This module deliberately uses a mix of validated types from the [`net`] crate and raw primitive
+//! types.  The choice depends on whether a value appears in a **match criterion** or an **action**.
+//!
+//! ## Match criteria: raw types
+//!
+//! Flow match patterns (see [`FlowMatch`]) use raw header structs ([`RawEthHeader`],
+//! [`RawUdpHeader`], etc.) whose fields are plain primitives (`u16` for ports, `u32` for VNI, and
+//! so on).  This is intentional: a flow rule may need to match on values that are *invalid* at the
+//! protocol level.  For example, hardware-offloaded rejection of malformed traffic requires
+//! matching on zero TCP/UDP ports, zero VNI, or multicast source MACs — all of which are illegal
+//! in well-formed packets but perfectly legal as `rte_flow` match criteria.
+//!
+//! Where a match field has no protocol-level validity constraint, the validated [`net`] type is used
+//! directly.  [`Mac`] (any `[u8; 6]`), [`EthType`] (any `u16`), [`Dscp`] (any 6-bit value), and
+//! [`Ecn`] (any 2-bit value) fall into this category — they enforce bit-width correctness without
+//! restricting the representable value set in a way that would preclude matching on malformed
+//! traffic.
+//!
+//! ## Actions: validated types
+//!
+//! Flow actions (see [`FlowAction`], [`SetFlowField`]) use the validated types from [`net`]
+//! wherever one exists (e.g. [`Vid`], [`net::vxlan::Vni`], [`Dscp`], [`Ecn`]).  Actions *produce*
+//! header values that will appear on the wire, so protocol-level validity is appropriate here.
+//! Crafting deliberately invalid outbound packets is expressly out of scope.
 
 use crate::dev::DevIndex;
 use crate::queue::tx::TxQueueIndex;
@@ -514,6 +541,16 @@ pub enum MatchType {
 }
 
 /// This is a wrapper around `struct rte_flow_item`.
+/// A single flow match criterion.
+///
+/// Each variant pairs a protocol layer with a [`FlowSpec`] that carries a spec value and an
+/// optional mask.  Wildcarding is controlled by the mask, not by the spec value — a zero in the
+/// spec is *not* a wildcard; it literally matches zero.
+///
+/// The inner header types (`Raw*Header`) use raw primitives rather than the validated types from
+/// [`net`] because matching on protocol-invalid values (e.g. zero ports, zero VNI) is a legitimate
+/// use case — for instance, hardware-offloaded rejection of malformed frames.  See the
+/// [module-level documentation](self) for the full rationale.
 pub enum FlowMatch {
     /// The end of a match
     End,
@@ -903,6 +940,12 @@ pub struct FlowMark(pub u32);
 pub struct CounterId(pub u32);
 pub struct MeterId(pub u32);
 
+/// An action to apply to traffic matched by a flow rule.
+///
+/// Unlike [`FlowMatch`], actions use validated types from the [`net`] crate wherever applicable
+/// (e.g. [`Vid`], [`EthType`]).  Actions produce values that will appear on the wire, so
+/// protocol-level validity is enforced.  Crafting deliberately invalid outbound packets is
+/// expressly out of scope.
 pub enum FlowAction {
     End,
     Void,
@@ -1081,8 +1124,12 @@ pub enum FlowFieldId {
     VxlanLastReserved = dpdk_sys::rte_flow_field_id::RTE_FLOW_FIELD_VXLAN_LAST_RSVD,
 }
 
-/// A wrapper around a `rte_flow_action_modify_field` that specifies the
-/// field to modify and its new value.
+/// A field modification action (`RTE_FLOW_ACTION_TYPE_MODIFY_FIELD`).
+///
+/// Each variant identifies a header field and the value to write into it.  As with
+/// [`FlowAction`], validated [`net`] types are used where they exist because these values will be
+/// written into outbound packets.  Fields without a validated type (e.g. TCP sequence numbers)
+/// use raw primitives.
 #[derive(Debug, Clone, Copy)]
 pub enum SetFlowField {
     /// Dest mac
