@@ -529,15 +529,15 @@ pub enum FlowMatch {
     // },
     // Raw(FlowSpec<Vec<u8>>),
     /// Matches an Ethernet header
-    Eth(FlowSpec<EthHeader>),
-    Vlan(FlowSpec<VlanHeader>),
-    Ipv4(FlowSpec<Ipv4Header>),
-    Ipv6(FlowSpec<Ipv6Header>),
-    // Icmp(FlowSpec<IcmpHeader>),
-    Udp(FlowSpec<UdpHeader>),
-    Tcp(FlowSpec<TcpHeader>),
-    // Sctp(FlowSpec<SctpHeader>),
-    Vxlan(FlowSpec<VxlanHeader>),
+    Eth(FlowSpec<RawEthHeader>),
+    Vlan(FlowSpec<RawVlanHeader>),
+    Ipv4(FlowSpec<RawIpv4Header>),
+    Ipv6(FlowSpec<RawIpv6Header>),
+    // Icmp(FlowSpec<RawIcmpHeader>),
+    Udp(FlowSpec<RawUdpHeader>),
+    Tcp(FlowSpec<RawTcpHeader>),
+    // Sctp(FlowSpec<RawSctpHeader>),
+    Vxlan(FlowSpec<RawVxlanHeader>),
     // Etag(FlowSpec<EtagHeader>),
     // Nvgre(FlowSpec<NvgreHeader>),
     // Mpls(FlowSpec<MplsHeader>),
@@ -580,38 +580,41 @@ pub struct MatchMeta {
     pub data: u32,
 }
 
-#[derive(Debug)]
-pub struct Vni(pub u32);
-
 // TODO: expose remaining fields
-pub struct VxlanHeader {
-    pub vni: Vni,
-}
-
-pub struct UdpPort(pub u16);
-pub struct TcpPort(pub u16);
-
-// TODO: expose remaining fields
-pub struct TcpHeader {
-    pub src_port: TcpPort,
-    pub dst_port: TcpPort,
+pub struct RawVxlanHeader {
+    /// VXLAN Network Identifier (24-bit, stored as u32).
+    pub vni: u32,
 }
 
 // TODO: expose remaining fields
-pub struct UdpHeader {
-    pub src_port: UdpPort,
-    pub dst_port: UdpPort,
+pub struct RawTcpHeader {
+    /// TCP source port.
+    pub src_port: u16,
+    /// TCP destination port.
+    pub dst_port: u16,
 }
 
 // TODO: expose remaining fields
-pub struct Ipv6Header {
+pub struct RawUdpHeader {
+    /// UDP source port.
+    pub src_port: u16,
+    /// UDP destination port.
+    pub dst_port: u16,
+}
+
+// TODO: expose remaining fields
+pub struct RawIpv6Header {
+    /// IPv6 source address.
     pub src: core::net::Ipv6Addr,
+    /// IPv6 destination address.
     pub dst: core::net::Ipv6Addr,
 }
 
 // TODO: expose remaining fields
-pub struct Ipv4Header {
+pub struct RawIpv4Header {
+    /// IPv4 source address.
     pub src: core::net::Ipv4Addr,
+    /// IPv4 destination address.
     pub dst: core::net::Ipv4Addr,
 }
 
@@ -645,13 +648,13 @@ impl<T> FlowSpec<T> {
     }
 }
 
-pub struct EthHeader {
+pub struct RawEthHeader {
     src: Mac,
     dst: Mac,
     ether_type: EthType,
 }
 
-impl EthHeader {
+impl RawEthHeader {
     /// Create a new Ethernet header specification.
     #[must_use]
     pub fn new(src: Mac, dst: Mac, ether_type: EthType) -> Self {
@@ -682,8 +685,8 @@ impl EthHeader {
 }
 
 /// TODO: forbid multicast mac src
-impl From<EthHeader> for dpdk_sys::rte_flow_item_eth {
-    fn from(header: EthHeader) -> Self {
+impl From<RawEthHeader> for dpdk_sys::rte_flow_item_eth {
+    fn from(header: RawEthHeader) -> Self {
         let mut eth = dpdk_sys::rte_flow_item_eth::default();
         eth.annon1.hdr = dpdk_sys::rte_ether_hdr {
             dst_addr: dpdk_sys::rte_ether_addr {
@@ -704,11 +707,12 @@ impl From<EthHeader> for dpdk_sys::rte_flow_item_eth {
     }
 }
 
-pub struct VlanTci(pub u16);
-
-pub struct VlanHeader {
+pub struct RawVlanHeader {
+    /// Outer VLAN EtherType.
     pub ether_type: EthType,
-    pub tci: VlanTci,
+    /// Tag Control Information (PCP + DEI + VID packed as raw u16).
+    pub tci: u16,
+    /// Inner EtherType (payload protocol).
     pub inner_ether_type: EthType,
     // TODO: figure out why DPDK lets you spec TCI twice
 }
@@ -1394,11 +1398,11 @@ impl CFlowActions {
 
 // -- Header conversion helpers --
 
-/// Convert an [`EthHeader`] reference to a C `rte_flow_item_eth`.
+/// Convert a [`RawEthHeader`] reference to a C `rte_flow_item_eth`.
 ///
-/// This duplicates the logic in `From<EthHeader> for rte_flow_item_eth`
+/// This duplicates the logic in `From<RawEthHeader> for rte_flow_item_eth`
 /// but operates on a borrow (the `From` impl consumes by value).
-fn eth_to_c(header: &EthHeader) -> dpdk_sys::rte_flow_item_eth {
+fn eth_to_c(header: &RawEthHeader) -> dpdk_sys::rte_flow_item_eth {
     let mut eth = dpdk_sys::rte_flow_item_eth::default();
     eth.annon1.hdr = dpdk_sys::rte_ether_hdr {
         dst_addr: dpdk_sys::rte_ether_addr {
@@ -1532,16 +1536,16 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
             FlowMatch::Udp(fs) => {
                 let spec = dpdk_sys::rte_flow_item_udp {
                     hdr: dpdk_sys::rte_udp_hdr {
-                        src_port: fs.spec().src_port.0.to_be(),
-                        dst_port: fs.spec().dst_port.0.to_be(),
+                        src_port: fs.spec().src_port.to_be(),
+                        dst_port: fs.spec().dst_port.to_be(),
                         ..Default::default()
                     },
                 };
                 let mask_c = fs.mask().map(|m| {
                     dpdk_sys::rte_flow_item_udp {
                         hdr: dpdk_sys::rte_udp_hdr {
-                            src_port: m.src_port.0.to_be(),
-                            dst_port: m.dst_port.0.to_be(),
+                            src_port: m.src_port.to_be(),
+                            dst_port: m.dst_port.to_be(),
                             ..Default::default()
                         },
                     }
@@ -1557,16 +1561,16 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
             FlowMatch::Tcp(fs) => {
                 let spec = dpdk_sys::rte_flow_item_tcp {
                     hdr: dpdk_sys::rte_tcp_hdr {
-                        src_port: fs.spec().src_port.0.to_be(),
-                        dst_port: fs.spec().dst_port.0.to_be(),
+                        src_port: fs.spec().src_port.to_be(),
+                        dst_port: fs.spec().dst_port.to_be(),
                         ..Default::default()
                     },
                 };
                 let mask_c = fs.mask().map(|m| {
                     dpdk_sys::rte_flow_item_tcp {
                         hdr: dpdk_sys::rte_tcp_hdr {
-                            src_port: m.src_port.0.to_be(),
-                            dst_port: m.dst_port.0.to_be(),
+                            src_port: m.src_port.to_be(),
+                            dst_port: m.dst_port.to_be(),
                             ..Default::default()
                         },
                     }
