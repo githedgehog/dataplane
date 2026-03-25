@@ -11,12 +11,11 @@ name = "cli"
 path = "bin/main.rs"
 
 [dependencies]
-bincode2 = { workspace = true, features = [] }
 clap = { workspace = true, features = ["derive", "std", "usage"] }
 colored = { workspace = true, features = [] }
-log = { workspace = true, features = ["serde"] }
+log = { workspace = true, features = [] }
+rkyv = { workspace = true, features = ["alloc", "bytecheck", "std"] }
 rustyline = { workspace = true, features = ["custom-bindings", "with-fuzzy"] }
-serde = { workspace = true, features = ["derive", "serde_derive"] }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
