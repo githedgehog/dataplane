@@ -388,7 +388,11 @@ pub enum Header {
 }
 
 impl Header {
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
+    fn parse_payload(
+        &self,
+        cursor: &mut Reader,
+        ipv6_next_header: Option<NextHeader>,
+    ) -> Option<Header> {
         use Header::{
             EmbeddedIp, Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan,
         };
@@ -399,9 +403,8 @@ impl Header {
             Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
             IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
             IpV6Ext(ext) => {
-                if let Ipv6(ipv6) = self {
-                    ext.parse_payload(ipv6.next_header(), cursor)
-                        .map(Header::from)
+                if let Some(next_header) = ipv6_next_header {
+                    ext.parse_payload(next_header, cursor).map(Header::from)
                 } else {
                     debug!("ipv6 extension header outside ipv6 header");
                     None
@@ -432,12 +435,16 @@ impl Parse for Headers {
             embedded_ip: None,
         };
         let mut prior = Header::Eth(eth);
+        let mut ipv6_next_header: Option<NextHeader> = None;
         loop {
-            let header = prior.parse_payload(&mut cursor);
+            let header = prior.parse_payload(&mut cursor, ipv6_next_header);
             match prior {
                 Header::Eth(eth) => this.eth = Some(eth),
                 Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
-                Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
+                Header::Ipv6(ip) => {
+                    ipv6_next_header = Some(ip.next_header());
+                    this.net = Some(Net::Ipv6(ip));
+                }
                 Header::Tcp(tcp) => this.transport = Some(Transport::Tcp(tcp)),
                 Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
                 Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),

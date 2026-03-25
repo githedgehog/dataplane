@@ -8,6 +8,7 @@ use crate::icmp_any::TruncatedIcmpAny;
 use crate::icmp4::{Icmp4Checksum, TruncatedIcmp4};
 use crate::icmp6::{Icmp6Checksum, TruncatedIcmp6};
 use crate::impl_from_for_enum;
+use crate::ip::NextHeader;
 use crate::ip_auth::IpAuth;
 use crate::ipv4::Ipv4;
 use crate::ipv6::{Ipv6, Ipv6Ext};
@@ -309,13 +310,15 @@ impl ParseWith for EmbeddedHeaders {
                     }))?
             }
         };
+        let mut ipv6_next_header: Option<NextHeader> = None;
         loop {
-            let header = prior.parse_payload(&mut cursor);
+            let header = prior.parse_payload(&mut cursor, ipv6_next_header);
             match prior {
                 EmbeddedHeader::Ipv4(ipv4) => {
                     this.net = Some(Net::Ipv4(ipv4));
                 }
                 EmbeddedHeader::Ipv6(ipv6) => {
+                    ipv6_next_header = Some(ipv6.next_header());
                     this.net = Some(Net::Ipv6(ipv6));
                 }
                 EmbeddedHeader::IpAuth(auth) => {
@@ -423,7 +426,11 @@ pub(crate) enum EmbeddedHeader {
 }
 
 impl EmbeddedHeader {
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<EmbeddedHeader> {
+    fn parse_payload(
+        &self,
+        cursor: &mut Reader,
+        ipv6_next_header: Option<NextHeader>,
+    ) -> Option<EmbeddedHeader> {
         use EmbeddedHeader::{Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp};
         match self {
             Ipv4(ipv4) => ipv4
@@ -436,8 +443,8 @@ impl EmbeddedHeader {
                 .parse_embedded_payload(cursor)
                 .map(EmbeddedHeader::from),
             IpV6Ext(ext) => {
-                if let Ipv6(ipv6) = self {
-                    ext.parse_embedded_payload(ipv6.next_header(), cursor)
+                if let Some(next_header) = ipv6_next_header {
+                    ext.parse_embedded_payload(next_header, cursor)
                         .map(EmbeddedHeader::from)
                 } else {
                     debug!("ipv6 extension header outside ipv6 header");
