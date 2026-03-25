@@ -16,10 +16,10 @@ use tracing::{error, info, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
-/// This is a zero-sized type that is used for lifetime management and to ensure that the Eal is
-/// properly initialized and cleaned up.
+/// This type is used for lifetime management and to ensure that the EAL is
+/// properly initialized and cleaned up.  It owns the various DPDK sub-system
+/// managers whose lifetimes are tied to the EAL.
 #[derive(Debug)]
-#[repr(transparent)]
 #[non_exhaustive]
 pub struct Eal {
     /// The memory manager.
