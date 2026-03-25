@@ -3,7 +3,7 @@
 
 //! DPDK Environment Abstraction Layer (EAL)
 use crate::mem::RteAllocator;
-use crate::{dev, lcore, mem, socket};
+use crate::{dev, flow, lcore, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::ToString;
@@ -39,8 +39,12 @@ pub struct Eal {
     ///
     /// You can manage logical cores and task dispatch here.
     pub lcore: lcore::Manager,
+
+    /// Flow rule manager.
+    ///
+    /// You can create, validate, and destroy hardware flow rules here.
+    pub flow: flow::Manager,
     // TODO: queue
-    // TODO: flow
 }
 
 // Eal is Send + Sync automatically because all of its fields (the Manager
@@ -149,6 +153,7 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
             dev: dev::Manager::init(),
             socket: socket::Manager::init(),
             lcore: lcore::Manager::init(),
+            flow: flow::Manager::init(),
         }
     };
     // Shift to the DPDK allocator
