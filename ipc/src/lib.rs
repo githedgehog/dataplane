@@ -217,6 +217,12 @@ impl Read for FinalizedMemFile {
     }
 }
 
+impl Seek for FinalizedMemFile {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.0 .0.seek(pos)
+    }
+}
+
 impl From<MemFile> for FinalizedMemFile {
     fn from(value: MemFile) -> Self {
         value.finalize()
