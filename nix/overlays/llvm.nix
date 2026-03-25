@@ -42,6 +42,7 @@ let
     ];
     targets = [
       platform.info.target
+      "wasm32-wasip1"
     ];
   };
   rustPlatform' = final.makeRustPlatform {
