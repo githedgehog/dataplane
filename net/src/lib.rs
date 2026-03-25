@@ -12,12 +12,14 @@
     clippy::expect_used,
     clippy::panic
 )]
+#![cfg_attr(not(unix), allow(unused))] // for wasm32 builds
 #![allow(clippy::should_panic_without_expect)] // we panic in contract checks with simple unwrap()
 
 pub mod addr_parse_error;
 pub mod buffer;
 pub mod checksum;
 pub mod eth;
+#[cfg(unix)]
 pub mod flows;
 pub mod headers;
 pub mod icmp4;
@@ -38,6 +40,7 @@ pub mod vlan;
 pub mod vxlan;
 
 // re-export
+#[cfg(unix)]
 pub use flows::flow_key::{
     self, ExtendedFlowKey, FlowKey, FlowKeyData, IcmpProtoKey, IpProtoKey, TcpProtoKey, UdpProtoKey,
 };

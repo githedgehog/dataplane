@@ -3,6 +3,7 @@
 
 //! Definitions for flow keys
 
+#![cfg(unix)]
 #![allow(missing_docs)]
 
 pub mod atomic_instant;

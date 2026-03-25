@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use linux_raw_sys::if_ether;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
@@ -16,7 +15,8 @@ pub struct Mtu(NonZero<u32>);
 
 impl Mtu {
     pub(crate) const MIN_U32: u32 = 1280; // 1280 IPv6 minimum MTU
-    pub(crate) const MAX_U32: u32 = if_ether::ETH_MAX_MTU;
+    pub(crate) const MAX_U32: u32 = 65535;
+
     pub(crate) const DEFAULT_U32: u32 = 1500;
 
     /// The minimum legal MTU for an IPv6 interface is 1280 bytes.
