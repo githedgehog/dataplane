@@ -134,6 +134,24 @@ impl FromStr for InterfaceArg {
     }
 }
 
+impl std::fmt::Display for PortArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortArg::Pci(addr) => write!(f, "pci@{addr}"),
+            PortArg::Kernel(name) => write!(f, "kernel@{name}"),
+        }
+    }
+}
+
+impl std::fmt::Display for InterfaceArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.port {
+            Some(port) => write!(f, "{}={port}", self.interface),
+            None => write!(f, "{}", self.interface),
+        }
+    }
+}
+
 use bytecheck::CheckBytes;
 
 /// Default path to the dataplane's control plane unix socket.
@@ -1163,7 +1181,7 @@ mod tests {
             .with_type::<PciAddress>()
             .for_each(|pci| {
                 let original = PortArg::Pci(pci.clone());
-                let serialized = format!("pci@{pci}");
+                let serialized = original.to_string();
                 let parsed = PortArg::from_str(&serialized).unwrap();
                 assert_eq!(original, parsed);
             });
@@ -1175,7 +1193,7 @@ mod tests {
             .with_type::<InterfaceName>()
             .for_each(|name| {
                 let original = PortArg::Kernel(name.clone());
-                let serialized = format!("kernel@{name}");
+                let serialized = original.to_string();
                 let parsed = PortArg::from_str(&serialized).unwrap();
                 assert_eq!(original, parsed);
             });
@@ -1186,10 +1204,13 @@ mod tests {
         bolero::check!()
             .with_type::<(InterfaceName, PciAddress)>()
             .for_each(|(iface, pci)| {
-                let serialized = format!("{iface}=pci@{pci}");
+                let original = InterfaceArg {
+                    interface: iface.clone(),
+                    port: Some(PortArg::Pci(pci.clone())),
+                };
+                let serialized = original.to_string();
                 let parsed = InterfaceArg::from_str(&serialized).unwrap();
-                assert_eq!(parsed.interface, *iface);
-                assert_eq!(parsed.port, Some(PortArg::Pci(pci.clone())));
+                assert_eq!(original, parsed);
             });
     }
 
@@ -1198,10 +1219,13 @@ mod tests {
         bolero::check!()
             .with_type::<(InterfaceName, InterfaceName)>()
             .for_each(|(iface, port_name)| {
-                let serialized = format!("{iface}=kernel@{port_name}");
+                let original = InterfaceArg {
+                    interface: iface.clone(),
+                    port: Some(PortArg::Kernel(port_name.clone())),
+                };
+                let serialized = original.to_string();
                 let parsed = InterfaceArg::from_str(&serialized).unwrap();
-                assert_eq!(parsed.interface, *iface);
-                assert_eq!(parsed.port, Some(PortArg::Kernel(port_name.clone())));
+                assert_eq!(original, parsed);
             });
     }
 
@@ -1210,13 +1234,15 @@ mod tests {
         bolero::check!()
             .with_type::<InterfaceName>()
             .for_each(|name| {
-                // An interface name without '=' should parse as port-less.
-                let name_str: &str = name.as_ref();
+                let original = InterfaceArg {
+                    interface: name.clone(),
+                    port: None,
+                };
+                let serialized = original.to_string();
                 // Skip names that happen to contain '=' (not generated, but be safe).
-                if !name_str.contains('=') {
-                    let parsed = InterfaceArg::from_str(name_str).unwrap();
-                    assert_eq!(parsed.interface, *name);
-                    assert!(parsed.port.is_none());
+                if !serialized.contains('=') {
+                    let parsed = InterfaceArg::from_str(&serialized).unwrap();
+                    assert_eq!(original, parsed);
                 }
             });
     }
