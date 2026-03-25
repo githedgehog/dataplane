@@ -51,7 +51,6 @@ pub enum PortArg {
     Debug, PartialEq, Eq, Clone, serde::Serialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive,
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
-#[allow(unused)]
 pub struct InterfaceArg {
     pub interface: InterfaceName,
     pub port: Option<PortArg>,
