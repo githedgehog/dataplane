@@ -868,27 +868,29 @@ impl CmdArgs {
         match self.driver {
             DriverKind::Dpdk => {
                 // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                let eal_args = self
-                    .interfaces()
-                    .map(|nic| match &nic.port {
+                let mut interfaces = Vec::with_capacity(self.interface.len());
+                let mut eal_args = Vec::with_capacity(self.interface.len() * 2);
+                for nic in self.interfaces() {
+                    match &nic.port {
                         Some(PortArg::Pci(pci_address)) => {
-                            Ok(["--allow".to_string(), format!("{pci_address}")])
+                            eal_args.push("--allow".to_string());
+                            eal_args.push(format!("{pci_address}"));
                         }
                         Some(PortArg::Kernel(interface_name)) => {
-                            Err(InvalidCmdArguments::UnsupportedByDriver(
+                            return Err(InvalidCmdArguments::UnsupportedByDriver(
                                 UnsupportedByDriver::Dpdk(interface_name.clone()),
-                            ))
+                            ));
                         }
-                        None => Err(InvalidCmdArguments::MissingPortSpecifier(
-                            nic.interface.clone(),
-                        )),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect();
+                        None => {
+                            return Err(InvalidCmdArguments::MissingPortSpecifier(
+                                nic.interface.clone(),
+                            ));
+                        }
+                    }
+                    interfaces.push(nic.clone());
+                }
                 Ok(DriverConfigSection::Dpdk(DpdkDriverConfigSection {
-                    interfaces: self.interfaces().cloned().collect(),
+                    interfaces,
                     eal_args,
                 }))
             }
