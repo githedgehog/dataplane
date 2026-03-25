@@ -39,6 +39,10 @@ impl Overlay {
     }
 
     /// Validate all peerings, checking if the VPCs they refer to exist in vpc table
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a peering references a VPC that does not exist in the VPC table.
     pub fn validate_peerings(&self) -> ConfigResult {
         debug!("Validating VPC peerings...");
         for peering in self.peering_table.values() {
@@ -60,6 +64,10 @@ impl Overlay {
     }
 
     /// Top most validation function for `Overlay` configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the overlay configuration is invalid.
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating overlay configuration...");
 

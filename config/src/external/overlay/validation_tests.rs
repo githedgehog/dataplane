@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Validation tests for VpcExpose / VpcPeering / Overlay
+//! Validation tests for `VpcExpose` / `VpcPeering` / Overlay
 //!
 //! These tests cover the expected semantics and restrictions for Expose objects in VPC peerings.
 //!

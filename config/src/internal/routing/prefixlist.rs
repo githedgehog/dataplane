@@ -66,6 +66,11 @@ impl PrefixList {
             entries: BTreeMap::new(),
         }
     }
+    /// Add an entry to the prefix list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry has an incompatible IP version or the sequence number is a duplicate.
     pub fn add_entry(&mut self, seq: Option<u32>, mut entry: PrefixListEntry) -> ConfigResult {
         if !entry.is_version_compatible(self.ipver) {
             let msg = format!(
@@ -94,6 +99,11 @@ impl PrefixList {
         self.entries.insert(seq, entry);
         Ok(())
     }
+    /// Add multiple entries to the prefix list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any entry has an incompatible IP version or a duplicate sequence number.
     pub fn add_entries(
         &mut self,
         entries: impl IntoIterator<Item = PrefixListEntry>,

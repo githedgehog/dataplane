@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Converters for internal BGP status -> K8s GatewayAgentStatusStateBgp CRD.
+//! Converters for internal BGP status -> K8s `GatewayAgentStatusStateBgp` CRD.
 
 use std::collections::BTreeMap;
 

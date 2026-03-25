@@ -16,6 +16,10 @@ impl PriorityCommunityTable {
         Self::default()
     }
     /// Insert a community
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::DuplicateCommunity`] if the community already exists in the table.
     pub fn insert(&mut self, order: usize, community: &str) -> Result<(), ConfigError> {
         if self.0.iter().any(|(_, comm)| comm == community) {
             return Err(ConfigError::DuplicateCommunity(community.to_string()));
