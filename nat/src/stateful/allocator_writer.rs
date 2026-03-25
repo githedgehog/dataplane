@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateful::NatDefaultAllocator;
+use crate::stateful::apalloc::NatDefaultAllocator;
 use arc_swap::ArcSwapOption;
 use config::GenId;
 use config::external::overlay::vpc::Peering;

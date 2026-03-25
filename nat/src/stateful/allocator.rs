@@ -5,7 +5,6 @@
 
 use crate::NatPort;
 use crate::port::NatPortError;
-use net::ExtendedFlowKey;
 use net::ip::NextHeader;
 use std::fmt::{Debug, Display};
 use std::net::IpAddr;
@@ -65,27 +64,4 @@ impl<T: Debug + Display> Display for AllocationResult<T> {
             self.idle_timeout,
         )
     }
-}
-
-/// `NatAllocator` is a trait to allocate IP addresses and ports for stateful NAT. The trait avoids
-/// exposing the internals of the allocator to the rest of the NAT code. It should be easy to try
-/// alternative implementations of the allocator by implementing this trait and trivially replacing
-/// the allocator in use in the pipeline stage.
-#[allow(clippy::type_complexity)]
-pub trait NatAllocator<T, U>: Debug + Sync + Send
-where
-    T: Debug,
-    U: Debug,
-{
-    fn new() -> Self;
-    fn allocate_v4(
-        &self,
-        eflow_key: &ExtendedFlowKey,
-    ) -> Result<AllocationResult<T>, AllocatorError>;
-    fn allocate_v6(
-        &self,
-        eflow_key: &ExtendedFlowKey,
-    ) -> Result<AllocationResult<U>, AllocatorError>;
-
-    // TODO: Should the method for building the allocator from a VpcTable be part of this trait?
 }
