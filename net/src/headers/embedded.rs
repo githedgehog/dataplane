@@ -102,6 +102,13 @@ impl EmbeddedHeaders {
         self.net.as_ref().map_or(0, |net| net.size().get())
     }
 
+    /// Total byte length of all network extension headers (e.g. IPv6 extension
+    /// headers, IP Authentication headers).
+    #[must_use]
+    pub fn net_ext_headers_len(&self) -> u16 {
+        self.net_ext.iter().map(|e| e.size().get()).sum()
+    }
+
     #[must_use]
     pub fn transport_headers_len(&self) -> u16 {
         self.transport
@@ -361,13 +368,11 @@ impl DeParse for EmbeddedHeaders {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
-        // TODO(blocking): Deal with ip{v4,v6} extensions
-        NonZero::new(self.net_headers_len() + self.transport_headers_len())
+        NonZero::new(self.net_headers_len() + self.net_ext_headers_len() + self.transport_headers_len())
             .unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
-        // TODO(blocking): Deal with ip{v4,v6} extensions
         let len = buf.len();
         if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
@@ -388,6 +393,10 @@ impl DeParse for EmbeddedHeaders {
             Some(ref net) => {
                 cursor.write(net)?;
             }
+        }
+
+        for ext in &self.net_ext {
+            cursor.write(ext)?;
         }
 
         match self.transport {
