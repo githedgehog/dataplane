@@ -226,11 +226,11 @@ fn main() {
 
     /* start driver with the provided pipeline builder */
     let e = match args.driver_name() {
-        "dpdk" => {
+        Some("dpdk") => {
             info!("Using driver DPDK...");
             todo!();
         }
-        "kernel" => {
+        Some("kernel") => {
             info!("Using driver kernel...");
             DriverKernel::start(
                 stop_tx.clone(),
@@ -239,8 +239,12 @@ fn main() {
                 &pipeline_factory,
             )
         }
-        other => {
+        Some(other) => {
             error!("Unknown driver '{other}'. Aborting...");
+            panic!("Packet processing pipeline failed to start. Aborting...");
+        }
+        None => {
+            error!("No driver specified. Aborting...");
             panic!("Packet processing pipeline failed to start. Aborting...");
         }
     };
