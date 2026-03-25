@@ -7,9 +7,8 @@
 
 use super::super::NatIp;
 use super::super::allocation::{AllocationResult, AllocatorError};
-use super::AllocatedIpPort;
-use crate::stateful::apalloc::NatAllocator;
-use crate::stateful::apalloc::alloc::{map_address, map_offset};
+use super::alloc::{map_address, map_offset};
+use super::{AllocatedIpPort, NatAllocator};
 use concurrency::sync::Arc;
 use net::ExtendedFlowKey;
 use std::collections::BTreeMap;
