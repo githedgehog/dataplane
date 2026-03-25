@@ -663,41 +663,7 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
             config_server: Some(ConfigServerSection {
                 config_dir: value.config_dir().cloned(),
             }),
-            driver: match &value.driver {
-                Some(driver) if driver == "dpdk" => {
-                    // TODO: adjust command line to specify lcore usage more flexibly in next PR
-                    let eal_args = value
-                        .interfaces()
-                        .map(|nic| match nic.port {
-                            Some(PortArg::Pci(pci_address)) => {
-                                Ok(["--allow".to_string(), format!("{pci_address}")])
-                            }
-                            Some(PortArg::Kernel(interface_name)) => {
-                                Err(InvalidCmdArguments::UnsupportedByDriver(
-                                    UnsupportedByDriver::Dpdk(interface_name.clone()),
-                                ))
-                            }
-                            None => Err(InvalidCmdArguments::MissingPortSpecifier(
-                                nic.interface.clone(),
-                            )),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                    DriverConfigSection::Dpdk(DpdkDriverConfigSection {
-                        interfaces: value.interfaces().collect(),
-                        eal_args,
-                    })
-                }
-                Some(driver) if driver == "kernel" => {
-                    DriverConfigSection::Kernel(KernelDriverConfigSection {
-                        interfaces: value.interfaces().collect(),
-                    })
-                }
-                Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone()))?,
-                None => Err(InvalidCmdArguments::NoDriverSpecified)?,
-            },
+            driver: value.build_driver_config()?,
             cli: CliConfigSection {
                 cli_sock_path: value.cli_sock_path().to_owned(),
             },
@@ -705,32 +671,11 @@ impl TryFrom<CmdArgs> for LaunchConfiguration {
                 control_plane_socket: value.cpi_sock_path().to_owned(),
                 frr_agent_socket: value.frr_agent_path().to_owned(),
             },
-            tracing: TracingConfigSection {
-                show: TracingShowSection {
-                    tags: if value.show_tracing_tags() {
-                        TracingDisplayOption::Show
-                    } else {
-                        TracingDisplayOption::Hide
-                    },
-                    targets: if value.show_tracing_targets() {
-                        TracingDisplayOption::Show
-                    } else {
-                        TracingDisplayOption::Hide
-                    },
-                },
-                config: value.tracing.clone(),
-            },
+            tracing: value.build_tracing_config(),
             metrics: MetricsConfigSection {
                 address: value.metrics_address(),
             },
-            bmp: if value.bmp_enabled() {
-                Some(BmpConfigSection {
-                    address: value.bmp_address(),
-                    interval: value.bmp_interval(),
-                })
-            } else {
-                None
-            },
+            bmp: value.build_bmp_config(),
             profiling: ProfilingConfigSection {
                 pyroscope_url: value.pyroscope_url().map(std::string::ToString::to_string),
                 frequency: ProfilingConfigSection::DEFAULT_FREQUENCY,
@@ -874,6 +819,87 @@ elsewhere and copy it in the configuration directory. This mode is meant mostly 
 }
 
 impl CmdArgs {
+    /// Build the [`DriverConfigSection`] from the parsed command-line arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No driver was specified.
+    /// - The driver name is not recognized.
+    /// - A DPDK interface is missing a PCI address binding.
+    /// - A kernel interface name was given to the DPDK driver (or vice-versa).
+    fn build_driver_config(&self) -> Result<DriverConfigSection, InvalidCmdArguments> {
+        match &self.driver {
+            Some(driver) if driver == "dpdk" => {
+                // TODO: adjust command line to specify lcore usage more flexibly in next PR
+                let eal_args = self
+                    .interfaces()
+                    .map(|nic| match nic.port {
+                        Some(PortArg::Pci(pci_address)) => {
+                            Ok(["--allow".to_string(), format!("{pci_address}")])
+                        }
+                        Some(PortArg::Kernel(interface_name)) => {
+                            Err(InvalidCmdArguments::UnsupportedByDriver(
+                                UnsupportedByDriver::Dpdk(interface_name.clone()),
+                            ))
+                        }
+                        None => Err(InvalidCmdArguments::MissingPortSpecifier(
+                            nic.interface.clone(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                Ok(DriverConfigSection::Dpdk(DpdkDriverConfigSection {
+                    interfaces: self.interfaces().collect(),
+                    eal_args,
+                }))
+            }
+            Some(driver) if driver == "kernel" => {
+                Ok(DriverConfigSection::Kernel(KernelDriverConfigSection {
+                    interfaces: self.interfaces().collect(),
+                }))
+            }
+            Some(other) => Err(InvalidCmdArguments::InvalidDriver(other.clone())),
+            None => Err(InvalidCmdArguments::NoDriverSpecified),
+        }
+    }
+
+    /// Build the [`TracingConfigSection`] from the parsed command-line arguments.
+    fn build_tracing_config(&self) -> TracingConfigSection {
+        TracingConfigSection {
+            show: TracingShowSection {
+                tags: if self.show_tracing_tags() {
+                    TracingDisplayOption::Show
+                } else {
+                    TracingDisplayOption::Hide
+                },
+                targets: if self.show_tracing_targets() {
+                    TracingDisplayOption::Show
+                } else {
+                    TracingDisplayOption::Hide
+                },
+            },
+            config: self.tracing.clone(),
+        }
+    }
+
+    /// Build the optional [`BmpConfigSection`] from the parsed command-line
+    /// arguments.
+    ///
+    /// Returns `None` when BMP is not enabled.
+    fn build_bmp_config(&self) -> Option<BmpConfigSection> {
+        if self.bmp_enabled() {
+            Some(BmpConfigSection {
+                address: self.bmp_address(),
+                interval: self.bmp_interval(),
+            })
+        } else {
+            None
+        }
+    }
+
     /// Get the configured driver name.
     ///
     /// Returns `"dpdk"` if no driver was explicitly specified (the default),
