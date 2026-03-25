@@ -13,7 +13,7 @@ use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
 use core::marker::PhantomData;
-use core::mem::transmute;
+
 use core::ptr::NonNull;
 use core::ptr::null;
 use core::ptr::null_mut;
@@ -145,19 +145,21 @@ impl Pool {
 
     #[must_use]
     pub fn alloc_bulk(&self, num: usize) -> Vec<Mbuf> {
-        // SAFETY: we should never have any null ptrs come back if ret passes check
-        let mut mbufs: Vec<Mbuf> = (0..num)
-            .map(|_| unsafe { transmute(null_mut::<dpdk_sys::rte_mbuf>()) })
-            .collect();
+        let mut ptrs: Vec<*mut dpdk_sys::rte_mbuf> = vec![null_mut(); num];
         let ret = unsafe {
             dpdk_sys::rte_pktmbuf_alloc_bulk(
                 self.0.as_mut_ptr(),
-                transmute::<*mut Mbuf, *mut *mut dpdk_sys::rte_mbuf>(mbufs.as_mut_ptr()),
+                ptrs.as_mut_ptr(),
                 num as c_uint,
             )
         };
         EalErrno::assert(ret);
-        mbufs
+        // SAFETY: On success (ret == 0, enforced by EalErrno::assert above),
+        // rte_pktmbuf_alloc_bulk guarantees every pointer in the output array
+        // is a valid, non-null pointer to an initialized rte_mbuf.
+        ptrs.into_iter()
+            .map(|ptr| unsafe { Mbuf::new_from_raw_unchecked(ptr) })
+            .collect()
     }
 }
 
