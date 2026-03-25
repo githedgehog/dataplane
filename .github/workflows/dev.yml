@@ -132,6 +132,7 @@ jobs:
           - tests.all
           - frr.dataplane
           - dataplane
+          - validator
         build:
           - name: "debug"
             profile: "debug"
@@ -151,28 +152,17 @@ jobs:
           username: "${{ github.actor }}"
           password: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: "login to image cache"
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL"
-
-      # it's temporarily needed to install skopeo
-      - name: Setup Go
-        uses: actions/setup-go@v6
+      - name: "Install nix"
+        uses: cachix/install-nix-action@v31
         with:
-          go-version: stable
-          cache: true
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixpkgs-unstable
 
       - name: "Checkout"
         uses: "actions/checkout@v6"
         with:
           persist-credentials: "false"
           fetch-depth: "0"
-
-      - name: "Install nix"
-        uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_path: nixpkgs=channel:nixpkgs-unstable
 
       - uses: "cachix/cachix-action@v17"
         with:
@@ -181,6 +171,17 @@ jobs:
           signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
           # prettier-ignore
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      # this step exists to avoid attributing the amount of time it takes to fetch the nix-shell dependencies to
+      # whatever step happens to access the nix-shell first.
+      - name: "setup nix shell"
+        run: |
+          nix-shell --run "echo nix shell env cached"
+
+      - name: "login to image cache"
+        run: |
+          docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL" <<<"${REGISTRY_PASSWORD}"
+          nix-shell --run "oras login -u \"$REGISTRY_USERNAME\" --password-stdin \"$REGISTRY_URL\" <<<\"${REGISTRY_PASSWORD}\""
 
       - name: "run pre-flight checks"
         if: ${{ matrix.nix-target == 'tests.all' }}
@@ -202,22 +203,28 @@ jobs:
       - name: "push container"
         if: ${{ matrix.nix-target != 'tests.all' }}
         run: |
-          nix-shell --run "just \
-              debug_justfile=${{matrix.debug_justfile}} \
-              check-dependencies"
-          for v in "" "version=${{ needs.version.outputs.version }}-${{ matrix.build.profile }}"; do
-            nix-shell --run "
-                just \
-                    docker_sock=/run/docker/docker.sock \
-                    debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }} \
-                    profile=${{ matrix.build.profile }} \
-                    sanitize=${{ matrix.build.sanitize }} \
-                    instrument=${{ matrix.build.instrument }} \
-                    oci_repo=ghcr.io \
-                    $v \
-                    push-container ${{ matrix.nix-target }}
-            "
-          done
+          nix-shell --run '
+            just \
+                debug_justfile=${{matrix.debug_justfile}} \
+                check-dependencies
+            for v in "" "version=${{ needs.version.outputs.version }}-${{ matrix.build.profile }}"; do
+              if [ "${{ matrix.nix-target }}" = "validator" ]; then
+                platform="wasm32-wasip1"
+              else
+                platform="x86-64-v3"
+              fi
+              just \
+                  docker_sock=/run/docker/docker.sock \
+                  debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }} \
+                  profile=${{ matrix.build.profile }} \
+                  platform=${platform} \
+                  sanitize=${{ matrix.build.sanitize }} \
+                  instrument=${{ matrix.build.instrument }} \
+                  oci_repo=ghcr.io \
+                  $v \
+                  push-container ${{ matrix.nix-target }}
+            done
+          '
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
