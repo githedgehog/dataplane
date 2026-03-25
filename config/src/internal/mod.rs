@@ -68,6 +68,11 @@ impl InternalConfig {
     pub fn get_vtep(&self) -> &Option<VtepConfig> {
         &self.vtep
     }
+    /// Add a VRF configuration to the internal config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the VRF has duplicate fields (name, table ID, or VNI).
     pub fn add_vrf_config(&mut self, vrf_cfg: VrfConfig) -> ConfigResult {
         self.vrfs.add_vrf_config(vrf_cfg)
     }

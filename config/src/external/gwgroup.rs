@@ -77,6 +77,12 @@ impl GwGroup {
         //N.B. we reverse the operands since want the most preferred first
         self.members.sort_by(|m1, m2| m2.cmp(m1));
     }
+    /// Add a member to the gateway group.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::DuplicateMember`] if a member with the same name already exists.
+    /// Returns [`ConfigError::DuplicateMemberAddress`] if a member with the same IP address already exists.
     pub fn add_member(&mut self, member: GwGroupMember) -> Result<(), ConfigError> {
         if self.get_member_by_name(&member.name).is_some() {
             return Err(ConfigError::DuplicateMember(member.name.clone()));
@@ -126,6 +132,11 @@ impl GwGroupTable {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Add a gateway group to the table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::DuplicateGroup`] if a group with the same name already exists.
     pub fn add_group(&mut self, group: GwGroup) -> Result<(), ConfigError> {
         if self.0.contains_key(group.name()) {
             return Err(ConfigError::DuplicateGroup(group.name().to_owned()));
@@ -332,7 +343,7 @@ mod test {
     fn test_bgp_community_setup() {
         let comtable = sample_community_table();
         let mut gwtable = build_sample_gw_groups();
-        gwtable.iter_mut().for_each(|group| group.sort_members());
+        gwtable.iter_mut().for_each(GwGroup::sort_members);
 
         println!("{gwtable}");
         println!("{comtable}");

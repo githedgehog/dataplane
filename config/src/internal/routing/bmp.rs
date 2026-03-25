@@ -26,6 +26,7 @@ pub enum BmpSource {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BmpOptions {
     /// Name for `bmp targets <name>`
     pub target_name: String,
