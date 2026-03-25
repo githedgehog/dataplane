@@ -507,7 +507,7 @@ impl IntegrityCheck {
     /// `seek`ed to the start or you will end up only hashing from the seek
     /// position to the end of the file.
     fn from_reader(r: &mut impl Read) -> Self {
-        const CHUNK_SIZE: usize = 128;
+        const CHUNK_SIZE: usize = 8192;
         let mut hasher = sha2::Sha384::new();
         loop {
             let mut chunk = [0_u8; CHUNK_SIZE];
@@ -516,10 +516,10 @@ impl IntegrityCheck {
                 .into_diagnostic()
                 .wrap_err("failed to read integrity check")
                 .unwrap();
-            hasher.update(&chunk[..amount]);
             if amount == 0 {
                 break;
             }
+            hasher.update(&chunk[..amount]);
         }
         let mut hash = [0; INTEGRITY_CHECK_BYTE_LEN];
         hash.copy_from_slice(&hasher.finalize()[..]);
