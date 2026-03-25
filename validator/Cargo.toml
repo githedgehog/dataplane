@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 config = { workspace = true }
-k8s-intf = { workspace = true }
+k8s-intf = { workspace = true, default-features = false }
 
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }

@@ -6,34 +6,48 @@ publish.workspace = true
 version.workspace = true
 
 [features]
+default = ["client"]
+# Enables the full K8s client, watcher, and status-reporting functionality.
+# Disable this feature (default-features = false) for WASM/WASI builds that
+# only need the generated CRD types.
+client = [
+    "dep:futures",
+    "dep:linkme",
+    "dep:rustls",
+    "dep:tokio",
+    "dep:tracectl",
+    "kube/client",
+    "kube/runtime",
+    "kube/rustls-tls",
+]
 bolero = ["dep:bolero", "dep:hardware", "dep:net", "dep:lpm", "net/test_buffer", "net/bolero", "hardware/bolero"]
 
 [dependencies]
 # internal
-hardware = { workspace = true, optional = true, features = ["bolero"] }
+hardware = { workspace = true, optional = true, features = ["bolero", "sysfs"] }
 lpm = { workspace = true, optional = true }
 net = { workspace = true, optional = true, features = ["bolero"] }
-tracectl = { workspace = true }
+tracectl = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 # external
 bolero = { workspace = true, optional = true }
-futures = { workspace = true }
-kube = { workspace = true, features = ["client", "derive", "runtime", "rustls-tls"] }
+futures = { workspace = true, optional = true }
+kube = { workspace = true, features = ["derive"] }
 kube-core = { workspace = true }
 k8s-openapi = { workspace = true, features = ["latest", "schemars", "std"] }
-linkme = { workspace = true }
-rustls = { workspace = true, features = ["aws-lc-rs"] }
+linkme = { workspace = true, optional = true }
+rustls = { workspace = true, features = ["aws-lc-rs"], optional = true }
 schemars = { workspace = true, features = ["derive", "std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 bolero = { workspace = true }
-hardware = { workspace = true, features = ["bolero"] }
+hardware = { workspace = true, features = ["bolero", "sysfs"] }
 lpm = { workspace = true, features = [] }
 net = { workspace = true, features = ["bolero", "test_buffer"] }
 
