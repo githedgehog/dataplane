@@ -287,6 +287,26 @@ impl FinalizedMemFile {
     #[instrument(level = "debug", skip(fd))]
     #[allow(unsafe_code)] // external contract documented and checked as well as I can for now
     pub unsafe fn from_fd(fd: OwnedFd) -> FinalizedMemFile {
+        Self::verify_is_memfd(&fd);
+        Self::verify_readonly(&fd);
+        Self::verify_sealed(&fd);
+        let mut file = std::fs::File::from(fd);
+        file.seek(SeekFrom::Start(0))
+            .into_diagnostic()
+            .wrap_err("failed to seek to start of memfd")
+            .unwrap();
+        Self::mark_cloexec(&file);
+        FinalizedMemFile(MemFile(file))
+    }
+
+    /// Verify that `fd` refers to a memfd by reading its `/proc/self/fd` symlink.
+    ///
+    /// # Panics
+    ///
+    /// 1. Panics if the symlink for the file descriptor cannot be read.
+    /// 2. Panics if the symlink target is not valid unicode.
+    /// 3. Panics if the symlink target does not start with `/memfd:`.
+    fn verify_is_memfd(fd: &OwnedFd) {
         // TODO: is procfs actually mounted at /proc?  Are we reading the correct file.  Annoying to fix this properly.
         let os_str =
             nix::fcntl::readlink(format!("/proc/self/fd/{fd}", fd = fd.as_raw_fd()).as_str())
@@ -302,17 +322,37 @@ impl FinalizedMemFile {
             readlink_result.starts_with("/memfd:"),
             "supplied file descriptor is not a memfd: {readlink_result}"
         );
+    }
+
+    /// Verify that `fd` is a regular file with owner-read-only permissions
+    /// (mode `0o100400`).
+    ///
+    /// # Panics
+    ///
+    /// 1. Panics if the file descriptor cannot be `stat`ed.
+    /// 2. Panics if the file mode does not match the expected permissions.
+    fn verify_readonly(fd: &OwnedFd) {
         let stat = nix::sys::stat::fstat(fd.as_fd())
             .into_diagnostic()
             .wrap_err("failed to stat memfd")
             .unwrap();
-        const EXPECTED_PERMISSIONS: u32 = nix::libc::S_IFREG | nix::libc::S_IRUSR; // regular file | owner read-only
+        const EXPECTED_PERMISSIONS: u32 = nix::libc::S_IFREG | nix::libc::S_IRUSR;
         assert!(
             stat.st_mode == EXPECTED_PERMISSIONS,
             "finalized memfd not in read only mode: given mode is {:o}, expected {EXPECTED_PERMISSIONS:o}",
             stat.st_mode
         );
+    }
 
+    /// Verify that `fd` carries the full set of seals expected on a finalized
+    /// memfd (`F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL`).
+    ///
+    /// # Panics
+    ///
+    /// 1. Panics if the seal flags cannot be read from the file descriptor.
+    /// 2. Panics if the seal bits are not recognized by the system.
+    /// 3. Panics if any expected seal bit is missing.
+    fn verify_sealed(fd: &OwnedFd) {
         let Some(seals) = SealFlag::from_bits(
             nix::fcntl::fcntl(fd.as_fd(), FcntlArg::F_GET_SEALS)
                 .into_diagnostic()
@@ -329,17 +369,19 @@ impl FinalizedMemFile {
             seals.contains(expected_bits),
             "missing seal bits on finalized memfd: bits set {seals:?}, bits expected: {expected_bits:?}"
         );
-        let mut file = std::fs::File::from(fd);
-        file.seek(SeekFrom::Start(0))
-            .into_diagnostic()
-            .wrap_err("failed to seek to start of memfd")
-            .unwrap();
-        // mark file close on exec so we are less likely to accidentally leak it
+    }
+
+    /// Mark a file as close-on-exec to prevent accidental leaking to
+    /// subprocesses.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `FD_CLOEXEC` flag cannot be set.
+    fn mark_cloexec(file: &std::fs::File) {
         nix::fcntl::fcntl(file.as_fd(), FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))
             .into_diagnostic()
             .wrap_err("unable to mark memfd as close-on-exec")
             .unwrap();
-        FinalizedMemFile(MemFile(file))
     }
 
     /// Validate this file using an [`IntegrityCheck`] serialized into the
