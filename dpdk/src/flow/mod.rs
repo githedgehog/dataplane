@@ -1253,13 +1253,13 @@ impl SetFlowField {
             width: u32,
         ) -> dpdk_sys::rte_flow_action_modify_field {
             dpdk_sys::rte_flow_action_modify_field {
-                operation: FieldModificationOperation::Set as u32,
+                operation: FieldModificationOperation::Set.into(),
                 src: dpdk_sys::rte_flow_field_data {
-                    field: FlowFieldId::Value as u32,
+                    field: FlowFieldId::Value.into(),
                     annon1: dpdk_sys::rte_flow_field_data__bindgen_ty_1 { value },
                 },
                 dst: dpdk_sys::rte_flow_field_data {
-                    field: dst_field as u32,
+                    field: dst_field.into(),
                     annon1: dpdk_sys::rte_flow_field_data__bindgen_ty_1::default(),
                 },
                 width,
@@ -1549,7 +1549,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
         match m {
             FlowMatch::End => {
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::End as u32,
+                    type_: MatchType::End.into(),
                     spec: ptr::null(),
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1557,7 +1557,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
             }
             FlowMatch::Void => {
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Void as u32,
+                    type_: MatchType::Void.into(),
                     spec: ptr::null(),
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1565,7 +1565,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
             }
             FlowMatch::Any => {
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Any as u32,
+                    type_: MatchType::Any.into(),
                     spec: ptr::null(),
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1576,7 +1576,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let mask_c = fs.mask().map(eth_to_c);
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec_c, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Eth as u32,
+                    type_: MatchType::Eth.into(),
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1601,7 +1601,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 });
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Ipv4 as u32,
+                    type_: MatchType::Ipv4.into(),
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1616,7 +1616,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let (spec_ptr, spec_box) = heap_ptr(spec);
                 storage.push(spec_box);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Ipv6 as u32,
+                    type_: MatchType::Ipv6.into(),
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1641,7 +1641,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 });
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Udp as u32,
+                    type_: MatchType::Udp.into(),
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1666,7 +1666,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 });
                 let (spec_ptr, mask_ptr) = push_spec_mask(&mut storage, spec, mask_c);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Tcp as u32,
+                    type_: MatchType::Tcp.into(),
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: mask_ptr,
@@ -1683,7 +1683,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let (spec_ptr, spec_box) = heap_ptr(spec);
                 storage.push(spec_box);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Meta as u32,
+                    type_: MatchType::Meta.into(),
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1698,7 +1698,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
                 let (spec_ptr, spec_box) = heap_ptr(spec);
                 storage.push(spec_box);
                 items.push(dpdk_sys::rte_flow_item {
-                    type_: MatchType::Tag as u32,
+                    type_: MatchType::Tag.into(),
                     spec: spec_ptr,
                     last: ptr::null(),
                     mask: ptr::null(),
@@ -1713,7 +1713,7 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
 
     // Terminate the pattern with an END sentinel.
     items.push(dpdk_sys::rte_flow_item {
-        type_: MatchType::End as u32,
+        type_: MatchType::End.into(),
         spec: ptr::null(),
         last: ptr::null(),
         mask: ptr::null(),
@@ -1734,8 +1734,6 @@ fn build_c_pattern(pattern: &[FlowMatch]) -> Result<CFlowPattern, FlowError> {
 /// Returns [`FlowError::UnsupportedActionType`] if an action variant lacks
 /// a C-level conversion.
 fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
-    use dpdk_sys::rte_flow_action_type::*;
-
     let mut c_actions: Vec<dpdk_sys::rte_flow_action> = Vec::with_capacity(actions.len() + 1);
     let mut storage: Vec<Box<dyn Any>> = Vec::with_capacity(actions.len());
 
@@ -1743,43 +1741,43 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
         match a {
             FlowAction::End => {
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_END,
+                    type_: FlowActionType::End.into(),
                     conf: ptr::null(),
                 });
             }
             FlowAction::Void => {
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_VOID,
+                    type_: FlowActionType::Void.into(),
                     conf: ptr::null(),
                 });
             }
             FlowAction::PassThrough => {
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_PASSTHRU,
+                    type_: FlowActionType::PassThrough.into(),
                     conf: ptr::null(),
                 });
             }
             FlowAction::Flag => {
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_FLAG,
+                    type_: FlowActionType::Flag.into(),
                     conf: ptr::null(),
                 });
             }
             FlowAction::Drop => {
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_DROP,
+                    type_: FlowActionType::Drop.into(),
                     conf: ptr::null(),
                 });
             }
             FlowAction::PopVlan => {
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_OF_POP_VLAN,
+                    type_: FlowActionType::PopVlan.into(),
                     conf: ptr::null(),
                 });
             }
             FlowAction::MacSwap => {
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_MAC_SWAP,
+                    type_: FlowActionType::MacSwap.into(),
                     conf: ptr::null(),
                 });
             }
@@ -1788,7 +1786,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_JUMP,
+                    type_: FlowActionType::Jump.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1797,7 +1795,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_MARK,
+                    type_: FlowActionType::Mark.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1808,7 +1806,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_QUEUE,
+                    type_: FlowActionType::Queue.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1817,7 +1815,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_COUNT,
+                    type_: FlowActionType::Count.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1826,7 +1824,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_METER,
+                    type_: FlowActionType::Meter.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1837,7 +1835,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN,
+                    type_: FlowActionType::PushVlan.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1849,7 +1847,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
+                    type_: FlowActionType::SetVlanVid.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1859,7 +1857,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_AGE,
+                    type_: FlowActionType::Age.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1868,7 +1866,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(action.conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_MODIFY_FIELD,
+                    type_: FlowActionType::ModifyField.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1904,7 +1902,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_RAW_ENCAP,
+                    type_: FlowActionType::RawEncap.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1921,7 +1919,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
                 let (conf_ptr, conf_box) = heap_ptr(conf);
                 storage.push(conf_box);
                 c_actions.push(dpdk_sys::rte_flow_action {
-                    type_: RTE_FLOW_ACTION_TYPE_RAW_DECAP,
+                    type_: FlowActionType::RawDecap.into(),
                     conf: conf_ptr,
                 });
             }
@@ -1930,7 +1928,7 @@ fn build_c_actions(actions: &[FlowAction]) -> Result<CFlowActions, FlowError> {
 
     // Terminate the action list with an END sentinel.
     c_actions.push(dpdk_sys::rte_flow_action {
-        type_: RTE_FLOW_ACTION_TYPE_END,
+        type_: FlowActionType::End.into(),
         conf: ptr::null(),
     });
 
