@@ -65,7 +65,7 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 use super::NatIp;
-use super::allocator::{AllocationResult, AllocatorError};
+use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
 use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
