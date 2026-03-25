@@ -6,8 +6,9 @@
 //! (`Ipv4Addr` and `Ipv6Addr`) that it works with.
 
 use super::super::NatIp;
-use super::super::allocator::{AllocationResult, AllocatorError, NatAllocator};
+use super::super::allocator::{AllocationResult, AllocatorError};
 use super::AllocatedIpPort;
+use crate::stateful::apalloc::NatDefaultAllocator;
 use crate::stateful::apalloc::alloc::{map_address, map_offset};
 use concurrency::sync::Arc;
 use net::ExtendedFlowKey;
@@ -29,8 +30,8 @@ pub trait NatIpWithBitmap: NatIp {
     ) -> Result<u32, AllocatorError>;
 
     // Allocate a new IP address from the allocator
-    fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
-        allocator: Arc<A>,
+    fn allocate(
+        allocator: Arc<NatDefaultAllocator>,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError>;
 }
@@ -50,8 +51,8 @@ impl NatIpWithBitmap for Ipv4Addr {
         Ok(u32::from(address))
     }
 
-    fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
-        allocator: Arc<A>,
+    fn allocate(
+        allocator: Arc<NatDefaultAllocator>,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
         allocator.allocate_v4(eflow_key)
@@ -79,8 +80,8 @@ impl NatIpWithBitmap for Ipv6Addr {
         map_address(address, bitmap_mapping)
     }
 
-    fn allocate<A: NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>>>(
-        allocator: Arc<A>,
+    fn allocate(
+        allocator: Arc<NatDefaultAllocator>,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
         allocator.allocate_v6(eflow_key)
