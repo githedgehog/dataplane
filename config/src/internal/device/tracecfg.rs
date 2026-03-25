@@ -7,9 +7,17 @@
 
 use crate::ConfigResult;
 use ordermap::OrderMap;
-use tracectl::DEFAULT_DEFAULT_LOGLEVEL;
-use tracectl::{LevelFilter, get_trace_ctl};
 use tracing::debug;
+
+#[cfg(unix)]
+use tracectl::DEFAULT_DEFAULT_LOGLEVEL;
+#[cfg(unix)]
+use tracectl::{LevelFilter, get_trace_ctl};
+
+#[cfg(not(unix))]
+use tracing::metadata::LevelFilter;
+#[cfg(not(unix))]
+const DEFAULT_DEFAULT_LOGLEVEL: LevelFilter = LevelFilter::INFO;
 
 #[derive(Clone, Debug)]
 pub struct TracingConfig {
@@ -35,9 +43,26 @@ impl TracingConfig {
     pub fn add_tag(&mut self, tag: &str, level: LevelFilter) {
         let _ = self.tags.insert(tag.to_string(), level);
     }
+    /// Validate the tracing configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any configured trace tag is unknown.
+    #[cfg(unix)]
     pub fn validate(&self) -> ConfigResult {
         debug!("Validating tracing configuration..");
-        let tags: Vec<&str> = self.tags.keys().map(|k| k.as_str()).collect();
+        let tags: Vec<&str> = self.tags.keys().map(String::as_str).collect();
         Ok(get_trace_ctl().check_tags(&tags)?)
+    }
+
+    /// Validate the tracing configuration (no-op on non-unix platforms).
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Ok(())` on non-unix platforms.
+    #[cfg(not(unix))]
+    pub fn validate(&self) -> ConfigResult {
+        debug!("Validating tracing configuration (no-op on this platform)..");
+        Ok(())
     }
 }
