@@ -14,7 +14,6 @@ const _: () = {
 
 use log::Level;
 use std::net::IpAddr;
-use strum::IntoEnumIterator;
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
@@ -175,8 +174,17 @@ impl CliResponse {
 }
 
 #[repr(u16)]
-#[allow(unused)]
-#[derive(Debug, Clone, EnumIter, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    EnumIter,
+    PartialEq,
+    strum::FromRepr,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub enum CliAction {
     Clear = 0,
     Connect,
@@ -259,21 +267,4 @@ pub enum CliAction {
 
     // loglevel
     SetLoglevel,
-}
-
-impl CliAction {
-    fn discriminant(&self) -> u16 {
-        unsafe { *<*const _>::from(self).cast::<u16>() }
-    }
-}
-impl TryFrom<u16> for CliAction {
-    type Error = ();
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        for a in CliAction::iter() {
-            if a.discriminant() == value {
-                return Ok(a);
-            }
-        }
-        Err(())
-    }
 }
