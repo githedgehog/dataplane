@@ -10,9 +10,9 @@ mod state;
 mod test;
 
 use super::NatTranslationData;
-use crate::stateful::allocator::{AllocationResult, AllocatorError, NatAllocator};
+use crate::stateful::allocator::{AllocationResult, AllocatorError};
 use crate::stateful::allocator_writer::NatAllocatorReader;
-use crate::stateful::apalloc::{AllocatedIpPort, NatDefaultAllocator, NatIpWithBitmap};
+use crate::stateful::apalloc::{AllocatedIpPort, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
 use crate::stateful::state::NatFlowState;
 pub use allocator_writer::NatAllocatorWriter;
