@@ -33,12 +33,6 @@ pub trait NatIp:
 
     // Convert from an `IpAddr` object to a `NatIp`, if possible
     fn try_from_addr(addr: IpAddr) -> Result<Self, ()>;
-
-    // Convert from an `Ipv4Addr` object to a `NatIp`, if possible
-    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()>;
-
-    // Convert from an `Ipv6Addr` object to a `NatIp`, if possible
-    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()>;
 }
 
 impl private::Sealed for Ipv4Addr {}
@@ -72,12 +66,6 @@ impl NatIp for Ipv4Addr {
             Err(())
         }
     }
-    fn try_from_ipv4_addr(addr: Ipv4Addr) -> Result<Self, ()> {
-        Ok(addr)
-    }
-    fn try_from_ipv6_addr(_addr: Ipv6Addr) -> Result<Self, ()> {
-        Err(())
-    }
 }
 
 impl NatIp for Ipv6Addr {
@@ -107,11 +95,5 @@ impl NatIp for Ipv6Addr {
         } else {
             Err(())
         }
-    }
-    fn try_from_ipv4_addr(_addr: Ipv4Addr) -> Result<Self, ()> {
-        Err(())
-    }
-    fn try_from_ipv6_addr(addr: Ipv6Addr) -> Result<Self, ()> {
-        Ok(addr)
     }
 }
