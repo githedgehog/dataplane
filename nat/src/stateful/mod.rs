@@ -124,13 +124,11 @@ impl StatefulNat {
     // On success, update session timeout.
     fn lookup_session<I: NatIpWithBitmap, Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
-        genid: i64,
     ) -> Option<NatTranslationData> {
         let flow_info = packet.meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
         flow_info.reset_expiry(state.idle_timeout()).ok()?;
-        flow_info.set_genid_pair(genid); // unconditionally (FIXME)
         Some(state.translation_data())
     }
 
@@ -375,10 +373,10 @@ impl StatefulNat {
         &self,
         packet: &mut Packet<Buf>,
     ) -> Result<bool, StatefulNatError> {
-        let genid = self.pipeline_data.genid();
-
-        // Hot path: if we have a session, directly translate the address already
-        if let Some(translate) = Self::lookup_session::<I, Buf>(packet, genid) {
+        // Hot path: if we have a session, directly translate the address.
+        // We don't check here if the flow is valid or not. That's done when the
+        // configuration is applied.
+        if let Some(translate) = Self::lookup_session::<I, Buf>(packet) {
             debug!("{}: Found session, translating packet", self.name());
             return Self::stateful_translate(self.name(), packet, &translate).and(Ok(true));
         }
