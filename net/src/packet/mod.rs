@@ -16,6 +16,8 @@ pub use contract::*;
 pub mod test_utils;
 
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
+#[cfg(any(doc, test, feature = "test_buffer"))]
+use crate::buffer::FrameBuffer;
 use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::flows::{FlowInfo, FlowStatus};
@@ -441,6 +443,41 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Get a reference to the headers of this `Packet`
     pub(crate) fn get_headers(&self) -> &Headers {
         &self.headers
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Direct construction from pre-built Headers (no parse round-trip)
+// ---------------------------------------------------------------------------
+
+#[cfg(any(doc, test, feature = "test_buffer"))]
+impl<Buf: FrameBuffer> Packet<Buf> {
+    /// Construct a [`Packet`] directly from pre-built [`Headers`] and a
+    /// payload byte slice, **without** a serialize → parse round-trip.
+    ///
+    /// `payload` is the raw byte content that follows all headers on the wire.
+    /// A [`Buf`] is created via [`FrameBuffer::from_frame`] to hold the
+    /// payload; the headers are stored in the [`Packet`] struct directly.
+    ///
+    /// This is the intended way to bridge [`Headers`] (e.g. from
+    /// `ValidHeadersBuilder::build()`) into a [`Packet<Buf>`] for
+    /// pipeline testing without the overhead and fragility of a
+    /// deparse-then-reparse cycle.
+    ///
+    /// # Note
+    ///
+    /// The caller is responsible for ensuring the headers are internally
+    /// consistent (correct lengths, checksums, `EthType`, etc.).
+    /// The `ValidHeadersBuilder` guarantees this; if you construct
+    /// [`Headers`] by other means, consider calling
+    /// [`Headers::update_checksums`] first.
+    #[must_use]
+    pub fn from_headers(headers: Headers, payload: &[u8]) -> Self {
+        Self {
+            headers,
+            payload: Buf::from_frame(payload),
+            meta: PacketMeta::new(true),
+        }
     }
 }
 
