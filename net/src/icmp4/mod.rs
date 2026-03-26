@@ -181,7 +181,16 @@ impl Parse for Icmp4 {
         if buf.len() > u16::MAX as usize {
             return Err(ParseError::BufferTooLong(buf.len()));
         }
-        let (inner, rest) = Icmpv4Header::from_slice(buf).map_err(|e| {
+        // Truncate the input to the maximum ICMPv4 header length before
+        // calling `from_slice`.  Without this, Timestamp / TimestampReply
+        // messages (RFC 792 §3.1) fail because `etherparse::Icmpv4Slice`
+        // enforces `slice.len() == TimestampMessage::LEN` (20 bytes) for
+        // those types — any trailing payload bytes cause a spurious
+        // `LenError`.  Capping at `MAX_LEN` is safe for all ICMP types:
+        // non-timestamp headers consume only 8 bytes of the 20-byte window,
+        // and timestamp headers consume exactly 20.
+        let parse_buf = &buf[..buf.len().min(Icmpv4Header::MAX_LEN)];
+        let (inner, rest) = Icmpv4Header::from_slice(parse_buf).map_err(|e| {
             let expected = NonZero::new(e.required_len).unwrap_or_else(|| unreachable!());
             ParseError::Length(LengthError {
                 expected,
@@ -189,14 +198,14 @@ impl Parse for Icmp4 {
             })
         })?;
         assert!(
-            rest.len() < buf.len(),
-            "rest.len() >= buf.len() ({rest} >= {buf})",
+            rest.len() < parse_buf.len(),
+            "rest.len() >= parse_buf.len() ({rest} >= {buf})",
             rest = rest.len(),
-            buf = buf.len()
+            buf = parse_buf.len()
         );
         #[allow(clippy::cast_possible_truncation)] // checked above
         let consumed =
-            NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
+            NonZero::new((parse_buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self(inner), consumed))
     }
 }
