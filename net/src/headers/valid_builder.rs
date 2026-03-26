@@ -2058,40 +2058,75 @@ mod tests {
         0x05, 0x06, 0x07, 0x08,
     ];
 
-    /// Generate a random `ICMPv4` echo request or reply.
+    /// Generate a random `ICMPv4` query message (RFC 792 echo or timestamp).
     ///
-    /// We deliberately avoid the [`Icmp4`] [`TypeGenerator`] here because it
-    /// can produce `TimestampRequest`/`TimestampReply` variants that trigger a
-    /// known exact-length check in `etherparse::Icmpv4Slice::from_slice`,
-    /// causing `deparse → parse` roundtrips to fail when trailing payload
-    /// bytes are present (etherparse requires `slice.len() ==
-    /// TimestampMessage::LEN` for those types).
+    /// Only **query-type** messages are generated here because error-type
+    /// messages (Destination Unreachable, Time Exceeded, etc.) trigger
+    /// embedded-header parsing during [`Headers::parse`], which requires
+    /// matching embedded headers in the payload.  Error types with
+    /// embedded headers are covered by variant 4 of this generator.
     ///
-    /// FIXME: fix the root cause in `Icmp4::parse` (truncate the input slice
-    /// to `Icmpv4Header::MAX_LEN` before calling `from_slice`) and then
-    /// switch back to `driver.produce::<Icmp4>()`.
+    /// Now that [`Icmp4::parse`] truncates its input to
+    /// [`Icmpv4Header::MAX_LEN`] (fixing the exact-length check in
+    /// `etherparse::Icmpv4Slice::from_slice` for RFC 792 §3.1 Timestamp
+    /// messages), we can safely generate all four query variants:
     ///
-    /// [`TypeGenerator`]: bolero::TypeGenerator
-    fn gen_icmp4_echo<D: bolero::Driver>(driver: &mut D) -> Option<Icmp4> {
-        let id: u16 = driver.produce()?;
-        let seq: u16 = driver.produce()?;
-        let echo = IcmpEchoHeader { id, seq };
-        let icmp_type = if driver.produce::<bool>()? {
-            Icmpv4Type::EchoRequest(echo)
-        } else {
-            Icmpv4Type::EchoReply(echo)
-        };
-        Some(Icmp4(Icmpv4Header::new(icmp_type)))
+    /// | Type | Code | Description             | RFC       |
+    /// |------|------|-------------------------|-----------|
+    /// |   0  |   0  | Echo Reply              | RFC 792   |
+    /// |   8  |   0  | Echo Request            | RFC 792   |
+    /// |  13  |   0  | Timestamp Request       | RFC 792   |
+    /// |  14  |   0  | Timestamp Reply         | RFC 792   |
+    fn gen_icmp4_query<D: bolero::Driver>(driver: &mut D) -> Option<Icmp4> {
+        use etherparse::icmpv4::TimestampMessage;
+        match driver.produce::<u8>()? % 4 {
+            0 => {
+                let echo = IcmpEchoHeader {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                };
+                Some(Icmp4(Icmpv4Header::new(Icmpv4Type::EchoRequest(echo))))
+            }
+            1 => {
+                let echo = IcmpEchoHeader {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                };
+                Some(Icmp4(Icmpv4Header::new(Icmpv4Type::EchoReply(echo))))
+            }
+            2 => Some(Icmp4(Icmpv4Header::new(
+                Icmpv4Type::TimestampRequest(TimestampMessage {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                    originate_timestamp: driver.produce()?,
+                    receive_timestamp: driver.produce()?,
+                    transmit_timestamp: driver.produce()?,
+                }),
+            ))),
+            _ => Some(Icmp4(Icmpv4Header::new(
+                Icmpv4Type::TimestampReply(TimestampMessage {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                    originate_timestamp: driver.produce()?,
+                    receive_timestamp: driver.produce()?,
+                    transmit_timestamp: driver.produce()?,
+                }),
+            ))),
+        }
     }
 
-    /// Generate a random `ICMPv6` echo request or reply.
+    /// Generate a random `ICMPv6` echo request or reply (RFC 4443 §4).
     ///
-    /// Mirrors [`gen_icmp4_echo`] for the v6 path.  The `ICMPv6` parser does
-    /// not have the same exact-length bug as `ICMPv4`, but using the [`Icmp6`]
-    /// [`TypeGenerator`] can produce error-type messages whose `parse_payload`
-    /// method then attempts to parse random trailing bytes as embedded
-    /// headers — causing `consumed > headers.size()` mismatches.  Echo types
-    /// never trigger embedded-header parsing.
+    /// Mirrors [`gen_icmp4_query`] for the v6 path.  Only echo types are
+    /// generated because the [`Icmp6`] [`TypeGenerator`] can produce
+    /// error-type messages whose [`Icmp6::parse_payload`] method attempts
+    /// to parse random trailing bytes as embedded IPv6 headers — causing
+    /// `consumed > headers.size()` mismatches during roundtrip tests.
+    /// Echo types never trigger embedded-header parsing.
+    ///
+    /// Unlike `ICMPv4`, `ICMPv6` has no Timestamp message type, so echo
+    /// request/reply are the only query types we produce here.  Error
+    /// types with embedded headers are covered by variant 4.
     ///
     /// [`TypeGenerator`]: bolero::TypeGenerator
     fn gen_icmp6_echo<D: bolero::Driver>(driver: &mut D) -> Option<Icmp6> {
@@ -2266,7 +2301,7 @@ mod tests {
                 (true, 3) => {
                     let src: UnicastIpv4Addr = driver.produce()?;
                     let dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
-                    let icmp = gen_icmp4_echo(driver)?;
+                    let icmp = gen_icmp4_query(driver)?;
                     let h = builder
                         .ipv4(|ip| {
                             ip.set_source(src);
