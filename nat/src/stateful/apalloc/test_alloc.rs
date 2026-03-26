@@ -13,7 +13,6 @@ mod context {
     use crate::stateful::apalloc::alloc::IpAllocator;
     use crate::stateful::apalloc::port_alloc::AllocatedPort;
     use crate::stateful::apalloc::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
-    use config::ConfigError;
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
@@ -151,11 +150,10 @@ mod context {
         vpctable
     }
 
-    pub fn build_allocator() -> Result<NatAllocator, ConfigError> {
+    pub fn build_allocator() -> NatAllocator {
         let vpc_table = build_context();
         let config = StatefulNatConfig::new(&vpc_table, 1);
-        let allocator = NatAllocator::from_config(&config)?.set_randomize(true);
-        Ok(allocator)
+        NatAllocator::from_config(&config).set_randomize(true)
     }
 }
 
@@ -170,7 +168,7 @@ mod std_tests {
 
     #[test]
     fn test_build_allocator() {
-        let allocator = build_allocator().unwrap();
+        let allocator = build_allocator();
 
         /*
         println!("{allocator:?}");
@@ -241,7 +239,7 @@ mod std_tests {
         )
         .extend_with_dst_vpcd(vpcd2());
 
-        let mut allocator = build_allocator().unwrap();
+        let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
             vpcd2(),
@@ -314,7 +312,7 @@ mod std_tests {
         )
         .extend_with_dst_vpcd(vpcd2());
 
-        let mut allocator = build_allocator().unwrap();
+        let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
             vpcd2(),
@@ -410,7 +408,7 @@ mod std_tests {
         )
         .extend_with_dst_vpcd(vpcd2());
 
-        let allocator = build_allocator().unwrap();
+        let allocator = build_allocator();
         let allocator1 = Arc::new(allocator);
         let allocator2 = allocator1.clone();
 
@@ -492,7 +490,7 @@ mod tests_shuttle {
             )
             .extend_with_dst_vpcd(vpcd2());
 
-            let allocator = build_allocator().unwrap();
+            let allocator = build_allocator();
             let allocator_arc = Arc::new(allocator);
             let allocator1 = allocator_arc.clone();
             let allocator2 = allocator_arc.clone();

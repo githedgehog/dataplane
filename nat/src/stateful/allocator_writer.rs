@@ -3,7 +3,6 @@
 
 use crate::stateful::apalloc::NatAllocator;
 use arc_swap::ArcSwapOption;
-use config::ConfigError;
 use config::GenId;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpc::VpcTable;
@@ -107,11 +106,7 @@ impl NatAllocatorWriter {
     }
 
     /// Replace the nat allocator with a new one
-    pub fn update_nat_allocator(
-        &mut self,
-        nat_config: StatefulNatConfig,
-        flow_table: &FlowTable,
-    ) -> Result<(), ConfigError> {
+    pub fn update_nat_allocator(&mut self, nat_config: StatefulNatConfig, flow_table: &FlowTable) {
         let genid = nat_config.genid;
 
         // freeze the current allocator ?
@@ -120,18 +115,18 @@ impl NatAllocatorWriter {
         if nat_config == self.config && old_allocator.is_some() {
             debug!("No need to update NAT allocator: NAT peerings did not change");
             upgrade_all_stateful_nat_flows(flow_table, genid);
-            return Ok(());
+            return;
         }
         if nat_config.num_stateful_nat_peerings() == 0 {
             debug!("Stateful NAT is not required: will invalidate flows and remove allocator");
             invalidate_all_stateful_nat_flows(flow_table);
             self.allocator.store(None);
-            return Ok(());
+            return;
         }
 
         // build a new allocator to replace the current
         let mut allocator =
-            NatAllocator::from_config(&nat_config)?.set_randomize(nat_config.randomize);
+            NatAllocator::from_config(&nat_config).set_randomize(nat_config.randomize);
 
         if old_allocator.is_some() {
             validate_stateful_nat_flows(flow_table, &nat_config, &mut allocator);
@@ -139,7 +134,6 @@ impl NatAllocatorWriter {
         self.allocator.store(Some(Arc::new(allocator)));
         self.config = nat_config;
         debug!("Updated allocator for stateful NAT");
-        Ok(())
     }
 }
 
