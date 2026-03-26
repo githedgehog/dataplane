@@ -57,6 +57,31 @@ instrument := "none"
 # target platform (x86-64-v3/bluefield2)
 platform := "x86-64-v3"
 
+# ---- Fuzzing configuration ------------------------------------------------
+
+# fuzzing engine (libfuzzer/honggfuzz/afl/kani)
+fuzz_engine := "libfuzzer"
+
+# fuzzing duration per target (e.g. "30s", "1m", "1h", "24h")
+fuzz_duration := "1m"
+
+# bolero build profile for fuzzing (fuzz/release)
+fuzz_profile := "fuzz"
+
+# sanitizer for fuzz builds (address/thread/none); bolero default is "address"
+fuzz_sanitizer := "address"
+
+# restrict fuzz targets to a single package (e.g. "dataplane-net"); empty = all
+fuzz_package := ""
+
+# Private: resolve the -p / --workspace flag for bolero commands.
+[private]
+_bolero_pkg_flag := if fuzz_package != "" { "-p " + fuzz_package } else { "--workspace" }
+
+# Private: resolve the sanitizer flag (bolero expects -s <san>, omit for "none"/empty).
+[private]
+_bolero_san_flag := if fuzz_sanitizer != "" { if fuzz_sanitizer != "none" { "-s " + fuzz_sanitizer } else { "" } } else { "" }
+
 version_extra := ""
 version_platform := if platform == "x86-64-v3" { "" } else { "-" + platform }
 version_profile := if profile == "release" { "" } else { "-" + profile }
@@ -299,6 +324,94 @@ bump_version version:
     echo "New version: {{ version }}"
     sed -i "s/^version = \".*\"/version = \"{{ version }}\"/" Cargo.toml
     cargo update --workspace
+
+# ---- Fuzzing recipes -------------------------------------------------------
+
+# List available fuzz targets as JSON lines (pipe through `jq` for formatting)
+#
+# Each line is a JSON object: {"package":"<crate>","test":"<test::path>"}
+#
+# Examples:
+#   just fuzz-list                                  # all targets, JSON
+#   just fuzz-list | jq -r '.test'                  # just test names
+#   just fuzz-list fuzz_package=dataplane-net        # one crate
+#   just fuzz-list | jq -s '.'                      # as a JSON array
+[script]
+fuzz-list:
+    {{ _just_debuggable_ }}
+    cargo bolero list {{ _bolero_pkg_flag }} {{ _cargo_feature_flags }} 2>/dev/null \
+      | sed '/^$/d'
+
+# List fuzz targets in a human-readable table
+[script]
+fuzz-list-pretty:
+    {{ _just_debuggable_ }}
+    printf "%-40s %s\n" "PACKAGE" "TEST"
+    printf "%-40s %s\n" "-------" "----"
+    cargo bolero list {{ _bolero_pkg_flag }} {{ _cargo_feature_flags }} 2>/dev/null \
+      | sed '/^$/d' \
+      | jq -r '[.package, .test] | @tsv' \
+      | while IFS=$'\t' read -r pkg test; do
+          printf "%-40s %s\n" "${pkg}" "${test}"
+        done
+
+# Run a single fuzz target with the configured engine and duration
+#
+# Examples:
+#   just fuzz-run icmp4::test::parse_back
+#   just fuzz-run tcp::test::parse_noise fuzz_engine=honggfuzz fuzz_duration=5m
+#   just fuzz-run icmp4::test::parse_back fuzz_package=dataplane-net fuzz_sanitizer=thread
+[script]
+fuzz-run target:
+    {{ _just_debuggable_ }}
+    echo "fuzz: target={{ target }} engine={{ fuzz_engine }} duration={{ fuzz_duration }} profile={{ fuzz_profile }} sanitizer={{ fuzz_sanitizer }}"
+    cargo bolero test "{{ target }}" \
+      {{ _bolero_pkg_flag }} \
+      -e {{ fuzz_engine }} \
+      -T {{ fuzz_duration }} \
+      {{ _bolero_san_flag }} \
+      --profile {{ fuzz_profile }} \
+      {{ _cargo_feature_flags }}
+
+# Run every fuzz target for the configured duration (default 1m each)
+#
+# Iterates over all bolero targets (optionally filtered by fuzz_package)
+# and runs each one sequentially.
+#
+# Examples:
+#   just fuzz-all                                       # all targets, 1m each
+#   just fuzz-all fuzz_duration=10s                     # quick smoke test
+#   just fuzz-all fuzz_package=dataplane-net fuzz_duration=5m
+[script]
+fuzz-all:
+    {{ _just_debuggable_ }}
+    targets="$(cargo bolero list {{ _bolero_pkg_flag }} {{ _cargo_feature_flags }} 2>/dev/null | sed '/^$/d')"
+    total="$(echo "${targets}" | wc -l)"
+    echo "=== Fuzzing ${total} targets for {{ fuzz_duration }} each ==="
+    echo "    engine={{ fuzz_engine }}  profile={{ fuzz_profile }}  sanitizer={{ fuzz_sanitizer }}"
+    echo "---"
+    i=0
+    failed=0
+    echo "${targets}" | jq -r '[.package, .test] | @tsv' | while IFS=$'\t' read -r pkg test; do
+      i=$((i + 1))
+      echo "[${i}/${total}] ${pkg}::${test}"
+      if ! cargo bolero test "${test}" \
+        -p "${pkg}" \
+        -e {{ fuzz_engine }} \
+        -T {{ fuzz_duration }} \
+        {{ _bolero_san_flag }} \
+        --profile {{ fuzz_profile }} \
+        {{ _cargo_feature_flags }}; then
+        echo "  ^^^ FAILED: ${pkg}::${test}"
+        failed=$((failed + 1))
+      fi
+    done
+    echo "---"
+    if [ "${failed}" -gt 0 ]; then
+      echo "FAIL: ${failed}/${total} fuzz targets had failures"
+      exit 1
+    fi
+    echo "OK: all ${total} fuzz targets completed successfully."
 
 # Enter nix-shell
 [script]
