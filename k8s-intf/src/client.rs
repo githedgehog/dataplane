@@ -47,7 +47,7 @@ async fn init_kube_client() -> Client {
 /// On success, watch for `GatewayAgent` CRD and call callback for all changes.
 async fn run_watcher(
     gateway_object_name: &str,
-    callback: Arc<impl AsyncFn(&GatewayAgent)>,
+    callback: &impl AsyncFn(&GatewayAgent),
 ) -> Result<(), crate::client::watcher::Error> {
     info!("Starting K8s GatewayAgent watcher...");
 
@@ -83,14 +83,17 @@ async fn run_watcher(
     }
 }
 
-/// Watch `GatewayAgent` CRD and call callback for all changes
+/// Create a kube client (and retry forever). On success, watch `GatewayAgent` CRD and call callback for all changes
+/// Note: This function loops forever and should be executed as an async task.
 pub async fn watch_gateway_agent_crd(
     gateway_object_name: &str,
     callback: Arc<impl AsyncFn(&GatewayAgent)>,
-) {
-    while let Err(e) = run_watcher(gateway_object_name, callback.clone()).await {
-        error!("Watcher error: {e}. Restarting kube client in 1s...");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+) -> ! {
+    loop {
+        if let Err(e) = run_watcher(gateway_object_name, callback.as_ref()).await {
+            error!("Watcher error: {e}. Restarting kube client in 2s...");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
     }
 }
 
