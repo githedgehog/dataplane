@@ -37,6 +37,7 @@ mod tests {
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
     use flow_entry::flow_table::FlowTable;
+    use flow_test::fuzz::FuzzTcpScenario;
     use flow_test::harness::{FlowHarness, NetworkConfig};
     use flow_test::meta::stamp_for_stateful_nat;
     use flow_test::tcp_flow::TcpFlow;
@@ -474,5 +475,46 @@ mod tests {
             "flow table should grow after the second connection \
              (after_reap={len_after}, final={len_final})"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Bolero fuzz tests
+    // -----------------------------------------------------------------------
+
+    /// Property-based test: random TCP scenarios survive identity-IP NAT.
+    ///
+    /// Bolero generates arbitrary [`FuzzTcpScenario`] instances — each with
+    /// random ports, payload sizes, and action sequences — and runs them
+    /// through the full stateful NAT pipeline.
+    ///
+    /// Verified invariants:
+    ///
+    /// - The TCP handshake completes through NAT for every generated
+    ///   port combination.
+    /// - Data sent from one endpoint arrives intact at the other after
+    ///   NAT rewrites the source port on every segment.
+    /// - Graceful close and RST are correctly translated when present.
+    /// - The flow table grows (at least one entry per scenario).
+    #[test]
+    fn fuzz_tcp_scenarios_through_identity_nat() {
+        bolero::check!()
+            .with_type::<FuzzTcpScenario>()
+            .for_each(|scenario| {
+                let (mut harness, sessions) = make_nat_harness();
+
+                scenario
+                    .run(&mut harness)
+                    .unwrap_or_else(|e| panic!("scenario {scenario} failed: {e}"));
+
+                // Every executed scenario must have created at least one
+                // flow-table entry (the handshake alone creates a session).
+                let len = sessions
+                    .len()
+                    .expect("should be able to read flow-table length");
+                assert!(
+                    len > 0,
+                    "flow table should have at least one entry after scenario {scenario}"
+                );
+            });
     }
 }

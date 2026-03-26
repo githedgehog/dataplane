@@ -33,7 +33,7 @@ tracing = { workspace = true }
 # internal
 fixin = { workspace = true }
 flow-filter = { workspace = true }
-flow-test = { workspace = true }
+flow-test = { workspace = true, features = ["bolero"] }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
