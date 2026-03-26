@@ -138,7 +138,9 @@ impl K8sClient {
         }
     }
 
-    pub async fn k8s_start_config_watch(k8s_client: Arc<Self>) {
+    /// This is a wrapper around `watch_gateway_agent_crd` for a particular callback.
+    /// Note: this method never returns
+    pub async fn k8s_start_config_watch(k8s_client: Arc<Self>) -> ! {
         let k8s_client2 = k8s_client.clone();
 
         let callback = async move |ga: &k8s_intf::gateway_agent_crd::GatewayAgent| {

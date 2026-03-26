@@ -69,7 +69,7 @@ pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, Lau
     let handle = std::thread::Builder::new()
         .name("mgmt".to_string())
         .spawn(move || {
-            debug!("Starting dataplane management thread");
+            debug!("Starting dataplane management thread...");
 
             /* create tokio runtime */
             let rt = tokio::runtime::Builder::new_current_thread()
