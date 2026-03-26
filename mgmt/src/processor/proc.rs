@@ -505,24 +505,11 @@ fn apply_stateless_nat_config(
 /// Update the config for stateful NAT
 fn apply_stateful_nat_config(
     vpc_table: &VpcTable,
-    _flow_table: &FlowTable,
+    flow_table: &FlowTable,
     natallocatorw: &mut NatAllocatorWriter,
+    genid: GenId,
 ) -> ConfigResult {
-    natallocatorw.update_allocator(vpc_table)?;
-    // TODO: Update session table
-    //
-    // Long-term, we want to keep at least the sessions that remain valid under the new
-    // configuration. But this requires reporting the internal state from the old allocator to the
-    // new one, or we risk allocating again some IPs and ports that are already in use for existing
-    // sessions. We don't support this yet.
-    //
-    // Short-term, we want to drop all existing sessions from the table and start fresh. This first
-    // requires the NAT code to move to the new session table implementation, which has not been
-    // done as of this writing.
-    //
-    // Side note: session table and allocator may need to be updated at the same time, so we might
-    // need a lock around them in the StatefulNat stage and we may need to update them both from
-    // .update_allocator().
+    natallocatorw.update_nat_allocator(vpc_table, flow_table, genid)?;
     debug!("Successfully updated the stateful NAT allocator");
     Ok(())
 }
@@ -619,6 +606,7 @@ impl ConfigProcessor {
             &config.external.overlay.vpc_table,
             flow_table.as_ref(),
             natallocatorw,
+            genid,
         )?;
 
         /* apply flow filtering config */
