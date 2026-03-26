@@ -244,7 +244,10 @@ mod contract {
             if driver.produce::<bool>()? {
                 Some(full_header)
             } else {
-                let mut buffer = driver.produce::<[u8; Tcp::MIN_LENGTH.get() as usize]>()?;
+                // Use MAX_LENGTH (60 bytes) so headers with TCP options
+                // (RFC 9293 §3.1, data_offset up to 15) can be serialized
+                // before we truncate them down to a partial header.
+                let mut buffer = [0u8; Tcp::MAX_LENGTH];
                 #[allow(clippy::unwrap_used)] // We want to catch errors when deparsing, if any
                 full_header.deparse(&mut buffer).unwrap();
 

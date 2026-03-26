@@ -378,7 +378,58 @@ mod contract {
     use crate::checksum::Checksum;
     use crate::tcp::Tcp;
     use bolero::{Driver, TypeGenerator};
-    use etherparse::TcpHeader;
+    use etherparse::{TcpHeader, TcpOptionElement};
+
+    /// Generate a random set of TCP options (RFC 9293 §3.1, RFC 7323).
+    ///
+    /// TCP options occupy the space between the fixed 20-byte header and the
+    /// maximum 60-byte header (controlled by the 4-bit Data Offset field).
+    /// The generator randomly includes common options observed in real SYN and
+    /// data segments:
+    ///
+    /// | Option                        | Kind | Length | Reference          |
+    /// |-------------------------------|------|--------|--------------------|
+    /// | Maximum Segment Size (MSS)    |  2   |   4    | RFC 9293 §3.1      |
+    /// | Window Scale                  |  3   |   3    | RFC 7323 §2        |
+    /// | SACK Permitted                |  4   |   2    | RFC 2018 §2        |
+    /// | Timestamps (`TSopt`)          |  8   |  10    | RFC 7323 §3        |
+    ///
+    /// The total options payload is capped at 40 bytes (data offset 15).
+    /// `etherparse::TcpHeader::set_options` handles NOP-padding to 32-bit
+    /// alignment automatically.
+    fn generate_tcp_options<D: Driver>(driver: &mut D) -> Option<Vec<TcpOptionElement>> {
+        let mut options = Vec::new();
+        // Each option is included with ~50% probability so we cover both
+        // "no options" (data_offset = 5) and "full options" cases.
+
+        // MSS — 4 bytes on the wire (RFC 9293 §3.1)
+        if driver.produce::<bool>()? {
+            options.push(TcpOptionElement::MaximumSegmentSize(driver.produce()?));
+        }
+
+        // Window Scale — 3 bytes on the wire (RFC 7323 §2)
+        // The shift count is at most 14 per RFC 7323 §2.3.
+        if driver.produce::<bool>()? {
+            options.push(TcpOptionElement::WindowScale(driver.produce::<u8>()? % 15));
+        }
+
+        // SACK Permitted — 2 bytes on the wire (RFC 2018 §2)
+        if driver.produce::<bool>()? {
+            options.push(TcpOptionElement::SelectiveAcknowledgementPermitted);
+        }
+
+        // Timestamps — 10 bytes on the wire (RFC 7323 §3)
+        // Ubiquitous in modern TCP stacks; alone occupies 12 bytes with
+        // NOP padding.
+        if driver.produce::<bool>()? {
+            options.push(TcpOptionElement::Timestamp(
+                driver.produce()?,
+                driver.produce()?,
+            ));
+        }
+
+        Some(options)
+    }
 
     impl TypeGenerator for Tcp {
         fn generate<D: Driver>(u: &mut D) -> Option<Self> {
@@ -400,6 +451,19 @@ mod contract {
                 .set_urg(u.produce()?)
                 .set_window_size(u.produce()?)
                 .set_urgent_pointer(u.produce()?);
+
+            // Generate TCP options (RFC 9293 §3.1).
+            //
+            // `set_options` may fail if the combined option bytes exceed 40
+            // (i.e. would push data_offset past 15).  This is extremely
+            // unlikely with our option set (MSS 4 + WS 3 + SACK-P 2 +
+            // TS 10 = 19 raw bytes, ≤ 24 with NOP padding), but we
+            // silently ignore the error to keep the generator total.
+            let options = generate_tcp_options(u)?;
+            if !options.is_empty() {
+                let _ = header.0.set_options(&options);
+            }
+
             Some(header)
         }
     }
