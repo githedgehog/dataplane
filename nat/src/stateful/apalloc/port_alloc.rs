@@ -85,14 +85,16 @@ pub(crate) struct PortAllocator<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> PortAllocator<I> {
-    pub(crate) fn new(reserved_port_range: Option<PortRange>) -> Self {
+    pub(crate) fn new(reserved_port_range: Option<PortRange>, randomize: bool) -> Self {
         let mut base_ports = (0..=255).collect::<Vec<_>>();
 
         // Shuffle the list of port blocks for the port allocator. This way, we can pick blocks in a
         // "random" order when allocating them, and have ports allocated in a "random" order. The
         // quotes denote that this is not completely random: ports are allocated sequentially within
         // a 256-port block.
-        Self::shuffle_slice(&mut base_ports);
+        if randomize {
+            Self::shuffle_slice(&mut base_ports);
+        }
         let blocks = std::array::from_fn(|i| AllocatorPortBlock::new(base_ports[i]));
 
         Self {
@@ -107,17 +109,7 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
 
     #[cfg(test)]
     pub(crate) fn new_no_randomness(reserved_port_range: Option<PortRange>) -> Self {
-        let base_ports = (0..=255).collect::<Vec<_>>();
-        // Do not shuffle
-        let blocks = std::array::from_fn(|i| AllocatorPortBlock::new(base_ports[i]));
-        Self {
-            blocks,
-            usable_blocks: AtomicU16::new(256),
-            current_alloc_index: AtomicUsize::new(0),
-            thread_blocks: ThreadPortMap::new(),
-            allocated_blocks: AllocatedPortBlockMap::new(),
-            reserved_port_range,
-        }
+        Self::new(reserved_port_range, false)
     }
 
     #[concurrency_mode(std)]

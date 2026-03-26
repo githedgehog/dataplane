@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::stateful::NatAllocatorWriter;
+    use crate::stateful::{NatAllocatorWriter, StatefulNatConfig};
     use crate::{IcmpErrorHandler, StatefulNat};
     use concurrency::sync::Arc;
     use config::ConfigError;
@@ -285,10 +285,13 @@ mod tests {
         let mut config = build_gwconfig_from_overlay(build_overlay_4vpcs());
         config.validate().unwrap();
 
+        let flow_table = FlowTable::new(16);
+
         // Check that we can validate the allocator
         let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &flow_table)
             .unwrap();
 
         // No NAT
@@ -362,8 +365,9 @@ mod tests {
         // Update config and allocator
         let mut new_config = build_gwconfig_from_overlay(build_overlay_2vpcs());
         new_config.validate().unwrap();
+        let nat_config = StatefulNatConfig::new(&new_config.external.overlay.vpc_table, 2);
         allocator
-            .update_allocator(&new_config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &flow_table)
             .unwrap();
 
         // Check existing connection
@@ -403,6 +407,7 @@ mod tests {
         let target_src = "2.2.0.0";
         let (output_src, output_dst, output_src_port, output_dst_port, done_reason) =
             check_packet(&mut nat, vni(100), vni(200), orig_src, orig_dst, 9998, 80);
+
         assert_eq!(output_src, addr_v4(target_src));
         assert_eq!(output_dst, addr_v4(orig_dst));
         assert_eq!(done_reason, None);
@@ -462,8 +467,10 @@ mod tests {
 
         // Check that we can validate the allocator
         let (_, mut allocator) = StatefulNat::new_with_defaults();
+
+        let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &FlowTable::new(16))
             .unwrap();
     }
 
@@ -506,8 +513,9 @@ mod tests {
 
         // Check that we can validate the allocator
         let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &FlowTable::new(16))
             .unwrap();
 
         // No NAT
@@ -677,8 +685,9 @@ mod tests {
 
         // Check that we can validate the allocator
         let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &FlowTable::new(16))
             .unwrap();
 
         // ICMP Error msg: expose211 -> expose121, no previous session for inner packet
@@ -832,8 +841,9 @@ mod tests {
 
         // Check that we can validate the allocator
         let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
+        let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &FlowTable::new(16))
             .unwrap();
 
         // Using the expose with a prefix
@@ -1057,8 +1067,9 @@ mod tests {
         let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
 
         // Check that we can validate the allocator
+        let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &FlowTable::new(16))
             .unwrap();
 
         // NAT: expose12 <-> expose21
@@ -1128,8 +1139,10 @@ mod tests {
         //
         // When we build the allocator, turn off randomness to check whether we may get collisions
         // for port allocation
+        let nat_config =
+            StatefulNatConfig::new(&config.external.overlay.vpc_table, 2).set_randomize(false);
         allocator
-            .update_allocator_and_turn_off_randomness(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &flow_table)
             .unwrap();
 
         // NAT: expose12 <-> expose21
@@ -1365,8 +1378,9 @@ mod tests {
         let mut nat = StatefulNat::new("stateful-nat", flow_table.clone(), allocator.get_reader());
 
         // Check that we can validate the allocator
+        let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
         allocator
-            .update_allocator(&config.external.overlay.vpc_table)
+            .update_nat_allocator(nat_config, &FlowTable::new(16))
             .unwrap();
 
         // NAT: expose1_1 -> expose1_2
