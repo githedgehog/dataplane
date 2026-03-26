@@ -35,6 +35,7 @@ allow = [
   "Apache-1.1",
   "Apache-2.0",
   "Artistic-2.0",
+  "0BSD",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "BSL-1.0",

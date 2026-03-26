@@ -14,6 +14,7 @@ members = [
     "errno",
     "flow-entry",
     "flow-filter",
+    "flow-test",
     "hardware",
     "id",
     "init",
@@ -61,6 +62,7 @@ dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8f
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
 flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features = [] }
 flow-filter = { path = "./flow-filter", package = "dataplane-flow-filter", features = [] }
+flow-test = { path = "./flow-test", package = "dataplane-flow-test", features = [] }
 hardware = { path = "./hardware", package = "dataplane-hardware", features = [] }
 id = { path = "./id", package = "dataplane-id", features = [] }
 init = { path = "./init", package = "dataplane-init", features = [] }
@@ -165,6 +167,7 @@ rustls = { version = "0.23.37", default-features = false, features = [] }
 rustyline = { version = "17.0.2", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = [] }
+smoltcp = { version = "0.13.0", default-features = false, features = [] }
 serde_json = { version = "1.0.149", default-features = false, features = [] }
 serde_yaml_ng = { version = "0.10.0", default-features = false, features = [] }
 serial_test = { version = "3.4.0", default-features = false, features = [] }
