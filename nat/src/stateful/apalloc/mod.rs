@@ -177,8 +177,7 @@ impl<I: NatIpWithBitmap> Display for AllocatedIpPort<I> {
 pub struct NatAllocator {
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
-    #[cfg(test)]
-    disable_randomness: bool,
+    randomize: bool,
 }
 
 impl NatAllocator {
@@ -186,8 +185,7 @@ impl NatAllocator {
         Self {
             pools_src44: PoolTable::new(),
             pools_src66: PoolTable::new(),
-            #[cfg(test)]
-            disable_randomness: false,
+            randomize: true,
         }
     }
 
@@ -195,20 +193,19 @@ impl NatAllocator {
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src44, self.must_disable_randomness())
+        Self::allocate_from_tables(eflow_key, &self.pools_src44)
     }
 
     fn allocate_v6(
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src66, self.must_disable_randomness())
+        Self::allocate_from_tables(eflow_key, &self.pools_src66)
     }
 
     fn allocate_from_tables<I: NatIpWithBitmap>(
         eflow_key: &ExtendedFlowKey,
         pools_src: &PoolTable<I, I>,
-        disable_randomness: bool,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         // get flow key from extended flow key
         let flow_key = eflow_key.flow_key();
@@ -244,7 +241,7 @@ impl NatAllocator {
 
         // Allocate IP and ports from pools, for source and destination NAT
         let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
-        let src_mapping = Self::get_mapping(pool_src_opt, allow_null, disable_randomness)?;
+        let src_mapping = Self::get_mapping(pool_src_opt, allow_null)?;
         let reverse_dst_mapping = Self::get_reverse_mapping(flow_key)?;
 
         Ok(AllocationResult {
@@ -252,16 +249,6 @@ impl NatAllocator {
             return_dst: reverse_dst_mapping,
             idle_timeout: pool_src_opt.and_then(alloc::IpAllocator::idle_timeout),
         })
-    }
-
-    #[cfg(test)]
-    const fn must_disable_randomness(&self) -> bool {
-        self.disable_randomness
-    }
-    #[cfg(not(test))]
-    #[allow(clippy::unused_self)]
-    const fn must_disable_randomness(&self) -> bool {
-        false
     }
 
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
@@ -282,7 +269,6 @@ impl NatAllocator {
     fn get_mapping<I: NatIpWithBitmap>(
         pool_src_opt: Option<&alloc::IpAllocator<I>>,
         allow_null: bool,
-        disable_randomness: bool,
     ) -> Result<Option<AllocatedIpPort<I>>, AllocatorError> {
         // Allocate IP and ports for source and destination NAT.
         //
@@ -296,7 +282,7 @@ impl NatAllocator {
         // port/identifier value for the src_mapping, even though we'll never use it. (This does not
         // apply to TCP or UDP, for which we need and use both ports).
         let src_mapping = match pool_src_opt {
-            Some(pool_src) => Some(pool_src.allocate(allow_null, disable_randomness)?),
+            Some(pool_src) => Some(pool_src.allocate(allow_null)?),
             None => None,
         };
 
@@ -342,7 +328,7 @@ impl NatAllocator {
             .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
-        pool.reserve(ip, port, false)
+        pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
     }
 
@@ -362,14 +348,13 @@ impl NatAllocator {
             .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
-        pool.reserve(ip, port, false)
+        pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
     }
 
-    #[cfg(test)]
     #[must_use]
-    pub fn set_disable_randomness(mut self, disable_randomness: bool) -> Self {
-        self.disable_randomness = disable_randomness;
+    pub fn set_randomize(mut self, randomize: bool) -> Self {
+        self.randomize = randomize;
         self
     }
 }

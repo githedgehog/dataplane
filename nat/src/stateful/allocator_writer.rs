@@ -25,13 +25,14 @@ pub(crate) struct StatefulNatPeering {
 }
 #[derive(Debug, Default, PartialEq)]
 pub struct StatefulNatConfig {
+    pub(crate) genid: GenId,
     peerings: Vec<StatefulNatPeering>,
     randomize: bool,
 }
 
 impl StatefulNatConfig {
     #[must_use]
-    pub fn new(vpc_table: &VpcTable) -> Self {
+    pub fn new(vpc_table: &VpcTable, genid: GenId) -> Self {
         let mut peerings = Vec::new();
         for vpc in vpc_table.values() {
             for peering in vpc.stateful_nat_peerings() {
@@ -43,6 +44,7 @@ impl StatefulNatConfig {
             }
         }
         Self {
+            genid,
             peerings,
             randomize: true, // randomize by default
         }
@@ -109,8 +111,9 @@ impl NatAllocatorWriter {
         &mut self,
         nat_config: StatefulNatConfig,
         flow_table: &FlowTable,
-        genid: GenId,
     ) -> Result<(), ConfigError> {
+        let genid = nat_config.genid;
+
         // freeze the current allocator ?
         let old_allocator = self.allocator.load();
 
@@ -127,87 +130,16 @@ impl NatAllocatorWriter {
         }
 
         // build a new allocator to replace the current
-        let mut new_allocator = NatAllocator::from_config(&nat_config)?;
+        let mut allocator =
+            NatAllocator::from_config(&nat_config)?.set_randomize(nat_config.randomize);
+
         if old_allocator.is_some() {
-            validate_stateful_nat_flows(flow_table, &nat_config, &mut new_allocator, genid);
+            validate_stateful_nat_flows(flow_table, &nat_config, &mut allocator);
         }
-        self.allocator.store(Some(Arc::new(new_allocator)));
+        self.allocator.store(Some(Arc::new(allocator)));
         self.config = nat_config;
         debug!("Updated allocator for stateful NAT");
         Ok(())
-    }
-
-    fn update_allocator_and_set_randomness(
-        &mut self,
-        vpc_table: &VpcTable,
-        #[allow(unused_variables)] disable_randomness: bool,
-    ) -> Result<(), ConfigError> {
-        let new_config = StatefulNatConfig::new(vpc_table);
-
-        let old_allocator_guard = self.allocator.load();
-        let Some(old_allocator) = old_allocator_guard.as_deref() else {
-            // No existing allocator, build a new one
-            #[cfg(test)]
-            let new_allocator =
-                NatAllocator::from_config(&new_config)?.set_disable_randomness(disable_randomness);
-            #[cfg(not(test))]
-            let new_allocator = NatAllocator::from_config(&new_config)?;
-
-            self.allocator.store(Some(Arc::new(new_allocator)));
-            self.config = new_config;
-            return Ok(());
-        };
-
-        if self.config == new_config {
-            // Nothing to update, simply return
-            return Ok(());
-        }
-
-        let new_allocator =
-            Self::update_existing_allocator(Some(old_allocator), &self.config, &new_config)?;
-        // Swap allocators; the old one is dropped.
-        self.allocator.store(Some(Arc::new(new_allocator)));
-        self.config = new_config;
-        debug!("Updated allocator for stateful NAT");
-        Ok(())
-    }
-
-    pub fn update_allocator(&mut self, vpc_table: &VpcTable) -> Result<(), ConfigError> {
-        self.update_allocator_and_set_randomness(vpc_table, false)
-    }
-
-    #[cfg(test)]
-    pub fn update_allocator_and_turn_off_randomness(
-        &mut self,
-        vpc_table: &VpcTable,
-    ) -> Result<(), ConfigError> {
-        self.update_allocator_and_set_randomness(vpc_table, true)
-    }
-
-    fn update_existing_allocator(
-        _allocator: Option<&NatAllocator>,
-        _old_config: &StatefulNatConfig,
-        new_config: &StatefulNatConfig,
-    ) -> Result<NatAllocator, ConfigError> {
-        #[allow(clippy::let_and_return)] // temporary
-        // TODO: Report state from old allocator to new allocator
-        //
-        // This means reporting all allocated IPs (and ports for these IPs) from the old allocator
-        // that remain valid in the new configuration to the new allocator (and discard the ones
-        // that are now invalid). This is required if we want to keep existing, valid connections open.
-        //
-        // It is not trivial to do, though, because it's difficult to do a meaningful "diff" between
-        // the two configurations or allocators' internal states. One allocated IP from the old
-        // allocator may still be available for NAT with the new configuration, but possibly for a
-        // different list of original prefixes. We can even have connections using some ports for a
-        // given allocated IP remaining valid, while others using other ports for the same IP become
-        // invalid.
-        //
-        // One "option" is to process all entries in the session table, look at the new
-        // configuration (or the new allocator entries) to see if they're still valid, and then
-        // report them to the new allocator. However, the old allocator keeps being updated during
-        // this process.
-        NatAllocator::from_config(new_config)
     }
 }
 
