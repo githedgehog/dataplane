@@ -17,3 +17,6 @@
 //! through a user-supplied packet processing closure.
 //! All smoltcp types are quarantined behind this crate's public API;
 //! consumers interact exclusively with types from the [`net`] crate.
+
+pub mod bridge;
+mod device;
