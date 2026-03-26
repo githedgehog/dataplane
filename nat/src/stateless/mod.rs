@@ -18,8 +18,6 @@ use net::headers::{
 };
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
-use net::tcp::TcpPort;
-use net::udp::UdpPort;
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use setup::tables::{NatTableValue, NatTables, PerVniTable};
@@ -127,30 +125,19 @@ impl StatelessNat {
             .try_transport_mut()
             .ok_or(StatelessNatError::UnsupportedTranslation)?;
         match transport {
-            Transport::Tcp(tcp) => {
+            Transport::Tcp(_) | Transport::Udp(_) => {
                 debug!(
                     "{nfi}: Changing L4 source port: {:?} -> {new_port}",
-                    tcp.source()
+                    transport.src_port()
                 );
-                tcp.set_source(
-                    TcpPort::try_from(new_port)
-                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
-                );
+                packet
+                    .set_source_port(
+                        NonZero::try_from(new_port)
+                            .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                    )
+                    .map_err(|_| StatelessNatError::UnsupportedTranslation)?;
             }
-            Transport::Udp(udp) => {
-                debug!(
-                    "{nfi}: Changing L4 source port: {:?} -> {new_port}",
-                    udp.source()
-                );
-                udp.set_source(
-                    UdpPort::try_from(new_port)
-                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
-                );
-            }
-            Transport::Icmp4(_icmp4) => {
-                todo!()
-            }
-            Transport::Icmp6(_icmp6) => {
+            Transport::Icmp4(_) | Transport::Icmp6(_) => {
                 todo!()
             }
         }
@@ -167,30 +154,19 @@ impl StatelessNat {
             .try_transport_mut()
             .ok_or(StatelessNatError::UnsupportedTranslation)?;
         match transport {
-            Transport::Tcp(tcp) => {
+            Transport::Tcp(_) | Transport::Udp(_) => {
                 debug!(
                     "{nfi}: Changing L4 destination port: {:?} -> {new_port}",
-                    tcp.destination()
+                    transport.dst_port()
                 );
-                tcp.set_destination(
-                    TcpPort::try_from(new_port)
-                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
-                );
+                packet
+                    .set_destination_port(
+                        NonZero::try_from(new_port)
+                            .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                    )
+                    .map_err(|_| StatelessNatError::UnsupportedTranslation)?;
             }
-            Transport::Udp(udp) => {
-                debug!(
-                    "{nfi}: Changing L4 destination port: {:?} -> {new_port}",
-                    udp.destination()
-                );
-                udp.set_destination(
-                    UdpPort::try_from(new_port)
-                        .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
-                );
-            }
-            Transport::Icmp4(_icmp4) => {
-                todo!()
-            }
-            Transport::Icmp6(_icmp6) => {
+            Transport::Icmp4(_) | Transport::Icmp6(_) => {
                 todo!()
             }
         }
