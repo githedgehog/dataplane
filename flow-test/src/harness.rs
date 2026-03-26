@@ -48,6 +48,8 @@ use tracing::trace;
 
 use crate::bridge::{frame_to_packet, packet_to_frame};
 use crate::endpoint::Endpoint;
+#[cfg(feature = "pcap")]
+use crate::pcap::{Direction, PcapCapture, Stage};
 use crate::time::SimClock;
 
 /// Default maximum number of steps before [`run_until_idle`] or [`run_until`]
@@ -196,6 +198,13 @@ where
     forward_count: usize,
     /// Total number of IP packets that have traversed the reverse pipe.
     reverse_count: usize,
+    /// Optional pcap capture buffer for recording frame exchanges.
+    ///
+    /// When enabled via [`enable_pcap`](Self::enable_pcap), every frame
+    /// that transits the harness is recorded with its simulated
+    /// timestamp, direction, and processing stage.
+    #[cfg(feature = "pcap")]
+    capture: Option<PcapCapture>,
     /// Marker to bind the `Buf` type parameter.
     _buf: std::marker::PhantomData<Buf>,
 }
@@ -252,6 +261,8 @@ where
             clock,
             forward_count: 0,
             reverse_count: 0,
+            #[cfg(feature = "pcap")]
+            capture: None,
             _buf: std::marker::PhantomData,
         }
     }
@@ -375,6 +386,43 @@ where
         &self.config
     }
 
+    /// Enable pcap capture of all frames exchanged through the harness.
+    ///
+    /// Once enabled, every frame that transits the forward or reverse
+    /// path is recorded with its simulated timestamp, direction, and
+    /// processing stage (pre-pipe, post-pipe, or passthrough).  The
+    /// resulting [`PcapCapture`] can be written to a file via
+    /// [`pcap_capture`](Self::pcap_capture) for offline analysis in
+    /// Wireshark, tcpdump, or similar tools.
+    ///
+    /// Calling this method a second time replaces the existing capture
+    /// buffer (any previously recorded frames are discarded).
+    #[cfg(feature = "pcap")]
+    pub fn enable_pcap(&mut self) {
+        self.capture = Some(PcapCapture::new());
+    }
+
+    /// Access the pcap capture buffer, if capture was
+    /// [`enabled`](Self::enable_pcap).
+    ///
+    /// Returns `None` if [`enable_pcap`](Self::enable_pcap) was never
+    /// called.
+    #[cfg(feature = "pcap")]
+    #[must_use]
+    pub fn pcap_capture(&self) -> Option<&PcapCapture> {
+        self.capture.as_ref()
+    }
+
+    /// Take ownership of the pcap capture buffer, leaving `None` in its
+    /// place.
+    ///
+    /// This is useful when you want to write the capture to disk and
+    /// then continue the simulation with a fresh (or no) capture.
+    #[cfg(feature = "pcap")]
+    pub fn take_pcap_capture(&mut self) -> Option<PcapCapture> {
+        self.capture.take()
+    }
+
     /// Get a shared reference to the client endpoint.
     pub(crate) fn client(&self) -> &Endpoint {
         &self.client
@@ -403,8 +451,16 @@ where
         if let Some(packet) = frame_to_packet::<Buf>(raw) {
             trace!(len = raw.len(), "forward pipe: IP packet");
             self.forward_count += 1;
+            #[cfg(feature = "pcap")]
+            if let Some(cap) = &mut self.capture {
+                cap.record(self.clock.elapsed(), Direction::Forward, Stage::PrePipe, raw);
+            }
             if let Some(processed) = (self.forward_pipe)(packet) {
                 if let Some(out) = packet_to_frame::<Buf>(processed) {
+                    #[cfg(feature = "pcap")]
+                    if let Some(cap) = &mut self.capture {
+                        cap.record(self.clock.elapsed(), Direction::Forward, Stage::PostPipe, &out);
+                    }
                     self.server.inject_rx(out);
                 } else {
                     trace!("forward pipe: packet_to_frame serialization failed, dropping");
@@ -415,6 +471,10 @@ where
         } else {
             // Non-IP frame (e.g. ARP) — forward as-is.
             trace!(len = raw.len(), "forward: passthrough non-IP frame");
+            #[cfg(feature = "pcap")]
+            if let Some(cap) = &mut self.capture {
+                cap.record(self.clock.elapsed(), Direction::Forward, Stage::Passthrough, raw);
+            }
             self.server.inject_rx(raw.to_vec());
         }
     }
@@ -424,8 +484,16 @@ where
         if let Some(packet) = frame_to_packet::<Buf>(raw) {
             trace!(len = raw.len(), "reverse pipe: IP packet");
             self.reverse_count += 1;
+            #[cfg(feature = "pcap")]
+            if let Some(cap) = &mut self.capture {
+                cap.record(self.clock.elapsed(), Direction::Reverse, Stage::PrePipe, raw);
+            }
             if let Some(processed) = (self.reverse_pipe)(packet) {
                 if let Some(out) = packet_to_frame::<Buf>(processed) {
+                    #[cfg(feature = "pcap")]
+                    if let Some(cap) = &mut self.capture {
+                        cap.record(self.clock.elapsed(), Direction::Reverse, Stage::PostPipe, &out);
+                    }
                     self.client.inject_rx(out);
                 } else {
                     trace!("reverse pipe: packet_to_frame serialization failed, dropping");
@@ -435,6 +503,10 @@ where
             }
         } else {
             trace!(len = raw.len(), "reverse: passthrough non-IP frame");
+            #[cfg(feature = "pcap")]
+            if let Some(cap) = &mut self.capture {
+                cap.record(self.clock.elapsed(), Direction::Reverse, Stage::Passthrough, raw);
+            }
             self.client.inject_rx(raw.to_vec());
         }
     }

@@ -22,7 +22,11 @@ pub mod bridge;
 mod device;
 mod endpoint;
 pub mod error;
+#[cfg(any(feature = "bolero", test))]
+pub mod fuzz;
 pub mod harness;
+#[cfg(feature = "pcap")]
+pub mod pcap;
 pub mod meta;
 pub mod tcp_flow;
 pub mod tcp_state;

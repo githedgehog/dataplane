@@ -5,11 +5,18 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+default = []
+bolero = ["dep:bolero", "net/bolero"]
+pcap = ["dep:pcap-file"]
+
 [dependencies]
 # Internal
 net = { workspace = true, features = ["test_buffer"] }
 
 # External
+bolero = { workspace = true, features = ["std"], optional = true }
+pcap-file = { workspace = true, optional = true }
 smoltcp = { workspace = true, features = [
     "medium-ethernet",
     "proto-ipv4",
@@ -21,4 +28,5 @@ smoltcp = { workspace = true, features = [
 tracing = { workspace = true }
 
 [dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
 tracing-test = { workspace = true, features = [] }
