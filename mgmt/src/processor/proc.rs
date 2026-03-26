@@ -25,7 +25,7 @@ use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
-use nat::stateful::NatAllocatorWriter;
+use nat::stateful::{NatAllocatorWriter, StatefulNatConfig};
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
 use pipeline::PipelineData;
@@ -510,7 +510,8 @@ fn apply_stateful_nat_config(
     natallocatorw: &mut NatAllocatorWriter,
     genid: GenId,
 ) -> ConfigResult {
-    natallocatorw.update_nat_allocator(vpc_table, flow_table, genid)?;
+    let nat_config = StatefulNatConfig::new(vpc_table);
+    natallocatorw.update_nat_allocator(nat_config, flow_table, genid)?;
     debug!("Successfully updated the stateful NAT allocator");
     Ok(())
 }
