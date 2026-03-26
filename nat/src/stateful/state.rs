@@ -68,6 +68,10 @@ pub(crate) struct AllocatedFlowState<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> AllocatedFlowState<I> {
+    pub(crate) fn update_src_alloc(&mut self, alloc: AllocatedIpPort<I>) {
+        self.src_alloc = Some(alloc);
+    }
+
     fn build_translation_data(
         src: Option<&AllocatedIpPort<I>>,
         dst: Option<&AllocatedIpPort<I>>,
