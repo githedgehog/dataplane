@@ -52,6 +52,11 @@ fn ask_user(question: &str) -> bool {
     }
 }
 
+/// Upper bound on a single CLI response payload.  Anything larger than this is
+/// almost certainly a bug or corrupt framing, so we reject it rather than
+/// attempting an unbounded allocation.
+const MAX_CLI_RESPONSE_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
+
 /// Receive the response, synchronously. This function may block the caller,
 /// which is the desired behavior. Now, unfortunately the `peek()` and the like
 /// methods of `UnixDatagram` are not stable. This creates an issue because if
@@ -72,6 +77,10 @@ fn process_cli_response(sock: &UnixDatagram) {
         return;
     }
     let msg_size = u64::from_ne_bytes(msg_size_wire);
+    if msg_size > MAX_CLI_RESPONSE_SIZE {
+        print_err!("Response size {msg_size} exceeds maximum ({MAX_CLI_RESPONSE_SIZE}), dropping");
+        return;
+    }
     #[allow(clippy::cast_possible_truncation)]
     if msg_size as usize > rx_buff.capacity() {
         rx_buff.resize(msg_size as usize, 0);
