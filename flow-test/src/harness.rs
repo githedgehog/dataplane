@@ -75,6 +75,83 @@ const SERVER_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 2);
 const PREFIX_LEN: u8 = 24;
 
 // ---------------------------------------------------------------------------
+// NetworkConfig
+// ---------------------------------------------------------------------------
+
+/// Network topology configuration for a [`FlowHarness`].
+///
+/// Controls the MAC addresses, IP addresses, subnet prefix lengths, and
+/// optional gateways assigned to the client and server endpoints.
+///
+/// The [`Default`] implementation places both endpoints on a single `/24`
+/// subnet with no gateways:
+///
+/// | Endpoint | MAC                 | IPv4        |
+/// |----------|---------------------|-------------|
+/// | Client   | `02:00:00:00:00:01` | `10.0.0.1`  |
+/// | Server   | `02:00:00:00:00:02` | `10.0.0.2`  |
+///
+/// For NAT tests that require custom addressing (e.g. VPC-specific subnets
+/// or different-subnet endpoints with gateways), construct a `NetworkConfig`
+/// with the desired values and pass it to [`FlowHarness::with_config`].
+#[derive(Debug, Clone)]
+pub struct NetworkConfig {
+    /// Client endpoint MAC address.
+    pub client_mac: EthernetAddress,
+    /// Server endpoint MAC address.
+    pub server_mac: EthernetAddress,
+    /// Client endpoint IPv4 address.
+    pub client_ip: Ipv4Address,
+    /// Server endpoint IPv4 address.
+    pub server_ip: Ipv4Address,
+    /// Client subnet prefix length.
+    pub client_prefix_len: u8,
+    /// Server subnet prefix length.
+    pub server_prefix_len: u8,
+    /// Optional default gateway for the client endpoint.
+    ///
+    /// Required when the server is on a different subnet or when
+    /// NAT rewrites addresses outside the client's local subnet.
+    pub client_gateway: Option<Ipv4Address>,
+    /// Optional default gateway for the server endpoint.
+    ///
+    /// Required when the client is on a different subnet or when
+    /// NAT rewrites addresses outside the server's local subnet.
+    pub server_gateway: Option<Ipv4Address>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            client_mac: CLIENT_MAC,
+            server_mac: SERVER_MAC,
+            client_ip: CLIENT_IP,
+            server_ip: SERVER_IP,
+            client_prefix_len: PREFIX_LEN,
+            server_prefix_len: PREFIX_LEN,
+            client_gateway: None,
+            server_gateway: None,
+        }
+    }
+}
+
+impl NetworkConfig {
+    /// Build an [`IpEndpoint`] targeting the **server** at `port`.
+    ///
+    /// Convenience method so callers don't need to extract the raw IP.
+    #[must_use]
+    pub fn server_endpoint(&self, port: u16) -> IpEndpoint {
+        IpEndpoint::new(IpAddress::from(self.server_ip), port)
+    }
+
+    /// Build an [`IpEndpoint`] targeting the **client** at `port`.
+    #[must_use]
+    pub fn client_endpoint(&self, port: u16) -> IpEndpoint {
+        IpEndpoint::new(IpAddress::from(self.client_ip), port)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FlowHarness
 // ---------------------------------------------------------------------------
 
@@ -103,6 +180,8 @@ where
     FwdPipe: FnMut(Packet<Buf>) -> Option<Packet<Buf>>,
     RevPipe: FnMut(Packet<Buf>) -> Option<Packet<Buf>>,
 {
+    /// Network topology used to create the endpoints.
+    config: NetworkConfig,
     /// The client-side endpoint.
     client: Endpoint,
     /// The server-side endpoint.
@@ -130,13 +209,42 @@ where
     /// Create a harness with separate forward and reverse pipe closures.
     ///
     /// Both endpoints are placed on the same /24 subnet with default
-    /// addresses so that ARP resolution works naturally.
+    /// addresses so that ARP resolution works naturally.  See
+    /// [`NetworkConfig::default`] for the default topology.
+    ///
+    /// Use [`with_config`](Self::with_config) when you need custom
+    /// addresses, prefix lengths, or gateways (e.g. for NAT tests).
     pub fn new(forward_pipe: FwdPipe, reverse_pipe: RevPipe) -> Self {
+        Self::with_config(NetworkConfig::default(), forward_pipe, reverse_pipe)
+    }
+
+    /// Create a harness with a custom network topology.
+    ///
+    /// This is the general-purpose constructor.  [`new`](Self::new) is a
+    /// convenience wrapper that uses [`NetworkConfig::default`].
+    pub fn with_config(
+        config: NetworkConfig,
+        forward_pipe: FwdPipe,
+        reverse_pipe: RevPipe,
+    ) -> Self {
         let clock = SimClock::new();
-        let client = Endpoint::new(CLIENT_MAC, CLIENT_IP, PREFIX_LEN, None, &clock);
-        let server = Endpoint::new(SERVER_MAC, SERVER_IP, PREFIX_LEN, None, &clock);
+        let client = Endpoint::new(
+            config.client_mac,
+            config.client_ip,
+            config.client_prefix_len,
+            config.client_gateway,
+            &clock,
+        );
+        let server = Endpoint::new(
+            config.server_mac,
+            config.server_ip,
+            config.server_prefix_len,
+            config.server_gateway,
+            &clock,
+        );
 
         Self {
+            config,
             client,
             server,
             forward_pipe,
@@ -261,6 +369,12 @@ where
         self.reverse_count
     }
 
+    /// The network topology configuration used to build this harness.
+    #[must_use]
+    pub fn config(&self) -> &NetworkConfig {
+        &self.config
+    }
+
     /// Get a shared reference to the client endpoint.
     pub(crate) fn client(&self) -> &Endpoint {
         &self.client
@@ -340,6 +454,13 @@ where
     pub fn symmetric(pipe: Pipe) -> Self {
         let reverse = pipe.clone();
         Self::new(pipe, reverse)
+    }
+
+    /// Create a harness with the same pipe closure for both directions and
+    /// a custom network topology.
+    pub fn symmetric_with_config(config: NetworkConfig, pipe: Pipe) -> Self {
+        let reverse = pipe.clone();
+        Self::with_config(config, pipe, reverse)
     }
 }
 
@@ -534,5 +655,135 @@ mod tests {
             harness.forward_count() > initial_forward,
             "IP packets should eventually flow through the forward pipe"
         );
+    }
+
+    // -- NetworkConfig tests ------------------------------------------------
+
+    #[test]
+    fn default_network_config_matches_legacy_constants() {
+        let cfg = NetworkConfig::default();
+        assert_eq!(cfg.client_mac, CLIENT_MAC);
+        assert_eq!(cfg.server_mac, SERVER_MAC);
+        assert_eq!(cfg.client_ip, CLIENT_IP);
+        assert_eq!(cfg.server_ip, SERVER_IP);
+        assert_eq!(cfg.client_prefix_len, PREFIX_LEN);
+        assert_eq!(cfg.server_prefix_len, PREFIX_LEN);
+        assert!(cfg.client_gateway.is_none());
+        assert!(cfg.server_gateway.is_none());
+    }
+
+    #[test]
+    fn server_endpoint_helper_uses_config_ip() {
+        let cfg = NetworkConfig {
+            server_ip: Ipv4Address::new(192, 168, 1, 100),
+            ..NetworkConfig::default()
+        };
+        let ep = cfg.server_endpoint(443);
+        assert_eq!(ep.addr, IpAddress::from(Ipv4Address::new(192, 168, 1, 100)));
+        assert_eq!(ep.port, 443);
+    }
+
+    #[test]
+    fn client_endpoint_helper_uses_config_ip() {
+        let cfg = NetworkConfig {
+            client_ip: Ipv4Address::new(172, 16, 0, 5),
+            ..NetworkConfig::default()
+        };
+        let ep = cfg.client_endpoint(8080);
+        assert_eq!(ep.addr, IpAddress::from(Ipv4Address::new(172, 16, 0, 5)));
+        assert_eq!(ep.port, 8080);
+    }
+
+    #[test]
+    fn with_config_uses_default_config() {
+        let harness = FlowHarness::<TestBuffer, _, _>::with_config(
+            NetworkConfig::default(),
+            identity,
+            identity,
+        );
+        assert_eq!(harness.config().client_ip, CLIENT_IP);
+        assert_eq!(harness.config().server_ip, SERVER_IP);
+    }
+
+    #[test]
+    fn config_accessor_reflects_custom_topology() {
+        let cfg = NetworkConfig {
+            client_ip: Ipv4Address::new(1, 1, 0, 1),
+            server_ip: Ipv4Address::new(10, 201, 201, 1),
+            client_prefix_len: 16,
+            server_prefix_len: 24,
+            client_gateway: Some(Ipv4Address::new(1, 1, 0, 254)),
+            server_gateway: Some(Ipv4Address::new(10, 201, 201, 254)),
+            ..NetworkConfig::default()
+        };
+        let harness = FlowHarness::<TestBuffer, _, _>::with_config(
+            cfg.clone(),
+            identity,
+            identity,
+        );
+        assert_eq!(harness.config().client_ip, Ipv4Address::new(1, 1, 0, 1));
+        assert_eq!(harness.config().server_ip, Ipv4Address::new(10, 201, 201, 1));
+        assert_eq!(harness.config().client_prefix_len, 16);
+        assert_eq!(harness.config().server_prefix_len, 24);
+        assert_eq!(harness.config().client_gateway, Some(Ipv4Address::new(1, 1, 0, 254)));
+        assert_eq!(harness.config().server_gateway, Some(Ipv4Address::new(10, 201, 201, 254)));
+    }
+
+    #[test]
+    fn handshake_completes_with_custom_same_subnet_config() {
+        let cfg = NetworkConfig {
+            client_ip: Ipv4Address::new(192, 168, 50, 10),
+            server_ip: Ipv4Address::new(192, 168, 50, 20),
+            ..NetworkConfig::default()
+        };
+        let server_ep = cfg.server_endpoint(80);
+        let mut harness = FlowHarness::<TestBuffer, _, _>::with_config(
+            cfg,
+            identity,
+            identity,
+        );
+
+        let server_handle = harness.server_mut().listen_tcp(80);
+        let client_handle = harness.client_mut().connect_tcp(server_ep, 49152);
+
+        harness.run_until_idle();
+
+        assert_eq!(
+            harness.client().tcp_socket(client_handle).state(),
+            tcp::State::Established,
+            "client should be ESTABLISHED with custom config"
+        );
+        assert_eq!(
+            harness.server().tcp_socket(server_handle).state(),
+            tcp::State::Established,
+            "server should be ESTABLISHED with custom config"
+        );
+    }
+
+    #[test]
+    fn symmetric_with_config_uses_custom_topology() {
+        let cfg = NetworkConfig {
+            client_ip: Ipv4Address::new(172, 20, 0, 1),
+            server_ip: Ipv4Address::new(172, 20, 0, 2),
+            ..NetworkConfig::default()
+        };
+        let server_ep = cfg.server_endpoint(80);
+        let mut harness =
+            FlowHarness::<TestBuffer, _, _>::symmetric_with_config(cfg, identity);
+
+        let server_handle = harness.server_mut().listen_tcp(80);
+        let client_handle = harness.client_mut().connect_tcp(server_ep, 49152);
+
+        harness.run_until_idle();
+
+        assert_eq!(
+            harness.client().tcp_socket(client_handle).state(),
+            tcp::State::Established,
+        );
+        assert_eq!(
+            harness.server().tcp_socket(server_handle).state(),
+            tcp::State::Established,
+        );
+        assert_eq!(harness.config().client_ip, Ipv4Address::new(172, 20, 0, 1));
     }
 }
