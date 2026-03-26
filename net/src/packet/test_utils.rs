@@ -58,7 +58,12 @@ fn make_default_for_transport(transport_type: Option<NextHeader>) -> Option<Tran
     }
 }
 
-fn make_default_for_eth(ethtype: EthType) -> Eth {
+/// Creates a default Ethernet frame with the given [`EthType`].
+///
+/// The source MAC address is 0x02:00:00:00:00:01 and the destination MAC address is
+/// 0x02:00:00:00:00:02.
+#[must_use]
+pub fn make_default_for_eth(ethtype: EthType) -> Eth {
     Eth::new(
         SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
         DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
