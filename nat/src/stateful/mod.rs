@@ -6,6 +6,7 @@ mod allocator_writer;
 pub mod apalloc;
 pub(crate) mod icmp_handling;
 mod natip;
+mod tcp_flow_test;
 mod test;
 
 use super::NatTranslationData;
