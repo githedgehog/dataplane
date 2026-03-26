@@ -4,8 +4,10 @@
 //! Display implementations for the forwarding table objects
 
 use crate::portfw::portfwtable::objects::{PortFwEntry, PortFwKey, PortFwTable};
-use common::cliprovider::{CliDataProvider, Heading};
+use common::cliprovider::{CliSource, Heading};
 use std::fmt::Display;
+
+impl CliSource for PortFwTable {}
 
 macro_rules! PORTFW_KEY {
     ($vpc:expr, $proto:expr) => {
@@ -54,11 +56,5 @@ impl Display for PortFwTable {
             writeln!(f, "{entry}")?;
         }
         Ok(())
-    }
-}
-
-impl CliDataProvider for PortFwTable {
-    fn provide(&self) -> String {
-        self.to_string()
     }
 }

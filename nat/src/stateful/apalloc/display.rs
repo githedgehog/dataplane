@@ -7,7 +7,7 @@ use super::NatDefaultAllocator;
 use crate::stateful::apalloc::alloc::{AllocatedIp, IpAllocator, NatPool};
 use crate::stateful::apalloc::port_alloc::PortAllocator;
 use crate::stateful::apalloc::{NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
-use common::cliprovider::{CliDataProvider, Heading};
+use common::cliprovider::{CliSource, Heading};
 use indenter::indented;
 use std::fmt::{Display, Error, Formatter, Result, Write};
 
@@ -18,11 +18,7 @@ macro_rules! with_indent {
     };
 }
 
-impl CliDataProvider for NatDefaultAllocator {
-    fn provide(&self) -> String {
-        self.to_string()
-    }
-}
+impl CliSource for NatDefaultAllocator {}
 
 impl Display for NatDefaultAllocator {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {

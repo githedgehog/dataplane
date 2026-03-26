@@ -3,7 +3,7 @@
 
 //! Display implementations
 
-use common::cliprovider::{CliDataProvider, Heading};
+use common::cliprovider::{CliSource, Heading};
 use indenter::indented;
 
 use std::collections::BTreeMap;
@@ -13,11 +13,7 @@ use std::fmt::Write;
 use crate::tables::{DstConnectionData, PortRangeMap, VpcConnectionsTable};
 use crate::{FlowFilterTable, RemoteData, VpcdLookupResult};
 
-impl CliDataProvider for FlowFilterTable {
-    fn provide(&self) -> String {
-        self.to_string()
-    }
-}
+impl CliSource for FlowFilterTable {}
 
 impl Display for FlowFilterTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

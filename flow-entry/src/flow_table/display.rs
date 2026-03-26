@@ -2,8 +2,10 @@
 // Copyright Open Network Fabric Authors
 
 use crate::flow_table::FlowTable;
-use common::cliprovider::{CliDataProvider, Heading};
+use common::cliprovider::{CliSource, Heading};
 use std::fmt::Display;
+
+impl CliSource for FlowTable {}
 
 impl Display for FlowTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -20,11 +22,5 @@ impl Display for FlowTable {
             write!(f, "Failed to lock flow table")?;
         }
         Ok(())
-    }
-}
-
-impl CliDataProvider for FlowTable {
-    fn provide(&self) -> String {
-        self.to_string()
     }
 }
