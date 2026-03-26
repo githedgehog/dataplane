@@ -21,5 +21,8 @@
 pub mod bridge;
 mod device;
 mod endpoint;
+pub mod error;
 pub mod harness;
+pub mod tcp_flow;
+pub mod tcp_state;
 mod time;
