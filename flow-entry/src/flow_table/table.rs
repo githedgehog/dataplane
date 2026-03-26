@@ -4,10 +4,10 @@
 use ahash::RandomState;
 use dashmap::DashMap;
 use net::FlowKey;
-use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::time::Instant;
+use std::{borrow::Borrow, sync::PoisonError};
 use tracing::debug;
 
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
@@ -348,6 +348,19 @@ impl FlowTable {
     pub fn len(&self) -> Option<usize> {
         let table = self.table.try_read().ok()?;
         Some(table.len())
+    }
+
+    /// Take a read lock to the flow table
+    /// # Errors
+    /// Returns `PoisonError` if the lock was poisoned.
+    #[allow(clippy::type_complexity)]
+    pub fn lock_read(
+        &self,
+    ) -> Result<
+        RwLockReadGuard<'_, DashMap<FlowKey, Weak<FlowInfo>, RandomState>>,
+        PoisonError<RwLockReadGuard<'_, DashMap<FlowKey, Weak<FlowInfo>, RandomState>>>,
+    > {
+        self.table.read()
     }
 }
 
