@@ -373,7 +373,10 @@ fn show_ip_fib_groups(
     }
 }
 
-fn show_provider(request: CliRequest, provider: Option<&dyn CliDataProvider>) -> CliResponse {
+fn show_provider(
+    request: CliRequest,
+    provider: Option<&(dyn CliDataProvider + Send)>,
+) -> CliResponse {
     let data = provider.map_or_else(
         || "no data is available".to_string(),
         CliDataProvider::provide,

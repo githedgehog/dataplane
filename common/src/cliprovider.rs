@@ -9,22 +9,45 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 /// A trait for types that can produce contents for the cli
-pub trait CliDataProvider: Send {
+pub trait CliDataProvider {
     fn provide(&self) -> String;
+}
+
+pub trait CliSource: Display {}
+
+impl<T> CliDataProvider for T
+where
+    T: CliSource,
+{
+    fn provide(&self) -> String {
+        self.to_string()
+    }
 }
 
 impl<T> CliDataProvider for Arc<T>
 where
-    T: Send + Sync + CliDataProvider,
+    T: CliDataProvider,
 {
     fn provide(&self) -> String {
         self.as_ref().provide()
     }
 }
 
+impl<T> CliDataProvider for Option<T>
+where
+    T: CliDataProvider,
+{
+    fn provide(&self) -> String {
+        match self {
+            Some(value) => value.provide(),
+            None => "(none)".to_string(),
+        }
+    }
+}
+
 impl<T> CliDataProvider for ReadHandle<T>
 where
-    T: Send + Sync + CliDataProvider,
+    T: CliDataProvider,
 {
     fn provide(&self) -> String {
         if let Some(data) = &self.enter() {
@@ -37,7 +60,7 @@ where
 
 impl<T> CliDataProvider for ArcSwap<T>
 where
-    T: Send + Sync + CliDataProvider,
+    T: CliDataProvider,
 {
     fn provide(&self) -> String {
         self.load().provide()
@@ -46,7 +69,7 @@ where
 
 impl<T> CliDataProvider for ArcSwapOption<T>
 where
-    T: Send + Sync + CliDataProvider,
+    T: CliDataProvider,
 {
     fn provide(&self) -> String {
         self.load()

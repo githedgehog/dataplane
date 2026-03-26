@@ -82,11 +82,11 @@ pub struct RouterParams {
 /// for the CLI to be able to display them.
 #[derive(Default)]
 pub struct CliSources {
-    pub flow_table: Option<Box<dyn CliDataProvider>>,
-    pub flow_filter: Option<Box<dyn CliDataProvider>>,
-    pub portfw_table: Option<Box<dyn CliDataProvider>>,
-    pub nat_tables: Option<Box<dyn CliDataProvider>>,
-    pub masquerade_state: Option<Box<dyn CliDataProvider>>,
+    pub flow_table: Option<Box<dyn CliDataProvider + Send>>,
+    pub flow_filter: Option<Box<dyn CliDataProvider + Send>>,
+    pub portfw_table: Option<Box<dyn CliDataProvider + Send>>,
+    pub nat_tables: Option<Box<dyn CliDataProvider + Send>>,
+    pub masquerade_state: Option<Box<dyn CliDataProvider + Send>>,
 }
 
 impl Display for RouterParams {
