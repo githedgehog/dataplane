@@ -24,29 +24,41 @@ pub(crate) struct StatefulNatPeering {
     pub(crate) peering: Peering,
 }
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct StatefulNatConfig(Vec<StatefulNatPeering>);
+pub struct StatefulNatConfig {
+    peerings: Vec<StatefulNatPeering>,
+    randomize: bool,
+}
 
 impl StatefulNatConfig {
     #[must_use]
-    pub(crate) fn new(vpc_table: &VpcTable) -> Self {
-        let mut config = Vec::new();
+    pub fn new(vpc_table: &VpcTable) -> Self {
+        let mut peerings = Vec::new();
         for vpc in vpc_table.values() {
             for peering in vpc.stateful_nat_peerings() {
-                config.push(StatefulNatPeering {
+                peerings.push(StatefulNatPeering {
                     src_vpcd: VpcDiscriminant::from_vni(vpc.vni),
                     dst_vpcd: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
                     peering: peering.clone(),
                 });
             }
         }
-        Self(config)
+        Self {
+            peerings,
+            randomize: true, // randomize by default
+        }
     }
+    #[must_use]
+    pub fn set_randomize(mut self, value: bool) -> Self {
+        self.randomize = value;
+        self
+    }
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = &StatefulNatPeering> {
-        self.0.iter()
+        self.peerings.iter()
     }
 
     pub(crate) fn num_stateful_nat_peerings(&self) -> usize {
-        self.0
+        self.peerings
             .iter()
             .map(|p| &p.peering)
             .filter(|p| {
@@ -61,7 +73,7 @@ impl StatefulNatConfig {
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
     ) -> Option<&StatefulNatPeering> {
-        self.0
+        self.peerings
             .iter()
             .find(|p| p.src_vpcd == src_vpcd && p.dst_vpcd == dst_vpcd)
     }
@@ -95,21 +107,19 @@ impl NatAllocatorWriter {
     /// Replace the nat allocator with a new one
     pub fn update_nat_allocator(
         &mut self,
-        vpc_table: &VpcTable,
+        nat_config: StatefulNatConfig,
         flow_table: &FlowTable,
         genid: GenId,
     ) -> Result<(), ConfigError> {
-        let new_config = StatefulNatConfig::new(vpc_table);
-
         // freeze the current allocator ?
         let old_allocator = self.allocator.load();
 
-        if new_config == self.config && old_allocator.is_some() {
+        if nat_config == self.config && old_allocator.is_some() {
             debug!("No need to update NAT allocator: NAT peerings did not change");
             upgrade_all_stateful_nat_flows(flow_table, genid);
             return Ok(());
         }
-        if new_config.num_stateful_nat_peerings() == 0 {
+        if nat_config.num_stateful_nat_peerings() == 0 {
             debug!("Stateful NAT is not required: will invalidate flows and remove allocator");
             invalidate_all_stateful_nat_flows(flow_table);
             self.allocator.store(None);
@@ -117,12 +127,12 @@ impl NatAllocatorWriter {
         }
 
         // build a new allocator to replace the current
-        let mut new_allocator = NatAllocator::from_config(&new_config)?;
+        let mut new_allocator = NatAllocator::from_config(&nat_config)?;
         if old_allocator.is_some() {
-            validate_stateful_nat_flows(flow_table, &new_config, &mut new_allocator, genid);
+            validate_stateful_nat_flows(flow_table, &nat_config, &mut new_allocator, genid);
         }
         self.allocator.store(Some(Arc::new(new_allocator)));
-        self.config = new_config;
+        self.config = nat_config;
         debug!("Updated allocator for stateful NAT");
         Ok(())
     }

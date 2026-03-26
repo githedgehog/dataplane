@@ -10,13 +10,16 @@ mod natip;
 mod state;
 mod test;
 
+// re exports
+pub use allocator_writer::NatAllocatorWriter;
+pub use allocator_writer::StatefulNatConfig;
+
 use super::NatTranslationData;
 use crate::stateful::allocation::{AllocationResult, AllocatorError};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::{AllocatedIpPort, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
 use crate::stateful::state::NatFlowState;
-pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
