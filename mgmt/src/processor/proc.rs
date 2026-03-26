@@ -503,16 +503,16 @@ fn apply_stateless_nat_config(
     Ok(())
 }
 
-/// Update the config for stateful NAT
+/// Update the config for stateful NAT.
 fn apply_stateful_nat_config(
     vpc_table: &VpcTable,
     flow_table: &FlowTable,
     natallocatorw: &mut NatAllocatorWriter,
     genid: GenId,
 ) -> ConfigResult {
-    let nat_config = StatefulNatConfig::new(vpc_table);
-    natallocatorw.update_nat_allocator(nat_config, flow_table, genid)?;
-    debug!("Successfully updated the stateful NAT allocator");
+    let nat_config = StatefulNatConfig::new(vpc_table, genid).set_randomize(true);
+    natallocatorw.update_nat_allocator(nat_config, flow_table)?;
+    debug!("Successfully updated stateful NAT allocator");
     Ok(())
 }
 

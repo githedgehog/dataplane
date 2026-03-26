@@ -61,6 +61,7 @@ impl NatAllocator {
             VpcManifest::port_forwarding_exposes_44,
             &mut self.pools_src44,
             NextHeader::ICMP,
+            self.randomize,
         )?;
 
         build_nat_pool_generic(
@@ -70,6 +71,7 @@ impl NatAllocator {
             VpcManifest::port_forwarding_exposes_66,
             &mut self.pools_src66,
             NextHeader::ICMP6,
+            self.randomize,
         )
     }
 }
@@ -84,6 +86,7 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
     port_forwarding_exposes_filter: P,
     table: &mut PoolTable<I, J>,
     icmp_proto: NextHeader,
+    randomize: bool,
 ) -> Result<(), AllocatorError>
 where
     F: FnOnce(&'a VpcManifest) -> FIter,
@@ -105,16 +108,19 @@ where
             expose.as_range_or_empty(),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.tcp,
+            randomize,
         )?;
         let udp_ip_allocator = ip_allocator_for_prefixes(
             expose.as_range_or_empty(),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.udp,
+            randomize,
         )?;
         let icmp_ip_allocator = ip_allocator_for_prefixes(
             expose.as_range_or_empty(),
             idle_timeout,
             &PrefixPortsSet::default(),
+            randomize,
         )?;
 
         add_pool_entries(
@@ -206,13 +212,14 @@ fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
     prefixes: &PrefixPortsSet,
     idle_timeout: Duration,
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
+    randomize: bool,
 ) -> Result<IpAllocator<J>, AllocatorError> {
     let pool = create_natpool(
         prefixes,
         prefixes_and_ports_to_exclude_from_pools,
         idle_timeout,
     )?;
-    let allocator = IpAllocator::new(pool);
+    let allocator = IpAllocator::new(pool, randomize);
     Ok(allocator)
 }
 

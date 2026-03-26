@@ -37,12 +37,14 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub(crate) struct IpAllocator<I: NatIpWithBitmap> {
     pool: Arc<RwLock<NatPool<I>>>,
+    randomize: bool,
 }
 
 impl<I: NatIpWithBitmap> IpAllocator<I> {
-    pub(crate) fn new(pool: NatPool<I>) -> Self {
+    pub(crate) fn new(pool: NatPool<I>, randomize: bool) -> Self {
         Self {
             pool: Arc::new(RwLock::new(pool)),
+            randomize,
         }
     }
 
@@ -82,12 +84,9 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         Err(AllocatorError::NoFreeIp)
     }
 
-    fn allocate_new_ip_from_pool(
-        &self,
-        disable_randomness: bool,
-    ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+    fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let mut allocated_ips = self.pool.write().unwrap();
-        let new_ip = allocated_ips.use_new_ip(self.clone(), disable_randomness)?;
+        let new_ip = allocated_ips.use_new_ip(self.clone(), self.randomize)?;
         let arc_ip = Arc::new(new_ip);
         allocated_ips.add_in_use(&arc_ip);
         Ok(arc_ip)
@@ -96,9 +95,8 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     fn allocate_from_new_ip(
         &self,
         allow_null: bool,
-        disable_randomness: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        self.allocate_new_ip_from_pool(disable_randomness)
+        self.allocate_new_ip_from_pool()
             .and_then(|ip| ip.allocate_port_for_ip(allow_null))
     }
 
@@ -110,7 +108,6 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     pub(crate) fn allocate(
         &self,
         allow_null: bool,
-        disable_randomness: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
         // FIXME: Should we clean up every time??
         self.cleanup_used_ips();
@@ -119,27 +116,22 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
             return Ok(port);
         }
 
-        self.allocate_from_new_ip(allow_null, disable_randomness)
+        self.allocate_from_new_ip(allow_null)
     }
 
-    fn get_allocated_ip(
-        &self,
-        ip: I,
-        disable_randomness: bool,
-    ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
+    fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         self.pool
             .write()
             .unwrap()
-            .reserve_from_pool(ip, self.clone(), disable_randomness)
+            .reserve_from_pool(ip, self.clone(), self.randomize)
     }
 
     pub(crate) fn reserve(
         &self,
         ip: I,
         port: NatPort,
-        disable_randomness: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        self.get_allocated_ip(ip, disable_randomness)
+        self.get_allocated_ip(ip)
             .and_then(|allocated_ip| allocated_ip.reserve_port_for_ip(port))
     }
 
@@ -171,35 +163,13 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         ip: I,
         ip_allocator: IpAllocator<I>,
         reserved_port_range: Option<PortRange>,
-        disable_randomness: bool,
+        randomize: bool,
     ) -> Self {
-        // Allow opt-in deterministic port allocation for tests
-        let port_allocator = Self::get_new_portallocator(reserved_port_range, disable_randomness);
-
         Self {
             ip,
-            port_allocator,
+            port_allocator: port_alloc::PortAllocator::new(reserved_port_range, randomize),
             ip_allocator,
         }
-    }
-
-    #[cfg(test)]
-    fn get_new_portallocator(
-        reserved_port_range: Option<PortRange>,
-        disable_randomness: bool,
-    ) -> port_alloc::PortAllocator<I> {
-        if disable_randomness {
-            port_alloc::PortAllocator::new_no_randomness(reserved_port_range)
-        } else {
-            port_alloc::PortAllocator::new(reserved_port_range)
-        }
-    }
-    #[cfg(not(test))]
-    fn get_new_portallocator(
-        reserved_port_range: Option<PortRange>,
-        _disable_randomness: bool,
-    ) -> port_alloc::PortAllocator<I> {
-        port_alloc::PortAllocator::new(reserved_port_range)
     }
 
     pub(crate) fn ip(&self) -> I {
@@ -306,7 +276,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
     fn use_new_ip(
         &mut self,
         ip_allocator: IpAllocator<I>,
-        disable_randomness: bool,
+        randomize: bool,
     ) -> Result<AllocatedIp<I>, AllocatorError> {
         // Retrieve the first available offset
         let offset = self.bitmap.pop_ip()?;
@@ -323,7 +293,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             ip,
             ip_allocator,
             reserved_port_range,
-            disable_randomness,
+            randomize,
         ))
     }
 
@@ -336,7 +306,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         &mut self,
         ip: I,
         ip_allocator: IpAllocator<I>,
-        disable_randomness: bool,
+        randomize: bool,
     ) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping)?;
 
@@ -357,7 +327,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // drops an AllocatedIp and its reference count goes to 0, but it hasn't called the drop()
         // function to remove the IP from the bitmap in that other thread yet).
         let _ = self.bitmap.set_ip_allocated(offset);
-        let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator, None, disable_randomness));
+        let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator, None, randomize));
         self.add_in_use(&arc_ip);
         Ok(arc_ip)
     }
