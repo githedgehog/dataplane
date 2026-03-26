@@ -183,8 +183,7 @@ pub struct NatDefaultAllocator {
     pools_dst44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
     pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
-    #[cfg(test)]
-    disable_randomness: bool,
+    randomize: bool,
 }
 
 impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatDefaultAllocator {
@@ -194,8 +193,7 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
             pools_dst44: PoolTable::new(),
             pools_src66: PoolTable::new(),
             pools_dst66: PoolTable::new(),
-            #[cfg(test)]
-            disable_randomness: false,
+            randomize: true,
         }
     }
 
@@ -203,24 +201,14 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(
-            eflow_key,
-            &self.pools_src44,
-            &self.pools_dst44,
-            self.must_disable_randomness(),
-        )
+        Self::allocate_from_tables(eflow_key, &self.pools_src44, &self.pools_dst44)
     }
 
     fn allocate_v6(
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(
-            eflow_key,
-            &self.pools_src66,
-            &self.pools_dst66,
-            self.must_disable_randomness(),
-        )
+        Self::allocate_from_tables(eflow_key, &self.pools_src66, &self.pools_dst66)
     }
 }
 
@@ -229,7 +217,6 @@ impl NatDefaultAllocator {
         eflow_key: &ExtendedFlowKey,
         pools_src: &PoolTable<I, I>,
         pools_dst: &PoolTable<I, I>,
-        disable_randomness: bool,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         // get flow key from extended flow key
         let flow_key = eflow_key.flow_key();
@@ -274,8 +261,7 @@ impl NatDefaultAllocator {
 
         // Allocate IP and ports from pools, for source and destination NAT
         let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
-        let (src_mapping, dst_mapping) =
-            Self::get_mapping(pool_src_opt, pool_dst_opt, allow_null, disable_randomness)?;
+        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt, allow_null)?;
 
         // Now based on the previous allocation, we need to "reserve" IP and ports for the reverse
         // path for the flow. First retrieve the relevant address pools.
@@ -293,12 +279,8 @@ impl NatDefaultAllocator {
         };
 
         // Reserve IP and ports for the reverse path for the flow.
-        let (reverse_src_mapping, reverse_dst_mapping) = Self::get_reverse_mapping(
-            flow_key,
-            reverse_pool_src_opt,
-            reverse_pool_dst_opt,
-            disable_randomness,
-        )?;
+        let (reverse_src_mapping, reverse_dst_mapping) =
+            Self::get_reverse_mapping(flow_key, reverse_pool_src_opt, reverse_pool_dst_opt)?;
 
         Ok(AllocationResult {
             src: src_mapping,
@@ -308,16 +290,6 @@ impl NatDefaultAllocator {
             src_flow_idle_timeout: pool_src_opt.and_then(IpAllocator::idle_timeout),
             dst_flow_idle_timeout: pool_dst_opt.and_then(IpAllocator::idle_timeout),
         })
-    }
-
-    #[cfg(test)]
-    const fn must_disable_randomness(&self) -> bool {
-        self.disable_randomness
-    }
-    #[cfg(not(test))]
-    #[allow(clippy::unused_self)]
-    const fn must_disable_randomness(&self) -> bool {
-        false
     }
 
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
@@ -354,7 +326,6 @@ impl NatDefaultAllocator {
         pool_src_opt: Option<&alloc::IpAllocator<I>>,
         pool_dst_opt: Option<&alloc::IpAllocator<I>>,
         allow_null: bool,
-        disable_randomness: bool,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         // Allocate IP and ports for source and destination NAT.
         //
@@ -368,12 +339,12 @@ impl NatDefaultAllocator {
         // port/identifier value for the src_mapping, even though we'll never use it. (This does not
         // apply to TCP or UDP, for which we need and use both ports).
         let src_mapping = match pool_src_opt {
-            Some(pool_src) => Some(pool_src.allocate(allow_null, disable_randomness)?),
+            Some(pool_src) => Some(pool_src.allocate(allow_null)?),
             None => None,
         };
 
         let dst_mapping = match pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.allocate(allow_null, disable_randomness)?),
+            Some(pool_dst) => Some(pool_dst.allocate(allow_null)?),
             None => None,
         };
 
@@ -384,7 +355,6 @@ impl NatDefaultAllocator {
         flow_key: &FlowKey,
         reverse_pool_src_opt: Option<&alloc::IpAllocator<I>>,
         reverse_pool_dst_opt: Option<&alloc::IpAllocator<I>>,
-        disable_randomness: bool,
     ) -> Result<AllocationMapping<I>, AllocatorError> {
         let reverse_src_mapping = match reverse_pool_src_opt {
             Some(pool_src) => {
@@ -407,7 +377,6 @@ impl NatDefaultAllocator {
                         )
                     })?,
                     reservation_src_port_number,
-                    disable_randomness,
                 )?)
             }
             None => None,
@@ -428,7 +397,6 @@ impl NatDefaultAllocator {
                         )
                     })?,
                     reservation_dst_port_number,
-                    disable_randomness,
                 )?)
             }
             None => None,
@@ -464,7 +432,7 @@ impl NatDefaultAllocator {
             .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
-        pool.reserve(ip, port, false)
+        pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
     }
 
@@ -484,14 +452,13 @@ impl NatDefaultAllocator {
             .ok_or(AllocatorError::InternalIssue("No ip allocator".to_string()))?;
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
-        pool.reserve(ip, port, false)
+        pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
     }
 
-    #[cfg(test)]
     #[must_use]
-    pub fn set_disable_randomness(mut self, disable_randomness: bool) -> Self {
-        self.disable_randomness = disable_randomness;
+    pub fn set_randomize(mut self, randomize: bool) -> Self {
+        self.randomize = randomize;
         self
     }
 }

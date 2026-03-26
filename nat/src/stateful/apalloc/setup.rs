@@ -77,6 +77,7 @@ impl NatDefaultAllocator {
             |expose| &expose.ips,
             &mut self.pools_src44,
             NextHeader::ICMP,
+            self.randomize,
         )?;
 
         build_nat_pool_generic(
@@ -88,6 +89,7 @@ impl NatDefaultAllocator {
             |expose| &expose.ips,
             &mut self.pools_src66,
             NextHeader::ICMP6,
+            self.randomize,
         )
     }
 
@@ -105,6 +107,7 @@ impl NatDefaultAllocator {
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst44,
             NextHeader::ICMP,
+            self.randomize,
         )?;
 
         build_nat_pool_generic(
@@ -116,6 +119,7 @@ impl NatDefaultAllocator {
             VpcExpose::as_range_or_empty,
             &mut self.pools_dst66,
             NextHeader::ICMP6,
+            self.randomize,
         )
     }
 }
@@ -134,6 +138,7 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
     target_prefixes_from_expose: H,
     table: &mut PoolTable<I, J>,
     icmp_proto: NextHeader,
+    randomize: bool,
 ) -> Result<(), AllocatorError>
 where
     F: FnOnce(&'a VpcManifest) -> FIter,
@@ -157,16 +162,19 @@ where
             original_prefixes_from_expose(expose),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.tcp,
+            randomize,
         )?;
         let udp_ip_allocator = ip_allocator_for_prefixes(
             original_prefixes_from_expose(expose),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.udp,
+            randomize,
         )?;
         let icmp_ip_allocator = ip_allocator_for_prefixes(
             original_prefixes_from_expose(expose),
             idle_timeout,
             &PrefixPortsSet::default(),
+            randomize,
         )?;
 
         add_pool_entries(
@@ -258,13 +266,14 @@ fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
     prefixes: &PrefixPortsSet,
     idle_timeout: Duration,
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
+    randomize: bool,
 ) -> Result<IpAllocator<J>, AllocatorError> {
     let pool = create_natpool(
         prefixes,
         prefixes_and_ports_to_exclude_from_pools,
         idle_timeout,
     )?;
-    let allocator = IpAllocator::new(pool);
+    let allocator = IpAllocator::new(pool, randomize);
     Ok(allocator)
 }
 
