@@ -4,19 +4,25 @@
 use crate::stateful::apalloc::NatAllocator;
 use arc_swap::ArcSwapOption;
 use config::ConfigError;
+use config::GenId;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpc::VpcTable;
+use config::external::overlay::vpcpeering::VpcExpose;
+use flow_entry::flow_table::FlowTable;
 use net::packet::VpcDiscriminant;
 use std::sync::Arc;
 use tracing::debug;
 
+use crate::stateful::flows::invalidate_all_stateful_nat_flows;
+use crate::stateful::flows::upgrade_all_stateful_nat_flows;
+use crate::stateful::flows::validate_stateful_nat_flows;
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct StatefulNatPeering {
-    pub(crate) src_vpc_id: VpcDiscriminant,
-    pub(crate) dst_vpc_id: VpcDiscriminant,
+    pub(crate) src_vpcd: VpcDiscriminant,
+    pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) peering: Peering,
 }
-
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct StatefulNatConfig(Vec<StatefulNatPeering>);
 
@@ -27,8 +33,8 @@ impl StatefulNatConfig {
         for vpc in vpc_table.values() {
             for peering in vpc.stateful_nat_peerings() {
                 config.push(StatefulNatPeering {
-                    src_vpc_id: VpcDiscriminant::from_vni(vpc.vni),
-                    dst_vpc_id: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
+                    src_vpcd: VpcDiscriminant::from_vni(vpc.vni),
+                    dst_vpcd: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
                     peering: peering.clone(),
                 });
             }
@@ -37,6 +43,27 @@ impl StatefulNatConfig {
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &StatefulNatPeering> {
         self.0.iter()
+    }
+
+    pub(crate) fn num_stateful_nat_peerings(&self) -> usize {
+        self.0
+            .iter()
+            .map(|p| &p.peering)
+            .filter(|p| {
+                p.local.exposes.iter().any(VpcExpose::has_stateful_nat)
+                    || p.remote.exposes.iter().any(VpcExpose::has_stateful_nat)
+            })
+            .count()
+    }
+
+    pub(crate) fn get_peering(
+        &self,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+    ) -> Option<&StatefulNatPeering> {
+        self.0
+            .iter()
+            .find(|p| p.src_vpcd == src_vpcd && p.dst_vpcd == dst_vpcd)
     }
 }
 
@@ -63,6 +90,41 @@ impl NatAllocatorWriter {
     #[must_use]
     pub fn get_reader_factory(&self) -> NatAllocatorReaderFactory {
         self.get_reader().factory()
+    }
+
+    /// Replace the nat allocator with a new one
+    pub fn update_nat_allocator(
+        &mut self,
+        vpc_table: &VpcTable,
+        flow_table: &FlowTable,
+        genid: GenId,
+    ) -> Result<(), ConfigError> {
+        let new_config = StatefulNatConfig::new(vpc_table);
+
+        // freeze the current allocator ?
+        let old_allocator = self.allocator.load();
+
+        if new_config == self.config && old_allocator.is_some() {
+            debug!("No need to update NAT allocator: NAT peerings did not change");
+            upgrade_all_stateful_nat_flows(flow_table, genid);
+            return Ok(());
+        }
+        if new_config.num_stateful_nat_peerings() == 0 {
+            debug!("Stateful NAT is not required: will invalidate flows and remove allocator");
+            invalidate_all_stateful_nat_flows(flow_table);
+            self.allocator.store(None);
+            return Ok(());
+        }
+
+        // build a new allocator to replace the current
+        let mut new_allocator = NatAllocator::from_config(&new_config)?;
+        if old_allocator.is_some() {
+            validate_stateful_nat_flows(flow_table, &new_config, &mut new_allocator, genid);
+        }
+        self.allocator.store(Some(Arc::new(new_allocator)));
+        self.config = new_config;
+        debug!("Updated allocator for stateful NAT");
+        Ok(())
     }
 
     fn update_allocator_and_set_randomness(
@@ -92,7 +154,7 @@ impl NatAllocatorWriter {
         }
 
         let new_allocator =
-            Self::update_existing_allocator(old_allocator, &self.config, &new_config)?;
+            Self::update_existing_allocator(Some(old_allocator), &self.config, &new_config)?;
         // Swap allocators; the old one is dropped.
         self.allocator.store(Some(Arc::new(new_allocator)));
         self.config = new_config;
@@ -113,10 +175,11 @@ impl NatAllocatorWriter {
     }
 
     fn update_existing_allocator(
-        _allocator: &NatAllocator,
+        _allocator: Option<&NatAllocator>,
         _old_config: &StatefulNatConfig,
         new_config: &StatefulNatConfig,
     ) -> Result<NatAllocator, ConfigError> {
+        #[allow(clippy::let_and_return)] // temporary
         // TODO: Report state from old allocator to new allocator
         //
         // This means reporting all allocated IPs (and ports for these IPs) from the old allocator
