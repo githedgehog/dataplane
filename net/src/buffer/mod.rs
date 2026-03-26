@@ -13,6 +13,29 @@ use std::error::Error;
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub use test_buffer::*;
 
+/// A [`PacketBufferMut`] that can be constructed from a raw Ethernet frame.
+///
+/// This is the minimum additional capability beyond [`PacketBufferMut`] needed to
+/// bridge raw byte arrays (e.g. from an in-process TCP stack) into `Packet<Buf>`.
+///
+/// Gated behind the `test_buffer` feature because production buffer types (DPDK mbufs)
+/// are allocated from memory pools, not constructed from arbitrary byte slices.
+#[cfg(any(doc, test, feature = "test_buffer"))]
+pub trait FrameBuffer: PacketBufferMut + Sized {
+    /// Construct a buffer whose active region contains exactly `frame`.
+    ///
+    /// Implementations must provide sufficient headroom and tailroom for
+    /// downstream header manipulation (prepend, trim, append).
+    fn from_frame(frame: &[u8]) -> Self;
+}
+
+#[cfg(any(doc, test, feature = "test_buffer"))]
+impl FrameBuffer for TestBuffer {
+    fn from_frame(frame: &[u8]) -> Self {
+        TestBuffer::from_raw_data(frame)
+    }
+}
+
 /// Super trait representing the abstract operations which may be performed on a packet buffer.
 pub trait PacketBuffer: AsRef<[u8]> + Headroom + Debug + 'static {}
 impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + Debug + 'static {}
