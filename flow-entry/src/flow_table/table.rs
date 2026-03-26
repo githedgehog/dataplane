@@ -6,10 +6,12 @@ use dashmap::DashMap;
 use net::FlowKey;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::{borrow::Borrow, time::Duration};
-use tracing::debug;
 
-use concurrency::sync::{Arc, RwLock};
+use concurrency::sync::{Arc, RwLock, RwLockReadGuard};
+use std::borrow::Borrow;
+use std::sync::PoisonError;
+use std::time::Duration;
+use tracing::debug;
 
 use net::flows::{FlowInfo, FlowStatus};
 
@@ -298,6 +300,19 @@ impl FlowTable {
                 .filter(|e| e.value().status() == FlowStatus::Active)
                 .count(),
         )
+    }
+
+    /// Take a read lock to the flow table
+    /// # Errors
+    /// Returns `PoisonError` if the lock was poisoned.
+    #[allow(clippy::type_complexity)]
+    pub fn lock_read(
+        &self,
+    ) -> Result<
+        RwLockReadGuard<'_, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
+        PoisonError<RwLockReadGuard<'_, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>>,
+    > {
+        self.table.read()
     }
 }
 
