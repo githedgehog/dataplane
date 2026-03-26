@@ -227,14 +227,13 @@ mod tests {
     use etherparse::icmpv4::DestUnreachableHeader;
     use etherparse::{IcmpEchoHeader, Icmpv4Type};
     use net::buffer::TestBuffer;
-    use net::eth::Eth;
     use net::eth::ethtype::EthType;
-    use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::headers::{HeadersBuilder, Net, Transport};
     use net::icmp4::Icmp4;
     use net::ip::NextHeader;
     use net::ipv4::Ipv4;
     use net::packet::Packet;
+    use net::packet::test_utils::make_default_for_eth;
     use net::parse::DeParse;
     use std::net::Ipv4Addr;
 
@@ -242,11 +241,7 @@ mod tests {
     fn test_validate_checksums_icmp_no_network_layer() {
         // Build a packet without IP header
         let mut headers = HeadersBuilder::default();
-        headers.eth(Some(Eth::new(
-            SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-            DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-            EthType::IPV4,
-        )));
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
@@ -263,6 +258,7 @@ mod tests {
         let mut ipv4 = Ipv4::default();
         ipv4.set_source(Ipv4Addr::new(1, 2, 3, 4).try_into().unwrap());
         ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
 
         let headers = headers.build().unwrap();
@@ -285,6 +281,7 @@ mod tests {
 
         let tcp = net::tcp::Tcp::default();
 
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Tcp(tcp)));
 
@@ -309,6 +306,7 @@ mod tests {
         let icmp_type = Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 1, seq: 1 });
         let icmp = Icmp4::with_type(icmp_type);
 
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
 
@@ -331,13 +329,17 @@ mod tests {
         ipv4.set_next_header(NextHeader::ICMP);
 
         let icmp_type = Icmpv4Type::DestinationUnreachable(DestUnreachableHeader::Network);
-        let icmp = Icmp4::with_type(icmp_type);
+        let mut icmp = Icmp4::with_type(icmp_type);
+        icmp.update_checksum(&[]).unwrap();
 
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
 
         let headers = headers.build().unwrap();
-        let mut buffer = TestBuffer::new();
+        // Use a zeroed buffer so that ICMP payload that assumed null payload is correct
+        let data = vec![0u8; headers.size().get() as usize];
+        let mut buffer = TestBuffer::from_raw_data(&data);
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
