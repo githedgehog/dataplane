@@ -39,6 +39,9 @@ mod accessor_macros;
 mod embedded;
 pub use embedded::*;
 
+#[cfg(feature = "packet-builder")]
+pub mod valid_builder;
+
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
