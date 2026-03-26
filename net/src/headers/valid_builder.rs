@@ -908,14 +908,22 @@ fn set_net_next_header(net: &mut Option<Net>, nh: NextHeader) {
 )]
 mod tests {
     use super::*;
-    use crate::headers::{TryEth, TryIcmp4, TryIpv4, TryIpv6, TryTcp, TryUdp, TryVxlan};
+    use crate::buffer::TestBuffer;
+    use crate::headers::{
+        TryEth, TryIcmp4, TryIp, TryIpv4, TryIpv6, TryTcp, TryTransport, TryUdp, TryVxlan,
+    };
+    use crate::icmp4::Icmp4ErrorMsgGenerator;
+    use crate::icmp6::Icmp6ErrorMsgGenerator;
     use crate::ipv4::addr::UnicastIpv4Addr;
     use crate::ipv6::addr::UnicastIpv6Addr;
+    use crate::packet::Packet;
     use crate::parse::Parse;
+    use std::time::Duration;
+
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use etherparse::icmpv4::DestUnreachableHeader;
-    use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type};
+    use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type, Icmpv6Header, Icmpv6Type};
 
     // -- shared helpers ----------------------------------------------------
 
@@ -1747,5 +1755,749 @@ mod tests {
         assert!(headers.try_icmp4().is_some());
         assert!(headers.embedded_ip().is_some());
         assert_roundtrip(&headers, &[]);
+    }
+
+    // =====================================================================
+    // materialize — direct Packet<Buf> construction
+    // =====================================================================
+
+    /// Materialize → serialize → parse roundtrip.
+    ///
+    /// Materializes `ValidHeadersBuilder` output into a `Packet<TestBuffer>`,
+    /// then serializes to wire format and re-parses, asserting the headers
+    /// match.
+    fn assert_materialize_roundtrip(
+        packet: Packet<TestBuffer>,
+        expected_headers: &Headers,
+        payload: &[u8],
+    ) {
+        // The materialized packet's headers should match the expected headers.
+        assert_eq!(packet.get_headers(), expected_headers, "headers mismatch");
+
+        // The payload length should match.
+        assert_eq!(
+            packet.payload().as_ref(),
+            payload,
+            "payload mismatch"
+        );
+
+        // Serialize to wire format and re-parse to verify full consistency.
+        let wire = packet.serialize().expect("serialize should succeed");
+        let reparsed = Packet::<TestBuffer>::new(TestBuffer::from_raw_data(wire.as_ref()))
+            .expect("re-parse should succeed");
+        assert_eq!(
+            reparsed.get_headers(),
+            expected_headers,
+            "serialize → parse roundtrip headers mismatch"
+        );
+    }
+
+    #[test]
+    fn materialize_ipv4_tcp() {
+        let headers = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .tcp(tcp_sport(), tcp_dport(), |tcp| {
+                tcp.set_syn(true);
+            })
+            .build(&[])
+            .unwrap();
+
+        let packet: Packet<TestBuffer> = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .tcp(tcp_sport(), tcp_dport(), |tcp| {
+                tcp.set_syn(true);
+            })
+            .materialize(&[])
+            .unwrap();
+
+        assert_materialize_roundtrip(packet, &headers, &[]);
+    }
+
+    #[test]
+    fn materialize_ipv4_tcp_with_payload() {
+        let payload = [0xAB_u8; 64];
+
+        let headers = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .tcp(tcp_sport(), tcp_dport(), |_| {})
+            .build(&payload)
+            .unwrap();
+
+        let packet: Packet<TestBuffer> = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .tcp(tcp_sport(), tcp_dport(), |_| {})
+            .materialize(&payload)
+            .unwrap();
+
+        assert_materialize_roundtrip(packet, &headers, &payload);
+    }
+
+    #[test]
+    fn materialize_ipv6_udp() {
+        let headers = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv6(|ip| {
+                ip.set_source(test_src_v6());
+                ip.set_destination(test_dst_v6());
+            })
+            .udp(udp_sport(), udp_dport(), |_| {})
+            .build(&[])
+            .unwrap();
+
+        let packet: Packet<TestBuffer> = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv6(|ip| {
+                ip.set_source(test_src_v6());
+                ip.set_destination(test_dst_v6());
+            })
+            .udp(udp_sport(), udp_dport(), |_| {})
+            .materialize(&[])
+            .unwrap();
+
+        assert_materialize_roundtrip(packet, &headers, &[]);
+    }
+
+    #[test]
+    fn materialize_icmp4_error_with_embedded() {
+        let headers = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .icmp4(make_icmp4_dest_unreachable())
+            .embedded(|inner| {
+                inner
+                    .ipv4(|ip| {
+                        ip.set_source(
+                            UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap(),
+                        );
+                        ip.set_destination(Ipv4Addr::new(172, 16, 0, 1));
+                        ip.set_ttl(4);
+                    })
+                    .tcp(tcp_sport(), tcp_dport(), |_| {})
+            })
+            .build(&[])
+            .unwrap();
+
+        let packet: Packet<TestBuffer> = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .icmp4(make_icmp4_dest_unreachable())
+            .embedded(|inner| {
+                inner
+                    .ipv4(|ip| {
+                        ip.set_source(
+                            UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap(),
+                        );
+                        ip.set_destination(Ipv4Addr::new(172, 16, 0, 1));
+                        ip.set_ttl(4);
+                    })
+                    .tcp(tcp_sport(), tcp_dport(), |_| {})
+            })
+            .materialize(&[])
+            .unwrap();
+
+        assert_materialize_roundtrip(packet, &headers, &[]);
+    }
+
+    #[test]
+    fn materialize_vxlan() {
+        let vni = Vni::new_checked(42).unwrap();
+        // A minimal inner Ethernet frame so the parser can detect VXLAN
+        // during the serialize → parse roundtrip.
+        let inner_frame = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00,
+            0x45, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00,
+            0x40, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+            0x05, 0x06, 0x07, 0x08,
+        ];
+
+        let headers = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .udp(udp_sport(), Vxlan::PORT, |_| {})
+            .vxlan(vni)
+            .build(&inner_frame)
+            .unwrap();
+
+        let packet: Packet<TestBuffer> = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .udp(udp_sport(), Vxlan::PORT, |_| {})
+            .vxlan(vni)
+            .materialize(&inner_frame)
+            .unwrap();
+
+        assert_materialize_roundtrip(packet, &headers, &inner_frame);
+    }
+
+    #[test]
+    fn materialize_ip_only_no_transport() {
+        let headers = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .build(&[])
+            .unwrap();
+
+        let packet: Packet<TestBuffer> = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .materialize(&[])
+            .unwrap();
+
+        assert_materialize_roundtrip(packet, &headers, &[]);
+    }
+
+    #[test]
+    fn materialize_matches_deparse_parse() {
+        // Build headers via the builder.
+        let payload = [0x42_u8; 20];
+        let headers = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .udp(udp_sport(), udp_dport(), |_| {})
+            .build(&payload)
+            .unwrap();
+
+        // Approach A: materialize directly.
+        let materialized: Packet<TestBuffer> = ValidHeadersBuilder::new()
+            .eth_defaults()
+            .ipv4(|ip| {
+                ip.set_source(test_src_v4());
+                ip.set_destination(test_dst_v4());
+                ip.set_ttl(64);
+            })
+            .udp(udp_sport(), udp_dport(), |_| {})
+            .materialize(&payload)
+            .unwrap();
+
+        // Approach B: deparse → parse (the traditional round-trip).
+        let hdr_size = headers.size().get() as usize;
+        let total = hdr_size + payload.len();
+        let mut buf = vec![0u8; total];
+        headers.deparse(&mut buf).expect("deparse should succeed");
+        buf[hdr_size..].copy_from_slice(&payload);
+        let parsed = Packet::<TestBuffer>::new(TestBuffer::from_raw_data(&buf))
+            .expect("parse should succeed");
+
+        // Both approaches must yield identical headers and payloads.
+        assert_eq!(
+            materialized.get_headers(),
+            parsed.get_headers(),
+            "materialized vs parsed headers mismatch"
+        );
+        assert_eq!(
+            materialized.payload().as_ref(),
+            parsed.payload().as_ref(),
+            "materialized vs parsed payload mismatch"
+        );
+    }
+
+    // =====================================================================
+    // Property-based tests (bolero)
+    // =====================================================================
+
+    /// Dummy inner Ethernet frame used as VXLAN payload in property tests.
+    ///
+    /// The parser needs *some* bytes after the VXLAN header for the roundtrip
+    /// to succeed; these are opaque payload as far as the outer headers are
+    /// concerned.
+    #[rustfmt::skip]
+    const VXLAN_INNER_FRAME: [u8; 36] = [
+        0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00,
+        0x45, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00,
+        0x40, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+        0x05, 0x06, 0x07, 0x08,
+    ];
+
+    /// Generate a random `ICMPv4` echo request or reply.
+    ///
+    /// We deliberately avoid the [`Icmp4`] [`TypeGenerator`] here because it
+    /// can produce `TimestampRequest`/`TimestampReply` variants that trigger a
+    /// known exact-length check in `etherparse::Icmpv4Slice::from_slice`,
+    /// causing `deparse → parse` roundtrips to fail when trailing payload
+    /// bytes are present (etherparse requires `slice.len() ==
+    /// TimestampMessage::LEN` for those types).
+    ///
+    /// FIXME: fix the root cause in `Icmp4::parse` (truncate the input slice
+    /// to `Icmpv4Header::MAX_LEN` before calling `from_slice`) and then
+    /// switch back to `driver.produce::<Icmp4>()`.
+    ///
+    /// [`TypeGenerator`]: bolero::TypeGenerator
+    fn gen_icmp4_echo<D: bolero::Driver>(driver: &mut D) -> Option<Icmp4> {
+        let id: u16 = driver.produce()?;
+        let seq: u16 = driver.produce()?;
+        let echo = IcmpEchoHeader { id, seq };
+        let icmp_type = if driver.produce::<bool>()? {
+            Icmpv4Type::EchoRequest(echo)
+        } else {
+            Icmpv4Type::EchoReply(echo)
+        };
+        Some(Icmp4(Icmpv4Header::new(icmp_type)))
+    }
+
+    /// Generate a random `ICMPv6` echo request or reply.
+    ///
+    /// Mirrors [`gen_icmp4_echo`] for the v6 path.  The `ICMPv6` parser does
+    /// not have the same exact-length bug as `ICMPv4`, but using the [`Icmp6`]
+    /// [`TypeGenerator`] can produce error-type messages whose `parse_payload`
+    /// method then attempts to parse random trailing bytes as embedded
+    /// headers — causing `consumed > headers.size()` mismatches.  Echo types
+    /// never trigger embedded-header parsing.
+    ///
+    /// [`TypeGenerator`]: bolero::TypeGenerator
+    fn gen_icmp6_echo<D: bolero::Driver>(driver: &mut D) -> Option<Icmp6> {
+        let id: u16 = driver.produce()?;
+        let seq: u16 = driver.produce()?;
+        let echo = IcmpEchoHeader { id, seq };
+        let icmp_type = if driver.produce::<bool>()? {
+            Icmpv6Type::EchoRequest(echo)
+        } else {
+            Icmpv6Type::EchoReply(echo)
+        };
+        Some(Icmp6(Icmpv6Header {
+            icmp_type,
+            checksum: 0, // builder recomputes checksums
+        }))
+    }
+
+    /// Generator that drives [`ValidHeadersBuilder`] with arbitrary inputs.
+    ///
+    /// Produces `(Headers, Vec<u8>)` — the builder output and the payload
+    /// bytes used during construction.
+    ///
+    /// # Coverage
+    ///
+    /// - IPv4 and IPv6 network layers
+    /// - TCP, UDP, `ICMPv4`, `ICMPv6`, and IP-only (no transport)
+    /// - 0–2 VLAN tags
+    /// - VXLAN encapsulation (UDP only)
+    /// - ICMP error messages with embedded headers (inner TCP / UDP / none)
+    /// - Variable-length payloads (0–128 bytes)
+    struct ValidPacketGenerator;
+
+    impl bolero::ValueGenerator for ValidPacketGenerator {
+        type Output = (Headers, Vec<u8>);
+
+        #[allow(clippy::too_many_lines)]
+        fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            // -- payload ---------------------------------------------------
+            let payload_len = driver.produce::<u8>()? as usize % 129;
+            let payload: Vec<u8> = (0..payload_len)
+                .map(|_| driver.produce::<u8>())
+                .collect::<Option<_>>()?;
+
+            // -- Ethernet --------------------------------------------------
+            let builder = if driver.produce::<bool>()? {
+                let src: SourceMac = driver.produce()?;
+                let dst: DestinationMac = driver.produce()?;
+                ValidHeadersBuilder::new().eth(src, dst)
+            } else {
+                ValidHeadersBuilder::new().eth_defaults()
+            };
+
+            // -- VLANs (0–2) -----------------------------------------------
+            let vlan_count = driver.produce::<u8>()? % 3;
+            let builder = (0..vlan_count).try_fold(builder, |b, _| {
+                let vid: Vid = driver.produce()?;
+                b.vlan(vid).ok()
+            })?;
+
+            // -- Network + Transport ----------------------------------------
+            let use_ipv4 = driver.produce::<bool>()?;
+            // 0=TCP  1=UDP  2=VXLAN  3=ICMP  4=ICMP+embedded  5=IP-only
+            let variant = driver.produce::<u8>()? % 6;
+            let ttl: u8 = driver.produce::<u8>()?.saturating_add(1);
+
+            match (use_ipv4, variant) {
+                // ---- IPv4 + TCP ------------------------------------------
+                (true, 0) => {
+                    let src: UnicastIpv4Addr = driver.produce()?;
+                    let dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
+                    let sport: TcpPort = driver.produce()?;
+                    let dport: TcpPort = driver.produce()?;
+                    let h = builder
+                        .ipv4(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_ttl(ttl);
+                        })
+                        .tcp(sport, dport, |_| {})
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                // ---- IPv6 + TCP ------------------------------------------
+                (false, 0) => {
+                    let src: UnicastIpv6Addr = driver.produce()?;
+                    let dst = Ipv6Addr::from(driver.produce::<u128>()?);
+                    let sport: TcpPort = driver.produce()?;
+                    let dport: TcpPort = driver.produce()?;
+                    let h = builder
+                        .ipv6(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_hop_limit(ttl);
+                        })
+                        .tcp(sport, dport, |_| {})
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                // ---- IPv4 + UDP ------------------------------------------
+                (true, 1) => {
+                    let src: UnicastIpv4Addr = driver.produce()?;
+                    let dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
+                    let sport: UdpPort = driver.produce()?;
+                    let dport: UdpPort = driver.produce()?;
+                    let h = builder
+                        .ipv4(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_ttl(ttl);
+                        })
+                        .udp(sport, dport, |_| {})
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                // ---- IPv6 + UDP ------------------------------------------
+                (false, 1) => {
+                    let src: UnicastIpv6Addr = driver.produce()?;
+                    let dst = Ipv6Addr::from(driver.produce::<u128>()?);
+                    let sport: UdpPort = driver.produce()?;
+                    let dport: UdpPort = driver.produce()?;
+                    let h = builder
+                        .ipv6(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_hop_limit(ttl);
+                        })
+                        .udp(sport, dport, |_| {})
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                // ---- IPv4 + UDP + VXLAN ----------------------------------
+                (true, 2) => {
+                    let src: UnicastIpv4Addr = driver.produce()?;
+                    let dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
+                    let sport: UdpPort = driver.produce()?;
+                    let vni: Vni = driver.produce()?;
+                    let h = builder
+                        .ipv4(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_ttl(ttl);
+                        })
+                        .udp(sport, Vxlan::PORT, |_| {})
+                        .vxlan(vni)
+                        .build(&VXLAN_INNER_FRAME)
+                        .ok()?;
+                    Some((h, VXLAN_INNER_FRAME.to_vec()))
+                }
+                // ---- IPv6 + UDP + VXLAN ----------------------------------
+                (false, 2) => {
+                    let src: UnicastIpv6Addr = driver.produce()?;
+                    let dst = Ipv6Addr::from(driver.produce::<u128>()?);
+                    let sport: UdpPort = driver.produce()?;
+                    let vni: Vni = driver.produce()?;
+                    let h = builder
+                        .ipv6(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_hop_limit(ttl);
+                        })
+                        .udp(sport, Vxlan::PORT, |_| {})
+                        .vxlan(vni)
+                        .build(&VXLAN_INNER_FRAME)
+                        .ok()?;
+                    Some((h, VXLAN_INNER_FRAME.to_vec()))
+                }
+                // ---- IPv4 + ICMPv4 (no embedded) -------------------------
+                (true, 3) => {
+                    let src: UnicastIpv4Addr = driver.produce()?;
+                    let dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
+                    let icmp = gen_icmp4_echo(driver)?;
+                    let h = builder
+                        .ipv4(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_ttl(ttl);
+                        })
+                        .icmp4(icmp)
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                // ---- IPv6 + ICMPv6 (no embedded) -------------------------
+                (false, 3) => {
+                    let src: UnicastIpv6Addr = driver.produce()?;
+                    let dst = Ipv6Addr::from(driver.produce::<u128>()?);
+                    let icmp = gen_icmp6_echo(driver)?;
+                    let h = builder
+                        .ipv6(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_hop_limit(ttl);
+                        })
+                        .icmp6(icmp)
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                // ---- IPv4 + ICMPv4 error + embedded ----------------------
+                (true, 4) => {
+                    let src: UnicastIpv4Addr = driver.produce()?;
+                    let dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
+                    let icmp = Icmp4ErrorMsgGenerator.generate(driver)?;
+                    // Generate all inner-header values up front so the
+                    // `embedded` closure can capture them by value.
+                    let inner_src: UnicastIpv4Addr = driver.produce()?;
+                    let inner_dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
+                    let inner_ttl: u8 = driver.produce()?;
+                    let inner_transport = driver.produce::<u8>()? % 3;
+                    let tcp_s: TcpPort = driver.produce()?;
+                    let tcp_d: TcpPort = driver.produce()?;
+                    let udp_s: UdpPort = driver.produce()?;
+                    let udp_d: UdpPort = driver.produce()?;
+                    let h = builder
+                        .ipv4(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_ttl(ttl);
+                        })
+                        .icmp4(icmp)
+                        .embedded(|asm| {
+                            let asm = asm.ipv4(|ip| {
+                                ip.set_source(inner_src);
+                                ip.set_destination(inner_dst);
+                                ip.set_ttl(inner_ttl);
+                            });
+                            match inner_transport {
+                                0 => asm.tcp(tcp_s, tcp_d, |_| {}),
+                                1 => asm.udp(udp_s, udp_d, |_| {}),
+                                _ => asm,
+                            }
+                        })
+                        .build(&[])
+                        .ok()?;
+                    Some((h, vec![]))
+                }
+                // ---- IPv6 + ICMPv6 error + embedded ----------------------
+                (false, 4) => {
+                    let src: UnicastIpv6Addr = driver.produce()?;
+                    let dst = Ipv6Addr::from(driver.produce::<u128>()?);
+                    let icmp = Icmp6ErrorMsgGenerator.generate(driver)?;
+                    let inner_src: UnicastIpv6Addr = driver.produce()?;
+                    let inner_dst = Ipv6Addr::from(driver.produce::<u128>()?);
+                    let inner_hop: u8 = driver.produce()?;
+                    let inner_transport = driver.produce::<u8>()? % 3;
+                    let tcp_s: TcpPort = driver.produce()?;
+                    let tcp_d: TcpPort = driver.produce()?;
+                    let udp_s: UdpPort = driver.produce()?;
+                    let udp_d: UdpPort = driver.produce()?;
+                    let h = builder
+                        .ipv6(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_hop_limit(ttl);
+                        })
+                        .icmp6(icmp)
+                        .embedded(|asm| {
+                            let asm = asm.ipv6(|ip| {
+                                ip.set_source(inner_src);
+                                ip.set_destination(inner_dst);
+                                ip.set_hop_limit(inner_hop);
+                            });
+                            match inner_transport {
+                                0 => asm.tcp(tcp_s, tcp_d, |_| {}),
+                                1 => asm.udp(udp_s, udp_d, |_| {}),
+                                _ => asm,
+                            }
+                        })
+                        .build(&[])
+                        .ok()?;
+                    Some((h, vec![]))
+                }
+                // ---- IPv4 IP-only ----------------------------------------
+                (true, 5) => {
+                    let src: UnicastIpv4Addr = driver.produce()?;
+                    let dst = Ipv4Addr::from(driver.produce::<[u8; 4]>()?);
+                    let h = builder
+                        .ipv4(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_ttl(ttl);
+                        })
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                // ---- IPv6 IP-only ----------------------------------------
+                (false, 5) => {
+                    let src: UnicastIpv6Addr = driver.produce()?;
+                    let dst = Ipv6Addr::from(driver.produce::<u128>()?);
+                    let h = builder
+                        .ipv6(|ip| {
+                            ip.set_source(src);
+                            ip.set_destination(dst);
+                            ip.set_hop_limit(ttl);
+                        })
+                        .build(&payload)
+                        .ok()?;
+                    Some((h, payload))
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    // -- property tests ---------------------------------------------------
+
+    /// For any headers produced by the builder, deparse → parse is the
+    /// identity.
+    #[test]
+    fn prop_roundtrip() {
+        bolero::check!()
+            .with_generator(ValidPacketGenerator)
+            .with_test_time(Duration::from_secs(10))
+            .for_each(|(headers, payload)| {
+                assert_roundtrip(headers, payload);
+            });
+    }
+
+    /// [`Packet::from_headers`] preserves the exact headers and payload
+    /// produced by the builder.
+    #[test]
+    fn prop_materialize_preserves_headers() {
+        bolero::check!()
+            .with_generator(ValidPacketGenerator)
+            .for_each(|(headers, payload)| {
+                let packet: Packet<TestBuffer> =
+                    Packet::from_headers(headers.clone(), payload);
+                assert_eq!(packet.get_headers(), headers);
+                assert_eq!(packet.payload().as_ref(), payload.as_slice());
+            });
+    }
+
+    /// The `EthType` on the Ethernet header (or innermost VLAN) correctly
+    /// reflects the IP version selected at build time.
+    #[test]
+    fn prop_ethtype_matches_ip_version() {
+        bolero::check!()
+            .with_generator(ValidPacketGenerator)
+            .for_each(|(headers, _payload)| {
+                let expected = match headers.try_ip() {
+                    Some(Net::Ipv4(_)) => EthType::IPV4,
+                    Some(Net::Ipv6(_)) => EthType::IPV6,
+                    None => return,
+                };
+                let eth = headers.try_eth().expect("builder always sets Eth");
+                if headers.vlan().is_empty() {
+                    assert_eq!(
+                        eth.ether_type(),
+                        expected,
+                        "without VLANs, Eth EthType must match IP version"
+                    );
+                } else {
+                    assert_eq!(
+                        eth.ether_type(),
+                        EthType::VLAN,
+                        "with VLANs, Eth EthType must be 802.1Q"
+                    );
+                }
+            });
+    }
+
+    /// The IP header's `NextHeader` / protocol field matches the transport
+    /// protocol selected at build time.
+    #[test]
+    fn prop_next_header_matches_transport() {
+        bolero::check!()
+            .with_generator(ValidPacketGenerator)
+            .for_each(|(headers, _payload)| {
+                let expected = match headers.try_transport() {
+                    Some(Transport::Tcp(_)) => NextHeader::TCP,
+                    Some(Transport::Udp(_)) => NextHeader::UDP,
+                    Some(Transport::Icmp4(_)) => NextHeader::ICMP,
+                    Some(Transport::Icmp6(_)) => NextHeader::ICMP6,
+                    None => return, // IP-only: NextHeader not set by builder
+                };
+                let actual = match headers.try_ip() {
+                    Some(Net::Ipv4(ip)) => NextHeader::from(ip.protocol()),
+                    Some(Net::Ipv6(ip)) => ip.next_header(),
+                    None => return,
+                };
+                assert_eq!(
+                    actual, expected,
+                    "IP NextHeader must match transport protocol"
+                );
+            });
+    }
+
+    /// The builder's checksum computation is idempotent: calling
+    /// `update_checksums` a second time with the same payload must be a
+    /// no-op.
+    #[test]
+    fn prop_checksum_idempotent() {
+        bolero::check!()
+            .with_generator(ValidPacketGenerator)
+            .for_each(|(headers, payload)| {
+                let mut recomputed = headers.clone();
+                recomputed.update_checksums(payload.as_slice());
+                assert_eq!(
+                    headers, &recomputed,
+                    "re-running update_checksums must be a no-op"
+                );
+            });
     }
 }
