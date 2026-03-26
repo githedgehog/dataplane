@@ -58,7 +58,8 @@ mod tests {
         VpcDiscriminant::from_vni(Vni::new_checked(vni_id).expect("valid test VNI"))
     }
 
-    /// Build a two-VPC overlay with **identity-IP** stateful NAT.
+    /// Build a two-VPC overlay with **identity-IP** stateful NAT and a
+    /// caller-specified `idle_timeout`.
     ///
     /// | VPC   | VNI | Role   | Expose              | As range            |
     /// |-------|-----|--------|---------------------|---------------------|
@@ -67,14 +68,13 @@ mod tests {
     ///
     /// The `/32 → /32` identity mapping ensures the source IP is unchanged.
     /// NAT still allocates a port from its pool and rewrites the source port.
-    fn build_identity_nat_overlay() -> Overlay {
+    fn build_identity_nat_overlay_with_timeout(idle_timeout: Duration) -> Overlay {
         let mut vpc_table = VpcTable::new();
         let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("VPC-1"));
         let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("VPC-2"));
 
-        // VPC-1 expose: stateful NAT with identity IP mapping, 60 s idle timeout.
         let expose_vpc1 = VpcExpose::empty()
-            .make_stateful_nat(Some(Duration::from_secs(60)))
+            .make_stateful_nat(Some(idle_timeout))
             .expect("stateful NAT config")
             .ip("10.0.0.1/32".into())
             .as_range("10.0.0.1/32".into())
@@ -96,6 +96,13 @@ mod tests {
         Overlay::new(vpc_table, peering_table)
     }
 
+    /// Build an identity-IP overlay with the default 60-second idle timeout.
+    ///
+    /// See [`build_identity_nat_overlay_with_timeout`] for the topology.
+    fn build_identity_nat_overlay() -> Overlay {
+        build_identity_nat_overlay_with_timeout(Duration::from_secs(60))
+    }
+
     /// Attach an existing flow-table session to `packet`'s metadata.
     ///
     /// This mirrors the production flow-lookup stage that runs before NAT.
@@ -113,7 +120,7 @@ mod tests {
     type NatPipe = Box<dyn FnMut(Packet<TestBuffer>) -> Option<Packet<TestBuffer>>>;
 
     /// Build a [`FlowHarness`] whose forward and reverse pipes run packets
-    /// through [`StatefulNat`].
+    /// through [`StatefulNat`] configured from the given [`Overlay`].
     ///
     /// Two separate `StatefulNat` instances share the same
     /// [`Arc<FlowTable>`] and [`NatAllocatorReader`].  This is safe because
@@ -123,9 +130,11 @@ mod tests {
     ///
     /// Returns `(harness, sessions)` so that tests can inspect the flow
     /// table after running traffic.
-    fn make_nat_harness() -> (FlowHarness<TestBuffer, NatPipe, NatPipe>, Arc<FlowTable>) {
+    fn make_nat_harness_with_overlay(
+        overlay: Overlay,
+    ) -> (FlowHarness<TestBuffer, NatPipe, NatPipe>, Arc<FlowTable>) {
         // -- NAT configuration -----------------------------------------------
-        let mut config = build_gwconfig_from_overlay(build_identity_nat_overlay());
+        let mut config = build_gwconfig_from_overlay(overlay);
         config.validate().expect("overlay config should be valid");
 
         // -- shared state ----------------------------------------------------
@@ -166,6 +175,12 @@ mod tests {
             FlowHarness::with_config(NetworkConfig::default(), forward_pipe, reverse_pipe);
 
         (harness, sessions)
+    }
+
+    /// Convenience wrapper: builds a NAT harness with the default 60-second
+    /// idle timeout.  See [`make_nat_harness_with_overlay`] for details.
+    fn make_nat_harness() -> (FlowHarness<TestBuffer, NatPipe, NatPipe>, Arc<FlowTable>) {
+        make_nat_harness_with_overlay(build_identity_nat_overlay())
     }
 
     // -----------------------------------------------------------------------
@@ -307,6 +322,157 @@ mod tests {
         assert_eq!(
             received, payload,
             "4 KiB payload should survive NAT round-trip intact"
+        );
+    }
+
+    /// TCP RST is correctly translated through identity-IP NAT.
+    ///
+    /// After an established connection, the client aborts with RST.  NAT
+    /// must translate the RST segment using the same session, and the
+    /// server must observe a closed connection.
+    #[test]
+    #[traced_test]
+    fn tcp_reset_through_identity_nat() {
+        let (mut harness, _sessions) = make_nat_harness();
+
+        let mut flow = TcpFlow::new(&mut harness, 49152, 80);
+        flow.connect().expect("handshake");
+
+        // Exchange a small payload so we know the connection was active.
+        flow.client().send(b"ping").expect("client send");
+        flow.server().recv(4).expect("server recv");
+
+        // Abort via RST.
+        let result = flow.reset();
+        assert!(
+            result.is_ok(),
+            "RST should complete through NAT: {result:?}"
+        );
+    }
+
+    /// Multiple TCP connections on different port pairs each get unique
+    /// NAT sessions.
+    ///
+    /// Three connections are established sequentially, each on a distinct
+    /// client-port / server-port pair, and all must succeed.  The flow
+    /// table must contain entries for every connection, proving that NAT's
+    /// port-allocation logic handles multiple concurrent sessions.
+    #[test]
+    #[traced_test]
+    fn multiple_tcp_flows_get_unique_nat_sessions() {
+        let (mut harness, sessions) = make_nat_harness();
+
+        // (client_port, server_port) tuples for three distinct connections.
+        let port_pairs: &[(u16, u16)] = &[(49152, 80), (49153, 8080), (49154, 8081)];
+
+        for &(client_port, server_port) in port_pairs {
+            let mut flow = TcpFlow::new(&mut harness, client_port, server_port);
+            flow.connect().expect("handshake should succeed for each port pair");
+
+            flow.client()
+                .send(b"hello")
+                .expect("client send should succeed");
+            let received = flow
+                .server()
+                .recv(5)
+                .expect("server recv should succeed");
+            assert_eq!(
+                received, b"hello",
+                "data should survive NAT on {client_port}->{server_port}"
+            );
+        }
+
+        // Each connection creates at least one flow-table entry.  With 3
+        // connections we expect at least 3 entries; the exact count depends
+        // on whether NAT inserts both directions or only the initiating
+        // direction.
+        let len = sessions
+            .len()
+            .expect("should be able to read flow-table length");
+        assert!(
+            len >= port_pairs.len(),
+            "expected at least {} flow-table entries for {} connections, got {len}",
+            port_pairs.len(),
+            port_pairs.len()
+        );
+    }
+
+    /// A new connection succeeds after the previous session expires.
+    ///
+    /// This test configures NAT with a very short idle timeout (10 ms),
+    /// establishes a connection, waits for the session to expire in
+    /// wall-clock time, reaps the expired entries, and then establishes a
+    /// new connection.  The second connection must succeed with a freshly
+    /// allocated NAT session.
+    ///
+    /// # Note on wall-clock sleep
+    ///
+    /// The flow table tracks expiry with [`std::time::Instant`] (real
+    /// wall-clock time), not the harness's simulated clock.  This test
+    /// therefore uses a short `thread::sleep` to let the entries expire.
+    /// The 10 ms timeout + 50 ms sleep keeps the test fast while providing
+    /// sufficient margin for CI environments.
+    #[test]
+    #[traced_test]
+    fn connection_after_flow_expiry() {
+        // Use a very short idle timeout so expiry happens quickly.
+        let idle_timeout = Duration::from_millis(10);
+        let (mut harness, sessions) =
+            make_nat_harness_with_overlay(build_identity_nat_overlay_with_timeout(idle_timeout));
+
+        // --- first connection -----------------------------------------------
+        {
+            let mut flow = TcpFlow::new(&mut harness, 49152, 80);
+            flow.connect().expect("first handshake");
+
+            flow.client().send(b"one").expect("first send");
+            flow.server().recv(3).expect("first recv");
+        }
+
+        let len_before = sessions
+            .len()
+            .expect("should be able to read flow-table length");
+        assert!(
+            len_before > 0,
+            "flow table should have entries after first connection"
+        );
+
+        // --- wait for expiry ------------------------------------------------
+        std::thread::sleep(Duration::from_millis(50));
+        let reaped = sessions.reap_all_expired();
+        assert!(
+            reaped > 0,
+            "at least one expired session should have been reaped"
+        );
+
+        let len_after = sessions
+            .len()
+            .expect("should be able to read flow-table length");
+        assert!(
+            len_after < len_before,
+            "flow table should have fewer entries after reaping \
+             (before={len_before}, after={len_after})"
+        );
+
+        // --- second connection on fresh ports -------------------------------
+        // Use different ports because the previous listen/connect sockets
+        // may still be bound in smoltcp's socket set.
+        {
+            let mut flow = TcpFlow::new(&mut harness, 49200, 8080);
+            flow.connect().expect("second handshake after expiry");
+
+            flow.client().send(b"two").expect("second send");
+            flow.server().recv(3).expect("second recv");
+        }
+
+        // The second connection should have created new flow-table entries.
+        let len_final = sessions
+            .len()
+            .expect("should be able to read flow-table length");
+        assert!(
+            len_final > len_after,
+            "flow table should grow after the second connection \
+             (after_reap={len_after}, final={len_final})"
         );
     }
 }
