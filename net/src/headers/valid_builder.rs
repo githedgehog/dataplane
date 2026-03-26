@@ -68,6 +68,11 @@ use crate::checksum::Checksum;
 use crate::vlan::Vid;
 use crate::vxlan::{Vni, Vxlan};
 
+#[cfg(all(unix, any(doc, test, feature = "test_buffer")))]
+use crate::buffer::FrameBuffer;
+#[cfg(all(unix, any(doc, test, feature = "test_buffer")))]
+use crate::packet::Packet;
+
 use super::{Net, Transport};
 
 // ---------------------------------------------------------------------------
@@ -97,11 +102,11 @@ pub struct WithTransport;
 /// Errors that can occur when building headers via [`ValidHeadersBuilder`].
 #[derive(Debug, thiserror::Error)]
 pub enum ValidHeadersBuildError {
-    /// ICMPv4 transport paired with an IPv6 network header.
+    /// `ICMPv4` transport paired with an IPv6 network header.
     #[error("ICMPv4 transport requires IPv4 network layer")]
     Icmp4WithIpv6,
 
-    /// ICMPv6 transport paired with an IPv4 network header.
+    /// `ICMPv6` transport paired with an IPv4 network header.
     #[error("ICMPv6 transport requires IPv6 network layer")]
     Icmp6WithIpv4,
 
@@ -204,10 +209,10 @@ impl BuilderInner {
         }
 
         // If embedded headers are present, they must have a network layer
-        if let Some(ref eh) = self.embedded_ip {
-            if eh.net_headers_len() == 0 {
-                return Err(ValidHeadersBuildError::EmbeddedMissingNet);
-            }
+        if let Some(ref eh) = self.embedded_ip
+            && eh.net_headers_len() == 0
+        {
+            return Err(ValidHeadersBuildError::EmbeddedMissingNet);
         }
 
         Ok(())
@@ -300,9 +305,8 @@ impl BuilderInner {
         // insert VLAN tags (which adjusts EthType automatically).
 
         let net_ethtype = match &self.net {
-            Some(Net::Ipv4(_)) => EthType::IPV4,
             Some(Net::Ipv6(_)) => EthType::IPV6,
-            None => EthType::IPV4, // unreachable via typestate
+            Some(Net::Ipv4(_)) | None => EthType::IPV4, // None unreachable via typestate
         };
 
         // `eth_src` / `eth_dst` are guaranteed `Some` by the typestate —
@@ -421,6 +425,11 @@ impl ValidHeadersBuilder<Empty> {
     ///
     /// These are locally-administered unicast addresses that will not collide
     /// with real hardware.
+    ///
+    /// # Panics
+    ///
+    /// Cannot panic — the hardcoded MAC bytes are valid locally-administered
+    /// unicast addresses by construction.
     pub fn eth_defaults(self) -> ValidHeadersBuilder<WithEth> {
         // The `unwrap` calls are safe: the byte values are valid by
         // inspection (locally-administered, unicast bit set).
@@ -551,7 +560,7 @@ impl ValidHeadersBuilder<WithNet> {
         }
     }
 
-    /// Set the transport layer to ICMPv4.
+    /// Set the transport layer to `ICMPv4`.
     ///
     /// The caller supplies a fully-constructed [`Icmp4`] value (echo request,
     /// destination unreachable, etc.).
@@ -566,7 +575,7 @@ impl ValidHeadersBuilder<WithNet> {
         }
     }
 
-    /// Set the transport layer to ICMPv6.
+    /// Set the transport layer to `ICMPv6`.
     ///
     /// The caller supplies a fully-constructed [`Icmp6`] value.
     ///
@@ -599,6 +608,29 @@ impl ValidHeadersBuilder<WithNet> {
     /// cross-layer validation fails.
     pub fn build(self, payload: &[u8]) -> Result<Headers, ValidHeadersBuildError> {
         self.inner.finalize(payload)
+    }
+
+    /// Build the assembled [`Headers`] and materialize them into a
+    /// [`Packet<Buf>`] without a serialize → parse round-trip.
+    ///
+    /// This is a convenience wrapper that calls [`.build(payload)`](Self::build)
+    /// and then [`Packet::from_headers`] to produce a ready-to-use packet for
+    /// pipeline testing.
+    ///
+    /// `payload` is the byte content that follows the IP header on the wire.
+    /// Pass `&[]` for a bare IP header with no payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidHeadersBuildError`] if the payload is too large or
+    /// cross-layer validation fails.
+    #[cfg(all(unix, any(doc, test, feature = "test_buffer")))]
+    pub fn materialize<Buf: FrameBuffer>(
+        self,
+        payload: &[u8],
+    ) -> Result<Packet<Buf>, ValidHeadersBuildError> {
+        let headers = self.inner.finalize(payload)?;
+        Ok(Packet::from_headers(headers, payload))
     }
 }
 
@@ -672,6 +704,32 @@ impl ValidHeadersBuilder<WithTransport> {
     /// the total size overflows `u16` limits.
     pub fn build(self, payload: &[u8]) -> Result<Headers, ValidHeadersBuildError> {
         self.inner.finalize(payload)
+    }
+
+    /// Build the assembled [`Headers`] and materialize them into a
+    /// [`Packet<Buf>`] without a serialize → parse round-trip.
+    ///
+    /// This is a convenience wrapper that calls [`.build(payload)`](Self::build)
+    /// and then [`Packet::from_headers`] to produce a ready-to-use packet for
+    /// pipeline testing.
+    ///
+    /// `payload` is the byte content that follows **all** headers on the wire.
+    /// Pass `&[]` when there is no trailing payload (the common case for ICMP
+    /// error packets where the interesting data is in the embedded headers).
+    ///
+    /// For VXLAN packets, `payload` is the serialized inner Ethernet frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidHeadersBuildError`] if cross-layer validation fails or
+    /// the total size overflows `u16` limits.
+    #[cfg(all(unix, any(doc, test, feature = "test_buffer")))]
+    pub fn materialize<Buf: FrameBuffer>(
+        self,
+        payload: &[u8],
+    ) -> Result<Packet<Buf>, ValidHeadersBuildError> {
+        let headers = self.inner.finalize(payload)?;
+        Ok(Packet::from_headers(headers, payload))
     }
 }
 
@@ -762,7 +820,7 @@ impl EmbeddedAssembler {
         self
     }
 
-    /// Set the inner transport to a full ICMPv4 header.
+    /// Set the inner transport to a full `ICMPv4` header.
     ///
     /// Automatically sets the inner IP's `NextHeader` to [`NextHeader::ICMP`].
     pub fn icmp4(mut self, icmp: Icmp4) -> Self {
@@ -771,7 +829,7 @@ impl EmbeddedAssembler {
         self
     }
 
-    /// Set the inner transport to a full ICMPv6 header.
+    /// Set the inner transport to a full `ICMPv6` header.
     ///
     /// Automatically sets the inner IP's `NextHeader` to
     /// [`NextHeader::ICMP6`].
@@ -845,7 +903,8 @@ fn set_net_next_header(net: &mut Option<Net>, nh: NextHeader) {
     clippy::expect_used,
     clippy::panic,
     clippy::missing_panics_doc,
-    clippy::missing_errors_doc
+    clippy::missing_errors_doc,
+    clippy::cast_possible_truncation
 )]
 mod tests {
     use super::*;
@@ -1168,8 +1227,8 @@ mod tests {
 
     #[test]
     fn icmp4_error_embedded_tcp_roundtrip() {
-        let inner_sport = TcpPort::new_checked(9999).unwrap();
-        let inner_dport = TcpPort::new_checked(443).unwrap();
+        let inner_src_port = TcpPort::new_checked(9999).unwrap();
+        let inner_dst_port = TcpPort::new_checked(443).unwrap();
 
         let headers = ValidHeadersBuilder::new()
             .eth_defaults()
@@ -1188,7 +1247,7 @@ mod tests {
                         ip.set_destination(Ipv4Addr::new(203, 0, 113, 1));
                         ip.set_ttl(4);
                     })
-                    .tcp(inner_sport, inner_dport, |_| {})
+                    .tcp(inner_src_port, inner_dst_port, |_| {})
             })
             .build(&[])
             .unwrap();
@@ -1209,8 +1268,8 @@ mod tests {
 
     #[test]
     fn icmp4_error_embedded_udp_roundtrip() {
-        let inner_sport = UdpPort::new_checked(5555).unwrap();
-        let inner_dport = UdpPort::new_checked(53).unwrap();
+        let inner_src_port = UdpPort::new_checked(5555).unwrap();
+        let inner_dst_port = UdpPort::new_checked(53).unwrap();
 
         let headers = ValidHeadersBuilder::new()
             .eth_defaults()
@@ -1229,7 +1288,7 @@ mod tests {
                         ip.set_destination(Ipv4Addr::new(8, 8, 8, 8));
                         ip.set_ttl(30);
                     })
-                    .udp(inner_sport, inner_dport, |_| {})
+                    .udp(inner_src_port, inner_dst_port, |_| {})
             })
             .build(&[])
             .unwrap();
@@ -1660,8 +1719,8 @@ mod tests {
         let outer_dst = Ipv4Addr::new(10, 0, 0, 2);
         let inner_src = UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap();
         let inner_dst = Ipv4Addr::new(172, 16, 0, 1);
-        let inner_sport = TcpPort::new_checked(12345).unwrap();
-        let inner_dport = TcpPort::new_checked(80).unwrap();
+        let inner_src_port = TcpPort::new_checked(12345).unwrap();
+        let inner_dst_port = TcpPort::new_checked(80).unwrap();
 
         let headers = ValidHeadersBuilder::new()
             .eth_defaults()
@@ -1678,7 +1737,7 @@ mod tests {
                         ip.set_destination(inner_dst);
                         ip.set_ttl(4);
                     })
-                    .tcp(inner_sport, inner_dport, |_| {})
+                    .tcp(inner_src_port, inner_dst_port, |_| {})
             })
             .build(&[])
             .unwrap();
