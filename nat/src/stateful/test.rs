@@ -288,9 +288,7 @@ async fn test_full_config() {
     // Check that we can validate the allocator
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
     let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
-    allocator
-        .update_nat_allocator(nat_config, &flow_table)
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &flow_table);
 
     // No NAT
     let (orig_src, orig_dst) = ("8.8.8.8", "9.9.9.9");
@@ -364,9 +362,7 @@ async fn test_full_config() {
     let mut new_config = build_gwconfig_from_overlay(build_overlay_2vpcs());
     new_config.validate().unwrap();
     let nat_config = StatefulNatConfig::new(&new_config.external.overlay.vpc_table, 2);
-    allocator
-        .update_nat_allocator(nat_config, &flow_table)
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &flow_table);
 
     // Check existing connection
     // TODO: We should drop this connection after updating the allocator in the future, as a
@@ -465,9 +461,7 @@ fn test_full_config_no_nat() {
     // Check that we can validate the allocator
     let (_, mut allocator) = StatefulNat::new_with_defaults();
     let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
-    allocator
-        .update_nat_allocator(nat_config, &FlowTable::new(16))
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 }
 
 fn check_packet_icmp_echo(
@@ -510,9 +504,7 @@ async fn test_icmp_echo_nat() {
     // Check that we can validate the allocator
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
     let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
-    allocator
-        .update_nat_allocator(nat_config, &FlowTable::new(16))
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // No NAT
     let (orig_src, orig_dst, orig_identifier) = (addr_v4("8.8.8.8"), addr_v4("9.9.9.9"), 1337);
@@ -682,9 +674,7 @@ async fn test_icmp_error_nat() {
     // Check that we can validate the allocator
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
     let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
-    allocator
-        .update_nat_allocator(nat_config, &FlowTable::new(16))
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // ICMP Error msg: expose211 -> expose121, no previous session for inner packet
     let (
@@ -838,9 +828,7 @@ async fn test_default_expose() {
     // Check that we can validate the allocator
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
     let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
-    allocator
-        .update_nat_allocator(nat_config, &FlowTable::new(16))
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // Using the expose with a prefix
     let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.1.0.1", "3.3.3.3", 9999, 443);
@@ -1063,9 +1051,7 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
     let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
 
     // Check that we can validate the allocator
-    allocator
-        .update_nat_allocator(nat_config, &FlowTable::new(16))
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // NAT: expose12 <-> expose21
     let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.0.0.18", "5.0.0.5", 9998, 443);
@@ -1136,9 +1122,7 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
     //
     // When we build the allocator, turn off randomness to check whether we may get collisions
     // for port allocation
-    allocator
-        .update_nat_allocator(nat_config, &flow_table)
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &flow_table);
 
     // NAT: expose12 <-> expose21
     let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.0.0.18", "5.0.0.5", 9998, 443);
@@ -1373,9 +1357,7 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
     let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
 
     // Check that we can validate the allocator
-    allocator
-        .update_nat_allocator(nat_config, &FlowTable::new(16))
-        .unwrap();
+    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // NAT: expose1_1 -> expose1_2
     let (orig_src, orig_dst, orig_src_port, orig_dst_port) = ("1.0.0.18", "5.0.0.5", 9998, 443);

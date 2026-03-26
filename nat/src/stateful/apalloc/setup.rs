@@ -6,9 +6,7 @@ use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatAllocator, PoolTable, PoolTableKey};
 use crate::ranges::IpRange;
 use crate::stateful::NatIp;
-use crate::stateful::allocation::AllocatorError;
 use crate::stateful::allocator_writer::StatefulNatConfig;
-use config::ConfigError;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 use config::utils::collapse_prefixes_peering;
@@ -20,38 +18,22 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, error};
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl NatAllocator {
-    /// Build a [`NatAllocator`] from information collected from a [`VpcTable`] object. This
-    /// information is passed as a [`StatefulNatConfig`].
-    ///
-    /// # Returns
-    ///
-    /// A [`NatAllocator`] that can be used to allocate NAT addresses, or a [`ConfigError`] if
-    /// building the allocator fails.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::FailureApply`] if adding a peering fails.
-    pub(crate) fn from_config(config: &StatefulNatConfig) -> Result<Self, ConfigError> {
-        debug!("Building allocator for stateful NAT from config:\n{config:#?}");
+    /// Build a [`NatAllocator`] from a [`StatefulNatConfig`]
+    pub(crate) fn from_config(config: &StatefulNatConfig) -> Self {
+        debug!("Building NAT allocator from config:\n{config:#?}");
         let mut allocator = NatAllocator::new();
         for peering_data in config.iter() {
-            allocator
-                .add_peering_addresses(&peering_data.peering, peering_data.dst_vpcd)
-                .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
+            allocator.add_peering_addresses(&peering_data.peering, peering_data.dst_vpcd);
         }
-        Ok(allocator)
+        allocator
     }
 
-    fn add_peering_addresses(
-        &mut self,
-        peering: &Peering,
-        dst_vpc_id: VpcDiscriminant,
-    ) -> Result<(), AllocatorError> {
+    fn add_peering_addresses(&mut self, peering: &Peering, dst_vpc_id: VpcDiscriminant) {
         let new_peering = collapse_prefixes_peering(peering);
 
         build_nat_pool_generic(
@@ -62,7 +44,7 @@ impl NatAllocator {
             &mut self.pools_src44,
             NextHeader::ICMP,
             self.randomize,
-        )?;
+        );
 
         build_nat_pool_generic(
             &new_peering.local,
@@ -72,7 +54,7 @@ impl NatAllocator {
             &mut self.pools_src66,
             NextHeader::ICMP6,
             self.randomize,
-        )
+        );
     }
 }
 
@@ -87,8 +69,7 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
     table: &mut PoolTable<I, J>,
     icmp_proto: NextHeader,
     randomize: bool,
-) -> Result<(), AllocatorError>
-where
+) where
     F: FnOnce(&'a VpcManifest) -> FIter,
     FIter: Iterator<Item = &'a VpcExpose>,
     P: FnOnce(&'a VpcManifest) -> PIter,
@@ -96,7 +77,8 @@ where
 {
     let port_forwarding_exposes: Vec<&'a VpcExpose> =
         port_forwarding_exposes_filter(manifest).collect();
-    exposes_filter(manifest).try_for_each(|expose| {
+
+    exposes_filter(manifest).for_each(|expose| {
         let prefixes_and_ports_to_exclude_from_pools =
             find_masquerade_portfw_overlap(&port_forwarding_exposes, expose);
 
@@ -109,19 +91,19 @@ where
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.tcp,
             randomize,
-        )?;
+        );
         let udp_ip_allocator = ip_allocator_for_prefixes(
             expose.as_range_or_empty(),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.udp,
             randomize,
-        )?;
+        );
         let icmp_ip_allocator = ip_allocator_for_prefixes(
             expose.as_range_or_empty(),
             idle_timeout,
             &PrefixPortsSet::default(),
             randomize,
-        )?;
+        );
 
         add_pool_entries(
             table,
@@ -131,8 +113,8 @@ where
             &udp_ip_allocator,
             &icmp_ip_allocator,
             icmp_proto,
-        )
-    })
+        );
+    });
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -171,14 +153,9 @@ fn pool_table_key_for_expose<I: NatIp>(
     prefix: &PrefixWithOptionalPorts,
     protocol: NextHeader,
     dst_vpc_id: VpcDiscriminant,
-) -> Result<PoolTableKey<I>, AllocatorError> {
-    let (addr, addr_range_end) = prefix_bounds(prefix)?;
-    Ok(PoolTableKey::new(
-        protocol,
-        dst_vpc_id,
-        addr,
-        addr_range_end,
-    ))
+) -> PoolTableKey<I> {
+    let (addr, addr_range_end) = prefix_bounds(prefix);
+    PoolTableKey::new(protocol, dst_vpc_id, addr, addr_range_end)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -190,22 +167,21 @@ fn add_pool_entries<I: NatIpWithBitmap, J: NatIpWithBitmap>(
     udp_allocator: &IpAllocator<J>,
     icmp_allocator: &IpAllocator<J>,
     icmp_proto: NextHeader,
-) -> Result<(), AllocatorError> {
+) {
     for prefix in prefixes {
         // We insert three times the entry, once for TCP, once for UDP and once for ICMP (v4 or v6
         // depending on the case). Allocations for TCP, for example, do not affect allocations for UDP
         // or for ICMP, the space defined by the combination of IP addresses and L4 ports/id is distinct
         // for each protocol.
 
-        let tcp_key = pool_table_key_for_expose(prefix, NextHeader::TCP, dst_vpc_id)?;
-        let udp_key = pool_table_key_for_expose(prefix, NextHeader::UDP, dst_vpc_id)?;
-        let icmp_key = pool_table_key_for_expose(prefix, icmp_proto, dst_vpc_id)?;
+        let tcp_key = pool_table_key_for_expose(prefix, NextHeader::TCP, dst_vpc_id);
+        let udp_key = pool_table_key_for_expose(prefix, NextHeader::UDP, dst_vpc_id);
+        let icmp_key = pool_table_key_for_expose(prefix, icmp_proto, dst_vpc_id);
 
         table.add_entry(tcp_key, tcp_allocator.clone());
         table.add_entry(udp_key, udp_allocator.clone());
         table.add_entry(icmp_key, icmp_allocator.clone());
     }
-    Ok(())
 }
 
 fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
@@ -213,21 +189,20 @@ fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
     idle_timeout: Duration,
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
     randomize: bool,
-) -> Result<IpAllocator<J>, AllocatorError> {
+) -> IpAllocator<J> {
     let pool = create_natpool(
         prefixes,
         prefixes_and_ports_to_exclude_from_pools,
         idle_timeout,
-    )?;
-    let allocator = IpAllocator::new(pool, randomize);
-    Ok(allocator)
+    );
+    IpAllocator::new(pool, randomize)
 }
 
 fn create_natpool<J: NatIpWithBitmap>(
     prefixes: &PrefixPortsSet,
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
     idle_timeout: Duration,
-) -> Result<NatPool<J>, AllocatorError> {
+) -> NatPool<J> {
     // Build mappings for IPv6 <-> u32 bitmap translation
     let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(
         &prefixes
@@ -235,58 +210,49 @@ fn create_natpool<J: NatIpWithBitmap>(
             // FIXME: Add port range, too
             .map(PrefixWithOptionalPorts::prefix)
             .collect::<BTreeSet<Prefix>>(),
-    )?;
+    );
 
     // Mark all addresses as available (free) in bitmap
     let mut bitmap = PoolBitmap::new();
     prefixes
         .iter()
         // FIXME: Add port range, too
-        .try_for_each(|prefix| bitmap.add_prefix(&prefix.prefix(), &reverse_bitmap_mapping))?;
+        .for_each(|prefix| bitmap.add_prefix(&prefix.prefix(), &reverse_bitmap_mapping));
 
     let reserved_prefixes_ports =
-        build_reserved_prefixes_ports(prefixes_and_ports_to_exclude_from_pools)?;
+        build_reserved_prefixes_ports(prefixes_and_ports_to_exclude_from_pools);
 
-    Ok(NatPool::new(
+    NatPool::new(
         bitmap,
         bitmap_mapping,
         reverse_bitmap_mapping,
         reserved_prefixes_ports,
         idle_timeout,
-    ))
+    )
 }
 
 fn build_reserved_prefixes_ports(
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
-) -> Result<Option<DisjointRangesBTreeMap<IpRange, PortRange>>, AllocatorError> {
+) -> Option<DisjointRangesBTreeMap<IpRange, PortRange>> {
     if prefixes_and_ports_to_exclude_from_pools.is_empty() {
-        return Ok(None);
+        return None;
     }
     let mut reserved_prefixes_ports = DisjointRangesBTreeMap::new();
     for prefix in prefixes_and_ports_to_exclude_from_pools {
         reserved_prefixes_ports.insert(
             prefix.prefix().into(),
-            prefix.ports().ok_or(AllocatorError::InternalIssue(format!(
-                "Expected port range for port forwarding prefix {prefix:?}"
-            )))?,
+            prefix.ports().expect("Missing ports. This is a bug"),
         );
     }
-    Ok(Some(reserved_prefixes_ports))
+    Some(reserved_prefixes_ports)
 }
 
-fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> Result<(I, I), AllocatorError> {
-    let addr = I::try_from_addr(prefix.prefix().as_address())
-        .map_err(|()| AllocatorError::InternalIssue("Failed to build IP address".to_string()))?;
-    let addr_range_end = match prefix.prefix() {
-        Prefix::IPV4(p) => I::try_from_ipv4_addr(p.last_address()).map_err(|()| {
-            AllocatorError::InternalIssue("Failed to build IPv4 address from prefix".to_string())
-        })?,
-        Prefix::IPV6(p) => I::try_from_ipv6_addr(p.last_address()).map_err(|()| {
-            AllocatorError::InternalIssue("Failed to build IPv6 address from prefix".to_string())
-        })?,
-    };
+fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> (I, I) {
+    let addr = I::try_from_addr(prefix.prefix().as_address()).unwrap_or_else(|()| unreachable!());
+    let addr_range_end =
+        I::try_from_addr(prefix.prefix().last_address()).unwrap_or_else(|()| unreachable!());
     // FIXME: Account for port ranges
-    Ok((addr, addr_range_end))
+    (addr, addr_range_end)
 }
 
 // The allocator's bitmap contains u32 only. For IPv4, it maps well to the address space. For IPv6,
@@ -297,7 +263,7 @@ fn prefix_bounds<I: NatIp>(prefix: &PrefixWithOptionalPorts) -> Result<(I, I), A
 #[allow(clippy::type_complexity)]
 fn create_ipv6_bitmap_mappings(
     prefixes: &BTreeSet<Prefix>,
-) -> Result<(BTreeMap<u32, u128>, BTreeMap<u128, u32>), AllocatorError> {
+) -> (BTreeMap<u32, u128>, BTreeMap<u128, u32>) {
     let mut bitmap_mapping = BTreeMap::new();
     let mut reverse_bitmap_mapping = BTreeMap::new();
     let mut index = 0;
@@ -310,15 +276,18 @@ fn create_ipv6_bitmap_mappings(
             if p.size() + u128::from(index) >= 2_u128.pow(32) {
                 break;
             }
-            index += u32::try_from(u128::try_from(p.size()).map_err(|_| {
-                AllocatorError::InternalIssue("Failed to convert prefix size to u128".to_string())
-            })?)
-            .map_err(|_| {
-                AllocatorError::InternalIssue("Failed to convert prefix size to u32".to_string())
-            })?;
+            let Ok(psize) = u128::try_from(p.size()) else {
+                error!("Failed to get u128 from prefix {:#?}", p.size());
+                continue;
+            };
+            let Ok(psize_u32) = u32::try_from(psize) else {
+                error!("Failed to convert {psize} to u32");
+                continue;
+            };
+            index += psize_u32;
         }
     }
-    Ok((bitmap_mapping, reverse_bitmap_mapping))
+    (bitmap_mapping, reverse_bitmap_mapping)
 }
 
 #[cfg(test)]
@@ -331,7 +300,7 @@ mod tests {
         PrefixWithOptionalPorts::new(s.into(), Some(PortRange::new(start, end).unwrap()))
     }
 
-    // find_masquerade_portfw_overlap()
+    // tests for find_masquerade_portfw_overlap()
 
     #[test]
     fn find_masquerade_portfw_overlap_multiple_pf_exposes() {
