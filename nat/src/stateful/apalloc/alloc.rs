@@ -407,11 +407,7 @@ impl PoolBitmap {
         self.0.insert(index)
     }
 
-    pub(crate) fn add_prefix(
-        &mut self,
-        prefix: &Prefix,
-        bitmap_mapping: &BTreeMap<u128, u32>,
-    ) -> Result<(), AllocatorError> {
+    pub(crate) fn add_prefix(&mut self, prefix: &Prefix, bitmap_mapping: &BTreeMap<u128, u32>) {
         match prefix {
             Prefix::IPV4(p) => {
                 let start = p.network().to_bits();
@@ -419,12 +415,11 @@ impl PoolBitmap {
                 self.0.insert_range(start..=end);
             }
             Prefix::IPV6(p) => {
-                let start = map_address(p.network(), bitmap_mapping)?;
-                let end = map_address(p.last_address(), bitmap_mapping)?;
+                let start = map_address(p.network(), bitmap_mapping);
+                let end = map_address(p.last_address(), bitmap_mapping);
                 self.0.insert_range(start..=end);
             }
         }
-        Ok(())
     }
 }
 
@@ -456,19 +451,11 @@ pub(crate) fn map_offset(
 }
 
 // Reverse operation from map_offset()
-pub(crate) fn map_address(
-    address: Ipv6Addr,
-    bitmap_mapping: &BTreeMap<u128, u32>,
-) -> Result<u32, AllocatorError> {
+pub(crate) fn map_address(address: Ipv6Addr, bitmap_mapping: &BTreeMap<u128, u32>) -> u32 {
     let (prefix_start_bits, prefix_offset) = bitmap_mapping
         .range(..=address.to_bits())
         .next_back()
-        .ok_or(AllocatorError::InternalIssue(
-            "Failed to find prefix in map for IPv6".to_string(),
-        ))?;
+        .expect("This should never fail");
 
-    Ok(prefix_offset
-        + u32::try_from(address.to_bits() - prefix_start_bits).map_err(|_| {
-            AllocatorError::InternalIssue("Failed to convert Ipv6 to offset".to_string())
-        })?)
+    prefix_offset + u32::try_from(address.to_bits() - prefix_start_bits).unwrap()
 }

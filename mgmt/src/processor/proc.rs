@@ -503,16 +503,16 @@ fn apply_stateless_nat_config(
 }
 
 /// Update the config for stateful NAT.
+/// This is now infallible. Validation should ensure it is.
 fn apply_stateful_nat_config(
     vpc_table: &VpcTable,
     flow_table: &FlowTable,
     natallocatorw: &mut NatAllocatorWriter,
     genid: GenId,
-) -> ConfigResult {
+) {
     let nat_config = StatefulNatConfig::new(vpc_table, genid).set_randomize(true);
-    natallocatorw.update_nat_allocator(nat_config, flow_table)?;
-    debug!("Successfully updated stateful NAT allocator");
-    Ok(())
+    natallocatorw.update_nat_allocator(nat_config, flow_table);
+    debug!("Updated stateful NAT allocator");
 }
 
 fn apply_flow_filtering_config(
@@ -608,7 +608,7 @@ impl ConfigProcessor {
             flow_table.as_ref(),
             natallocatorw,
             genid,
-        )?;
+        );
 
         /* apply flow filtering config */
         apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;
