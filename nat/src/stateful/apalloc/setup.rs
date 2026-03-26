@@ -37,14 +37,11 @@ impl NatDefaultAllocator {
     ///
     /// [`ConfigError::FailureApply`] if adding a peering fails.
     pub(crate) fn from_config(config: &StatefulNatConfig) -> Result<Self, ConfigError> {
-        debug!(
-            "Building allocator for stateful NAT, from config: {:?}",
-            config
-        );
+        debug!("Building allocator for stateful NAT from config:\n{config:#?}");
         let mut allocator = NatDefaultAllocator::new();
         for peering_data in config.iter() {
             allocator
-                .add_peering_addresses(&peering_data.peering, peering_data.dst_vpc_id)
+                .add_peering_addresses(&peering_data.peering, peering_data.dst_vpcd)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
         Ok(allocator)

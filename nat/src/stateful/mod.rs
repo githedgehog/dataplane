@@ -4,6 +4,7 @@
 mod allocator;
 mod allocator_writer;
 pub mod apalloc;
+pub(crate) mod flows;
 pub(crate) mod icmp_handling;
 mod natip;
 mod test;
