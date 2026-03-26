@@ -20,3 +20,6 @@
 
 pub mod bridge;
 mod device;
+mod endpoint;
+pub mod harness;
+mod time;
