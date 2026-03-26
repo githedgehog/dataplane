@@ -9,13 +9,16 @@ pub(crate) mod icmp_handling;
 mod natip;
 mod test;
 
+// re exports
+pub use allocator_writer::NatAllocatorWriter;
+pub use allocator_writer::StatefulNatConfig;
+
 use super::NatTranslationData;
 use crate::stateful::allocator::{AllocationResult, AllocatorError, NatAllocator};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::AllocatedIpPort;
 use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
-pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
