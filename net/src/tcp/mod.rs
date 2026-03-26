@@ -477,10 +477,17 @@ mod test {
 
     const MIN_LEN: usize = Tcp::MIN_LENGTH.get() as usize;
 
+    /// Deparse → parse roundtrip for all generated [`Tcp`] headers,
+    /// including headers with TCP options (RFC 9293 §3.1).
+    ///
+    /// The `TypeGenerator` now produces headers with 0–4 TCP options
+    /// (MSS, Window Scale, SACK Permitted, Timestamps), so this test
+    /// exercises data offsets from 5 (20 bytes, no options) up to 11
+    /// (44 bytes, all four options with NOP padding).
     #[test]
     fn parse_back() {
         bolero::check!().with_type().for_each(|tcp: &Tcp| {
-            let mut buffer = [0u8; 64];
+            let mut buffer = [0u8; Tcp::MAX_LENGTH];
             let consumed = match tcp.deparse(&mut buffer) {
                 Ok(consumed) => consumed,
                 Err(err) => {
@@ -496,7 +503,6 @@ mod test {
             assert_eq!(tcp.sequence_number(), parsed.sequence_number());
             assert_eq!(tcp.ack_number(), parsed.ack_number());
             assert_eq!(tcp.ack(), parsed.ack());
-            assert_eq!(tcp.ack(), parsed.ack());
             assert_eq!(tcp.cwr(), parsed.cwr());
             assert_eq!(tcp.ece(), parsed.ece());
             assert_eq!(tcp.fin(), parsed.fin());
@@ -506,8 +512,35 @@ mod test {
             assert_eq!(tcp.urg(), parsed.urg());
             assert_eq!(tcp.window_size(), parsed.window_size());
             assert_eq!(tcp.urgent_pointer(), parsed.urgent_pointer());
+            assert_eq!(tcp.options(), parsed.options());
             assert_eq!(tcp, &parsed);
             assert_eq!(consumed, consumed2);
+        });
+    }
+
+    /// Verify that TCP headers with options survive a 60-byte buffer
+    /// roundtrip — the maximum TCP header size (`data_offset` = 15).
+    ///
+    /// This catches regressions where option bytes are silently dropped
+    /// or the data offset is mis-computed during deparse.
+    #[test]
+    fn parse_back_max_buffer() {
+        bolero::check!().with_type().for_each(|tcp: &Tcp| {
+            let mut buffer = [0u8; Tcp::MAX_LENGTH];
+            let consumed = tcp
+                .deparse(&mut buffer)
+                .unwrap_or_else(|e| unreachable!("{e:?}"));
+            // data_offset encodes header length in 4-byte words
+            assert_eq!(
+                tcp.data_offset() as usize * 4,
+                consumed.into_non_zero_usize().get(),
+                "data_offset * 4 must equal serialized length"
+            );
+            let (parsed, consumed2) =
+                Tcp::parse(&buffer[..consumed.into_non_zero_usize().get()])
+                    .unwrap_or_else(|e| unreachable!("{e:?}"));
+            assert_eq!(consumed, consumed2);
+            assert_eq!(tcp, &parsed);
         });
     }
 
@@ -551,6 +584,32 @@ mod test {
                     &slice[MIN_LEN..consumed1.into_non_zero_usize().get()],
                     &slice2[MIN_LEN..consumed1.into_non_zero_usize().get()]
                 );
+            });
+    }
+
+    /// Parse arbitrary 60-byte buffers (max TCP header size) and verify
+    /// that anything parseable survives a roundtrip.
+    ///
+    /// This complements `parse_noise` (which uses 20-byte buffers) by
+    /// exercising the full data-offset range including options.
+    #[test]
+    fn parse_arbitrary_max_bytes() {
+        bolero::check!()
+            .with_type()
+            .for_each(|slice: &[u8; Tcp::MAX_LENGTH]| {
+                let Ok((parsed, consumed1)) = Tcp::parse(slice) else {
+                    return;
+                };
+                let mut buf2 = [0u8; Tcp::MAX_LENGTH];
+                let consumed2 = parsed
+                    .deparse(&mut buf2)
+                    .unwrap_or_else(|e| unreachable!("{e:?}"));
+                assert_eq!(consumed1, consumed2);
+                let (parsed_back, consumed3) =
+                    Tcp::parse(&buf2[..consumed2.into_non_zero_usize().get()])
+                        .unwrap_or_else(|e| unreachable!("{e:?}"));
+                assert_eq!(consumed2, consumed3);
+                assert_eq!(parsed, parsed_back);
             });
     }
 }
