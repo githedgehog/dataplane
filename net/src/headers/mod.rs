@@ -616,7 +616,7 @@ pub enum PushVlanError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PopVlanError {
-    #[error("can't push vlan without an ethernet header")]
+    #[error("can't pop vlan without an ethernet header")]
     NoEthernetHeader,
 }
 
