@@ -3,10 +3,9 @@
 
 //! Display implementations for allocator types
 
-use super::NatDefaultAllocator;
-use crate::stateful::apalloc::alloc::{AllocatedIp, IpAllocator, NatPool};
-use crate::stateful::apalloc::port_alloc::PortAllocator;
-use crate::stateful::apalloc::{NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
+use super::alloc::{AllocatedIp, IpAllocator, NatPool};
+use super::port_alloc::PortAllocator;
+use super::{NatAllocator, NatIp, NatIpWithBitmap, PoolTable, PoolTableKey};
 use common::cliprovider::{CliSource, Heading};
 use indenter::indented;
 use std::fmt::{Display, Error, Formatter, Result, Write};
@@ -18,9 +17,9 @@ macro_rules! with_indent {
     };
 }
 
-impl CliSource for NatDefaultAllocator {}
+impl CliSource for NatAllocator {}
 
-impl Display for NatDefaultAllocator {
+impl Display for NatAllocator {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         Heading("Masquerade NAT allocator table").fmt(f)?;
 
@@ -30,10 +29,6 @@ impl Display for NatDefaultAllocator {
         writeln!(with_indent!(f), "{}", self.pools_src44)?;
         writeln!(f, "source pools (IPv6):")?;
         writeln!(with_indent!(f), "{}", self.pools_src66)?;
-        writeln!(f, "destination pools (IPv4):")?;
-        writeln!(with_indent!(f), "{}", self.pools_dst44)?;
-        writeln!(f, "destination pools (IPv6):")?;
-        writeln!(with_indent!(f), "{}", self.pools_dst66)?;
         Ok(())
     }
 }

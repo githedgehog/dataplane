@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateful::NatDefaultAllocator;
+use crate::stateful::apalloc::NatAllocator;
 use arc_swap::ArcSwapOption;
 use config::GenId;
 use config::external::overlay::vpc::Peering;
@@ -83,7 +83,7 @@ impl StatefulNatConfig {
 #[derive(Debug)]
 pub struct NatAllocatorWriter {
     config: StatefulNatConfig,
-    allocator: Arc<ArcSwapOption<NatDefaultAllocator>>,
+    allocator: Arc<ArcSwapOption<NatAllocator>>,
 }
 
 impl NatAllocatorWriter {
@@ -126,7 +126,7 @@ impl NatAllocatorWriter {
 
         // build a new allocator to replace the current
         let mut allocator =
-            NatDefaultAllocator::from_config(&nat_config).set_randomize(nat_config.randomize);
+            NatAllocator::from_config(&nat_config).set_randomize(nat_config.randomize);
 
         if old_allocator.is_some() {
             validate_stateful_nat_flows(flow_table, &nat_config, &mut allocator);
@@ -144,17 +144,17 @@ impl Default for NatAllocatorWriter {
 }
 
 #[derive(Debug, Clone)]
-pub struct NatAllocatorReader(Arc<ArcSwapOption<NatDefaultAllocator>>);
+pub struct NatAllocatorReader(Arc<ArcSwapOption<NatAllocator>>);
 
 impl NatAllocatorReader {
-    pub fn get(&self) -> Option<Arc<NatDefaultAllocator>> {
+    pub fn get(&self) -> Option<Arc<NatAllocator>> {
         self.0.load().clone()
     }
     #[must_use]
     pub fn factory(&self) -> NatAllocatorReaderFactory {
         NatAllocatorReaderFactory(self.clone())
     }
-    pub fn inner(&self) -> Arc<ArcSwapOption<NatDefaultAllocator>> {
+    pub fn inner(&self) -> Arc<ArcSwapOption<NatAllocator>> {
         self.0.clone()
     }
 }

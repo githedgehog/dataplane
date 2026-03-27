@@ -8,11 +8,11 @@ use concurrency::concurrency_mode;
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
 mod context {
-    use crate::stateful::allocator::AllocationResult;
+    use crate::stateful::allocation::AllocationResult;
     use crate::stateful::allocator_writer::StatefulNatConfig;
     use crate::stateful::apalloc::alloc::IpAllocator;
     use crate::stateful::apalloc::port_alloc::AllocatedPort;
-    use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
+    use crate::stateful::apalloc::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
@@ -73,10 +73,7 @@ mod context {
                 "<none>".to_string()
             }
         };
-        println!("src: {}", format_ip_port(&allocation.src));
-        println!("dst: {}", format_ip_port(&allocation.dst));
-        println!("return_src: {}", format_ip_port(&allocation.return_src));
-        println!("return_dst: {}", format_ip_port(&allocation.return_dst));
+        println!("allocation: {allocation}");
     }
 
     pub fn get_ip_allocator_v4(
@@ -106,12 +103,7 @@ mod context {
             .unwrap()
             .not_as("10.1.0.3/32".into())
             .unwrap();
-        let expose2 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("2.0.0.0/16".into())
-            .as_range("10.2.0.0/29".into())
-            .unwrap();
+        let expose2 = VpcExpose::empty().ip("2.0.0.0/16".into());
 
         let manifest1 = VpcManifest {
             name: "VPC-1".into(),
@@ -125,14 +117,7 @@ mod context {
             .ip("3.0.1.0/24".into())
             .as_range("10.3.0.0/30".into())
             .unwrap();
-        let expose4 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
-            .ip("4.0.0.0/16".into())
-            .as_range("10.4.0.0/31".into())
-            .unwrap()
-            .as_range("10.4.1.0/30".into())
-            .unwrap();
+        let expose4 = VpcExpose::empty().ip("4.0.0.0/16".into());
 
         let manifest2 = VpcManifest {
             name: "VPC-2".into(),
@@ -171,17 +156,16 @@ mod context {
         vpctable
     }
 
-    pub fn build_allocator() -> NatDefaultAllocator {
+    pub fn build_allocator() -> NatAllocator {
         let vpc_table = build_context();
         let config = StatefulNatConfig::new(&vpc_table, 1);
-        NatDefaultAllocator::from_config(&config).set_randomize(true)
+        NatAllocator::from_config(&config).set_randomize(true)
     }
 }
 
 #[concurrency_mode(std)]
 mod std_tests {
     use super::context::*;
-    use crate::stateful::allocator::NatAllocator;
     use crate::stateful::apalloc::PoolTableKey;
     use concurrency::sync::Arc;
     use concurrency::thread;
@@ -218,7 +202,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::TCP)
                 .count(),
-            7
+            5
         );
         assert_eq!(
             allocator
@@ -227,39 +211,10 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::UDP)
                 .count(),
-            7
-        );
-
-        assert!(
-            allocator
-                .pools_dst44
-                .0
-                .keys()
-                .all(|k| k.dst_id == vpcd2() || k.dst_id == vpcd1())
-        );
-        // One entry for each ".as_range()" from the VPCExpose objects,
-        // after exclusion ranges have been applied
-        assert_eq!(
-            allocator
-                .pools_dst44
-                .0
-                .keys()
-                .filter(|k| k.protocol == NextHeader::TCP)
-                .count(),
-            6
-        );
-        assert_eq!(
-            allocator
-                .pools_dst44
-                .0
-                .keys()
-                .filter(|k| k.protocol == NextHeader::UDP)
-                .count(),
-            6
+            5
         );
 
         assert_eq!(allocator.pools_src66.0.len(), 0);
-        assert_eq!(allocator.pools_dst66.0.len(), 0);
 
         let ip_allocator = allocator
             .pools_src44
@@ -274,21 +229,6 @@ mod std_tests {
 
         assert!(bitmap.contains_range(addr_v4_bits("10.1.0.0")..=addr_v4_bits("10.1.0.2")));
         assert_eq!(bitmap.len(), 3);
-        assert_eq!(in_use.len(), 0);
-
-        let ip_allocator = allocator
-            .pools_dst44
-            .get(&PoolTableKey::new(
-                NextHeader::TCP,
-                vpcd2(),
-                addr_v4("10.3.0.0"),
-                addr_v4("255.255.255.255"),
-            ))
-            .unwrap();
-        let (bitmap, in_use) = ip_allocator.get_pool_clone_for_tests();
-
-        assert!(bitmap.contains_range(addr_v4_bits("3.0.0.0")..=addr_v4_bits("3.0.1.255")));
-        assert_eq!(bitmap.len(), 512);
         assert_eq!(in_use.len(), 0);
     }
 
@@ -320,27 +260,19 @@ mod std_tests {
         print_allocation(&allocation);
 
         assert!(allocation.src.is_some());
-        assert!(allocation.dst.is_some());
-        assert!(allocation.return_src.is_some());
         assert!(allocation.return_dst.is_some());
 
         assert_eq!(allocation.src.as_ref().unwrap().ip(), addr_v4("10.1.0.0"));
-        assert_eq!(allocation.dst.as_ref().unwrap().ip(), addr_v4("3.0.0.0"));
         assert_eq!(
-            allocation.return_src.as_ref().unwrap().ip(),
-            addr_v4("10.3.0.2")
+            allocation.return_dst.as_ref().map(|(ip, _)| ip),
+            Some(&ipaddr("1.1.0.0"))
         );
         assert_eq!(
-            allocation.return_src.as_ref().unwrap().port().as_u16(),
-            5678
-        );
-        assert_eq!(
-            allocation.return_dst.as_ref().unwrap().ip(),
-            addr_v4("1.1.0.0")
-        );
-        assert_eq!(
-            allocation.return_dst.as_ref().unwrap().port().as_u16(),
-            1234
+            allocation
+                .return_dst
+                .as_ref()
+                .map(|(_, port)| port.as_u16()),
+            Some(1234)
         );
 
         let (bitmap, in_use) = get_ip_allocator_v4(
@@ -498,7 +430,7 @@ mod std_tests {
 #[concurrency_mode(shuttle)]
 mod tests_shuttle {
     use super::context::*;
-    use crate::stateful::allocator::NatAllocator;
+    use crate::stateful::allocation::NatAllocator;
     use net::FlowKey;
     use net::ip::NextHeader;
     use shuttle::sync::{Arc, Mutex};

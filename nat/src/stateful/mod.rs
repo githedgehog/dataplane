@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-mod allocator;
+pub(crate) mod allocation;
 mod allocator_writer;
 pub mod apalloc;
 pub(crate) mod flows;
 pub(crate) mod icmp_handling;
 mod natip;
+mod state;
 mod test;
 
 // re exports
@@ -14,11 +15,11 @@ pub use allocator_writer::NatAllocatorWriter;
 pub use allocator_writer::StatefulNatConfig;
 
 use super::NatTranslationData;
-use crate::stateful::allocator::{AllocationResult, AllocatorError, NatAllocator};
+use crate::stateful::allocation::{AllocationResult, AllocatorError};
 use crate::stateful::allocator_writer::NatAllocatorReader;
-use crate::stateful::apalloc::AllocatedIpPort;
-use crate::stateful::apalloc::{NatDefaultAllocator, NatIpWithBitmap};
+use crate::stateful::apalloc::{AllocatedIpPort, NatIpWithBitmap};
 use crate::stateful::natip::NatIp;
+use crate::stateful::state::NatFlowState;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
@@ -28,7 +29,7 @@ use net::headers::{Net, Transport, TryIp, TryIpMut, TryTransportMut};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
@@ -58,27 +59,6 @@ enum StatefulNatError {
     InvalidPort(u16),
     #[error("unexpected IP protocol key variant")]
     UnexpectedKeyVariant,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NatFlowState<I: NatIpWithBitmap> {
-    src_alloc: Option<AllocatedIpPort<I>>,
-    dst_alloc: Option<AllocatedIpPort<I>>,
-    idle_timeout: Duration,
-}
-
-impl<I: NatIpWithBitmap> Display for NatFlowState<I> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.src_alloc.as_ref() {
-            Some(a) => write!(f, "({}:{}, ", a.ip(), a.port().as_u16()),
-            None => write!(f, "(unchanged, "),
-        }?;
-        match self.dst_alloc.as_ref() {
-            Some(a) => write!(f, "{}:{})", a.ip(), a.port().as_u16()),
-            None => write!(f, "unchanged)"),
-        }?;
-        write!(f, "[{}s]", self.idle_timeout.as_secs())
-    }
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -148,9 +128,8 @@ impl StatefulNat {
         let flow_info = packet.meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
-        flow_info.reset_expiry(state.idle_timeout).ok()?;
-        let translation_data = Self::get_translation_data(&state.src_alloc, &state.dst_alloc);
-        Some(translation_data)
+        flow_info.reset_expiry(state.idle_timeout()).ok()?;
+        Some(state.translation_data())
     }
 
     // Look up for a session by passing the parameters that make up a flow key.
@@ -169,8 +148,7 @@ impl StatefulNat {
         let flow_info = self.sessions.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
-        let translation_data = Self::get_translation_data(&state.src_alloc, &state.dst_alloc);
-        Some((translation_data, state.idle_timeout))
+        Some((state.translation_data(), state.idle_timeout()))
     }
 
     fn session_timeout_time(timeout: Duration) -> Instant {
@@ -200,7 +178,7 @@ impl StatefulNat {
         alloc: AllocationResult<AllocatedIpPort<I>>,
     ) -> Result<(), StatefulNatError> {
         // Given that at least one of alloc.src or alloc.dst is set, we should always have at least one timeout set.
-        let idle_timeout = alloc.idle_timeout().unwrap_or_else(|| unreachable!());
+        let idle_timeout = alloc.idle_timeout.unwrap_or_else(|| unreachable!());
 
         // src and dst vpc of this packet
         let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
@@ -210,7 +188,7 @@ impl StatefulNat {
         let reverse_key = Self::new_reverse_session(flow_key, &alloc, dst_vpc_id)?;
 
         // build NAT state for both flows
-        let (forward_state, reverse_state) = Self::new_states_from_alloc(alloc, idle_timeout);
+        let (forward_state, reverse_state) = NatFlowState::new_pair_from_alloc(alloc, idle_timeout);
 
         // build a flow pair from the keys (without NAT state)
         let expires_at = Self::session_timeout_time(idle_timeout);
@@ -329,23 +307,6 @@ impl StatefulNat {
         }
     }
 
-    fn new_states_from_alloc<I: NatIpWithBitmap>(
-        alloc: AllocationResult<AllocatedIpPort<I>>,
-        idle_timeout: Duration,
-    ) -> (NatFlowState<I>, NatFlowState<I>) {
-        let forward_state = NatFlowState {
-            src_alloc: alloc.src,
-            dst_alloc: alloc.dst,
-            idle_timeout,
-        };
-        let reverse_state = NatFlowState {
-            src_alloc: alloc.return_src,
-            dst_alloc: alloc.return_dst,
-            idle_timeout,
-        };
-        (forward_state, reverse_state)
-    }
-
     fn new_reverse_session<I: NatIpWithBitmap>(
         flow_key: &FlowKey,
         alloc: &AllocationResult<AllocatedIpPort<I>>,
@@ -361,18 +322,14 @@ impl StatefulNat {
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
 
-        let (reverse_src_addr, allocated_src_port_to_use) =
-            match alloc.dst.as_ref().map(|a| (a.ip(), a.port())) {
-                Some((ip, port)) => (ip.to_ip_addr(), Some(port)),
-                // No destination NAT for forward session:
-                // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
-                //
-                // Reverse session will be:
-                // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
-                //
-                // Use destination IP and port from forward tuple.
-                None => (*flow_key.data().dst_ip(), None),
-            };
+        // No destination NAT for forward session:
+        // f.init:(src: a, dst: b) -> f.nated:(src: A, dst: b)
+        //
+        // Reverse session will be:
+        // r.init:(src: b, dst: A) -> r.nated:(src: b, dst: a)
+        //
+        // Use destination IP and port from forward tuple.
+        let reverse_src_addr = *flow_key.data().dst_ip();
         let (reverse_dst_addr, allocated_dst_port_to_use) =
             match alloc.src.as_ref().map(|a| (a.ip(), a.port())) {
                 Some((ip, port)) => (ip.to_ip_addr(), Some(port)),
@@ -382,31 +339,6 @@ impl StatefulNat {
         // Reverse the forward protocol key...
         let mut reverse_proto_key = flow_key.data().proto_key_info().reverse();
         // ... but adjust ports as necessary (use allocated ports for the reverse session)
-        if let Some(src_port) = allocated_src_port_to_use {
-            match reverse_proto_key {
-                IpProtoKey::Tcp(_) | IpProtoKey::Udp(_) => {
-                    reverse_proto_key
-                        .try_set_src_port(
-                            src_port
-                                .try_into()
-                                .map_err(|_| StatefulNatError::InvalidPort(src_port.as_u16()))?,
-                        )
-                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                }
-                IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(_)) => {
-                    // For ICMP, we only need to set the identifier once. Use the "dst_port" below if
-                    // available, otherwise, use the "src_port" here.
-                    if allocated_dst_port_to_use.is_none() {
-                        reverse_proto_key
-                            .try_set_identifier(src_port.as_u16())
-                            .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                    }
-                }
-                IpProtoKey::Icmp(_) => {
-                    return Err(StatefulNatError::UnexpectedKeyVariant);
-                }
-            }
-        }
         if let Some(dst_port) = allocated_dst_port_to_use {
             match reverse_proto_key {
                 IpProtoKey::Tcp(_) | IpProtoKey::Udp(_) => {
@@ -474,7 +406,7 @@ impl StatefulNat {
 
         debug!("{}: Allocated translation data: {alloc}", self.name());
 
-        let translation_data = Self::get_translation_data(&alloc.src, &alloc.dst);
+        let translation_data = Self::get_translation_data(&alloc.src, &None);
 
         self.create_flow_pair(packet, &flow_key, alloc)?;
 

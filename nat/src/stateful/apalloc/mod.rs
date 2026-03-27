@@ -8,9 +8,9 @@
 //! Here is an attempt to visualize the allocator structure:
 //!
 //! ```text
-//! ┌───────────────────┐
-//! │NatDefaultAllocator├─────────────────────┬──────┬──────┐
-//! └────────┬──────────┘                     │      │      │
+//! ┌────────────┐
+//! │NatAllocator├────────────────────────────┬──────┬──────┐
+//! └────────┬───┘                            │      │      │
 //!          │                                │      │      │
 //! ┌────────▼────────┐         ┌─────────────▼──────▼──────▼───┐
 //! │PoolTable (src44)│         │PoolTable (src66, dst44, dst66)│
@@ -58,16 +58,14 @@
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock), to deallocate the ports when the
 //! [`AllocatedPort`](port_alloc::AllocatedPort) is dropped;
 //! [`AllocatedPortBlock`](port_alloc::AllocatedPortBlock) has a back reference to
-//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`], to deallocate the IP address
-//! when they are dropped.
+//! [`AllocatedIp`](alloc::AllocatedIp), and then the [`IpAllocator`](alloc::IpAllocator), to
+//! deallocate the IP address when they are dropped.
 
-#![allow(clippy::ip_constant)]
 #![allow(rustdoc::private_intra_doc_links)]
 
-use super::allocator::{AllocationResult, AllocatorError};
-use super::{NatAllocator, NatIp};
+use super::NatIp;
+use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
-use crate::stateful::apalloc::alloc::IpAllocator;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use net::IcmpProtoKey;
 use net::IpProtoKey;
@@ -76,7 +74,7 @@ use net::packet::VpcDiscriminant;
 use net::{ExtendedFlowKey, FlowKey};
 use std::collections::BTreeMap;
 use std::fmt::Display;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error};
 
 mod alloc;
@@ -155,12 +153,11 @@ impl<I: NatIpWithBitmap, J: NatIpWithBitmap> PoolTable<I, J> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// NatDefaultAllocator
+// NatAllocator
 ///////////////////////////////////////////////////////////////////////////////
 
 /// [`AllocatedIpPort`] is the public type for the object returned by our allocator.
 pub type AllocatedIpPort<I> = port_alloc::AllocatedPort<I>;
-type AllocationMapping<I> = (Option<AllocatedIpPort<I>>, Option<AllocatedIpPort<I>>);
 
 impl<I: NatIpWithBitmap> Display for AllocatedIpPort<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -171,28 +168,23 @@ impl<I: NatIpWithBitmap> Display for AllocatedIpPort<I> {
     }
 }
 
-/// [`NatDefaultAllocator`] is our default IP addresses and ports allocator for stateful NAT,
-/// implementing the [`NatAllocator`] trait.
+/// [`NatAllocator`] is the IP addresses and ports allocator for stateful NAT.
 ///
 /// Internally, it contains various bitmap-based IP pools, and each IP address allocated from these
 /// pools contains a port allocator.
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
-pub struct NatDefaultAllocator {
+pub struct NatAllocator {
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
-    pools_dst44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
-    pools_dst66: PoolTable<Ipv6Addr, Ipv6Addr>,
     randomize: bool,
 }
 
-impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatDefaultAllocator {
+impl NatAllocator {
     fn new() -> Self {
         Self {
             pools_src44: PoolTable::new(),
-            pools_dst44: PoolTable::new(),
             pools_src66: PoolTable::new(),
-            pools_dst66: PoolTable::new(),
             randomize: true,
         }
     }
@@ -201,28 +193,27 @@ impl NatAllocator<AllocatedIpPort<Ipv4Addr>, AllocatedIpPort<Ipv6Addr>> for NatD
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src44, &self.pools_dst44)
+        Self::allocate_from_tables(eflow_key, &self.pools_src44)
     }
 
     fn allocate_v6(
         &self,
         eflow_key: &ExtendedFlowKey,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src66, &self.pools_dst66)
+        Self::allocate_from_tables(eflow_key, &self.pools_src66)
     }
-}
 
-impl NatDefaultAllocator {
     fn allocate_from_tables<I: NatIpWithBitmap>(
         eflow_key: &ExtendedFlowKey,
         pools_src: &PoolTable<I, I>,
-        pools_dst: &PoolTable<I, I>,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
         // get flow key from extended flow key
         let flow_key = eflow_key.flow_key();
         let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
-        let (src_vpc_id, dst_vpc_id) = Self::get_vpc_discriminants(eflow_key)?;
+        let dst_vpc_id = eflow_key
+            .dst_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?;
 
         // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
@@ -248,47 +239,15 @@ impl NatDefaultAllocator {
             return Err(AllocatorError::Denied);
         }
 
-        // Get address pools for destination
-        let pool_dst_opt = pools_dst.get_entry(
-            next_header,
-            dst_vpc_id,
-            NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
-                AllocatorError::InternalIssue(
-                    "Failed to convert IP address to Ipv4Addr".to_string(),
-                )
-            })?,
-        );
-
         // Allocate IP and ports from pools, for source and destination NAT
         let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
-        let (src_mapping, dst_mapping) = Self::get_mapping(pool_src_opt, pool_dst_opt, allow_null)?;
-
-        // Now based on the previous allocation, we need to "reserve" IP and ports for the reverse
-        // path for the flow. First retrieve the relevant address pools.
-
-        let reverse_pool_src_opt = if let Some(mapping) = &dst_mapping {
-            pools_src.get_entry(next_header, src_vpc_id, mapping.ip())
-        } else {
-            None
-        };
-
-        let reverse_pool_dst_opt = if let Some(mapping) = &src_mapping {
-            pools_dst.get_entry(next_header, src_vpc_id, mapping.ip())
-        } else {
-            None
-        };
-
-        // Reserve IP and ports for the reverse path for the flow.
-        let (reverse_src_mapping, reverse_dst_mapping) =
-            Self::get_reverse_mapping(flow_key, reverse_pool_src_opt, reverse_pool_dst_opt)?;
+        let src_mapping = Self::get_mapping(pool_src_opt, allow_null)?;
+        let reverse_dst_mapping = Self::get_reverse_mapping(flow_key)?;
 
         Ok(AllocationResult {
             src: src_mapping,
-            dst: dst_mapping,
-            return_src: reverse_src_mapping,
             return_dst: reverse_dst_mapping,
-            src_flow_idle_timeout: pool_src_opt.and_then(IpAllocator::idle_timeout),
-            dst_flow_idle_timeout: pool_dst_opt.and_then(IpAllocator::idle_timeout),
+            idle_timeout: pool_src_opt.and_then(alloc::IpAllocator::idle_timeout),
         })
     }
 
@@ -307,26 +266,10 @@ impl NatDefaultAllocator {
         }
     }
 
-    fn get_vpc_discriminants(
-        eflow_key: &ExtendedFlowKey,
-    ) -> Result<(VpcDiscriminant, VpcDiscriminant), AllocatorError> {
-        let src_vpc_id = eflow_key
-            .flow_key()
-            .data()
-            .src_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?;
-
-        let dst_vpc_id = eflow_key
-            .dst_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?;
-        Ok((src_vpc_id, dst_vpc_id))
-    }
-
     fn get_mapping<I: NatIpWithBitmap>(
         pool_src_opt: Option<&alloc::IpAllocator<I>>,
-        pool_dst_opt: Option<&alloc::IpAllocator<I>>,
         allow_null: bool,
-    ) -> Result<AllocationMapping<I>, AllocatorError> {
+    ) -> Result<Option<AllocatedIpPort<I>>, AllocatorError> {
         // Allocate IP and ports for source and destination NAT.
         //
         // In the case of ICMP Query messages, use dst_mapping to hold an allocated identifier
@@ -343,66 +286,19 @@ impl NatDefaultAllocator {
             None => None,
         };
 
-        let dst_mapping = match pool_dst_opt {
-            Some(pool_dst) => Some(pool_dst.allocate(allow_null)?),
-            None => None,
-        };
-
-        Ok((src_mapping, dst_mapping))
+        Ok(src_mapping)
     }
 
-    fn get_reverse_mapping<I: NatIpWithBitmap>(
+    fn get_reverse_mapping(
         flow_key: &FlowKey,
-        reverse_pool_src_opt: Option<&alloc::IpAllocator<I>>,
-        reverse_pool_dst_opt: Option<&alloc::IpAllocator<I>>,
-    ) -> Result<AllocationMapping<I>, AllocatorError> {
-        let reverse_src_mapping = match reverse_pool_src_opt {
-            Some(pool_src) => {
-                let reservation_src_port_number = match flow_key.data().proto_key_info() {
-                    IpProtoKey::Tcp(tcp) => tcp.dst_port.into(),
-                    IpProtoKey::Udp(udp) => udp.dst_port.into(),
-                    // FIXME: We're doing a useless port reservation here, but without reserving a
-                    // "port" (or an ID for ICMP) we can't reserve an IP, given the current
-                    // architecture of the allocator. The ID will be overwritten by the ID for the
-                    // destination mapping. Note: this does not mean we're exhausting allocatable
-                    // identifiers sooner, because we allocate from a ports/identifier pool we don't
-                    // need.
-                    IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
-                };
-
-                Some(pool_src.reserve(
-                    NatIp::try_from_addr(*flow_key.data().dst_ip()).map_err(|()| {
-                        AllocatorError::InternalIssue(
-                            "Failed to convert IP address to Ipv4Addr".to_string(),
-                        )
-                    })?,
-                    reservation_src_port_number,
-                )?)
-            }
-            None => None,
+    ) -> Result<Option<(IpAddr, NatPort)>, AllocatorError> {
+        let reverse_target_ip = *flow_key.data().src_ip();
+        let reverse_target_port = match flow_key.data().proto_key_info() {
+            IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
+            IpProtoKey::Udp(udp) => udp.src_port.into(),
+            IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
         };
-
-        let reverse_dst_mapping = match reverse_pool_dst_opt {
-            Some(pool_dst) => {
-                let reservation_dst_port_number = match flow_key.data().proto_key_info() {
-                    IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
-                    IpProtoKey::Udp(udp) => udp.src_port.into(),
-                    IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
-                };
-
-                Some(pool_dst.reserve(
-                    NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
-                        AllocatorError::InternalIssue(
-                            "Failed to convert IP address to Ipv4Addr".to_string(),
-                        )
-                    })?,
-                    reservation_dst_port_number,
-                )?)
-            }
-            None => None,
-        };
-
-        Ok((reverse_src_mapping, reverse_dst_mapping))
+        Ok(Some((reverse_target_ip, reverse_target_port)))
     }
 
     fn get_icmp_query_id(key: &IcmpProtoKey) -> Result<u16, AllocatorError> {
@@ -480,6 +376,8 @@ fn max_range<I: NatIp>() -> I {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::ip_constant)]
+
     use super::*;
     use net::vxlan::Vni;
 
