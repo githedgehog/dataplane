@@ -16,3 +16,8 @@ result*/**
 /bin
 sysroot
 devroot
+creds.json
+scripts/vlab/root/etc/zot/*.crt
+scripts/vlab/root/etc/zot/*.key
+scripts/vlab/root/etc/zot/*.csr
+scripts/vlab/root/etc/zot/*.srl
