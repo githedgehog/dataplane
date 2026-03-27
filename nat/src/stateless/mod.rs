@@ -14,7 +14,8 @@ pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-expor
 use crate::{NatPort, NatTranslationData};
 use net::buffer::PacketBufferMut;
 use net::headers::{
-    Net, Transport, TryEmbeddedTransport, TryInnerIp, TryIpMut, TryTransport, TryTransportMut,
+    Net, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp, TryIp,
+    TryIpMut, TryTransport, TryTransportMut,
 };
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -173,6 +174,19 @@ impl StatelessNat {
         Ok(())
     }
 
+    // Is this an ICMP error packet that contains an embedded IP packet?
+    fn is_icmp_inner_translation_candidate<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
+        // If no network layer, no translation needed
+        packet.try_ip().is_some()
+        // If not ICMPv4 or ICMPv6, no translation needed
+        && packet.try_icmp_any().is_some_and(|icmp| {
+            // If not an ICMP error message, no translation needed
+            icmp.is_error_message()
+        })
+        // If no embedded IP packet, no translation needed
+        && packet.embedded_headers().is_some()
+    }
+
     fn find_translation_icmp_inner<Buf: PacketBufferMut>(
         table: &PerVniTable,
         packet: &Packet<Buf>,
@@ -210,11 +224,10 @@ impl StatelessNat {
         packet: &mut Packet<Buf>,
         dst_vni: Vni,
     ) -> Result<bool, StatelessNatError> {
-        match validate_checksums_icmp(packet) {
-            Err(e) => return Err(StatelessNatError::IcmpErrorMsg(e)), // Error, drop packet
-            Ok(false) => return Ok(false),                            // No translation needed
-            Ok(true) => {} // Translation needed, carry on
+        if !Self::is_icmp_inner_translation_candidate(packet) {
+            return Ok(false);
         }
+        validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
 
         let Some(state) = Self::find_translation_icmp_inner(table, packet, dst_vni) else {
             return Err(StatelessNatError::UnsupportedTranslation);
