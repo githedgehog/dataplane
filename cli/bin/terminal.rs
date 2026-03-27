@@ -5,6 +5,8 @@
 
 use crate::cmdtree::Node;
 use colored::Colorize;
+use dataplane_cli::cliproto::CLI_RX_BUFF_SIZE;
+use nix::sys::socket::{setsockopt, sockopt::RcvBuf};
 use rustyline::config::{ColorMode, CompletionType, Config};
 use rustyline::history::MemHistory;
 use rustyline::{Cmd, Event, KeyCode, KeyEvent, Modifiers};
@@ -189,7 +191,10 @@ impl Terminal {
         perms.set_mode(0o777);
         fs::set_permissions(bind_addr, perms).map_err(|_| "Failure setting permissions")?;
         sock.set_nonblocking(false)
-            .map_err(|_| "Failed to set non-blocking")?;
+            .map_err(|_| "Failed to set sock non-blocking")?;
+
+        setsockopt(&sock, RcvBuf, &CLI_RX_BUFF_SIZE)
+            .map_err(|_| "Failure setting recv buffer size")?;
         Ok(sock)
     }
 
