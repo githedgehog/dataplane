@@ -73,7 +73,7 @@ version:
 oci_repo := "127.0.0.1:30000"
 oci_insecure := ""
 oci_name := "githedgehog/dataplane"
-oci_frr_prefix := "githedgehog/dpdk-sys/frr"
+oci_frr_prefix := "githedgehog/dataplane/frr"
 oci_image_dataplane := oci_repo + "/" + oci_name + ":" + version
 oci_image_dataplane_debugger := oci_repo + "/" + oci_name + "/debugger:" + version
 oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
@@ -173,12 +173,12 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             ;;
         "frr.dataplane")
             docker load < ./results/containers.frr.dataplane
-            docker tag "ghcr.io/githedgehog/dpdk-sys/frr:{{version}}" "{{oci_image_frr_dataplane}}"
+            docker tag "ghcr.io/githedgehog/dataplane/frr:{{version}}" "{{oci_image_frr_dataplane}}"
             echo "imported {{oci_image_frr_dataplane}}"
             ;;
         "frr.host")
             docker load < ./results/containers.frr.host
-            docker tag "ghcr.io/githedgehog/dpdk-sys/frr-host:{{version}}" "{{oci_image_frr_host}}"
+            docker tag "ghcr.io/githedgehog/dataplane/frr-host:{{version}}" "{{oci_image_frr_host}}"
             echo "imported {{oci_image_frr_host}}"
             ;;
         "validator")
