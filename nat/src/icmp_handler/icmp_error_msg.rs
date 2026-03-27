@@ -7,6 +7,7 @@
 use crate::NatPort;
 use crate::NatTranslationData;
 use net::buffer::PacketBufferMut;
+use std::num::NonZero;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{
     EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
@@ -32,8 +33,8 @@ pub enum IcmpErrorMsgError {
     InvalidIpVersion,
     #[error("IP address {0} is not unicast")]
     NotUnicast(IpAddr),
-    #[error("no allocated identifier found for translation")]
-    NoIdentifier,
+    #[error("no translation possible")]
+    NoTranslationPossible,
 }
 
 // # Return
@@ -98,9 +99,6 @@ pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
         state.src_port,
         state.dst_port,
     );
-    let embedded_headers = packet
-        .embedded_headers_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
 
     // From REQ-4 from RFC 5508, "NAT Behavioral Requirements for ICMP":
     //
@@ -110,114 +108,162 @@ pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
     //
     //        a) Revert the IP and transport headers of the embedded IP packet to their original
     //        form, using the matching mapping;
-    let net = embedded_headers
-        .try_inner_ip_mut()
+    if let Some(src_addr) = target_src_addr {
+        nat_translate_icmp_inner_src(packet, src_addr, target_src_port)?;
+    }
+    if let Some(dst_addr) = target_dst_addr {
+        nat_translate_icmp_inner_dst(packet, dst_addr, target_dst_port)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    target_addr: IpAddr,
+    target_port: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let embedded_headers = packet
+        .embedded_headers_mut()
         .ok_or(IcmpErrorMsgError::BadIpHeader)?;
-    if let Some(target_src_ip) = target_src_addr {
-        net.try_set_source(
-            target_src_ip
+
+    embedded_headers
+        .try_inner_ip_mut()
+        .ok_or(IcmpErrorMsgError::BadIpHeader)?
+        .try_set_source(
+            target_addr
                 .try_into()
-                .map_err(|_| IcmpErrorMsgError::NotUnicast(target_src_ip))?,
+                .map_err(|_| IcmpErrorMsgError::NotUnicast(target_addr))?,
         )
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
-    }
 
-    let net = embedded_headers
-        .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
-    if let Some(target_dst_ip) = target_dst_addr {
-        net.try_set_destination(target_dst_ip)
-            .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
-    }
-
+    let Some(target_port) = target_port else {
+        // No port to translate, we're done
+        return Ok(());
+    };
     let Some(transport) = embedded_headers.try_embedded_transport_mut() else {
         // No transport layer in the inner packet, that's fine, we're done here
-        // TODO: Log trace anyway?
         return Ok(());
     };
 
     match transport {
         EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
-            translate_inner_tcp_udp(transport, target_src_port, target_dst_port)
+            translate_inner_tcp_udp_src(transport, target_port)?;
         }
-        EmbeddedTransport::Icmp4(icmp4) => translate_inner_icmp(icmp4, target_src_port),
-        EmbeddedTransport::Icmp6(icmp6) => translate_inner_icmp(icmp6, target_src_port),
+        EmbeddedTransport::Icmp4(icmp4) => {
+            translate_inner_icmp(icmp4, target_port);
+        }
+        EmbeddedTransport::Icmp6(icmp6) => {
+            translate_inner_icmp(icmp6, target_port);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    target_addr: IpAddr,
+    target_port: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let embedded_headers = packet
+        .embedded_headers_mut()
+        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
+
+    embedded_headers
+        .try_inner_ip_mut()
+        .ok_or(IcmpErrorMsgError::BadIpHeader)?
+        .try_set_destination(target_addr)
+        .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
+
+    let Some(target_port) = target_port else {
+        // No port to translate, we're done
+        return Ok(());
+    };
+    let Some(transport) = embedded_headers.try_embedded_transport_mut() else {
+        // No transport layer in the inner packet, that's fine, we're done here
+        return Ok(());
+    };
+
+    match transport {
+        EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
+            translate_inner_tcp_udp_dst(transport, target_port)
+        }
+        _ => Ok(()), // ICMP is dealt with when dealing with the source port
     }
 }
 
-fn translate_inner_icmp<T>(
-    icmp: &mut T,
-    target_identifier: Option<NatPort>,
-) -> Result<(), IcmpErrorMsgError>
+fn translate_inner_icmp<T>(icmp: &mut T, target_identifier: NatPort)
 where
     T: TruncatedIcmpAny + Checksum,
     u16: std::convert::From<<T as Checksum>::Checksum>,
 {
     let Some(old_identifier) = icmp.identifier() else {
         // No identifier to translate, we're done
-        return Ok(());
+        return;
     };
-    let Some(new_identifier) = target_identifier.map(NatPort::as_u16) else {
-        // We really should have received a target identifier, something went wrong
-        return Err(IcmpErrorMsgError::NoIdentifier);
-    };
+    let new_identifier = target_identifier.as_u16();
+    if new_identifier == old_identifier {
+        // No change needed
+        return;
+    }
+
     icmp.try_set_identifier(new_identifier)
         .unwrap_or_else(|_| unreachable!()); // We found an old identifier, we can set a new one
-
     let Some(current_checksum) = icmp.checksum().map(u16::from) else {
         // No checksum to update, we're done
-        return Ok(());
+        return;
     };
     let _ = icmp.increment_update_checksum(
         T::Checksum::from(current_checksum),
         old_identifier,
         new_identifier,
     );
+}
+
+fn translate_inner_tcp_udp_src(
+    transport: &mut EmbeddedTransport,
+    target_port: NatPort,
+) -> Result<(), IcmpErrorMsgError> {
+    // Assume we have TCP or UDP, with source port always present
+    let old_port = transport.source().unwrap_or_else(|| unreachable!()).into();
+    let new_port: NonZero<u16> = target_port
+        .try_into()
+        .map_err(|_| IcmpErrorMsgError::InvalidPort(target_port.as_u16()))?;
+    if old_port == new_port.get() {
+        return Ok(());
+    }
+    transport
+        .set_source(new_port)
+        .unwrap_or_else(|_| unreachable!());
+    // We don't know whether the header and payload are full: the easiest way to deal with
+    // transport checksum update is to do an unconditional, incremental update here. Note
+    // that this checksum will not be updated again when deparsing the packet.
+    if let Some(current_checksum) = transport.checksum() {
+        transport.update_checksum(current_checksum, old_port, new_port.get());
+    }
     Ok(())
 }
 
-fn translate_inner_tcp_udp(
+fn translate_inner_tcp_udp_dst(
     transport: &mut EmbeddedTransport,
-    target_src_port: Option<NatPort>,
-    target_dst_port: Option<NatPort>,
+    target_port: NatPort,
 ) -> Result<(), IcmpErrorMsgError> {
-    // Assume we have TCP or UDP, with source and destination ports always present
-    let (old_src_port, old_dst_port) = (
-        transport.source().unwrap_or_else(|| unreachable!()).into(),
-        transport
-            .destination()
-            .unwrap_or_else(|| unreachable!())
-            .into(),
-    );
-
-    if let Some(target_src_port) = target_src_port {
-        transport
-            .set_source(
-                target_src_port
-                    .try_into()
-                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_src_port.as_u16()))?,
-            )
-            .unwrap_or_else(|_| unreachable!());
-        // We don't know whether the header and payload are full: the easiest way to deal with
-        // transport checksum update is to do an unconditional, incremental update here. Note
-        // that this checksum will not be updated again when deparsing the packet.
-        if let Some(current_checksum) = transport.checksum() {
-            transport.update_checksum(current_checksum, old_src_port, target_src_port.as_u16());
-        }
+    // Assume we have TCP or UDP, with destination port always present
+    let old_port = transport
+        .destination()
+        .unwrap_or_else(|| unreachable!())
+        .into();
+    let new_port: NonZero<u16> = target_port
+        .try_into()
+        .map_err(|_| IcmpErrorMsgError::InvalidPort(target_port.as_u16()))?;
+    if old_port == new_port.get() {
+        return Ok(());
     }
-    if let Some(target_dst_port) = target_dst_port {
-        transport
-            .set_destination(
-                target_dst_port
-                    .try_into()
-                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_dst_port.as_u16()))?,
-            )
-            .unwrap_or_else(|_| unreachable!());
-        if let Some(current_checksum) = transport.checksum() {
-            transport.update_checksum(current_checksum, old_dst_port, target_dst_port.as_u16());
-        }
+    transport
+        .set_destination(new_port)
+        .unwrap_or_else(|_| unreachable!());
+    if let Some(current_checksum) = transport.checksum() {
+        transport.update_checksum(current_checksum, old_port, new_port.get());
     }
-
     Ok(())
 }
 
