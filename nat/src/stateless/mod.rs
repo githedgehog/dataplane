@@ -7,11 +7,12 @@ pub mod natrw;
 pub mod setup;
 pub(crate) mod test;
 
+use crate::NatPort;
 use crate::icmp_handler::icmp_error_msg::{
-    IcmpErrorMsgError, nat_translate_icmp_inner, validate_checksums_icmp,
+    IcmpErrorMsgError, nat_translate_icmp_inner_dst, nat_translate_icmp_inner_src,
+    validate_checksums_icmp,
 };
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
-use crate::{NatPort, NatTranslationData};
 use net::buffer::PacketBufferMut;
 use net::headers::{
     Net, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp, TryIp,
@@ -187,52 +188,50 @@ impl StatelessNat {
         && packet.embedded_headers().is_some()
     }
 
-    fn find_translation_icmp_inner<Buf: PacketBufferMut>(
+    fn translate_icmp_inner_packet_src_if_any<Buf: PacketBufferMut>(
         table: &PerVniTable,
-        packet: &Packet<Buf>,
-        dst_vni: Vni,
-    ) -> Option<NatTranslationData> {
-        let net = packet.try_inner_ip()?;
-        let transport = packet.try_embedded_transport();
-        // Note how we swap addresses to find NAT ranges: we're sending the inner packet back
-        // without swapping source and destination in the header, so we need to swap the ranges we
-        // get from the tables lookup.
-        let src_mapping = table.find_dst_mapping(
-            &net.src_addr(),
-            transport.and_then(|t| t.destination().map(NonZero::get)),
-        );
-        let dst_mapping = table.find_src_mapping(
-            &net.dst_addr(),
-            transport.and_then(|t| t.destination().map(NonZero::get)),
-            dst_vni,
-        );
-
-        Some(NatTranslationData {
-            src_addr: src_mapping.map(|(addr, _)| addr),
-            dst_addr: dst_mapping.map(|(addr, _)| addr),
-            src_port: src_mapping.and_then(|(_, port)| {
-                port.and_then(|port| NatPort::new_port_checked(port).ok()) // TODO: FIXME ICMP
-            }),
-            dst_port: dst_mapping.and_then(|(_, port)| {
-                port.and_then(|port| NatPort::new_port_checked(port).ok()) // TODO: FIXME ICMP
-            }),
-        })
+        packet: &mut Packet<Buf>,
+    ) -> Result<bool, StatelessNatError> {
+        let addr = packet
+            .try_inner_ip()
+            .ok_or(StatelessNatError::NoIpHeader)?
+            .src_addr();
+        let port = packet
+            .try_embedded_transport()
+            .and_then(|t| t.source().map(NonZero::get));
+        // Note: we assign the _destination_ mapping to the target _source_ address.
+        // We're sending the inner packet back without swapping source and destination in the
+        // header, so we need to swap the ranges we get from the tables lookup.
+        let Some((src_addr, src_port)) = table.find_dst_mapping(&addr, port) else {
+            return Err(StatelessNatError::UnsupportedTranslation);
+        };
+        let src_port = src_port.and_then(|p| NatPort::new_port_checked(p).ok());
+        nat_translate_icmp_inner_src::<Buf>(packet, src_addr, src_port)
+            .map_err(StatelessNatError::IcmpErrorMsg)?;
+        Ok(true)
     }
 
-    fn translate_icmp_inner_packet_if_any<Buf: PacketBufferMut>(
+    fn translate_icmp_inner_packet_dst_if_any<Buf: PacketBufferMut>(
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
         dst_vni: Vni,
     ) -> Result<bool, StatelessNatError> {
-        if !Self::is_icmp_inner_translation_candidate(packet) {
-            return Ok(false);
-        }
-        validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
-
-        let Some(state) = Self::find_translation_icmp_inner(table, packet, dst_vni) else {
+        let addr = packet
+            .try_inner_ip()
+            .ok_or(StatelessNatError::NoIpHeader)?
+            .dst_addr();
+        let port = packet
+            .try_embedded_transport()
+            .and_then(|t| t.destination().map(NonZero::get));
+        // Note: we assign the _source_ mapping to the target _destination_ address.
+        // We're sending the inner packet back without swapping source and destination in the
+        // header, so we need to swap the ranges we get from the tables lookup.
+        let Some((dst_addr, dst_port)) = table.find_src_mapping(&addr, port, dst_vni) else {
             return Err(StatelessNatError::UnsupportedTranslation);
         };
-        nat_translate_icmp_inner::<Buf>(packet, &state).map_err(StatelessNatError::IcmpErrorMsg)?;
+        let dst_port = dst_port.and_then(|p| NatPort::new_port_checked(p).ok());
+        nat_translate_icmp_inner_dst::<Buf>(packet, dst_addr, dst_port)
+            .map_err(StatelessNatError::IcmpErrorMsg)?;
         Ok(true)
     }
 
@@ -299,8 +298,10 @@ impl StatelessNat {
             }
         }
 
-        if packet.is_icmp() {
-            modified |= Self::translate_icmp_inner_packet_if_any(table, packet, dst_vni)?;
+        if Self::is_icmp_inner_translation_candidate(packet) {
+            validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
+            modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
+            modified |= Self::translate_icmp_inner_packet_src_if_any(table, packet)?;
         }
         Ok(modified)
     }
