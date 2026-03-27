@@ -156,6 +156,24 @@ pub enum NetExt {
     Ipv6Ext(Ipv6Ext),
 }
 
+impl DeParse for NetExt {
+    type Error = ();
+
+    fn size(&self) -> NonZero<u16> {
+        match self {
+            NetExt::IpAuth(auth) => auth.size(),
+            NetExt::Ipv6Ext(ext) => ext.size(),
+        }
+    }
+
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        match self {
+            NetExt::IpAuth(auth) => auth.deparse(buf),
+            NetExt::Ipv6Ext(ext) => ext.deparse(buf),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TransportError {
     #[error("transport protocol does not use ports")]
@@ -487,15 +505,21 @@ impl DeParse for Headers {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
-        // TODO(blocking): Deal with ip{v4,v6} extensions
         let eth = self.eth.as_ref().map_or(0, |x| x.size().get());
         let vlan = self.vlan.iter().map(|v| v.size().get()).sum::<u16>();
-        let net = match self.net {
+        let (net, net_ext) = match self.net {
             None => {
                 debug_assert!(self.transport.is_none());
-                0
+                debug_assert!(
+                    self.net_ext.is_empty(),
+                    "net_ext headers present without a net header"
+                );
+                (0, 0)
             }
-            Some(ref n) => n.size().get(),
+            Some(ref n) => {
+                let net_ext: u16 = self.net_ext.iter().map(|e| e.size().get()).sum();
+                (n.size().get(), net_ext)
+            }
         };
         let transport = match self.transport {
             None => 0,
@@ -509,12 +533,11 @@ impl DeParse for Headers {
             .embedded_ip
             .as_ref()
             .map_or(0, |embedded_header| embedded_header.size().get());
-        NonZero::new(eth + vlan + net + transport + encap + embedded_ip)
+        NonZero::new(eth + vlan + net + net_ext + transport + encap + embedded_ip)
             .unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
-        // TODO(blocking): Deal with ip{v4,v6} extensions
         let len = buf.len();
         if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
@@ -545,6 +568,10 @@ impl DeParse for Headers {
             Some(ref net) => {
                 cursor.write(net)?;
             }
+        }
+
+        for ext in &self.net_ext {
+            cursor.write(ext)?;
         }
 
         match self.transport {
