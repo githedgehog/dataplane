@@ -210,11 +210,10 @@ impl StatelessNat {
         packet: &mut Packet<Buf>,
         dst_vni: Vni,
     ) -> Result<bool, StatelessNatError> {
-        match validate_checksums_icmp(packet) {
-            Err(e) => return Err(StatelessNatError::IcmpErrorMsg(e)), // Error, drop packet
-            Ok(false) => return Ok(false),                            // No translation needed
-            Ok(true) => {} // Translation needed, carry on
+        if !packet.is_icmp_inner_translation_candidate() {
+            return Ok(false);
         }
+        validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
 
         let Some(state) = Self::find_translation_icmp_inner(table, packet, dst_vni) else {
             return Err(StatelessNatError::UnsupportedTranslation);
