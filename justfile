@@ -70,7 +70,7 @@ version:
 
 # OCI repo to push images to
 
-oci_repo := "127.0.0.1:30000"
+oci_repo := "192.168.19.1:30000"
 oci_insecure := ""
 oci_name := "githedgehog/dataplane"
 oci_frr_prefix := "githedgehog/dataplane/frr"
@@ -330,3 +330,54 @@ bump_version version:
 [script]
 shell:
    nix-shell
+
+# Base image for the vlab container
+[private]
+vlab_base_image := "ubuntu:25.10"
+
+# Start the vlab environment
+[script]
+vlab-up *args:
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./run.sh "{{ vlab_base_image }}" "{{ args }}"
+    popd
+
+# Open a shell or run a command on the vlab control plane
+[script]
+vlab-control *args:
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./control.sh {{ args }}
+    popd
+
+# Stop the vlab container and remove the docker network
+[confirm]
+[script]
+vlab-down:
+    {{ _just_debuggable_ }}
+    docker stop vlab || true
+    docker rm vlab || true
+    docker network rm zot || true
+
+# Stop vlab and remove all associated docker volumes
+[confirm]
+[script]
+vlab-purge: vlab-down
+    {{ _just_debuggable_ }}
+    docker volume rm vlab || true
+    docker volume rm zot || true
+
+[script]
+vlab-patch-dataplane: (push-container "dataplane")
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '"{\"spec\":{\"overrides\":{\"versions\":{\"gateway\":{\"dataplane\":\"{{version}}\"}}}}}"'
+    popd
+
+[script]
+vlab-patch-frr: (push-container "frr.dataplane")
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '"{\"spec\":{\"overrides\":{\"versions\":{\"gateway\":{\"frr\":\"{{version}}\"}}}}}"'
+    popd
