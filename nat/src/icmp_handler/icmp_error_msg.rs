@@ -7,7 +7,6 @@
 use crate::NatPort;
 use crate::NatTranslationData;
 use net::buffer::PacketBufferMut;
-use std::num::NonZero;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{
     EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
@@ -18,6 +17,7 @@ use net::icmp_any::{IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
 use net::ipv4::Ipv4;
 use net::packet::Packet;
 use std::net::IpAddr;
+use std::num::NonZero;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IcmpErrorMsgError {
