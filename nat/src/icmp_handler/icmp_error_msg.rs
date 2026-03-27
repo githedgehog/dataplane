@@ -7,7 +7,6 @@
 use crate::NatPort;
 use crate::NatTranslationData;
 use net::buffer::PacketBufferMut;
-use std::num::NonZero;
 use net::checksum::{Checksum, ChecksumError};
 use net::headers::{
     EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
@@ -18,6 +17,7 @@ use net::icmp_any::{IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
 use net::ipv4::Ipv4;
 use net::packet::Packet;
 use std::net::IpAddr;
+use std::num::NonZero;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IcmpErrorMsgError {
@@ -39,23 +39,19 @@ pub enum IcmpErrorMsgError {
 
 // # Return
 //
+// * `Ok(())` if checksums are valid and we can translate the inner packet
 // * An error if we fail to validate relevant checksums and packet should be dropped
-// * `true` if checksums are valid and we need to translate the inner packet
-// * `false` if we don't need to translate the inner packet
 pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
-) -> Result<bool, IcmpErrorMsgError> {
+) -> Result<(), IcmpErrorMsgError> {
     let Some(net) = packet.try_ip() else {
-        // No network layer, no translation needed
-        return Ok(false);
+        return Err(IcmpErrorMsgError::BadIpHeader);
     };
     let Some(icmp) = packet.try_icmp_any() else {
-        // Not ICMPv4 or ICMPv6, no translation needed
-        return Ok(false);
+        return Err(IcmpErrorMsgError::NoTranslationPossible);
     };
     if !icmp.is_error_message() {
-        // Not an ICMP error message, no translation needed
-        return Ok(false);
+        return Err(IcmpErrorMsgError::NoTranslationPossible);
     }
 
     let icmp_payload =
@@ -71,7 +67,7 @@ pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
 
     let Some(embedded_ip) = packet.embedded_headers() else {
         // No embedded IP packet to translate
-        return Ok(false);
+        return Err(IcmpErrorMsgError::NoTranslationPossible);
     };
 
     // From REQ-3 a) from RFC 5508, "NAT Behavioral Requirements for ICMP":
@@ -85,8 +81,7 @@ pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
             .validate_checksum(&())
             .map_err(IcmpErrorMsgError::BadChecksumInnerIpv4)?;
     }
-
-    Ok(true)
+    Ok(())
 }
 
 pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
@@ -293,7 +288,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::BadIpHeader));
     }
 
     #[test]
@@ -312,7 +307,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 
     #[test]
@@ -339,7 +334,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 
     #[test]
@@ -363,7 +358,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 
     #[test]
@@ -402,7 +397,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 }
 
@@ -464,7 +459,7 @@ mod bolero_tests {
 
                 // Now, ICMP and inner IP headers checksums should be valid
                 let res = validate_checksums_icmp::<TestBuffer>(&icmp_error_msg_clone);
-                assert_eq!(res, Ok(true), "Checksum validation failed: {res:?}");
+                assert!(res.is_ok(), "Checksum validation failed: {res:?}");
 
                 // Also check outer IP header checksum, since we're at it
                 if let Some(ipv4) = icmp_error_msg_clone.headers().try_ipv4() {
@@ -608,7 +603,7 @@ mod bolero_tests {
                     // Update and validate checksums for inner IP header, ICMP header, and outer IP header
                     icmp_error_msg_clone.update_checksums();
                     let res = validate_checksums_icmp::<TestBuffer>(&icmp_error_msg_clone);
-                    assert_eq!(res, Ok(true), "Checksum validation failed: {res:?}");
+                    assert!(res.is_ok(), "Checksum validation failed: {res:?}");
                 },
             );
     }
