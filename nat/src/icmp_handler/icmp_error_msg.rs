@@ -17,6 +17,7 @@ use net::icmp_any::{IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
 use net::ipv4::Ipv4;
 use net::packet::Packet;
 use std::net::IpAddr;
+use std::num::NonZero;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IcmpErrorMsgError {
@@ -32,29 +33,28 @@ pub enum IcmpErrorMsgError {
     InvalidIpVersion,
     #[error("IP address {0} is not unicast")]
     NotUnicast(IpAddr),
-    #[error("no allocated identifier found for translation")]
-    NoIdentifier,
+    #[error("no translation possible")]
+    NoTranslationPossible,
 }
 
 // # Return
 //
+// * `Ok(())` if checksums are valid and we can translate the inner packet
 // * An error if we fail to validate relevant checksums and packet should be dropped
-// * `true` if checksums are valid and we need to translate the inner packet
-// * `false` if we don't need to translate the inner packet
 pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
-) -> Result<bool, IcmpErrorMsgError> {
+) -> Result<(), IcmpErrorMsgError> {
     let Some(net) = packet.try_ip() else {
         // No network layer, no translation needed
-        return Ok(false);
+        return Err(IcmpErrorMsgError::BadIpHeader);
     };
     let Some(icmp) = packet.try_icmp_any() else {
         // Not ICMPv4 or ICMPv6, no translation needed
-        return Ok(false);
+        return Err(IcmpErrorMsgError::NoTranslationPossible);
     };
     if !icmp.is_error_message() {
         // Not an ICMP error message, no translation needed
-        return Ok(false);
+        return Err(IcmpErrorMsgError::NoTranslationPossible);
     }
 
     let icmp_payload =
@@ -70,7 +70,7 @@ pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
 
     let Some(embedded_ip) = packet.embedded_headers() else {
         // No embedded IP packet to translate
-        return Ok(false);
+        return Err(IcmpErrorMsgError::NoTranslationPossible);
     };
 
     // From REQ-3 a) from RFC 5508, "NAT Behavioral Requirements for ICMP":
@@ -84,8 +84,7 @@ pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
             .validate_checksum(&())
             .map_err(IcmpErrorMsgError::BadChecksumInnerIpv4)?;
     }
-
-    Ok(true)
+    Ok(())
 }
 
 pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
@@ -98,9 +97,6 @@ pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
         state.src_port,
         state.dst_port,
     );
-    let embedded_headers = packet
-        .embedded_headers_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
 
     // From REQ-4 from RFC 5508, "NAT Behavioral Requirements for ICMP":
     //
@@ -110,114 +106,162 @@ pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
     //
     //        a) Revert the IP and transport headers of the embedded IP packet to their original
     //        form, using the matching mapping;
-    let net = embedded_headers
-        .try_inner_ip_mut()
+    if let Some(src_addr) = target_src_addr {
+        nat_translate_icmp_inner_src(packet, src_addr, target_src_port)?;
+    }
+    if let Some(dst_addr) = target_dst_addr {
+        nat_translate_icmp_inner_dst(packet, dst_addr, target_dst_port)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    target_addr: IpAddr,
+    target_port: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let embedded_headers = packet
+        .embedded_headers_mut()
         .ok_or(IcmpErrorMsgError::BadIpHeader)?;
-    if let Some(target_src_ip) = target_src_addr {
-        net.try_set_source(
-            target_src_ip
+
+    embedded_headers
+        .try_inner_ip_mut()
+        .ok_or(IcmpErrorMsgError::BadIpHeader)?
+        .try_set_source(
+            target_addr
                 .try_into()
-                .map_err(|_| IcmpErrorMsgError::NotUnicast(target_src_ip))?,
+                .map_err(|_| IcmpErrorMsgError::NotUnicast(target_addr))?,
         )
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
-    }
 
-    let net = embedded_headers
-        .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
-    if let Some(target_dst_ip) = target_dst_addr {
-        net.try_set_destination(target_dst_ip)
-            .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
-    }
-
+    let Some(target_port) = target_port else {
+        // No port to translate, we're done
+        return Ok(());
+    };
     let Some(transport) = embedded_headers.try_embedded_transport_mut() else {
         // No transport layer in the inner packet, that's fine, we're done here
-        // TODO: Log trace anyway?
         return Ok(());
     };
 
     match transport {
         EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
-            translate_inner_tcp_udp(transport, target_src_port, target_dst_port)
+            translate_inner_tcp_udp_src(transport, target_port)?;
         }
-        EmbeddedTransport::Icmp4(icmp4) => translate_inner_icmp(icmp4, target_src_port),
-        EmbeddedTransport::Icmp6(icmp6) => translate_inner_icmp(icmp6, target_src_port),
+        EmbeddedTransport::Icmp4(icmp4) => {
+            translate_inner_icmp(icmp4, target_port);
+        }
+        EmbeddedTransport::Icmp6(icmp6) => {
+            translate_inner_icmp(icmp6, target_port);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+    target_addr: IpAddr,
+    target_port: Option<NatPort>,
+) -> Result<(), IcmpErrorMsgError> {
+    let embedded_headers = packet
+        .embedded_headers_mut()
+        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
+
+    embedded_headers
+        .try_inner_ip_mut()
+        .ok_or(IcmpErrorMsgError::BadIpHeader)?
+        .try_set_destination(target_addr)
+        .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
+
+    let Some(target_port) = target_port else {
+        // No port to translate, we're done
+        return Ok(());
+    };
+    let Some(transport) = embedded_headers.try_embedded_transport_mut() else {
+        // No transport layer in the inner packet, that's fine, we're done here
+        return Ok(());
+    };
+
+    match transport {
+        EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_) => {
+            translate_inner_tcp_udp_dst(transport, target_port)
+        }
+        _ => Ok(()), // ICMP is dealt with when dealing with the source port
     }
 }
 
-fn translate_inner_icmp<T>(
-    icmp: &mut T,
-    target_identifier: Option<NatPort>,
-) -> Result<(), IcmpErrorMsgError>
+fn translate_inner_icmp<T>(icmp: &mut T, target_identifier: NatPort)
 where
     T: TruncatedIcmpAny + Checksum,
     u16: std::convert::From<<T as Checksum>::Checksum>,
 {
     let Some(old_identifier) = icmp.identifier() else {
         // No identifier to translate, we're done
-        return Ok(());
+        return;
     };
-    let Some(new_identifier) = target_identifier.map(NatPort::as_u16) else {
-        // We really should have received a target identifier, something went wrong
-        return Err(IcmpErrorMsgError::NoIdentifier);
-    };
+    let new_identifier = target_identifier.as_u16();
+    if new_identifier == old_identifier {
+        // No change needed
+        return;
+    }
+
     icmp.try_set_identifier(new_identifier)
         .unwrap_or_else(|_| unreachable!()); // We found an old identifier, we can set a new one
-
     let Some(current_checksum) = icmp.checksum().map(u16::from) else {
         // No checksum to update, we're done
-        return Ok(());
+        return;
     };
     let _ = icmp.increment_update_checksum(
         T::Checksum::from(current_checksum),
         old_identifier,
         new_identifier,
     );
+}
+
+fn translate_inner_tcp_udp_src(
+    transport: &mut EmbeddedTransport,
+    target_port: NatPort,
+) -> Result<(), IcmpErrorMsgError> {
+    // Assume we have TCP or UDP, with source port always present
+    let old_port = transport.source().unwrap_or_else(|| unreachable!()).into();
+    let new_port: NonZero<u16> = target_port
+        .try_into()
+        .map_err(|_| IcmpErrorMsgError::InvalidPort(target_port.as_u16()))?;
+    if old_port == new_port.get() {
+        return Ok(());
+    }
+    transport
+        .set_source(new_port)
+        .unwrap_or_else(|_| unreachable!());
+    // We don't know whether the header and payload are full: the easiest way to deal with
+    // transport checksum update is to do an unconditional, incremental update here. Note
+    // that this checksum will not be updated again when deparsing the packet.
+    if let Some(current_checksum) = transport.checksum() {
+        transport.update_checksum(current_checksum, old_port, new_port.get());
+    }
     Ok(())
 }
 
-fn translate_inner_tcp_udp(
+fn translate_inner_tcp_udp_dst(
     transport: &mut EmbeddedTransport,
-    target_src_port: Option<NatPort>,
-    target_dst_port: Option<NatPort>,
+    target_port: NatPort,
 ) -> Result<(), IcmpErrorMsgError> {
-    // Assume we have TCP or UDP, with source and destination ports always present
-    let (old_src_port, old_dst_port) = (
-        transport.source().unwrap_or_else(|| unreachable!()).into(),
-        transport
-            .destination()
-            .unwrap_or_else(|| unreachable!())
-            .into(),
-    );
-
-    if let Some(target_src_port) = target_src_port {
-        transport
-            .set_source(
-                target_src_port
-                    .try_into()
-                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_src_port.as_u16()))?,
-            )
-            .unwrap_or_else(|_| unreachable!());
-        // We don't know whether the header and payload are full: the easiest way to deal with
-        // transport checksum update is to do an unconditional, incremental update here. Note
-        // that this checksum will not be updated again when deparsing the packet.
-        if let Some(current_checksum) = transport.checksum() {
-            transport.update_checksum(current_checksum, old_src_port, target_src_port.as_u16());
-        }
+    // Assume we have TCP or UDP, with destination port always present
+    let old_port = transport
+        .destination()
+        .unwrap_or_else(|| unreachable!())
+        .into();
+    let new_port: NonZero<u16> = target_port
+        .try_into()
+        .map_err(|_| IcmpErrorMsgError::InvalidPort(target_port.as_u16()))?;
+    if old_port == new_port.get() {
+        return Ok(());
     }
-    if let Some(target_dst_port) = target_dst_port {
-        transport
-            .set_destination(
-                target_dst_port
-                    .try_into()
-                    .map_err(|_| IcmpErrorMsgError::InvalidPort(target_dst_port.as_u16()))?,
-            )
-            .unwrap_or_else(|_| unreachable!());
-        if let Some(current_checksum) = transport.checksum() {
-            transport.update_checksum(current_checksum, old_dst_port, target_dst_port.as_u16());
-        }
+    transport
+        .set_destination(new_port)
+        .unwrap_or_else(|_| unreachable!());
+    if let Some(current_checksum) = transport.checksum() {
+        transport.update_checksum(current_checksum, old_port, new_port.get());
     }
-
     Ok(())
 }
 
@@ -227,14 +271,13 @@ mod tests {
     use etherparse::icmpv4::DestUnreachableHeader;
     use etherparse::{IcmpEchoHeader, Icmpv4Type};
     use net::buffer::TestBuffer;
-    use net::eth::Eth;
     use net::eth::ethtype::EthType;
-    use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::headers::{HeadersBuilder, Net, Transport};
     use net::icmp4::Icmp4;
     use net::ip::NextHeader;
     use net::ipv4::Ipv4;
     use net::packet::Packet;
+    use net::packet::test_utils::make_default_for_eth;
     use net::parse::DeParse;
     use std::net::Ipv4Addr;
 
@@ -242,18 +285,14 @@ mod tests {
     fn test_validate_checksums_icmp_no_network_layer() {
         // Build a packet without IP header
         let mut headers = HeadersBuilder::default();
-        headers.eth(Some(Eth::new(
-            SourceMac::new(Mac([0x2, 0, 0, 0, 0, 1])).unwrap(),
-            DestinationMac::new(Mac([0x2, 0, 0, 0, 0, 2])).unwrap(),
-            EthType::IPV4,
-        )));
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::BadIpHeader));
     }
 
     #[test]
@@ -263,6 +302,7 @@ mod tests {
         let mut ipv4 = Ipv4::default();
         ipv4.set_source(Ipv4Addr::new(1, 2, 3, 4).try_into().unwrap());
         ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
 
         let headers = headers.build().unwrap();
@@ -271,7 +311,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 
     #[test]
@@ -285,6 +325,7 @@ mod tests {
 
         let tcp = net::tcp::Tcp::default();
 
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Tcp(tcp)));
 
@@ -294,7 +335,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 
     #[test]
@@ -309,6 +350,7 @@ mod tests {
         let icmp_type = Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 1, seq: 1 });
         let icmp = Icmp4::with_type(icmp_type);
 
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
 
@@ -318,7 +360,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 
     #[test]
@@ -331,18 +373,22 @@ mod tests {
         ipv4.set_next_header(NextHeader::ICMP);
 
         let icmp_type = Icmpv4Type::DestinationUnreachable(DestUnreachableHeader::Network);
-        let icmp = Icmp4::with_type(icmp_type);
+        let mut icmp = Icmp4::with_type(icmp_type);
+        icmp.update_checksum(&[]).unwrap();
 
+        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
 
         let headers = headers.build().unwrap();
-        let mut buffer = TestBuffer::new();
+        // Use a zeroed buffer so that ICMP payload that assumed null payload is correct
+        let data = vec![0u8; headers.size().get() as usize];
+        let mut buffer = TestBuffer::from_raw_data(&data);
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(false));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
     }
 }
 
@@ -404,7 +450,7 @@ mod bolero_tests {
 
                 // Now, ICMP and inner IP headers checksums should be valid
                 let res = validate_checksums_icmp::<TestBuffer>(&icmp_error_msg_clone);
-                assert_eq!(res, Ok(true), "Checksum validation failed: {res:?}");
+                assert!(res.is_ok(), "Checksum validation failed: {res:?}");
 
                 // Also check outer IP header checksum, since we're at it
                 if let Some(ipv4) = icmp_error_msg_clone.headers().try_ipv4() {
@@ -543,7 +589,7 @@ mod bolero_tests {
                     // Update and validate checksums for inner IP header, ICMP header, and outer IP header
                     icmp_error_msg_clone.update_checksums();
                     let res = validate_checksums_icmp::<TestBuffer>(&icmp_error_msg_clone);
-                    assert_eq!(res, Ok(true), "Checksum validation failed: {res:?}");
+                    assert!(res.is_ok(), "Checksum validation failed: {res:?}");
                 },
             );
     }
