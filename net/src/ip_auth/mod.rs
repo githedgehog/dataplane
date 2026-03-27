@@ -7,7 +7,9 @@ use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::impl_from_for_enum;
-use crate::parse::{Parse, ParseError, ParseHeader, Reader};
+use crate::parse::{
+    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader, Reader,
+};
 use crate::tcp::{Tcp, TruncatedTcp};
 use crate::udp::{TruncatedUdp, Udp};
 use etherparse::{IpAuthHeader, IpNumber};
@@ -86,6 +88,28 @@ impl Parse for IpAuth {
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
         Ok((Self(inner), consumed))
+    }
+}
+
+impl DeParse for IpAuth {
+    type Error = ();
+
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // IpAuthHeader length is bounded
+        NonZero::new(self.0.header_len() as u16).unwrap_or_else(|| unreachable!())
+    }
+
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        let len = buf.len();
+        if len < self.size().into_non_zero_usize().get() {
+            return Err(DeParseError::Length(LengthError {
+                expected: self.size().into_non_zero_usize(),
+                actual: len,
+            }));
+        }
+        let bytes = self.0.to_bytes();
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Ok(self.size())
     }
 }
 

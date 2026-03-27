@@ -19,6 +19,7 @@ use crate::parse::{
 use crate::tcp::{Tcp, TruncatedTcp};
 use crate::udp::{TruncatedUdp, Udp};
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv6Extensions, Ipv6Header};
+use std::io::Cursor;
 use std::net::Ipv6Addr;
 use std::num::NonZero;
 use tracing::{debug, trace};
@@ -381,6 +382,11 @@ impl_from_for_enum![
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ipv6Ext {
     inner: Box<Ipv6Extensions>,
+    /// The IP protocol number that introduced the first extension header in
+    /// this chain (i.e. the `next_header` value from the IPv6 base header or
+    /// a preceding extension).  Needed by [`Ipv6Extensions::write`] during
+    /// serialization.
+    first_ip_number: IpNumber,
 }
 
 impl ParseWith for Ipv6Ext {
@@ -406,7 +412,38 @@ impl ParseWith for Ipv6Ext {
         #[allow(clippy::cast_possible_truncation)] // buffer length bounded above
         let consumed =
             NonZero::new((buf.len() - rest.len()) as u16).ok_or_else(|| unreachable!())?;
-        Ok((Self { inner }, consumed))
+        Ok((
+            Self {
+                inner,
+                first_ip_number: ip_number,
+            },
+            consumed,
+        ))
+    }
+}
+
+impl DeParse for Ipv6Ext {
+    type Error = ();
+
+    fn size(&self) -> NonZero<u16> {
+        #[allow(clippy::cast_possible_truncation)] // extension header length is bounded
+        NonZero::new(self.inner.header_len() as u16).unwrap_or_else(|| unreachable!())
+    }
+
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        let size = self.size();
+        let len = buf.len();
+        if len < size.into_non_zero_usize().get() {
+            return Err(DeParseError::Length(LengthError {
+                expected: size.into_non_zero_usize(),
+                actual: len,
+            }));
+        }
+        let mut cursor = Cursor::new(&mut buf[..size.get() as usize]);
+        self.inner
+            .write(&mut cursor, self.first_ip_number)
+            .map_err(|_| DeParseError::Invalid(()))?;
+        Ok(size)
     }
 }
 
