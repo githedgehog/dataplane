@@ -1,0 +1,37 @@
+{
+    "log": {
+        "level": "debug"
+    },
+    "storage": {
+        "rootDirectory": "/zot"
+    },
+    "http": {
+        "address": "192.168.19.1",
+        "port": "30000",
+        "realm": "zot",
+        "tls": {
+            "cert": "/etc/zot/zot.crt",
+            "key": "/etc/zot/zot.key"
+        }
+    },
+    "extensions": {
+        "sync": {
+            "enable": true,
+            "credentialsFile": "/etc/zot/creds.json",
+            "registries": [
+                {
+                    "urls": ["https://ghcr.io"],
+                    "onDemand": true,
+                    "tlsVerify": true,
+                    "content": [
+                        {
+                            "prefix": "/githedgehog/**",
+                            "destination": "/githedgehog",
+                            "stripPrefix": true
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}
