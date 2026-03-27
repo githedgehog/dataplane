@@ -156,6 +156,24 @@ pub enum NetExt {
     Ipv6Ext(Ipv6Ext),
 }
 
+impl DeParse for NetExt {
+    type Error = ();
+
+    fn size(&self) -> NonZero<u16> {
+        match self {
+            NetExt::IpAuth(auth) => auth.size(),
+            NetExt::Ipv6Ext(ext) => ext.size(),
+        }
+    }
+
+    fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
+        match self {
+            NetExt::IpAuth(auth) => auth.deparse(buf),
+            NetExt::Ipv6Ext(ext) => ext.deparse(buf),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TransportError {
     #[error("transport protocol does not use ports")]
@@ -388,7 +406,11 @@ pub enum Header {
 }
 
 impl Header {
-    fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
+    fn parse_payload(
+        &self,
+        cursor: &mut Reader,
+        ipv6_next_header: Option<NextHeader>,
+    ) -> Option<Header> {
         use Header::{
             EmbeddedIp, Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan,
         };
@@ -399,9 +421,8 @@ impl Header {
             Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
             IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
             IpV6Ext(ext) => {
-                if let Ipv6(ipv6) = self {
-                    ext.parse_payload(ipv6.next_header(), cursor)
-                        .map(Header::from)
+                if let Some(next_header) = ipv6_next_header {
+                    ext.parse_payload(next_header, cursor).map(Header::from)
                 } else {
                     debug!("ipv6 extension header outside ipv6 header");
                     None
@@ -432,12 +453,16 @@ impl Parse for Headers {
             embedded_ip: None,
         };
         let mut prior = Header::Eth(eth);
+        let mut ipv6_next_header: Option<NextHeader> = None;
         loop {
-            let header = prior.parse_payload(&mut cursor);
+            let header = prior.parse_payload(&mut cursor, ipv6_next_header);
             match prior {
                 Header::Eth(eth) => this.eth = Some(eth),
                 Header::Ipv4(ip) => this.net = Some(Net::Ipv4(ip)),
-                Header::Ipv6(ip) => this.net = Some(Net::Ipv6(ip)),
+                Header::Ipv6(ip) => {
+                    ipv6_next_header = Some(ip.next_header());
+                    this.net = Some(Net::Ipv6(ip));
+                }
                 Header::Tcp(tcp) => this.transport = Some(Transport::Tcp(tcp)),
                 Header::Udp(udp) => this.transport = Some(Transport::Udp(udp)),
                 Header::Icmp4(icmp4) => this.transport = Some(Transport::Icmp4(icmp4)),
@@ -487,12 +512,16 @@ impl DeParse for Headers {
     type Error = ();
 
     fn size(&self) -> NonZero<u16> {
-        // TODO(blocking): Deal with ip{v4,v6} extensions
         let eth = self.eth.as_ref().map_or(0, |x| x.size().get());
         let vlan = self.vlan.iter().map(|v| v.size().get()).sum::<u16>();
+        let net_ext: u16 = self.net_ext.iter().map(|e| e.size().get()).sum();
         let net = match self.net {
             None => {
                 debug_assert!(self.transport.is_none());
+                debug_assert!(
+                    self.net_ext.is_empty(),
+                    "net_ext headers present without a net header"
+                );
                 0
             }
             Some(ref n) => n.size().get(),
@@ -509,12 +538,11 @@ impl DeParse for Headers {
             .embedded_ip
             .as_ref()
             .map_or(0, |embedded_header| embedded_header.size().get());
-        NonZero::new(eth + vlan + net + transport + encap + embedded_ip)
+        NonZero::new(eth + vlan + net + net_ext + transport + encap + embedded_ip)
             .unwrap_or_else(|| unreachable!())
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
-        // TODO(blocking): Deal with ip{v4,v6} extensions
         let len = buf.len();
         if len < self.size().into_non_zero_usize().get() {
             return Err(DeParseError::Length(LengthError {
@@ -545,6 +573,10 @@ impl DeParse for Headers {
             Some(ref net) => {
                 cursor.write(net)?;
             }
+        }
+
+        for ext in &self.net_ext {
+            cursor.write(ext)?;
         }
 
         match self.transport {
@@ -589,7 +621,7 @@ impl DeParse for Headers {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PushVlanError {
-    #[error("can't push vlan without an ethernet header")]
+    #[error("can't pop vlan without an ethernet header")]
     NoEthernetHeader,
     #[error("Header already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
     TooManyVlans,
@@ -597,7 +629,7 @@ pub enum PushVlanError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PopVlanError {
-    #[error("can't push vlan without an ethernet header")]
+    #[error("can't pop vlan without an ethernet header")]
     NoEthernetHeader,
 }
 
@@ -1619,10 +1651,8 @@ mod test {
         }
 
         pub(super) fn tcp() -> Tcp {
-            let mut tcp = Tcp::default();
-            tcp.set_source(123.try_into().unwrap())
-                .set_destination(456.try_into().unwrap())
-                .set_syn(true)
+            let mut tcp = Tcp::new(123.try_into().unwrap(), 456.try_into().unwrap());
+            tcp.set_syn(true)
                 .set_sequence_number(1)
                 .set_checksum(1234.into())
                 .unwrap();
@@ -1630,11 +1660,8 @@ mod test {
         }
 
         pub(super) fn udp() -> Udp {
-            let mut udp = Udp::default();
-            udp.set_source(123.try_into().unwrap())
-                .set_destination(456.try_into().unwrap())
-                .set_checksum(1234.into())
-                .unwrap();
+            let mut udp = Udp::new(123.try_into().unwrap(), 456.try_into().unwrap());
+            udp.set_checksum(1234.into()).unwrap();
             udp
         }
 
@@ -1976,22 +2003,22 @@ mod test {
         let comparisons = [
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(31319),
+                good_udp: UdpChecksum::new(31303),
                 payload: &[],
             },
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(31063),
+                good_udp: UdpChecksum::new(31047),
                 payload: &[1],
             },
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(31061),
+                good_udp: UdpChecksum::new(31045),
                 payload: &[1, 2],
             },
             Comparison {
                 good_ipv4: Ipv4Checksum::new(46718),
-                good_udp: UdpChecksum::new(14863),
+                good_udp: UdpChecksum::new(14847),
                 payload: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
             },
         ];
@@ -2118,19 +2145,19 @@ mod test {
         }
         let comparisons = [
             Comparison {
-                good_udp: UdpChecksum::new(64172),
+                good_udp: UdpChecksum::new(64156),
                 payload: &[],
             },
             Comparison {
-                good_udp: UdpChecksum::new(63916),
+                good_udp: UdpChecksum::new(63900),
                 payload: &[1],
             },
             Comparison {
-                good_udp: UdpChecksum::new(63914),
+                good_udp: UdpChecksum::new(63898),
                 payload: &[1, 2],
             },
             Comparison {
-                good_udp: UdpChecksum::new(47712),
+                good_udp: UdpChecksum::new(47696),
                 payload: &[1, 2, 3, 6, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 15, 16],
             },
         ];

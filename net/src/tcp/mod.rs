@@ -23,7 +23,7 @@ use crate::ipv6::Ipv6;
 pub use contract::*;
 
 /// A TCP header.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tcp(TcpHeader);
 
 impl Tcp {
@@ -34,9 +34,13 @@ impl Tcp {
     pub const MAX_LENGTH: usize = 60;
 
     #[must_use]
-    /// Build a new `Tcp` object
-    pub fn new() -> Self {
-        Self(TcpHeader::default())
+    /// Build a new `Tcp` object with the given source and destination ports.
+    pub fn new(source: TcpPort, destination: TcpPort) -> Self {
+        Self(TcpHeader {
+            source_port: source.into(),
+            destination_port: destination.into(),
+            ..TcpHeader::default()
+        })
     }
 
     fn compute_checksum_ipv4(&self, net: &Ipv4, payload: impl AsRef<[u8]>) -> TcpChecksum {
@@ -59,7 +63,8 @@ impl Tcp {
     #[must_use]
     pub const fn source(&self) -> TcpPort {
         debug_assert!(self.0.source_port != 0);
-        #[allow(unsafe_code)] // non-zero checked in [`Parse`] and `new`.
+        #[allow(unsafe_code)]
+        // non-zero enforced by [`Parse`] and [`Tcp::new`] (both require non-zero ports)
         unsafe {
             TcpPort::new_unchecked(self.0.source_port)
         }
@@ -75,7 +80,8 @@ impl Tcp {
     #[must_use]
     pub const fn destination(&self) -> TcpPort {
         debug_assert!(self.0.destination_port != 0);
-        #[allow(unsafe_code)] // non-zero checked in [`Parse`] and `new`.
+        #[allow(unsafe_code)]
+        // non-zero enforced by [`Parse`] and [`Tcp::new`] (both require non-zero ports)
         unsafe {
             TcpPort::new_unchecked(self.0.destination_port)
         }
