@@ -350,7 +350,7 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
         }
 
         StatelessNatError::IcmpErrorMsg(
-            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoIdentifier,
+            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoTranslationPossible,
         ) => DoneReason::InternalFailure,
 
         StatelessNatError::IcmpErrorMsg(
