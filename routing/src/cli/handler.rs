@@ -22,17 +22,20 @@ use crate::routingdb::RoutingDb;
 
 use chrono::Local;
 use cli::cliproto::{
-    CliAction, CliError, CliRequest, CliResponse, CliSerialize, RequestArgs, RouteProtocol,
+    CLI_MSG_CHUNK_SIZE, CliAction, CliError, CliRequest, CliResponse, CliSerialize, RequestArgs,
+    RouteProtocol,
 };
 use config::{ConfigSummary, GwConfig, GwConfigMeta};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
 use std::sync::Arc;
-use strum::IntoEnumIterator;
-use tracing::{error, trace};
 
 use common::cliprovider::{CliDataProvider, Heading};
+use strum::IntoEnumIterator;
+
+#[allow(unused)]
+use tracing::{error, trace};
 
 use tracectl::{get_trace_ctl, trace_target};
 trace_target!("cli", LevelFilter::OFF, &[]);
@@ -419,6 +422,7 @@ fn show_tech(
     ];
     let time = Local::now();
     let mut data = format!("time: {}\n", time.format("%Y-%m-%d %H:%M:%S"));
+
     for action in CliAction::iter().filter(|a| !excluded.contains(a)) {
         let request = CliRequest::new(action, RequestArgs::default());
         if let Ok(response) = do_handle_cli_request(request, db, rio, sources) {
@@ -428,6 +432,7 @@ fn show_tech(
             }
         }
     }
+
     CliResponse::from_request_ok(request, data)
 }
 
@@ -527,6 +532,7 @@ fn do_handle_cli_request(
     Ok(response)
 }
 
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn handle_cli_request(
     rio: &mut Rio,
     peer: &SocketAddr,
@@ -536,19 +542,42 @@ pub(crate) fn handle_cli_request(
 ) {
     trace!("Got cli request: {request:#?} from {peer:?}");
 
+    // handle the request
     let cliresponse = do_handle_cli_request(request.clone(), db, rio, cli_sources)
         .unwrap_or_else(|e| CliResponse::from_request_fail(request, e));
 
-    /* serialize the response */
+    // serialize the response
     let response = cliresponse.serialize().unwrap_or_else(|_| {
         error!("Failed to serialize CLI response !!");
         "Failure".into()
     });
 
-    let response_len = (response.len() as u64).to_ne_bytes();
-    let _ = rio.clisock.send_to_addr(&response_len, peer); // FIXME
-    match rio.clisock.send_to_addr(&response, peer) {
-        Ok(len) => trace!("Sent cli response ({len} octets)"),
-        Err(e) => error!("Failure sending CLI response: {e}"),
+    // split response in chunks and send them. If sending fails (EAGAIN), cache ALL the remaining chunks until they can be sent again later,
+    // even if sending may succeed for them, to avoid reordering them. On any other failure, empty the cache. Sent or cached, chunks are
+    // appended an octet (bool), indicating if more chunks follow so that the receiver (CLI) can know when to stop receiving them and assemble
+    // the full message. The more flag is sent on the same send() call so that it has the same fate as the chunk.
+    let num_chunks = response.len().div_ceil(CLI_MSG_CHUNK_SIZE);
+    let mut cache = false;
+    for (num, chunk) in response.chunks(CLI_MSG_CHUNK_SIZE).enumerate() {
+        let more = num < num_chunks - 1;
+        let mut raw = chunk.to_vec();
+        raw.push(more.into());
+
+        if cache {
+            rio.cli_cache.push(peer.clone(), raw.as_slice());
+        } else {
+            match rio.clisock.send_to_addr(raw.as_slice(), peer) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    rio.cli_cache.push(peer.clone(), raw.as_slice());
+                    cache = true; // cache from now on
+                }
+                Err(e) => {
+                    error!("Error writing cli response chunk: {e}");
+                    rio.cli_cache.clear();
+                    break;
+                }
+            }
+        }
     }
 }

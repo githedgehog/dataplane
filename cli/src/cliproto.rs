@@ -30,6 +30,12 @@ use std::net::IpAddr;
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
+// Size of a chunk. Messages may be split into chunks of this size if they exceed it
+pub const CLI_MSG_CHUNK_SIZE: usize = 2048;
+
+// Socket snd/rx size. This is a recommendation as it can't be enforced 100%
+pub const CLI_RX_BUFF_SIZE: usize = CLI_MSG_CHUNK_SIZE * 8192;
+
 /// A log level for use in CLI protocol messages.
 ///
 /// This mirrors [`log::Level`] but implements the [`rkyv`] serialization

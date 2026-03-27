@@ -17,14 +17,19 @@ use crate::router::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent};
 use crate::routingdb::RoutingDb;
 
+use crate::cli::iocache::IoCache;
 use bytes::BytesMut;
-use cli::cliproto::{CliRequest, CliSerialize};
+use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest, CliSerialize};
 use config::{GwConfig, GwConfigMeta};
 use dplane_rpc::socks::RpcCachedSock;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 
+use nix::sys::socket::{
+    getsockopt, setsockopt,
+    sockopt::{SndBuf, SndBufForce},
+};
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -94,6 +99,16 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     Ok(sock)
 }
 
+fn open_cli_sock(path: &String) -> Result<UnixDatagram, RouterError> {
+    let sock = open_unix_sock(path)?;
+    setsockopt(&sock, SndBufForce, &CLI_RX_BUFF_SIZE)
+        .map_err(|_| RouterError::Internal("Failure setting snd buffer size"))?;
+    if let Ok(size) = getsockopt(&sock, SndBuf) {
+        debug!("Cli sock send buffer set to {size}");
+    }
+    Ok(sock)
+}
+
 pub(crate) const CPSOCK: Token = Token(0);
 pub(crate) const CLISOCK: Token = Token(1);
 pub(crate) const FRRMISOCK: Token = Token(2);
@@ -115,6 +130,7 @@ pub(crate) struct Rio {
     stale_timeout: Option<Instant>,
     pub(crate) gwconfig: Option<Arc<GwConfig>>,
     pub(crate) cfg_history: Arc<Vec<GwConfigMeta>>,
+    pub(crate) cli_cache: IoCache,
 }
 impl Rio {
     fn new(conf: &RioConf) -> Result<Rio, RouterError> {
@@ -140,7 +156,7 @@ impl Rio {
         let cpsock = open_unix_sock(&cp_sock_path)?;
 
         /* create unix sock for cli and bind it */
-        let clisock = open_unix_sock(&cli_sock_path)?;
+        let clisock = open_cli_sock(&cli_sock_path)?;
 
         /* frrmi - communication to frr-agent */
         let frrmi = Frrmi::new(&frrmi_sock_path);
@@ -186,6 +202,7 @@ impl Rio {
             stale_timeout: None,
             gwconfig: None,
             cfg_history: Arc::from(vec![]),
+            cli_cache: IoCache::new(),
         })
     }
     pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {
@@ -314,9 +331,17 @@ impl Rio {
             db.vrftable.remove_deleted_vrfs(&mut db.iftw);
         }
     }
+    fn cli_wake_on_writeable(&self, writeable: bool) {
+        let interests = if writeable {
+            Interest::READABLE | Interest::WRITABLE
+        } else {
+            Interest::READABLE
+        };
+        let _ = self.reregister(CLISOCK, self.clisock.as_raw_fd(), interests);
+    }
 }
 
-#[allow(clippy::missing_errors_doc)]
+#[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 pub(crate) fn start_rio(
     conf: &RioConf,
     fibtw: FibTableWriter,
@@ -384,10 +409,19 @@ pub(crate) fn start_rio(
                         rio.cpi_status_check(&mut db);
                     }
                     CLISOCK => {
+                        if event.is_writable() {
+                            rio.cli_cache.drain(&rio.clisock);
+                            if rio.cli_cache.is_empty() {
+                                rio.cli_wake_on_writeable(false);
+                            }
+                        }
                         while event.is_readable() {
                             if let Ok((len, peer)) = rio.clisock.recv_from(cli_buf.as_mut()) {
                                 if let Ok(request) = CliRequest::deserialize(&cli_buf[0..len]) {
                                     handle_cli_request(&mut rio, &peer, request, &db, &cli_sources);
+                                    if !rio.cli_cache.is_empty() {
+                                        rio.cli_wake_on_writeable(true);
+                                    }
                                 }
                             } else {
                                 break;

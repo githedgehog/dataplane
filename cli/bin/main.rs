@@ -12,6 +12,7 @@ use cmdline::Cmdline;
 use cmdtree::Node;
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
+use dataplane_cli::cliproto::CLI_MSG_CHUNK_SIZE;
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
@@ -52,52 +53,30 @@ fn ask_user(question: &str) -> bool {
     }
 }
 
-/// Upper bound on a single CLI response payload.  Anything larger than this is
-/// almost certainly a bug or corrupt framing, so we reject it rather than
-/// attempting an unbounded allocation.
-const MAX_CLI_RESPONSE_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
+fn process_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
+    let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
+    let rx_len = sock.recv(rx_buff.as_mut())?;
+    Ok((rx_buff[..rx_len - 1].to_vec(), rx_buff[rx_len - 1] != 0))
+}
 
-/// Receive the response, synchronously. This function may block the caller,
-/// which is the desired behavior. Now, unfortunately the `peek()` and the like
-/// methods of `UnixDatagram` are not stable. This creates an issue because if
-/// a message has length L and we request to read fewer octets, the excess ones
-/// will be lost. We could request a very large L, but that would require
-/// allocating a big buffer (no big deal), but its size could sooner or later be
-/// exceeded (e.g. retrieving a full routing table).
-/// We solve this for the moment by letting the dataplane send the size of the
-/// message (as 8 octets|u64) and then the message itself, in two writes.
-/// Therefore, here, we'll do 2 reads; one to figure out the length and a second
-/// one to received the actual message (response).
-fn process_cli_response(sock: &UnixDatagram) {
-    let mut rx_buff = vec![0u8; 1024];
-    let mut msg_size_wire = [0u8; 8];
-
-    if let Err(e) = sock.recv(msg_size_wire.as_mut()) {
-        print_err!("Error receiving msg size: {e}");
-        return;
-    }
-    let msg_size = u64::from_ne_bytes(msg_size_wire);
-    if msg_size > MAX_CLI_RESPONSE_SIZE {
-        print_err!("Response size {msg_size} exceeds maximum ({MAX_CLI_RESPONSE_SIZE}), dropping");
-        return;
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    if msg_size as usize > rx_buff.capacity() {
-        rx_buff.resize(msg_size as usize, 0);
-    }
-
-    #[allow(clippy::single_match_else)]
-    match sock.recv(rx_buff.as_mut_slice()) {
-        Ok(rx_len) => match CliResponse::deserialize(&rx_buff[0..rx_len]) {
-            Ok(response) => match &response.result {
-                Ok(data) => println!("{data}"),
-                Err(e) => print_err!("Dataplane error: {e}"),
-            },
-            Err(_) => print_err!("Failed to deserialize response"),
-        },
-        Err(e) => {
-            print_err!("Failed to recv from dataplane: {e}");
+/// Receive the response, synchronously
+fn process_cli_response(sock: &UnixDatagram) -> Result<String, String> {
+    let mut raw_data = vec![];
+    loop {
+        let (chunk, more) =
+            process_chunk(sock).map_err(|e| format!("Error receiving response: {e}"))?;
+        raw_data.extend(chunk);
+        if !more {
+            break;
         }
+    }
+    // deserialize
+    let response = CliResponse::deserialize(raw_data.as_slice())
+        .map_err(|e| format!("Failed to deserialize response: {e}"))?;
+
+    match response.result {
+        Ok(data) => Ok(data),
+        Err(e) => Ok(format!("Dataplane error: {e}")),
     }
 }
 
@@ -110,20 +89,21 @@ fn execute_remote_action(
         print_err!("Not connnected to dataplane.");
         return;
     }
-    // serialize request and send it
-    if let Ok(request) = CliRequest::new(action, args.remote.clone()).serialize() {
-        match terminal.sock.send(&request) {
-            Ok(_) => process_cli_response(&terminal.sock),
-            Err(e) => {
-                print_err!(
-                    "Error sending request: {e}, request length: {}",
-                    request.len()
-                );
-                terminal.connected(false);
-            }
-        }
-    } else {
+    // build request & serialize it
+    let Ok(request) = CliRequest::new(action, args.remote.clone()).serialize() else {
         print_err!("Failed to serialize request!");
+        return;
+    };
+    // send the request
+    if let Err(e) = terminal.sock.send(&request) {
+        print_err!("Error sending request: {e}");
+        terminal.connected(false);
+        return;
+    }
+    // receive and process response
+    match process_cli_response(&terminal.sock) {
+        Ok(data) => println!("{data}"),
+        Err(e) => print_err!("{e}"),
     }
 }
 
