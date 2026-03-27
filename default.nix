@@ -705,7 +705,7 @@ let
   };
 
   containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
-    name = "ghcr.io/githedgehog/dpdk-sys/frr";
+    name = "ghcr.io/githedgehog/dataplane/frr";
     inherit tag;
     contents = pkgs.buildEnv {
       name = "dataplane-frr-env";
@@ -750,7 +750,7 @@ let
   };
 
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
-    name = "ghcr.io/githedgehog/dpdk-sys/frr-host";
+    name = "ghcr.io/githedgehog/dataplane/frr-host";
     inherit tag;
     contents = pkgs.buildEnv {
       name = "dataplane-frr-host-env";
