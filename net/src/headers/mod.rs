@@ -621,7 +621,7 @@ impl DeParse for Headers {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PushVlanError {
-    #[error("can't push vlan without an ethernet header")]
+    #[error("can't pop vlan without an ethernet header")]
     NoEthernetHeader,
     #[error("Header already has as many VLAN headers as parser can support (max is {MAX_VLANS})")]
     TooManyVlans,
@@ -629,7 +629,7 @@ pub enum PushVlanError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PopVlanError {
-    #[error("can't push vlan without an ethernet header")]
+    #[error("can't pop vlan without an ethernet header")]
     NoEthernetHeader,
 }
 
