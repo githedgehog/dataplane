@@ -23,7 +23,7 @@ use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
-use nat::stateful::NatAllocatorWriter;
+use nat::stateful::{NatAllocatorWriter, StatefulNatConfig};
 use nat::stateless::NatTablesWriter;
 use nat::stateless::setup::build_nat_configuration;
 use pipeline::PipelineData;
@@ -38,6 +38,7 @@ use rekon::{Observe, Reconcile};
 use tracectl::get_trace_ctl;
 use tracing::{debug, error, info, warn};
 
+use flow_entry::flow_table::FlowTable;
 use net::interface::display::MultiIndexInterfaceMapView;
 use net::interface::{Interface, InterfaceName};
 use routing::{FrrAppliedConfig, RouterCtlSender};
@@ -79,6 +80,9 @@ pub struct ConfigProcessorParams {
 
     // access data associated to pipeline
     pub pipeline_data: Arc<PipelineData>,
+
+    // flow table
+    pub flow_table: Arc<FlowTable>,
 
     // writer for vpc mapping table
     pub vpcmapw: VpcMapWriter<VpcMapName>,
@@ -498,28 +502,17 @@ fn apply_stateless_nat_config(
     Ok(())
 }
 
-/// Update the config for stateful NAT
+/// Update the config for stateful NAT.
+/// This is now infallible. Validation should ensure it is.
 fn apply_stateful_nat_config(
     vpc_table: &VpcTable,
+    flow_table: &FlowTable,
     natallocatorw: &mut NatAllocatorWriter,
-) -> ConfigResult {
-    natallocatorw.update_allocator(vpc_table)?;
-    // TODO: Update session table
-    //
-    // Long-term, we want to keep at least the sessions that remain valid under the new
-    // configuration. But this requires reporting the internal state from the old allocator to the
-    // new one, or we risk allocating again some IPs and ports that are already in use for existing
-    // sessions. We don't support this yet.
-    //
-    // Short-term, we want to drop all existing sessions from the table and start fresh. This first
-    // requires the NAT code to move to the new session table implementation, which has not been
-    // done as of this writing.
-    //
-    // Side note: session table and allocator may need to be updated at the same time, so we might
-    // need a lock around them in the StatefulNat stage and we may need to update them both from
-    // .update_allocator().
-    debug!("Successfully updated the stateful NAT allocator");
-    Ok(())
+    genid: GenId,
+) {
+    let nat_config = StatefulNatConfig::new(vpc_table, genid).set_randomize(true);
+    natallocatorw.update_nat_allocator(nat_config, flow_table);
+    debug!("Updated stateful NAT allocator");
 }
 
 fn apply_flow_filtering_config(
@@ -579,6 +572,7 @@ impl ConfigProcessor {
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
         let portfw_w = &mut self.proc_params.portfw_w;
+        let flow_table = &self.proc_params.flow_table;
 
         // internal config should be available
         let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
@@ -609,7 +603,12 @@ impl ConfigProcessor {
         apply_stateless_nat_config(&config.external.overlay.vpc_table, nattablesw)?;
 
         /* apply stateful NAT config */
-        apply_stateful_nat_config(&config.external.overlay.vpc_table, natallocatorw)?;
+        apply_stateful_nat_config(
+            &config.external.overlay.vpc_table,
+            flow_table.as_ref(),
+            natallocatorw,
+            genid,
+        );
 
         /* apply flow filtering config */
         apply_flow_filtering_config(&config.external.overlay, flowfilterw)?;

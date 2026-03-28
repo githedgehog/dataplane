@@ -9,6 +9,7 @@ pub mod test {
     use config::external::gwgroup::GwGroupMember;
     use config::external::gwgroup::GwGroupTable;
 
+    use flow_entry::flow_table::FlowTable;
     use lpm::prefix::Prefix;
     use net::eth::mac::Mac;
     use net::interface::Mtu;
@@ -464,10 +465,14 @@ pub mod test {
         /* pipeline data */
         let pipeline_data = Arc::from(PipelineData::default());
 
+        /* flow table */
+        let flow_table = Arc::from(FlowTable::new(16));
+
         /* build configuration of mgmt config processor */
         let processor_config = ConfigProcessorParams {
             router_ctl,
             pipeline_data,
+            flow_table,
             vpcmapw,
             nattablesw,
             natallocatorw,

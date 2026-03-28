@@ -3,40 +3,80 @@
 
 use crate::stateful::NatDefaultAllocator;
 use arc_swap::ArcSwapOption;
-use config::ConfigError;
+use config::GenId;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpc::VpcTable;
+use config::external::overlay::vpcpeering::VpcExpose;
+use flow_entry::flow_table::FlowTable;
 use net::packet::VpcDiscriminant;
 use std::sync::Arc;
 use tracing::debug;
 
+use crate::stateful::flows::invalidate_all_stateful_nat_flows;
+use crate::stateful::flows::upgrade_all_stateful_nat_flows;
+use crate::stateful::flows::validate_stateful_nat_flows;
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct StatefulNatPeering {
-    pub(crate) src_vpc_id: VpcDiscriminant,
-    pub(crate) dst_vpc_id: VpcDiscriminant,
+    pub(crate) src_vpcd: VpcDiscriminant,
+    pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) peering: Peering,
 }
-
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct StatefulNatConfig(Vec<StatefulNatPeering>);
+pub struct StatefulNatConfig {
+    pub(crate) genid: GenId,
+    peerings: Vec<StatefulNatPeering>,
+    randomize: bool,
+}
 
 impl StatefulNatConfig {
-    pub(crate) fn new(vpc_table: &VpcTable) -> Self {
-        let mut config = Vec::new();
+    #[must_use]
+    pub fn new(vpc_table: &VpcTable, genid: GenId) -> Self {
+        let mut peerings = Vec::new();
         for vpc in vpc_table.values() {
-            for peering in &vpc.peerings {
-                config.push(StatefulNatPeering {
-                    src_vpc_id: VpcDiscriminant::from_vni(vpc.vni),
-                    dst_vpc_id: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
+            for peering in vpc.stateful_nat_peerings() {
+                peerings.push(StatefulNatPeering {
+                    src_vpcd: VpcDiscriminant::from_vni(vpc.vni),
+                    dst_vpcd: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
                     peering: peering.clone(),
                 });
             }
         }
-        Self(config)
+        Self {
+            genid,
+            peerings,
+            randomize: true, // randomize by default
+        }
+    }
+    #[must_use]
+    pub fn set_randomize(mut self, value: bool) -> Self {
+        self.randomize = value;
+        self
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &StatefulNatPeering> {
-        self.0.iter()
+        self.peerings.iter()
+    }
+
+    pub(crate) fn num_stateful_nat_peerings(&self) -> usize {
+        self.peerings
+            .iter()
+            .map(|p| &p.peering)
+            .filter(|p| {
+                p.local.exposes.iter().any(VpcExpose::has_stateful_nat)
+                    || p.remote.exposes.iter().any(VpcExpose::has_stateful_nat)
+            })
+            .count()
+    }
+
+    pub(crate) fn get_peering(
+        &self,
+        src_vpcd: VpcDiscriminant,
+        dst_vpcd: VpcDiscriminant,
+    ) -> Option<&StatefulNatPeering> {
+        self.peerings
+            .iter()
+            .find(|p| p.src_vpcd == src_vpcd && p.dst_vpcd == dst_vpcd)
     }
 }
 
@@ -65,80 +105,35 @@ impl NatAllocatorWriter {
         self.get_reader().factory()
     }
 
-    fn update_allocator_and_set_randomness(
-        &mut self,
-        vpc_table: &VpcTable,
-        #[allow(unused_variables)] disable_randomness: bool,
-    ) -> Result<(), ConfigError> {
-        let new_config = StatefulNatConfig::new(vpc_table);
+    /// Replace the nat allocator with a new one
+    pub fn update_nat_allocator(&mut self, nat_config: StatefulNatConfig, flow_table: &FlowTable) {
+        let genid = nat_config.genid;
 
-        let old_allocator_guard = self.allocator.load();
-        let Some(old_allocator) = old_allocator_guard.as_deref() else {
-            // No existing allocator, build a new one
-            #[cfg(test)]
-            let new_allocator =
-                Self::build_new_allocator(&new_config)?.set_disable_randomness(disable_randomness);
-            #[cfg(not(test))]
-            let new_allocator = Self::build_new_allocator(&new_config)?;
+        // freeze the current allocator ?
+        let old_allocator = self.allocator.load();
 
-            self.allocator.store(Some(Arc::new(new_allocator)));
-            self.config = new_config;
-            return Ok(());
-        };
-
-        if self.config == new_config {
-            // Nothing to update, simply return
-            return Ok(());
+        if nat_config == self.config && old_allocator.is_some() {
+            debug!("No need to update NAT allocator: NAT peerings did not change");
+            upgrade_all_stateful_nat_flows(flow_table, genid);
+            return;
+        }
+        if nat_config.num_stateful_nat_peerings() == 0 {
+            debug!("Stateful NAT is not required: will invalidate flows and remove allocator");
+            invalidate_all_stateful_nat_flows(flow_table);
+            self.allocator.store(None);
+            return;
         }
 
-        let new_allocator =
-            Self::update_existing_allocator(old_allocator, &self.config, &new_config)?;
-        // Swap allocators; the old one is dropped.
-        self.allocator.store(Some(Arc::new(new_allocator)));
-        self.config = new_config;
+        // build a new allocator to replace the current
+        let mut allocator =
+            NatDefaultAllocator::from_config(&nat_config).set_randomize(nat_config.randomize);
+
+        if old_allocator.is_some() {
+            validate_stateful_nat_flows(flow_table, &nat_config, &mut allocator);
+        }
+        self.allocator.store(Some(Arc::new(allocator)));
+        self.config = nat_config;
         debug!("Updated allocator for stateful NAT");
-        Ok(())
-    }
-
-    pub fn update_allocator(&mut self, vpc_table: &VpcTable) -> Result<(), ConfigError> {
-        self.update_allocator_and_set_randomness(vpc_table, false)
-    }
-
-    #[cfg(test)]
-    pub fn update_allocator_and_turn_off_randomness(
-        &mut self,
-        vpc_table: &VpcTable,
-    ) -> Result<(), ConfigError> {
-        self.update_allocator_and_set_randomness(vpc_table, true)
-    }
-
-    fn build_new_allocator(config: &StatefulNatConfig) -> Result<NatDefaultAllocator, ConfigError> {
-        NatDefaultAllocator::build_nat_allocator(config)
-    }
-
-    fn update_existing_allocator(
-        _allocator: &NatDefaultAllocator,
-        _old_config: &StatefulNatConfig,
-        new_config: &StatefulNatConfig,
-    ) -> Result<NatDefaultAllocator, ConfigError> {
-        // TODO: Report state from old allocator to new allocator
-        //
-        // This means reporting all allocated IPs (and ports for these IPs) from the old allocator
-        // that remain valid in the new configuration to the new allocator (and discard the ones
-        // that are now invalid). This is required if we want to keep existing, valid connections open.
-        //
-        // It is not trivial to do, though, because it's difficult to do a meaningful "diff" between
-        // the two configurations or allocators' internal states. One allocated IP from the old
-        // allocator may still be available for NAT with the new configuration, but possibly for a
-        // different list of original prefixes. We can even have connections using some ports for a
-        // given allocated IP remaining valid, while others using other ports for the same IP become
-        // invalid.
-        //
-        // One "option" is to process all entries in the session table, look at the new
-        // configuration (or the new allocator entries) to see if they're still valid, and then
-        // report them to the new allocator. However, the old allocator keeps being updated during
-        // this process.
-        Self::build_new_allocator(new_config)
     }
 }
 

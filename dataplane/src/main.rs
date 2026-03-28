@@ -212,6 +212,7 @@ fn main() {
         processor_params: ConfigProcessorParams {
             router_ctl: setup.router.get_ctl_tx(),
             pipeline_data: pipeline_factory().get_data(),
+            flow_table: setup.flow_table,
             vpcmapw: setup.vpcmapw,
             nattablesw: setup.nattablesw,
             natallocatorw: setup.natallocatorw,
