@@ -13,10 +13,7 @@ impl Display for FlowTable {
             Heading(format!("Flow Table ({} entries)", table.len())).fmt(f)?;
             for entry in table.iter() {
                 let key = entry.key();
-                match entry.value().upgrade() {
-                    Some(value) => writeln!(f, "{key}\n{value}")?,
-                    None => writeln!(f, "{key}: NONE")?,
-                }
+                writeln!(f, "{key}\n{}", entry.value())?;
             }
         } else {
             write!(f, "Failed to lock flow table")?;

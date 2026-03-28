@@ -2,17 +2,14 @@
 // Copyright Open Network Fabric Authors
 
 mod display;
-pub mod nf_expirations;
 pub mod nf_lookup;
 pub mod table;
-mod thread_local_pq;
 
+pub use nf_lookup::FlowLookup;
 pub use table::FlowTable;
 
 pub use net::flows::atomic_instant::AtomicInstant;
 pub use net::flows::flow_info::*;
-pub use nf_expirations::ExpirationsNF;
-pub use nf_lookup::FlowLookup;
 
 use tracectl::trace_target;
 trace_target!("flow-table", LevelFilter::INFO, &["pipeline"]);
