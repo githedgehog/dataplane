@@ -139,26 +139,21 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     // before swapping allocators.
     // The easiest way I know how to do that is by bundling the pre-shift logic into its own scope.
     // The system memory will be free by the time this scope closes.
-    let eal = {
-        let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
-            Eal::fatal_error(e.to_string());
-        });
-        let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
-        let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
-        if ret < 0 {
-            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
-        }
-        Eal {
-            mem: mem::Manager::init(),
-            dev: dev::Manager::init(),
-            socket: socket::Manager::init(),
-            lcore: lcore::Manager::init(),
-            flow: flow::Manager::init(),
-        }
-    };
-    // Shift to the DPDK allocator
-    RteAllocator::mark_initialized();
-    eal
+    let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
+        Eal::fatal_error(e.to_string());
+    });
+    let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
+    let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
+    if ret < 0 {
+        EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+    }
+    Eal {
+        mem: mem::Manager::init(),
+        dev: dev::Manager::init(),
+        socket: socket::Manager::init(),
+        lcore: lcore::Manager::init(),
+        flow: flow::Manager::init(),
+    }
 }
 
 impl Eal {
@@ -170,6 +165,11 @@ impl Eal {
     #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn has_pci(&self) -> bool {
         unsafe { dpdk_sys::rte_eal_has_pci() != 0 }
+    }
+
+    #[cold]
+    pub fn has_hugepages(&self) -> bool {
+        unsafe { dpdk_sys::rte_eal_has_hugepages() != 0 }
     }
 
     /// Exits the DPDK application with an error message, cleaning up the [`Eal`] as gracefully as

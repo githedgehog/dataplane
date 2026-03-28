@@ -7,6 +7,8 @@ version.workspace = true
 
 [dependencies]
 
+rstar = { workspace = true }
+
 dpdk-sys = { workspace = true }
 errno = { workspace = true }
 net = { workspace = true }
