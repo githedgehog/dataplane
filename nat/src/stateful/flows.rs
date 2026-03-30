@@ -17,7 +17,7 @@ use net::flows::FlowInfoLocked;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error};
 
-pub(crate) fn invalidate_all_stateful_nat_flows(flow_table: &FlowTable) {
+pub(crate) fn invalidate_all_masquerading_flows(flow_table: &FlowTable) {
     debug!("INVALIDATING all masquerading flows...");
     let mut count = 0;
     let table_lock = flow_table.lock_read();
@@ -32,7 +32,7 @@ pub(crate) fn invalidate_all_stateful_nat_flows(flow_table: &FlowTable) {
     debug!("Invalidated {count} flows");
 }
 
-pub(crate) fn upgrade_all_stateful_nat_flows(flow_table: &FlowTable, genid: GenId) {
+pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenId) {
     debug!("UPGRADING all masquerading flows to gen {genid}...");
     let mut count = 0;
     let table_lock = flow_table.lock_read();
@@ -160,7 +160,11 @@ fn re_reserve_ip_and_port(
     }
 }
 
-pub(crate) fn validate_stateful_nat_flows(
+/// Main function called to deal with flows when masquerade configuration changes. This function:
+///   - locks the flow table
+///   - examines all masquerade flows to determine if they should continue or be invalidated
+///   - flows that continue get a new allocation with the same ip and port in the new allocator
+pub(crate) fn check_masquerading_flows(
     flow_table: &FlowTable,
     new_config: &StatefulNatConfig,
     new_allocator: &mut NatAllocator,

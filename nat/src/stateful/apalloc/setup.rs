@@ -25,7 +25,7 @@ const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 impl NatAllocator {
     /// Build a [`NatAllocator`] from a [`StatefulNatConfig`]
     pub(crate) fn from_config(config: &StatefulNatConfig) -> Self {
-        debug!("Building NAT allocator from config:\n{config:#?}");
+        debug!("Building stateful NAT allocator from config:\n{config:#?}");
         let mut allocator = NatAllocator::new().set_randomize(config.randomize());
         for peering_data in config.iter() {
             allocator.add_peering_addresses(&peering_data.peering, peering_data.dst_vpcd);
