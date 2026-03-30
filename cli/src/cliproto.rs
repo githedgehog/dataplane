@@ -69,7 +69,16 @@ impl From<CliLogLevel> for Level {
 }
 
 #[derive(
-    AsRefStr, EnumString, Debug, Clone, EnumIter, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    AsRefStr,
+    EnumString,
+    Debug,
+    Clone,
+    EnumIter,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
 #[strum(ascii_case_insensitive)]
 pub enum RouteProtocol {
@@ -82,7 +91,9 @@ pub enum RouteProtocol {
 }
 
 /// Arguments to a cli request
-#[derive(Debug, Default, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[allow(unused)]
 pub struct RequestArgs {
     pub address: Option<IpAddr>,         /* an IP address */
@@ -95,7 +106,7 @@ pub struct RequestArgs {
 }
 
 /// A Cli request
-#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[allow(unused)]
 pub struct CliRequest {
     pub action: CliAction,
@@ -150,7 +161,7 @@ impl CliSerialize for CliResponse {
     }
 }
 
-#[derive(Error, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Error, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum CliError {
     #[error("Internal error")]
     InternalError,
@@ -161,7 +172,7 @@ pub enum CliError {
 }
 
 /// A Cli response
-#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct CliResponse {
     pub request: CliRequest,
     // TODO: replace this String with a proper enum of response types
@@ -199,6 +210,7 @@ impl CliResponse {
     Copy,
     EnumIter,
     PartialEq,
+    Eq,
     strum::FromRepr,
     rkyv::Archive,
     rkyv::Serialize,
