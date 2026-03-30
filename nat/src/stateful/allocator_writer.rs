@@ -22,11 +22,17 @@ pub(crate) struct StatefulNatPeering {
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) peering: Peering,
 }
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
 pub struct StatefulNatConfig {
-    pub(crate) genid: GenId,
+    genid: GenId,
     peerings: Vec<StatefulNatPeering>,
     randomize: bool,
+}
+impl PartialEq for StatefulNatConfig {
+    fn eq(&self, other: &Self) -> bool {
+        // we exclude genid from comparison
+        self.peerings == other.peerings && self.randomize == other.randomize
+    }
 }
 
 impl StatefulNatConfig {
@@ -48,10 +54,21 @@ impl StatefulNatConfig {
             randomize: true, // randomize by default
         }
     }
+
+    #[must_use]
+    pub fn genid(&self) -> GenId {
+        self.genid
+    }
+
     #[must_use]
     pub fn set_randomize(mut self, value: bool) -> Self {
         self.randomize = value;
         self
+    }
+
+    #[must_use]
+    pub fn randomize(&self) -> bool {
+        self.randomize
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &StatefulNatPeering> {
@@ -107,7 +124,7 @@ impl NatAllocatorWriter {
 
     /// Replace the nat allocator with a new one
     pub fn update_nat_allocator(&mut self, nat_config: StatefulNatConfig, flow_table: &FlowTable) {
-        let genid = nat_config.genid;
+        let genid = nat_config.genid();
 
         // freeze the current allocator ?
         let old_allocator = self.allocator.load();
@@ -125,9 +142,7 @@ impl NatAllocatorWriter {
         }
 
         // build a new allocator to replace the current
-        let mut allocator =
-            NatDefaultAllocator::from_config(&nat_config).set_randomize(nat_config.randomize);
-
+        let mut allocator = NatDefaultAllocator::from_config(&nat_config);
         if old_allocator.is_some() {
             validate_stateful_nat_flows(flow_table, &nat_config, &mut allocator);
         }

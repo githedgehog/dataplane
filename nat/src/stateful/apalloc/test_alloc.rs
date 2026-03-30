@@ -174,7 +174,7 @@ mod context {
     pub fn build_allocator() -> NatDefaultAllocator {
         let vpc_table = build_context();
         let config = StatefulNatConfig::new(&vpc_table, 1);
-        NatDefaultAllocator::from_config(&config).set_randomize(true)
+        NatDefaultAllocator::from_config(&config)
     }
 }
 
