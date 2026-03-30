@@ -299,3 +299,79 @@ pub enum CliAction {
     // loglevel
     SetLoglevel,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    /// Build a `CliRequest` that exercises every `RequestArgs` field so the
+    /// round-trip covers `Option`, `String`, `IpAddr`, `u32`, and enum
+    /// variants — the types most likely to contain alignment-sensitive
+    /// archived representations.
+    fn sample_request() -> CliRequest {
+        CliRequest::new(
+            CliAction::ShowRouterIpv4Routes,
+            RequestArgs {
+                address: Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+                prefix: Some((IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24)),
+                vrfid: Some(42),
+                vni: Some(10_100),
+                ifname: Some("eth0".into()),
+                loglevel: Some(CliLogLevel::Debug),
+                protocol: Some(RouteProtocol::Bgp),
+            },
+        )
+    }
+
+    /// Build a `CliResponse` that carries both the nested `CliRequest` and a
+    /// non-trivial `Ok(String)` result.
+    fn sample_response() -> CliResponse {
+        CliResponse::from_request_ok(sample_request(), "some result data".into())
+    }
+
+    #[test]
+    fn request_round_trip() {
+        let original = sample_request();
+        let bytes = original.serialize().expect("serialize");
+        let got = CliRequest::deserialize(&bytes).expect("deserialize");
+        assert_eq!(got, original);
+    }
+
+    #[test]
+    fn response_round_trip() {
+        let original = sample_response();
+        let bytes = original.serialize().expect("serialize");
+        let got = CliResponse::deserialize(&bytes).expect("deserialize");
+        assert_eq!(got, original);
+    }
+
+    /// Simulate the misalignment that `BytesMut::split_to` caused: prepend
+    /// between 1 and `SerializerVec::ALIGNMENT - 1` junk bytes so the rkyv
+    /// payload starts at every possible sub-alignment offset.  The
+    /// `AlignedVec` copy in `deserialize` must correct each one.
+    #[test]
+    fn request_deserialize_from_misaligned_buffer() {
+        let bytes = sample_request().serialize().expect("serialize");
+        for offset in 1..SerializerVec::ALIGNMENT {
+            let mut shifted = vec![0xFFu8; offset];
+            shifted.extend_from_slice(&bytes);
+            let got = CliRequest::deserialize(&shifted[offset..])
+                .unwrap_or_else(|_| panic!("deserialize failed at offset {offset}"));
+            assert_eq!(got, sample_request());
+        }
+    }
+
+    /// Same misalignment sweep for `CliResponse`.
+    #[test]
+    fn response_deserialize_from_misaligned_buffer() {
+        let bytes = sample_response().serialize().expect("serialize");
+        for offset in 1..SerializerVec::ALIGNMENT {
+            let mut shifted = vec![0xFFu8; offset];
+            shifted.extend_from_slice(&bytes);
+            let got = CliResponse::deserialize(&shifted[offset..])
+                .unwrap_or_else(|_| panic!("deserialize failed at offset {offset}"));
+            assert_eq!(got, sample_response());
+        }
+    }
+}
