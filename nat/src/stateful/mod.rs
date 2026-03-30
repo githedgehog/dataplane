@@ -68,7 +68,7 @@ enum StatefulNatError {
 #[derive(Debug)]
 pub struct StatefulNat {
     name: String,
-    sessions: Arc<FlowTable>,
+    flow_table: Arc<FlowTable>,
     allocator: NatAllocatorReader,
     pipeline_data: Arc<PipelineData>,
 }
@@ -76,10 +76,10 @@ pub struct StatefulNat {
 impl StatefulNat {
     /// Creates a new [`StatefulNat`] processor from provided parameters.
     #[must_use]
-    pub fn new(name: &str, sessions: Arc<FlowTable>, allocator: NatAllocatorReader) -> Self {
+    pub fn new(name: &str, flow_table: Arc<FlowTable>, allocator: NatAllocatorReader) -> Self {
         Self {
             name: name.to_string(),
-            sessions,
+            flow_table,
             allocator,
             pipeline_data: Arc::from(PipelineData::default()),
         }
@@ -111,7 +111,7 @@ impl StatefulNat {
     /// Get session table
     #[must_use]
     pub fn sessions(&self) -> &Arc<FlowTable> {
-        &self.sessions
+        &self.flow_table
     }
 
     fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {
@@ -147,7 +147,7 @@ impl StatefulNat {
         proto_key_info: IpProtoKey,
     ) -> Option<(NatTranslationData, Duration)> {
         let flow_key = FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info);
-        let flow_info = self.sessions.lookup(&flow_key)?;
+        let flow_info = self.flow_table.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<NatFlowState<I>>()?;
         Some((state.translation_data(), state.idle_timeout()))
@@ -406,11 +406,11 @@ impl StatefulNat {
             return Err(StatefulNatError::NoAllocator);
         };
 
+        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+
         // build flow key
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
-
-        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
         // build extended flow key, with the dst vpc discriminant
         let e_flow_key = flow_key.extend_with_dst_vpcd(dst_vpc_id);
