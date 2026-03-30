@@ -12,9 +12,9 @@ use net::packet::VpcDiscriminant;
 use std::sync::Arc;
 use tracing::debug;
 
-use crate::stateful::flows::invalidate_all_stateful_nat_flows;
-use crate::stateful::flows::upgrade_all_stateful_nat_flows;
-use crate::stateful::flows::validate_stateful_nat_flows;
+use crate::stateful::flows::check_masquerading_flows;
+use crate::stateful::flows::invalidate_all_masquerading_flows;
+use crate::stateful::flows::upgrade_all_masquerading_flows;
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct StatefulNatPeering {
@@ -75,7 +75,7 @@ impl StatefulNatConfig {
         self.peerings.iter()
     }
 
-    pub(crate) fn num_stateful_nat_peerings(&self) -> usize {
+    pub(crate) fn num_masquerading_peerings(&self) -> usize {
         self.peerings
             .iter()
             .map(|p| &p.peering)
@@ -125,30 +125,37 @@ impl NatAllocatorWriter {
     /// Replace the nat allocator with a new one
     pub fn update_nat_allocator(&mut self, nat_config: StatefulNatConfig, flow_table: &FlowTable) {
         let genid = nat_config.genid();
+        let curr_allocator = self.allocator.load();
 
-        // freeze the current allocator ?
-        let old_allocator = self.allocator.load();
-
-        if nat_config == self.config && old_allocator.is_some() {
+        // keep state as-is if config did not change, and just upgrade flows
+        if nat_config == self.config {
             debug!("No need to update NAT allocator: NAT peerings did not change");
-            upgrade_all_stateful_nat_flows(flow_table, genid);
-            return;
-        }
-        if nat_config.num_stateful_nat_peerings() == 0 {
-            debug!("Stateful NAT is not required: will invalidate flows and remove allocator");
-            invalidate_all_stateful_nat_flows(flow_table);
-            self.allocator.store(None);
+            if curr_allocator.is_some() {
+                upgrade_all_masquerading_flows(flow_table, genid);
+            }
             return;
         }
 
-        // build a new allocator to replace the current
-        let mut allocator = NatDefaultAllocator::from_config(&nat_config);
-        if old_allocator.is_some() {
-            validate_stateful_nat_flows(flow_table, &nat_config, &mut allocator);
+        // if we transition to a config wo/ masquerading, flush allocator and remove flows
+        if nat_config.num_masquerading_peerings() == 0 {
+            if curr_allocator.is_some() {
+                debug!("No stateful NAT is required anymore: will invalidate flows");
+                invalidate_all_masquerading_flows(flow_table);
+                self.allocator.store(None);
+            }
+            return;
         }
+
+        // build a new allocator
+        let mut allocator = NatDefaultAllocator::from_config(&nat_config);
+        if curr_allocator.is_some() {
+            check_masquerading_flows(flow_table, &nat_config, &mut allocator);
+        }
+
+        // replace
         self.allocator.store(Some(Arc::new(allocator)));
         self.config = nat_config;
-        debug!("Updated allocator for stateful NAT");
+        debug!("Updated stateful NAT allocator");
     }
 }
 
