@@ -2,14 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 use ahash::RandomState;
+use concurrency::sync::{Arc, RwLock, RwLockReadGuard};
 use dashmap::DashMap;
 use net::FlowKey;
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
-
-use concurrency::sync::{Arc, RwLock, RwLockReadGuard};
-use std::borrow::Borrow;
-use std::sync::PoisonError;
 use std::time::Duration;
 use tracing::debug;
 
@@ -303,16 +301,14 @@ impl FlowTable {
     }
 
     /// Take a read lock to the flow table
-    /// # Errors
-    /// Returns `PoisonError` if the lock was poisoned.
+    ///
+    /// # Panics
+    ///
+    /// This method panics if the `RwLock` is poisoned and may panic if, when called, the thread
+    /// already holds a lock to the table
     #[allow(clippy::type_complexity)]
-    pub fn lock_read(
-        &self,
-    ) -> Result<
-        RwLockReadGuard<'_, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
-        PoisonError<RwLockReadGuard<'_, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>>,
-    > {
-        self.table.read()
+    pub fn lock_read(&self) -> RwLockReadGuard<'_, DashMap<FlowKey, Arc<FlowInfo>, RandomState>> {
+        self.table.read().unwrap()
     }
 }
 

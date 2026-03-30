@@ -20,8 +20,8 @@ use tracing::{debug, error};
 pub(crate) fn invalidate_all_stateful_nat_flows(flow_table: &FlowTable) {
     debug!("INVALIDATING all masquerading flows...");
     let mut count = 0;
-    let table_lock = flow_table.lock_read().unwrap();
-    for flow_info in table_lock.iter().filter_map(|flow| flow.upgrade()) {
+    let table_lock = flow_table.lock_read();
+    for flow_info in table_lock.iter() {
         if let Ok(locked) = flow_info.locked.read()
             && locked.nat_state.as_ref().is_some()
         {
@@ -35,12 +35,8 @@ pub(crate) fn invalidate_all_stateful_nat_flows(flow_table: &FlowTable) {
 pub(crate) fn upgrade_all_stateful_nat_flows(flow_table: &FlowTable, genid: GenId) {
     debug!("UPGRADING all masquerading flows to gen {genid}...");
     let mut count = 0;
-    let table_lock = flow_table.lock_read().unwrap();
-    for flow_info in table_lock
-        .iter()
-        .filter_map(|flow| flow.upgrade())
-        .filter(|flow| flow.is_valid())
-    {
+    let table_lock = flow_table.lock_read();
+    for flow_info in table_lock.iter().filter(|flow| flow.is_valid()) {
         if let Ok(locked) = flow_info.locked.read()
             && locked.nat_state.as_ref().is_some()
         {
@@ -152,12 +148,8 @@ pub(crate) fn validate_stateful_nat_flows(
     new_allocator: &mut NatDefaultAllocator,
 ) {
     let genid = new_config.genid();
-    let table_lock = flow_table.lock_read().unwrap();
-    for flow_info in table_lock
-        .iter()
-        .filter_map(|flow| flow.upgrade())
-        .filter(|flow_info| flow_info.is_valid())
-    {
+    let table_lock = flow_table.lock_read();
+    for flow_info in table_lock.iter().filter(|flow_info| flow_info.is_valid()) {
         // ip and port used for masquerading the flow
         let Some((ip, port)) = get_flow_src_masquerading_allocation(&flow_info) else {
             continue;
