@@ -334,7 +334,8 @@ pub(crate) fn start_rio(
         info!("CLI: Listening at {}.", &rio.cli_sock_path);
         info!("FRRMI: will connect to {}.", &rio.frrmi.get_remote());
         let mut events = Events::with_capacity(64);
-        let mut buf = BytesMut::with_capacity(2048); // reused by cpi / cli
+        let mut cpi_buf = BytesMut::with_capacity(2048);
+        let mut cli_buf = vec![0u8; 2048];
 
         /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(fibtw, iftw, atabler);
@@ -362,9 +363,9 @@ pub(crate) fn start_rio(
                 match event.token() {
                     CPSOCK => {
                         while event.is_readable() {
-                            buf.resize(2048, 0);
-                            if let Ok((len, peer)) = rio.cpi_sock.recv_from(buf.as_mut()) {
-                                let mut data = buf.split_to(len).freeze();
+                            cpi_buf.resize(2048, 0);
+                            if let Ok((len, peer)) = rio.cpi_sock.recv_from(cpi_buf.as_mut()) {
+                                let mut data = cpi_buf.split_to(len).freeze();
                                 process_cpi_data(&mut rio, &peer, &mut data, &mut db);
                             } else {
                                 break;
@@ -384,9 +385,8 @@ pub(crate) fn start_rio(
                     }
                     CLISOCK => {
                         while event.is_readable() {
-                            buf.resize(2048, 0);
-                            if let Ok((len, peer)) = rio.clisock.recv_from(buf.as_mut()) {
-                                if let Ok(request) = CliRequest::deserialize(&buf[0..len]) {
+                            if let Ok((len, peer)) = rio.clisock.recv_from(cli_buf.as_mut()) {
+                                if let Ok(request) = CliRequest::deserialize(&cli_buf[0..len]) {
                                     handle_cli_request(&mut rio, &peer, request, &db, &cli_sources);
                                 }
                             } else {
