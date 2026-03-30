@@ -3,6 +3,19 @@
 
 //! Defines the cli protocol for the dataplane
 
+use rkyv::util::AlignedVec;
+
+/// The [`AlignedVec`] flavour returned by [`rkyv::to_bytes`] (i.e. with its
+/// default alignment).  Deserialization buffers must use the same alignment
+/// because the serializer inserts padding that assumes the buffer's base
+/// address satisfies this alignment; a misaligned base shifts every interior
+/// field, causing `bytecheck` validation to reject the archive.
+///
+/// Using a type alias rather than a bare constant keeps us in lockstep with
+/// rkyv: if the crate ever changes its default `AlignedVec` alignment, this
+/// alias picks it up automatically.
+type SerializerVec = AlignedVec;
+
 // `rkyv::from_bytes` only validates archived data when rkyv's `bytecheck`
 // feature is active.  If it were ever disabled, deserialization of IPC
 // messages would silently skip validation -- a safety hole.
@@ -115,7 +128,10 @@ impl CliSerialize for CliRequest {
     }
 
     fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
-        rkyv::from_bytes::<Self, rkyv::rancor::Error>(buf).map_err(|_| CliSerdeError::Deserialize)
+        let mut aligned = SerializerVec::with_capacity(buf.len());
+        aligned.extend_from_slice(buf);
+        rkyv::from_bytes::<Self, rkyv::rancor::Error>(&aligned)
+            .map_err(|_| CliSerdeError::Deserialize)
     }
 }
 
@@ -127,7 +143,10 @@ impl CliSerialize for CliResponse {
     }
 
     fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
-        rkyv::from_bytes::<Self, rkyv::rancor::Error>(buf).map_err(|_| CliSerdeError::Deserialize)
+        let mut aligned = SerializerVec::with_capacity(buf.len());
+        aligned.extend_from_slice(buf);
+        rkyv::from_bytes::<Self, rkyv::rancor::Error>(&aligned)
+            .map_err(|_| CliSerdeError::Deserialize)
     }
 }
 
