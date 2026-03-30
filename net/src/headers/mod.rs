@@ -1548,6 +1548,8 @@ mod test {
     use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, Parse, ParseError};
 
     use super::{Net, Transport};
+    #[allow(unused_imports)] // used by ipv6 checksum vector tests
+    use crate::checksum::Checksum as _;
     use crate::icmp6::{Icmp6Checksum, Icmp6ChecksumPayload};
     use crate::ipv4::{Ipv4Checksum, UnicastIpv4Addr};
     use crate::tcp::{TcpChecksum, TcpChecksumPayload, TcpPort};
@@ -2202,5 +2204,95 @@ mod test {
                 _ => unreachable!(),
             }
         }
+    }
+
+    fn build_ipv6_with_hop_by_hop(
+        transport_ip_number: etherparse::IpNumber,
+        transport_header: &[u8],
+    ) -> Vec<u8> {
+        // Minimal hop-by-hop options header (8 bytes total): 6-byte payload
+        let hop_by_hop =
+            etherparse::Ipv6RawExtHeader::new_raw(transport_ip_number, &[0u8; 6]).unwrap();
+        let ext_len = 8u16;
+        let payload_length = ext_len + u16::try_from(transport_header.len()).unwrap();
+
+        let eth = etherparse::Ethernet2Header {
+            source: [0x02, 0xca, 0xfe, 0xba, 0xbe, 0x01],
+            destination: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ether_type: etherparse::EtherType::IPV6,
+        };
+        let ipv6 = etherparse::Ipv6Header {
+            traffic_class: 0,
+            flow_label: 0.try_into().unwrap(),
+            payload_length,
+            next_header: etherparse::IpNumber::IPV6_HEADER_HOP_BY_HOP,
+            hop_limit: 64,
+            source: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+        };
+
+        let mut buf = Vec::new();
+        eth.write(&mut buf).unwrap();
+        ipv6.write(&mut buf).unwrap();
+        hop_by_hop.write(&mut buf).unwrap();
+        buf.extend_from_slice(transport_header);
+        buf
+    }
+
+    fn minimal_tcp_header_bytes(src: u16, dst: u16) -> [u8; 20] {
+        let mut buf = [0u8; 20];
+        buf[0..2].copy_from_slice(&src.to_be_bytes());
+        buf[2..4].copy_from_slice(&dst.to_be_bytes());
+        buf[12] = 5 << 4; // data offset = 5 → 20 bytes
+        buf
+    }
+
+    #[test]
+    fn ipv6_hop_by_hop_tcp_roundtrip() {
+        let tcp_bytes = minimal_tcp_header_bytes(80, 443);
+        let raw = build_ipv6_with_hop_by_hop(etherparse::IpNumber::TCP, &tcp_bytes);
+
+        let (headers, bytes_parsed) = Headers::parse(&raw).expect("parse failed");
+
+        // The extension header must have been parsed into net_ext.
+        assert_eq!(
+            headers.net_ext.len(),
+            1,
+            "expected one IPv6 extension header"
+        );
+        assert!(
+            matches!(headers.net_ext[0], super::NetExt::Ipv6Ext(_)),
+            "expected Ipv6Ext variant in net_ext"
+        );
+
+        // IPv6 and TCP should be present.
+        assert!(matches!(headers.net, Some(Net::Ipv6(_))));
+        assert!(matches!(headers.transport, Some(Transport::Tcp(_))));
+
+        // Deparse → reparse round-trip.
+        let size = headers.size().into_non_zero_usize().get();
+        assert_eq!(bytes_parsed.into_non_zero_usize().get(), size);
+
+        let mut buf = vec![0u8; size];
+        let written = headers.deparse(&mut buf).expect("deparse failed");
+        assert_eq!(written.into_non_zero_usize().get(), size);
+
+        let (reparsed, _) = Headers::parse(&buf).expect("reparse failed");
+        assert_eq!(headers, reparsed);
+    }
+
+    #[test]
+    fn ipv6_ext_header_included_in_size() {
+        let tcp_bytes = minimal_tcp_header_bytes(80, 443);
+        let raw = build_ipv6_with_hop_by_hop(etherparse::IpNumber::TCP, &tcp_bytes);
+
+        let (headers, _) = Headers::parse(&raw).expect("parse failed");
+
+        // Eth(14) + IPv6(40) + HopByHop(8) + TCP(20) = 82
+        assert_eq!(
+            headers.size().get(),
+            14 + 40 + 8 + 20,
+            "size must include extension header"
+        );
     }
 }
