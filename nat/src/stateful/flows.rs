@@ -169,7 +169,7 @@ pub(crate) fn validate_stateful_nat_flows(
     new_config: &StatefulNatConfig,
     new_allocator: &mut NatAllocator,
 ) {
-    let genid = new_config.genid;
+    let genid = new_config.genid();
     let table_lock = flow_table.lock_read().unwrap();
     for flow_info in table_lock
         .iter()
