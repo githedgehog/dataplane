@@ -545,7 +545,7 @@ impl DeParse for Headers {
                 cursor.write(eth)?;
             }
         }
-        for vlan in self.vlan.iter().rev() {
+        for vlan in &self.vlan {
             cursor.write(vlan)?;
         }
         match self.net {
@@ -652,7 +652,7 @@ impl Headers {
     #[allow(dead_code)]
     unsafe fn push_vlan_header_unchecked(&mut self, vlan: Vlan) -> Result<(), PushVlanError> {
         if self.vlan.len() < MAX_VLANS {
-            self.vlan.push(vlan);
+            self.vlan.insert(0, vlan);
             Ok(())
         } else {
             Err(PushVlanError::TooManyVlans)
@@ -679,7 +679,7 @@ impl Headers {
                 let old_eth_type = eth.ether_type();
                 eth.set_ether_type(EthType::VLAN);
                 let new_vlan_header = Vlan::new(vid, old_eth_type, Pcp::default(), false);
-                self.vlan.push(new_vlan_header);
+                self.vlan.insert(0, new_vlan_header);
                 Ok(())
             }
         }
@@ -700,13 +700,15 @@ impl Headers {
     pub fn pop_vlan(&mut self) -> Result<Option<Vlan>, PopVlanError> {
         match &mut self.eth {
             None => Err(PopVlanError::NoEthernetHeader),
-            Some(eth) => match self.vlan.pop() {
-                None => Ok(None),
-                Some(vlan) => {
+            Some(eth) => {
+                if self.vlan.is_empty() {
+                    Ok(None)
+                } else {
+                    let vlan = self.vlan.remove(0);
                     eth.set_ether_type(vlan.inner_ethtype());
                     Ok(Some(vlan))
                 }
-            },
+            }
         }
     }
 
