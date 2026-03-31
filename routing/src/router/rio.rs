@@ -17,9 +17,9 @@ use crate::router::ctl::{RouterCtlMsg, RouterCtlSender, handle_ctl_msg};
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent};
 use crate::routingdb::RoutingDb;
 
-use crate::cli::iocache::IoCache;
 use bytes::BytesMut;
-use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest, CliSerialize};
+use cli::IoCache;
+use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest};
 use config::{GwConfig, GwConfigMeta};
 use dplane_rpc::socks::RpcCachedSock;
 
@@ -362,7 +362,6 @@ pub(crate) fn start_rio(
         info!("FRRMI: will connect to {}.", &rio.frrmi.get_remote());
         let mut events = Events::with_capacity(64);
         let mut cpi_buf = BytesMut::with_capacity(2048);
-        let mut cli_buf = vec![0u8; 2048];
 
         /* create routing database: this is fully owned by the CPI */
         let mut db = RoutingDb::new(fibtw, iftw, atabler);
@@ -418,14 +417,10 @@ pub(crate) fn start_rio(
                             }
                         }
                         while event.is_readable() {
-                            if let Ok((len, peer)) = rio.clisock.recv_from(cli_buf.as_mut()) {
-                                if let Ok(request) = CliRequest::deserialize(&cli_buf[0..len])
-                                    .inspect_err(|e| error!("{e}"))
-                                {
-                                    handle_cli_request(&mut rio, &peer, request, &db, &cli_sources);
-                                    if !rio.cli_cache.is_empty() {
-                                        rio.cli_wake_on_writeable(true);
-                                    }
+                            if let Ok((peer, request)) = CliRequest::recv(&rio.clisock) {
+                                handle_cli_request(&mut rio, &peer, request, &db, &cli_sources);
+                                if !rio.cli_cache.is_empty() {
+                                    rio.cli_wake_on_writeable(true);
                                 }
                             } else {
                                 break;

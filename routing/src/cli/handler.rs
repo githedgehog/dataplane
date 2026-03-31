@@ -21,10 +21,7 @@ use crate::router::rio::Rio;
 use crate::routingdb::RoutingDb;
 
 use chrono::Local;
-use cli::cliproto::{
-    CLI_FAILURE_STR, CLI_MSG_CHUNK_SIZE, CliAction, CliError, CliRequest, CliResponse,
-    CliSerialize, RequestArgs, RouteProtocol,
-};
+use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, RequestArgs, RouteProtocol};
 use config::{ConfigSummary, GwConfig, GwConfigMeta};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
@@ -546,40 +543,9 @@ pub(crate) fn handle_cli_request(
     let cliresponse = do_handle_cli_request(request.clone(), db, rio, cli_sources)
         .unwrap_or_else(|e| CliResponse::from_request_fail(request, e));
 
-    // serialize the response. If this fails, `FAILURE_STR` is sent to the cli so that it does not get stuck waiting for a response
-    let response = cliresponse
-        .serialize()
-        .inspect_err(|e| error!("{e}"))
-        .unwrap_or_else(|_| CLI_FAILURE_STR.to_vec());
-
-    // split response in chunks and send them. If sending fails (EAGAIN), cache ALL the remaining chunks until they can be sent again later,
-    // even if sending may succeed for them, to avoid reordering them. On any other failure, empty the cache. Sent or cached, chunks are
-    // appended an octet (bool), indicating if more chunks follow so that the receiver (CLI) can know when to stop receiving them and assemble
-    // the full message. The more flag is sent on the same send() call so that it has the same fate as the chunk.
-    let response_len = response.len();
-    let num_chunks = response_len.div_ceil(CLI_MSG_CHUNK_SIZE);
-    let mut cache = false;
-    trace!("Response is {response_len} octets. Will send in {num_chunks} chunks",);
-    for (num, chunk) in response.chunks(CLI_MSG_CHUNK_SIZE).enumerate() {
-        let more = num < num_chunks - 1;
-        let mut raw = chunk.to_vec();
-        raw.push(more.into());
-
-        if cache {
-            rio.cli_cache.push(peer.clone(), raw.as_slice());
-        } else {
-            match rio.clisock.send_to_addr(raw.as_slice(), peer) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    rio.cli_cache.push(peer.clone(), raw.as_slice());
-                    cache = true; // cache from now on
-                }
-                Err(e) => {
-                    error!("Error writing cli response chunk: {e}");
-                    rio.cli_cache.clear();
-                    break;
-                }
-            }
-        }
+    // serialize the response and send it. Response may be sent in multiple chunks.
+    // If not all of them can be sent, they will be cached.
+    if let Err(e) = cliresponse.send(peer, &rio.clisock, &mut rio.cli_cache) {
+        error!("Failed to send response: {e}");
     }
 }
