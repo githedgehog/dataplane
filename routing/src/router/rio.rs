@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 #[allow(unused)]
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 // capacity of rio control channel
 const CTL_CHANNEL_CAPACITY: usize = 100;
@@ -222,7 +222,9 @@ impl Rio {
         fd: i32,
         interests: Interest,
     ) -> Result<(), RouterError> {
-        debug!("Re-registering fd {fd}...");
+        let r = if interests.is_readable() { "r" } else { "-" };
+        let w = if interests.is_writable() { "w" } else { "-" };
+        debug!("Re-registering fd {fd} for {r}{w}");
         let mut ev_sock = SourceFd(&fd);
         self.poller
             .registry()

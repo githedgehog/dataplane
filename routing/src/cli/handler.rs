@@ -556,8 +556,10 @@ pub(crate) fn handle_cli_request(
     // even if sending may succeed for them, to avoid reordering them. On any other failure, empty the cache. Sent or cached, chunks are
     // appended an octet (bool), indicating if more chunks follow so that the receiver (CLI) can know when to stop receiving them and assemble
     // the full message. The more flag is sent on the same send() call so that it has the same fate as the chunk.
-    let num_chunks = response.len().div_ceil(CLI_MSG_CHUNK_SIZE);
+    let response_len = response.len();
+    let num_chunks = response_len.div_ceil(CLI_MSG_CHUNK_SIZE);
     let mut cache = false;
+    trace!("Response is {response_len} octets. Will send in {num_chunks} chunks",);
     for (num, chunk) in response.chunks(CLI_MSG_CHUNK_SIZE).enumerate() {
         let more = num < num_chunks - 1;
         let mut raw = chunk.to_vec();
