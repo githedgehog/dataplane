@@ -344,7 +344,9 @@ pub enum CliAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::RngExt;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::{thread, time::Duration};
 
     /// Build a `CliRequest` that exercises every `RequestArgs` field so the
     /// round-trip covers `Option`, `String`, `IpAddr`, `u32`, and enum
@@ -413,5 +415,71 @@ mod tests {
                 .unwrap_or_else(|_| panic!("deserialize failed at offset {offset}"));
             assert_eq!(got, sample_response());
         }
+    }
+
+    fn generate_big_response_data(random: usize) -> String {
+        let data = "DATA";
+        data.repeat(random)
+    }
+
+    fn generate_big_response(data: String) -> CliResponse {
+        CliResponse::from_request_ok(sample_request(), data)
+    }
+
+    /// Open 2 sockets, one for dataplane and one for cli. Spawn a thread representing dataplane.
+    /// Send dataplane a request and receive a big response from it.
+    #[test]
+    fn test_communications() {
+        const DP_PATH: &str = "/tmp/dpsock";
+        const CLI_PATH: &str = "/tmp/clisock";
+        std::fs::remove_file(DP_PATH).unwrap();
+        std::fs::remove_file(CLI_PATH).unwrap();
+
+        let dpsock = UnixDatagram::bind(DP_PATH).unwrap();
+        dpsock.set_nonblocking(true).unwrap();
+
+        let clisock = UnixDatagram::bind(CLI_PATH).unwrap();
+        clisock.set_nonblocking(false).unwrap();
+        clisock.connect(DP_PATH).unwrap();
+
+        // generate reponse data with random length
+        let mut rng = rand::rng();
+        let random_repeat = rng.random_range(100 * CLI_MSG_CHUNK_SIZE..CLI_MSG_CHUNK_SIZE * 10_000);
+        let response_data = generate_big_response_data(random_repeat);
+        let response_data_len = response_data.len();
+
+        thread::spawn(move || {
+            let mut cache = IoCache::new();
+            let mut send_attempted = false;
+            let response = generate_big_response(response_data.clone());
+            loop {
+                if send_attempted {
+                    // send from cache if we already called send()
+                    cache.drain(&dpsock);
+                    thread::sleep(Duration::from_millis(10));
+                } else {
+                    match CliRequest::recv(&dpsock) {
+                        Ok((peer, _request)) => {
+                            response.send(&peer, &dpsock, &mut cache).unwrap();
+                            send_attempted = true;
+                            // from now on, send from cache
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(100)),
+                    }
+                }
+                if send_attempted && cache.is_empty() {
+                    break;
+                }
+            }
+        });
+
+        // send request
+        let request = sample_request();
+        request.send(&clisock).unwrap();
+
+        // receive response
+        let response = CliResponse::recv_sync(&clisock).unwrap();
+        let data = response.result.unwrap();
+        assert_eq!(data.len(), response_data_len);
     }
 }

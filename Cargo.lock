@@ -1334,6 +1334,7 @@ dependencies = [
  "clap",
  "colored",
  "nix 0.31.2",
+ "rand 0.10.0",
  "rkyv",
  "rustyline",
  "strum 0.28.0",
