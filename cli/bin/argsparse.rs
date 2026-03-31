@@ -4,7 +4,6 @@
 //! Adds main parser for command arguments
 
 use dataplane_cli::cliproto::{RequestArgs, RouteProtocol};
-use log::Level;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -25,8 +24,6 @@ pub enum ArgsError {
     UnrecognizedArgs(HashMap<String, String>),
     #[error("Missing value for {0}")]
     MissingValue(&'static str),
-    #[error("Unknown loglevel {0}")]
-    UnknownLogLevel(String),
     #[error("Bad value {0}")]
     BadValue(String),
     #[error("Unknown protocol '{0}'")]
@@ -104,17 +101,6 @@ impl CliArgs {
                 return Err(ArgsError::MissingValue("ifname"));
             }
             args.remote.ifname.clone_from(&Some(ifname));
-        }
-        if let Some(level) = args_map.remove("level") {
-            if level.is_empty() {
-                return Err(ArgsError::MissingValue("level"));
-            }
-            let level = level.to_uppercase();
-            args.remote.loglevel = Some(
-                Level::from_str(level.as_str())
-                    .map_err(|_| ArgsError::UnknownLogLevel(level))?
-                    .into(),
-            );
         }
         if let Some(protocol) = args_map.remove("protocol") {
             if protocol.is_empty() {

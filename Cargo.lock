@@ -1333,7 +1333,6 @@ version = "0.18.0"
 dependencies = [
  "clap",
  "colored",
- "log",
  "nix 0.31.2",
  "rkyv",
  "rustyline",

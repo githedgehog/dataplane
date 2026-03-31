@@ -25,7 +25,6 @@ const _: () = {
     use rkyv::bytecheck::CheckBytes as _;
 };
 
-use log::Level;
 use std::net::IpAddr;
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
@@ -38,44 +37,6 @@ pub const CLI_RX_BUFF_SIZE: usize = CLI_MSG_CHUNK_SIZE * 8192;
 
 // Special message sent instead of a response if the latter cannot be serialized
 pub const CLI_FAILURE_STR: &[u8] = "FAILURE".as_bytes();
-
-/// A log level for use in CLI protocol messages.
-///
-/// This mirrors [`log::Level`] but implements the [`rkyv`] serialization
-/// traits that `Level` itself does not provide.  Use the [`From`] /
-/// [`Into`] conversions to interoperate with [`log::Level`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum CliLogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl From<Level> for CliLogLevel {
-    fn from(level: Level) -> Self {
-        match level {
-            Level::Error => Self::Error,
-            Level::Warn => Self::Warn,
-            Level::Info => Self::Info,
-            Level::Debug => Self::Debug,
-            Level::Trace => Self::Trace,
-        }
-    }
-}
-
-impl From<CliLogLevel> for Level {
-    fn from(level: CliLogLevel) -> Self {
-        match level {
-            CliLogLevel::Error => Self::Error,
-            CliLogLevel::Warn => Self::Warn,
-            CliLogLevel::Info => Self::Info,
-            CliLogLevel::Debug => Self::Debug,
-            CliLogLevel::Trace => Self::Trace,
-        }
-    }
-}
 
 #[derive(
     AsRefStr,
@@ -110,7 +71,6 @@ pub struct RequestArgs {
     pub vrfid: Option<u32>,              /* Id of a VRF */
     pub vni: Option<u32>,                /* Vxlan vni */
     pub ifname: Option<String>,          /* name of interface */
-    pub loglevel: Option<CliLogLevel>,   /* loglevel -- see [`CliLogLevel`] */
     pub protocol: Option<RouteProtocol>, /* a type of route or routing protocol */
 }
 
@@ -304,9 +264,6 @@ pub enum CliAction {
     // DPDK
     ShowDpdkPort,
     ShowDpdkPortStats,
-
-    // loglevel
-    SetLoglevel,
 }
 
 #[cfg(test)]
@@ -327,7 +284,6 @@ mod tests {
                 vrfid: Some(42),
                 vni: Some(10_100),
                 ifname: Some("eth0".into()),
-                loglevel: Some(CliLogLevel::Debug),
                 protocol: Some(RouteProtocol::Bgp),
             },
         )
