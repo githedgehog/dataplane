@@ -3,7 +3,9 @@
 
 //! Defines the cli protocol for the dataplane
 
+use crate::iocache::IoCache;
 use rkyv::util::AlignedVec;
+use std::os::unix::net::SocketAddr;
 
 /// The [`AlignedVec`] flavour returned by [`rkyv::to_bytes`] (i.e. with its
 /// default alignment).  Deserialization buffers must use the same alignment
@@ -25,7 +27,7 @@ const _: () = {
     use rkyv::bytecheck::CheckBytes as _;
 };
 
-use std::net::IpAddr;
+use std::{net::IpAddr, os::unix::net::UnixDatagram};
 use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
@@ -140,6 +142,14 @@ pub enum CliError {
     NotSupported(String),
 }
 
+#[derive(Error, Debug)]
+pub enum CliLocalError {
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] CliSerdeError),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+
 /// A Cli response
 #[derive(Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct CliResponse {
@@ -151,24 +161,92 @@ pub struct CliResponse {
 
 #[allow(unused)]
 impl CliRequest {
+    #[must_use]
     pub fn new(action: CliAction, args: RequestArgs) -> Self {
         Self { action, args }
+    }
+    pub fn send(&self, sock: &UnixDatagram) -> Result<usize, CliLocalError> {
+        let serialized = self.serialize()?;
+        sock.send(&serialized).map_err(std::convert::Into::into)
+    }
+    pub fn recv(sock: &UnixDatagram) -> Result<((SocketAddr, Self)), CliLocalError> {
+        let mut rx_buf = vec![0u8; CLI_MSG_CHUNK_SIZE];
+        let (len, peer) = sock.recv_from(rx_buf.as_mut())?;
+        let request = CliRequest::deserialize(&rx_buf[0..len])?;
+        Ok((peer, request))
     }
 }
 
 #[allow(unused)]
 impl CliResponse {
+    #[must_use]
     pub fn from_request_ok(request: CliRequest, data: String) -> Self {
         Self {
             request,
             result: Ok(data),
         }
     }
+
+    #[must_use]
     pub fn from_request_fail(request: CliRequest, error: CliError) -> Self {
         Self {
             request,
             result: Err(error),
         }
+    }
+
+    pub fn send(
+        &self,
+        peer: &SocketAddr,
+        sock: UnixDatagram,
+        cache: &mut IoCache,
+    ) -> Result<(), CliLocalError> {
+        let serialized = self.serialize()?;
+        let total_len = serialized.len();
+        let num_chunks = total_len.div_ceil(CLI_MSG_CHUNK_SIZE);
+        let mut cache_rest = false;
+
+        // xmit each chunk, followed by more flag, or cache
+        for (num, chunk) in serialized.chunks(CLI_MSG_CHUNK_SIZE).enumerate() {
+            let more = num < num_chunks - 1;
+            let mut raw = chunk.to_vec();
+            raw.push(more.into());
+
+            if cache_rest {
+                cache.push(peer.clone(), raw.as_slice());
+            } else {
+                match sock.send_to_addr(raw.as_slice(), peer) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        cache.push(peer.clone(), raw.as_slice());
+                        cache_rest = true; // cache from now on
+                    }
+                    Err(e) => {
+                        cache.clear_peer(peer);
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
+        let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
+        let rx_len = sock.recv(rx_buff.as_mut())?;
+        Ok((rx_buff[..rx_len - 1].to_vec(), rx_buff[rx_len - 1] != 0))
+    }
+
+    pub fn recv_sync(sock: &UnixDatagram) -> Result<Self, CliLocalError> {
+        let mut raw_data = vec![];
+        loop {
+            let (chunk, more) = Self::recv_chunk(sock)?;
+            raw_data.extend(chunk);
+            if !more {
+                break;
+            }
+        }
+        Ok(CliResponse::deserialize(raw_data.as_slice())?)
     }
 }
 
