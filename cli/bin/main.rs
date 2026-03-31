@@ -12,8 +12,8 @@ use cmdline::Cmdline;
 use cmdtree::Node;
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
-use dataplane_cli::cliproto::{CLI_FAILURE_STR, CLI_MSG_CHUNK_SIZE};
-use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
+use dataplane_cli::cliproto::CliLocalError;
+use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse};
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
 use std::rc::Rc;
@@ -53,34 +53,12 @@ fn ask_user(question: &str) -> bool {
     }
 }
 
-fn process_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
-    let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
-    let rx_len = sock.recv(rx_buff.as_mut())?;
-    Ok((rx_buff[..rx_len - 1].to_vec(), rx_buff[rx_len - 1] != 0))
-}
-
-/// Receive the response, synchronously
+/// Receive the response, synchronously. This is blocking by design
 fn process_cli_response(sock: &UnixDatagram) -> Result<String, String> {
-    let mut raw_data = vec![];
-    loop {
-        let (chunk, more) =
-            process_chunk(sock).map_err(|e| format!("Error receiving response: {e}"))?;
-        raw_data.extend(chunk);
-        if !more {
-            break;
-        }
-    }
-    if raw_data == CLI_FAILURE_STR {
-        return Err("Dataplane could not serialize response".to_string());
-    }
-
-    // deserialize
-    let response = CliResponse::deserialize(raw_data.as_slice())
-        .map_err(|e| format!("Failed to deserialize response: {e}"))?;
-
+    let response = CliResponse::recv_sync(sock).map_err(|e| e.to_string())?;
     match response.result {
         Ok(data) => Ok(data),
-        Err(e) => Err(format!("Dataplane error: {e}")),
+        Err(e) => Err(format!("Dataplane answered: {e}")),
     }
 }
 
@@ -93,22 +71,19 @@ fn execute_remote_action(
         print_err!("Not connnected to dataplane.");
         return;
     }
-    // build request & serialize it
-    let request = match CliRequest::new(action, args.remote.clone()).serialize() {
-        Ok(request) => request,
-        Err(e) => {
-            print_err!("{e}");
-            return;
-        }
-    };
+    // build request
+    let request = CliRequest::new(action, args.remote.clone());
 
-    // send the request
-    if let Err(e) = terminal.sock.send(&request) {
-        print_err!("Error sending request: {e}");
-        terminal.connected(false);
+    // serialize it and send it
+    if let Err(e) = request.send(&terminal.sock) {
+        print_err!("Error issuing request: {e}");
+        if matches!(e, CliLocalError::IoError(_)) {
+            terminal.connected(false);
+        }
         return;
     }
-    // receive and process response
+
+    // receive and deserialize response, synchronously
     match process_cli_response(&terminal.sock) {
         Ok(data) => println!("{data}"),
         Err(e) => print_err!("{e}"),

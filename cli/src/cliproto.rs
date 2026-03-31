@@ -32,13 +32,10 @@ use strum::{AsRefStr, EnumIter, EnumString};
 use thiserror::Error;
 
 // Size of a chunk. Messages may be split into chunks of this size if they exceed it
-pub const CLI_MSG_CHUNK_SIZE: usize = 2048;
+const CLI_MSG_CHUNK_SIZE: usize = 2048;
 
 // Socket snd/rx size. This is a recommendation as it can't be enforced 100%
 pub const CLI_RX_BUFF_SIZE: usize = CLI_MSG_CHUNK_SIZE * 8192;
-
-// Special message sent instead of a response if the latter cannot be serialized
-pub const CLI_FAILURE_STR: &[u8] = "FAILURE".as_bytes();
 
 #[derive(
     AsRefStr,
@@ -86,9 +83,9 @@ pub struct CliRequest {
 
 #[derive(Error, Debug)]
 pub enum CliSerdeError {
-    #[error("Serialization error: {0}")]
+    #[error("Serialize error: {0}")]
     Serialize(String),
-    #[error("Deserialization error: {0}")]
+    #[error("Deserialize error: {0}")]
     Deserialize(String),
 }
 
@@ -198,7 +195,7 @@ impl CliResponse {
     pub fn send(
         &self,
         peer: &SocketAddr,
-        sock: UnixDatagram,
+        sock: &UnixDatagram,
         cache: &mut IoCache,
     ) -> Result<(), CliLocalError> {
         let serialized = self.serialize()?;
@@ -231,16 +228,16 @@ impl CliResponse {
         Ok(())
     }
 
-    fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
-        let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
-        let rx_len = sock.recv(rx_buff.as_mut())?;
-        Ok((rx_buff[..rx_len - 1].to_vec(), rx_buff[rx_len - 1] != 0))
-    }
-
     pub fn recv_sync(sock: &UnixDatagram) -> Result<Self, CliLocalError> {
+        fn recv_chunk(sock: &UnixDatagram) -> Result<(Vec<u8>, bool), std::io::Error> {
+            let mut rx_buff = vec![0u8; CLI_MSG_CHUNK_SIZE + 1];
+            let rx_len = sock.recv(rx_buff.as_mut())?;
+            Ok((rx_buff[..rx_len - 1].to_vec(), rx_buff[rx_len - 1] != 0))
+        }
+
         let mut raw_data = vec![];
         loop {
-            let (chunk, more) = Self::recv_chunk(sock)?;
+            let (chunk, more) = recv_chunk(sock)?;
             raw_data.extend(chunk);
             if !more {
                 break;
