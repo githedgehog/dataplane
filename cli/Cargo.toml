@@ -19,6 +19,10 @@ rustyline = { workspace = true, features = ["custom-bindings", "with-fuzzy"] }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+rand = { workspace = true }
+
+
 [build-dependencies]
 # internal
 
