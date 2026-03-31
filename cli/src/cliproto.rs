@@ -121,10 +121,10 @@ pub struct CliRequest {
 
 #[derive(Error, Debug)]
 pub enum CliSerdeError {
-    #[error("Serialization error")]
-    Serialize,
-    #[error("Deserialization error")]
-    Deserialize,
+    #[error("Serialization error: {0}")]
+    Serialize(String),
+    #[error("Deserialization error: {0}")]
+    Deserialize(String),
 }
 
 /// Convenience trait for serializing / deserializing CLI protocol messages
@@ -141,14 +141,14 @@ impl CliSerialize for CliRequest {
     fn serialize(&self) -> Result<Vec<u8>, CliSerdeError> {
         rkyv::to_bytes::<rkyv::rancor::Error>(self)
             .map(|aligned| aligned.to_vec())
-            .map_err(|_| CliSerdeError::Serialize)
+            .map_err(|e| CliSerdeError::Serialize(e.to_string()))
     }
 
     fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
         let mut aligned = SerializerVec::with_capacity(buf.len());
         aligned.extend_from_slice(buf);
         rkyv::from_bytes::<Self, rkyv::rancor::Error>(&aligned)
-            .map_err(|_| CliSerdeError::Deserialize)
+            .map_err(|e| CliSerdeError::Deserialize(e.to_string()))
     }
 }
 
@@ -156,14 +156,14 @@ impl CliSerialize for CliResponse {
     fn serialize(&self) -> Result<Vec<u8>, CliSerdeError> {
         rkyv::to_bytes::<rkyv::rancor::Error>(self)
             .map(|aligned| aligned.to_vec())
-            .map_err(|_| CliSerdeError::Serialize)
+            .map_err(|e| CliSerdeError::Serialize(e.to_string()))
     }
 
     fn deserialize(buf: &[u8]) -> Result<Self, CliSerdeError> {
         let mut aligned = SerializerVec::with_capacity(buf.len());
         aligned.extend_from_slice(buf);
         rkyv::from_bytes::<Self, rkyv::rancor::Error>(&aligned)
-            .map_err(|_| CliSerdeError::Deserialize)
+            .map_err(|e| CliSerdeError::Deserialize(e.to_string()))
     }
 }
 
