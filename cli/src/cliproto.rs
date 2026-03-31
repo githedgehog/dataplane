@@ -36,6 +36,9 @@ pub const CLI_MSG_CHUNK_SIZE: usize = 2048;
 // Socket snd/rx size. This is a recommendation as it can't be enforced 100%
 pub const CLI_RX_BUFF_SIZE: usize = CLI_MSG_CHUNK_SIZE * 8192;
 
+// Special message sent instead of a response if the latter cannot be serialized
+pub const CLI_FAILURE_STR: &[u8] = "FAILURE".as_bytes();
+
 /// A log level for use in CLI protocol messages.
 ///
 /// This mirrors [`log::Level`] but implements the [`rkyv`] serialization

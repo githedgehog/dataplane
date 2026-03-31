@@ -12,7 +12,7 @@ use cmdline::Cmdline;
 use cmdtree::Node;
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
-use dataplane_cli::cliproto::CLI_MSG_CHUNK_SIZE;
+use dataplane_cli::cliproto::{CLI_FAILURE_STR, CLI_MSG_CHUNK_SIZE};
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse, CliSerialize};
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
@@ -70,13 +70,17 @@ fn process_cli_response(sock: &UnixDatagram) -> Result<String, String> {
             break;
         }
     }
+    if raw_data == CLI_FAILURE_STR {
+        return Err("Dataplane could not serialize response".to_string());
+    }
+
     // deserialize
     let response = CliResponse::deserialize(raw_data.as_slice())
         .map_err(|e| format!("Failed to deserialize response: {e}"))?;
 
     match response.result {
         Ok(data) => Ok(data),
-        Err(e) => Ok(format!("Dataplane error: {e}")),
+        Err(e) => Err(format!("Dataplane error: {e}")),
     }
 }
 
@@ -90,10 +94,14 @@ fn execute_remote_action(
         return;
     }
     // build request & serialize it
-    let Ok(request) = CliRequest::new(action, args.remote.clone()).serialize() else {
-        print_err!("Failed to serialize request!");
-        return;
+    let request = match CliRequest::new(action, args.remote.clone()).serialize() {
+        Ok(request) => request,
+        Err(e) => {
+            print_err!("{e}");
+            return;
+        }
     };
+
     // send the request
     if let Err(e) = terminal.sock.send(&request) {
         print_err!("Error sending request: {e}");

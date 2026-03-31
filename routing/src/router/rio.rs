@@ -417,7 +417,9 @@ pub(crate) fn start_rio(
                         }
                         while event.is_readable() {
                             if let Ok((len, peer)) = rio.clisock.recv_from(cli_buf.as_mut()) {
-                                if let Ok(request) = CliRequest::deserialize(&cli_buf[0..len]) {
+                                if let Ok(request) = CliRequest::deserialize(&cli_buf[0..len])
+                                    .inspect_err(|e| error!("{e}"))
+                                {
                                     handle_cli_request(&mut rio, &peer, request, &db, &cli_sources);
                                     if !rio.cli_cache.is_empty() {
                                         rio.cli_wake_on_writeable(true);
