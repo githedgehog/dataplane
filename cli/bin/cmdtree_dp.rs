@@ -5,7 +5,6 @@
 
 use crate::cmdtree::{Node, NodeArg};
 use dataplane_cli::cliproto::{CliAction, RouteProtocol};
-use log::Level;
 use std::convert::AsRef;
 use strum::IntoEnumIterator;
 
@@ -310,30 +309,6 @@ fn cmd_show() -> Node {
     root += cmd_show_tech();
     root
 }
-fn cmd_loglevel() -> Node {
-    let mut root = Node::new("log")
-        .desc("Set logging level")
-        .action(CliAction::SetLoglevel);
-    let arg = NodeArg::new("level")
-        .choice(Level::Trace.as_str().to_lowercase().as_str())
-        .choice(Level::Debug.as_str().to_lowercase().as_str())
-        .choice(Level::Info.as_str().to_lowercase().as_str())
-        .choice(Level::Warn.as_str().to_lowercase().as_str())
-        .choice(Level::Error.as_str().to_lowercase().as_str());
-    root = root.arg_add(arg);
-    root
-}
-fn cmd_set() -> Node {
-    let mut root = Node::new("set");
-    root += cmd_loglevel();
-
-    root
-}
-fn cmd_mgmt() -> Node {
-    let mut root = Node::new("");
-    root += cmd_set();
-    root
-}
 fn cmd_local() -> Node {
     let mut root = Node::new("");
     root += Node::new("clear")
@@ -391,7 +366,6 @@ fn cmd_cpi() -> Node {
 pub fn gw_cmd_tree() -> Node {
     let mut root = Node::new("");
     root += cmd_local();
-    root += cmd_mgmt();
     root += cmd_show();
     root += cmd_frrmi();
     root += cmd_cpi();

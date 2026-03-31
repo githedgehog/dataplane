@@ -13,7 +13,6 @@ path = "bin/main.rs"
 [dependencies]
 clap = { workspace = true, features = ["derive", "std", "usage"] }
 colored = { workspace = true, features = [] }
-log = { workspace = true, features = [] }
 nix = { workspace = true, features = ["socket"] }
 rkyv = { workspace = true, features = ["alloc", "bytecheck", "std"] }
 rustyline = { workspace = true, features = ["custom-bindings", "with-fuzzy"] }
