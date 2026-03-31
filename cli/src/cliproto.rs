@@ -201,27 +201,32 @@ impl CliResponse {
         let serialized = self.serialize()?;
         let total_len = serialized.len();
         let num_chunks = total_len.div_ceil(CLI_MSG_CHUNK_SIZE);
-        let mut cache_rest = false;
 
-        // xmit each chunk, followed by more flag, or cache
+        // attempt to send any cached data first
+        if !cache.is_empty() {
+            cache.drain(sock);
+        }
+        // if we did not clear the cache, cache the messages
+        let mut use_cache = !cache.is_empty();
+
+        // Partition the serialized response in chunks and attempt to send them.
+        // Each chunk is appended one octet indicating if more chunks follow. If send returns
+        // WouldBlock, cache the chunk and all the remaining ones. On any other error,
+        // clear the cache for the recipient and return.
         for (num, chunk) in serialized.chunks(CLI_MSG_CHUNK_SIZE).enumerate() {
             let more = num < num_chunks - 1;
             let mut raw = chunk.to_vec();
             raw.push(more.into());
 
-            if cache_rest {
+            if use_cache {
                 cache.push(peer.clone(), raw.as_slice());
-            } else {
-                match sock.send_to_addr(raw.as_slice(), peer) {
-                    Ok(_) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        cache.push(peer.clone(), raw.as_slice());
-                        cache_rest = true; // cache from now on
-                    }
-                    Err(e) => {
-                        cache.clear_peer(peer);
-                        return Err(e.into());
-                    }
+            } else if let Err(e) = sock.send_to_addr(raw.as_slice(), peer) {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    cache.push(peer.clone(), raw.as_slice());
+                    use_cache = true;
+                } else {
+                    cache.clear_peer(peer);
+                    return Err(e.into());
                 }
             }
         }

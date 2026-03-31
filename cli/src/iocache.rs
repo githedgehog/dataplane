@@ -16,7 +16,7 @@ impl IoCache {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn push(&mut self, addr: SocketAddr, data: &[u8]) {
+    pub(crate) fn push(&mut self, addr: SocketAddr, data: &[u8]) {
         let chunk = IoChunk {
             addr,
             data: Box::from(data),
