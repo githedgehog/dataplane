@@ -2,3 +2,4 @@
 // Copyright Open Network Fabric Authors
 
 pub mod cliproto;
+pub(crate) mod iocache;
