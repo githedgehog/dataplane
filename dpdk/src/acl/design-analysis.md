@@ -2281,17 +2281,261 @@ and represent the closest prior art we are aware of.
 
 @inproceedings{gupta2000,
   author    = {Gupta, Pankaj and McKeown, Nick},
-  title     = {ClassBench: A Packet Classification Benchmark},
-  booktitle = {Proceedings of ACM SIGCOMM (HiCuts paper)},
-  year      = {2000},
+  title     = {Algorithms for Packet Classification},
+  booktitle = {IEEE Network},
+  year      = {2001},
   keywords  = {type-space-prior-art},
-  note      = {HiCuts and subsequent HyperCuts (Singh et al., SIGCOMM 2003) build
-               decision trees that partition the rule space. Our type dispatch is a
-               principled first-level split in such a decision tree — partitioning by
-               protocol structure before partitioning by field values. These works do
-               not derive the split from the parser graph.}
+  note      = {HiCuts (Gupta \& McKeown) and subsequent HyperCuts (Singh et al.,
+               SIGCOMM 2003) build decision trees that partition the rule space.
+               Our type dispatch is a principled first-level split in such a decision
+               tree — partitioning by protocol structure before partitioning by field
+               values. These works do not derive the split from the parser graph.}
+}
+
+@inproceedings{bosshart2013,
+  author    = {Bosshart, Pat and Gibb, Glen and Kim, Hun-Seok and Varghese, George
+               and McKeown, Nick and Izzard, Martin and Mujica, Fernando and Horowitz, Mark},
+  title     = {Forwarding Metamorphosis: Fast Programmable Match-Action Processing
+               in Hardware for {SDN}},
+  booktitle = {Proceedings of ACM SIGCOMM},
+  year      = {2013},
+  keywords  = {type-space-prior-art},
+  note      = {Introduces Reconfigurable Match Tables (RMT). The parser produces a
+               "packet header vector" containing extracted fields plus metadata. Each
+               table match produces a "next-table-address" for dynamic table selection.
+               RMT's parser → PHV → match-action pipeline is structurally similar to
+               our parser → type-tag → narrow-table dispatch. The key difference: RMT's
+               next-table is determined by match results (runtime, per-rule), while our
+               type tag is determined by parser structure (runtime, per-packet, before
+               any match). Our approach front-loads the dispatch to avoid matching
+               against irrelevant tables entirely.}
+}
+
+@inproceedings{bosshart2014,
+  author    = {Bosshart, Pat and Daly, Dan and Gibb, Glen and Izzard, Martin and
+               McKeown, Nick and Rexford, Jennifer and Schlesinger, Cole and
+               Talayco, Dan and Vahdat, Amin and Varghese, George and Walker, David},
+  title     = {{P4}: Programming Protocol-Independent Packet Processors},
+  journal   = {ACM SIGCOMM Computer Communication Review},
+  year      = {2014},
+  keywords  = {type-space-prior-art},
+  note      = {P4 defines the parser as a finite state machine over a protocol graph.
+               The parser walks incoming bytes and extracts headers based on the
+               programmed parse graph. This is exactly our type-space graph — P4's
+               parse graph and our protocol graph are the same mathematical object.
+               P4 compilers implicitly map parser state to table selection, but do not
+               expose the parser path as an explicit, encodable type tag. Our
+               contribution is the explicit bit-vector encoding of the parser path and
+               its use for first-level dispatch, batch sorting, and structural
+               validation — none of which P4 exposes as first-class concepts.}
+}
+
+@article{li2020,
+  author    = {Li, Wenjun and Yang, Tong and Xie, Gaogang and Salamatian, Kav\'{e}
+               and Uhlig, Steve and Li, Xin and Zhou, Huiping and Wang, Yanhui},
+  title     = {{CutTSS}: Tuple Space Assisted Packet Classification With High
+               Performance on Both Search and Update},
+  journal   = {IEEE Journal on Selected Areas in Communications},
+  volume    = {38},
+  number    = {7},
+  year      = {2020},
+  keywords  = {type-space-prior-art},
+  note      = {Extends Tuple Space Search with rule-subset grouping by "small fields"
+               and partial decision trees. The grouping eliminates rule replications
+               and enables efficient pre-cuttings. Related to our field-signature
+               grouping (phase 1 fallback), but groups by rule field structure rather
+               than by parser-derived packet type. Achieves \~{}10x improvement over
+               OVS TSS.}
+}
+
+@inproceedings{lin2023,
+  author    = {Lin, Hsin-Tsung and Wang, Pi-Chung},
+  title     = {Scalable Packet Classification Based on Rule Categorization and
+               Cross-Producting},
+  journal   = {Computer Networks},
+  year      = {2023},
+  keywords  = {type-space-prior-art},
+  note      = {Categorizes rules by their "length combinations" (prefix lengths across
+               fields). Rules within the same category incur no storage penalty for
+               cross-producting. This is a form of rule-structure-aware decomposition
+               that is conceptually related to our type-tag grouping, but operates on
+               rule properties (prefix lengths) rather than packet properties (protocol
+               structure). The distinction matters: our dispatch is per-packet, theirs
+               is per-rule-set.}
+}
+
+@inproceedings{zhang2025,
+  author    = {Zhang, Xinyi and Qiu, Qianrui and Xu, Zhiyuan and He, Peng and
+               Liu, Xilai and Salamatian, Kav\'{e} and Pei, Changhua and Xie, Gaogang},
+  title     = {{NPC}: Rethinking Dataplane through Network-aware Packet Classification},
+  booktitle = {Proceedings of ACM SIGCOMM},
+  year      = {2025},
+  keywords  = {type-space-prior-art},
+  note      = {Uses sketch-based network traffic features to guide decision tree
+               construction. Adapts the classifier to the actual traffic distribution.
+               1.86x--23.88x speedup over state-of-the-art. Related to our adaptive
+               re-optimization concept (profile-guided recompilation), but NPC adapts
+               the data structure to traffic patterns while we adapt to hardware
+               capabilities. Complementary approaches.}
+}
+
+@article{jamil2022,
+  author    = {Jamil, Nihaal and others},
+  title     = {Many-field Packet Classification with Decomposition and
+               Reinforcement Learning},
+  journal   = {IET Networks / arXiv:2205.07973},
+  year      = {2022},
+  keywords  = {type-space-prior-art},
+  note      = {Decomposes many-field rule sets by grouping fields using statistical
+               metrics (standard deviation, diversity index), then builds per-group
+               decision trees via reinforcement learning. Related to our field-
+               signature grouping but uses statistical properties of the rule values
+               rather than the protocol graph structure. Does not include a
+               per-packet type dispatch step.}
+}
+
+@misc{dpdk-acl-categories,
+  title     = {DPDK ACL Library: Rule Categories},
+  author    = {{DPDK Project}},
+  year      = {2025},
+  url       = {https://doc.dpdk.org/guides/prog_guide/packet_classif_access_ctrl.html},
+  keywords  = {type-space-prior-art},
+  note      = {DPDK's ACL library supports per-rule category bitmasks, enabling
+               "parallel lookup" where a single search returns results for multiple
+               categories. IPv4 and IPv6 rules use separate field definitions but can
+               coexist in one ACL context. This is a limited form of rule-type-aware
+               classification — our type-tag dispatch generalizes it by deriving the
+               categorization from the protocol graph rather than manual rule annotation.}
 }
 ```
+
+### Analogous concepts in database query optimization
+
+The type-space dispatch pattern has strong parallels in database systems, even though
+the terminology differs. These are not direct prior art (they don't address packet
+classification) but represent the same algorithmic ideas applied in a different domain.
+Relevant for a white paper's related-work section.
+
+```biblatex
+@online{mssql-psp,
+  title     = {Parameter Sensitive Plan Optimization},
+  author    = {{Microsoft}},
+  year      = {2022},
+  url       = {https://learn.microsoft.com/en-us/sql/relational-databases/performance/parameter-sensitive-plan-optimization},
+  keywords  = {type-space-db-analog},
+  note      = {SQL Server 2022's PSP optimization creates a "dispatcher plan" that
+               routes execution to different query variants based on runtime parameter
+               cardinality. The dispatcher evaluates predicates and selects the optimal
+               subplan per-query. This is structurally analogous to our type-tag
+               dispatch: a lightweight first-level classifier (dispatcher/type-tag)
+               routes to a specialized execution path (query variant/narrow table)
+               without executing the expensive full plan first. Key parallel: the
+               dispatcher is a compile-time artifact that makes a runtime routing
+               decision, exactly as our compiler produces the type-tag encoding that
+               the runtime parser evaluates.}
+}
+
+@online{pg-partition-pruning,
+  title     = {Table Partitioning: Partition Pruning},
+  author    = {{PostgreSQL Global Development Group}},
+  year      = {2025},
+  url       = {https://www.postgresql.org/docs/current/ddl-partitioning.html},
+  keywords  = {type-space-db-analog},
+  note      = {PostgreSQL's partition pruning examines each partition's definition and
+               proves that it need not be scanned because it could not contain rows
+               matching the WHERE clause. The partition key is the analog of our type
+               tag: a discriminator that determines which physical tables are relevant.
+               List partitioning on a "type" column is the closest analog — the planner
+               uses the discriminator value to eliminate irrelevant partitions before
+               executing any scan, just as our type tag eliminates irrelevant narrow
+               tables before classification.}
+}
+
+@online{ef-core-tph,
+  title     = {Inheritance: Table-Per-Hierarchy ({TPH})},
+  author    = {{Microsoft Entity Framework Core}},
+  year      = {2025},
+  url       = {https://learn.microsoft.com/en-us/ef/core/modeling/inheritance},
+  keywords  = {type-space-db-analog},
+  note      = {ORM Table-Per-Hierarchy inheritance stores all types in one table with
+               a discriminator column. Queries filter on the discriminator to retrieve
+               only the relevant type. This is the database version of "one wide table
+               with a type column" — exactly the problem our type-space dispatch
+               solves by splitting into narrow tables. TPH's discriminator column is
+               our type tag; TPT (table-per-type, separate table per derived type)
+               is our narrow-table decomposition. The ORM literature's analysis of
+               TPH vs TPT tradeoffs (join cost vs table width vs discriminator
+               filtering) directly parallels our analysis of wide-table vs
+               type-tag-dispatched narrow tables.}
+}
+
+@inproceedings{avnur2000,
+  author    = {Avnur, Ron and Hellerstein, Joseph M.},
+  title     = {Eddies: Continuously Adaptive Query Processing},
+  booktitle = {Proceedings of ACM SIGMOD},
+  year      = {2000},
+  keywords  = {type-space-db-analog},
+  note      = {Eddies route tuples through query operators dynamically, adapting
+               routing based on runtime conditions. A "routing table" records valid
+               destinations and probabilities for different "tuple signatures." The
+               tuple signature → routing destination mapping is conceptually identical
+               to our type-tag → narrow-table dispatch. Eddies adapt at runtime per
+               tuple; our dispatch is fixed per compilation (but could be adapted
+               per the adaptive re-optimization discussion in Principle 8).}
+}
+```
+
+#### Assessment of novelty
+
+Based on the full literature survey (networking + database), the type-space dispatch
+idea is **novel in its specific combination** but builds on well-established
+foundations from both fields:
+
+**What exists in prior work (networking):**
+- Parser as a finite state machine over a protocol graph (P4 [bosshart2014])
+- Parser output driving table selection (RMT [bosshart2013])
+- Rule-set decomposition by field structure (CutTSS [li2020], Lin [lin2023])
+- Traffic-aware classifier adaptation (NPC [zhang2025])
+- Header space as a geometric/algebraic object (Kazemian [kazemian2012])
+- Tuple-based rule grouping (TSS [srinivasan1999])
+
+**What exists in prior work (databases):**
+- Dispatcher plan routing to specialized subplans (SQL Server PSP [mssql-psp])
+- Partition pruning by discriminator column (PostgreSQL [pg-partition-pruning])
+- Wide table with discriminator vs narrow per-type tables (TPH vs TPT [ef-core-tph])
+- Tuple-signature-based runtime routing (Eddies [avnur2000])
+
+**What appears to be novel in the combination:**
+1. **Explicit bit-vector encoding of the parser path** as a first-class runtime
+   dispatch key. P4 compilers map parser state to tables implicitly; database
+   dispatchers route by predicate cardinality; we encode the protocol *path*
+   explicitly and use it for O(1) dispatch before any match is attempted.
+2. **Unification of match validation, action validation, and runtime dispatch** in a
+   single graph structure. Prior work in both networking and databases treats these
+   as separate concerns. The database world has query validation and partition
+   pruning as separate optimizer passes; we derive both from one graph.
+3. **Degenerate-edge annotations** for sort-key masking to prevent TCP reordering
+   during batch optimization. No prior work in either field addresses this.
+4. **Structural hygiene grading** (clean/grey/dirty) from the type tag as a
+   security triage signal. Unique to the networking context.
+5. **Typestate API mirroring** — the user-facing match builder walks the same graph
+   that the runtime parser walks, producing the same encoding. The database analog
+   (ORM type discriminator → query filter) is close but doesn't provide compile-time
+   enforcement via phantom types.
+
+The strongest cross-domain analog is **SQL Server's PSP dispatcher plan**: a
+compiler-generated lightweight routing layer that dispatches to specialized execution
+paths based on runtime properties of the input. The key difference is that PSP
+dispatches by predicate cardinality (a statistical property of the data), while we
+dispatch by protocol structure (a deterministic property of the packet). Ours is
+cheaper (O(1) lookup vs cardinality estimation) and more predictable (deterministic
+vs statistical), but PSP is more adaptive (can re-route based on changing data
+distributions).
+
+The **TPH vs TPT tradeoff** from the ORM literature is an almost exact analog of our
+"wide table with field-signature grouping" (phase 1, TPH-like) vs "narrow tables
+with type-tag dispatch" (phase 2, TPT-like). The ORM community's decades of analysis
+on when to use each strategy may inform our phasing decision.
 
 
 ## Type-space vector: further optimizations
