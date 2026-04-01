@@ -46,7 +46,7 @@ jobs:
 
       - name: "Check formatting"
         run: |
-          nix-shell --run "just fmt --check"
+          nix-shell --run "set -euo pipefail; just fmt --check"
 
       - name: "How to fix"
         if: ${{ failure() }}
