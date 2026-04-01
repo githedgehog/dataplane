@@ -2727,3 +2727,106 @@ of truth for the encoding.
 computed by the software parser equals the type tag that would be set by the hardware
 trap rule compiled for that packet's match criteria. This is a straightforward
 `proptest` assertion across all NIC capability levels.
+
+
+## Revision: abandon the vector split, enrich the graph instead
+
+### The problem with the stable/unstable split
+
+The stable/unstable prefix split (described in Optimization 2) loses positional
+information. If the stable prefix is `Eth → IPv4 → TCP` and the unstable suffix
+says "a VLAN was present," you don't know *where* in the path the VLAN appeared.
+The suffix is a bag of flags, not a positioned sequence. You can't reconstruct
+correct field offsets from `(stable_prefix, unstable_suffix)` alone.
+
+This is an algorithmic error in the design: the split discards exactly the
+information needed for the offset computation that is the suffix's purpose.
+
+### The fix: explicit degenerate nodes in the type-space graph
+
+Instead of splitting the vector, make the graph richer. The updated
+`type-space.mmd` now has explicit `vlan_0` and `qinq_0` nodes alongside `vlan`
+and `qinq`:
+
+```
+ethertype → vlan     (meaningful VLAN, VID > 0)
+ethertype → vlan_0   (priority-tagged, VID = 0)
+ethertype → qinq     (meaningful QinQ)
+ethertype → qinq_0   (priority-tagged QinQ)
+```
+
+This means:
+- `Eth → vlan → IPv4 → TCP` and `Eth → vlan_0 → IPv4 → TCP` are **distinct paths
+  with distinct full vectors** — no information lost
+- Field offsets are deterministic from the full vector (the VLAN header is at a
+  known position in both paths, but the *semantic meaning* differs)
+- The graph itself disambiguates the degenerate case — no post-hoc split needed
+
+The same approach extends to other semi-degenerate transitions:
+- IPv6 with/without extension headers → explicit `ipv6_ext` nodes
+- GRE with/without key → explicit `gre_key` / `gre_nokey` nodes
+- IPv4 with/without options → explicit `ipv4_opts` node
+
+### The remaining problem: batch sort reordering
+
+Enriching the graph solves the offset computation problem but does NOT solve the
+TCP reordering problem. A single flow that alternates between `vlan_0` and untagged
+packets still produces different type tags, and batch sorting still separates them
+into different groups.
+
+The fix for this is narrower than the original stable/unstable split: define
+**sort-key equivalence classes** on the graph. Two type tags are sort-equivalent if
+they differ only in degenerate transitions that can vary within a flow:
+
+```rust
+struct TypeSpaceEdge {
+    from: NodeId,
+    to: NodeId,
+    trigger: EdgeTrigger,
+    // For the sort-key equivalence: edges marked `degenerate` are ignored
+    // when computing the sort key, but included in the full type tag.
+    degenerate: bool,
+    bit_code: Option<u8>,
+}
+
+impl TypeTag {
+    /// The full type tag — used for table selection and offset computation.
+    fn full(&self) -> u32 { self.bits }
+
+    /// The sort key — degenerate edges masked out. Used only for batch sorting.
+    /// Packets from the same flow always have the same sort key.
+    fn sort_key(&self) -> u32 { self.bits & self.stable_mask }
+}
+```
+
+The sort key is a **masked projection** of the full type tag, not a separate
+encoding. No information is split or discarded — the full tag retains everything.
+The sort key just ignores the bits that can vary within a flow.
+
+This is simpler, more correct, and less error-prone than the two-part
+`TypeSpaceVector { stable, unstable }` struct proposed earlier. The full vector
+is one value; the sort key is a mask applied to it.
+
+### What this changes in the design
+
+- **The `TypeSpaceVector { stable, unstable }` struct is withdrawn.** Replace with
+  a single `TypeTag` that carries the full path encoding, plus a `stable_mask` that
+  defines the sort-key equivalence.
+- **Table selection uses the full tag.** Different degenerate variants (vlan vs
+  vlan_0) get different tables with correct offsets.
+- **Batch sorting uses `tag.sort_key()`.** Flows that alternate between degenerate
+  variants stay grouped.
+- **The graph's `degenerate` annotation on edges replaces the `EdgeStability` enum.**
+  Same information, attached to the right place (the edge, not a separate vector
+  partition).
+- **Rule duplication across degenerate variants** is handled by the compiler, same
+  as IPv4/IPv6 disjunction: the user writes one rule, the compiler installs it in
+  both the `vlan` and `vlan_0` tables.
+
+### Impact on the phase 1 provisions
+
+The `EdgeStability` enum in `TypeSpaceEdge` becomes a `degenerate: bool` flag.
+The `TypeSpaceVector { stable, unstable }` struct becomes `TypeTag` with a
+`stable_mask`. These are minor changes to the reserved data structures. The
+provision for `Option<TypeTag>` in `MatchRule` and `PacketMeta` is unchanged.
+The `TableGrouper` trait is unchanged. The overall provision strategy is unaffected.

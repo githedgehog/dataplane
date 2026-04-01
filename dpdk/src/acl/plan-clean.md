@@ -188,20 +188,22 @@ struct TypeSpaceEdge {
     from: NodeId,
     to: NodeId,
     trigger: EdgeTrigger,          // e.g. EtherType::IPV4, NextHeader::TCP
-    stability: EdgeStability,      // Stable or Unstable — populated in phase 1
+    degenerate: bool,              // true for edges that can vary within a flow
     bit_code: Option<u8>,          // None in phase 1, assigned in phase 2
-}
-
-enum EdgeStability {
-    /// Never varies within a flow (EtherType, IP protocol, tunnel type).
-    Stable,
-    /// May vary packet-to-packet (VLAN presence, IPv6 ext headers).
-    Unstable,
 }
 ```
 
-The `stability` annotation costs one enum per edge and can be populated in phase 1
-even though it's only consumed by the vector's stable/unstable split in phase 2.
+The `degenerate` flag costs one bool per edge and can be populated in phase 1. In
+phase 2 it serves two purposes: (1) the compiler duplicates rules across degenerate
+variants (e.g. a rule matching "any IPv4 TCP" is installed in both the `vlan` and
+`vlan_0` tables), and (2) the sort-key mask is derived from it (degenerate bits are
+masked out so flows that alternate between variants stay grouped during batch sorting).
+
+Note: an earlier version of this plan proposed splitting the type-space vector into
+a `TypeSpaceVector { stable, unstable }` struct. This was found to lose positional
+information needed for offset computation. The corrected design uses a single full
+type tag with a masked sort key. See "Revision: abandon the vector split" in the
+design analysis for details.
 
 **5. The parser is factored into per-layer steps.**
 
@@ -283,7 +285,7 @@ fn reference_classify(
 | `MatchRule::type_tag: Option<TypeTag>`         | One `Option` field, always `None`             | Avoids changing every `MatchRule` consumer                 |
 | `PacketMeta::type_tag: Option<TypeTag>`        | One `Option` field, always `None`             | Avoids changing every pipeline stage                       |
 | `TableGrouper` trait                           | One trait + one impl (~20 lines)              | Swap instead of rewrite                                    |
-| Explicit `TypeSpaceGraph` with `EdgeStability` | Data structure for validation (needed anyway) | Bit-code assignment and stable/unstable split are additive |
+| Explicit `TypeSpaceGraph` with `degenerate` flag | Data structure for validation (needed anyway) | Bit-code assignment and sort-key mask derivation are additive |
 | Per-layer parser factoring                     | Good structure (probably natural)             | Hook insertion points exist                                |
 | `GroupingReason` enum in compilation report    | One enum variant unused                       | Report schema doesn't change                               |
 | `reference_classify` accepts `Option<TypeTag>` | One ignored parameter                         | Test harness doesn't change                                |
@@ -393,7 +395,7 @@ Conntrack is a two-phase mechanism: the conntrack action observes TCP state; dow
 
 The parser-derived type tag enables several performance optimizations beyond table dispatch:
 
-1. **Batch sorting.** Stable-sort receive batches by type tag before DPDK ACL classification. Packets with the same header structure traverse the same trie paths, improving instruction and data cache hit rates. The sort key uses only the **stable prefix** of the type tag (transitions that never vary within a flow: EtherType, IP protocol, tunnel type) to avoid TCP reordering from semi-degenerate transitions (VLAN presence, IPv6 extension headers).
+1. **Batch sorting.** Stable-sort receive batches by type tag before DPDK ACL classification. Packets with the same header structure traverse the same trie paths, improving instruction and data cache hit rates. The sort key is a **masked projection** of the full type tag that ignores bits corresponding to degenerate graph edges (e.g. `vlan` vs `vlan_0`). This ensures flows that alternate between degenerate variants stay grouped, preventing TCP reordering. The full tag is used for table selection and offset computation; the masked sort key is used only for batch ordering.
 
 2. **Hardware parse skip.** When trap rules punt packets to software, they can encode the type tag in rte_flow MARK metadata. Software can skip re-parsing — field offsets are deterministic per type tag, and the frame is already in network byte order.
 

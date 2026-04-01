@@ -1,6 +1,14 @@
 # Type-space dispatch for match-action table compilation
 
-Consider the space of all possible ethernet frames.
+> Attribution note: sections prefixed with **[DN]** are Daniel's original words.
+> Sections prefixed with **[Claude]** are Claude's analysis prompted by Daniel's input.
+> Some entries combine both.
+
+---
+
+## Part 1 — the core idea
+
+**[DN]** Consider the space of all possible ethernet frames.
 Now imagine fitting that space into a (functionally infinitely large) type system.
 For example, (Ethernet -> Ipv4 -> Tcp) would be a type.
 (Ethernet -> VLAN -> VLAN -> VLAN -> Ipv6 -> Icmp6) would be another type.
@@ -23,20 +31,20 @@ This would
 2. disambiguate matches (ipv4 and ipv6 paths would end with differing bit vectors and could not overlap)
 3. decrease table update time by lowering the number of matches and therefore shrinking $n$ in the $O(n log(n))$ asymptotic runtime.
 
-This connects naturally to the MatchBuilder typestate.\*\* The builder's state transitions (Empty → WithEth → WithNet → WithTransport) are literally a walk through this graph. The builder could automatically compute the bit vector as it transitions. Rules built with the same builder path produce the same bit vector → same narrow table. This is a beautiful unification.
+**[Claude]** This connects naturally to the MatchBuilder typestate. The builder's state transitions (Empty → WithEth → WithNet → WithTransport) are literally a walk through this graph. The builder could automatically compute the bit vector as it transitions. Rules built with the same builder path produce the same bit vector → same narrow table.
 
-**It solves several open problems simultaneously:**
+It solves several open problems simultaneously:
 
 1. **Table width** — each table only has the fields relevant to its header stack. IPv4 tables don't waste space on IPv6 address fields.
-2. **IPv4/IPv6 disjunction** — different bit vectors, different tables. They can NEVER overlap. The open question from section 4 vanishes.
+2. **IPv4/IPv6 disjunction** — different bit vectors, different tables. They can NEVER overlap.
 3. **Overlap analysis scope** — smaller n per table. The O(n log n) analysis runs on rules that actually could interact, not the entire rule set.
 4. **Compiler table decomposition** — the bit vector gives the compiler a principled basis for splitting logical tables into backend tables, rather than ad-hoc field-signature grouping.
 
 ---
 
-## Part 2 - ambitious and potentially foolish optimizations?
+## Part 2 — ambitious and potentially foolish optimizations?
 
-**Idea:** Can the type space bit vector be used _in reverse_ as well?
+**[DN]** Can the type space bit vector be used _in reverse_ as well?
 
 Assume you get a match-action specification from the end user.
 The matches within this table span some finite collection of type-space vectors.
@@ -61,60 +69,51 @@ Then you could hook a more optimized algorithm to that rx queue and skip even mo
 
 ## Part 3 — stable vs unstable type-space transitions
 
-Semi-degenerate type-space vectors are a pathological case for batch sorting. A single flow might alternate between type-space vectors (e.g. priority-tagged vs untagged, IPv6 with vs without extension headers). The sort would split the flow across groups — and this is worse than a locality problem. It causes TCP segment reordering. The stable sort preserves order within a group, but packets from different groups are forwarded in group order, not arrival order. Even a small amount of reordering (3 duplicate ACKs) triggers fast retransmit and congestion window halving at the receiver. This makes the stable/unstable split a correctness requirement, not just an optimization.
+> **Note:** The specific mechanism proposed here (splitting the vector into two halves)
+> was later found to be flawed — see Part 8. The core observations about TCP reordering
+> risk and the need to distinguish stable vs unstable transitions remain valid.
 
-The fix: split the type-space vector into two halves.
-The first half (stable prefix) encodes only transitions which are uniformly meaningful and never vary within a flow — EtherType (IPv4 vs IPv6), IP protocol (TCP vs UDP), tunnel type. The second half (unstable suffix) captures potentially degenerate motion — VLAN presence, IPv6 extension headers, IPv4 options, GRE key presence.
+**[DN]** Are there pathological edge cases in the stable sort on type-space vector based optimizations? I think that semi-degenerate type-space vectors might be a problem. The most basic case would be a "flow" which alternated between priority tagging and naked packets. More plausible (and less obviously silly) flows might involve oscillations between IPv6 extension headers being present or absent. It may be worth splitting the type-space vector in half. The first half only encodes uniformly meaningful transitions. The second half captures potentially degenerate motion.
 
-Batch sorting uses only the stable prefix as the sort key. The unstable suffix is still computed and stored for field offset computation, but doesn't affect grouping. Packets from the same flow always have the same stable prefix, so they stay together regardless of header variations.
+**[DN]** The pathological cases might technically be worse than a locality issue. Reordering TCP frames is a whole different type of performance problem.
 
-This connects to the semi-degenerate transition discussion: the "collapse" annotations on the type-space graph define exactly which transitions are unstable. The compiler uses the same annotations for table merging, sort-key construction, and offset map selection.
+**[Claude]** This is much worse than a cache locality issue. TCP reordering triggers fast retransmit and congestion control responses at the receiver. Even a small amount of reordering (3 duplicate ACKs) can cause the sender to halve its congestion window (RFC 5681). A stable sort that separates a TCP flow's packets across type-tag groups causes systematic reordering of every flow with semi-degenerate alternation. This makes the stable/unstable distinction a correctness requirement, not just an optimization.
 
 ---
 
 ## Part 4 — smoltcp as a protocol-level test oracle
 
-The TCP reordering concern (Part 3) makes this a strong candidate for protocol-level
-testing. A smoltcp-based TCP stack in the test suite can observe the protocol-level
-consequences of dataplane reordering: duplicate ACKs, fast retransmit, congestion
-window collapse, connection stalls.
+**[DN]** This is also a strong reason to include something like `smoltcp` in the project's test suite. We already have another (not yet merged) branch which adds bolero test mechanics which can generate an arbitrary concert of tcp flows for the sake of testing.
 
-Combined with the bolero flow-concert generator (separate in-progress branch), this
-enables end-to-end property tests: "for any mix of TCP flows with semi-degenerate
-type-space alternation, the dataplane introduces zero spurious retransmits."
-
-This is a stronger assertion than packet-level ordering checks — it tests what the
-receiver actually experiences, not just what the dataplane emitted.
+**[Claude]** A smoltcp-based TCP stack in the test suite would catch reordering issues that pure packet-level property tests can't — it observes the protocol-level consequences (congestion window collapse, spurious retransmits, connection stalls) rather than just asserting packet order. Combined with the bolero flow-concert generator, this enables end-to-end property tests: "for any mix of TCP flows with semi-degenerate type-space alternation, the dataplane introduces zero spurious retransmits."
 
 ---
 
 ## Part 5 — adversarial type-space vectors (VLAN stacking attacks)
 
-Pathological case within the pathological case: a repeated stack of priority-tagged VLANs (VID=0). Syntactically valid, semantically adversarial. Each VID=0 tag adds 4 bytes of offset without meaningful structure. An attacker could use this to push fields past the ACL's configured offsets, causing the classifier to read the wrong bytes. If the bytes at the expected offset happen to match a permissive rule, it's an ACL bypass.
+**[DN]** There may be pathological cases within the pathological case. Technically speaking a repeated stack of priority tagged VLANs is a valid ethernet frame, but it is also suspicious (is somebody trying to circumvent our ACLs by hiding inside 0 tags?).
 
-The type-space vector's stable prefix would be identical to an untagged frame (VID=0 tags are unstable transitions), but the actual field offsets are shifted by 4 × num_priority_tags. If the classifier trusts the stable prefix for offset computation without accounting for the unstable suffix, the offsets are wrong.
-
-This means the type-space vector cannot be trusted as a field-offset oracle unless the parser validates the path, not just encodes it. The parser must enforce MAX_VLANS strictly, count priority tags separately, and either normalize (strip VID=0 tags before classification) or expose the tag depth as a matchable criterion so users can write explicit drop rules for suspicious frames.
-
-This is analogous to HTTP request smuggling: the parser must be at least as strict as the destination host's parser, or attackers exploit the gap.
+**[Claude]** A stack of VID=0 VLAN tags is syntactically valid but semantically adversarial. Each tag adds 4 bytes of offset without meaningful structure. An attacker could use this to push fields past the ACL's configured offsets, causing the classifier to read the wrong bytes. If the bytes at the expected offset happen to match a permissive rule, it's an ACL bypass. This is analogous to HTTP request smuggling: the parser must be at least as strict as the destination host's parser, or attackers exploit the gap.
 
 ---
 
 ## Part 6 — the type-space vector as a trust/greylist signal
 
-The type-space vector is trustworthy when the unstable suffix is "clean" (empty or contains only well-understood single transitions). This makes it a natural triage signal: frames with clean unstable suffixes go to the fast path (trust offsets, batch sort, narrow table dispatch). Frames with suspicious unstable suffixes (multiple priority tags, unexpected extension headers) go to a grey path that does full re-parsing and structure validation before classification.
+**[DN]** Would the type-space vector still be trustworthy under the condition that the semi-degenerate portion of that vector was "clean" in some sense? It might be that this is another use for the vector: grey listing frames which look silly.
 
-The grey path isn't necessarily slow — it just doesn't take the offset shortcuts. It re-derives offsets from the actual parse and validates coherence. For 99%+ of traffic the grey path is never taken.
+**[DN]** Grey frames could also be given special handling in hardware. Rate limiting, mirroring to an ERSPAN, pcap, marked for IDS/IPS.
 
-The grey path also doubles as an observability hook: structurally unusual frames are logged and counted even if they're ultimately allowed by policy. This gives operators visibility into traffic that might be probing for parser/classifier mismatches. You don't need to drop suspicious frames to benefit from knowing they exist.
+**[Claude]** The type-space vector becomes a trust signal about the frame's structural hygiene. Frames with clean vectors go to the fast path. Frames with suspicious structure (multiple priority tags, unexpected extension headers) go to a grey path that does full re-parsing and validation. The grey path doubles as an observability hook — structurally unusual frames are logged and counted even when allowed by policy.
 
-Grey frames are also natural targets for hardware-assisted "observe without blocking" actions: rate limiting (meter the grey path so attackers can't overwhelm the slow path), ERSPAN mirroring (copy to remote analyzer), PCAP capture (ring buffer for forensics), and IDS/IPS marking (tag metadata so downstream inspection knows this frame was structurally unusual). Which actions are available depends on the NIC — same capability-adaptive compilation pattern as the main ACL rules.
+Grey frames are natural targets for hardware-assisted "observe without blocking" actions: rate limiting, ERSPAN mirroring, PCAP capture, IDS/IPS marking. Which actions are available depends on the NIC — same capability-adaptive compilation pattern as the main ACL rules.
 
 ---
 
 ## Part 7 — the type-space graph unifies everything
 
-The type-space graph does triple duty — it is the compiler's single source of truth for what is structurally valid at any point in the pipeline:
+**[DN]** Is this another category of events which can be detected (tho not handled per se) by the type space vector? The actual implementation might not take this exact shape, but mathematically speaking the type space walk allows the compiler to reject this type of error I think.
+
+**[Claude]** Yes. The type-space graph does triple duty — it is the compiler's single source of truth for what is structurally valid at any point in the pipeline:
 
 1. **Match validation**: the MatchBuilder walks the graph forward through protocol edges. The current node determines which fields exist. Matching on TCP ports without traversing IP → TCP is a type error.
 
@@ -122,4 +121,24 @@ The type-space graph does triple duty — it is the compiler's single source of 
 
 3. **Type dispatch**: the parser's traversal path is encoded as a bit vector for table selection.
 
-All three are the same graph traversed in different contexts. This means the type-space graph is the core data structure of the compiler. The MatchBuilder typestate is a user-facing projection. The action validator is a compiler-internal projection. The type-tag encoding is a runtime projection. They all derive from the same source.
+All three are the same graph traversed in different contexts. The MatchBuilder typestate is a user-facing projection. The action validator is a compiler-internal projection. The type-tag encoding is a runtime projection. They all derive from the same source.
+
+---
+
+## Part 8 — the stable/unstable split is wrong, enrich the graph instead
+
+**[DN]** I think we made an algorithmic error in the vector split part of the design. Splitting the vector has lost information which was previously implicit: the location of the set bits. Unless there is some way to conclusively determine when and where the supplemental portion of the vector will apply then I don't think our algorithm is quite right just yet. One way to at least partially fix this is by adding edges to the type-space graph and abandon the split portion of the vector in favor of this "degeneracy" disambiguating second path. Basically add a special case in the type space for priority tagged traffic. This is not ideal and likely needs further refinement.
+
+**[Claude]** The diagnosis is correct: the `TypeSpaceVector { stable, unstable }` split loses positional information. The suffix is a bag of flags, not a positioned sequence — you can't reconstruct field offsets from it.
+
+Fix: abandon the split. Enrich the graph with explicit degenerate nodes (`vlan_0`, `qinq_0` alongside `vlan`, `qinq`). Every path produces a full, unambiguous type tag. No information is lost.
+
+The batch sorting reordering problem is solved with a **sort-key mask**, not a vector split. The full type tag is one value encoding the complete path. The sort key is a masked projection that ignores bits for degenerate edges:
+
+```
+full tag:  0b01_001_00_10  (Eth → vlan_0 → IPv4 → TCP)
+sort mask: 0b00_111_11_11  (vlan/vlan_0 bits masked out)
+sort key:  0b00_001_00_10  (same as Eth → IPv4 → TCP)
+```
+
+One value, one mask, two views. Simpler, more correct, no information discarded. Parts 3, 5, and 6 should be read with this correction in mind.
