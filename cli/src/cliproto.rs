@@ -437,8 +437,8 @@ mod tests {
     fn test_communications() {
         const DP_PATH: &str = "/tmp/dpsock";
         const CLI_PATH: &str = "/tmp/clisock";
-        std::fs::remove_file(DP_PATH).unwrap();
-        std::fs::remove_file(CLI_PATH).unwrap();
+        let _ = std::fs::remove_file(DP_PATH);
+        let _ = std::fs::remove_file(CLI_PATH);
 
         let dpsock = UnixDatagram::bind(DP_PATH).unwrap();
         dpsock.set_nonblocking(true).unwrap();
