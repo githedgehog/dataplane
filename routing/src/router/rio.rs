@@ -26,10 +26,7 @@ use dplane_rpc::socks::RpcCachedSock;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 
-use nix::sys::socket::{
-    getsockopt, setsockopt,
-    sockopt::{SndBuf, SndBufForce},
-};
+use nix::sys::socket::{getsockopt, setsockopt, sockopt::SndBuf};
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -101,7 +98,7 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 
 fn open_cli_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     let sock = open_unix_sock(path)?;
-    setsockopt(&sock, SndBufForce, &CLI_RX_BUFF_SIZE)
+    setsockopt(&sock, SndBuf, &CLI_RX_BUFF_SIZE)
         .map_err(|_| RouterError::Internal("Failure setting snd buffer size"))?;
     if let Ok(size) = getsockopt(&sock, SndBuf) {
         debug!("Cli sock send buffer set to {size}");
