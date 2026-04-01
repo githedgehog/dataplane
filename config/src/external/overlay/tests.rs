@@ -348,9 +348,9 @@ pub mod test {
         // Build peering with stateful NAT on both sides
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -358,10 +358,10 @@ pub mod test {
                         .as_range("2.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -369,7 +369,7 @@ pub mod test {
                         .as_range("4.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
 
         // Build VPC pering table and add peering
@@ -396,9 +396,9 @@ pub mod test {
         // Build peering with stateful NAT on one side and stateless NAT on the other side
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -406,10 +406,10 @@ pub mod test {
                         .as_range("2.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -417,7 +417,7 @@ pub mod test {
                         .as_range("4.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
 
         // Build VPC pering table and add peering
@@ -1005,39 +1005,39 @@ pub mod test {
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "1.0.0.0/24".into(),
                         Some(PortRange::new(2001, 3000).unwrap()),
                     ))],
-                },
-                VpcManifest {
-                    name: "vpc2".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                ),
+                VpcManifest::with_exposes(
+                    "vpc2",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "5.0.0.0/24".into(),
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
-                },
+                ),
             ))
             .unwrap();
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "2.0.0.0/24".into(),
                         Some(PortRange::new(2001, 3000).unwrap()),
                     ))],
-                },
-                VpcManifest {
-                    name: "vpc3".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                ),
+                VpcManifest::with_exposes(
+                    "vpc3",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "5.0.0.0/25".into(),
                         Some(PortRange::new(5001, 7000).unwrap()),
                     ))],
-                },
+                ),
             ))
             .unwrap();
 
@@ -1074,37 +1074,34 @@ pub mod test {
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "1.0.0.0/24".into(),
                         Some(PortRange::new(2001, 3000).unwrap()),
                     ))],
-                },
-                VpcManifest {
-                    name: "vpc2".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                ),
+                VpcManifest::with_exposes(
+                    "vpc2",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "5.0.0.0/24".into(),
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
-                },
+                ),
             ))
             .unwrap();
 
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "2.0.0.0/24".into(),
                         Some(PortRange::new(2001, 3000).unwrap()),
                     ))],
-                },
-                VpcManifest {
-                    name: "vpc3".to_string(),
-                    exposes: vec![VpcExpose::empty().set_default()],
-                },
+                ),
+                VpcManifest::with_exposes("vpc3", vec![VpcExpose::empty().set_default()]),
             ))
             .unwrap();
 
@@ -1129,33 +1126,27 @@ pub mod test {
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().set_default()],
-                },
-                VpcManifest {
-                    name: "vpc2".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
+                VpcManifest::with_exposes(
+                    "vpc2",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "5.0.0.0/24".into(),
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
-                },
+                ),
             ))
             .unwrap();
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().set_default()],
-                },
-                VpcManifest {
-                    name: "vpc3".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
+                VpcManifest::with_exposes(
+                    "vpc3",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "6.0.0.0/24".into(),
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
-                },
+                ),
             ))
             .unwrap();
 
@@ -1180,33 +1171,27 @@ pub mod test {
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "1.0.0.0/24".into(),
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
-                },
-                VpcManifest {
-                    name: "vpc2".to_string(),
-                    exposes: vec![VpcExpose::empty().set_default()],
-                },
+                ),
+                VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().set_default()]),
             ))
             .unwrap();
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc3",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "1.0.0.0/24".into(),
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
-                },
-                VpcManifest {
-                    name: "vpc3".to_string(),
-                    exposes: vec![VpcExpose::empty().set_default()],
-                },
+                ),
+                VpcManifest::with_exposes("vpc3", vec![VpcExpose::empty().set_default()]),
             ))
             .unwrap();
 
@@ -1233,16 +1218,16 @@ pub mod test {
         peering_table
             .add(VpcPeering::with_default_group(
                 "vpc1-to-vpc2",
-                VpcManifest {
-                    name: "vpc1".to_string(),
-                    exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                         "1.0.0.0/24".into(),
                         Some(PortRange::new(6001, 8000).unwrap()),
                     ))],
-                },
-                VpcManifest {
-                    name: "vpc2".to_string(),
-                    exposes: vec![
+                ),
+                VpcManifest::with_exposes(
+                    "vpc2",
+                    vec![
                         VpcExpose::empty().set_default(),
                         VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                             "4.0.0.0/24".into(),
@@ -1255,7 +1240,7 @@ pub mod test {
                         )),
                         VpcExpose::empty().set_default(),
                     ],
-                },
+                ),
             ))
             .unwrap();
 

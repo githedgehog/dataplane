@@ -409,14 +409,8 @@ fn test_flow_filter_table_overlap_cases() {
     peering_table
         .add(VpcPeering::new(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![VpcExpose::empty().ip("1.0.0.0/24".into())],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())],
-            },
+            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().ip("1.0.0.0/24".into())]),
+            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().ip("5.0.0.0/24".into())]),
             None,
         ))
         .unwrap();
@@ -424,17 +418,14 @@ fn test_flow_filter_table_overlap_cases() {
     peering_table
         .add(VpcPeering::new(
             "vpc2-to-vpc3",
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty().ip("5.0.0.0/24".into()),
                     VpcExpose::empty().ip("6.0.0.0/24".into()),
                 ],
-            },
-            VpcManifest {
-                name: "vpc3".to_string(),
-                exposes: vec![VpcExpose::empty().ip("1.0.0.64/26".into())],
-            },
+            ),
+            VpcManifest::with_exposes("vpc3", vec![VpcExpose::empty().ip("1.0.0.64/26".into())]),
             None,
         ))
         .unwrap();
@@ -643,34 +634,28 @@ fn test_flow_filter_table_from_overlay() {
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![VpcExpose::empty().ip("1.0.0.0/24".into())],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().ip("1.0.0.0/24".into())]),
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty().ip("5.0.0.0/24".into()),
                     VpcExpose::empty().set_default(),
                 ],
-            },
+            ),
         ))
         .unwrap();
 
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc3",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty().ip("1.0.0.0/24".into()),
                     VpcExpose::empty().ip("2.0.0.0/24".into()),
                 ],
-            },
-            VpcManifest {
-                name: "vpc3".to_string(),
-                exposes: vec![VpcExpose::empty().ip("6.0.0.0/24".into())],
-            },
+            ),
+            VpcManifest::with_exposes("vpc3", vec![VpcExpose::empty().ip("6.0.0.0/24".into())]),
         ))
         .unwrap();
 
@@ -758,14 +743,8 @@ fn test_flow_filter_table_check_send_from_default() {
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())],
-            },
+            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
+            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().ip("5.0.0.0/24".into())]),
         ))
         .unwrap();
 
@@ -810,14 +789,8 @@ fn test_flow_filter_table_check_default_to_default() {
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
+            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
+            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().set_default()]),
         ))
         .unwrap();
 
@@ -862,9 +835,9 @@ fn test_flow_filter_table_check_nat_requirements() {
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty().ip("1.0.0.0/24".into()), // No NAT
                     VpcExpose::empty()
                         .make_stateless_nat()
@@ -880,10 +853,10 @@ fn test_flow_filter_table_check_nat_requirements() {
                         .unwrap(),
                     VpcExpose::empty().set_default(), // Default (no NAT)
                 ],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty().ip("5.0.0.0/24".into()), // No NAT
                     VpcExpose::empty()
                         .make_stateless_nat()
@@ -899,7 +872,7 @@ fn test_flow_filter_table_check_nat_requirements() {
                         .unwrap(),
                     VpcExpose::empty().set_default(), // Default (no NAT)
                 ],
-            },
+            ),
         ))
         .unwrap();
 
@@ -990,9 +963,9 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1012,11 +985,11 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
                         )) // Port forwarding
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())], // No NAT
-            },
+            ),
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![VpcExpose::empty().ip("5.0.0.0/24".into())], // No NAT
+            ),
         ))
         .unwrap();
 
@@ -1195,9 +1168,9 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None) // Stateful NAT
                         .unwrap()
@@ -1217,11 +1190,11 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
                         ))
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())], // No NAT
-            },
+            ),
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![VpcExpose::empty().ip("5.0.0.0/24".into())], // No NAT
+            ),
         ))
         .unwrap();
 
@@ -1329,9 +1302,9 @@ fn test_flow_filter_protocol_any_port_forwarding() {
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1351,11 +1324,8 @@ fn test_flow_filter_protocol_any_port_forwarding() {
                         ))
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![VpcExpose::empty().ip("5.0.0.0/24".into())],
-            },
+            ),
+            VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().ip("5.0.0.0/24".into())]),
         ))
         .unwrap();
 
@@ -1416,17 +1386,17 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty()
                         .ip("192.168.50.0/24".into())
                         .ip("192.168.60.0/24".into()),
                 ],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty()
                         .make_port_forwarding(None, Some(L4Protocol::Tcp))
                         .unwrap()
@@ -1465,16 +1435,16 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .unwrap(),
                     VpcExpose::empty().ip("192.168.80.0/24".into()),
                 ],
-            },
+            ),
         ))
         .unwrap();
 
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc3",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1482,10 +1452,10 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .as_range("10.30.50.0/24".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "vpc3".to_string(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "vpc3",
+                vec![
                     VpcExpose::empty().ip("192.168.100.0/24".into()),
                     VpcExpose::empty()
                         .make_stateless_nat()
@@ -1494,16 +1464,16 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .as_range("30.10.128.0/27".into())
                         .unwrap(),
                 ],
-            },
+            ),
         ))
         .unwrap();
 
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc2-to-vpc3",
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1511,11 +1481,11 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .as_range("20.30.90.0/24".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "vpc3".to_string(),
-                exposes: vec![VpcExpose::empty().ip("192.168.128.0/27".into())],
-            },
+            ),
+            VpcManifest::with_exposes(
+                "vpc3",
+                vec![VpcExpose::empty().ip("192.168.128.0/27".into())],
+            ),
         ))
         .unwrap();
 
@@ -1641,17 +1611,17 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty()
                         .ip("192.168.50.0/24".into())
                         .ip("192.168.60.0/24".into()),
                 ],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty()
                         .make_port_forwarding(None, Some(L4Protocol::Tcp))
                         .unwrap()
@@ -1697,16 +1667,16 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .unwrap(),
                     VpcExpose::empty().ip("192.168.80.0/24".into()),
                 ],
-            },
+            ),
         ))
         .unwrap();
 
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc3",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc1",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1714,10 +1684,10 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .as_range("10.30.50.0/24".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "vpc3".to_string(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "vpc3",
+                vec![
                     VpcExpose::empty().ip("192.168.100.0/24".into()),
                     VpcExpose::empty()
                         .make_stateless_nat()
@@ -1726,16 +1696,16 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .as_range("30.10.128.0/27".into())
                         .unwrap(),
                 ],
-            },
+            ),
         ))
         .unwrap();
 
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc2-to-vpc3",
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1743,11 +1713,11 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .as_range("20.30.90.30/32".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "vpc3".to_string(),
-                exposes: vec![VpcExpose::empty().ip("192.168.128.0/27".into())],
-            },
+            ),
+            VpcManifest::with_exposes(
+                "vpc3",
+                vec![VpcExpose::empty().ip("192.168.128.0/27".into())],
+            ),
         ))
         .unwrap();
 
@@ -1846,13 +1816,10 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
     peering_table
         .add(VpcPeering::with_default_group(
             "vpc1-to-vpc2",
-            VpcManifest {
-                name: "vpc1".to_string(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
-            VpcManifest {
-                name: "vpc2".to_string(),
-                exposes: vec![
+            VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().set_default()]),
+            VpcManifest::with_exposes(
+                "vpc2",
+                vec![
                     VpcExpose::empty()
                         .make_port_forwarding(None, Some(L4Protocol::Tcp))
                         .unwrap()
@@ -1872,7 +1839,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         .as_range("10.0.0.0/24".into())
                         .unwrap(),
                 ],
-            },
+            ),
         ))
         .unwrap();
 

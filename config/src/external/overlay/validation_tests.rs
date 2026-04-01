@@ -1151,14 +1151,8 @@ mod test {
     fn test_no_nat_plus_no_nat_passes() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("10.1.0.0/16".into())],
-            },
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("10.0.0.0/16".into())]),
+            VpcManifest::with_exposes("VPC-2", vec![VpcExpose::empty().ip("10.1.0.0/16".into())]),
         );
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
@@ -1169,13 +1163,10 @@ mod test {
         // No NAT on left, stateful NAT on right
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("10.0.0.0/16".into())]),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1183,7 +1174,7 @@ mod test {
                         .as_range("2.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
@@ -1193,9 +1184,9 @@ mod test {
     fn test_stateless_plus_stateless_passes() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1203,10 +1194,10 @@ mod test {
                         .as_range("2.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1214,7 +1205,7 @@ mod test {
                         .as_range("4.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
@@ -1224,9 +1215,9 @@ mod test {
     fn test_stateless_plus_stateful_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1234,10 +1225,10 @@ mod test {
                         .as_range("2.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1245,7 +1236,7 @@ mod test {
                         .as_range("4.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         let result = validate_overlay_with_peering(peering);
         assert_eq!(
@@ -1260,9 +1251,9 @@ mod test {
     fn test_stateless_plus_port_forwarding_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_port_forwarding(None, None)
                         .unwrap()
@@ -1270,10 +1261,10 @@ mod test {
                         .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1281,7 +1272,7 @@ mod test {
                         .as_range("4.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         let result = validate_overlay_with_peering(peering);
         assert_eq!(
@@ -1296,9 +1287,9 @@ mod test {
     fn test_stateful_plus_stateful_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1306,10 +1297,10 @@ mod test {
                         .as_range("2.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1317,7 +1308,7 @@ mod test {
                         .as_range("4.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         let result = validate_overlay_with_peering(peering);
         assert_eq!(
@@ -1332,9 +1323,9 @@ mod test {
     fn test_stateful_plus_port_forwarding_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1342,10 +1333,10 @@ mod test {
                         .as_range("2.0.0.0/8".into())
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_port_forwarding(None, None)
                         .unwrap()
@@ -1353,7 +1344,7 @@ mod test {
                         .as_range(prefix_with_ports("4.0.0.1/32", 8080, 8080))
                         .unwrap(),
                 ],
-            },
+            ),
         );
         let result = validate_overlay_with_peering(peering);
         assert_eq!(
@@ -1368,9 +1359,9 @@ mod test {
     fn test_port_forwarding_plus_port_forwarding_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes(
+                "VPC-1",
+                vec![
                     VpcExpose::empty()
                         .make_port_forwarding(None, None)
                         .unwrap()
@@ -1378,10 +1369,10 @@ mod test {
                         .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                         .unwrap(),
                 ],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            ),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_port_forwarding(None, None)
                         .unwrap()
@@ -1389,7 +1380,7 @@ mod test {
                         .as_range(prefix_with_ports("4.0.0.1/32", 8080, 8080))
                         .unwrap(),
                 ],
-            },
+            ),
         );
         let result = validate_overlay_with_peering(peering);
         assert_eq!(
@@ -1441,25 +1432,13 @@ mod test {
         // VPC-2 and VPC-3 both expose overlapping prefixes to VPC-1
         let peering1 = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("8.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/16".into())],
-            },
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("8.0.0.0/16".into())]),
+            VpcManifest::with_exposes("VPC-2", vec![VpcExpose::empty().ip("10.0.0.0/16".into())]),
         );
         let peering2 = VpcPeering::with_default_group(
             "Peering-2",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("9.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-3".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("10.0.1.0/24".into())],
-            },
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("9.0.0.0/16".into())]),
+            VpcManifest::with_exposes("VPC-3", vec![VpcExpose::empty().ip("10.0.1.0/24".into())]),
         );
         let result = validate_overlay_3vpc(peering1, peering2);
         assert!(
@@ -1473,13 +1452,10 @@ mod test {
     fn test_cross_peering_overlapping_both_stateful_nat_passes() {
         let peering1 = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("8.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("8.0.0.0/16".into())]),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1487,17 +1463,14 @@ mod test {
                         .as_range("1.0.0.0/16".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         let peering2 = VpcPeering::with_default_group(
             "Peering-2",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("9.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-3".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("9.0.0.0/16".into())]),
+            VpcManifest::with_exposes(
+                "VPC-3",
+                vec![
                     VpcExpose::empty()
                         .make_stateful_nat(None)
                         .unwrap()
@@ -1505,7 +1478,7 @@ mod test {
                         .as_range("1.0.0.0/16".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         assert!(validate_overlay_3vpc(peering1, peering2).is_ok());
     }
@@ -1515,13 +1488,10 @@ mod test {
     fn test_cross_peering_private_prefixes_overlapping_passes() {
         let peering1 = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("8.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("8.0.0.0/16".into())]),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1529,17 +1499,14 @@ mod test {
                         .as_range("1.0.0.0/16".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         let peering2 = VpcPeering::with_default_group(
             "Peering-2",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("9.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-3".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("9.0.0.0/16".into())]),
+            VpcManifest::with_exposes(
+                "VPC-3",
+                vec![
                     VpcExpose::empty()
                         .make_stateless_nat()
                         .unwrap()
@@ -1547,7 +1514,7 @@ mod test {
                         .as_range("2.0.0.0/16".into())
                         .unwrap(),
                 ],
-            },
+            ),
         );
         assert!(validate_overlay_3vpc(peering1, peering2).is_ok());
     }
@@ -1557,25 +1524,13 @@ mod test {
     fn test_multiple_default_destinations_to_same_vpc_rejected() {
         let peering1 = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("8.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("8.0.0.0/16".into())]),
+            VpcManifest::with_exposes("VPC-2", vec![VpcExpose::empty().set_default()]),
         );
         let peering2 = VpcPeering::with_default_group(
             "Peering-2",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("9.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-3".to_owned(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("9.0.0.0/16".into())]),
+            VpcManifest::with_exposes("VPC-3", vec![VpcExpose::empty().set_default()]),
         );
         let result = validate_overlay_3vpc(peering1, peering2);
         assert!(
@@ -1589,17 +1544,14 @@ mod test {
     fn test_multiple_default_exposes_same_peering_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().ip("8.0.0.0/16".into())],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("8.0.0.0/16".into())]),
+            VpcManifest::with_exposes(
+                "VPC-2",
+                vec![
                     VpcExpose::empty().set_default(),
                     VpcExpose::empty().set_default(),
                 ],
-            },
+            ),
         );
         let result = validate_overlay_with_peering(peering);
         assert!(
@@ -1632,14 +1584,8 @@ mod test {
     fn test_default_to_default_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
-            VpcManifest {
-                name: "VPC-1".to_owned(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
-            VpcManifest {
-                name: "VPC-2".to_owned(),
-                exposes: vec![VpcExpose::empty().set_default()],
-            },
+            VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().set_default()]),
+            VpcManifest::with_exposes("VPC-2", vec![VpcExpose::empty().set_default()]),
         );
         let result = validate_overlay_with_peering(peering);
         assert!(

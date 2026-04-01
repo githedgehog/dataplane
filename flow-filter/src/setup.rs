@@ -698,15 +698,15 @@ mod tests {
         let vpcd1 = vpcd(100);
         let vpcd2 = vpcd(200);
 
-        let manifest1 = VpcManifest {
-            name: "manifest1".to_string(),
-            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        };
+        let manifest1 = VpcManifest::with_exposes(
+            "manifest1",
+            vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        );
 
-        let manifest2 = VpcManifest {
-            name: "manifest2".to_string(),
-            exposes: vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-        };
+        let manifest2 = VpcManifest::with_exposes(
+            "manifest2",
+            vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
+        );
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
@@ -727,15 +727,15 @@ mod tests {
         let vpcd1 = vpcd(100);
         let vpcd2 = vpcd(200);
 
-        let manifest1 = VpcManifest {
-            name: "manifest1".to_string(),
-            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        };
+        let manifest1 = VpcManifest::with_exposes(
+            "manifest1",
+            vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        );
 
-        let manifest2 = VpcManifest {
-            name: "manifest2".to_string(),
-            exposes: vec![VpcExpose::empty().ip("10.0.0.0/25".into())],
-        };
+        let manifest2 = VpcManifest::with_exposes(
+            "manifest2",
+            vec![VpcExpose::empty().ip("10.0.0.0/25".into())],
+        );
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
@@ -762,18 +762,18 @@ mod tests {
         let vpcd1 = vpcd(100);
         let vpcd2 = vpcd(200);
 
-        let manifest1 = VpcManifest {
-            name: "manifest1".to_string(),
-            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        };
+        let manifest1 = VpcManifest::with_exposes(
+            "manifest1",
+            vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        );
 
-        let manifest2 = VpcManifest {
-            name: "manifest2".to_string(),
-            exposes: vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
+        let manifest2 = VpcManifest::with_exposes(
+            "manifest2",
+            vec![VpcExpose::empty().ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/25".into(),
                 Some(PortRange::new(100, 200).unwrap()),
             ))],
-        };
+        );
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
@@ -804,25 +804,25 @@ mod tests {
         let vpcd1 = vpcd(100);
         let vpcd2 = vpcd(200);
 
-        let manifest1 = VpcManifest {
-            name: "manifest1".to_string(),
-            exposes: vec![
+        let manifest1 = VpcManifest::with_exposes(
+            "manifest1",
+            vec![
                 VpcExpose::empty()
                     .ip("10.0.0.0/24".into())
                     .ip("20.0.0.128/25".into()),
             ],
-        };
+        );
 
-        let manifest2 = VpcManifest {
-            name: "manifest2".to_string(),
-            exposes: vec![
+        let manifest2 = VpcManifest::with_exposes(
+            "manifest2",
+            vec![
                 VpcExpose::empty()
                     .make_stateful_nat(None)
                     .unwrap()
                     .ip("10.0.0.0/25".into()),
                 VpcExpose::empty().ip("20.0.0.0/24".into()),
             ],
-        };
+        );
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
@@ -870,9 +870,9 @@ mod tests {
     fn test_get_manifest_ips_overlap_multiple_times() {
         let vpcd = vpcd(100);
 
-        let manifest = VpcManifest {
-            name: "manifest2".to_string(),
-            exposes: vec![
+        let manifest = VpcManifest::with_exposes(
+            "manifest2",
+            vec![
                 VpcExpose::empty()
                     .make_port_forwarding(None, Some(L4Protocol::Tcp))
                     .unwrap()
@@ -910,7 +910,7 @@ mod tests {
                     .as_range("10.0.0.0/24".into())
                     .unwrap(),
             ],
-        };
+        );
 
         let overlap = get_manifest_ips_overlap(
             &manifest,
@@ -1066,10 +1066,10 @@ mod tests {
     fn test_get_split_prefixes_for_manifest_no_overlap() {
         let vpcd = vpcd(100);
 
-        let manifest = VpcManifest {
-            name: "manifest".to_string(),
-            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        };
+        let manifest = VpcManifest::with_exposes(
+            "manifest",
+            vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        );
 
         let overlaps = BTreeMap::new();
 
@@ -1097,10 +1097,10 @@ mod tests {
     fn test_get_split_prefixes_for_manifest_with_overlap() {
         let vpcd = vpcd(100);
 
-        let manifest = VpcManifest {
-            name: "manifest".to_string(),
-            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        };
+        let manifest = VpcManifest::with_exposes(
+            "manifest",
+            vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        );
 
         let mut overlaps = BTreeMap::new();
         // The overlap covers part of the manifest's prefix
@@ -1154,10 +1154,10 @@ mod tests {
         let remote_data_c = RemoteData::new(vpcd(300), None, None);
 
         // VPC A exposes 10.0.0.0/24
-        let manifest = VpcManifest {
-            name: "manifest_a".to_string(),
-            exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        };
+        let manifest = VpcManifest::with_exposes(
+            "manifest_a",
+            vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+        );
 
         let mut overlaps = BTreeMap::new();
         // Overlap 1: 10.0.0.0/25 is shared between A and B
@@ -1217,14 +1217,14 @@ mod tests {
 
         vpc1.peerings.push(Peering {
             name: "vpc1-to-vpc2".to_string(),
-            local: VpcManifest {
-                name: "vpc1-local".to_string(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-            },
-            remote: VpcManifest {
-                name: "vpc2-remote".to_string(),
-                exposes: vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-            },
+            local: VpcManifest::with_exposes(
+                "vpc1-local",
+                vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+            ),
+            remote: VpcManifest::with_exposes(
+                "vpc2-remote",
+                vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
+            ),
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
         });
@@ -1272,28 +1272,28 @@ mod tests {
         // Add two peerings with overlapping remote prefixes
         vpc1.peerings.push(Peering {
             name: "vpc1-to-vpc2".to_string(),
-            local: VpcManifest {
-                name: "vpc1-local".to_string(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-            },
-            remote: VpcManifest {
-                name: "vpc2-remote".to_string(),
-                exposes: vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-            },
+            local: VpcManifest::with_exposes(
+                "vpc1-local",
+                vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+            ),
+            remote: VpcManifest::with_exposes(
+                "vpc2-remote",
+                vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
+            ),
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
         });
 
         vpc1.peerings.push(Peering {
             name: "vpc1-to-vpc3".to_string(),
-            local: VpcManifest {
-                name: "vpc1-local2".to_string(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-            },
-            remote: VpcManifest {
-                name: "vpc3-remote".to_string(),
-                exposes: vec![VpcExpose::empty().ip("20.0.0.0/25".into())],
-            },
+            local: VpcManifest::with_exposes(
+                "vpc1-local2",
+                vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+            ),
+            remote: VpcManifest::with_exposes(
+                "vpc3-remote",
+                vec![VpcExpose::empty().ip("20.0.0.0/25".into())],
+            ),
             remote_id: "VPC03".try_into().unwrap(),
             gwgroup: None,
         });
@@ -1347,14 +1347,8 @@ mod tests {
 
         vpc.peerings.push(Peering {
             name: "peering1".to_string(),
-            local: VpcManifest {
-                name: "local1".to_string(),
-                exposes: vec![],
-            },
-            remote: VpcManifest {
-                name: "remote1".to_string(),
-                exposes: vec![],
-            },
+            local: VpcManifest::with_exposes("local1", vec![]),
+            remote: VpcManifest::with_exposes("remote1", vec![]),
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
         });
@@ -1373,14 +1367,14 @@ mod tests {
 
         vpc.peerings.push(Peering {
             name: "peering1".to_string(),
-            local: VpcManifest {
-                name: "local1".to_string(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-            },
-            remote: VpcManifest {
-                name: "remote1".to_string(),
-                exposes: vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-            },
+            local: VpcManifest::with_exposes(
+                "local1",
+                vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+            ),
+            remote: VpcManifest::with_exposes(
+                "remote1",
+                vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
+            ),
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
         });
@@ -1408,14 +1402,14 @@ mod tests {
         // Add peering from vpc1 to vpc2
         vpc1.peerings.push(Peering {
             name: "vpc1-to-vpc2".to_string(),
-            local: VpcManifest {
-                name: "vpc1-local".to_string(),
-                exposes: vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-            },
-            remote: VpcManifest {
-                name: "vpc2-remote".to_string(),
-                exposes: vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-            },
+            local: VpcManifest::with_exposes(
+                "vpc1-local",
+                vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+            ),
+            remote: VpcManifest::with_exposes(
+                "vpc2-remote",
+                vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
+            ),
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: None,
         });

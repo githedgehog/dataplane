@@ -172,10 +172,7 @@ fn build_context() -> NatTables {
         .as_range("4.0.0.0/16".into())
         .unwrap();
 
-    let manifest1 = VpcManifest {
-        name: "VPC-1".into(),
-        exposes: vec![expose1, expose2],
-    };
+    let manifest1 = VpcManifest::with_exposes("VPC-1", vec![expose1, expose2]);
 
     //     expose:
     //       - ips:
@@ -219,10 +216,7 @@ fn build_context() -> NatTables {
         .not_as("5.6.8.0/24".into())
         .unwrap();
 
-    let manifest2 = VpcManifest {
-        name: "VPC-2".into(),
-        exposes: vec![expose3, expose4],
-    };
+    let manifest2 = VpcManifest::with_exposes("VPC-2", vec![expose3, expose4]);
 
     let peering1 = Peering {
         name: "test_peering1".into(),
