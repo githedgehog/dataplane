@@ -67,76 +67,79 @@ jobs:
         # We run our "pre" check with `continue-on-error` set to true because it is equally possible that the upgrade
         # _resolves_ the license / security issue we have had / would have had without the upgrade.
         run: |
-          nix-shell --run "just check-dependencies"
+          nix-shell --run "set -euo pipefail; just check-dependencies"
         continue-on-error: true
 
       - name: "cargo upgrade"
         id: upgrade
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '<224724778+hedgehog-dataplane-update[bot]@users.noreply.github.com>'
-          BASE="$(git rev-parse HEAD)"
+          nix-shell --run '
+            set -euo pipefail;
+            git config user.name "github-actions[bot]"
+            git config user.email "<224724778+hedgehog-dataplane-update[bot]@users.noreply.github.com>"
+            BASE="$(git rev-parse HEAD)"
 
-          # Run "cargo update"
-          echo "::notice::Running cargo update"
-          nix-shell --run "cargo update"
-          if ! git diff --quiet; then
-              echo "Found changes after cargo update, creating commit"
-              git add Cargo.lock
-              git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
-          fi
+            # Run "cargo update"
+            echo "::notice::Running cargo update"
+            nix-shell --run "set -euo pipefail; cargo update"
+            if ! git diff --quiet; then
+                echo "Found changes after cargo update, creating commit"
+                git add Cargo.lock
+                git commit -sm "bump(cargo)!: bump dependencies (cargo update)"
+            fi
 
-          # Check updates available with "cargo upgrade",
-          # then bump each package individually through separate commits
-          echo "::notice::Looking for dependencies to upgrade"
-          nix-shell --run "cargo upgrade --incompatible=allow --dry-run" | tee upgrade_output.txt
-          sed '/^====/d; /^name .*old req .*new req/d; s/ .*//' upgrade_output.txt > list_packages.txt
-          nb_upgrades=$(wc -l < list_packages.txt)
+            # Check updates available with "cargo upgrade",
+            # then bump each package individually through separate commits
+            echo "::notice::Looking for dependencies to upgrade"
+            nix-shell --run "set -euo pipefail; cargo upgrade --incompatible=allow --dry-run" | tee upgrade_output.txt
+            sed "/^====/d; /^name .*old req .*new req/d; s/ .*//" upgrade_output.txt > list_packages.txt
+            nb_upgrades=$(wc -l < list_packages.txt)
 
-          echo "Found the following ${nb_upgrades} upgrade(s) available:"
-          cat list_packages.txt
+            echo "Found the following ${nb_upgrades} upgrade(s) available:"
+            cat list_packages.txt
 
-          echo "::notice::Upgrading packages that need an upgrade (if any), one by one"
-          while read -r package; do
-              echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
-              echo '' | tee -a commit_msg.txt
-              nix-shell --run "cargo upgrade --incompatible=allow --package $package" | tee -a commit_msg.txt
-              git add Cargo.lock Cargo.toml cli/Cargo.toml
-              git commit -sF commit_msg.txt
-          done < list_packages.txt
+            echo "::notice::Upgrading packages that need an upgrade (if any), one by one"
+            while read -r package; do
+                echo "bump(cargo)!: bump $package (cargo upgrade)" | tee commit_msg.txt
+                tee -a commit_msg.txt <<<""
+                cargo upgrade --incompatible=allow --package "$package" | tee -a commit_msg.txt
+                git add Cargo.lock Cargo.toml cli/Cargo.toml
+                git commit -sF commit_msg.txt
+            done < list_packages.txt
 
-          # If we didn't create any commits, we don't need to create a PR message
-          if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
-              rm -f -- upgrade_output.txt list_packages.txt commit_msg.txt
-              exit 0
-          fi
-          echo '::notice::We created the following commits:'
-          git log --reverse -p "${BASE}"..
+            # If we did not create any commits, we do not need to create a PR message
+            if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
+                rm -f -- upgrade_output.txt list_packages.txt commit_msg.txt
+                exit 0
+            fi
+            echo "::notice::We created the following commits:"
+            git log --reverse -p "${BASE}"..
 
-          # Create Pull Request description
-          echo '### :rocket: Upgrades available' | tee upgrade.log
-          if [[ "${nb_upgrades}" -ge 1 ]]; then
-              echo '' | tee -a upgrade.log
-              echo '```' | tee -a upgrade.log
-              tee -a upgrade.log < upgrade_output.txt
-              echo '```' | tee -a upgrade.log
-          fi
+            # Create Pull Request description
+            echo "### :rocket: Upgrades available" | tee upgrade.log
+            if [[ "${nb_upgrades}" -ge 1 ]]; then
+                echo "" | tee -a upgrade.log
+                echo "\`\`\`" | tee -a upgrade.log
+                tee -a upgrade.log < upgrade_output.txt
+                echo "\`\`\`" | tee -a upgrade.log
+            fi
 
-          echo '' | tee -a upgrade.log
-          echo ':warning: This Pull Request was automatically generated and should be carefully reviewed before acceptance. It may introduce **breaking changes**.' | tee -a upgrade.log
+            tee -a upgrade.log <<<""
+            tee -a upgrade.log <<<":warning: This Pull Request was automatically generated and should be carefully reviewed before acceptance. It may introduce **breaking changes**."
 
-          cat upgrade.log > "${GITHUB_STEP_SUMMARY}"
-          {
-            echo 'upgrade<<EOF';
-            cat upgrade.log;
-            echo 'EOF';
-          } >> "${GITHUB_OUTPUT}"
+            cat upgrade.log > "${GITHUB_STEP_SUMMARY}"
+            {
+                echo "upgrade<<EOF";
+                cat upgrade.log;
+                echo "EOF";
+            } >> "${GITHUB_OUTPUT}"
 
-          rm -f -- upgrade.log upgrade_output.txt list_packages.txt commit_msg.txt
+            rm -f -- upgrade.log upgrade_output.txt list_packages.txt commit_msg.txt
+          '
 
       - name: "check-dependencies (post)"
         run: |
-          nix-shell --run "just check-dependencies"
+          nix-shell --run "set -euo pipefail; just check-dependencies"
 
       - name: "Create Pull Request"
         uses: "peter-evans/create-pull-request@v8"

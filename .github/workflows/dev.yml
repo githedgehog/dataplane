@@ -180,17 +180,18 @@ jobs:
       # whatever step happens to access the nix-shell first.
       - name: "setup nix shell"
         run: |
-          nix-shell --run "echo nix shell env cached"
+          nix-shell --run "set -euo pipefail; echo nix shell env cached"
 
       - name: "login to image cache"
         run: |
           docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL" <<<"${REGISTRY_PASSWORD}"
-          nix-shell --run "oras login -u \"$REGISTRY_USERNAME\" --password-stdin \"$REGISTRY_URL\" <<<\"${REGISTRY_PASSWORD}\""
+          nix-shell --run "set -euo pipefail; oras login -u \"$REGISTRY_USERNAME\" --password-stdin \"$REGISTRY_URL\" <<<\"${REGISTRY_PASSWORD}\""
 
       - name: "run pre-flight checks"
         if: ${{ matrix.nix-target == 'tests.all' }}
         run: |
           nix-shell --run '
+            set -euo pipefail;
             for features in "" "shuttle"; do
               just \
                   docker_sock=/run/docker/docker.sock \
@@ -208,6 +209,7 @@ jobs:
         if: ${{ matrix.nix-target != 'tests.all' }}
         run: |
           nix-shell --run '
+            set -euo pipefail;
             just \
                 debug_justfile=${{matrix.debug_justfile}} \
                 check-dependencies
@@ -396,6 +398,7 @@ jobs:
       - name: "push containers"
         run: |
           nix-shell --run "
+            set -euo pipefail;
             just \
               docker_sock=/run/docker/docker.sock \
               oci_repo=ghcr.io \

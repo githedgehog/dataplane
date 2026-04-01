@@ -105,7 +105,7 @@ build target="dataplane.tar" *args:
       --print-build-logs \
       --show-trace \
       --out-link "results/${target}" \
-      --max-jobs {{jobs}} \
+      --max-jobs "{{jobs}}" \
       --keep-failed \
       {{ args }}
 
@@ -113,7 +113,7 @@ build target="dataplane.tar" *args:
 [script]
 fmt *args:
     {{ _just_debuggable_ }}
-    nix-shell --run "cargo fmt {{args}}"
+    cargo fmt {{args}}
 
 # run a series of pre-flight checks to catch most problems you might find in CI early
 [script]
@@ -125,7 +125,7 @@ pre-flight: (check-dependencies) (fmt "--check") (test) (lint) (doctest)
 test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" } else { "tests.pkg." + package }) args)
     {{ _just_debuggable_ }}
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
-    nix-shell --run "cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}"
+    cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
 
 [script]
 docs package="" *args: (build (if package == "" { "docs.all" } else { "docs.pkg." + package }) args)
@@ -185,7 +185,7 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
             echo "NOTE: validator image is wasm and not containerized"
             ;;
         *)
-            >&2 echo "{{target}}" not a valid container
+            >&2 echo "{{target}} is not a valid container"
             exit 99
     esac
 
@@ -211,11 +211,11 @@ push-container target="dataplane" *args: (build-container target args) && versio
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
     case "{{target}}" in
         "dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} docker-daemon:{{ oci_image_dataplane }} docker://{{ oci_image_dataplane }}
+            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane }}" "docker://{{ oci_image_dataplane }}"
             echo "Pushed {{ oci_image_dataplane }}"
             ;;
         "dataplane-debugger")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} docker-daemon:{{ oci_image_dataplane_debugger }} docker://{{ oci_image_dataplane_debugger }}
+            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{ oci_image_dataplane_debugger }}" "docker://{{ oci_image_dataplane_debugger }}"
             echo "Pushed {{ oci_image_dataplane_debugger }}"
             ;;
         "debug-tools")
@@ -223,11 +223,11 @@ push-container target="dataplane" *args: (build-container target args) && versio
             exit 1
             ;;
         "frr.dataplane")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} docker-daemon:{{oci_image_frr_dataplane}} docker://{{oci_image_frr_dataplane}}
+            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_dataplane}}" "docker://{{oci_image_frr_dataplane}}"
             echo "Pushed {{ oci_image_frr_dataplane }}"
             ;;
         "frr.host")
-            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} docker-daemon:{{oci_image_frr_host}} docker://{{oci_image_frr_host}}
+            skopeo copy --src-daemon-host="${DOCKER_HOST}" {{ _skopeo_dest_insecure }} "docker-daemon:{{oci_image_frr_host}}" "docker://{{oci_image_frr_host}}"
             echo "Pushed {{ oci_image_frr_host }}"
             ;;
         "validator")
@@ -241,7 +241,7 @@ push-container target="dataplane" *args: (build-container target args) && versio
             echo "Pushed {{ oci_image_dataplane_validator }}"
             ;;
         *)
-            >&2 echo "{{target}}" not a valid container
+            >&2 echo "{{target}} is not a valid container"
             exit 99
     esac
 
@@ -256,7 +256,7 @@ push:
         else
           platform="x86-64-v3"
         fi
-        nix-shell --run "just debug_justfile={{debug_justfile}} oci_repo={{oci_repo}} version={{version}} profile=release platform=${platform} sanitize= instrument=none push-container ${container}"
+        just debug_justfile="{{debug_justfile}}" oci_repo="{{oci_repo}}" version="{{version}}" profile=release platform="${platform}" sanitize= instrument=none push-container "${container}"
     done
 
 # Print names of container images to build or push
@@ -268,19 +268,19 @@ print-container-tags:
 [script]
 check-dependencies *args:
     {{ _just_debuggable_ }}
-    nix-shell --run "cargo deny {{ _cargo_feature_flags }} check {{ args }}"
+    cargo deny {{ _cargo_feature_flags }} check {{ args }}
 
 # Run linters
 [script]
 lint *args:
     {{ _just_debuggable_ }}
-    nix-shell --run "cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings"
+    cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings
 
 # Run doctests
 [script]
 doctest *args:
     {{ _just_debuggable_ }}
-    nix-shell --run "cargo test --doc {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }}"
+    cargo test --doc {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }}
 
 # Run tests with code coverage. Args will be forwarded to nextest
 [script]
@@ -322,8 +322,9 @@ bump_minor_version:
 # Bump the version in Cargo.toml to the specified version (for example, "1.2.3")
 [script]
 bump_version version:
-    echo "New version: {{ version }}"
-    sed -i "s/^version = \".*\"/version = \"{{ version }}\"/" Cargo.toml
+    declare -r new_version="{{ version }}"
+    echo "New version: ${new_version}"
+    sed -i "s/^version = \".*\"/version = \"${new_version}\"/" Cargo.toml
     cargo update --workspace
 
 # Enter nix-shell

@@ -69,15 +69,15 @@ jobs:
 
       - name: "Bump version"
         run: |
-          nix-shell --run "
-            if [ -n '${{ inputs.new_version }}' ]; then
-              just bump_version '${{ inputs.new_version }}'
+          nix-shell --run '
+            set -euo pipefail;
+            if [ -n "${{ inputs.new_version }}" ]; then
+              just bump_version "${{ inputs.new_version }}"
             else
               just bump_minor_version
             fi
-          "
-          new_version="$(nix-shell --run "tomlq --raw-output '.workspace.package.version' Cargo.toml")"
-          echo "new_version=${new_version}" >> "${GITHUB_ENV}"
+            echo "new_version=$(tomlq --raw-output ".workspace.package.version" Cargo.toml)" >> "${GITHUB_ENV}"
+          '
 
       - name: "Commit changes"
         run: |
