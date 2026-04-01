@@ -106,10 +106,7 @@ mod context {
             .unwrap();
         let expose2 = VpcExpose::empty().ip("2.0.0.0/16".into());
 
-        let manifest1 = VpcManifest {
-            name: "VPC-1".into(),
-            exposes: vec![expose1, expose2],
-        };
+        let manifest1 = VpcManifest::with_exposes("VPC-1", vec![expose1, expose2]);
 
         let expose3 = VpcExpose::empty()
             .make_stateful_nat(None)
@@ -120,10 +117,7 @@ mod context {
             .unwrap();
         let expose4 = VpcExpose::empty().ip("4.0.0.0/16".into());
 
-        let manifest2 = VpcManifest {
-            name: "VPC-2".into(),
-            exposes: vec![expose3, expose4],
-        };
+        let manifest2 = VpcManifest::with_exposes("VPC-2", vec![expose3, expose4]);
 
         // Peerings
         let peering1 = Peering {

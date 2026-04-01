@@ -546,6 +546,14 @@ impl VpcManifest {
             ..Default::default()
         }
     }
+
+    #[must_use]
+    pub fn with_exposes(vpc_name: &str, exposes: Vec<VpcExpose>) -> Self {
+        let mut manifest = Self::new(vpc_name);
+        manifest.add_exposes(exposes);
+        manifest
+    }
+
     #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
         self.exposes.iter().any(VpcExpose::has_host_prefixes)
