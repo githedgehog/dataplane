@@ -35,6 +35,7 @@ now the recommended approach. See the detailed analysis in the "Typestate match 
 section below.
 
 Remaining concerns (addressable):
+
 - `net` types validate **values** (rejecting multicast src addrs, zero ports). A match
   builder should validate only **structure** (layer ordering), not values — any value is
   fair game for matching, including invalid ones for rejection rules.
@@ -71,6 +72,60 @@ Note: exact match is a degenerate case of mask (mask = all ones). LPM is a speci
 pattern of mask (contiguous high bits). Range is fundamentally different — it cannot
 be expressed as a single mask operation. The DPDK ACL library natively supports all
 three of its field types: `MASK`, `RANGE`, and `BITMASK`.
+
+#### How DPDK ACL handles ranges internally
+
+DPDK's ACL library does **not** store ranges natively in its trie. The function
+`acl_gen_range_trie()` in `acl_bld.c` [dpdk-acl-src] decomposes each range into
+**byte-level transitions** in the multi-bit trie (stride = 8). A range `[low, high]`
+is split into up to three segments per byte boundary:
+
+1. Low prefix section (partial byte from `low` up to the next byte boundary)
+2. Middle section (full byte values between the boundaries)
+3. High prefix section (partial byte from the last boundary down to `high`)
+
+Each segment generates trie node transitions via `acl_add_ptr_range()`, and the
+resulting sub-tries are merged into the main rule trie with `acl_merge_trie()`.
+This means a single rule with a port range generates **more trie nodes** than a
+rule with a mask/exact match on the same field [dpdk-acl-guide].
+
+**Performance implications for DPDK ACL (software):**
+
+- **Build time**: modestly slower for range-heavy rule sets (more nodes to construct/merge)
+- **Memory**: larger compiled trie. The DPDK docs warn: "depending on the rules set,
+  that could consume significant amount of memory" [dpdk-acl-guide]
+- **Classify time**: effectively unchanged — trie traversal is O(field_bytes) per packet,
+  SIMD-parallelized across the batch, regardless of how many nodes a range expanded to
+
+For a 16-bit port range, the worst-case expansion is roughly `2W - 2` prefix-equivalent
+entries per byte level (W = bits per byte = 8). The trie merges overlapping prefixes,
+so typical port ranges add a modest number of extra nodes.
+
+**Hardware TCAM: much worse.** Range-to-prefix expansion in TCAM is notoriously expensive:
+
+- A single 16-bit port range can expand to ~30 TCAM entries
+- Two port ranges (src + dst) can multiply: up to 30 × 30 = 900 TCAM entries per rule
+- TCAM entries are a scarce, fixed resource on ASICs
+
+Hardware mitigations include **dedicated range matching units** (e.g. Memory's range
+checkers, ALU-based range match on various ASICs). These map a port value to a small
+index (e.g. 0-7), and only the index enters TCAM as an exact match — avoiding the
+expansion entirely.
+
+**Design implication:** `MatchCriterion` should keep ranges as first-class primitives
+(`SrcPort { low, high }`), never pre-decomposing them. The backend lowering pass
+decides how to handle ranges per target:
+
+| Backend           | Range strategy                                                           |
+| ----------------- | ------------------------------------------------------------------------ |
+| DPDK ACL          | Pass through as `RTE_ACL_FIELD_TYPE_RANGE` — DPDK handles trie expansion |
+| rte_flow          | Pass through — hardware may have range matchers                          |
+| tc-flower         | Pass through — kernel handles it                                         |
+| TCAM (direct)     | Expand to prefix set OR use range checker hardware                       |
+| Software fallback | Interval tree / sorted range check                                       |
+
+The compiler's overlap analyzer must also understand ranges natively (interval
+intersection), not as expanded prefix sets.
 
 Some backends handle overlapping rules gracefully (DPDK ACL: highest priority wins).
 Others do NOT — `rte_flow`, tc-flower, P4 tables, hardware offload engines may give
@@ -252,16 +307,16 @@ pub struct MatchBuilder<State> {
 
 **State transitions:**
 
-| From | Method | To | Notes |
-|------|--------|----|-------|
-| `MatchEmpty` | `.eth(...)` | `MatchWithEth` | Optional: `.eth()` with no args = match any ethernet |
-| `MatchWithEth` | `.ipv4(...)` | `MatchWithNet` | Auto-adds `EthType == 0x0800` |
-| `MatchWithEth` | `.ipv6(...)` | `MatchWithNet` | Auto-adds `EthType == 0x86DD` |
-| `MatchWithNet` | `.tcp(...)` | `MatchWithTransport` | Auto-adds `IpProto == 6` |
-| `MatchWithNet` | `.udp(...)` | `MatchWithTransport` | Auto-adds `IpProto == 17` |
-| `MatchWithNet` | `.icmp4(...)` | `MatchWithTransport` | Auto-adds `IpProto == 1`, requires IPv4 |
-| `MatchWithNet` | `.build(priority)` | `MatchRule` | IP-only match (no transport constraint) |
-| `MatchWithTransport` | `.build(priority)` | `MatchRule` | Full match with transport |
+| From                 | Method             | To                   | Notes                                                |
+| -------------------- | ------------------ | -------------------- | ---------------------------------------------------- |
+| `MatchEmpty`         | `.eth(...)`        | `MatchWithEth`       | Optional: `.eth()` with no args = match any ethernet |
+| `MatchWithEth`       | `.ipv4(...)`       | `MatchWithNet`       | Auto-adds `EthType == 0x0800`                        |
+| `MatchWithEth`       | `.ipv6(...)`       | `MatchWithNet`       | Auto-adds `EthType == 0x86DD`                        |
+| `MatchWithNet`       | `.tcp(...)`        | `MatchWithTransport` | Auto-adds `IpProto == 6`                             |
+| `MatchWithNet`       | `.udp(...)`        | `MatchWithTransport` | Auto-adds `IpProto == 17`                            |
+| `MatchWithNet`       | `.icmp4(...)`      | `MatchWithTransport` | Auto-adds `IpProto == 1`, requires IPv4              |
+| `MatchWithNet`       | `.build(priority)` | `MatchRule`          | IP-only match (no transport constraint)              |
+| `MatchWithTransport` | `.build(priority)` | `MatchRule`          | Full match with transport                            |
 
 **Metadata methods available on ALL states** (orthogonal to layer ordering):
 
@@ -310,12 +365,12 @@ let rule = MatchBuilder::new()
 
 Each field method should support all applicable match types:
 
-| Match type | Method pattern | Example |
-|------------|---------------|---------|
-| **Exact** | `.dst_port(80)` | Port 80 only |
-| **Range** | `.dst_port_range(1024..=65535)` | Ephemeral ports |
-| **Prefix / LPM** | `.dst_prefix(prefix)` | IP prefix match |
-| **Mask / bitmask** | `.flags_masked(value, mask)` | TCP SYN flag |
+| Match type         | Method pattern                  | Example         |
+| ------------------ | ------------------------------- | --------------- |
+| **Exact**          | `.dst_port(80)`                 | Port 80 only    |
+| **Range**          | `.dst_port_range(1024..=65535)` | Ephemeral ports |
+| **Prefix / LPM**   | `.dst_prefix(prefix)`           | IP prefix match |
+| **Mask / bitmask** | `.flags_masked(value, mask)`    | TCP SYN flag    |
 
 Exact match is syntactic sugar for mask with `mask = all ones`. LPM is syntactic sugar
 for mask with contiguous high bits. Range is fundamentally distinct — it cannot be
@@ -323,14 +378,14 @@ expressed as a mask operation.
 
 ### Key differences from packet builder
 
-| Concern | Packet builder | Match builder |
-|---------|---------------|---------------|
-| **Value validation** | Strict — rejects multicast src MAC, zero ports | **None** — any value is matchable (needed for rejection rules) |
-| **Structural validation** | Enforced via typestate + build-time checks | Same — layer ordering via typestate, cross-layer via build-time |
-| **Field completeness** | Every field must have a value | Omitted fields are **wildcards** |
-| **Field flexibility** | Exact values only | Exact, range, prefix, or mask per field |
-| **Output** | `Headers` (concrete packet headers) | `MatchRule` / `Vec<MatchCriterion>` (compiler input) |
-| **Metadata** | Not applicable (packet content only) | VNI, VRF, iif, etc. via orthogonal methods |
+| Concern                   | Packet builder                                 | Match builder                                                   |
+| ------------------------- | ---------------------------------------------- | --------------------------------------------------------------- |
+| **Value validation**      | Strict — rejects multicast src MAC, zero ports | **None** — any value is matchable (needed for rejection rules)  |
+| **Structural validation** | Enforced via typestate + build-time checks     | Same — layer ordering via typestate, cross-layer via build-time |
+| **Field completeness**    | Every field must have a value                  | Omitted fields are **wildcards**                                |
+| **Field flexibility**     | Exact values only                              | Exact, range, prefix, or mask per field                         |
+| **Output**                | `Headers` (concrete packet headers)            | `MatchRule` / `Vec<MatchCriterion>` (compiler input)            |
+| **Metadata**              | Not applicable (packet content only)           | VNI, VRF, iif, etc. via orthogonal methods                      |
 
 ### IPv4/IPv6 disjunction
 
@@ -362,6 +417,7 @@ fn match_any_ip_tcp(dst_port: u16, priority: i32) -> [MatchRule; 2] {
 ### Pros and cons
 
 **Pros:**
+
 - Compile-time enforcement of layer ordering — prevents nonsense matches
 - Mirror of familiar packet builder API — low cognitive load for users
 - Auto-derivation of implied criteria (EthType, NextHeader) eliminates bugs
@@ -371,6 +427,7 @@ fn match_any_ip_tcp(dst_port: u16, priority: i32) -> [MatchRule; 2] {
 - Output is `MatchRule` — feeds directly into the compiler pipeline
 
 **Cons:**
+
 - IPv4/IPv6 disjunction requires two rules (addressable by helpers + compiler merging)
 - "Match any IP version" requires two rules or a wildcard net transition
 - Not code-level reuse of packet builder — new builder with different semantics, same pattern
@@ -1067,15 +1124,15 @@ must interact with the update/generation-swap mechanism (section 9) efficiently.
 
 Not all passes can be incremental. The compilation pipeline has a natural split:
 
-| Pass | Incremental? | Rationale |
-|------|-------------|-----------|
-| Validate | **Yes** | Stateless per-rule. Only validate new/changed rules. |
-| OverlapAnalysis | **Partially** | Adding a rule: insert into trie structures, check overlaps only against existing rules it touches. Removing: remove and recheck affected pairs. The overlap *graph* is incrementally maintainable. |
-| Assign | **Partially** | New rule may only affect its own assignment + trap rules for overlap partners. But cascading effects possible (new trap exceeds capacity → must reassign others). |
-| InsertTraps | **Recompute per overlap group** | Trap correctness depends on the full assignment within a connected overlap component. |
-| Lower (DPDK ACL) | **No — batch only** | `rte_acl_build()` rebuilds the entire compiled trie. Cannot incrementally add a rule. |
-| Lower (rte_flow) | **Yes** | `rte_flow_create/destroy` are per-rule. Hardware supports incremental. |
-| Lower (tc-flower) | **Yes** | Per-filter install/remove via netlink. |
+| Pass              | Incremental?                    | Rationale                                                                                                                                                                                          |
+| ----------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Validate          | **Yes**                         | Stateless per-rule. Only validate new/changed rules.                                                                                                                                               |
+| OverlapAnalysis   | **Partially**                   | Adding a rule: insert into trie structures, check overlaps only against existing rules it touches. Removing: remove and recheck affected pairs. The overlap _graph_ is incrementally maintainable. |
+| Assign            | **Partially**                   | New rule may only affect its own assignment + trap rules for overlap partners. But cascading effects possible (new trap exceeds capacity → must reassign others).                                  |
+| InsertTraps       | **Recompute per overlap group** | Trap correctness depends on the full assignment within a connected overlap component.                                                                                                              |
+| Lower (DPDK ACL)  | **No — batch only**             | `rte_acl_build()` rebuilds the entire compiled trie. Cannot incrementally add a rule.                                                                                                              |
+| Lower (rte_flow)  | **Yes**                         | `rte_flow_create/destroy` are per-rule. Hardware supports incremental.                                                                                                                             |
+| Lower (tc-flower) | **Yes**                         | Per-filter install/remove via netlink.                                                                                                                                                             |
 
 **The critical observation**: the DPDK ACL software backend forces a full trie rebuild,
 but the analysis passes (overlap, assignment, trap insertion) CAN be incremental. The
@@ -1099,10 +1156,11 @@ When the source changes, each derived view needs refreshing. The question is: fu
 refresh (rebuild everything) or incremental refresh (update only what changed)?
 
 Database literature on **incremental view maintenance (IVM)** is directly applicable:
+
 - **Full materialization**: rebuild from scratch. Simple, correct, no stale state bugs.
   Cost: O(n) per update where n = total rule count.
 - **Incremental maintenance**: propagate deltas through the view definitions. Complex but
-  cost proportional to the *change size*, not the total rule count.
+  cost proportional to the _change size_, not the total rule count.
 - **Hybrid**: incrementally maintain cheap views (overlap graph), batch-rebuild expensive
   ones (DPDK ACL context).
 
@@ -1156,7 +1214,7 @@ The compiler's incrementality is **orthogonal** to the runtime's atomicity mecha
 ```
 
 Whether step 2 is full-rebuild or incremental doesn't affect steps 3-4. The generation
-swap cares about the *output* (new compiled tables), not how they were produced.
+swap cares about the _output_ (new compiled tables), not how they were produced.
 
 #### Adaptive re-optimization (profile-guided)
 
@@ -1178,12 +1236,12 @@ hit counters, trap overhead, capacity utilization.
 
 #### Recommended phasing
 
-| Phase | Approach | Complexity |
-|-------|----------|------------|
-| 1 | **Full recompilation** on any change. Build new context, left-right swap. | Simple, correct. Sufficient for BGP-timescale (~ms) updates with ≤10K rules. |
-| 2 | **Incremental analysis** with batch backend rebuild. Cache overlap graph and backend assignments. Only rebuild DPDK ACL context (the expensive part). | Moderate. Saves re-analyzing unchanged rules. |
-| 3 | **Salsa-style dependency tracking** for fine-grained incrementality. Automatic invalidation. | Significant investment. Warranted only if compile latency becomes a bottleneck. |
-| 4 | **Adaptive re-optimization** based on runtime stats. | Research-grade. Monitor hit counters and trap overhead, feed back into compiler. |
+| Phase | Approach                                                                                                                                              | Complexity                                                                       |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 1     | **Full recompilation** on any change. Build new context, left-right swap.                                                                             | Simple, correct. Sufficient for BGP-timescale (~ms) updates with ≤10K rules.     |
+| 2     | **Incremental analysis** with batch backend rebuild. Cache overlap graph and backend assignments. Only rebuild DPDK ACL context (the expensive part). | Moderate. Saves re-analyzing unchanged rules.                                    |
+| 3     | **Salsa-style dependency tracking** for fine-grained incrementality. Automatic invalidation.                                                          | Significant investment. Warranted only if compile latency becomes a bottleneck.  |
+| 4     | **Adaptive re-optimization** based on runtime stats.                                                                                                  | Research-grade. Monitor hit counters and trap overhead, feed back into compiler. |
 
 Phase 1 is the right starting point. The left-right swap pattern (already in `flow-filter`)
 handles the atomic transition. The compiler rebuilds everything, swaps, done. Move to
@@ -1193,14 +1251,153 @@ compiler only runs for policy-rule updates).
 
 ### Key references
 
-| Topic                | Reference                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------ |
-| Nanopass design      | Sarkar, Waddell, Dybvig. "A Nanopass Infrastructure for Compiler Education." SFPW 2004           |
-| Multi-level IR       | Lattner et al. "MLIR: Scaling Compiler Infrastructure for Domain-Specific Computation." CGO 2021 |
-| Query optimization   | Graefe. "The Cascades Framework for Query Optimization." IEEE Data Eng. Bulletin, 1995           |
-| E-graphs             | Willsey et al. "egg: Fast and Extensible Equality Saturation." POPL 2021                         |
-| Network updates      | Reitblatt et al. "Abstractions for Network Update." SIGCOMM 2012                                 |
-| Incremental comp.    | Salsa framework — https://salsa-rs.github.io/salsa/                                              |
-| Incremental view maint. | Gupta & Mumick. "Maintenance of Materialized Views: Problems, Techniques, and Applications." 1995 |
-| Diagnostic rendering | `miette` crate — https://github.com/zkat/miette                                                  |
-| Property testing     | `proptest` crate — https://github.com/proptest-rs/proptest                                       |
+See the bibliography at the end of this document. Inline citations use `[cite-key]` notation.
+
+---
+
+## Bibliography
+
+References are listed in biblatex-inspired style. Inline citations throughout the
+document use the bracketed cite keys (e.g. `[sarkar2004]`).
+
+### Papers and books
+
+```biblatex
+@inproceedings{sarkar2004,
+  author    = {Sarkar, Dipanwita and Waddell, Oscar and Dybvig, R. Kent},
+  title     = {A Nanopass Infrastructure for Compiler Education},
+  booktitle = {Proceedings of the ACM SIGPLAN Workshop on Scheme and Functional Programming},
+  year      = {2004},
+  note      = {Foundational work on decomposing compilers into many small passes with
+               distinct IR types per pass. Directly applicable to our pass pipeline design.}
+}
+
+@inproceedings{lattner2021,
+  author    = {Lattner, Chris and Amini, Mehdi and Bondhugula, Uday and Cohen, Albert
+               and Davis, Andy and Pienaar, Jacques and Riddle, River and Shpeisman, Tatiana
+               and Vasilache, Nicolas and Zinenko, Oleksandr},
+  title     = {{MLIR}: Scaling Compiler Infrastructure for Domain-Specific Computation},
+  booktitle = {IEEE/ACM International Symposium on Code Generation and Optimization (CGO)},
+  year      = {2021},
+  note      = {Multi-level IR with dialect system and progressive lowering. Informs our
+               4-level IR design (frontend, core, assigned, backend-specific).}
+}
+
+@article{graefe1995,
+  author    = {Graefe, Goetz},
+  title     = {The Cascades Framework for Query Optimization},
+  journal   = {IEEE Data Engineering Bulletin},
+  volume    = {18},
+  number    = {3},
+  year      = {1995},
+  note      = {Cost-based query optimizer with physical properties and enforcers.
+               Our trap rules are directly analogous to Cascades enforcers.}
+}
+
+@inproceedings{willsey2021,
+  author    = {Willsey, Max and Nandi, Chandrakana and Wang, Yisu Remy and Flatt, Oliver
+               and Tatlock, Zachary and Panchekha, Pavel},
+  title     = {egg: Fast and Extensible Equality Saturation},
+  booktitle = {Proceedings of the ACM on Programming Languages (POPL)},
+  year      = {2021},
+  note      = {E-graph based optimization. Used in Cranelift. Potentially applicable
+               if we need to explore equivalent rule representations.}
+}
+
+@inproceedings{reitblatt2012,
+  author    = {Reitblatt, Mark and Foster, Nate and Rexford, Jennifer and
+               Schlesinger, Cole and Walker, David},
+  title     = {Abstractions for Network Update},
+  booktitle = {Proceedings of ACM SIGCOMM},
+  year      = {2012},
+  note      = {Foundational paper on per-packet consistent network updates via
+               generation/version tagging. Directly informs our atomic update design.}
+}
+
+@article{gupta1995,
+  author    = {Gupta, Ashish and Mumick, Inderpal Singh},
+  title     = {Maintenance of Materialized Views: Problems, Techniques, and Applications},
+  journal   = {IEEE Data Engineering Bulletin},
+  volume    = {18},
+  number    = {2},
+  year      = {1995},
+  note      = {Incremental view maintenance theory. Our compiled tables are materialized
+               views of the rule set; this literature applies to incremental recompilation.}
+}
+```
+
+### Technical documentation
+
+```biblatex
+@online{dpdk-acl-guide,
+  title     = {Packet Classification and Access Control (ACL) Library},
+  author    = {{DPDK Project}},
+  year      = {2025},
+  url       = {https://doc.dpdk.org/guides/prog_guide/packet_classif_access_ctrl.html},
+  note      = {Official DPDK programmer's guide for the ACL library. Documents the
+               multi-bit trie (stride=8), field types (MASK, RANGE, BITMASK), and
+               build/classify lifecycle. Warns about memory consumption for complex
+               rule sets.}
+}
+
+@online{dpdk-acl-src,
+  title     = {DPDK ACL Build Implementation (acl\_bld.c)},
+  author    = {{DPDK Project}},
+  year      = {2025},
+  url       = {https://github.com/DPDK/dpdk/blob/main/lib/acl/acl_bld.c},
+  note      = {Source code for ACL trie construction. Contains acl\_gen\_range\_trie()
+               which decomposes range fields into byte-level trie transitions.
+               Confirms that ranges are expanded at build time, not stored natively.}
+}
+```
+
+### Software libraries and frameworks
+
+```biblatex
+@online{salsa,
+  title     = {Salsa: A Framework for On-Demand, Incremental Computation},
+  url       = {https://salsa-rs.github.io/salsa/},
+  note      = {Incremental computation framework used by rust-analyzer. Query DAG
+               with automatic dependency tracking and invalidation. Applicable to
+               incremental recompilation of rule sets.}
+}
+
+@online{miette,
+  title     = {miette: Fancy Diagnostic Reporting for Rust},
+  url       = {https://github.com/zkat/miette},
+  note      = {Structured diagnostic rendering with source context. For compiler
+               error/warning reporting.}
+}
+
+@online{proptest,
+  title     = {proptest: Property-Based Testing for Rust},
+  url       = {https://github.com/proptest-rs/proptest},
+  note      = {For property-based testing of compiler passes, especially semantic
+               equivalence between compiled output and reference implementation.}
+}
+
+@online{rstar,
+  title     = {rstar: R*-tree Spatial Indexing for Rust},
+  url       = {https://github.com/georust/rstar},
+  note      = {R*-tree implementation supporting arbitrary-dimension bounding box
+               queries. Evaluated for rule overlap detection; useful as a fallback
+               for complex multi-range overlap analysis.}
+}
+
+@online{good-lp,
+  title     = {good\_lp: Mixed Integer Linear Programming for Rust},
+  url       = {https://crates.io/crates/good_lp},
+  version   = {1.15.0},
+  note      = {Unified LP/MILP API over multiple solver backends (HiGHS, CBC, etc.).
+               Recommended for future constraint-based rule-to-backend assignment
+               when targeting multi-stage ASICs.}
+}
+
+@online{selen,
+  title     = {selen: Constraint Satisfaction Problem Solver for Rust},
+  url       = {https://crates.io/crates/selen},
+  version   = {0.15.5},
+  note      = {Pure Rust CSP solver. Worth evaluating as lighter-weight alternative
+               to good\_lp for rule assignment optimization.}
+}
+```
