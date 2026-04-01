@@ -704,3 +704,185 @@ trait RuleAssigner {
     ) -> Result<RuleAssignment, AssignmentError>;
 }
 ```
+
+---
+
+## Compiler design principles
+
+This system is more analogous to a **database query optimizer** than a language compiler:
+the user writes a logical specification (match-action rules), the compiler analyzes it
+(overlap detection, capability checking), and produces a physical plan (backend-specific
+table configurations). But several universal compiler principles apply.
+
+### Principle 1: Pass-based architecture with distinct IR types (nanopass-inspired)
+
+Decompose the compiler into many small passes, each doing one transformation between
+two explicitly-defined IR types.
+
+**Recommended pass pipeline:**
+
+```
+Pass 1: Parse/Ingest   (UserConfig       → RawRuleSet)
+Pass 2: Validate        (RawRuleSet       → ValidRuleSet)       — type errors reported
+Pass 3: Normalize       (ValidRuleSet     → NormalizedRuleSet)   — canonicalize field order, etc.
+Pass 4: OverlapAnalysis (NormalizedRuleSet→ AnnotatedRuleSet)    — overlap pairs computed
+Pass 5: Assign          (AnnotatedRuleSet → AssignedRuleSet)     — backend assignment per rule
+Pass 6: InsertTraps     (AssignedRuleSet  → CompleteRuleSet)     — trap rules added
+Pass 7: Lower           (CompleteRuleSet  → BackendConfigs)      — per-backend IR emission
+Pass 8: Report          (all IRs          → CompilationReport)   — "EXPLAIN" output
+```
+
+Each pass is a function `IR_n → Result<IR_n+1, Vec<Diagnostic>>`. Rust enums model
+IR variants naturally, and exhaustive pattern matching ensures a pass handles every case.
+
+**Why this matters for maintainability**: each pass has a tiny, well-defined contract.
+A 8-pass compiler is easier to test and debug than a 2-pass compiler. New passes can be
+inserted without modifying existing ones.
+
+**Reference**: Sarkar, Waddell, Dybvig. "A Nanopass Infrastructure for Compiler Education."
+SFPW 2004. Originally for language compilers, but the principle (many small passes, distinct
+types per pass) applies to any compiler-like system.
+
+### Principle 2: Progressive lowering with 4 IR levels (MLIR-inspired)
+
+MLIR's key insight: compilers need multiple IRs at different abstraction levels, with
+well-defined lowering between them. Don't try to go from user rules to DPDK ACL field
+definitions in one step.
+
+**Recommended IR levels:**
+
+| Level | Name              | Contents                                                                                          | Analogous to   |
+| ----- | ----------------- | ------------------------------------------------------------------------------------------------- | -------------- |
+| 1     | **Frontend IR**   | User-facing rules. Symbolic names, high-level constructs ("match VRF X"), human-readable actions. | SQL query text |
+| 2     | **Core IR**       | Validated, normalized rules. Fields resolved to concrete bit ranges. Overlap annotations.         | Logical plan   |
+| 3     | **Assigned IR**   | Rules partitioned by backend. Trap rules inserted. Still backend-agnostic representation.         | Physical plan  |
+| 4     | **Backend IR(s)** | One per backend. DPDK ACL field defs, rte_flow patterns, tc-flower specs. Direct API inputs.      | Execution plan |
+
+MLIR also teaches that **lowering can be incremental** — you can mix abstraction levels
+in the same IR (some rules already lowered to backend IR while others are still at the
+core level). This is useful when different rules go to different backends.
+
+### Principle 3: Compilation report as first-class output (query optimizer EXPLAIN)
+
+Every major database supports `EXPLAIN` to show what the optimizer decided and why.
+This is essential for this system. Users will ask "why didn't my rule get offloaded?"
+
+The compiler should produce a structured **CompilationReport**:
+
+```rust
+struct CompilationReport {
+    /// Per-rule: where it was assigned and why.
+    rule_assignments: Vec<RuleAssignmentInfo>,
+    /// Overlap pairs detected.
+    overlaps: Vec<(RuleId, RuleId)>,
+    /// Synthetic trap rules inserted.
+    trap_rules: Vec<TrapRuleInfo>,
+    /// Rules that couldn't be offloaded, with reasons.
+    fallbacks: Vec<FallbackReason>,
+    /// Backend table layouts chosen by the compiler.
+    table_layouts: Vec<TableLayoutInfo>,
+}
+
+struct FallbackReason {
+    rule_id: RuleId,
+    attempted_backend: BackendId,
+    reason: FallbackCause, // e.g. UnsupportedAction, OverlapConflict, CapacityExceeded
+    detail: String,        // "Rule 47 requires VXLAN decap, ConnectX-7 port 0 does not support it"
+}
+```
+
+This isn't an afterthought — design the IR to carry provenance information through
+every pass so the report can explain the full decision chain.
+
+### Principle 4: Diagnostics are structured data, not strings
+
+Follow the `rustc` / `rust-analyzer` model:
+
+- A diagnostic is a struct: `{ severity, rule_id, message, location, notes, suggestions }`
+- **Accumulate, don't abort**: each pass collects all diagnostics and returns them.
+  The user sees all problems at once, not one at a time.
+- Severity levels: Error (compilation fails), Warning (intentional overlap?),
+  Info (backend assignment decisions), Hint (suggestions for better offloadability)
+- Consider diagnostic codes (e.g. `E012: action not supported by backend`) with
+  a `--explain E012` mechanism for detailed descriptions
+
+Crates: `miette` or `ariadne` for rendering diagnostics with source context.
+
+### Principle 5: Property-based testing of passes (the highest-value testing strategy)
+
+Each pass has a small contract → each pass is independently testable. But the most
+valuable test is **end-to-end semantic equivalence**:
+
+> For any input packet, the compiled tables must produce the same classification
+> result as a naive linear-scan reference implementation.
+
+Generate random rule sets and random packets with `proptest`, compile the rules,
+classify the packets through both the compiled backend and the reference implementation,
+and assert identical results.
+
+**Additional property tests per pass:**
+
+| Pass            | Property                                                                                     |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| Validate        | Invalid rules always rejected; valid rules always pass                                       |
+| OverlapAnalysis | Overlap pairs are symmetric; non-overlapping rules have disjoint match regions               |
+| Assign          | Every rule assigned to exactly one backend; backend constraints satisfied                    |
+| InsertTraps     | No priority inversion possible (for any overlapping pair with split backends, a trap exists) |
+| Lower           | Output satisfies backend-specific invariants (field alignment, capacity limits)              |
+| Round-trip      | `parse(pretty_print(ir)) == ir` for serializable IRs                                         |
+
+### Principle 6: Declarative lowering rules (Cranelift ISLE-inspired)
+
+Cranelift uses **ISLE** (Instruction Selection Lowering Expressions) — a DSL for writing
+pattern-matching lowering rules. Instead of imperative code translating rules to backend
+entries, consider declarative rules:
+
+```
+// Pseudocode — not actual ISLE syntax
+(match_criterion (ipv4_src addr prefix_len))
+  => (dpdk_acl_field (type MASKED) (offset 12) (size 4) (value addr) (mask prefix_to_mask(prefix_len)))
+
+(match_criterion (dst_port low high))
+  => (dpdk_acl_field (type RANGE) (offset 22) (size 2) (value low) (mask high))
+```
+
+This makes lowering **auditable** — you can review the rules and confirm correctness
+without tracing imperative code paths. For the first implementation, Rust match statements
+serve the same purpose (and are simpler). But if backend count grows, consider extracting
+a declarative layer.
+
+### Principle 7: The Cascades "enforcer" pattern for trap rules
+
+In the Cascades query optimizer framework (Graefe 1995), when the chosen physical plan
+doesn't naturally satisfy a required property (e.g. sort order), the optimizer inserts
+an **enforcer** node (e.g. a Sort). The enforcer has a known cost and is transparent
+to the rest of the plan.
+
+Trap rules are exactly this: they are enforcers that ensure priority correctness when
+the physical plan (backend assignment) doesn't naturally provide it. Modeling them as
+a dedicated pass (not scattered throughout the assignment logic) keeps the architecture
+clean and testable.
+
+### What NOT to do
+
+- **Don't build a general-purpose optimization framework.** The optimizations are domain-
+  specific. A few well-chosen passes beat an extensible rewrite engine for this scale.
+- **Don't use the visitor pattern where match statements work.** Rust exhaustive matching
+  is simpler and catches missing cases at compile time.
+- **Don't over-abstract the IR.** This isn't LLVM — you don't need infinite extensibility.
+  4 IR levels is enough. If you find yourself defining "IR combinators", step back.
+- **Don't sacrifice readability for cleverness.** Compiler code has a reputation for being
+  impenetrable. Fight that. Each pass should be a straightforward function that a new
+  engineer can read and understand in 30 minutes.
+
+### Key references
+
+| Topic                | Reference                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
+| Nanopass design      | Sarkar, Waddell, Dybvig. "A Nanopass Infrastructure for Compiler Education." SFPW 2004           |
+| Multi-level IR       | Lattner et al. "MLIR: Scaling Compiler Infrastructure for Domain-Specific Computation." CGO 2021 |
+| Query optimization   | Graefe. "The Cascades Framework for Query Optimization." IEEE Data Eng. Bulletin, 1995           |
+| E-graphs             | Willsey et al. "egg: Fast and Extensible Equality Saturation." POPL 2021                         |
+| Network updates      | Reitblatt et al. "Abstractions for Network Update." SIGCOMM 2012                                 |
+| Diagnostic rendering | `miette` crate — https://github.com/zkat/miette                                                  |
+| Property testing     | `proptest` crate — https://github.com/proptest-rs/proptest                                       |
