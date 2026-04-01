@@ -331,4 +331,9 @@ mod test {
             .with_type()
             .for_each(parse_buffer_of_fixed_length::<{ HEADER_LEN_USIZE + 1 }>);
     }
+
+    #[test]
+    fn should_fail() {
+        panic!("this test SHOULD fail");
+    }
 }
