@@ -22,22 +22,26 @@ The plan's own analysis identifies fatal issues:
 
 > > Yes I agree. This plan is functionally unworkable. Let's just remove theory 1 from consideration.
 
-### Theory 2 (typestate from `net`) - significantly weaker than presented
+### Theory 2 (typestate from `net`) - now viable, recommended direction
 
-**Key finding: the `net` crate does NOT have typestate builders.** It uses `derive_builder`
-(runtime fluent builders with `HeadersBuilder::default()`), not compile-time typestate enforcement
-with phantom types. The plan.md's "work in progress typestate driven packet builders" appear to
-be aspirational, not implemented. This undercuts Theory 2's main premise.
+**Update**: The `net` crate now has a fully implemented typestate builder
+(`ValidHeadersBuilder` in `net/src/headers/valid_builder.rs`, ~2500 lines, 48+ tests).
+It uses phantom type parameters (`Empty → WithEth → WithNet → WithTransport`) to enforce
+layer ordering at compile time, with runtime enums for disjoint choices (IPv4/IPv6,
+TCP/UDP/ICMP) and build-time cross-layer validation.
 
-Additional problems:
+This changes the assessment — a **symmetric match builder** using the same pattern is
+now the recommended approach. See the detailed analysis in the "Typestate match builder"
+section below.
 
-- `net` types validate away invalid values (multicast src addrs, zero ports, zero VNI).
-  But matching on these is essential for rejection rules. The `flow` module explicitly uses
-  **raw header types** for this reason.
-- Metadata fields (VNI, VRF, interface index) don't fit the packet header model.
-- Symmetry between "constructing a packet" and "constructing a match pattern" is imperfect —
-  a match allows wildcards, ranges, and masks on every field, which has no analog in packet
-  construction.
+Remaining concerns (addressable):
+- `net` types validate **values** (rejecting multicast src addrs, zero ports). A match
+  builder should validate only **structure** (layer ordering), not values — any value is
+  fair game for matching, including invalid ones for rejection rules.
+- Metadata fields (VNI, VRF, interface index) don't fit the packet-layer hierarchy, but
+  can be handled as orthogonal methods available on all builder states.
+- A match allows wildcards, ranges, and masks on every field, which has no analog in
+  packet construction — the match builder is strictly more flexible per-field.
 
 ### Pure compile-time table definition - deprioritize
 
@@ -55,11 +59,18 @@ backend — they're a **rule overlap analyzer** for the compilation phase.
 
 ### The problem
 
-Each ACL rule defines a region in multi-dimensional space:
+Each ACL rule defines a region in multi-dimensional space. The original plan identified
+three match flavors; there are actually four:
 
-- Exact match (proto=6) → degenerate range [6, 6]
-- LPM (192.168.1.0/24) → range [192.168.1.0, 192.168.1.255]
-- Range (ports 1024-65535) → range [1024, 65535]
+1. **Exact match** (proto=6) → degenerate range [6, 6]
+2. **LPM / prefix** (192.168.1.0/24) → range [192.168.1.0, 192.168.1.255]
+3. **Range** (ports 1024-65535) → range [1024, 65535]
+4. **Mask / bitmask** (TCP flags & SYN) → value + mask, for matching bit fields
+
+Note: exact match is a degenerate case of mask (mask = all ones). LPM is a specific
+pattern of mask (contiguous high bits). Range is fundamentally different — it cannot
+be expressed as a single mask operation. The DPDK ACL library natively supports all
+three of its field types: `MASK`, `RANGE`, and `BITMASK`.
 
 Some backends handle overlapping rules gracefully (DPDK ACL: highest priority wins).
 Others do NOT — `rte_flow`, tc-flower, P4 tables, hardware offload engines may give
@@ -202,16 +213,213 @@ You don't run both backends on every packet. Instead:
 
 ---
 
+## Typestate match builder — recommended approach for Layer 1
+
+The `ValidHeadersBuilder` (`net/src/headers/valid_builder.rs`) now provides a fully
+implemented typestate builder for packet construction. A **symmetric match builder**
+using the same pattern is the recommended approach for defining match rules.
+
+### How ValidHeadersBuilder works
+
+The builder uses four phantom type states to enforce layer ordering:
+
+```
+Empty → WithEth → WithNet → WithTransport
+```
+
+- Methods are only defined on specific `impl` blocks (e.g. `.ipv4()` only on `WithEth`)
+- Disjoint choices (IPv4/IPv6, TCP/UDP/ICMP) are enums resolved at runtime
+- Cross-layer constraints (ICMP4 requires IPv4) are validated at `build()` time
+- Derived fields (EthType, NextHeader, payload lengths) are auto-computed
+
+### Adaptation for match definitions
+
+A `MatchBuilder` would mirror the packet builder's structure but with different semantics:
+
+```rust
+pub struct MatchEmpty;
+pub struct MatchWithEth;
+pub struct MatchWithNet;
+pub struct MatchWithTransport;
+
+#[must_use = "match builders do nothing unless `.build()` is called"]
+pub struct MatchBuilder<State> {
+    criteria: Vec<MatchCriterion>,
+    metadata: Vec<MetadataCriterion>,
+    _state: PhantomData<State>,
+}
+```
+
+**State transitions:**
+
+| From | Method | To | Notes |
+|------|--------|----|-------|
+| `MatchEmpty` | `.eth(...)` | `MatchWithEth` | Optional: `.eth()` with no args = match any ethernet |
+| `MatchWithEth` | `.ipv4(...)` | `MatchWithNet` | Auto-adds `EthType == 0x0800` |
+| `MatchWithEth` | `.ipv6(...)` | `MatchWithNet` | Auto-adds `EthType == 0x86DD` |
+| `MatchWithNet` | `.tcp(...)` | `MatchWithTransport` | Auto-adds `IpProto == 6` |
+| `MatchWithNet` | `.udp(...)` | `MatchWithTransport` | Auto-adds `IpProto == 17` |
+| `MatchWithNet` | `.icmp4(...)` | `MatchWithTransport` | Auto-adds `IpProto == 1`, requires IPv4 |
+| `MatchWithNet` | `.build(priority)` | `MatchRule` | IP-only match (no transport constraint) |
+| `MatchWithTransport` | `.build(priority)` | `MatchRule` | Full match with transport |
+
+**Metadata methods available on ALL states** (orthogonal to layer ordering):
+
+```rust
+impl<S> MatchBuilder<S> {
+    fn vni(self, vni: Vni) -> Self { ... }
+    fn vni_masked(self, value: u32, mask: u32) -> Self { ... }
+    fn iif(self, iif: InterfaceIndex) -> Self { ... }
+    fn vrf(self, vrf: u32) -> Self { ... }
+    fn vpcd(self, vpcd: VpcDiscriminant) -> Self { ... }
+}
+```
+
+### Example usage
+
+```rust
+// Match TCP traffic to 10.0.0.0/8 port 80
+let rule = MatchBuilder::new()
+    .eth()                                      // match any ethernet frame
+    .ipv4(|ip| ip.dst_prefix(ten_slash_8))      // auto-adds EthType=0x0800
+    .tcp(|tcp| tcp.dst_port(80))                // auto-adds IpProto=6
+    .build(100)?;
+
+// Match any IPv6 UDP traffic from a specific VNI
+let rule = MatchBuilder::new()
+    .vni(my_vni)                                // metadata — available on any state
+    .eth()
+    .ipv6(|_ip| {})                             // auto-adds EthType=0x86DD, wildcard addrs
+    .udp(|_udp| {})                             // auto-adds IpProto=17, wildcard ports
+    .build(50)?;
+
+// Match traffic with TCP SYN flag set (bitmask match)
+let rule = MatchBuilder::new()
+    .eth()
+    .ipv4(|_ip| {})
+    .tcp(|tcp| tcp.flags_masked(TcpFlags::SYN, TcpFlags::SYN))
+    .build(200)?;
+
+// Match for rejection: any frame with multicast source MAC
+let rule = MatchBuilder::new()
+    .eth(|eth| eth.src_mac_masked(0x01_00_00_00_00_00u64, 0x01_00_00_00_00_00u64))
+    .build(1000)?;  // high priority, drop action
+```
+
+### Four match flavors per field
+
+Each field method should support all applicable match types:
+
+| Match type | Method pattern | Example |
+|------------|---------------|---------|
+| **Exact** | `.dst_port(80)` | Port 80 only |
+| **Range** | `.dst_port_range(1024..=65535)` | Ephemeral ports |
+| **Prefix / LPM** | `.dst_prefix(prefix)` | IP prefix match |
+| **Mask / bitmask** | `.flags_masked(value, mask)` | TCP SYN flag |
+
+Exact match is syntactic sugar for mask with `mask = all ones`. LPM is syntactic sugar
+for mask with contiguous high bits. Range is fundamentally distinct — it cannot be
+expressed as a mask operation.
+
+### Key differences from packet builder
+
+| Concern | Packet builder | Match builder |
+|---------|---------------|---------------|
+| **Value validation** | Strict — rejects multicast src MAC, zero ports | **None** — any value is matchable (needed for rejection rules) |
+| **Structural validation** | Enforced via typestate + build-time checks | Same — layer ordering via typestate, cross-layer via build-time |
+| **Field completeness** | Every field must have a value | Omitted fields are **wildcards** |
+| **Field flexibility** | Exact values only | Exact, range, prefix, or mask per field |
+| **Output** | `Headers` (concrete packet headers) | `MatchRule` / `Vec<MatchCriterion>` (compiler input) |
+| **Metadata** | Not applicable (packet content only) | VNI, VRF, iif, etc. via orthogonal methods |
+
+### IPv4/IPv6 disjunction
+
+Same as the packet builder — IPv4 vs IPv6 is an enum resolved at runtime. You cannot
+express "match IPv4 OR IPv6 with different fields" in a single builder chain. Instead,
+create two `MatchRule`s:
+
+```rust
+let v4_rule = MatchBuilder::new().eth().ipv4(|ip| ...).tcp(...).build(10)?;
+let v6_rule = MatchBuilder::new().eth().ipv6(|ip| ...).tcp(...).build(10)?;
+table.add_rules(&[v4_rule, v6_rule]);
+```
+
+The **compiler** handles merging these into an efficient backend representation (DPDK ACL
+supports multiple rule patterns in one table via categories). The user writes two
+type-safe rules; the compiler produces one optimized table.
+
+For convenience, helper functions can generate both variants:
+
+```rust
+fn match_any_ip_tcp(dst_port: u16, priority: i32) -> [MatchRule; 2] {
+    [
+        MatchBuilder::new().eth().ipv4(|_| {}).tcp(|t| t.dst_port(dst_port)).build(priority).unwrap(),
+        MatchBuilder::new().eth().ipv6(|_| {}).tcp(|t| t.dst_port(dst_port)).build(priority).unwrap(),
+    ]
+}
+```
+
+### Pros and cons
+
+**Pros:**
+- Compile-time enforcement of layer ordering — prevents nonsense matches
+- Mirror of familiar packet builder API — low cognitive load for users
+- Auto-derivation of implied criteria (EthType, NextHeader) eliminates bugs
+- Wildcards are natural (omit fields) — simpler than the packet builder
+- Structural validation only — no value restrictions for rejection rules
+- Metadata is orthogonal — clean separation from protocol stack
+- Output is `MatchRule` — feeds directly into the compiler pipeline
+
+**Cons:**
+- IPv4/IPv6 disjunction requires two rules (addressable by helpers + compiler merging)
+- "Match any IP version" requires two rules or a wildcard net transition
+- Not code-level reuse of packet builder — new builder with different semantics, same pattern
+- Sequential construction is somewhat artificial (match criteria are conceptually unordered),
+  but the ordering guides the user through correct layer composition
+- The four match flavors (exact/range/prefix/mask) increase the per-field API surface
+
+---
+
 ## Emerging architecture (3 layers)
 
 ### Layer 1: Match definition (user-facing)
 
-Backend-agnostic rule definitions. Raw fields (like `flow` module) + typed constructors.
+**The `MatchBuilder` (typestate, described above) is the user-facing API.** It produces
+`MatchRule` values — backend-agnostic rule definitions containing only the fields the
+user specified (absent fields are wildcards).
 
-The previous draft showed a fixed `MatchCriterion` enum with all possible fields. This is
-wrong — it would force every DPDK ACL table to be maximally wide, degrading performance.
+The `MatchCriterion` enum is the **internal representation** produced by the builder,
+not something the user constructs directly:
 
-**The table width should be a property of the compiled table, not the rule definition.**
+```rust
+/// Internal: a single match criterion produced by MatchBuilder.
+/// Each rule contains only the fields it needs — absent fields are wildcards.
+enum MatchCriterion {
+    // Auto-inserted by builder based on layer choices:
+    EthType { value: u16, mask: u16 },
+    IpProto { value: u8, mask: u8 },
+    // User-specified via builder methods:
+    Ipv4Src { addr: u32, prefix_len: u8 },
+    Ipv4Dst { addr: u32, prefix_len: u8 },
+    Ipv6Src { addr: u128, prefix_len: u8 },
+    Ipv6Dst { addr: u128, prefix_len: u8 },
+    SrcPort { low: u16, high: u16 },          // range match
+    DstPort { low: u16, high: u16 },          // range match
+    TcpFlags { value: u8, mask: u8 },         // bitmask match
+    // Metadata (orthogonal to protocol stack):
+    Vni { value: u32, mask: u32 },
+    IngressInterface { index: u32 },
+    Vrf { value: u32 },
+}
+
+struct MatchRule {
+    criteria: Vec<MatchCriterion>,
+    priority: i32,
+    action_id: ActionId,
+}
+```
+
+**The table width is a property of the compiled table, not the rule definition.**
 
 The compiler should:
 
@@ -219,32 +427,6 @@ The compiler should:
 2. Build the narrowest possible table(s) for those fields
 3. If rules within a set use disjoint field sets (e.g. some match ports, others don't),
    split them into separate narrower tables
-
-This means the user-facing rule definition should be flexible about which fields are present
-(not a fixed-width struct), and the compiler determines the optimal table layout.
-
-```rust
-/// A single match criterion. The rule only contains the fields it actually needs.
-enum MatchCriterion {
-    EthType { value: u16, mask: u16 },
-    Ipv4Src { addr: u32, prefix_len: u8 },
-    Ipv4Dst { addr: u32, prefix_len: u8 },
-    Ipv6Src { addr: u128, prefix_len: u8 },
-    Ipv6Dst { addr: u128, prefix_len: u8 },
-    IpProto { value: u8, mask: u8 },
-    SrcPort { low: u16, high: u16 },
-    DstPort { low: u16, high: u16 },
-    Vni { value: u32, mask: u32 },
-    IngressInterface { index: u32 },
-}
-
-struct MatchRule {
-    /// Only the fields this rule cares about. Absent fields are wildcards.
-    criteria: Vec<MatchCriterion>,
-    priority: i32,
-    action_id: ActionId,
-}
-```
 
 The compiler then groups rules by their **field signature** (the set of MatchCriterion
 variants present) and compiles each group into a separate, optimally-narrow backend table.
@@ -875,6 +1057,140 @@ clean and testable.
   impenetrable. Fight that. Each pass should be a straightforward function that a new
   engineer can read and understand in 30 minutes.
 
+### Principle 8: Incremental compilation and the update problem
+
+Traditional compilers and query optimizers are batch-oriented: compile everything from
+scratch. But ACL rules change at runtime (BGP updates, policy changes). The compiler
+must interact with the update/generation-swap mechanism (section 9) efficiently.
+
+#### The incremental boundary
+
+Not all passes can be incremental. The compilation pipeline has a natural split:
+
+| Pass | Incremental? | Rationale |
+|------|-------------|-----------|
+| Validate | **Yes** | Stateless per-rule. Only validate new/changed rules. |
+| OverlapAnalysis | **Partially** | Adding a rule: insert into trie structures, check overlaps only against existing rules it touches. Removing: remove and recheck affected pairs. The overlap *graph* is incrementally maintainable. |
+| Assign | **Partially** | New rule may only affect its own assignment + trap rules for overlap partners. But cascading effects possible (new trap exceeds capacity → must reassign others). |
+| InsertTraps | **Recompute per overlap group** | Trap correctness depends on the full assignment within a connected overlap component. |
+| Lower (DPDK ACL) | **No — batch only** | `rte_acl_build()` rebuilds the entire compiled trie. Cannot incrementally add a rule. |
+| Lower (rte_flow) | **Yes** | `rte_flow_create/destroy` are per-rule. Hardware supports incremental. |
+| Lower (tc-flower) | **Yes** | Per-filter install/remove via netlink. |
+
+**The critical observation**: the DPDK ACL software backend forces a full trie rebuild,
+but the analysis passes (overlap, assignment, trap insertion) CAN be incremental. The
+hardware backends (rte_flow, tc-flower) support per-rule incremental updates. So the
+most valuable incrementality is in the **analysis cache**.
+
+#### This is materialized view maintenance
+
+The compiled tables are **materialized views** of the rule set:
+
+```
+source:  rules[]                  (base table)
+view 1:  overlap_graph            (derived from rules)
+view 2:  backend_assignments      (derived from overlap_graph + backend capabilities)
+view 3:  trap_rules               (derived from assignments + overlaps)
+view 4:  dpdk_acl_context         (derived from assigned rules — batch rebuild)
+view 5:  rte_flow_rules           (derived from assigned rules — incremental)
+```
+
+When the source changes, each derived view needs refreshing. The question is: full
+refresh (rebuild everything) or incremental refresh (update only what changed)?
+
+Database literature on **incremental view maintenance (IVM)** is directly applicable:
+- **Full materialization**: rebuild from scratch. Simple, correct, no stale state bugs.
+  Cost: O(n) per update where n = total rule count.
+- **Incremental maintenance**: propagate deltas through the view definitions. Complex but
+  cost proportional to the *change size*, not the total rule count.
+- **Hybrid**: incrementally maintain cheap views (overlap graph), batch-rebuild expensive
+  ones (DPDK ACL context).
+
+#### The Salsa/rust-analyzer model
+
+Salsa (the incremental computation framework used by rust-analyzer) provides the most
+principled approach for incremental compilation in Rust:
+
+- Define the compiler as a DAG of **queries** with explicit inputs and dependencies
+- When an input changes, salsa automatically determines which queries are invalidated
+- Only invalidated queries are recomputed; everything else is cached
+- The framework handles memoization, dependency tracking, and cycle detection
+
+For this system, the queries would be:
+
+```rust
+// Pseudocode — salsa-style query definitions
+#[salsa::input]
+fn rules(db: &dyn Db) -> Arc<Vec<MatchRule>>;
+
+#[salsa::tracked]
+fn validated_rules(db: &dyn Db) -> Arc<Vec<ValidRule>>;
+
+#[salsa::tracked]
+fn overlap_graph(db: &dyn Db) -> Arc<OverlapGraph>;
+
+#[salsa::tracked]
+fn backend_assignment(db: &dyn Db) -> Arc<AssignedRuleSet>;
+
+#[salsa::tracked]
+fn trap_rules(db: &dyn Db) -> Arc<Vec<TrapRule>>;
+
+#[salsa::tracked]
+fn dpdk_acl_config(db: &dyn Db) -> Arc<DpdkAclConfig>;  // always rebuilds if assignment changes
+```
+
+When `rules` changes, salsa recomputes `validated_rules` (only for changed rules),
+then checks if `overlap_graph` changed (it might not if the new rule doesn't overlap
+with anything), and so on. If the overlap graph didn't change, everything downstream
+is cached.
+
+#### Interaction with generation tagging (section 9)
+
+The compiler's incrementality is **orthogonal** to the runtime's atomicity mechanism:
+
+```
+1. Rule change arrives (add/remove/modify)
+2. Compiler runs (full or incremental) → produces new compiled state
+3. Generation swap protocol (section 9) atomically transitions to new state
+4. Old state drained and freed
+```
+
+Whether step 2 is full-rebuild or incremental doesn't affect steps 3-4. The generation
+swap cares about the *output* (new compiled tables), not how they were produced.
+
+#### Adaptive re-optimization (profile-guided)
+
+Database query optimizers increasingly support **adaptive execution** — re-optimizing
+based on runtime statistics (Spark AQE, CockroachDB adaptive execution). The analog here:
+
+- **Hot-rule promotion**: if a software-fallback rule has a very high hit count, the
+  compiler could try harder to offload it (splitting it, restructuring overlaps, etc.)
+- **Trap-rule overhead monitoring**: if trap rules account for a large fraction of
+  hardware table capacity or traffic, the compiler could consolidate (move more rules
+  to software to reduce trap count)
+- **Backend rebalancing**: if one NIC's hardware tables are full but another has space,
+  the compiler could redistribute rules
+
+This is essentially **JIT-style profile-guided optimization for match-action tables**.
+It's an advanced feature (not phase 1), but the architecture should not preclude it.
+The compilation report (principle 3) already collects the data needed to drive this:
+hit counters, trap overhead, capacity utilization.
+
+#### Recommended phasing
+
+| Phase | Approach | Complexity |
+|-------|----------|------------|
+| 1 | **Full recompilation** on any change. Build new context, left-right swap. | Simple, correct. Sufficient for BGP-timescale (~ms) updates with ≤10K rules. |
+| 2 | **Incremental analysis** with batch backend rebuild. Cache overlap graph and backend assignments. Only rebuild DPDK ACL context (the expensive part). | Moderate. Saves re-analyzing unchanged rules. |
+| 3 | **Salsa-style dependency tracking** for fine-grained incrementality. Automatic invalidation. | Significant investment. Warranted only if compile latency becomes a bottleneck. |
+| 4 | **Adaptive re-optimization** based on runtime stats. | Research-grade. Monitor hit counters and trap overhead, feed back into compiler. |
+
+Phase 1 is the right starting point. The left-right swap pattern (already in `flow-filter`)
+handles the atomic transition. The compiler rebuilds everything, swaps, done. Move to
+phase 2 only if profiling shows that compilation latency is a problem for the workloads
+that matter (the NAT exact-match case is already handled by the hash table, so the
+compiler only runs for policy-rule updates).
+
 ### Key references
 
 | Topic                | Reference                                                                                        |
@@ -884,5 +1200,7 @@ clean and testable.
 | Query optimization   | Graefe. "The Cascades Framework for Query Optimization." IEEE Data Eng. Bulletin, 1995           |
 | E-graphs             | Willsey et al. "egg: Fast and Extensible Equality Saturation." POPL 2021                         |
 | Network updates      | Reitblatt et al. "Abstractions for Network Update." SIGCOMM 2012                                 |
+| Incremental comp.    | Salsa framework — https://salsa-rs.github.io/salsa/                                              |
+| Incremental view maint. | Gupta & Mumick. "Maintenance of Materialized Views: Problems, Techniques, and Applications." 1995 |
 | Diagnostic rendering | `miette` crate — https://github.com/zkat/miette                                                  |
 | Property testing     | `proptest` crate — https://github.com/proptest-rs/proptest                                       |
