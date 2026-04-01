@@ -437,13 +437,180 @@ fn match_any_ip_tcp(dst_port: u16, priority: i32) -> [MatchRule; 2] {
 
 ---
 
-## Emerging architecture (3 layers)
+## Parser-derived type dispatch (bit vector encoding)
+
+### The idea
+
+The space of all possible ethernet frames can be modeled as a directed graph of header
+types (see `type-space.mmd`). Each node represents a header layer, and edges represent
+the possible next-header choices. The parser's traversal of this graph when parsing a
+packet is a **walk** through the type space.
+
+If we encode this walk as a **bit vector** — using `ceil(log2(out_degree + 1))` bits at
+each node to record which edge was taken (including an implicit "miss" edge for unknown
+protocols) — the resulting bit vector acts as a **type tag** that uniquely identifies the
+packet's header structure.
+
+This type tag can then be used as a **first-level exact-match dispatch** (jump table /
+hash lookup) to select the right narrow ACL table for classification.
+
+### Bit vector encoding
+
+For the type-space graph in `type-space.mmd`:
+
+```
+Node              Out-edges (incl. implicit miss)    Bits
+─────────────────────────────────────────────────────────
+ethertype         {arp, ipv4, ipv6, vlan, qinq, miss}  3
+ipv4 next-header  {tcp, udp, icmp4, miss}               2
+ipv6 next-header  {tcp, udp, icmp6, miss}               2
+udp encap         {vxlan, geneve, miss}                  2
+```
+
+Examples:
+- `Eth → IPv4 → TCP`: 3 + 2 = **5 bits**
+- `Eth → VLAN → IPv6 → UDP`: 3 + 3 + 2 + 2 = **10 bits**
+- `Eth → VLAN → IPv4 → UDP → VXLAN → Eth → IPv4 → TCP`: outer 3+2+2 + inner 3+2 = **12 bits**
+
+The bit vector space is small enough for a direct jump table or hash map. Only populated
+entries exist (the space is sparse but that's fine for a hash lookup).
+
+### What this solves
+
+1. **Table narrowing** — each narrow table only has fields relevant to its header stack.
+   IPv4 tables don't waste space on IPv6 address fields. Directly addresses the table
+   width concern.
+
+2. **IPv4/IPv6 disambiguation** — different bit vectors, different tables. They can
+   NEVER overlap. The open question from section 4 (IPv4/IPv6 disjunction) vanishes.
+
+3. **Smaller n per table** — overlap analysis runs on rules that could actually interact,
+   not the full rule set. Shrinks the n in O(n log n).
+
+4. **Principled table decomposition** — the compiler splits tables based on a formal
+   property of the protocol graph, not ad-hoc field-signature heuristics.
+
+### Connection to the MatchBuilder typestate
+
+The MatchBuilder's state transitions (Empty → WithEth → WithNet → WithTransport) are
+literally a walk through this graph. **The builder can automatically compute the bit
+vector as it transitions:**
+
+```rust
+impl MatchBuilder<MatchWithEth> {
+    fn ipv4(self, configure: impl FnOnce(&mut Ipv4Match)) -> MatchBuilder<MatchWithNet> {
+        // Appends "ipv4" edge encoding to the bit vector
+        self.type_tag.push_bits(ETHERTYPE_IPV4_CODE, 3);
+        // Auto-inserts EthType == 0x0800 criterion
+        // ...
+    }
+}
+```
+
+Rules built with the same builder path produce the **same type tag** → land in the
+**same narrow table**. This is a natural unification of the typestate API with the
+compiler's table decomposition.
+
+### Runtime cost
+
+Computing the bit vector during parsing is essentially free — the parser already makes
+these decisions. Store the type tag in `PacketMeta` as a small integer field. The
+first-level dispatch is a hash lookup on a small key — O(1) and cache-friendly.
+
+```rust
+// In PacketMeta:
+pub type_tag: TypeTag,  // e.g. u16 or u32, depending on max path depth
+
+// First-level dispatch in classify:
+let table = table_map.get(&packet.meta.type_tag)
+    .unwrap_or(&default_table);
+table.classify(packet);
+```
+
+### Semi-degenerate transitions
+
+Not all graph edges represent meaningful type-space transitions. Some are structurally
+present but semantically degenerate:
+
+**VLAN 0 (priority-tagged frames)**: A VLAN tag with VID 0 is a "priority tag" — it
+carries QoS information but does not indicate VLAN membership. The frame is logically
+untagged despite having a VLAN header. In the type-space graph, the `ethertype → vlan`
+edge is taken, but the resulting header structure is functionally equivalent to an
+untagged frame (same fields are available for matching, same actions are valid).
+
+Options for handling semi-degenerate transitions:
+
+**A) Encode them as distinct types anyway.** VLAN-0 and untagged frames get different
+bit vectors and different narrow tables. This is correct but may split the rule set
+unnecessarily — a rule that says "match all TCP port 80" would need entries in both
+the untagged-IPv4-TCP table and the VLAN0-IPv4-TCP table.
+
+**B) Collapse degenerate transitions.** The compiler recognizes that VLAN 0 exposes
+the same match/action space as untagged, and maps them to the same bit vector. Rules
+apply to both without duplication. The type-space graph has a "collapse" annotation:
+
+```
+vlan(vid=0) → ethertype   [collapse to: untagged → ethertype]
+```
+
+**C) Treat it as a compiler optimization.** The user writes rules against the full
+type space (including VLAN 0 as distinct). The compiler detects that two type tags
+expose identical match fields and merges their tables. This is the most general but
+requires the compiler to reason about field-set equivalence.
+
+Option B is likely the right default — VLAN 0 is a well-known edge case, and collapsing
+it is a simple annotation on the type-space graph. Option C is the general fallback for
+future semi-degenerate cases.
+
+Other potential semi-degenerate transitions:
+- **QinQ outer tag with pass-through inner**: similar to VLAN 0
+- **IP options / extension headers**: may or may not change the available match fields
+  (e.g. IPv6 routing header doesn't change the matchable fields for most ACL purposes)
+- **GRE with vs without key**: both are GRE, but the presence of a key changes the
+  available match space
+
+The type-space graph should model these as distinct edges with optional collapse
+annotations that the compiler can use for table merging. These same annotations also
+define the stable/unstable split of the type-space vector — see "Pathological case:
+semi-degenerate vectors splitting flows" under Optimization 2.
+
+### Bounded depth for cycles
+
+The graph has cycles: `vlan → ethertype → vlan` and `vxlan → ethernet → ...`. The bit
+vector needs bounded depth:
+
+- **VLAN stacking**: cap at `MAX_VLANS` (already 4 in the packet builder). Each VLAN
+  traversal adds 3 bits. 4 VLANs = 12 extra bits.
+- **Tunneling**: concatenate "outer path" + "inner path" as separate segments. Each
+  tunnel restart begins a new sub-vector. Cap at max tunnel depth (e.g. 2 for
+  VXLAN-in-VXLAN).
+
+### Metadata is orthogonal
+
+VNI, VRF, interface index are independent of the header structure. They should NOT be
+encoded in the type tag — that would multiply tables without benefit (all those tables
+would have the same field layout). Instead, metadata is handled as additional criteria
+in the narrow table, after the type dispatch.
+
+---
+
+## Emerging architecture (3 layers + type dispatch)
+
+### Layer 0: Type dispatch (parser-derived)
+
+The parser computes a type tag (bit vector encoding of its traversal path through the
+protocol type-space graph) and stores it in `PacketMeta`. This tag is used as a
+first-level exact-match dispatch key to select the appropriate narrow ACL table.
+
+The `MatchBuilder` automatically computes the type tag during rule construction,
+ensuring that rules are compiled into the correct narrow table.
 
 ### Layer 1: Match definition (user-facing)
 
 **The `MatchBuilder` (typestate, described above) is the user-facing API.** It produces
 `MatchRule` values — backend-agnostic rule definitions containing only the fields the
-user specified (absent fields are wildcards).
+user specified (absent fields are wildcards). Each `MatchRule` carries a `type_tag`
+computed by the builder, which the compiler uses for table placement.
 
 The `MatchCriterion` enum is the **internal representation** produced by the builder,
 not something the user constructs directly:
@@ -842,7 +1009,101 @@ Why aggregate at read time rather than increment a shared counter on the hot pat
 - The analogy to inlined-function code coverage is exact: the coverage tool aggregates
   counts from all inline sites at report time, not at execution time
 
-### 11. Multi-NIC topology coupling
+### 11. Temporal concerns: rule aging and stateful actions
+
+Two distinct temporal concerns affect the design:
+
+#### Rule aging (idle timeout / TTL)
+
+Some rule types "age out" based on hit recency. Dynamic NAT is the canonical example:
+a flow entry lives for N minutes of inactivity, then is removed.
+
+Requirements:
+
+- Per-rule last-hit timestamp (or hit counter + periodic sweep)
+- Timer/sweep mechanism that triggers removal of expired entries
+- Integration with the update path (removal triggers recompilation or incremental delete)
+
+**Impact on this design**: We already scoped dynamic NAT to the hash table fast path
+(section 7, "Scope boundary: static policy rules vs. dynamic flow state"), which
+simplifies this — hash table entries support TTLs natively without affecting compiled
+trie structures.
+
+If _policy rules_ ever need aging (e.g. "temporary permit for 60 seconds"), the compiler
+would need to handle scheduled removal + rebuild on expiry. This would naturally integrate
+with the generation-swap mechanism (section 9): expiry triggers a new compilation with
+the rule removed, then generation swap.
+
+Hardware offload complicates aging — hardware flow entries may have their own aging
+mechanisms (e.g. `rte_flow` action `RTE_FLOW_ACTION_TYPE_AGE`). The compiler would need
+to set aging parameters during lowering and handle aging notifications from hardware.
+
+#### Rate limiters and stateful self-interacting actions
+
+Rate limiters (policers, shapers, token buckets) are fundamentally different from
+everything else in this design: their behavior is a **function of their own hit history**.
+A token bucket's drop/pass decision depends on how many packets have hit it recently.
+
+This introduces **shared mutable state on the hot path** — architecturally unlike
+stateless match-action rules where the action is a pure function of the matched packet.
+
+**How this fits the architecture:**
+
+The match determines _which_ rate limiter applies; the rate limiter itself is a
+**separate stateful object** referenced by ID, not inline action logic:
+
+```rust
+enum Action {
+    // Stateless actions (pure function of the packet):
+    Forward { port: PortId },
+    Drop,
+    SetField { field: FieldId, value: u64 },
+    PushVlan { vid: u16 },
+
+    // Stateful action references (shared mutable state):
+    Police { meter_id: MeterId },      // token bucket / leaky bucket
+    Count { counter_id: CounterId },   // already discussed in section 10
+    Age { timeout_id: TimeoutId },     // idle timeout tracking
+}
+```
+
+Rate limiters / meters are **decoupled from the match-action table** and managed
+independently:
+
+```rust
+struct MeterTable {
+    meters: Vec<Meter>,  // token bucket state, rate config, burst config
+}
+```
+
+**Hardware support**: Most NICs and ASICs support metering natively:
+
+- `rte_flow`: `RTE_FLOW_ACTION_TYPE_METER` references a meter object
+- P4: meter externs with `direct` or `indirect` binding
+- tc-flower: `tc action police` with rate/burst parameters
+
+The compiler's role for rate limiters:
+
+1. Allocate meter IDs and map logical meters to backend meter objects
+2. Validate that the target backend supports metering
+3. If not: fall through to software metering (atomic counters + timestamp)
+4. Handle the fact that a **single logical meter may be referenced by multiple rules**
+   across multiple backend tables — the meter state must be shared, not duplicated
+
+**Hot-path contention**: Software rate limiters that are hit by multiple cores need
+either per-core sharding (with periodic reconciliation) or atomic operations on shared
+state. Per-core sharding is more performant but less precise. The choice depends on
+the required accuracy of the rate limit.
+
+**Implication for the action model**: Actions are not purely "ordered sequences of
+frame mutations" (section 3). Some actions are **stateful references** that read and
+write external state. The compiler's action validation (section 3) needs to distinguish:
+
+- **Frame-mutating actions**: ordered, stateless, precondition/postcondition model
+- **Stateful reference actions**: unordered w.r.t. frame state, but need resource
+  allocation (meter IDs, counter IDs, timeout handles) and backend capability checks
+
+### 12. Multi-NIC topology coupling
 
 When the dataplane spans multiple distinct NICs (e.g. two ConnectX-7 cards, not two ports
 on one card), hardware offload becomes topology-aware:
@@ -881,7 +1142,7 @@ can prove the entire match+action chain is expressible on a single NIC. This is 
 optimistic offloading with hard-to-debug cross-NIC failures. The compiler should report
 _why_ a rule wasn't offloaded (for debugging), not silently degrade.
 
-### 12. Constraint solver libraries — analysis
+### 13. Constraint solver libraries — analysis
 
 The rule-to-backend assignment problem is inherently a constrained optimization:
 
@@ -943,6 +1204,376 @@ trait RuleAssigner {
     ) -> Result<RuleAssignment, AssignmentError>;
 }
 ```
+
+### 14. Conntrack, NAT64, and stateful pipeline actions
+
+#### Corrected action taxonomy
+
+Investigation of the actual DPDK API [dpdk-rte-flow-guide] [dpdk-nat64-patch]
+reveals that conntrack and NAT64 are simpler and more decoupled than initially feared.
+The action taxonomy has three categories, but they are differently composed than
+originally described:
+
+**Category 1: Stateless frame mutation.** Pure function of the packet.
+`PushVlan`, `PopVlan`, `SetField`, `Forward`, and — importantly — **`NAT64`**.
+
+**Category 2: Stateful match enrichment.** Observes the packet, updates shared state,
+and produces matchable metadata. Does NOT modify the packet.
+`Police`, `Count`, `Age`, and — importantly — **`Conntrack`**.
+
+**Category 3: Stateful frame mutation.** Would combine categories 1 and 2 — mutates
+the packet based on runtime state. **No rte_flow action is in this category by itself.**
+However, *compound action sequences* that combine conntrack + SetField effectively
+create this behavior.
+
+```rust
+enum Action {
+    // Category 1: stateless frame mutation
+    Forward { port: PortId },
+    SetField { field: FieldId, value: u64 },
+    PushVlan { vid: u16 },
+    Nat64 { direction: Nat64Direction },  // stateless RFC 6052 rewrite
+
+    // Category 2: stateful match enrichment (don't mutate frame)
+    Police { meter_id: MeterId },
+    Count { counter_id: CounterId },
+    Conntrack { handle: ConntrackHandle }, // observes TCP state, labels packet
+}
+```
+
+#### What conntrack actually does
+
+Conntrack is a **two-phase observe-then-match mechanism** [dpdk-rte-flow-guide]:
+
+**Phase 1 (action):** A conntrack context is created as an indirect action handle via
+`rte_flow_action_handle_create()`. When applied to a flow rule, the hardware conntrack
+engine **observes** each matching packet's TCP flags, sequence numbers, and ACK values.
+It updates its internal TCP state machine (SYN_RECV → ESTABLISHED → FIN_WAIT → etc.)
+and **labels** the packet with the resulting state. The packet bytes are unchanged.
+
+**Phase 2 (match):** Downstream flow rules use `RTE_FLOW_ITEM_TYPE_CONNTRACK` as a
+match criterion, matching on the state label from phase 1:
+
+```
+Table 1 (observe):
+  Rule: match 5-tuple → action: conntrack(handle_A)
+
+Table 2 (act on state):
+  Rule: match conntrack(handle_A) = ESTABLISHED → action: forward
+  Rule: match conntrack(handle_A) = INVALID     → action: drop
+  Rule: match conntrack(handle_A) = NEW         → action: trap to software
+```
+
+Conntrack does NOT perform address/port translation. It does NOT modify the frame.
+It is a **stateful match enrichment** — it expands the set of things downstream rules
+can match on by adding connection-state metadata that doesn't exist in the raw packet.
+
+The conntrack handle is shared across rules for both directions of a flow
+(original + reply). Direction is toggled via `rte_flow_action_handle_update()`.
+State can be queried from software via `rte_flow_action_handle_query()`.
+
+#### What NAT64 actually does
+
+The rte_flow NAT64 action is far simpler than its name suggests [dpdk-nat64-patch]:
+
+```c
+struct rte_flow_action_nat64 {
+    enum rte_flow_nat64_type type;  // RTE_FLOW_NAT64_6TO4 or RTE_FLOW_NAT64_4TO6
+};
+```
+
+One field. No addresses, no ports, no conntrack handle. It is a **stateless header
+rewrite** using the RFC 6052 well-known prefix (`64:ff9b::/96`):
+
+- **6-to-4**: extracts the IPv4 address embedded in the low 32 bits of the IPv6 address
+- **4-to-6**: embeds the IPv4 address into the well-known prefix
+
+It handles IP version, traffic class/TOS, flow label, payload length, next header,
+hop limit/TTL. It explicitly does NOT handle ICMP translation or transport layer ports.
+
+For non-well-known prefixes, the patch notes: "another modify fields can be used after
+the NAT64 to support other modes with different prefix and offset" — meaning you chain
+`NAT64 + SetField` to rewrite addresses post-translation.
+
+**NAT64 is Category 1 (stateless frame mutation)**, not Category 3. It has no runtime
+state. The address mapping is deterministic from the well-known prefix. The compiler
+CAN predict the output. Trap rules are safe for NAT64 alone.
+
+#### Where the real complexity lives: compound stateful NAT
+
+The split-brain concern from the original analysis applies not to any single action
+but to **compound action sequences** that build stateful NAT from primitives:
+
+```
+Software control plane:
+  1. Packet arrives, matches conntrack = NEW
+  2. Software allocates NAT mapping (10.0.0.1:12345)
+  3. Software installs hardware flow rules:
+     - match original 5-tuple → action: set_field(new_addr), set_field(new_port), forward
+     - match reply 5-tuple → action: set_field(orig_addr), set_field(orig_port), forward
+  4. Subsequent packets match the hardware rules (fast path, stateless SetField)
+
+Software aging:
+  5. Conntrack reports ESTABLISHED → flow is active
+  6. Conntrack times out → software removes hardware rules, frees NAT mapping
+```
+
+This is **Option B from the original analysis** (software-primary conntrack), and it
+turns out to be how rte_flow conntrack is designed to be used. The hardware does
+stateless translation on established flows via explicit SetField actions. Software
+manages the state lifecycle (allocation, teardown, timeout).
+
+The trap/cascade concern is now more precisely stated: the **NAT mapping allocation**
+(step 2) must be done in software. Hardware rules for established flows are stateless
+SetField actions that CAN be safely trapped/cascaded. The conntrack state observation
+(phase 1) CAN be split — hardware observes packets it sees, software queries the
+state when it needs to. The split-brain risk is only in the mapping allocation, which
+is inherently a software control-plane operation.
+
+#### Revised implications for the compiler
+
+The fourth validation axis (state coherence) is still needed but applies more narrowly:
+
+1. **Conntrack observation** — can be offloaded. Safe to trap (state is queryable).
+2. **NAT64 (well-known prefix)** — can be offloaded. Safe to trap (stateless).
+3. **SetField for established NAT flows** — can be offloaded. Safe to trap (stateless).
+4. **NAT mapping allocation (conntrack = NEW)** — must be in software. This is the
+   control-plane decision that produces the SetField parameters for steps 2-3.
+
+The compiler's role is to offload the data-plane pieces (conntrack observation,
+stateless rewrites) and ensure the control-plane pieces (mapping allocation, timeout
+management) stay in software. This is a much cleaner separation than "everything
+must be in one place."
+
+**Option C (scope conntrack as a separate pipeline stage) remains the right first
+step.** Conntrack is a distinct pipeline phase that produces matchable metadata.
+The ACL compiler handles the downstream rules that match on conntrack state. The
+conntrack module manages its own hardware/software split independently.
+
+#### NAT64 and the type-space vector
+
+NAT64 is unique in that it changes the packet's protocol structure. If the type-space
+vector is computed before NAT64 and used for downstream dispatch, the downstream tables
+see the wrong type tag. Two options:
+
+- **Recompute type tag after NAT64.** The NAT64 action updates the type-space vector
+  in packet metadata. Downstream tables use the post-NAT64 tag. This is correct but
+  requires the NAT64 action to know the type-space encoding.
+- **Model NAT64 as a pipeline boundary.** The pre-NAT64 pipeline uses one type tag;
+  the post-NAT64 pipeline uses a different one. The NAT64 stage sits between them as
+  a type-space transition. This is cleaner and maps to the multi-phase table design
+  (section 6).
+
+### 15. Security actions: type-space destruction (MACsec, IPsec)
+
+NAT64 *mutates* the type-space vector. MACsec and IPsec are worse — they **destroy**
+it. Encryption renders everything after the security header opaque.
+
+#### The spectrum of type-space impact
+
+| Action | Type-space effect | Post-action visibility |
+|--------|------------------|----------------------|
+| `SetField` | None — structure unchanged | All fields visible |
+| `PushVlan` | Adds a layer — structure grows | All fields visible (at shifted offsets) |
+| `NAT64` | Mutates layer (IPv6 → IPv4) — structure changes | All fields visible (different type tag) |
+| `IPsec (ESP)` | **Destroys transport and above** — encrypted | Only ESP header (SPI, seq#) visible |
+| `MACsec` | **Destroys L3 and above** — encrypted | Only SecTAG visible; even EtherType of inner frame is gone |
+
+After IPsec ESP encryption, the type-space vector terminates at "ESP." There is no
+transport layer to dispatch on — TCP/UDP/ICMP port matching is impossible. After MACsec
+encryption, the type-space vector terminates at "MACsec SecTAG." There is no network
+layer — IP address matching is impossible.
+
+The reverse (decryption) is **type-space creation**: an opaque blob becomes a full
+protocol stack that wasn't visible before. The post-decryption packet has a complete
+type-space vector that didn't exist pre-decryption.
+
+#### Pipeline implications
+
+Encryption/decryption points are **mandatory pipeline boundaries**. You cannot have a
+single ACL table that spans across one:
+
+```
+Pre-encryption pipeline:                Post-encryption pipeline:
+  Full type-space visible                 Only security headers visible
+  Can match on L3/L4 fields              Can match on SPI, seq#, etc.
+  Can apply L3/L4 actions                Cannot inspect inner payload
+         │                                        │
+         ▼                                        ▼
+    ┌─────────┐                              ┌─────────┐
+    │ ENCRYPT  │ ── type-space destroyed ──▶  │ (opaque) │
+    └─────────┘                              └─────────┘
+
+Post-decryption pipeline:
+  Full type-space CREATED (inner packet parsed)
+  New type tag computed
+  Can match on inner L3/L4 fields
+```
+
+The compiler must model these as **distinct pipeline phases** with different type-space
+graphs:
+
+- **Phase A (pre-crypto)**: full type-space graph, all fields matchable
+- **Crypto boundary**: encrypt or decrypt — type-space is destroyed or created
+- **Phase B (post-crypto)**: different type-space graph (security headers only, or
+  newly-revealed inner headers)
+
+Rules that need to match on inner fields after decryption belong in Phase B. Rules
+that match on outer fields before encryption belong in Phase A. The compiler must
+reject rules that try to span the boundary (e.g. "match on ESP SPI AND inner TCP
+port" — the inner TCP port doesn't exist in the same pipeline phase as the ESP SPI).
+
+#### Interaction with hardware offload
+
+Modern NICs (ConnectX-7, Intel E810) support inline IPsec/MACsec — the hardware
+encrypts/decrypts in the NIC pipeline. This means the pipeline boundary exists
+inside the NIC:
+
+- **Inline IPsec encrypt**: NIC applies rte_flow rules on the cleartext packet,
+  then encrypts before sending on the wire. Pre-encryption ACLs can be offloaded.
+- **Inline IPsec decrypt**: NIC decrypts incoming packets, then applies rte_flow
+  rules on the cleartext. Post-decryption ACLs can be offloaded.
+
+The compiler needs to know **where in the NIC pipeline the crypto boundary falls**
+to correctly assign rules to pre-crypto or post-crypto stages. This extends the
+`PipelineTopology` model from section 6:
+
+```rust
+struct PipelineStage {
+    match_capabilities: MatchCapabilities,
+    action_capabilities: ActionCapabilities,
+    sram_entries: usize,
+    tcam_entries: usize,
+    /// Where this stage sits relative to crypto boundaries.
+    crypto_position: CryptoPosition,
+}
+
+enum CryptoPosition {
+    /// Before any crypto — full type-space visible.
+    PreCrypto,
+    /// After decryption — inner type-space visible.
+    PostDecrypt,
+    /// After encryption — only security headers visible.
+    PostEncrypt,
+    /// No crypto in the pipeline.
+    NoCrypto,
+}
+```
+
+#### Type-space-terminating actions are table-terminating
+
+Actions that destroy or fundamentally alter the type-space are **table-terminating** —
+they end the current pipeline phase. After such an action, only two categories of
+subsequent operations are valid:
+
+**1. Content-independent actions** — operations that don't read or interpret the
+packet body. These are valid because they operate on the packet's *existence* or
+*metadata*, not its *content*:
+- Forward / emit to wire
+- Police / meter (rate limit)
+- Mirror / ERSPAN (copy opaque bytes for analysis)
+- Count (increment counter)
+- Mark metadata (tag for downstream use)
+
+**2. Re-enter pipeline** — start over with a fresh parse and a new type-space vector:
+- Jump / goto to a subsequent table (post-action type-space)
+- This is the only way to resume content-aware processing
+
+**Nothing else is valid.** The compiler must **statically reject** any action sequence
+that attempts content-aware operations (SetField on L3/L4, match on inner headers)
+after a type-space-terminating action. This is a compile-time error, not a runtime
+check.
+
+This fits naturally into the action precondition/postcondition model (section 3):
+
+```rust
+enum ActionPostcondition {
+    /// Frame structure preserved — downstream actions can read/modify content.
+    StructurePreserved,
+    /// Frame structure mutated — new type-space vector, must re-dispatch.
+    StructureMutated { new_type_tag: TypeTag },
+    /// Frame structure destroyed — only content-independent actions valid.
+    StructureDestroyed,
+}
+```
+
+The compiler walks the action sequence, tracking the postcondition. When it encounters
+`StructureDestroyed`, any subsequent content-aware action is a compile error. When it
+encounters `StructureMutated`, it knows a pipeline phase boundary is needed.
+
+Classification of actions by postcondition:
+
+| Action | Postcondition |
+|--------|--------------|
+| SetField, PushVlan, PopVlan | `StructurePreserved` |
+| NAT64, NAT44 | `StructureMutated { new_type_tag }` |
+| IPsec ESP encrypt | `StructureDestroyed` |
+| MACsec encrypt | `StructureDestroyed` |
+| IPsec ESP decrypt | `StructureMutated { new_type_tag }` (inner packet revealed) |
+| MACsec decrypt | `StructureMutated { new_type_tag }` (inner frame revealed) |
+| Forward, Police, Count, Mirror | Content-independent (no postcondition on structure) |
+
+Note: decryption is `StructureMutated`, not `StructureDestroyed` — the packet *gains*
+structure rather than losing it. But it still requires re-parsing and re-dispatch
+because the newly-revealed inner headers weren't visible before.
+
+#### Connection to the state coherence problem (section 14)
+
+Like NAT64/conntrack, IPsec/MACsec involve shared state (security associations,
+sequence numbers, replay windows). The same state-coherence constraint applies:
+rules involving crypto actions should not be partially offloaded via trap rules,
+because the security association state must be consistent. Either the NIC handles
+the full crypto pipeline or software does — no split.
+
+However, crypto is somewhat better-behaved than conntrack because the security
+association is typically configured explicitly (not discovered per-flow like NAT
+conntrack). The compiler knows the SA parameters at compile time and can make
+clean offload decisions.
+
+#### The type-space graph unifies match, action, and dispatch validation
+
+The type-space graph (from the "Parser-derived type dispatch" section) does triple duty.
+It is not just a dispatch mechanism — it is the compiler's **single source of truth**
+for what is structurally valid at any point in the pipeline:
+
+**1. Match validation (already described).** The MatchBuilder walks the graph forward
+through protocol edges. The current node determines which fields exist and can be
+matched on. Matching on TCP ports without first traversing an IP → TCP path is a
+type error — the graph has no such edge.
+
+**2. Action validation.** The action validator walks the graph forward through **action
+edges**. Each action transitions to a new node (or stays at the current one):
+
+```
+Current node: Eth → IPv4 → TCP
+  action: SetField(tcp_dst_port)  → stays at same node (structure preserved)
+  action: PushVlan                → moves to Eth → VLAN → IPv4 → TCP (structure grows)
+  action: NAT64                   → moves to Eth → IPv4 → TCP  ──▶  Eth → IPv6 → TCP
+  action: IPsec_encrypt           → moves to Eth → IPv4 → ESP (terminal — no TCP visible)
+  action: SetField(tcp_dst_port)  → ERROR: tcp_dst_port does not exist at current node
+```
+
+The error is detectable purely from the graph: the action references a field that
+doesn't exist at the current node. No runtime check needed — the compiler rejects it
+statically.
+
+**3. Type-space dispatch (already described).** The parser's traversal path is encoded
+as a bit vector. The same graph defines the encoding, the available fields, and the
+narrow table selection.
+
+All three are the same graph, traversed in different contexts:
+
+| Context | Edge type | Direction | What it determines |
+|---------|-----------|-----------|-------------------|
+| Parsing / MatchBuilder | Protocol edges (EtherType, NextHeader) | Forward | Which fields can be matched on |
+| Action validation | Action edges (PushVlan, NAT64, Encrypt) | Forward | Which fields can be mutated; pipeline boundaries |
+| Type dispatch | Parser traversal path | Encoded as bit vector | Which narrow table to use |
+
+This means the type-space graph is the **core data structure of the compiler**. It
+defines the grammar of valid match-action combinations. The MatchBuilder's typestate
+is a user-facing projection of this graph. The action validator is a compiler-internal
+projection. The type-tag encoding is a runtime projection. They all derive from the
+same source.
 
 ---
 
@@ -1047,17 +1678,168 @@ Follow the `rustc` / `rust-analyzer` model:
 
 Crates: `miette` or `ariadne` for rendering diagnostics with source context.
 
-### Principle 5: Property-based testing of passes (the highest-value testing strategy)
+### Principle 5: Reference implementation as the testing oracle
 
-Each pass has a small contract → each pass is independently testable. But the most
-valuable test is **end-to-end semantic equivalence**:
+The single most valuable testing asset is a **reference classifier**: a trivial,
+obviously-correct implementation that serves as the oracle for all optimized backends.
 
-> For any input packet, the compiled tables must produce the same classification
-> result as a naive linear-scan reference implementation.
+```rust
+/// Reference classifier. O(n) linear scan per packet. Obviously correct.
+/// Available in tests and to downstream crates via feature flag.
+#[cfg(any(test, feature = "constrained_backend"))]
+fn reference_classify(rules: &[MatchRule], packet: &[u8], meta: &PacketMeta) -> Option<ActionId> {
+    // Rules are pre-sorted by priority (highest first).
+    // First match wins.
+    rules.iter()
+        .filter(|rule| rule_matches(rule, packet, meta))
+        .map(|rule| rule.action_id)
+        .next()
+}
 
-Generate random rule sets and random packets with `proptest`, compile the rules,
-classify the packets through both the compiled backend and the reference implementation,
-and assert identical results.
+#[cfg(any(test, feature = "constrained_backend"))]
+fn rule_matches(rule: &MatchRule, packet: &[u8], meta: &PacketMeta) -> bool {
+    rule.criteria.iter().all(|criterion| criterion_matches(criterion, packet, meta))
+}
+
+#[cfg(any(test, feature = "constrained_backend"))]
+fn criterion_matches(c: &MatchCriterion, packet: &[u8], meta: &PacketMeta) -> bool {
+    match c {
+        MatchCriterion::Ipv4Dst { addr, prefix_len } => {
+            let field = u32::from_be_bytes(packet[DST_IP_OFFSET..][..4].try_into().unwrap());
+            let mask = u32::MAX << (32 - prefix_len);
+            (field & mask) == (addr & mask)
+        }
+        MatchCriterion::DstPort { low, high } => {
+            let port = u16::from_be_bytes(packet[DST_PORT_OFFSET..][..2].try_into().unwrap());
+            port >= *low && port <= *high
+        }
+        // ... one arm per MatchCriterion variant
+    }
+}
+```
+
+This is intentionally dumb: no tries, no SIMD, no type-space dispatch, no batch
+processing. It is a **specification, not an implementation.** It exists solely to
+answer: "given this rule set and this packet, what should the answer be?"
+
+**The key property test** (using bolero `TypeGenerator` / `ValueGenerator`):
+
+```rust
+#[test]
+fn compiled_matches_reference() {
+    bolero::check!()
+        .with_type::<(Vec<MatchRule>, Vec<TestPacket>)>()
+        .for_each(|(rules, packets)| {
+            let compiled = compiler.compile(&rules).unwrap();
+            for packet in &packets {
+                let reference_result = reference_classify(&rules, &packet.data, &packet.meta);
+                let compiled_result = compiled.classify(&packet.data, &packet.meta);
+                assert_eq!(reference_result, compiled_result,
+                    "Mismatch on packet {:?} with {} rules", packet, rules.len());
+            }
+        });
+}
+```
+
+This test applies to **every backend and every optimization**:
+- DPDK ACL compiled trie must agree with reference
+- Type-space dispatch + narrow tables must agree with reference
+- Batch-sorted classification must agree with reference
+- Hardware-trapped + software-classified must agree with reference
+- Any future backend must agree with reference
+
+The reference implementation is `#[cfg(test)]` only — zero cost in production. It is
+the oracle that makes every optimization safe to attempt. If an optimization produces
+a different answer for any generated input, the test catches it.
+
+**Generator design matters.** The `TypeGenerator` for `MatchRule` and `TestPacket` should
+produce:
+- Rules with varying field signatures (some with ports, some without)
+- Rules with overlapping match regions (to stress priority ordering)
+- Rules spanning both IPv4 and IPv6 (to stress type-space dispatch)
+- Packets that match zero, one, or multiple rules (to stress priority)
+- Packets with unusual headers (VLAN stacking, tunneling, unknown protocols)
+- Edge cases: zero-length prefixes (match all), empty rule sets, maximum priority values
+
+The `net` crate's existing `ValidHeadersBuilder` + `materialize()` is the natural
+building block for test packet generation — it already produces valid packets with
+known header structures.
+
+**Capability-constrained reference implementation for cascade/trap testing:**
+
+The reference implementation can be extended into a **configurable capability simulator**
+that acts as a proxy for a NIC with limited capabilities. By artificially restricting
+what the reference backend can express, we force the compiler to exercise its cascade
+and trap logic — and then verify that the cascaded result is still correct.
+
+```rust
+/// A deliberately degraded backend that rejects rules based on configurable
+/// capability constraints. Simulates a NIC that can't handle certain match
+/// types, actions, or overlap patterns.
+#[cfg(any(test, feature = "constrained_backend"))]
+struct ConstrainedBackend {
+    /// Which MatchCriterion variants this backend can express.
+    supported_criteria: HashSet<MatchCriterionKind>,
+    /// Which Action variants this backend can execute.
+    supported_actions: HashSet<ActionKind>,
+    /// Maximum number of rules before capacity is exhausted.
+    max_rules: usize,
+    /// Whether this backend tolerates overlapping rules.
+    supports_overlaps: bool,
+}
+```
+
+This enables a powerful test pattern:
+
+```rust
+#[test]
+fn cascade_preserves_semantics() {
+    bolero::check!()
+        .with_type::<(Vec<MatchRule>, ConstrainedBackend)>()
+        .for_each(|(rules, constrained_hw)| {
+            // The full-capability reference: linear scan, no restrictions.
+            let reference_result = reference_classify(&rules, &packet.data, &packet.meta);
+
+            // Compile with a deliberately limited "hardware" backend +
+            // full-capability software fallback.
+            let compiled = compiler.compile_with_cascade(
+                &rules,
+                &mut constrained_hw,  // "hardware" — will reject some rules
+                &mut SoftwareBackend, // fallback — accepts everything
+            ).unwrap();
+
+            // The cascaded result (hardware + traps + software fallback)
+            // must agree with the unconstrained reference.
+            let cascaded_result = compiled.classify(&packet.data, &packet.meta);
+            assert_eq!(reference_result, cascaded_result);
+        });
+}
+```
+
+By generating **random capability constraints** alongside random rule sets, bolero
+explores the full space of cascade scenarios:
+
+- Backend that rejects all range matches → all port rules fall to software + traps
+- Backend with capacity for only 10 rules → overflow rules cascade + traps
+- Backend that can't handle overlaps → overlapping groups fall to software + traps
+- Backend that supports no actions → everything falls to software (degenerate case)
+- Backend that supports everything → no cascade needed (happy path)
+
+This tests the **compiler's cascade logic, trap insertion, and priority correctness**
+without needing actual hardware. The constrained backend is a stand-in for any NIC
+between e1000 (supports almost nothing) and ConnectX-7 (supports almost everything).
+The same test harness covers every point on that spectrum.
+
+The `ConstrainedBackend` is gated on `#[cfg(any(test, feature = "constrained_backend"))]`
+— zero cost in production builds, but available to downstream crates via a feature flag.
+A crate implementing a new backend (e.g. a P4 target or custom FPGA) can enable the
+`constrained_backend` feature and immediately reuse the full property-based test suite:
+the oracle, the capability simulator, and the cascade correctness assertions. No need
+to reimplement the testing infrastructure — just implement `MatchBackend` and plug in.
+
+The same feature gate should apply to the reference classifier and the bolero generators,
+so that the entire testing toolkit is available as a reusable library for downstream
+backend authors.
 
 **Additional property tests per pass:**
 
@@ -1069,6 +1851,8 @@ and assert identical results.
 | InsertTraps     | No priority inversion possible (for any overlapping pair with split backends, a trap exists) |
 | Lower           | Output satisfies backend-specific invariants (field alignment, capacity limits)              |
 | Round-trip      | `parse(pretty_print(ir)) == ir` for serializable IRs                                         |
+| TypeTag         | Software-parsed type tag == hardware-programmed MARK value for same packet                   |
+| Cascade         | For any `ConstrainedBackend`, cascaded classify == unconstrained reference classify          |
 
 ### Principle 6: Declarative lowering rules (Cranelift ISLE-inspired)
 
@@ -1206,12 +1990,10 @@ is cached.
 
 The compiler's incrementality is **orthogonal** to the runtime's atomicity mechanism:
 
-```
 1. Rule change arrives (add/remove/modify)
 2. Compiler runs (full or incremental) → produces new compiled state
 3. Generation swap protocol (section 9) atomically transitions to new state
 4. Old state drained and freed
-```
 
 Whether step 2 is full-rebuild or incremental doesn't affect steps 3-4. The generation
 swap cares about the _output_ (new compiled tables), not how they were produced.
@@ -1349,6 +2131,42 @@ document use the bracketed cite keys (e.g. `[sarkar2004]`).
                which decomposes range fields into byte-level trie transitions.
                Confirms that ranges are expanded at build time, not stored natively.}
 }
+
+@online{dpdk-rte-flow-guide,
+  title     = {Generic Flow API (rte\_flow)},
+  author    = {{DPDK Project}},
+  year      = {2025},
+  url       = {https://doc.dpdk.org/guides/prog_guide/rte_flow.html},
+  note      = {Official DPDK programmer's guide for rte\_flow. Documents conntrack as
+               a two-phase observe-then-match mechanism: conntrack action labels packets
+               with TCP state; RTE\_FLOW\_ITEM\_TYPE\_CONNTRACK matches on that state.
+               Conntrack does NOT modify packets. NAT64 is a stateless RFC 6052 rewrite.
+               Referenced in section 14.}
+}
+
+@online{dpdk-nat64-patch,
+  title     = {[PATCH v2 1/2] ethdev: introduce NAT64 action},
+  author    = {{DPDK dev mailing list}},
+  year      = {2024},
+  url       = {https://www.mail-archive.com/dev@dpdk.org/msg283556.html},
+  note      = {Patch introducing RTE\_FLOW\_ACTION\_TYPE\_NAT64. Confirms the struct has
+               a single field (direction: 6to4 or 4to6). Uses RFC 6052 well-known prefix
+               (64:ff9b::/96) for address mapping. Explicitly out of scope: ICMP and
+               transport layer translation. Notes that SetField can be chained after
+               NAT64 for non-well-known prefixes.}
+}
+
+@online{dpdk-conntrack-struct,
+  title     = {rte\_flow\_action\_conntrack Struct Reference},
+  author    = {{DPDK Project}},
+  year      = {2025},
+  url       = {https://doc.dpdk.org/api/structrte__flow__action__conntrack.html},
+  note      = {Full struct definition for conntrack action configuration. Tracks TCP
+               state (SYN\_RECV through TIME\_WAIT), window scaling, sequence/ack numbers,
+               direction, retransmission limits. Created as indirect action handle via
+               rte\_flow\_action\_handle\_create(). Queryable via
+               rte\_flow\_action\_handle\_query().}
+}
 ```
 
 ### Software libraries and frameworks
@@ -1401,3 +2219,511 @@ document use the bracketed cite keys (e.g. `[sarkar2004]`).
                to good\_lp for rule assignment optimization.}
 }
 ```
+
+### Possible prior art for the type-space dispatch idea
+
+The parser-derived type-tag dispatch concept (encoding the parser's walk through
+the protocol graph as a bit vector for first-level table selection) does not appear
+to have a single canonical name or paper. The following works address related aspects
+and represent the closest prior art we are aware of.
+
+```biblatex
+@inproceedings{kazemian2012,
+  author    = {Kazemian, Peyman and Varghese, George and McKeown, Nick},
+  title     = {Header Space Analysis: Static Checking for Networks},
+  booktitle = {Proceedings of USENIX NSDI},
+  year      = {2012},
+  keywords  = {type-space-prior-art},
+  note      = {Formalizes the space of all possible packet headers as a geometric space
+               and models forwarding/ACL rules as transformations on that space. Our
+               type-space graph is the protocol dimension of their header space; our bit
+               vector is a compact encoding of a point in that dimension. Closest
+               conceptual ancestor to the type-space idea.}
+}
+
+@inproceedings{jose2015,
+  author    = {Jose, Lavanya and Yan, Lisa and Varghese, George and McKeown, Nick},
+  title     = {Compiling Packet Programs to Reconfigurable Switches},
+  booktitle = {Proceedings of USENIX NSDI},
+  year      = {2015},
+  keywords  = {type-space-prior-art},
+  note      = {Describes how the P4 compiler maps parser-derived packet types to
+               match-action table placement on fixed-pipeline ASICs. The parser state
+               machine implicitly performs the same function as our type-tag dispatch,
+               but our bit vector encoding makes the mapping explicit and portable
+               across backends. Closest implementation-level precedent.}
+}
+
+@inproceedings{srinivasan1999,
+  author    = {Srinivasan, V. and Varghese, George and Suri, Subhash and Waldvogel, Marcel},
+  title     = {Fast and Scalable Layer Four Switching},
+  booktitle = {Proceedings of ACM SIGCOMM},
+  year      = {1999},
+  keywords  = {type-space-prior-art},
+  note      = {Introduces Tuple Space Search: grouping rules by their "tuple" (which fields
+               are wildcarded vs specified). Used in Open vSwitch. Our approach is more
+               principled — the tuple is derived from the parser graph structure (a property
+               of the packet) rather than from rule field masks (a property of the rule set).}
+}
+
+@inproceedings{song2013,
+  author    = {Song, Haoyu},
+  title     = {Protocol-Oblivious Forwarding: Unleash the Power of {SDN} through a
+               Future-Proof Forwarding Plane},
+  booktitle = {Proceedings of ACM HotSDN},
+  year      = {2013},
+  keywords  = {type-space-prior-art},
+  note      = {Abstracts packet fields as (offset, length) pairs relative to a
+               parser-identified header structure. The parser's output determines which
+               fields are available — conceptually similar to our type tag determining
+               the available match space. Does not propose the bit vector encoding.}
+}
+
+@inproceedings{gupta2000,
+  author    = {Gupta, Pankaj and McKeown, Nick},
+  title     = {ClassBench: A Packet Classification Benchmark},
+  booktitle = {Proceedings of ACM SIGCOMM (HiCuts paper)},
+  year      = {2000},
+  keywords  = {type-space-prior-art},
+  note      = {HiCuts and subsequent HyperCuts (Singh et al., SIGCOMM 2003) build
+               decision trees that partition the rule space. Our type dispatch is a
+               principled first-level split in such a decision tree — partitioning by
+               protocol structure before partitioning by field values. These works do
+               not derive the split from the parser graph.}
+}
+```
+
+
+## Type-space vector: further optimizations
+
+The type-space vector computed during parsing has uses beyond first-level table dispatch.
+Three increasingly ambitious optimizations follow, ordered from practical to speculative.
+
+### Optimization 1: Hardware-assisted parse skip via trap metadata
+
+When hardware trap rules punt packets to software, the trap action can encode the
+type-space vector in packet metadata (rte_flow's `META`, `TAG`, or `MARK` actions —
+typically 32 bits, more than sufficient for the type-space vector).
+
+If software's first action is feeding the packet into a DPDK ACL table, it can
+**skip parsing entirely**:
+- The type-space vector tells you the header structure
+- Field offsets are computable without parsing (they're deterministic per type tag)
+- The frame is already in network byte order (which DPDK ACL requires)
+- The hardware already validated the protocol structure when it matched the trap rule
+
+This is essentially **hardware-accelerated parser offload**: the NIC did the parsing
+work, and you read the result from metadata instead of re-doing it in software.
+
+**Feasibility**: High. rte_flow MARK is widely supported on modern NICs (ConnectX,
+Intel E810). The type-space vector fits easily in 32 bits. The main requirement is
+that the trap rules are compiled with the correct MARK values, which the compiler
+controls.
+
+### Optimization 2: Batch sorting by type-space vector for cache locality
+
+Within a receive batch, stable-sort packets by their type-space vector before feeding
+them to the ACL classifier.
+
+**Why this helps**: DPDK ACL's SIMD classify processes N packets in lockstep through
+the same trie. If those N packets have the same header structure (same type tag), they
+are far more likely to take the **same trie branches**, which dramatically improves:
+- **Instruction cache**: same trie paths are hot
+- **Branch predictor**: same branch directions repeated
+- **Data cache**: same trie nodes accessed repeatedly
+
+The stable sort preserves arrival order within a type-tag group, which matters for
+ordering guarantees that downstream processing may rely on.
+
+**Refinement: RSS hash as tie-breaker.** Stable-sort by `(type_tag, rss_hash)`. Packets
+with the same type tag AND the same RSS hash are likely from the same flow — nearly
+identical headers. This maximizes L1 data cache hits on the packet data itself during
+classification.
+
+**Refinement: alternating sort order.** Alternate between ascending and descending sort
+order on successive batches. The end of one batch's sorted order is then close to the
+beginning of the next batch's reversed order, keeping the hot trie paths and packet data
+warm across batch boundaries. This is a form of **cache-oblivious scheduling**.
+
+**Algorithmic correctness of stable sorting batches**: Stable sort preserves the relative
+order of packets with equal keys. If downstream processing requires strict arrival order,
+this is preserved within each type-tag group. Cross-group ordering is not preserved, but
+packets with different type tags are typically processed independently (different tables,
+different actions). If strict global ordering is required (rare in a dataplane), the sort
+must be undone after classification — but the classification itself is order-independent.
+
+**Cost**: The sort is O(b log b) where b is the batch size (typically 32-64 packets).
+For small b, a simple insertion sort or counting sort (the type-tag space is small) may
+outperform a general sort. Counting sort on the type-tag would be O(b + k) where k is
+the number of distinct type tags — likely very fast.
+
+#### Pathological case: semi-degenerate vectors splitting flows
+
+A single TCP flow between two hosts should stay grouped after sorting. But if some
+packets arrive with a priority VLAN tag (VID=0) and others don't, or if some IPv6
+packets in a flow carry extension headers and others don't, they get **different
+type-space vectors** despite being the same logical flow.
+
+Batch sorting then splits the flow across groups. This is **worse than a locality
+issue** — it is a **correctness problem for TCP**. The stable sort preserves order
+*within* a group, but packets from different groups are processed and forwarded in
+group order, not arrival order. If a flow's packets land in two groups (VLAN-tagged
+and untagged), all the untagged packets are forwarded before the VLAN-tagged ones
+(or vice versa), even if they originally interleaved.
+
+This causes **systematic reordering** of TCP segments. At the receiver, even 3
+out-of-order packets trigger fast retransmit and congestion window halving (RFC 5681).
+A dataplane that introduces reordering on every batch boundary would catastrophically
+degrade TCP throughput for any flow exhibiting semi-degenerate type-space alternation.
+This is not a performance optimization concern — it is a functional correctness
+requirement.
+
+**Solution: split the type-space vector into stable prefix + unstable suffix.**
+
+The **stable prefix** encodes transitions that never vary within a flow:
+
+| Transition | Example | Why stable |
+|---|---|---|
+| EtherType: IPv4 vs IPv6 | `0x0800` vs `0x86DD` | A flow is one or the other |
+| IP Protocol | TCP vs UDP vs ICMP | Fixed per flow definition |
+| Tunnel type | VXLAN vs GENEVE | Fixed per tunnel |
+| Inner EtherType / Protocol | Same reasoning | Inner headers are stable |
+
+The **unstable suffix** encodes transitions that can vary packet-to-packet:
+
+| Transition | Example | Why unstable |
+|---|---|---|
+| VLAN presence / count | Priority tag (VID=0) appears intermittently | Switch behavior varies |
+| IPv6 extension headers | Hop-by-hop, routing, fragment | Router may add/omit per packet |
+| IPv4 options | Rarely present | Can appear intermittently |
+| GRE key presence | Some implementations include key conditionally | Implementation-dependent |
+
+**The batch sort uses only the stable prefix as the sort key.** Packets from the same
+flow always have the same stable prefix, so they stay grouped. The unstable suffix is
+still computed and stored — it's used after sorting to determine field offsets within
+the narrow table (e.g. "this packet has a VLAN header, so IP starts at offset 18
+instead of 14"), but it doesn't affect which group the packet lands in.
+
+```rust
+struct TypeSpaceVector {
+    /// Stable prefix: determines table selection and sort grouping.
+    /// Never varies within a flow.
+    stable: u16,
+    /// Unstable suffix: determines field offsets within the table.
+    /// May vary packet-to-packet within a flow.
+    unstable: u16,
+}
+
+// Batch sort key: only the stable prefix
+impl Ord for TypeSpaceVector {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.stable.cmp(&other.stable)
+    }
+}
+```
+
+**Interaction with table selection:** The stable prefix selects the narrow table
+(which fields exist). The unstable suffix selects the **offset map** within that table
+(where those fields are located in the packet). Two packets with the same stable prefix
+but different unstable suffixes hit the same table with the same rules — they just need
+different offset calculations to extract the field values from the raw packet bytes.
+
+This connects directly to the semi-degenerate transition discussion earlier: the
+"collapse" annotations on the type-space graph define exactly which transitions are
+unstable (and thus go in the suffix). The compiler uses the same annotations for both
+table merging and sort-key construction.
+
+**Interaction with DPDK ACL:** DPDK ACL rules define field offsets statically at table
+build time. If packets with the same stable prefix but different unstable suffixes have
+different field offsets, they need either:
+- Separate DPDK ACL tables (one per offset variant) — simple but multiplies tables
+- A pre-classification normalization step that copies fields to fixed offsets — avoids
+  table multiplication but adds per-packet cost
+- Accept that DPDK ACL is called with the correct offset table per unstable-suffix
+  variant (the type dispatch already selects the table, this just adds a sub-dispatch)
+
+The right choice depends on how many unstable variants actually appear in practice.
+For most workloads, the dominant case (no VLAN, no IPv6 extension headers) covers 95%+
+of packets, and the variants are rare enough that a sub-dispatch is cheap.
+
+#### Testing reordering with smoltcp
+
+The TCP reordering concern makes this a strong candidate for protocol-level testing
+beyond packet-level property tests. A `smoltcp`-based TCP stack in the test suite
+can act as a simulated receiver that observes protocol-level consequences of dataplane
+behavior:
+
+```
+bolero generates arbitrary concert of TCP flows
+    ↓
+dataplane under test (with batch sorting, type-space dispatch, etc.)
+    ↓
+smoltcp simulated receiver
+    ↓
+assert: no spurious retransmits, no congestion window collapse,
+        no duplicate ACKs caused by dataplane reordering
+```
+
+This catches reordering issues that pure packet-level assertions cannot. A packet-level
+test can assert "packets within a flow are in order," but a smoltcp receiver observes
+the *protocol-level consequences*: duplicate ACKs, fast retransmit triggers, window
+shrinkage, connection stalls. This is a stronger and more realistic assertion.
+
+The bolero flow-concert generator (on a separate in-progress branch) produces
+multi-flow workloads with controlled timing and interleaving. Combined with smoltcp,
+this enables property tests like:
+
+- "For any mix of TCP flows with semi-degenerate type-space alternation, the dataplane
+  introduces zero spurious retransmits"
+- "Batch sorting with stable-prefix-only keys preserves TCP goodput within X% of
+  unsorted baseline"
+- "No flow experiences more than N out-of-order packets per M-packet window"
+
+These tests should run against both the reference classifier (which does not sort)
+and the optimized classifier (which does sort), comparing TCP-level metrics. Any
+degradation in the optimized path that exceeds a configured threshold is a test failure.
+
+#### Security: adversarial type-space vectors (VLAN tag stacking attacks)
+
+A pathological case within the pathological case: a repeated stack of priority-tagged
+VLANs (VID=0). This is syntactically valid — each tag is a well-formed 802.1Q header.
+But it is semantically adversarial:
+
+**Attack surface:**
+
+1. **Field offset poisoning.** Each VID=0 tag adds 4 bytes of offset without adding
+   meaningful structure. If the ACL expects TCP dst port at offset 34 but the frame
+   has 8 priority VLAN tags (32 extra bytes), the ACL reads the wrong bytes entirely.
+   An attacker could craft the frame so that the bytes at the expected offset happen
+   to match a permissive rule.
+
+2. **Type-space budget exhaustion.** If `MAX_VLANS` is 4 and the frame has 12 priority
+   tags, the parser hits the cap. What happens to the remaining headers? If the parser
+   stops at the cap and declares "VLAN × 4 → unknown," the frame might bypass ACLs
+   that only apply to recognized protocol stacks.
+
+3. **Stable/unstable confusion.** VID=0 VLAN tags are "unstable" transitions, so the
+   stable prefix is identical to an untagged frame. But the field offsets are shifted
+   by `4 × num_priority_tags` bytes. If the classifier uses the stable prefix to select
+   a table but the unstable suffix to compute offsets, and the unstable suffix doesn't
+   account for adversarial tag depth, the offsets are wrong.
+
+4. **ACL bypass via hidden headers.** The attacker could hide a TCP SYN behind a wall
+   of priority tags, hoping the dataplane's parser gives up or miscalculates, while
+   the destination host's TCP/IP stack (which is more lenient) strips the tags and
+   accepts the SYN. This is a classic impedance mismatch between the classifier's
+   parser and the end host's parser.
+
+**Mitigations:**
+
+**A) Parser must validate, not just encode.** The type-space vector cannot be trusted
+as a field-offset oracle unless the parser validates the path. Specifically:
+- Enforce `MAX_VLANS` strictly. Frames exceeding it are classified as malformed and
+  assigned to a "drop or punt to slow path" default rule.
+- Count priority tags separately from meaningful VLAN tags. A frame with >1 VID=0
+  tag is suspicious and should be flagged.
+
+**B) The unstable suffix must be authoritative about offsets.** The stable prefix
+selects the table; the unstable suffix provides the exact byte offsets. The offset
+computation must be derived from the parser's actual traversal (counting every header
+it walked through), not from the stable prefix's "expected" layout.
+
+**C) Normalize before classifying.** Strip VID=0 priority tags before computing the
+type-space vector. The normalized frame has the same semantics (priority tags don't
+affect forwarding) but a predictable layout. This is the safest option but has a
+per-packet cost (memmove to close the gaps, or a scatter-gather indirection layer).
+
+**D) Treat excessive priority tags as a match criterion.** Add a `MatchCriterion`
+variant like `VlanDepth { min: u8, max: u8 }` or `PriorityTagCount { max: u8 }`.
+This lets the user write explicit rules like "drop any frame with >2 VID=0 tags."
+The type-space compiler would recognize this pattern and enforce it before ACL
+dispatch.
+
+**E) Use the unstable suffix as a trust / greylist signal.** The type-space vector
+is trustworthy when the unstable suffix is "clean." Rather than a binary drop/allow
+decision, the unstable suffix grades the frame's structural hygiene:
+
+| Unstable suffix state | Trust | Processing path |
+|---|---|---|
+| Empty (no unstable transitions) | **Clean** | Fast path: trust offsets, batch sort, narrow table dispatch |
+| Single well-known transition (1 VLAN, 1 ext header) | **Normal** | Fast path with adjusted offsets |
+| Multiple unstable transitions (2+ VLANs, mixed ext headers) | **Grey** | Punt to full-parse path, validate structure, log |
+| Exceeds structural bounds (>MAX_VLANS, nested priority tags) | **Dirty** | Drop or trap to software for deep inspection |
+
+This makes the type-space vector a **triage signal**, not just a dispatch key:
+
+```
+Parse → compute type-space vector (stable prefix + unstable suffix)
+    ↓
+Is unstable suffix clean?
+    ├─ Clean/Normal → fast path: trust offsets, batch sort, narrow table
+    └─ Grey/Dirty   → grey path: full re-parse, validate structure,
+                       classify with verified offsets, log anomaly
+```
+
+The grey path doesn't need to be expensive — it just doesn't take the offset shortcuts.
+It re-derives offsets from the actual parse and validates that the frame structure is
+coherent. For the 99%+ of traffic that's clean, this path is never taken.
+
+The grey path also serves as an **observability and security response hook**. Grey
+frames are natural targets for hardware-assisted "observe without blocking" actions:
+
+- **Rate limiting** — meter the grey path so an attacker flooding structurally unusual
+  frames can't overwhelm the slow-path CPU. Uses the `Police { meter_id }` stateful
+  action (section 11). The meter can be shared across all grey-classified traffic or
+  per-type-tag, depending on the desired granularity.
+- **ERSPAN mirroring** — copy grey frames to a remote analyzer without affecting
+  forwarding. Supported by most NICs via `rte_flow` sample/mirror actions and by
+  switches via ERSPAN sessions. Enables real-time visibility without impacting the
+  data path.
+- **PCAP capture** — software-side ring buffer of recent grey frames for forensic
+  analysis. A bounded queue drained by a capture thread, trivially implemented.
+- **IDS/IPS marking** — tag packet metadata (e.g. a "grey" flag or the unstable suffix
+  itself) so a downstream IDS pipeline stage knows this frame was structurally unusual
+  and deserves deeper inspection. The type-space vector is the natural metadata to carry.
+
+Which of these actions are available depends on the hardware — the compiler's
+`NicDescriptor` already models per-NIC capabilities. The compiler can install grey-path
+actions in hardware where supported (e.g. rate-limit + mirror on ConnectX-7) and fall
+back to software-only handling (log + count) on less capable NICs. This is the same
+capability-adaptive compilation pattern used for the main ACL rules.
+
+**Recommended approach:** Combine A + D + E. Enforce a hard cap on VLAN depth in the
+parser (already exists: `MAX_VLANS = 4`). Expose `VlanDepth` / `PriorityTagCount`
+as matchable criteria so users can write explicit policy. Use the unstable suffix
+cleanliness as a fast-path / grey-path triage signal. Frames exceeding the cap are
+dropped or punted — they never reach the ACL tables with wrong offsets. Frames in the
+grey zone get full validation before classification.
+
+This is analogous to how web application firewalls handle request smuggling: the
+parser must be at least as strict as the strictest downstream consumer, or an
+attacker can exploit the gap between what the classifier sees and what the
+destination processes.
+
+### Optimization 3: RX queue steering by type-space vector
+
+Use hardware flow director or RSS to steer packets to **per-type-tag RX queues**, then
+attach a specialized processing pipeline per queue.
+
+For example:
+- Queue 0: IPv4-TCP packets → optimized IPv4-TCP pipeline (no protocol dispatch needed)
+- Queue 1: IPv6-TCP packets → optimized IPv6-TCP pipeline
+- Queue 2: IPv4-UDP-VXLAN packets → tunnel decap pipeline
+- Queue 3: everything else → general-purpose pipeline
+
+**Benefits**:
+- Eliminates type dispatch entirely for hot-path queues
+- Enables per-queue specialized code (no branches on protocol type)
+- Pipeline code for a specific type tag is simpler and more optimizable
+
+**Scalability concern** (noted in the original idea): The number of distinct type tags
+× number of queues can exceed hardware limits. Modern NICs typically support 64-512
+queues, but dedicating a queue per type tag doesn't scale to rare protocol combinations.
+
+**Practical approach**: Dedicate queues only to the 3-5 dominant type tags (which likely
+handle 95%+ of traffic). Use a catch-all queue for everything else. The compiler, which
+knows the rule set, can determine which type tags have the most rules and are worth
+specializing.
+
+**Interaction with RSS**: RSS distributes flows across queues for load balancing. Per-type
+queues would need a two-level scheme: first steer by type tag, then RSS-balance within
+each type's queue set. Some NICs support this natively (Intel's Flow Director + RSS,
+Mellanox's hairpin queues + flow steering).
+
+### Graceful degradation across NIC capabilities
+
+The type-space vector is a **property of the packet, not a property of the NIC.** It
+is always computable in software by the parser. Hardware only offers shortcuts to compute
+it faster or exploit it earlier. This means the core algorithm works identically on every
+NIC, and the optimizations layer on additively:
+
+| Capability needed | Optimization | e1000 | i40e | ConnectX-7+ |
+|---|---|---|---|---|
+| Nothing | Core type-space dispatch (software parser computes tag) | **Yes** | **Yes** | **Yes** |
+| Nothing | Batch sorting by type tag for cache locality | **Yes** | **Yes** | **Yes** |
+| rte_flow MARK/META | Parse skip via trap metadata | No | Partial | **Yes** |
+| Flow Director / multi-queue | RX queue steering by type tag | No | Partial | **Yes** |
+| Multiple RX queues | Per-type specialized pipelines | No | **Yes** | **Yes** |
+
+Even on an e1000 with a single RX queue, no flow steering, and no metadata marking,
+the system gets the full software benefit: type-space dispatch + batch sorting. Every
+core benefit (table narrowing, disambiguation, smaller n, principled decomposition) is
+preserved. The NIC's capabilities determine how much additional acceleration is available,
+not whether the algorithm is correct.
+
+### Heterogeneous NICs: per-NIC compilation targets
+
+A dataplane with multiple NICs of different capabilities (e.g. a ConnectX-7 and an
+i40e in the same machine) is analogous to a compiler targeting **multiple instruction
+set architectures simultaneously** — like producing both AVX-512 and SSE2 code paths
+from the same source, selected at runtime by a CPUID check.
+
+The compiler already has a per-NIC capability model (`NicDescriptor` from section 12).
+For type-space optimizations, this extends naturally:
+
+```rust
+struct NicDescriptor {
+    ports: Vec<PortId>,
+    capabilities: BackendCapabilities,
+    // Type-space optimization support:
+    supports_mark: bool,       // can set MARK/META on trap rules
+    supports_flow_director: bool, // can steer by arbitrary match to specific queue
+    max_rx_queues: usize,      // queue budget for type-tag steering
+    mark_bits: u8,             // width of MARK field (e.g. 24 or 32)
+}
+```
+
+The compiler produces a **per-NIC compilation plan**:
+
+```
+NIC A (ConnectX-7):
+  - Offload 80% of rules to hardware
+  - Trap rules carry type-space vector in MARK (32 bits)
+  - 4 dedicated RX queues for hot type tags
+  - Software path: parse skip for trapped packets, full parse for others
+
+NIC B (i40e):
+  - Offload 40% of rules to hardware (fewer capabilities)
+  - No MARK support → software always parses
+  - 2 RX queues (limited budget) → only IPv4-TCP gets a dedicated queue
+  - Software path: full parse + type-space dispatch + batch sort
+
+NIC C (e1000):
+  - No offload
+  - Single RX queue
+  - Software path: full parse + type-space dispatch + batch sort
+```
+
+The key design principle is **the same rule set compiles to different physical plans
+per NIC, but the logical semantics are identical.** A packet matched by rule R produces
+the same action regardless of which NIC it arrived on. The NIC only affects performance,
+not correctness.
+
+This is exactly the compiler analogy: the same C function compiles to different machine
+code for different targets, but the observable behavior is the same. The `NicDescriptor`
+is the equivalent of a target triple / CPU feature set.
+
+**Compilation workflow for heterogeneous NICs:**
+
+1. The compiler receives the full rule set + the set of NIC descriptors
+2. For each NIC, it produces a separate physical plan:
+   a. Which rules are offloaded to this NIC's hardware?
+   b. Which trap rules are installed (with or without MARK)?
+   c. What RX queue steering is configured?
+   d. What software pipeline configuration is generated?
+3. The software pipeline adapts per-packet based on which NIC the packet arrived from:
+   - Check `PacketMeta::iif` → determine originating NIC
+   - If NIC supports MARK and packet has MARK set → read type tag from MARK, skip parse
+   - Otherwise → full software parse, compute type tag
+
+**Cross-NIC consistency**: The type-space vector must be the same regardless of how it
+was computed (hardware MARK vs software parse). This is guaranteed because the encoding
+is defined by the type-space graph, which is a compile-time constant. The MARK value
+the compiler programs into hardware trap rules is the same value the software parser
+would compute for the same packet. The compiler ensures this — it's the single source
+of truth for the encoding.
+
+**Testing**: Property-based tests should verify that for any packet, the type tag
+computed by the software parser equals the type tag that would be set by the hardware
+trap rule compiled for that packet's match criteria. This is a straightforward
+`proptest` assertion across all NIC capability levels.
