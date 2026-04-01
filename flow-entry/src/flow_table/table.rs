@@ -684,7 +684,8 @@ mod tests {
             }
 
             // drain_stale: all Cancelled flows should be purged, leaving exactly 1.
-            flow_table.drain_stale();
+            let reaped = flow_table.drain_stale();
+            assert_eq!(reaped, REAP_THRESHOLD_TEST + 100 - 1);
             assert_eq!(flow_table.active_len().unwrap(), 1);
         }
     }
