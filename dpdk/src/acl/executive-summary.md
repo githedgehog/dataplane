@@ -29,9 +29,9 @@ The testing infrastructure is feature-gated so downstream crates implementing ne
 
 ## Phasing
 
-**Phase 1** delivers the type-safe rule builder, the type-space graph, the reference classifier, and the DPDK ACL software backend. This proves the abstraction and is immediately usable by downstream crates.
+**Phase 1** delivers the type-safe rule builder, the type-space graph (for validation), the reference classifier, and the DPDK ACL software backend. This proves the abstraction and is immediately usable by downstream crates. Table decomposition uses simple field-signature grouping; runtime performance is acceptable but not yet optimized.
 
-**Phase 2** adds overlap analysis, hardware fall-through with trap rules, and the compilation report ("explain plan"). This is where multi-rule tables become correct across mixed hardware/software execution.
+**Phase 2** adds the type-space vector (for runtime dispatch and principled table decomposition), overlap analysis, hardware fall-through with trap rules, and the compilation report ("explain plan"). This is where multi-rule tables become correct across mixed hardware/software execution and classification performance improves significantly.
 
 **Phase 3** adds multi-NIC support, atomic table updates via generation tagging, and hardware offload via rte_flow. This is production hardware acceleration.
 
