@@ -142,3 +142,66 @@ sort key:  0b00_001_00_10  (same as Eth → IPv4 → TCP)
 ```
 
 One value, one mask, two views. Simpler, more correct, no information discarded. Parts 3, 5, and 6 should be read with this correction in mind.
+
+---
+
+## Part 9 — the type-space vector is a perfect hash, and dispatch should be hierarchical
+
+**[DN]** Does the type-space vector constitute a form of perfect hash function? My thinking was oriented toward maximizing the efficiency of the dispatch once the type-space vector was known. I'm not actually sure how jump tables are implemented by a contemporary compiler though. More, I'm wondering if this sort of "exact match" framing is quite right for table dispatch in the first place. Consider how a routing table might only care that a packet is Eth → IPv4, but in an exact match oriented dispatch you would miss if you got a type-space vector which was Eth → IPv4 → Tcp. The Tcp is not relevant for that, but you could also just mask it out of the type-space vector if you knew that a priori.
+
+**[Claude]** The vector is a perfect hash — injective by construction (distinct paths → distinct bit vectors) — but not minimal (the bit space is sparse). It's stronger than a typical perfect hash in two ways: (1) injectivity is structural, not discovered by parameter search, and (2) it's incrementally computable as the parser traverses each layer.
+
+But the more important observation is that exact-match dispatch is the wrong framing. Different tables care about different prefix depths: routing needs `Eth → IPv4` (doesn't care about transport), firewall needs `Eth → IPv4 → TCP` (cares about ports). Exact match would force rule duplication across all transport-level tables for routing rules.
+
+The best dispatch strategy is **hierarchical** — each level of the type-space graph is a dispatch level. Tables attach at the depth they care about. Routing attaches at the ethertype level. Firewall attaches at the transport level. Each dispatch level has very few entries (3-6, the out-degree of the graph node), making dense arrays practical. No hash map needed at any individual level.
+
+This also means dispatch is incrementally evaluable: as soon as the parser identifies the ethertype, routing tables activate — before the transport layer is even parsed.
+
+**[DN]** This seems largely true, but semi-degenerate paths are a persistent complication.
+
+**[Claude]** Correct. Degenerate edges create spurious dispatch levels — a routing table wants "any IPv4" but the hierarchy already branched on VLAN presence before reaching IP. Multiple paths lead to IPv4 (direct, tagged, priority-tagged, double-tagged). One fix: degenerate edges are transparent to dispatch by default (Option A). But see Part 10 for a more general solution.
+
+---
+
+## Part 10 — node-based attachment and per-node offsets
+
+**[DN]** Option B is worth exploring a bit more. Some networking constructs break the type space graph a bit. For instance, some tunnel types keep "naked" IPv4 headers inside the tunnel without an ethernet header encapsulating them. But the "I don't care how you got here" property might handle those cases with extra grace. Additionally, computing byte offsets might be significantly easier if it could be decomposed into "I don't care, just give me the start of the IPv4 header" type mechanics instead of always needing to consider the whole type space vector.
+
+**[Claude]** This is a deeper insight than it first appears. The problem is that the type-space graph assumes a clean layered stack, but real networking has IP-in-IP tunnels (no inner Ethernet), GRE carrying raw IPv4, MPLS peeling off to reveal IP directly, etc. In all these cases, the consuming table wants "the IPv4 header" — it doesn't care about the path. The table's interest is in a **node**, not a **path to that node**.
+
+Option B solves this by having tables attach to nodes rather than paths. Combined with **per-node offset recording** in the parser, this simplifies offset computation dramatically: instead of replaying the full type-space vector to compute cumulative offsets, the parser records "IPv4 starts at byte 14" (or byte 64 for inner headers) as it goes. A table just reads the offset for its attachment node.
+
+This also changes how DPDK ACL is invoked — the data pointer passed to `classify()` can be `packet_start + ipv4_offset` rather than `packet_start`, so the ACL table's field definitions are relative to the IPv4 header, not the frame start. The same ACL table works regardless of VLAN tags or tunnel headers that preceded it.
+
+Per-node offset recording should be built into the parser from phase 1 — it's a natural byproduct of parsing (you already know where each header starts) and prevents a painful retrofit when tunnel support is added.
+
+---
+
+## Part 11 — "degenerate" is policy, not a graph property
+
+**[DN]** Perhaps the concept of "degenerate" or "semi-degenerate" transitions is too opinionated? Certainly the finished system should be able to account for something as pedestrian as priority tagged frames, but this is still an ACL system. It is entirely reasonable for a network administrator (e.g. in a cloud environment) to block priority tagged frames in an ACL as a point of policy. If we cook the notion of semi-degeneracy into the system then we are possibly over constraining the design.
+
+**[Claude]** This is correct. `degenerate: bool` on graph edges bakes a structural judgment into the graph ("VLAN-0 is noise most tables don't care about"), but whether a priority-tagged frame is meaningless or policy-relevant depends on the deployment. The graph should be neutral — every edge is a valid transition.
+
+What was modeled as `degenerate: bool` is actually three separate policy concerns:
+1. **Sort-key masking** — "can this transition vary within a single flow?" Even this is arguably a property of the network environment, not the protocol. It should be a configurable `SortKeyPolicy` input.
+2. **Greylisting** — "flag suspicious structural patterns" is an ACL rule the user writes, not a graph annotation.
+3. **Dispatch transparency** — with node-based attachment (Option B), this dissolves entirely. A table attaching to "IPv4" doesn't care about VLAN presence because it said so, not because VLAN is marked "degenerate."
+
+The `degenerate: bool` field is removed from `TypeSpaceEdge`. The graph defines what's structurally possible. Policy defines what's desired. The compiler respects both without conflating them.
+
+---
+
+## Part 12 — path-aware vs node-aware dispatch, and operator UX
+
+**[DN]** Does removing `degenerate` strictly scope us to Option B? I was leaning toward that option anyway, but narrowing scope is useful to ground us if possible. Although closing design windows without exploring them is perhaps a bit foolish as well.
+
+**[Claude]** No — removing `degenerate` is compatible with all options. But it makes Option B the path of least resistance (it never needed the annotation). The options are not mutually exclusive. Recommended: Option B (node-aware) as the default attachment model, path-aware as opt-in for tables that need it, Option D (hierarchical) for the dispatch mechanism. They compose.
+
+**[DN]** One additional concern is sharp edges in the UX for this system. This type of nuance is suitable for a network programmer and rather toxic to the average network operator. We need sensible defaults and appropriate "lints" from the compiler which detect this type of sharp edge.
+
+**[Claude]** The system needs two UX layers: an operator-facing API (the MatchBuilder with sensible defaults — "match IPv4 dst 10.0.0.0/8" just works) and a programmer-facing API (full control over attachment qualifiers, sort-key policy, inner/outer selection). The operator path never exposes the complexity.
+
+Compiler lints bridge the gap — detecting ambiguous inner/outer, unnecessary rule duplication, sort-key conflicts with VLAN matching, and action sequences that cross type-space boundaries. Severity: Errors (hard reject from type-space graph), Warnings (likely unintended, compiler accepts but flags), Info (optimization hints in the EXPLAIN report).
+
+Sensible defaults: "match IPv4" means innermost header. Sort-key masks VLAN presence by default. Greylisting flags stacked VID-0. An operator who doesn't know about the complexity gets correct, safe behavior. A programmer who needs different behavior overrides explicitly.

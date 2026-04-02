@@ -3074,3 +3074,402 @@ The `TypeSpaceVector { stable, unstable }` struct becomes `TypeTag` with a
 `stable_mask`. These are minor changes to the reserved data structures. The
 provision for `Option<TypeTag>` in `MatchRule` and `PacketMeta` is unchanged.
 The `TableGrouper` trait is unchanged. The overall provision strategy is unaffected.
+
+## Type-space vector dispatch: prefix matching, not exact matching
+
+### The problem with exact-match dispatch
+
+The initial design assumed exact-match dispatch: a packet's full type-space vector
+selects one specific narrow table. But different tables care about different **prefix
+depths** of the vector:
+
+- A routing table only needs `Eth → IPv4` — it doesn't care about the transport layer.
+- A firewall table needs `Eth → IPv4 → TCP` — it matches on ports.
+- A tunnel decap table needs `Eth → IPv4 → UDP → VXLAN` — deeper still.
+
+With exact-match dispatch, a packet with vector `Eth → IPv4 → TCP` would miss the
+routing table (which was registered for `Eth → IPv4`, not `Eth → IPv4 → TCP`). You'd
+need to duplicate the routing rules into every table whose vector starts with
+`Eth → IPv4` — the TCP table, the UDP table, the ICMP table, etc. This is wasteful
+and fragile.
+
+### The type-space vector is a canonical path encoding with the perfect-hash property
+
+The vector is injective by construction (distinct paths → distinct bit vectors), which
+makes it a **perfect hash** over the set of valid protocol paths. But it is not
+minimal — the bit space is sparse. More importantly, it is **incrementally computable**:
+the parser builds it bit-by-bit as it traverses each layer, unlike a traditional hash
+that requires the complete key.
+
+However, using it for pure exact-match dispatch wastes the structural information that
+the encoding carries. The vector's bits have positional meaning — they encode the graph
+traversal at each depth level. This structure should be exploited, not discarded.
+
+### Four dispatch strategies
+
+**A) Exact match with rule duplication.** Install routing rules in every table whose
+vector prefix matches `Eth → IPv4`. Works but multiplies rules and is fragile when new
+protocol types are added (a new transport protocol creates a new table that needs copies
+of all routing rules).
+
+**B) Prefix match (LPM) on the type-space vector.** The dispatch is itself an LPM on
+the vector's bits. The routing table registers interest in the prefix `Eth → IPv4`
+(first N bits). The firewall registers `Eth → IPv4 → TCP` (first M bits, M > N). A
+packet with vector `Eth → IPv4 → TCP` matches both — the dispatcher activates both
+tables. This is the type-space dispatch analog of IP routing: shorter prefixes match
+more traffic.
+
+There's a pleasant recursion here: the dispatch on the type-space vector is itself an
+LPM problem — the same class of problem the ACL is designed to solve.
+
+**C) Masked match.** Each table declares a mask over the type-space vector indicating
+which bits it cares about. The routing table's mask zeroes out everything after the IP
+version bits. This is more general than prefix — a table could theoretically care about
+the tunnel layer but not the transport layer — but prefix is the common case.
+
+**D) Hierarchical dispatch.** Instead of one flat dispatch, use a multi-level dispatch
+that mirrors the graph depth:
+
+```
+Level 1: dispatch on ethertype bits
+  → routing tables activate here (they only need L3)
+  → continue to level 2
+
+Level 2: dispatch on IP protocol bits
+  → firewall tables activate here (they need L4)
+  → continue to level 3
+
+Level 3: dispatch on transport encap bits
+  → tunnel tables activate here (they need encap)
+```
+
+Each level is a narrow exact match, and tables attach at the depth they care about.
+This maps directly to the type-space graph structure — each graph node is a dispatch
+level. It's also incrementally evaluable: as soon as the parser processes the
+ethertype, you know which level-1 tables to activate, before parsing IP headers.
+
+### Recommendation
+
+**Option D (hierarchical dispatch)** is the best fit because:
+
+1. It mirrors the type-space graph — each dispatch level is a node in the graph.
+2. It's incrementally evaluable — tables activate as early as possible during parsing.
+3. It avoids rule duplication — the routing table attaches at the ethertype level once,
+   not copied into every transport-level table.
+4. It naturally handles the "routing doesn't care about TCP" case without masking.
+5. It composes well with the multi-phase pipeline (section 6) — each dispatch level
+   can be a pipeline phase boundary.
+
+The type-space vector still serves as the full path identifier for offset computation,
+sort-key masking, and greylisting. The hierarchical dispatch uses the vector's bits
+level-by-level rather than as a single flat key. The vector is the encoding; the
+hierarchical dispatch is how it's consumed.
+
+This also resolves the jump-table efficiency question: each dispatch level has very
+few entries (out-degree of the graph node, typically 3-6), making dense arrays or
+small match tables practical. No hash map needed at any individual level.
+
+### Complication: degenerate edges in hierarchical dispatch
+
+Degenerate edges (`vlan` vs `vlan_0`, `ipv6` vs `ipv6_ext`) create spurious dispatch
+levels. A routing table wants "any packet with an IPv4 header" but the hierarchy has
+already branched on VLAN presence before reaching the IP layer. There are multiple
+paths to IPv4:
+
+- `Eth → IPv4` (direct)
+- `Eth → vlan → IPv4` (tagged)
+- `Eth → vlan_0 → IPv4` (priority-tagged)
+- `Eth → qinq → vlan → IPv4` (double-tagged)
+
+The routing table doesn't care about these distinctions. Three options:
+
+**A) Degenerate edges are transparent to dispatch.** The hierarchy skips degenerate
+nodes. The first "real" dispatch level is `ethertype → {arp, ipv4, ipv6, miss}`,
+regardless of VLAN tags traversed. Tables that DO care about VLAN presence (e.g.
+a VLAN policy table) opt into the degenerate level explicitly. This reuses the
+graph's `degenerate: bool` annotation — degenerate edges are recorded in the full
+type tag (for offset computation) but invisible to dispatch (for table selection).
+
+**B) Tables attach with a depth mask.** A routing table attaches at the IPv4 node
+with a mask that says "I don't care how you got here." The dispatcher checks whether
+the packet's path passes through the attachment node, ignoring masked-out edges.
+This is the dispatch analog of the sort-key mask.
+
+**C) Multi-attach.** The compiler attaches the routing table at every node that
+leads to IPv4. Simpler conceptually but grows with the number of degenerate paths.
+
+**Option A is clean for the degenerate case specifically** — it aligns with the
+existing `degenerate` annotation and handles VLAN/extension header variations well.
+
+However, **Option B deserves deeper exploration** because it solves a broader class
+of problems that Option A does not.
+
+### Option B revisited: node-based attachment and per-node offsets
+
+#### The problem Option B solves that A doesn't
+
+The type-space graph assumes a clean layered stack: `Eth → IP → Transport → Encap`.
+But real networking has cases that break this assumption:
+
+- **IP-in-IP tunnels**: `Eth → IPv4 → IPv4` — no inner Ethernet
+- **GRE without Ethernet**: `Eth → IPv4 → GRE → IPv4` — GRE carries raw IPv4
+- **MPLS**: `Eth → MPLS → IPv4` — MPLS peels off to reveal IP directly
+- **L2TP**: various encapsulations with and without L2 headers
+
+In all these cases, a routing table wants "the IPv4 header" — it doesn't care
+whether it's the outer one, the inner one after GRE, or the one after MPLS decap.
+The table's interest is in a **node** (IPv4), not a **path to that node**.
+
+Option A (degenerate transparency) handles variations in how you reach a node
+through the same graph region (VLAN vs no-VLAN before IPv4). But it doesn't handle
+reaching the same node type through **fundamentally different graph regions** (outer
+IPv4 vs inner IPv4 after tunnel decap). These are different nodes in the graph with
+different paths, but the consuming table doesn't distinguish them.
+
+Option B's "I don't care how you got here" property handles both cases uniformly.
+
+#### Per-node offset recording simplifies offset computation
+
+If offset computation is decomposed into "give me the start of the IPv4 header"
+rather than "replay the full type-space vector to compute the cumulative offset,"
+the parser records **per-node offsets** as it traverses:
+
+```rust
+struct ParseResult {
+    /// The full type-space vector — canonical path encoding.
+    type_tag: TypeTag,
+    /// Per-node byte offsets discovered during parsing.
+    offsets: NodeOffsetMap,
+}
+
+/// Sparse map: only nodes actually traversed have entries.
+struct NodeOffsetMap {
+    eth_offset: Option<u16>,       // always 0 for outer, varies for inner
+    vlan_offset: Option<u16>,      // present only if VLAN was traversed
+    ipv4_offset: Option<u16>,      // present only if IPv4 was traversed
+    ipv6_offset: Option<u16>,      // present only if IPv6 was traversed
+    tcp_offset: Option<u16>,       // present only if TCP was traversed
+    udp_offset: Option<u16>,       // present only if UDP was traversed
+    // ... one field per node type in the graph
+    // For tunnels, inner offsets are separate fields:
+    inner_eth_offset: Option<u16>,
+    inner_ipv4_offset: Option<u16>,
+    inner_ipv6_offset: Option<u16>,
+    // ...
+}
+```
+
+A table that attaches to "IPv4" just reads `offsets.ipv4_offset` — it doesn't need
+to know about VLAN tags, MPLS labels, or tunnel headers that preceded it. This is:
+
+- **Simpler**: no cumulative offset replay from the full type-space vector
+- **Composable**: each table reads only the offsets it needs
+- **Tunnel-friendly**: inner and outer headers have separate offset fields
+- **Cache-friendly**: the offset map is a small struct in `PacketMeta`, hot in L1
+
+#### How this interacts with DPDK ACL
+
+DPDK ACL's `classify()` takes a pointer to the start of the packet data and uses
+field offsets defined at table build time. With per-node offsets, the pointer passed
+to ACL can be `packet_start + offsets.ipv4_offset` instead of `packet_start`. The
+ACL table's field definitions then use offsets relative to the IPv4 header, not
+relative to the start of the frame. This means:
+
+- The same ACL table works regardless of how many VLAN tags or tunnel headers
+  preceded the IPv4 header
+- No rule duplication for different encapsulation paths
+- The ACL table is narrower (only IPv4 + transport fields, no L2 fields)
+
+#### Revised recommendation
+
+**Option B (node-based attachment with per-node offsets) is the better long-term
+design.** It handles:
+- Degenerate edges (VLAN/extension headers) — same as Option A
+- Different paths to the same node type (tunnels, MPLS) — Option A can't do this
+- Offset computation without full vector replay
+- Tunnel inner/outer header disambiguation
+
+Option A remains valid as a simpler first implementation if tunnel support is
+deferred. But the per-node offset recording should be built into the parser from
+phase 1 — it's a natural byproduct of parsing (you already know where each header
+starts) and it prevents a painful retrofit when tunnel support is added.
+
+Tables that need to match on specific transitions (e.g. "drop all priority-tagged
+frames") or path-specific conditions (e.g. "match only the outer IPv4 header") can
+still do so by specifying which node instance they attach to. The default is "give me
+the most relevant instance" (typically the innermost for forwarding, the outermost
+for encap policy).
+
+### Revision: "degenerate" is policy, not a graph property
+
+The `degenerate: bool` annotation on graph edges was an attempt to bake structural
+judgments into the graph: "VLAN-0 is a degenerate transition that most tables don't
+care about." But whether a priority-tagged frame is meaningless noise or a policy-
+relevant signal depends entirely on the deployment:
+
+- A cloud operator might block priority-tagged frames as policy
+- A carrier might require them
+- A security-conscious environment might greylist them for inspection
+
+The system should not have an opinion. The graph should be **neutral** — every edge
+is a valid transition. What was previously modeled as `degenerate: bool` is actually
+three separate policy concerns, each controlled by the user or the compiler's
+heuristics rather than hardcoded into the graph:
+
+**1. Sort-key masking (TCP reordering prevention).**
+The actual invariant is: "can this transition vary within a single flow?" This
+determines whether the transition's bits should be masked out of the sort key.
+But even this is arguably a property of the network environment (a well-configured
+network won't intermittently priority-tag the same flow), not the protocol. The
+sort-key mask should be a **configurable policy input**:
+
+```rust
+struct SortKeyPolicy {
+    /// Transitions whose bits are masked out of the sort key.
+    /// Default: conservative set (VLAN presence, IPv6 ext headers).
+    /// Operator can override based on their network's behavior.
+    masked_edges: HashSet<EdgeId>,
+}
+```
+
+**2. Greylisting thresholds.**
+"Flag frames with >2 VID-0 tags" is an ACL rule the user writes, not a hardcoded
+graph annotation. The type-space vector provides the information needed to write
+such rules (the full path is encoded), but the threshold and response are policy.
+
+**3. Dispatch transparency.**
+With Option B (node-based attachment), this concern largely dissolves. A table that
+attaches to "IPv4" doesn't care about VLAN presence — not because VLAN is "degenerate"
+but because the table said it cares about IPv4. The dispatch mechanism doesn't need
+to know which transitions are "meaningful" vs "degenerate."
+
+**What changes in the data structures:**
+
+```rust
+struct TypeSpaceEdge {
+    from: NodeId,
+    to: NodeId,
+    trigger: EdgeTrigger,
+    // REMOVED: degenerate: bool
+    // The graph is neutral. Policy is expressed elsewhere.
+    bit_code: Option<u8>,
+}
+
+// Sort-key masking is now a separate policy input, not a graph annotation:
+struct CompilerConfig {
+    sort_key_policy: SortKeyPolicy,
+    // ... other policy inputs
+}
+```
+
+This is a cleaner separation of concerns: the graph defines what's structurally
+*possible*. Policy defines what's *desired*. The compiler respects both without
+conflating them.
+
+### Path-aware vs node-aware dispatch: keeping both options open
+
+Removing `degenerate` from the graph is compatible with all dispatch options, but
+it makes Option B (node-based attachment) the path of least resistance — it never
+needed the annotation in the first place.
+
+However, **the options are not mutually exclusive**, and we should not close design
+windows prematurely. The real question is: should dispatch be path-aware or
+node-aware? There are cases for both:
+
+| Scenario | Path-aware (A/D) | Node-aware (B) |
+|---|---|---|
+| "Match outer IPv4 only" | Natural — attach at hierarchy position | Needs qualifier: "outer" vs "any" |
+| "Match any IPv4 regardless of encap" | Needs multi-attach or masking | Natural — just say "IPv4" |
+| "Match only when VLAN is present" | Natural — attach at VLAN level | Needs explicit VLAN criterion |
+| Tunnel inner vs outer | Natural — different hierarchy positions | Needs inner/outer qualifier |
+
+Most tables are node-aware ("give me IPv4"). Some tables are path-aware ("match
+only the outer IPv4 after exactly one VLAN tag"). The recommended default:
+
+- **Option B (node-aware) as the default attachment model.** Tables say what node
+  they care about. This covers the common case without complexity.
+- **Path-aware opt-in for tables that need it.** Tables that care about the specific
+  path can specify qualifiers (outer/inner, VLAN-present, etc.).
+- **Option D (hierarchical) for the dispatch mechanism.** Hierarchical traversal
+  determines evaluation order. Node-based attachment determines which tables are
+  relevant at each node. They compose naturally.
+
+### UX concern: sharp edges for network operators
+
+This type-space / node-attachment / path-qualifier design has significant nuance that
+is appropriate for a **network programmer** (someone building dataplane features) but
+potentially toxic for a **network operator** (someone writing ACL rules to manage
+traffic). The two audiences have very different needs:
+
+| Concern | Network programmer | Network operator |
+|---|---|---|
+| Type-space graph | Defines it, extends it | Never sees it |
+| Node attachment | Chooses inner vs outer, path qualifiers | Writes "match IPv4 dst 10.0.0.0/8" |
+| Sort-key policy | Configures for their deployment | Doesn't know it exists |
+| Greylisting | Implements the grey-path pipeline | Writes "drop priority-tagged frames" |
+| Compiler report | Reads "EXPLAIN" output for debugging | Wants "rule accepted" or "rule rejected: reason" |
+
+**The system needs two layers of UX:**
+
+1. **Operator-facing API**: the `MatchBuilder` with sensible defaults. An operator
+   writes `MatchBuilder::new().eth().ipv4(|ip| ip.dst_prefix(p)).tcp(|t| t.dst_port(80)).build(100)`
+   and never thinks about type-space vectors, node attachment, or dispatch strategy.
+   The builder picks the right defaults (innermost header, node-aware attachment,
+   conservative sort-key policy).
+
+2. **Programmer-facing API**: full control over attachment qualifiers, sort-key
+   policy, path-specific matching, inner/outer header selection. Available but not
+   required. The operator path never exposes this complexity.
+
+**Compiler lints bridge the gap.** The compiler should detect sharp edges and warn
+the operator before they cause problems:
+
+```
+Lint examples:
+
+W001: Rule matches on "IPv4" without specifying inner/outer. This table also has
+      tunnel decap rules. Did you mean to match the inner IPv4 header?
+      [default: inner — add .outer() to match the outer header]
+
+W002: Rule matches on TCP dst port 80 but does not constrain IP version. This will
+      generate two backend rules (IPv4 and IPv6). If you only intended IPv4, add
+      .ipv4() before .tcp().
+
+W003: Rule "drop all priority-tagged frames" matches on VLAN VID=0 but the
+      sort-key policy does not mask VLAN transitions. This may cause TCP
+      reordering for flows that alternate between tagged and untagged. Consider
+      adding VLAN edges to the sort-key mask, or accept this if your network
+      does not intermittently priority-tag.
+
+W004: Rule matches on "outer IPv4 src" but also applies a NAT64 action. After
+      NAT64, the outer IPv4 header will be IPv6. Downstream rules matching on
+      IPv4 will not see this packet. Did you intend this?
+
+W005: This rule set has 47 rules matching on L3 fields only (no transport).
+      These rules are duplicated across 6 transport-type tables. Consider
+      using node-based attachment to avoid duplication.
+      [This is an optimization hint, not a correctness warning]
+
+E001: Action sequence invalid: SetField(tcp_dst_port) follows IPsec encrypt.
+      TCP header is not accessible after encryption.
+      [This is a hard error, not a lint]
+```
+
+**Lint severity levels:**
+- **Error (E)**: structurally invalid — compiler rejects the rule. These come from
+  the type-space graph (action after type-space destruction, matching on nonexistent
+  fields).
+- **Warning (W)**: likely unintended behavior — compiler accepts but flags. These come
+  from heuristics (ambiguous inner/outer, unnecessary duplication, sort-key conflicts).
+- **Info (I)**: optimization opportunities — compiler notes in the EXPLAIN report.
+  (Rule duplication that could be avoided, hardware offload missed by a narrow margin.)
+
+**Sensible defaults eliminate most sharp edges:**
+- "Match IPv4" means innermost IPv4 header (the one you'd route on)
+- "Match TCP port" means the transport of the innermost IP header
+- Sort-key policy defaults to masking VLAN presence and IPv6 extension headers
+- Greylisting defaults to flagging >MAX_VLANS or stacked VID-0 tags
+
+These defaults are chosen so that an operator who doesn't know about the complexity
+gets correct, safe behavior. A programmer who needs different behavior can override.
+The lints catch cases where the default might be wrong for the specific rule set.

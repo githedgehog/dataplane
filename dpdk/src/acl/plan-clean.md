@@ -427,12 +427,46 @@ Three layers of testing, all `#[cfg(any(test, feature = "constrained_backend"))]
 
 ## Phasing
 
-| Phase | Scope                                                                                                                                                                                 | Key deliverable                                                                          |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| 1     | MatchBuilder typestate API + type-space **graph** (validation, not vector) + reference classifier + DPDK ACL backend + field-signature table grouping + full recompilation on updates | Core value. Proves the abstraction. Downstream crates can start using the API.           |
-| 2     | Type-space **vector** encoding + runtime dispatch + overlap analysis + fall-through with trap rules + compilation report + batch sorting                                              | Principled table decomposition. Correctness for multi-rule tables with hardware offload. |
-| 3     | Multi-NIC support + generation tagging for atomic updates + rte_flow backend                                                                                                          | Production hardware offload.                                                             |
-| 4     | Incremental compilation (salsa-style) + adaptive re-optimization + constraint solver for multi-stage ASICs                                                                            | Scale and performance refinement.                                                        |
+| Phase | Scope | Key deliverable |
+|---|---|---|
+| 1 | MatchBuilder typestate API + type-space **graph** (validation, not vector) + reference classifier + DPDK ACL backend + field-signature table grouping + per-node offset recording + full recompilation on updates | Core value. Proves the abstraction. Graph enforces hard errors. Downstream crates can start using the API. |
+| 2 | Type-space **vector** encoding + runtime dispatch + overlap analysis + fall-through with trap rules + compilation report + batch sorting + **initial lints** (W-class) based on phase 1 user feedback | Principled table decomposition. Correctness for multi-rule tables with hardware offload. |
+| 3 | Multi-NIC support + generation tagging for atomic updates + rte_flow backend + expanded lint set | Production hardware offload. |
+| 4 | Incremental compilation (salsa-style) + adaptive re-optimization + constraint solver for multi-stage ASICs | Scale and performance refinement. |
 
 See "Design decision: graph in phase 1, vector in phase 2" above for the rationale
 and trade-offs of this phasing choice.
+
+### Validation and linting: the rustc/clippy model
+
+The compiler's validation follows the same model as `rustc` (hard type errors) and
+`clippy` (increasingly sophisticated pattern lints):
+
+**Phase 1: the graph enforces hard errors (E-class).** If the type-space graph says a
+field doesn't exist at a node, or an action sequence crosses a type-space-terminating
+boundary, the compiler rejects the rule. This is structural correctness from the graph
+— no heuristics, no opinions. The compiler is "correct but unhelpful" in phase 1: it
+accepts or rejects, with no nuance about whether a valid rule is *probably wrong*.
+
+**Phase 2+: lints add warnings (W-class) incrementally.** Each lint catches a specific
+"technically valid but probably wrong" pattern. Lints are:
+- **Small and self-contained** — each is an independent check, typically a few dozen lines
+- **Additive** — adding a new lint never changes the core compiler or breaks existing rules
+- **Prioritized by real user feedback** — don't anticipate sharp edges speculatively;
+  add lints reactively as downstream engineers report confusion
+
+**Ongoing: info-class hints accumulate.** Optimization suggestions in the EXPLAIN report
+(unnecessary rule duplication, hardware offload missed by a narrow margin, etc.). These
+never block anything — they're advisory.
+
+This separation matters because the two audiences have different tolerances:
+- A **network programmer** (building dataplane features) can handle the full complexity
+  of type-space semantics, node attachment, and path qualifiers.
+- A **network operator** (writing ACL rules) should never see this complexity. They
+  write `MatchBuilder::new().eth().ipv4(...).tcp(...).build()` and the sensible defaults
+  + lints protect them from sharp edges.
+
+The MatchBuilder's sensible defaults (innermost header, node-aware attachment,
+conservative sort-key policy) are chosen so that an operator who doesn't know about
+the type-space internals gets correct, safe behavior. The lints catch the remaining
+cases where the default might be wrong for a specific rule set.
