@@ -302,6 +302,7 @@ jobs:
           - false
         upgradefrom:
           - ""
+          - "26.01"
         include:
           # gateway l3vni
           - fabricmode: spine-leaf
