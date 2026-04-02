@@ -128,6 +128,13 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         Some(flow_info)
     }
 
+    /// Invalidate the flow that a packet refers to if any, and the related flow
+    pub fn invalidate_flows(&self) {
+        if let Some(flow_info) = self.meta().flow_info.as_ref() {
+            flow_info.invalidate_pair();
+        }
+    }
+
     #[inline]
     fn underlay_qos_from_outer_headers(headers: &Headers) -> (Option<Dscp>, Option<Ecn>) {
         match &headers.net {

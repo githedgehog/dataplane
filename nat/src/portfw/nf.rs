@@ -19,7 +19,6 @@ use std::time::Instant;
 use crate::portfw::flow_state::PortFwAction;
 use crate::portfw::flow_state::build_portfw_flow_keys;
 use crate::portfw::flow_state::get_packet_port_fw_state;
-use crate::portfw::flow_state::invalidate_flow_state;
 use crate::portfw::flow_state::refresh_port_fw_entry;
 use crate::portfw::flow_state::setup_forward_flow;
 use crate::portfw::flow_state::setup_reverse_flow;
@@ -130,10 +129,10 @@ impl PortForwarder {
 
         // insert the two related flows
         if let Some(prior) = self.flow_table.insert_from_arc(fw_key, &fw_flow) {
-            debug!("Replaced flow entry: {prior}");
+            warn!("Replaced flow entry: {prior}");
         }
         if let Some(prior) = self.flow_table.insert_from_arc(rev_key, &rev_flow) {
-            debug!("Replaced flow entry: {prior}");
+            warn!("Replaced flow entry: {prior}");
         }
     }
 
@@ -318,9 +317,9 @@ impl PortForwarder {
             } else {
                 debug!("Packet hit Active flow referring to STALE port-forwarding rule.");
                 let Some(entry) = Self::get_rule_from_pkt(packet, pfwtable, &state) else {
-                    debug!("Packet should no longer be forwarded. Will drop and invalidate state");
+                    debug!("Packet should no longer be forwarded. Will drop and invalidate flow");
+                    packet.invalidate_flows();
                     packet.done(DoneReason::Filtered);
-                    invalidate_flow_state(packet);
                     return;
                 };
                 /* we found a port-forwarding rule that grants access to this packet */

@@ -21,7 +21,8 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
 ) {
-    debug!("Processing ICMP error message with flow  {flow_info}");
+    let f = flow_info.logfmt();
+    debug!("Processing ICMP error message with flow {f}");
 
     let flow_info_locked = flow_info.locked.read().unwrap();
 

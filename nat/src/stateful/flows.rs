@@ -151,6 +151,7 @@ pub(crate) fn check_masquerading_flows(
     new_config: &StatefulNatConfig,
     new_allocator: &mut NatDefaultAllocator,
 ) {
+    debug!("CHECKING masquerading flows with new configuration...");
     let genid = new_config.genid();
     let table_lock = flow_table.lock_read();
     for flow_info in table_lock.iter().filter(|flow_info| flow_info.is_valid()) {
@@ -163,7 +164,7 @@ pub(crate) fn check_masquerading_flows(
         let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
         let src_vpcd = flow_key.data().src_vpcd().unwrap_or_else(|| unreachable!());
 
-        debug!("Checking flow {flow_key} to {dst_vpcd} against masquerading configurations");
+        debug!("Checking flow {}", flow_info.logfmt());
 
         let Some(nat_peering) = new_config.get_peering(src_vpcd, dst_vpcd) else {
             debug!("Invalidating flow: there's no longer a peering {src_vpcd} -- {dst_vpcd}");
@@ -191,10 +192,9 @@ pub(crate) fn check_masquerading_flows(
             //
             // If either of those fails, we invalidate the flow. On success, we upgrade the flow to the new gen id.
             if re_reserve_ip_and_port(new_allocator, flow_info.as_ref(), ip, port).is_ok() {
-                debug!("Upgrading flow {flow_key} to gen id {genid}...");
+                debug!("Upgrading flow {} to gen id {genid}...", flow_info.logfmt());
                 flow_info.set_genid_pair(genid);
             } else {
-                debug!("Invalidating flow {flow_key}");
                 flow_info.invalidate_pair();
             }
         } else {
