@@ -12,6 +12,7 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 
 use super::{AtomicInstant, FlowInfoItem};
 use crate::FlowKey;
@@ -391,6 +392,7 @@ impl FlowInfo {
     ///
     /// This method is thread-safe.
     pub fn invalidate(&self) {
+        debug!("Invalidating flow {}...", self.logfmt());
         self.update_status(FlowStatus::Cancelled);
         self.token.cancel();
     }

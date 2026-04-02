@@ -71,8 +71,8 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
         .unwrap_or_else(|| unreachable!());
 
     let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-    let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!());
-    debug!("Processing ICMP error packet from {src_vpcd} using flow {flow_key} {flow_info}");
+    let f = flow_info.logfmt();
+    debug!("Processing ICMP error packet from {src_vpcd} using flow {f}");
 
     // this is informational and to drop ICMP errors that need not be processed: if the flow for the offending
     // packet is no longer valid, no need to process the ICMP error.

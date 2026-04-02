@@ -179,7 +179,7 @@ impl IcmpErrorHandler {
             packet.done(DoneReason::Filtered);
             return;
         };
-        debug!("Found flow for key={rev_flow_key}");
+        debug!("Found flow, {}", flow.logfmt());
         let flow_info_locked = flow.locked.read().unwrap();
         let Some(dst_vpcd) = flow_info_locked.dst_vpcd else {
             warn!("Flow-info for {rev_flow_key} has no dst VPC discriminant. This is a bug");
@@ -213,7 +213,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for IcmpErrorHandler {
         input.filter_map(move |mut packet| {
             if !packet.is_done() && packet.meta().is_overlay() && packet.is_icmp_error() {
                 if packet.meta().requires_stateless_nat() {
-                    // don't process icmp errors for stateless NAT or if we have
+                    // don't process icmp errors for stateless NAT or if we know dst-vpcd
                     debug!("ICMP error will be handled by static NAT NF:\n{packet}");
                 } else if packet.meta().dst_vpcd.is_some() {
                     // NOTE: this assumes that the flow-filter will NOT mark icmp errors
