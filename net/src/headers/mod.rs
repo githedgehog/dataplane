@@ -39,17 +39,21 @@ pub use embedded::*;
 const MAX_VLANS: usize = 4;
 const MAX_NET_EXTENSIONS: usize = 2;
 
-// TODO: remove `pub` from all fields
+/// A parsed set of network packet headers.
+///
+/// Fields are crate-private to restrict direct external construction.
+/// Use the [`HeadersBuilder`] (via `derive_builder`) for construction
+/// and the public accessor methods for reading.
 #[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
 #[builder(default)]
 pub struct Headers {
-    pub eth: Option<Eth>,
-    pub vlan: ArrayVec<Vlan, MAX_VLANS>,
-    pub net: Option<Net>,
-    pub net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
-    pub transport: Option<Transport>,
-    pub udp_encap: Option<UdpEncap>,
-    pub embedded_ip: Option<EmbeddedHeaders>,
+    pub(crate) eth: Option<Eth>,
+    pub(crate) vlan: ArrayVec<Vlan, MAX_VLANS>,
+    pub(crate) net: Option<Net>,
+    pub(crate) net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+    pub(crate) transport: Option<Transport>,
+    pub(crate) udp_encap: Option<UdpEncap>,
+    pub(crate) embedded_ip: Option<EmbeddedHeaders>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -630,6 +634,99 @@ impl Headers {
     /// Add / Replace Ethernet header
     pub fn set_eth(&mut self, eth: Eth) {
         self.eth = Some(eth);
+    }
+
+    // ---- public read accessors ----
+
+    /// Get a reference to the Ethernet header, if present.
+    #[must_use]
+    pub fn eth(&self) -> Option<&Eth> {
+        self.eth.as_ref()
+    }
+
+    /// Get a mutable reference to the Ethernet header, if present.
+    #[must_use]
+    pub fn eth_mut(&mut self) -> Option<&mut Eth> {
+        self.eth.as_mut()
+    }
+
+    /// Get a reference to the VLAN header stack.
+    #[must_use]
+    pub fn vlan(&self) -> &ArrayVec<Vlan, MAX_VLANS> {
+        &self.vlan
+    }
+
+    /// Get a reference to the network (IP) header, if present.
+    #[must_use]
+    pub fn net(&self) -> Option<&Net> {
+        self.net.as_ref()
+    }
+
+    /// Get a mutable reference to the network (IP) header, if present.
+    #[must_use]
+    pub fn net_mut(&mut self) -> Option<&mut Net> {
+        self.net.as_mut()
+    }
+
+    /// Get a reference to the network extension headers (e.g. IPv6 extensions,
+    /// IP Authentication headers).
+    #[must_use]
+    pub fn net_ext(&self) -> &ArrayVec<NetExt, MAX_NET_EXTENSIONS> {
+        &self.net_ext
+    }
+
+    /// Get a reference to the transport header, if present.
+    #[must_use]
+    pub fn transport(&self) -> Option<&Transport> {
+        self.transport.as_ref()
+    }
+
+    /// Get a mutable reference to the transport header, if present.
+    #[must_use]
+    pub fn transport_mut(&mut self) -> Option<&mut Transport> {
+        self.transport.as_mut()
+    }
+
+    /// Replace the network (IP) header, returning the previous value.
+    pub fn set_net(&mut self, net: Option<Net>) -> Option<Net> {
+        std::mem::replace(&mut self.net, net)
+    }
+
+    /// Replace the transport header, returning the previous value.
+    pub fn set_transport(&mut self, transport: Option<Transport>) -> Option<Transport> {
+        std::mem::replace(&mut self.transport, transport)
+    }
+
+    /// Replace the UDP encapsulation header, returning the previous value.
+    pub fn set_udp_encap(&mut self, udp_encap: Option<UdpEncap>) -> Option<UdpEncap> {
+        std::mem::replace(&mut self.udp_encap, udp_encap)
+    }
+
+    /// Get a reference to the UDP encapsulation header, if present.
+    #[must_use]
+    pub fn udp_encap(&self) -> Option<&UdpEncap> {
+        self.udp_encap.as_ref()
+    }
+
+    /// Get a mutable reference to the UDP encapsulation header, if present.
+    #[must_use]
+    pub fn udp_encap_mut(&mut self) -> Option<&mut UdpEncap> {
+        self.udp_encap.as_mut()
+    }
+
+    /// Get a reference to the embedded IP headers, if present.
+    ///
+    /// Embedded IP headers appear inside ICMP error messages, which contain a
+    /// (potentially truncated) copy of the original offending packet.
+    #[must_use]
+    pub fn embedded_ip(&self) -> Option<&EmbeddedHeaders> {
+        self.embedded_ip.as_ref()
+    }
+
+    /// Get a mutable reference to the embedded IP headers, if present.
+    #[must_use]
+    pub fn embedded_ip_mut(&mut self) -> Option<&mut EmbeddedHeaders> {
+        self.embedded_ip.as_mut()
     }
 
     /// Push a VLAN header to the top of the stack.

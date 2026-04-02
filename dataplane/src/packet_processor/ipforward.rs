@@ -5,7 +5,6 @@
 
 #![allow(clippy::similar_names)]
 
-use arrayvec::ArrayVec;
 use net::headers::{TryHeadersMut, TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, Packet};
 use net::{buffer::PacketBufferMut, checksum::Checksum};
@@ -18,8 +17,7 @@ use routing::{
     VxlanEncapsulation,
 };
 
-use net::headers::Headers;
-use net::headers::Net;
+use net::headers::{Headers, Net};
 use net::interface::InterfaceIndex;
 use net::ip::NextHeader;
 use net::ipv4::{Ipv4, UnicastIpv4Addr};
@@ -214,15 +212,9 @@ impl IpForwarder {
         let udp_encap = UdpEncap::Vxlan(Vxlan::new(vxlan.vni));
 
         // Vxlan encap API headers
-        let headers = Headers {
-            eth: None, /* to be set at egress */
-            vlan: ArrayVec::default(),
-            net: Some(net),
-            net_ext: ArrayVec::default(),
-            transport: None, /* should be UDP, but it is automatically done */
-            udp_encap: Some(udp_encap),
-            embedded_ip: None,
-        };
+        let mut headers = Headers::default();
+        headers.set_net(Some(net));
+        headers.set_udp_encap(Some(udp_encap));
         VxlanEncap::new(headers).map_err(|e| format!("{e}"))
     }
 
@@ -281,8 +273,7 @@ impl IpForwarder {
                 Ok(()) => {
                     let vni = vxlan_headers
                         .headers()
-                        .udp_encap
-                        .as_ref()
+                        .udp_encap()
                         .unwrap_or_else(|| unreachable!())
                         .vxlan_vni();
 
