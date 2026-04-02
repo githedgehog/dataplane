@@ -57,15 +57,6 @@ impl FlowFilter {
         }
     }
 
-    /// Invalidate the flow that a packet refers to if any
-    fn invalidate_packet_flow<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
-        if let Some(flow_info) = packet.meta().flow_info.as_ref() {
-            let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!());
-            debug!("Invalidating flow {flow_key}:{flow_info}");
-            flow_info.invalidate_pair();
-        }
-    }
-
     /// Once a packet has been validated, if it refers to a flow, check that the flow
     /// is consistent with the annotations set for the packet. This is needed to invalidate
     /// flows on configuration changes since the flow a packet refers to may have been created with
@@ -136,9 +127,12 @@ impl FlowFilter {
             debug!("{nfi}: Packet has flow-info but from a prior config ({flow_genid} < {genid})");
             return false;
         }
-        // The flow has the same generation id as the current config. Small transient state aside
+        // The flow has the same generation id as the current config. Small transient period aside,
         // this means that the flow is up-to-date and we can bypass the filter
-        debug!("{nfi}: Packet can bypass flow filter due to flow {flow_info}");
+        debug!(
+            "{nfi}: Packet can bypass flow filter due to flow {}",
+            flow_info.logfmt()
+        );
         if Self::set_nat_requirements_from_flow_info(packet).is_err() {
             debug!("{nfi}: Failed to set nat requirements");
             return false;
@@ -400,7 +394,7 @@ impl FlowFilter {
                     debug!(
                         "{nfi}: Invalid NAT requirements found for flow {tuple}, dropping packet"
                     );
-                    Self::invalidate_packet_flow(packet);
+                    packet.invalidate_flows();
                     packet.done(DoneReason::Filtered);
                     return;
                 }
@@ -429,7 +423,7 @@ impl FlowFilter {
                     }
                     Err(reason) => {
                         debug!("Will drop packet. Reason: {reason}");
-                        Self::invalidate_packet_flow(packet);
+                        packet.invalidate_flows();
                         packet.done(reason);
                         return;
                     }
@@ -452,7 +446,7 @@ impl FlowFilter {
         // Drop the packet since we don't know destination and it is not an icmp error
         let Some(dst_vpcd) = dst_vpcd else {
             debug!("Could not determine dst vpcd for packet. Dropping it...");
-            Self::invalidate_packet_flow(packet);
+            packet.invalidate_flows();
             packet.done(DoneReason::Filtered);
             return;
         };
@@ -464,7 +458,7 @@ impl FlowFilter {
         // to do so. Therefore, it should not upgrade flow to newer gen ids. However, it can (and must) invalidate
         // flows in some cases, because no other NF would do so otherwise.
         if Self::should_invalidate_flow(packet, dst_vpcd, genid) {
-            Self::invalidate_packet_flow(packet);
+            packet.invalidate_flows();
         }
     }
 }

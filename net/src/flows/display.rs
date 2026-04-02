@@ -59,7 +59,7 @@ impl Display for FlowInfo {
         let expires_in = expires_at.saturating_duration_since(Instant::now());
         let genid = self.genid();
 
-        if let Ok(info) = self.locked.try_read() {
+        if let Ok(info) = self.locked.read() {
             write!(f, "{info}")?;
         } else {
             write!(f, "could not lock!")?;
@@ -76,5 +76,56 @@ impl Display for FlowInfo {
             self.status(),
             expires_in.as_secs(),
         )
+    }
+}
+
+pub struct FlowInfoOneLiner<'a>(&'a FlowInfo);
+struct FlowInfoLockedOneLiner<'a>(&'a FlowInfoLocked);
+
+impl Display for FlowInfoLockedOneLiner<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locked = self.0;
+        if let Some(data) = &locked.dst_vpcd {
+            write!(f, "dst-vpcd:{data} ")?;
+        }
+        if let Some(data) = &locked.port_fw_state {
+            write!(f, "port-forwarding:{data} ")?;
+        }
+        if let Some(data) = &locked.nat_state {
+            write!(f, "nat-state:{data} ")?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for FlowInfoOneLiner<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let flow_info = self.0;
+        let genid = flow_info.genid();
+        let key = flow_info
+            .flowkey()
+            .map_or_else(|| "none".to_string(), ToString::to_string);
+
+        let r = flow_info
+            .related
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .map_or("no", |_| "yes");
+
+        if let Ok(info) = flow_info.locked.read() {
+            write!(
+                f,
+                "{key} info:{} related:{r} genid:{genid}",
+                FlowInfoLockedOneLiner(&info)
+            )
+        } else {
+            write!(f, "{key} info:inaccessible! related:{r} genid:{genid}")
+        }
+    }
+}
+
+impl FlowInfo {
+    pub fn logfmt(&self) -> FlowInfoOneLiner<'_> {
+        FlowInfoOneLiner(self)
     }
 }

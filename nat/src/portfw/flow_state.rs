@@ -215,13 +215,6 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
     Some(state.clone())
 }
 
-/// Invalidate the flow that this packet matched and the related one if any.
-pub(crate) fn invalidate_flow_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) {
-    if let Some(flow_info) = packet.meta().flow_info.as_ref() {
-        flow_info.invalidate_pair();
-    }
-}
-
 /// Update the port-forwarding state of a flow entry after processing a packet.
 /// This updates the flow status shared by flow entries' port-forwarding state.
 /// We use the status of the flow to determine the extent to which the lifetime
@@ -253,7 +246,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     // invalidate the flows in both directions. In either case, the packet is let through.
     let extend_by = match new_status {
         PortFwFlowStatus::Established => entry.estab_timeout(),
-        PortFwFlowStatus::Closed | PortFwFlowStatus::Reset => return invalidate_flow_state(packet),
+        PortFwFlowStatus::Closed | PortFwFlowStatus::Reset => return packet.invalidate_flows(),
         _ => entry.init_timeout(),
     };
 
