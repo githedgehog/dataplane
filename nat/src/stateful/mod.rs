@@ -17,7 +17,7 @@ use crate::stateful::natip::NatIp;
 use crate::stateful::state::NatFlowState;
 pub use allocator_writer::NatAllocatorWriter;
 use concurrency::sync::Arc;
-use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{IcmpProtoKey, Uni};
 use net::flows::{ExtractRef, FlowInfo};
@@ -55,6 +55,8 @@ enum StatefulNatError {
     InvalidPort(u16),
     #[error("unexpected IP protocol key variant")]
     UnexpectedKeyVariant,
+    #[error("flow table capacity exceeded")]
+    CapacityExceeded,
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -200,8 +202,25 @@ impl StatefulNat {
         forward.set_genid_pair(self.pipeline_data.genid());
 
         // insert in flow-table
-        self.sessions.insert_from_arc(*flow_key, &forward);
-        self.sessions.insert_from_arc(reverse_key, &reverse);
+        self.sessions
+            .insert_from_arc(*flow_key, &forward)
+            .map_err(|e| match e {
+                FlowTableError::CapacityExceeded => StatefulNatError::CapacityExceeded,
+                FlowTableError::InvalidShardCount(_) => unreachable!(),
+            })?;
+
+        // The reverse insert is expected to always succeed: capacity enforcement
+        // recognises that reverse has a related flow (forward) already in the table
+        // and admits it unconditionally.  Remove the forward entry on the unlikely
+        // event of failure to avoid leaving a one-sided flow.
+        if let Err(e) = self.sessions.insert_from_arc(reverse_key, &reverse) {
+            debug_assert!(false, "reverse flow insert failed unexpectedly: {e:?}");
+            self.sessions.remove(flow_key);
+            return Err(match e {
+                FlowTableError::CapacityExceeded => StatefulNatError::CapacityExceeded,
+                FlowTableError::InvalidShardCount(_) => unreachable!(),
+            });
+        }
         Ok(())
     }
 
@@ -483,7 +502,8 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
 
         StatefulNatError::AllocationFailure(
             AllocatorError::NoFreeIp | AllocatorError::NoPortBlock | AllocatorError::NoFreePort(_),
-        ) => DoneReason::NatOutOfResources,
+        )
+        | StatefulNatError::CapacityExceeded => DoneReason::NatOutOfResources,
 
         StatefulNatError::NoAllocator
         | StatefulNatError::UnexpectedKeyVariant

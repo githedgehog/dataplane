@@ -42,6 +42,7 @@ pub mod test {
     use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
     use concurrency::sync::Arc;
     use config::internal::status::DataplaneStatus;
+    use flow_entry::flow_table::FlowTable;
     use flow_filter::FlowFilterTableWriter;
     use nat::portfw::PortFwTableWriter;
     use nat::stateful::NatAllocatorWriter;
@@ -476,6 +477,7 @@ pub mod test {
             vpc_stats_store,
             dp_status_r,
             bmp_options: None,
+            flow_table: Arc::new(FlowTable::default()),
         };
 
         /* start config processor to test the processing of a config. The processor embeds the

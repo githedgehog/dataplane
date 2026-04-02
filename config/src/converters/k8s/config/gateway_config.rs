@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use std::num::NonZero;
+
 use k8s_intf::gateway_agent_crd::{GatewayAgent, GatewayAgentSpec};
 
 use crate::converters::k8s::FromK8sConversionError;
@@ -113,6 +115,21 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
         let gwgroup_table = GwGroupTable::try_from(&ga.spec)?;
         let comtable = PriorityCommunityTable::try_from(&ga.spec)?;
 
+        let flow_table_capacity = ga_spec_gw
+            .flow_table_capacity
+            .map(|v| {
+                usize::try_from(v)
+                    .ok()
+                    .and_then(NonZero::new)
+                    .ok_or_else(|| {
+                        FromK8sConversionError::InvalidData(
+                            "flowTableCapacity must be a non-zero value that fits in a usize"
+                                .to_string(),
+                        )
+                    })
+            })
+            .transpose()?;
+
         let external_config = ExternalConfigBuilder::default()
             .gwname(input.gwname.clone())
             .genid(input.genid)
@@ -121,6 +138,7 @@ impl TryFrom<&GatewayAgent> for ExternalConfig {
             .overlay(overlay)
             .gwgroups(gwgroup_table)
             .communities(comtable)
+            .flow_table_capacity(flow_table_capacity)
             .build()
             .map_err(|e| {
                 FromK8sConversionError::InternalError(format!(

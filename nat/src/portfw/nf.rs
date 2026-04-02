@@ -4,7 +4,7 @@
 //! Port forwarding stage
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
-use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 
 use net::buffer::PacketBufferMut;
 use net::flows::{ExtractMut, FlowInfo};
@@ -129,12 +129,36 @@ impl PortForwarder {
         }
 
         // insert the two related flows
-        if let Some(prior) = self.flow_table.insert_from_arc(fw_key, &fw_flow) {
-            debug!("Replaced flow entry: {prior}");
+        match self.flow_table.insert_from_arc(fw_key, &fw_flow) {
+            Ok(Some(ref prior)) => debug!("Replaced forward flow entry: {prior}"),
+            Ok(None) => {}
+            Err(FlowTableError::CapacityExceeded) => {
+                warn!("Flow table capacity exceeded; dropping port-forwarded packet");
+                packet.done(DoneReason::NatOutOfResources);
+                return;
+            }
+            Err(FlowTableError::InvalidShardCount(_)) => unreachable!(),
         }
-        if let Some(prior) = self.flow_table.insert_from_arc(rev_key, &rev_flow) {
-            debug!("Replaced flow entry: {prior}");
+        // The reverse insert is expected to always succeed: capacity enforcement
+        // recognises that rev_flow has a related flow (fw_flow) already in the table
+        // and admits it unconditionally.  Remove the forward entry on the unlikely
+        // event of failure to avoid leaving a one-sided flow.
+        if let Err(e) = self.flow_table.insert_from_arc(rev_key, &rev_flow) {
+            debug_assert!(
+                false,
+                "reverse port-forwarding flow insert failed unexpectedly: {e:?}"
+            );
+            self.flow_table.remove(&fw_key);
+            match e {
+                FlowTableError::CapacityExceeded => {
+                    warn!("Flow table capacity exceeded; dropping port-forwarded packet");
+                    packet.done(DoneReason::NatOutOfResources);
+                }
+                FlowTableError::InvalidShardCount(_) => unreachable!(),
+            }
+            return;
         }
+        debug!("Inserted forward and reverse port-forwarding flow entries");
     }
 
     fn try_port_forwarding<Buf: PacketBufferMut>(

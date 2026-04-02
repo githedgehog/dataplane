@@ -44,6 +44,7 @@ where
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
     pub portfw_w: PortFwTableWriter,
+    pub flow_table: Arc<FlowTable>,
 }
 
 /// Start a router and provide the associated pipeline
@@ -60,6 +61,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     // create entities shared by management and data-path NFs
     let flow_table = Arc::new(FlowTable::default());
+    let flow_table_for_setup = flow_table.clone();
     let flowfiltertablesw = FlowFilterTableWriter::new();
     let flowfiltertablesr_factory = flowfiltertablesw.get_reader_factory();
     let nattablesw = NatTablesWriter::new();
@@ -142,5 +144,6 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         stats,
         vpc_stats_store,
         portfw_w,
+        flow_table: flow_table_for_setup,
     })
 }

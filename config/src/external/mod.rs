@@ -8,6 +8,8 @@ pub mod gwgroup;
 pub mod overlay;
 pub mod underlay;
 
+use std::num::NonZero;
+
 use crate::internal::device::DeviceConfig;
 use crate::{ConfigError, ConfigResult};
 use communities::PriorityCommunityTable;
@@ -31,6 +33,8 @@ pub struct ExternalConfig {
     pub overlay: Overlay, /* VPCs and peerings -- get highly developed in internal config */
     pub gwgroups: GwGroupTable, /* gateway group table */
     pub communities: PriorityCommunityTable, /* priority-to-community table */
+    #[builder(default)]
+    pub flow_table_capacity: Option<NonZero<usize>>, /* optional hard cap of flow table */
 }
 impl ExternalConfig {
     pub const BLANK_GENID: GenId = 0;
@@ -46,6 +50,7 @@ impl ExternalConfig {
             overlay: Overlay::default(),
             gwgroups: GwGroupTable::new(),
             communities: PriorityCommunityTable::new(),
+            flow_table_capacity: None,
         }
     }
 

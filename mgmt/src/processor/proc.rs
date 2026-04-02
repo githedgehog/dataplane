@@ -4,7 +4,9 @@
 //! Configuration processor
 
 use concurrency::sync::Arc;
+use flow_entry::flow_table::FlowTable;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZero;
 use tokio::sync::RwLock;
 
 use tokio::spawn;
@@ -103,6 +105,9 @@ pub struct ConfigProcessorParams {
 
     // BMP options to inject into InternalConfig
     pub bmp_options: Option<BmpOptions>,
+
+    // Reference to the FlowTable so we can reapply capacity on each config update
+    pub flow_table: Arc<FlowTable>,
 }
 
 impl ConfigProcessor {
@@ -585,6 +590,14 @@ impl ConfigProcessor {
 
         /* apply device config */
         apply_device_config(&config.external.device)?;
+
+        /* apply flow table capacity (falls back to default when not explicitly configured) */
+        self.proc_params.flow_table.set_capacity(
+            config
+                .external
+                .flow_table_capacity
+                .map_or(FlowTable::DEFAULT_CAPACITY, NonZero::get),
+        );
 
         if genid == ExternalConfig::BLANK_GENID {
             /* apply config with VPC manager */
