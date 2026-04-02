@@ -220,6 +220,7 @@ fn main() {
             vpc_stats_store: setup.vpc_stats_store,
             dp_status_r: dp_status.clone(),
             bmp_options: bmp_client_opts,
+            flow_table: setup.flow_table,
         },
     }) {
         error!("Failed to start mgmt: {e}. Stopping dataplane...");
