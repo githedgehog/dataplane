@@ -222,7 +222,16 @@ impl NatDefaultAllocator {
         let flow_key = eflow_key.flow_key();
         let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
-        let (src_vpc_id, dst_vpc_id) = Self::get_vpc_discriminants(eflow_key)?;
+
+        let src_vpc_id = eflow_key
+            .flow_key()
+            .data()
+            .src_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?;
+
+        let dst_vpc_id = eflow_key
+            .dst_vpcd()
+            .ok_or(AllocatorError::MissingDiscriminant)?;
 
         // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
@@ -305,21 +314,6 @@ impl NatDefaultAllocator {
             IpProtoKey::Udp(_) => NextHeader::UDP,
             IpProtoKey::Icmp(_) => NextHeader::ICMP,
         }
-    }
-
-    fn get_vpc_discriminants(
-        eflow_key: &ExtendedFlowKey,
-    ) -> Result<(VpcDiscriminant, VpcDiscriminant), AllocatorError> {
-        let src_vpc_id = eflow_key
-            .flow_key()
-            .data()
-            .src_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?;
-
-        let dst_vpc_id = eflow_key
-            .dst_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?;
-        Ok((src_vpc_id, dst_vpc_id))
     }
 
     fn get_mapping<I: NatIpWithBitmap>(
