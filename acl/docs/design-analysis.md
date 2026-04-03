@@ -3913,3 +3913,109 @@ Categories select which action applies, not which buffer to use. Multiple
 categories can share a buffer (same offsets), or have distinct buffers
 (different offsets, e.g., outer vs inner). The design composes naturally
 with overlapping categories.
+
+---
+
+## V1 design constraints and phasing
+
+The preceding sections explore a large design space — type-space vectors,
+conditional transforms, hierarchical dispatch, SIMD gather, hardware offload,
+category-typed field buffers. Not all of this is needed for v1. This section
+records the constraints that govern what goes into the first shippable version
+versus what is deferred.
+
+### Constraints
+
+**1. Leave room for the type-space vector, but don't build it yet.**
+
+The type-space theory is compelling and the design should not foreclose it.
+The `Within<T>` trait graph implicitly encodes the type-space edges. The
+`CategorySet` enum approximates the vector. The `Compiler` trait is the
+extension point where vector computation and SIMD gather would plug in.
+
+But the first pass should be debuggable, explainable, and not require
+co-workers to understand runtime type theory to use or maintain the library.
+The type-space vector is an optimization and a theoretical foundation, not a
+v1 requirement. If a compelling idea emerges that requires it, the design can
+accommodate it — but complexity should be pulled in by need, not pushed in by
+elegance.
+
+**2. API stability and user-friendliness above all.**
+
+The builder chain (`AclRuleBuilder::new().eth_match(...).ipv4_match(...).permit(100)`)
+is the primary user surface and should be stable. Minor revisions are
+acceptable in the early life of the library, but the core abstractions
+(rule builder, categories, compiler trait) should be right enough that the
+API doesn't break as internals evolve.
+
+This means: internals (how `AclMatchFields` stores data, how the compiler
+transforms rules) are private and can change freely. The public API (builder
+methods, `AclRule` accessors, `CategorySet` trait, `Compiler` trait) must be
+designed with stability in mind.
+
+A user who writes rules against the builder API today should not need to
+rewrite them when we add DPDK ACL compilation, or rte_flow support, or a
+software fallback. The rule is the rule; the backend is the backend.
+
+**3. Don't sacrifice performance for flexibility we won't use.**
+
+Modern compilers are smart. Compile-time category enums, static dispatch,
+monomorphized generics — these are free at runtime and valuable for
+optimization. Don't replace them with trait objects or dynamic dispatch in
+the name of theoretical flexibility. The set of protocol shapes a dataplane
+handles is effectively closed (IPv4/IPv6 x TCP/UDP/ICMP + tunnels). An enum
+with 8-12 variants covers the space.
+
+If a genuinely open-ended requirement appears (user-defined protocol parsers,
+plugin match fields), that can be layered on later — likely via a separate
+mechanism, not by making the core types dynamic.
+
+**4. No hardware offload implementation yet; keep the door open.**
+
+The `Compiler` trait is generic. A DPDK ACL compiler, an rte_flow compiler,
+a tc-flower compiler, and a software fallback all implement the same trait.
+Adding a new backend is additive (a new impl), not a rewrite.
+
+V1 should include at least one working `Compiler` implementation to prove
+the trait design end-to-end. A software linear-scan classifier is the
+simplest option — it validates the full pipeline (build rules → categorize →
+compile → classify) without DPDK dependencies.
+
+Hardware offload (NIC parse metadata, DDP, ConnectX flow steering) is
+documented in the design notes and can be added as additional `Compiler`
+implementations when the need arises.
+
+### V1 components and status
+
+| Component | Status | Notes |
+|---|---|---|
+| `AclRuleBuilder<T, M>` | Implemented | Typestate builder, compile-time layer ordering |
+| Match types (`EthMatch`, etc.) | Implemented | Simple structs with `Option` fields |
+| `Metadata` trait | Implemented | Marker trait, `M` defaults to `()` |
+| `ExactMatch<T>`, `MaskedMatch<T>`, `RangeMatch<T>` | Implemented | Generic match expression building blocks |
+| `Ipv4Prefix`, `Ipv6Prefix`, `PortRange` | Implemented | Validated range/prefix types |
+| `CategorySet` trait | Implemented | User-defined compile-time enum |
+| `CategorizedTable<C, M>` | Implemented | Validates rules against categories |
+| `CategorizedRule<M>` | Implemented | Rule + category bitmask |
+| `ClassifyResult<C>` | Implemented | Per-category action results |
+| `Compiler<C, M>` trait | Defined | Trait exists; no implementations yet |
+| Software classifier | Not started | Needed to prove the pipeline end-to-end |
+| DPDK ACL compiler | Not started | Primary production backend |
+| Category-typed field buffers | Design only | Documented above; not yet prototyped |
+| Conditional vector transforms | Design only | Documented above; deferred |
+| Type-space vector runtime | Design only | Documented above; deferred |
+
+### What "done" looks like for v1
+
+A v1 is shippable when:
+
+1. A user can construct rules via the builder, add them to a categorized
+   table, compile the table with at least one backend, and classify packets.
+2. The API is documented with examples and doc-tests.
+3. The category validation catches shape mismatches at table-build time.
+4. At least one `Compiler` implementation exists and is tested.
+5. The design docs (this file and companions) are up to date.
+
+Everything else — SIMD gather, hardware offload, type-space vectors,
+hierarchical dispatch — is future work documented here for context but not
+blocking v1.
