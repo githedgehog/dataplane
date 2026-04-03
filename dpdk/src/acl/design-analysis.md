@@ -3366,6 +3366,70 @@ This is a cleaner separation of concerns: the graph defines what's structurally
 *possible*. Policy defines what's *desired*. The compiler respects both without
 conflating them.
 
+### Further refinement: conditional vector transforms
+
+The revision above correctly removes `degenerate: bool` from the graph and moves
+sort-key masking to `CompilerConfig`. But sort-key masks are still a static
+projection — they unconditionally clear bits regardless of packet content.
+
+A more general mechanism: **conditional vector transforms** that run between
+parsing and dispatch. The parser computes the raw type-space vector mechanically.
+Transforms then normalize it based on configurable policy:
+
+```rust
+/// A transform that conditionally rewrites the type-space vector.
+trait VectorTransform {
+    /// Inspect the packet and modify the raw vector.
+    fn apply(&self, vector: &mut TypeSpaceVector, packet: &Headers);
+}
+
+/// Example: operator configures "VID=0 means untagged for dispatch purposes"
+struct StripPriorityVlan;
+impl VectorTransform for StripPriorityVlan {
+    fn apply(&self, vector: &mut TypeSpaceVector, packet: &Headers) {
+        if packet.vlan().first().map_or(false, |v| v.vid() == Vid::ZERO) {
+            vector.clear_layer(Layer::Vlan);
+        }
+    }
+}
+```
+
+The transform chain is configured per-deployment:
+
+```rust
+struct CompilerConfig {
+    /// Transforms applied to raw type-space vectors before dispatch.
+    /// Ordered — applied in sequence.
+    vector_transforms: Vec<Box<dyn VectorTransform>>,
+    // sort_key_policy is subsumed: a static mask is just a transform
+    // whose condition is always true.
+}
+```
+
+**Why this is better than sort-key masks:**
+
+1. **Masks are a special case.** A sort-key mask is a transform with condition
+   "always" and action "clear these bits." Conditional transforms generalize
+   this to "clear these bits *if* the packet has property X."
+
+2. **The graph stays minimal.** No `vlan_0` vs `vlan` node proliferation. The
+   graph has one VLAN node. Path count doesn't explode.
+
+3. **Batch sorting is simpler.** Transforms normalize *before* sorting, so
+   packets in the same flow always get the same transformed vector. No need
+   for a separate sort-key mask — the transform IS the normalization.
+
+4. **Composes with any dispatch model.** Transforms run before dispatch
+   regardless of whether dispatch is path-aware (Option A/D) or node-aware
+   (Option B). The dispatch layer sees only normalized vectors.
+
+5. **Operator-configurable.** "VID=0 is untagged" is a transform the operator
+   enables. "IPv6 extension headers don't affect dispatch" is another.
+   Different deployments compose different transform sets.
+
+The three-phase pipeline becomes: **parse** (mechanical, deterministic) →
+**transform** (policy, configurable) → **dispatch** (fast, table-driven).
+
 ### Path-aware vs node-aware dispatch: keeping both options open
 
 Removing `degenerate` from the graph is compatible with all dispatch options, but

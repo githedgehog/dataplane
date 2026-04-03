@@ -143,6 +143,44 @@ sort key:  0b00_001_00_10  (same as Eth → IPv4 → TCP)
 
 One value, one mask, two views. Simpler, more correct, no information discarded. Parts 3, 5, and 6 should be read with this correction in mind.
 
+### Refinement: conditional vector transforms replace degenerate nodes
+
+**[DN]** The enriched-graph approach (adding `vlan_0`, `qinq_0` nodes) still bakes a
+structural judgment into the graph: the decision that VID=0 is "degenerate" and
+deserves its own node. But whether VID=0 is special is a policy choice, not a
+protocol property. A cloud operator might block priority-tagged frames; a carrier
+might require them. The graph should not have an opinion.
+
+The cleaner formalism: compute the type-space vector mechanically from the parse
+without accounting for degeneracy at all. VLAN tag present → VLAN bit is set.
+Then apply **conditional transforms** on the vector as a separate, configurable
+layer:
+
+```
+raw vector: [Eth, VLAN, IPv4, TCP]
+transform:  "if VLAN.vid == 0, clear the VLAN bit"
+result:     [Eth, IPv4, TCP]
+```
+
+This generalizes sort-key masking. A mask is a static projection; a conditional
+transform can inspect packet fields to decide whether to apply. The transform
+chain is configured per-deployment, not per-graph.
+
+Benefits:
+- The graph stays small and universal (one VLAN node, not two).
+- Transforms compose — different deployments apply different transform sets.
+- The batch-sorting problem is solved more directly: transforms normalize
+  degenerate variants *before* sorting, so packets in the same flow always get
+  the same vector. No masking needed.
+- Separates concerns: parser (mechanical) → transforms (policy) → dispatch (fast).
+
+Sort-key masking becomes a special case of conditional transforms where the
+condition is always true and the action is "clear these bits."
+
+The design-analysis.md revision at "degenerate is policy, not a graph property"
+moves in this direction but retains sort-key masks as the primary mechanism. This
+refinement replaces masks with the more general conditional transform.
+
 ---
 
 ## Part 9 — the type-space vector is a perfect hash, and dispatch should be hierarchical
