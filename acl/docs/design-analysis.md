@@ -3704,3 +3704,135 @@ documentation, since the ACL system's correctness depends on it: if a future
 raw-offset extraction path would break. A doc comment on the `Parse` trait
 along the lines of "implementations must not rely on or cause side effects on
 the input buffer" would formalize this.
+
+### Category-typed field buffers: mutable access as a function of the match
+
+The category system (see "ACL category system" above) tells us *which* fields
+a rule examined. The type-space vector tells us *where* those fields are in the
+raw packet. Combining these: after classification, we can copy the matched
+fields into a **typed, mutable buffer** whose structure is determined by the
+category.
+
+**The typed field buffer.**
+
+Each category implies a specific set of matched fields. This set can be
+represented as a concrete struct:
+
+```rust
+// Category Ipv4Tcp → this struct
+struct Ipv4TcpFields {
+    ipv4_src: [u8; 4],  // network byte order, copied from raw packet
+    ipv4_dst: [u8; 4],
+    tcp_src:  [u8; 2],
+    tcp_dst:  [u8; 2],
+}
+
+impl Ipv4TcpFields {
+    fn ipv4_src(&self) -> Ipv4Addr { Ipv4Addr::from(self.ipv4_src) }
+    fn set_ipv4_src(&mut self, addr: Ipv4Addr) { self.ipv4_src = addr.octets(); }
+    fn tcp_dst(&self) -> TcpPort { /* from network-order bytes */ }
+    fn set_tcp_dst(&mut self, port: TcpPort) { /* to network-order bytes */ }
+}
+```
+
+After classification, the user dispatches on the category and gets a typed
+buffer with getters and setters — no `Option` wrapping, no runtime checks
+for field presence. The category already proved the fields exist.
+
+**Populating the buffer.**
+
+The buffer is populated by copying bytes from the raw packet at offsets
+determined by the type-space vector:
+
+```rust
+fn extract(packet: &[u8], offsets: &Ipv4TcpOffsets) -> Ipv4TcpFields {
+    let mut fields = Ipv4TcpFields::zeroed();
+    fields.ipv4_src.copy_from_slice(&packet[offsets.ipv4_src..][..4]);
+    fields.ipv4_dst.copy_from_slice(&packet[offsets.ipv4_dst..][..4]);
+    fields.tcp_src.copy_from_slice(&packet[offsets.tcp_src..][..2]);
+    fields.tcp_dst.copy_from_slice(&packet[offsets.tcp_dst..][..2]);
+    fields
+}
+```
+
+This is a small, fixed-size copy (typically 20-40 bytes of match fields).
+The offsets are constant for all packets with the same type-space vector,
+so this is a tight, predictable operation.
+
+**Flushing mutations back to the packet.**
+
+If the user modifies fields (e.g., NAT rewrite), the mutations are flushed
+back to the raw packet buffer using the same offsets:
+
+```rust
+fn flush(fields: &Ipv4TcpFields, packet: &mut [u8], offsets: &Ipv4TcpOffsets) {
+    packet[offsets.ipv4_src..][..4].copy_from_slice(&fields.ipv4_src);
+    packet[offsets.ipv4_dst..][..4].copy_from_slice(&fields.ipv4_dst);
+    packet[offsets.tcp_src..][..2].copy_from_slice(&fields.tcp_src);
+    packet[offsets.tcp_dst..][..2].copy_from_slice(&fields.tcp_dst);
+}
+```
+
+This avoids the full `DeParse` path for simple field rewrites. `DeParse`
+serializes an entire parsed struct back to the buffer; flush writes only
+the modified fields. For a NAT rewrite that changes one IP address and one
+port, flush touches 6 bytes vs `DeParse` rewriting entire headers.
+
+Note: checksum recomputation is still needed after field mutations.  The
+flush path handles field bytes only; checksums are a separate concern
+(and may be offloaded to hardware).
+
+**When to populate: lazy vs eager.**
+
+Two strategies for when to create the field buffer:
+
+- **Eager (before classify):** Copy fields into the buffer as part of
+  classification input preparation. The buffer serves double duty: backend
+  input and post-classify typed access. Costs a copy for every packet
+  regardless of whether the match result requires mutation.
+
+- **Lazy (after classify):** Only copy fields for packets that matched a
+  mutation action. The fast path (classify → permit/deny with no mutation)
+  pays no copy cost. The action path pays the copy only when needed.
+
+Lazy is almost certainly the right default. Most packets are permit/deny
+decisions that don't need field mutation. The copy is only worthwhile when
+the action requires it.
+
+For DPDK ACL specifically: DPDK reads directly from the raw packet pointer
+at field-definition offsets. It does not require a pre-copied field buffer
+from the user. So the eager strategy would be pure overhead for the DPDK
+backend — the copy would only serve the typed-access path, not DPDK's
+classification input.
+
+**Recycling field buffers.**
+
+The field buffer struct is small and fixed-size per category. It can be
+stack-allocated or allocated once per category per worker thread and reused
+across packets. For a batch of packets that share the same type-space
+vector (achievable by sorting), the same buffer and offset table are reused
+for every packet in the batch — overwrite, use, flush, repeat.
+
+**Three representations of packet fields.**
+
+This introduces a third representation alongside raw bytes and parsed structs:
+
+| Representation | Byte order | Content | Mutability | Used for |
+|---|---|---|---|---|
+| Raw packet bytes | Network | Full packet | `&[u8]` / `&mut [u8]` | DPDK ACL input, wire format |
+| Parsed structs (`Ipv4`, `Tcp`) | Host | Full headers | Owned, mutable | Complex mutations, validation |
+| Field buffer (`Ipv4TcpFields`) | Network | Matched fields only | `&mut`, flushable | Category-typed access, simple rewrites |
+
+The field buffer lives in the sweet spot between raw bytes (no type safety)
+and parsed structs (full copy, full validation, host byte order). It gives
+type-safe mutable access to exactly the fields the ACL matched on, at
+minimal copy cost, with a flush path that writes back only what changed.
+
+**DPDK lifetime considerations.**
+
+DPDK ACL's `rte_acl_classify` takes `const uint8_t **data` (pointers to
+packet data) and returns `uint32_t *results` (userdata per category). After
+`classify` returns, DPDK holds no references to the packet data or any
+intermediate buffers. There is no DPDK-imposed lifetime constraint on field
+buffers — they are entirely owned by the caller and can be created, mutated,
+and flushed at any time after classification.
