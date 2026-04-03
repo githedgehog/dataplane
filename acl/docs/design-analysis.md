@@ -4124,6 +4124,51 @@ with `Headers` or the raw buffer directly. Views are a potential v2
 enhancement that would tighten the connection between "what the ACL
 matched" and "what the action can see."
 
+**Further speculation: lazy `Headers` population from a raw packet view.**
+
+Another possibility considered: run the raw packet through ACL classification
+*before* parsing, then lazily populate `Headers` fields on first access
+using the offsets determined by the type-space vector. The ACL match could
+seed which fields get populated (only parse what was matched), deferring
+the rest until needed.
+
+This is conceptually appealing but likely impractical for v1:
+
+- `DeParse` (write-back to wire) probably needs a fully hydrated `Headers`,
+  not a partially populated one. A lazy `Headers` would need to either
+  eagerly populate on `DeParse` or track which fields are dirty.
+- The existing pipeline parses packets eagerly and expects `Headers` to be
+  complete. Changing this is a deep refactor.
+- The benefit over eager parsing is small if most packets end up needing
+  most fields anyway (routing needs IP, firewall needs IP + transport, NAT
+  needs IP + transport + embedded headers).
+
+The *mutation* variant — where the ACL view provides setters that write
+through to `Headers` fields directly — is more compelling but has the same
+design-space explosion problem. It's another accessor pattern layered on
+top of an already-functional parsed representation.
+
+**Closing the action-path design space for now.**
+
+The preceding sections explore a rich space of options for the action path:
+field buffers (network-order, then host-order), zero-copy views, buffered
+views, lazy Headers, mutable projections. These are all valid ideas that
+differ in copy cost, type safety, ergonomics, and implementation complexity.
+
+The design space is too large to resolve without a working classifier to
+build on top of. The action path is intentionally deferred:
+
+- **V1 returns `Action` per category.** The user works with `Headers` or
+  the raw buffer for mutations, exactly as they do today.
+- **V2 can introduce views** once we know the real access patterns from
+  production usage. The category system provides the foundation — the
+  category determines what a view would contain.
+- **The options above are recorded, not committed.** Any of them could be
+  the right answer depending on profiling results and ergonomic feedback.
+
+Focus now shifts to the classify side: building the linear-scan reference
+implementation and proving the pipeline end-to-end.
+
 ---
 
 ## V1 design constraints and phasing
