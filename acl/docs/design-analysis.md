@@ -3836,3 +3836,80 @@ packet data) and returns `uint32_t *results` (userdata per category). After
 intermediate buffers. There is no DPDK-imposed lifetime constraint on field
 buffers — they are entirely owned by the caller and can be created, mutated,
 and flushed at any time after classification.
+
+**Categories are not mutually exclusive.**
+
+DPDK ACL categories are explicitly designed for overlap. A single rule can
+participate in multiple categories (`category_mask = 0b0011` means categories
+0 and 1), and a single packet gets one result per category. The typed field
+buffer design does not require mutual exclusivity. There are three cases to
+consider:
+
+*Case 1: Categories partition by protocol shape.*
+
+This is the common case. `Ipv4Tcp` and `Ipv6Udp` are structurally disjoint —
+a real packet can only be one or the other. The categories are mutually
+exclusive by the nature of the packet, even though DPDK doesn't enforce this.
+The user dispatches on the packet's actual protocol shape (known from
+parsing) to select the field buffer struct type, then reads the corresponding
+category's action from the classify result.
+
+Rules may still overlap across categories (a "deny all from 10.0.0.0/8" rule
+might have `category_mask` spanning all IPv4 categories), but the packet only
+inhabits one shape, so only one field buffer is needed.
+
+*Case 2: Categories represent different pipeline stages.*
+
+More interesting: categories can represent different *views* of the same
+packet for different pipeline stages. For example:
+
+- Category 0: match on outer IPv4 headers (tunnel source routing)
+- Category 1: match on inner IPv4 headers (tenant firewall)
+
+Both categories are structurally `Ipv4`, but they examine different parts
+of the packet. The field buffer struct type is the same (`Ipv4Fields`),
+but the offset tables differ — outer offsets for category 0, inner offsets
+for category 1.
+
+This means the field buffer is parameterized by **(category, offset table)**,
+not just category. Two field buffers can coexist for the same packet, each
+with the correct offsets for their category's view:
+
+```rust
+// Routing stage: outer IP
+let outer = Ipv4Fields::extract(packet, &outer_offsets);
+let route_action = result.action(Category::OuterIpv4);
+
+// Firewall stage: inner IP
+let inner = Ipv4Fields::extract(packet, &inner_offsets);
+let fw_action = result.action(Category::InnerIpv4);
+```
+
+Each stage gets its own typed, mutable field buffer. They don't conflict
+because they reference non-overlapping byte ranges in the raw packet
+(outer headers vs inner headers after decapsulation offset).
+
+*Case 3: Multiple categories match the same fields.*
+
+If two categories examine the same fields at the same offsets but with
+different rule sets (e.g., category 0 is "admin ACL" and category 1 is
+"tenant ACL"), only one field buffer is needed. Both categories share
+the same struct type and offset table. The user extracts once and reads
+actions from both categories:
+
+```rust
+let fields = Ipv4TcpFields::extract(packet, &offsets);
+let admin_action = result.action(Category::AdminAcl);
+let tenant_action = result.action(Category::TenantAcl);
+// Combine: deny if either denies, permit if both permit
+```
+
+The field buffer is shared; the actions are per-category. Mutation only
+happens once (the field bytes are the same regardless of which category's
+action you're implementing).
+
+**Summary:** The field buffer is tied to a (struct type, offset table) pair.
+Categories select which action applies, not which buffer to use. Multiple
+categories can share a buffer (same offsets), or have distinct buffers
+(different offsets, e.g., outer vs inner). The design composes naturally
+with overlapping categories.
