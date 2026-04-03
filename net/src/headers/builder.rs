@@ -60,7 +60,12 @@
 
 use std::num::NonZero;
 
+use etherparse::{IcmpEchoHeader, Icmpv4Type, Icmpv6Type};
+
 use crate::checksum::Checksum;
+use crate::eth::Eth;
+use crate::eth::ethtype::EthType;
+use crate::eth::mac::{DestinationMac, Mac, SourceMac};
 use crate::headers::{EmbeddedHeadersBuilder, EmbeddedTransport, Headers};
 use crate::icmp4::Icmp4;
 use crate::icmp4::TruncatedIcmp4;
@@ -74,7 +79,9 @@ use crate::parse::DeParse;
 use crate::tcp::port::TcpPort;
 use crate::tcp::{Tcp, TruncatedTcp};
 use crate::udp::port::UdpPort;
-use crate::udp::{Udp, UdpEncap};
+use crate::udp::{Udp, UdpChecksum, UdpEncap};
+use crate::vlan::{Pcp, Vid, Vlan};
+use crate::vxlan::{Vni, Vxlan};
 
 use super::{Net, Transport};
 
@@ -294,6 +301,20 @@ impl Default for HeaderStack<()> {
     }
 }
 
+/// Helper macro to generate named layer methods on `HeaderStack<T>`.
+macro_rules! layer_method {
+    ($(#[$meta:meta])* $method:ident, $header:ty) => {
+        $(#[$meta])*
+        pub fn $method(self, f: impl FnOnce(&mut $header)) -> HeaderStack<$header>
+        where
+            $header: Blank + Within<T>,
+            Headers: Install<$header>,
+        {
+            self.stack(f)
+        }
+    };
+}
+
 impl<T> HeaderStack<T>
 where
     Headers: Install<T>,
@@ -358,16 +379,265 @@ where
         Ok(self.headers)
     }
 
+    layer_method!(
+        /// Push an `Eth` layer.
+        eth, Eth
+    );
+    layer_method!(
+        /// Push a `Vlan` layer.
+        vlan, Vlan
+    );
+    layer_method!(
+        /// Push an `Ipv4` layer.
+        ipv4, Ipv4
+    );
+    layer_method!(
+        /// Push an `Ipv6` layer.
+        ipv6, Ipv6
+    );
+    layer_method!(
+        /// Push a `Tcp` layer.
+        tcp, Tcp
+    );
+    layer_method!(
+        /// Push a `Udp` layer.
+        udp, Udp
+    );
+    layer_method!(
+        /// Push an `Icmp4` layer.
+        icmp4, Icmp4
+    );
+    layer_method!(
+        /// Push an `Icmp6` layer.
+        icmp6, Icmp6
+    );
+    layer_method!(
+        /// Push a `Vxlan` layer.
+        vxlan, Vxlan
+    );
 }
 
+// Within impls -- valid layer relationships
+impl Within<()> for Eth {
+    fn conform(_parent: &mut ()) {}
+}
 
-// Seed impls -- the () layer that starts every stack
+impl Within<Eth> for Vlan {
+    fn conform(parent: &mut Eth) {
+        parent.set_ether_type(EthType::VLAN);
+    }
+}
+
+impl Within<Vlan> for Vlan {
+    fn conform(parent: &mut Vlan) {
+        parent.set_inner_ethtype(EthType::VLAN);
+    }
+}
+
+impl Within<Eth> for Ipv4 {
+    fn conform(parent: &mut Eth) {
+        parent.set_ether_type(EthType::IPV4);
+    }
+}
+
+impl Within<Vlan> for Ipv4 {
+    fn conform(parent: &mut Vlan) {
+        parent.set_inner_ethtype(EthType::IPV4);
+    }
+}
+
+impl Within<Eth> for Ipv6 {
+    fn conform(parent: &mut Eth) {
+        parent.set_ether_type(EthType::IPV6);
+    }
+}
+
+impl Within<Vlan> for Ipv6 {
+    fn conform(parent: &mut Vlan) {
+        parent.set_inner_ethtype(EthType::IPV6);
+    }
+}
+
+impl Within<Ipv4> for Tcp {
+    fn conform(parent: &mut Ipv4) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<Ipv6> for Tcp {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<Ipv4> for Udp {
+    fn conform(parent: &mut Ipv4) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<Ipv6> for Udp {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<Ipv4> for Icmp4 {
+    fn conform(parent: &mut Ipv4) {
+        parent.set_next_header(NextHeader::ICMP);
+    }
+}
+
+impl Within<Ipv6> for Icmp6 {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::ICMP6);
+    }
+}
+
+impl Within<Udp> for Vxlan {
+    fn conform(parent: &mut Udp) {
+        let _ = parent.set_checksum(UdpChecksum::ZERO);
+        parent.set_destination(Vxlan::PORT);
+    }
+}
+
+// Install impls -- how Headers absorbs each layer
+
 impl Install<()> for Headers {
     fn install(&mut self, (): ()) {}
 }
 
+impl Install<Eth> for Headers {
+    fn install(&mut self, eth: Eth) {
+        self.set_eth(eth);
+    }
+}
+
+impl Install<Vlan> for Headers {
+    /// # Panics
+    ///
+    /// Panics if the VLAN stack is full (more than `MAX_VLANS` pushed).
+    /// This is test-facing code; exceeding the limit is a programming error.
+    fn install(&mut self, vlan: Vlan) {
+        #[allow(clippy::expect_used)] // test code
+        self.vlan
+            .try_push(vlan)
+            .expect("too many VLANs (exceeded MAX_VLANS)");
+    }
+}
+
+impl Install<Ipv4> for Headers {
+    fn install(&mut self, ip: Ipv4) {
+        self.net = Some(Net::Ipv4(ip));
+    }
+}
+
+impl Install<Ipv6> for Headers {
+    fn install(&mut self, ip: Ipv6) {
+        self.net = Some(Net::Ipv6(ip));
+    }
+}
+
+impl Install<Tcp> for Headers {
+    fn install(&mut self, tcp: Tcp) {
+        self.set_transport(Some(Transport::Tcp(tcp)));
+    }
+}
+
+impl Install<Udp> for Headers {
+    fn install(&mut self, udp: Udp) {
+        self.set_transport(Some(Transport::Udp(udp)));
+    }
+}
+
+impl Install<Icmp4> for Headers {
+    fn install(&mut self, icmp: Icmp4) {
+        self.set_transport(Some(Transport::Icmp4(icmp)));
+    }
+}
+
+impl Install<Icmp6> for Headers {
+    fn install(&mut self, icmp: Icmp6) {
+        self.set_transport(Some(Transport::Icmp6(icmp)));
+    }
+}
+
+impl Install<Vxlan> for Headers {
+    fn install(&mut self, vxlan: Vxlan) {
+        self.udp_encap = Some(UdpEncap::Vxlan(vxlan));
+    }
+}
+
 impl Blank for () {
     fn blank() -> Self {}
+}
+
+impl Blank for Eth {
+    fn blank() -> Self {
+        // Locally-administered unicast MACs -- won't collide with real hardware.
+        #[allow(clippy::unwrap_used)]
+        let src = SourceMac::new(Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01])).unwrap();
+        #[allow(clippy::unwrap_used)]
+        let dst = DestinationMac::new(Mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x02])).unwrap();
+        Eth::new(src, dst, EthType::IPV4)
+    }
+}
+
+impl Blank for Vlan {
+    fn blank() -> Self {
+        Vlan::new(Vid::MIN, EthType::IPV4, Pcp::MIN, false)
+    }
+}
+
+impl Blank for Ipv4 {
+    fn blank() -> Self {
+        Ipv4::default()
+    }
+}
+
+impl Blank for Ipv6 {
+    fn blank() -> Self {
+        Ipv6::default()
+    }
+}
+
+impl Blank for Tcp {
+    fn blank() -> Self {
+        #[allow(clippy::unwrap_used)] // port 1 is always valid
+        Tcp::new(
+            TcpPort::new_checked(1).unwrap(),
+            TcpPort::new_checked(1).unwrap(),
+        )
+    }
+}
+
+impl Blank for Udp {
+    fn blank() -> Self {
+        #[allow(clippy::unwrap_used)] // port 1 is always valid
+        Udp::new(
+            UdpPort::new_checked(1).unwrap(),
+            UdpPort::new_checked(1).unwrap(),
+        )
+    }
+}
+
+impl Blank for Icmp4 {
+    fn blank() -> Self {
+        Icmp4::with_type(Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 0, seq: 0 }))
+    }
+}
+
+impl Blank for Icmp6 {
+    fn blank() -> Self {
+        Icmp6::with_type(Icmpv6Type::EchoRequest(IcmpEchoHeader { id: 0, seq: 0 }))
+    }
+}
+
+impl Blank for Vxlan {
+    fn blank() -> Self {
+        #[allow(clippy::unwrap_used)] // VNI 1 is always valid
+        Vxlan::new(Vni::new_checked(1).unwrap())
+    }
 }
 
 // Embedded ICMP headers -- modifier on HeaderStack<Icmp4> / HeaderStack<Icmp6>
