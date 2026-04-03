@@ -3630,3 +3630,77 @@ Dynamic Device Personalization or NVIDIA ConnectX flow steering) may be able
 to compute and tag the type-space vector in hardware metadata, eliminating the
 software parse entirely for the ACL path. This would make the vector
 effectively free and the offset computation a pure lookup.
+
+### Parse immutability and field extraction without copying
+
+**Observation:** The `Parse` trait in `dataplane-net` takes `&[u8]` — it never
+mutates the raw packet buffer. Parsing copies field values into owned Rust
+structs (`Ipv4`, `Tcp`, etc.) and advances a cursor to track the "consumed"
+position. The underlying bytes are untouched.
+
+This is significant because it means the raw packet buffer remains valid and
+unchanged after parsing. Any byte range that was valid before parsing is still
+valid after. This opens a path for type-safe field extraction directly from the
+raw buffer, using the type-space vector offsets, without going through the
+parsed structs at all.
+
+**Mutable sub-slices in Rust.**
+
+Rust does have mechanisms for taking multiple mutable sub-slices of a buffer,
+but they are limited:
+
+- `split_at_mut(mid)` gives `(&mut [u8], &mut [u8])` — two non-overlapping
+  halves. Can be chained to split into more pieces, but it's cumbersome for
+  extracting arbitrary field ranges.
+- `split_first_mut()`, `split_last_mut()` — similar, for single elements.
+- The general pattern requires proving non-overlap at each split point.
+
+For the ACL use case, we would need something like "give me `&mut [u8]` for
+bytes 26..30 (IPv4 src) and `&mut [u8]` for bytes 34..36 (TCP dst port)
+simultaneously." Rust can do this if the ranges are provably non-overlapping,
+but the ergonomics are poor and the proof is tedious for dynamic offsets.
+
+**However, the copy-based path is likely the right one anyway.**
+
+DPDK ACL requires that match fields be copied into a flat `rte_acl_field_data`
+array for classification. The raw packet bytes can't be used in place — they
+are scattered across the packet at various offsets and potentially unaligned.
+DPDK ACL's input is a pointer to the *start* of the packet data, and the field
+definitions specify offsets from that pointer. So DPDK ACL does the "gather"
+itself internally.
+
+For other backends (software classification, `rte_flow`), the situation is
+similar: the backend needs field values in its own format, which implies a
+copy regardless.
+
+This means the practical extraction path is:
+
+1. Compute field offsets from the raw type-space vector.
+2. Copy the relevant bytes into the backend's field structure (or let the
+   backend read from the raw buffer at those offsets, as DPDK ACL does).
+3. Classify.
+4. If the match result implies mutation (NAT, TTL decrement), use the *parsed*
+   structs from the `Parse` path for modification, then `DeParse` back to
+   the buffer.
+
+Steps 1-3 are the ACL fast path: raw bytes, no Parse overhead, network byte
+order preserved. Step 4 is the action path: parsed structs give type safety
+and host-byte-order convenience for complex mutations, but only runs for
+packets that actually need modification.
+
+The **field structure used in step 2 could be recycled** across packets with
+the same type-space vector, since the offsets are identical. Allocate once per
+vector, reuse for every packet in the batch. Combined with SIMD gather (point
+4 in the prior section), this could make the ACL field extraction path very
+efficient.
+
+**Formalizing the immutability constraint.**
+
+The observation that `Parse` never mutates the buffer is currently implicit —
+it follows from the `&[u8]` signature but isn't stated as a crate-level
+invariant. It may be worth making this explicit in the `dataplane-net`
+documentation, since the ACL system's correctness depends on it: if a future
+`Parse` implementation mutated the buffer (e.g., for in-place decryption), the
+raw-offset extraction path would break. A doc comment on the `Parse` trait
+along the lines of "implementations must not rely on or cause side effects on
+the input buffer" would formalize this.
