@@ -89,6 +89,12 @@ impl Ipv4 {
         self.0.protocol
     }
 
+    /// The IP protocol / next-header field as a [`NextHeader`].
+    #[must_use]
+    pub fn next_header(&self) -> NextHeader {
+        self.0.protocol.into()
+    }
+
     /// Length of the header (includes options) in bytes.
     ///
     /// <div class="warning">
