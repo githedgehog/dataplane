@@ -3537,3 +3537,96 @@ E001: Action sequence invalid: SetField(tcp_dst_port) follows IPsec encrypt.
 These defaults are chosen so that an operator who doesn't know about the complexity
 gets correct, safe behavior. A programmer who needs different behavior can override.
 The lints catch cases where the default might be wrong for the specific rule set.
+
+### Type-space vectors, field offsets, and the Parse/DeParse boundary
+
+The type-space vector doesn't just dispatch to the right table — it also
+**fully determines the byte offsets of every protocol field in the raw packet.**
+A vector of `[Eth, VLAN, IPv4, TCP]` means: Ethernet starts at byte 0, VLAN at
+byte 14, IPv4 at byte 18, TCP at byte 18 + IHL*4. The vector encodes the parser's
+traversal path, and each node in the graph has a known header size (or a size
+determinable from the header itself, like IPv4 IHL).
+
+This has several implications for how the ACL system interacts with the existing
+`Parse` and `DeParse` traits in `dataplane-net`:
+
+**1. Raw offsets give network-byte-order fields for free.**
+
+DPDK ACL's `rte_acl_classify` operates on raw packet bytes in network order —
+it never needs parsed, host-order values. If the type-space vector gives us
+the offset of, say, the IPv4 source address, we can point DPDK ACL directly
+at `packet_ptr + offset` without any parse/deparse round-trip. The `Parse`
+trait is not needed for ACL field extraction; the type-space vector plus the
+raw packet pointer is sufficient.
+
+**2. The raw (un-transformed) vector defines correct offsets; the policy-transformed vector does not.**
+
+Conditional vector transforms (the degeneracy handling from the prior section)
+modify the vector for *dispatch* purposes — e.g., clearing the VLAN bit so a
+VID=0 frame dispatches like an untagged frame. But the raw offsets still reflect
+the actual packet structure. A VID=0 frame still has 4 bytes of VLAN tag at byte
+14, and IPv4 starts at byte 18, not byte 14.
+
+This means the system must maintain **both** vectors:
+- The **raw vector** for offset computation (always reflects true packet layout).
+- The **transformed vector** for table dispatch (reflects policy-normalized shape).
+
+The compiler needs both when emitting field definitions for a backend: the
+dispatch table is selected by the transformed vector, but the field offsets
+within that table are computed from the raw vector.
+
+**3. Alignment is a real concern.**
+
+Different type-space vectors produce different field offsets, and the initial
+packet buffer pointer may have arbitrary alignment (DPDK mbufs are typically
+cache-line aligned, but the L2 header starts at an offset within the mbuf).
+This means:
+
+- IPv4 source address might be at a 2-byte-aligned offset (after 14-byte
+  Ethernet + 4-byte VLAN = byte 18 + 12 = byte 30), not 4-byte aligned.
+- Fields accessed via raw pointer arithmetic need unaligned reads.
+- This is already handled correctly by the existing `Parse` implementations
+  (which use `read_unaligned` or equivalent), but any SIMD gather path must
+  account for it.
+
+**4. SIMD gather from type-space offsets.**
+
+Given a batch of packets with the same type-space vector (achievable by sorting
+packets by vector before classification), the field offsets are identical across
+the batch. This enables `std::simd` gather operations:
+
+```
+// Pseudocode: gather IPv4 src from N packets with the same type-space vector
+let offset = type_space.field_offset(Field::Ipv4Src); // e.g., 26
+let ptrs: [*const u8; N] = packets.map(|p| p.data_ptr().add(offset));
+// SIMD gather 4 bytes from each pointer
+```
+
+This could be significantly faster than parsing each packet individually
+through the `Parse` trait, especially for the ACL hot path where we only
+need specific fields, not full header structures.
+
+**5. Whether offsets can be computed efficiently without the type-space vector is unclear.**
+
+The existing `Parse` trait walks the packet byte-by-byte, parsing each header
+to determine the next header's offset. This is correct but sequential. The
+type-space vector, if already computed (e.g., by a hardware parser or a prior
+software pass), provides all offsets without re-parsing.
+
+However, computing the type-space vector *itself* requires at least a partial
+parse (reading EtherType, IP protocol, etc.). The question is whether the
+vector can be computed more cheaply than a full parse — for example, by
+reading only the discriminant fields (EtherType at byte 12, IP protocol at
+a fixed offset within the IP header) rather than validating all header fields.
+
+This is an open question that needs analysis. If the vector can be computed
+from a small number of fixed-offset discriminant reads, it may be
+significantly cheaper than a full `Parse` pass. If it requires the same
+amount of work as parsing, the benefit is limited to the SIMD gather
+optimization described above.
+
+A related possibility: NICs with hardware parse offload (e.g., Intel's
+Dynamic Device Personalization or NVIDIA ConnectX flow steering) may be able
+to compute and tag the type-space vector in hardware metadata, eliminating the
+software parse entirely for the ACL path. This would make the vector
+effectively free and the offset computation a pure lookup.
