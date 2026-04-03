@@ -1,0 +1,10 @@
+[package]
+name = "dataplane-acl"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+net = { path = "../net", package = "dataplane-net" }
+thiserror = { workspace = true }

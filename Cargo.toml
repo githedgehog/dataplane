@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "acl",
     "args",
     "cli",
     "common",
