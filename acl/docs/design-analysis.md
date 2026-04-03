@@ -3986,6 +3986,144 @@ categories can share a buffer (same offsets), or have distinct buffers
 (different offsets, e.g., outer vs inner). The design composes naturally
 with overlapping categories.
 
+### Thought experiment: views as the output of classification
+
+*Note: this section is exploratory. The ideas here are promising but need
+further analysis before committing to an implementation. They are recorded
+to preserve the line of reasoning.*
+
+The "field buffer" concept above evolved through several iterations: raw
+network-order bytes, then aligned host-order copies. But there's a more
+fundamental framing that unifies these with the existing `Headers` type:
+**packet views.**
+
+`Headers` is already a view. It's a parsed, strongly typed, mutable
+representation of a packet. The user reads and writes protocol fields
+through it. The raw buffer is the underlying storage; `Headers` is a lens
+that makes it ergonomic.
+
+An ACL match could produce *another* view — narrower than `Headers` (only
+the matched fields), but typed by the category (no `Option` soup). The
+analogy to databases is direct:
+
+| Database concept | ACL equivalent |
+|---|---|
+| Table | Raw packet buffer |
+| Full table scan | `Headers` (parse everything) |
+| Query with projection | ACL rule (match specific fields) |
+| Result set | View (typed access to matched fields) |
+| Updatable view | Mutable view (write-back to packet) |
+
+If the classification API returned a view, the action path becomes:
+
+```rust
+// Hypothetical API sketch
+table.classify(&mut packet, |view: Ipv4TcpView<'_>| {
+    // `view` type is determined by the category that matched.
+    // Only the matched fields are accessible — the type enforces this.
+    let dst = view.ipv4_dst();
+    view.set_ipv4_dst(nat_rewrite(dst));
+    view.set_tcp_dst(new_port);
+    Action::Permit
+});
+```
+
+The view type (`Ipv4TcpView`) is determined by the category. The closure's
+type parameter tells the user exactly what's available. This is the
+"compile-time typed extraction as a function of the match" goal that
+motivated the earlier exploration of type-level lists and HLists — but
+achieved through runtime category dispatch into a fixed set of typed
+closures, which is compatible with heterogeneous tables.
+
+**Zero-copy views vs buffered views.**
+
+There are two possible implementations of a view:
+
+*Zero-copy (live lens):* The view wraps `&mut [u8]` (the raw packet buffer)
+plus an offset table. Getters do unaligned reads with byte-order conversion;
+setters write directly to the packet:
+
+```rust
+struct Ipv4TcpView<'pkt> {
+    buf: &'pkt mut [u8],
+    offsets: Ipv4TcpOffsets,
+}
+
+impl<'pkt> Ipv4TcpView<'pkt> {
+    fn ipv4_dst(&self) -> Ipv4Addr {
+        // Unaligned read at self.offsets.ipv4_dst, convert from network order
+    }
+    fn set_ipv4_dst(&mut self, addr: Ipv4Addr) {
+        // Write directly to the packet buffer at the known offset
+    }
+}
+```
+
+No copy at all. Mutations go straight to wire bytes. The sub-byte and
+alignment concerns are encapsulated in the accessor methods. The lifetime
+`'pkt` ties the view to the packet buffer.
+
+*Buffered (parsed snapshot):* The view holds owned, aligned, host-order
+values (as discussed in the "aligned host-order values" revision above).
+Mutations accumulate in the buffer and flush to the packet when the view
+is dropped or explicitly flushed.
+
+The zero-copy approach is more elegant and avoids the "flush" problem
+(mutations are immediate), but it means every field access does an
+unaligned read + byte-order conversion. For fields accessed multiple times
+in an action closure, this is redundant work. The buffered approach does
+the conversion once.
+
+A hybrid is possible: lazy population on first access, cached thereafter.
+But this adds complexity. The right choice depends on profiling the action
+path, which is premature for now.
+
+**Relationship to `Headers`.**
+
+Both `Headers` and an ACL view are projections of the same underlying
+packet buffer. They differ in scope and lifecycle:
+
+| Property | `Headers` | ACL view |
+|---|---|---|
+| Scope | All parsed protocol layers | Only the fields the ACL matched on |
+| Created | During the parse pass | After classification, on demand |
+| Byte order | Host | Host (buffered) or network (zero-copy) |
+| Mutability | Owned copies, mutable | Mutable (either variant) |
+| Write-back | Via `DeParse` | Via flush (buffered) or immediate (zero-copy) |
+| Type determined by | The parse path (always the same type) | The category (varies per match) |
+
+They could coexist: `Headers` for the general pipeline, ACL views for
+the action path. Or ACL views could eventually replace parts of the
+`Headers` usage where only specific fields are needed.
+
+**Open questions.**
+
+- Can the `classify` API actually dispatch into typed closures per
+  category? This requires something like a visitor pattern or a match on
+  the category enum with per-variant closures. The ergonomics of this
+  need exploration.
+
+- Should the view hold `&mut [u8]` (the raw buffer) or `&mut Packet`
+  (a higher-level type that manages headroom, checksums, etc.)? The
+  latter provides more context for the action closure.
+
+- How does this interact with the existing pipeline's `NetworkFunction`
+  trait? The pipeline currently passes `Packet<Buf>` through a chain of
+  NFs. Injecting an ACL view into this chain requires the classify step
+  to produce something the next NF can consume.
+
+- The multi-category case (same packet, multiple views for different
+  pipeline stages) is well-defined conceptually but the ownership model
+  needs care — you can't have two `&mut [u8]` to the same buffer. The
+  buffered variant avoids this (each view owns its copy); the zero-copy
+  variant would need sequential, not concurrent, access.
+
+These questions are recorded for future exploration. The v1 implementation
+does not need views — it returns `Action` per category and the user works
+with `Headers` or the raw buffer directly. Views are a potential v2
+enhancement that would tighten the connection between "what the ACL
+matched" and "what the action can see."
+
 ---
 
 ## V1 design constraints and phasing
