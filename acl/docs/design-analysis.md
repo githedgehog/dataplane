@@ -3940,7 +3940,39 @@ v1 requirement. If a compelling idea emerges that requires it, the design can
 accommodate it — but complexity should be pulled in by need, not pushed in by
 elegance.
 
-**2. API stability and user-friendliness above all.**
+**2. The user's mental model is a linear scan in priority order.**
+
+In the mind of the user, classifying a packet against an ACL table is
+equivalent to: walk the rules in priority order, return the action of the
+first rule that matches, or the default action if none match. That's it.
+
+Every backend — DPDK ACL tries, rte_flow hardware tables, tc-flower kernel
+classifiers — must produce the same result as this linear scan. If a "smart"
+backend produces a different answer than the linear scan, the backend is
+wrong. The user's mental model is the specification.
+
+This means the **linear-scan classifier is the first `Compiler`
+implementation**, and it serves a dual purpose:
+
+- **Reference semantics:** It defines what "correct" means. It is the
+  oracle that all other backends are tested against.
+- **Property testing:** bolero / proptest can generate arbitrary rule sets
+  and packet headers, classify with both the linear scan and a "smart"
+  backend, and assert the results are identical. This catches every class
+  of semantic divergence — priority inversion, mask misinterpretation,
+  category confusion, off-by-one in prefix matching.
+
+The linear-scan implementation should be:
+- Trivially correct (obviously right, not cleverly right)
+- Completely agnostic to performance (no batching, no SIMD, no caching)
+- Easy to debug (step through with a debugger, print each rule's match result)
+- The test oracle for every other backend, forever
+
+This is a strong constraint on the design: if a feature or optimization
+cannot be explained as "producing the same result as the linear scan, but
+faster," it's wrong or the mental model needs updating.
+
+**3. API stability and user-friendliness above all.**
 
 The builder chain (`AclRuleBuilder::new().eth_match(...).ipv4_match(...).permit(100)`)
 is the primary user surface and should be stable. Minor revisions are
@@ -3957,7 +3989,7 @@ A user who writes rules against the builder API today should not need to
 rewrite them when we add DPDK ACL compilation, or rte_flow support, or a
 software fallback. The rule is the rule; the backend is the backend.
 
-**3. Don't sacrifice performance for flexibility we won't use.**
+**4. Don't sacrifice performance for flexibility we won't use.**
 
 Modern compilers are smart. Compile-time category enums, static dispatch,
 monomorphized generics — these are free at runtime and valuable for
@@ -3970,7 +4002,7 @@ If a genuinely open-ended requirement appears (user-defined protocol parsers,
 plugin match fields), that can be layered on later — likely via a separate
 mechanism, not by making the core types dynamic.
 
-**4. No hardware offload implementation yet; keep the door open.**
+**5. No hardware offload implementation yet; keep the door open.**
 
 The `Compiler` trait is generic. A DPDK ACL compiler, an rte_flow compiler,
 a tc-flower compiler, and a software fallback all implement the same trait.
@@ -3999,7 +4031,7 @@ implementations when the need arises.
 | `CategorizedRule<M>` | Implemented | Rule + category bitmask |
 | `ClassifyResult<C>` | Implemented | Per-category action results |
 | `Compiler<C, M>` trait | Defined | Trait exists; no implementations yet |
-| Software classifier | Not started | Needed to prove the pipeline end-to-end |
+| Linear-scan classifier | Not started | Reference semantics and property test oracle |
 | DPDK ACL compiler | Not started | Primary production backend |
 | Category-typed field buffers | Design only | Documented above; not yet prototyped |
 | Conditional vector transforms | Design only | Documented above; deferred |
@@ -4013,8 +4045,11 @@ A v1 is shippable when:
    table, compile the table with at least one backend, and classify packets.
 2. The API is documented with examples and doc-tests.
 3. The category validation catches shape mismatches at table-build time.
-4. At least one `Compiler` implementation exists and is tested.
-5. The design docs (this file and companions) are up to date.
+4. The linear-scan `Compiler` implementation exists and is tested.
+5. Property tests compare the linear-scan classifier against at least one
+   "smart" backend (DPDK ACL or a software trie) on random rule sets and
+   packets, asserting identical results.
+6. The design docs (this file and companions) are up to date.
 
 Everything else — SIMD gather, hardware offload, type-space vectors,
 hierarchical dispatch — is future work documented here for context but not
