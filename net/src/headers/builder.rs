@@ -325,7 +325,7 @@ where
     /// runs to customize it.  The *previous* top-of-stack is conformed
     /// (via [`Within`]) and installed into [`Headers`] before the new layer
     /// is created.
-    pub fn stack<U>(mut self, f: impl FnOnce(&mut U)) -> HeaderStack<U>
+    pub fn stack<U>(mut self, mutate: impl FnOnce(&mut U)) -> HeaderStack<U>
     where
         U: Blank + Within<T>,
         Headers: Install<U>,
@@ -334,7 +334,7 @@ where
         self.headers.install(self.working);
 
         let mut e = U::blank();
-        f(&mut e);
+        mutate(&mut e);
         HeaderStack {
             headers: self.headers,
             working: e,
@@ -683,29 +683,30 @@ fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError
 
     let payload_u16 = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLarge)?;
 
-    // UDP datagram length
-    if let Some(Transport::Udp(udp)) = &mut headers.transport {
-        let udp_total = Udp::MIN_LENGTH
-            .get()
-            .checked_add(encap_size)
-            .and_then(|v| v.checked_add(payload_u16))
-            .and_then(NonZero::new)
-            .ok_or(BuildError::PayloadTooLarge)?;
-
-        #[allow(unsafe_code)]
-        // SAFETY: `udp_total >= Udp::MIN_LENGTH` by construction.
-        unsafe {
-            udp.set_length(udp_total);
-        }
-    }
-
-    // IP payload length
+    // It is safe to combine values this way because the mutually exclusive values are mapped back
+    // to zero (e.g. embedded_size is 0 when transport is UDP, encap_size is 0 when transport is
+    // ICMP, etc.).
     // TODO: include net_ext size once IPv6 extension headers are supported.
     let ip_payload = transport_size
-        .checked_add(embedded_size)
+        .checked_add(payload_u16)
         .and_then(|v| v.checked_add(encap_size))
-        .and_then(|v| v.checked_add(payload_u16))
+        .and_then(|v| v.checked_add(embedded_size))
         .ok_or(BuildError::PayloadTooLarge)?;
+
+    match headers.transport {
+        Some(Transport::Udp(ref mut udp)) => {
+            // SAFETY: `transport_size >= Udp::MIN_LENGTH` when transport is UDP, so `ip_payload`
+            // is guaranteed non-zero.
+            let udp_len = NonZero::new(ip_payload).unwrap_or_else(|| unreachable!());
+            #[allow(unsafe_code)]
+            // SAFETY: `udp_len >= Udp::MIN_LENGTH` by construction.
+            unsafe {
+                udp.set_length(udp_len);
+            }
+        }
+        // No length field in these headers to adjust.
+        Some(Transport::Tcp(_) | Transport::Icmp4(_) | Transport::Icmp6(_)) | None => {}
+    }
 
     match &mut headers.net {
         Some(Net::Ipv4(ip)) => {
@@ -721,3 +722,396 @@ fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipv4::UnicastIpv4Addr;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn ipv4_tcp_fixup_headers() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(10, 0, 0, 1)).unwrap());
+                ip.set_destination(Ipv4Addr::new(10, 0, 0, 2));
+            })
+            .tcp(|tcp| {
+                tcp.set_source(TcpPort::new_checked(12345).unwrap());
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            })
+            .build_headers()
+            .unwrap();
+
+        // Eth should have IPV4 ethtype (set by conform)
+        assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV4);
+
+        // IPv4 next_header should be TCP (set by conform)
+        let Net::Ipv4(ipv4) = headers.net().unwrap() else {
+            panic!("expected Ipv4");
+        };
+        assert_eq!(ipv4.next_header(), NextHeader::TCP);
+
+        // Transport should be TCP
+        assert!(matches!(headers.transport(), Some(Transport::Tcp(_))));
+    }
+
+    #[test]
+    fn ipv6_udp_fixup_headers() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .udp(|udp| {
+                udp.set_source(UdpPort::new_checked(5000).unwrap());
+                udp.set_destination(UdpPort::new_checked(6000).unwrap());
+            })
+            .build_headers()
+            .unwrap();
+
+        assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
+
+        let Net::Ipv6(ipv6) = headers.net().unwrap() else {
+            panic!("expected Ipv6");
+        };
+        assert_eq!(ipv6.next_header(), NextHeader::UDP);
+    }
+
+    #[test]
+    fn double_vlan_ordering() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_vid(Vid::new(100).unwrap());
+            })
+            .vlan(|v| {
+                v.set_vid(Vid::new(200).unwrap());
+            })
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+
+        let vlans = headers.vlan();
+        assert_eq!(vlans.len(), 2);
+        assert_eq!(vlans[0].vid(), Vid::new(100).unwrap());
+        assert_eq!(vlans[1].vid(), Vid::new(200).unwrap());
+    }
+
+    #[test]
+    fn vxlan_conforms_udp() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .udp(|udp| {
+                // User sets a wrong port -- conform should overwrite it.
+                udp.set_destination(UdpPort::new_checked(9999).unwrap());
+            })
+            .vxlan(|_| {})
+            .build_headers()
+            .unwrap();
+
+        let Transport::Udp(udp) = headers.transport().unwrap() else {
+            panic!("expected Udp");
+        };
+        assert_eq!(udp.destination(), Vxlan::PORT);
+    }
+
+    #[test]
+    fn icmp4_with_embedded() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_destination(Ipv4Addr::new(10, 0, 0, 1));
+            })
+            .icmp4(|_| {})
+            .embedded(|inner| {
+                inner
+                    .ipv4(|ip| {
+                        ip.set_source(UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap());
+                        ip.set_destination(Ipv4Addr::new(10, 0, 0, 1));
+                    })
+                    .tcp(
+                        TcpPort::new_checked(12345).unwrap(),
+                        TcpPort::new_checked(80).unwrap(),
+                        |_| {},
+                    )
+            })
+            .build_headers_with_payload([])
+            .unwrap();
+
+        assert!(headers.embedded_ip().is_some());
+        assert!(matches!(headers.transport(), Some(Transport::Icmp4(_))));
+    }
+
+    #[test]
+    fn fixup_computes_ip_payload_length() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers_with_payload([])
+            .unwrap();
+
+        let Net::Ipv4(ipv4) = headers.net().unwrap() else {
+            panic!("expected Ipv4");
+        };
+        let Transport::Tcp(tcp) = headers.transport().unwrap() else {
+            panic!("expected Tcp");
+        };
+
+        // IP payload length should equal the TCP header size (no trailing payload).
+        assert_eq!(
+            ipv4.total_len()
+                .checked_sub(u16::try_from(ipv4.header_len()).unwrap())
+                .unwrap(),
+            tcp.size().get()
+        );
+    }
+
+    #[test]
+    fn blank_eth_uses_locally_administered_macs() {
+        let eth = Eth::blank();
+        let src = eth.source();
+        let dst = eth.destination();
+        // Locally-administered bit (second-least-significant bit of first octet)
+        assert_ne!(src.inner().0, [0; 6]);
+        assert_ne!(dst.inner().0, [0; 6]);
+    }
+
+    #[test]
+    fn vxlan_udp_length_includes_encap() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .udp(|_| {})
+            .vxlan(|_| {})
+            .build_headers_with_payload([])
+            .unwrap();
+
+        let Transport::Udp(udp) = headers.transport().unwrap() else {
+            panic!("expected Udp");
+        };
+        // UDP length = UDP header + VXLAN header + 0 payload
+        assert_eq!(
+            udp.length().get(),
+            Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()
+        );
+    }
+
+    #[test]
+    fn icmp4_embedded_inner_next_header_is_correct() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .icmp4(|_| {})
+            .embedded(|inner| {
+                inner.ipv4(|_| {}).tcp(
+                    TcpPort::new_checked(1).unwrap(),
+                    TcpPort::new_checked(1).unwrap(),
+                    |_| {},
+                )
+            })
+            .build_headers_with_payload([])
+            .unwrap();
+
+        let eh = headers
+            .embedded_ip()
+            .expect("embedded headers should exist");
+        assert!(eh.net_headers_len() > 0, "inner IP should be present");
+        assert!(
+            eh.transport_headers_len() > 0,
+            "inner transport should be present"
+        );
+    }
+
+    #[test]
+    fn icmp6_with_embedded_ipv6_udp() {
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .icmp6(|_| {})
+            .embedded(|inner| {
+                inner.ipv6(|_| {}).udp(
+                    UdpPort::new_checked(1).unwrap(),
+                    UdpPort::new_checked(1).unwrap(),
+                    |_| {},
+                )
+            })
+            .build_headers_with_payload([])
+            .unwrap();
+
+        assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
+        assert!(matches!(headers.transport(), Some(Transport::Icmp6(_))));
+        assert!(headers.embedded_ip().is_some());
+    }
+
+    #[test]
+    fn fixup_with_nonempty_payload() {
+        let payload = [0xAA; 100];
+        let headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers_with_payload(payload)
+            .unwrap();
+
+        let Net::Ipv4(ipv4) = headers.net().unwrap() else {
+            panic!("expected Ipv4");
+        };
+        let Transport::Tcp(tcp) = headers.transport().unwrap() else {
+            panic!("expected Tcp");
+        };
+
+        let expected_ip_payload = tcp.size().get() + u16::try_from(payload.len()).unwrap();
+        assert_eq!(
+            ipv4.total_len()
+                .checked_sub(u16::try_from(ipv4.header_len()).unwrap())
+                .unwrap(),
+            expected_ip_payload
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "too many VLANs")]
+    fn too_many_vlans_panics() {
+        let _ = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .vlan(|_| {})
+            .vlan(|_| {})
+            .vlan(|_| {})
+            .vlan(|_| {}) // 5th VLAN -- should panic
+            .build_headers();
+    }
+
+    // -- Property-based tests (bolero) ----------------------------------------
+
+    use crate::buffer::TestBuffer;
+    use crate::parse::Parse;
+
+    /// Replace a `Blank` value with a bolero-generated one.
+    fn inject<T>(input: T) -> impl FnOnce(&mut T) {
+        |reference| {
+            let _ = std::mem::replace(reference, input);
+        }
+    }
+
+    const MAX_PAYLOAD_LEN: usize = 60_000;
+
+    #[test]
+    fn ipv4_tcp_consistent() {
+        bolero::check!().with_type().cloned().for_each(
+            |(eth, ipv4, tcp, payload): (Eth, Ipv4, Tcp, Vec<u8>)| {
+                if payload.len() > MAX_PAYLOAD_LEN {
+                    return;
+                }
+
+                let expected_payload_len = tcp
+                    .size()
+                    .get()
+                    .checked_add(u16::try_from(payload.len()).unwrap())
+                    .unwrap();
+
+                let headers = HeaderStack::new()
+                    .eth(inject(eth))
+                    .ipv4(inject(ipv4))
+                    .tcp(inject(tcp))
+                    .build_headers_with_payload(&payload)
+                    .unwrap();
+
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV4);
+                let Some(Net::Ipv4(ipv4)) = headers.net() else {
+                    panic!("expected Ipv4");
+                };
+                assert_eq!(ipv4.next_header(), NextHeader::TCP);
+                assert_eq!(
+                    ipv4.total_len()
+                        .checked_sub(u16::try_from(ipv4.header_len()).unwrap())
+                        .unwrap(),
+                    expected_payload_len
+                );
+
+                let mut test_buffer = TestBuffer::new();
+                headers.deparse(test_buffer.as_mut()).unwrap();
+                let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
+                assert_eq!(consumed.get() as usize, headers.size().get() as usize);
+                assert_eq!(headers, headers2, "round trip failed after using builder");
+            },
+        );
+    }
+
+    #[test]
+    fn ipv6_udp_vxlan_consistent() {
+        bolero::check!().with_type().cloned().for_each(
+            |(eth, ipv6, udp, vxlan, payload): (Eth, Ipv6, Udp, Vxlan, Vec<u8>)| {
+                if payload.len() > MAX_PAYLOAD_LEN {
+                    return;
+                }
+
+                let headers = HeaderStack::new()
+                    .eth(inject(eth))
+                    .ipv6(inject(ipv6))
+                    .udp(inject(udp))
+                    .vxlan(inject(vxlan))
+                    .build_headers_with_payload(&payload)
+                    .unwrap();
+
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
+                let Some(Net::Ipv6(ipv6)) = headers.net() else {
+                    panic!("expected Ipv6");
+                };
+                let Some(Transport::Udp(udp)) = headers.transport() else {
+                    panic!("expected Udp");
+                };
+                let Some(UdpEncap::Vxlan(_)) = headers.udp_encap() else {
+                    panic!("expected Vxlan");
+                };
+                assert_eq!(ipv6.next_header(), NextHeader::UDP);
+                assert_eq!(udp.destination(), Vxlan::PORT);
+
+                // UDP length = UDP header + VXLAN header + payload
+                let expected_udp_len = Udp::MIN_LENGTH.get()
+                    + vxlan.size().get()
+                    + u16::try_from(payload.len()).unwrap();
+                assert_eq!(udp.length().get(), expected_udp_len);
+
+                // VXLAN conform must zero the UDP checksum (RFC 7348)
+                assert_eq!(
+                    udp.checksum(),
+                    Some(UdpChecksum::ZERO),
+                    "VXLAN UDP checksum should be zero per RFC 7348"
+                );
+
+                let mut test_buffer = TestBuffer::new();
+                headers.deparse(test_buffer.as_mut()).unwrap();
+                let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
+                assert_eq!(consumed.get() as usize, headers.size().get() as usize);
+                assert_eq!(headers, headers2, "round trip failed after using builder");
+            },
+        );
+    }
+
+    #[test]
+    fn vxlan_always_overrides_udp_dst() {
+        bolero::check!().with_type().cloned().for_each(
+            |(eth, ipv4, udp, vxlan): (Eth, Ipv4, Udp, Vxlan)| {
+                let headers = HeaderStack::new()
+                    .eth(inject(eth))
+                    .ipv4(inject(ipv4))
+                    .udp(inject(udp))
+                    .vxlan(inject(vxlan))
+                    .build_headers()
+                    .unwrap();
+
+                let Transport::Udp(udp) = headers.transport().unwrap() else {
+                    panic!("expected Udp");
+                };
+                assert_eq!(
+                    udp.destination(),
+                    Vxlan::PORT,
+                    "VXLAN conform must override UDP dst port to 4789",
+                );
+            },
+        );
+    }
+}
