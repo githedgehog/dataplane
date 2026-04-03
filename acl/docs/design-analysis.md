@@ -3828,6 +3828,78 @@ and parsed structs (full copy, full validation, host byte order). It gives
 type-safe mutable access to exactly the fields the ACL matched on, at
 minimal copy cost, with a flush path that writes back only what changed.
 
+**Revision: deep copy with aligned, host-order values is likely better
+than raw network-order bytes.**
+
+The field buffer examples above store raw `[u8; 4]` in network byte order
+and provide accessor methods that convert to/from host types. This was
+motivated by the idea of minimizing work at extraction time (just
+`copy_from_slice`). But two practical problems make this approach less
+attractive than it appears:
+
+*Sub-byte fields.* Many protocol fields are not byte-aligned:
+
+- VLAN VID: 12 bits (bits 0-11 of a 16-bit field shared with PCP and DEI)
+- IPv4 IHL: 4 bits
+- DSCP: 6 bits, ECN: 2 bits
+- IPv4 fragment offset: 13 bits
+- IPv4 flags: 3 bits
+
+You cannot `copy_from_slice` a 12-bit field. Extracting VID from raw bytes
+requires reading 2 bytes, masking with `0x0FFF`, and (for the flush path)
+reading the existing 2 bytes, clearing bits 0-11, OR-ing in the new value,
+and writing back. This is more complex than a simple byte copy, and the
+extraction logic is field-specific.
+
+*Alignment.* Fields in the raw packet are not naturally aligned. An IPv4
+source address (4 bytes) might be at byte offset 26 (Eth 14 + IPv4 header
+offset 12) — not 4-byte aligned. Ethernet's 14-byte header means every
+subsequent field's alignment depends on how many VLAN tags preceded it
+(each adds 4 bytes). On x86 unaligned reads are cheap but still require
+`read_unaligned`; on other architectures they may trap. And in Rust,
+creating `&u32` to an unaligned address is undefined behavior regardless
+of platform.
+
+These problems mean the extraction path is not a simple memcpy either way.
+If we're already doing per-field reads with masking and byte-order
+conversion, the marginal cost of storing the result as an aligned,
+host-byte-order native type (e.g., `Ipv4Addr`, `TcpPort`, `u16`) rather
+than `[u8; N]` is essentially zero.
+
+The revised field buffer design stores **parsed, aligned, host-byte-order
+values** — essentially the same representation as the existing `Parse`
+output, just scoped to the matched fields:
+
+```rust
+struct Ipv4TcpFields {
+    ipv4_src: Ipv4Addr,   // host type, aligned, no conversion needed for user
+    ipv4_dst: Ipv4Addr,
+    tcp_src:  TcpPort,
+    tcp_dst:  TcpPort,
+}
+```
+
+The extraction cost is the same (unaligned read + byte-swap from network
+order), but the user-facing API is simpler (no `.ipv4_src()` accessor that
+does conversion — the field IS the value). And the flush path just reverses
+the conversion (host-to-network, write at known offset).
+
+This also means the field buffer is closer in spirit to the existing parsed
+structs. The difference is scope (matched fields only vs full headers) and
+lifecycle (created lazily after classification, not during the parse pass).
+
+The DPDK ACL backend still operates on raw packet bytes at network-order
+offsets — it doesn't use the field buffer for classification. The field
+buffer is for the user's action path after classification.
+
+A remaining open question: should the field buffer reuse the existing
+parsed header types (`Ipv4`, `Tcp`) from `dataplane-net`, or define its
+own lighter-weight types? The existing types carry full header data
+(including fields the ACL didn't match on), which is more than needed.
+But reusing them avoids type proliferation and lets the user work with
+familiar types. This is a pragmatic tradeoff that can be resolved when
+the field buffer is implemented.
+
 **DPDK lifetime considerations.**
 
 DPDK ACL's `rte_acl_classify` takes `const uint8_t **data` (pointers to
