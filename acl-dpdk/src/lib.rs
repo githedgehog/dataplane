@@ -19,4 +19,5 @@
 
 pub mod compiler;
 pub mod field_map;
+pub mod input;
 pub mod rule_translate;

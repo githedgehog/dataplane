@@ -11,3 +11,6 @@ dpdk = { workspace = true }
 etherparse = { workspace = true }
 net = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+net = { workspace = true, features = ["builder"] }

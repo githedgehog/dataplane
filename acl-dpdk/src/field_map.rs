@@ -145,8 +145,18 @@ pub mod fields {
 /// - TCP/UDP src port is at byte 34
 /// - TCP/UDP dst port is at byte 36
 pub trait OffsetProvider {
+    /// Byte offset of the Ethernet source MAC.
+    fn eth_src_offset(&self) -> u32;
+    /// Byte offset of the Ethernet destination MAC.
+    fn eth_dst_offset(&self) -> u32;
     /// Byte offset of the `EtherType` field.
     fn eth_type_offset(&self) -> u32;
+    /// Byte offset of the VLAN VID field.
+    fn vlan_vid_offset(&self) -> u32;
+    /// Byte offset of the VLAN PCP field.
+    fn vlan_pcp_offset(&self) -> u32;
+    /// Byte offset of the VLAN inner `EtherType` field.
+    fn vlan_inner_type_offset(&self) -> u32;
     /// Byte offset of the IPv4 protocol field.
     fn ipv4_proto_offset(&self) -> u32;
     /// Byte offset of the IPv4 source address.
@@ -177,8 +187,25 @@ pub trait OffsetProvider {
 pub struct StandardEthernetOffsets;
 
 impl OffsetProvider for StandardEthernetOffsets {
+    fn eth_src_offset(&self) -> u32 {
+        6 // source MAC at byte 6 in Ethernet frame
+    }
+    fn eth_dst_offset(&self) -> u32 {
+        0 // destination MAC at byte 0
+    }
     fn eth_type_offset(&self) -> u32 {
         12
+    }
+    fn vlan_vid_offset(&self) -> u32 {
+        // No VLANs in standard Ethernet — this offset is meaningless
+        // but must be provided.  Place it past the Ethernet header.
+        14
+    }
+    fn vlan_pcp_offset(&self) -> u32 {
+        14
+    }
+    fn vlan_inner_type_offset(&self) -> u32 {
+        14
     }
     fn ipv4_proto_offset(&self) -> u32 {
         14 + 9
