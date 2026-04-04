@@ -47,18 +47,35 @@ impl CompiledEntry {
 ///
 /// Private — users interact with [`Classifier`] and never see this.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Tiered variant used in future update support
+#[allow(dead_code)] // MutableMap and Cascade used in future update support
 enum ClassifierInner {
     /// Linear scan of sorted rules.  Reference implementation.
     Linear {
         rules: Vec<CompiledEntry>,
         default_fate: Fate,
     },
-    /// Two-tier: check delta first, fall through to base.
-    Tiered {
-        delta: Box<ClassifierInner>,
-        base: Box<ClassifierInner>,
+
+    /// Mutable fast-path stage.  Supports O(1) insert/delete while
+    /// live — used for data-plane-driven entries (NAT connections,
+    /// flow state).
+    ///
+    /// The internal lookup strategy is an implementation detail
+    /// (hash map for exact match, concurrent trie for prefixes, etc.).
+    /// The defining property is mutability without rebuild.
+    MutableMap {
+        // TODO: actual map implementation (DashMap, MultiIndexMap, etc.)
+        default_fate: Fate,
     },
+
+    /// Ordered cascade: try each stage in sequence, return the first
+    /// match.  The last stage's default fate is the cascade's default.
+    ///
+    /// Subsumes the old two-tier model and extends to any depth:
+    /// - `[MutableMap, Linear]` — NAT fast path + policy fallback
+    /// - `[Linear(delta), DpdkAcl(base)]` — two-tier update
+    /// - `[MutableMap, Linear(delta), DpdkAcl(base)]` — all three
+    Cascade(Vec<ClassifierInner>),
+
     // Future variants:
     // DpdkAcl { context: ..., default_fate: Fate },
     // RteFlow { ... },
@@ -78,20 +95,37 @@ impl ClassifierInner {
                 }
                 ClassifyOutcome::Default(*default_fate)
             }
-            Self::Tiered { delta, base } => {
-                let outcome = delta.classify(headers);
-                if matches!(outcome, ClassifyOutcome::Matched(_)) {
-                    return outcome;
+
+            Self::MutableMap { default_fate, .. } => {
+                // TODO: actual map lookup
+                ClassifyOutcome::Default(*default_fate)
+            }
+
+            Self::Cascade(stages) => {
+                for stage in stages {
+                    let outcome = stage.classify(headers);
+                    if matches!(outcome, ClassifyOutcome::Matched(_)) {
+                        return outcome;
+                    }
                 }
-                base.classify(headers)
+                // No match in any stage → default from last stage.
+                stages
+                    .last()
+                    .map_or(ClassifyOutcome::Default(Fate::Drop), |s| {
+                        ClassifyOutcome::Default(s.default_fate())
+                    })
             }
         }
     }
 
     fn default_fate(&self) -> Fate {
         match self {
-            Self::Linear { default_fate, .. } => *default_fate,
-            Self::Tiered { base, .. } => base.default_fate(),
+            Self::Linear { default_fate, .. } | Self::MutableMap { default_fate, .. } => {
+                *default_fate
+            }
+            Self::Cascade(stages) => stages
+                .last()
+                .map_or(Fate::Drop, ClassifierInner::default_fate),
         }
     }
 }
