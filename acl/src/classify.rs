@@ -106,7 +106,7 @@ fn rule_matches(fields: &AclMatchFields, headers: &Headers) -> bool {
 /// Ethernet layer matching.
 fn eth_matches(m: &EthMatch, headers: &Headers) -> bool {
     m.ether_type
-        .is_none_or(|et| headers.eth().is_some_and(|eth| eth.ether_type() == et))
+        .matches(|et| headers.eth().is_some_and(|eth| eth.ether_type() == *et))
 }
 
 /// IPv4 layer matching.
@@ -115,11 +115,9 @@ fn ipv4_matches(m: &Ipv4Match, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src
-        .is_none_or(|pfx| ipv4_in_prefix(pfx, ip.source().into()))
-        && m.dst
-            .is_none_or(|pfx| ipv4_in_prefix(pfx, ip.destination()))
-        && m.protocol.is_none_or(|p| ip.next_header() == p)
+    m.src.matches(|pfx| ipv4_in_prefix(*pfx, ip.source().into()))
+        && m.dst.matches(|pfx| ipv4_in_prefix(*pfx, ip.destination()))
+        && m.protocol.matches(|p| ip.next_header() == *p)
 }
 
 /// IPv6 layer matching.
@@ -128,11 +126,9 @@ fn ipv6_matches(m: &Ipv6Match, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src
-        .is_none_or(|pfx| ipv6_in_prefix(pfx, ip.source().into()))
-        && m.dst
-            .is_none_or(|pfx| ipv6_in_prefix(pfx, ip.destination()))
-        && m.protocol.is_none_or(|p| ip.next_header() == p)
+    m.src.matches(|pfx| ipv6_in_prefix(*pfx, ip.source().into()))
+        && m.dst.matches(|pfx| ipv6_in_prefix(*pfx, ip.destination()))
+        && m.protocol.matches(|p| ip.next_header() == *p)
 }
 
 /// TCP layer matching.
@@ -141,9 +137,8 @@ fn tcp_matches(m: &TcpMatch, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src.is_none_or(|r| tcp_port_in_range(r, tcp.source()))
-        && m.dst
-            .is_none_or(|r| tcp_port_in_range(r, tcp.destination()))
+    m.src.matches(|r| tcp_port_in_range(*r, tcp.source()))
+        && m.dst.matches(|r| tcp_port_in_range(*r, tcp.destination()))
 }
 
 /// UDP layer matching.
@@ -152,9 +147,8 @@ fn udp_matches(m: &UdpMatch, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src.is_none_or(|r| udp_port_in_range(r, udp.source()))
-        && m.dst
-            .is_none_or(|r| udp_port_in_range(r, udp.destination()))
+    m.src.matches(|r| udp_port_in_range(*r, udp.source()))
+        && m.dst.matches(|r| udp_port_in_range(*r, udp.destination()))
 }
 
 /// `ICMPv4` layer matching.
@@ -171,7 +165,7 @@ fn icmp4_matches(m: &Icmp4Match, headers: &Headers) -> bool {
     // TODO: implement type/code matching once Icmp4 exposes raw u8 accessors.
     // For now, if the rule specifies type or code constraints, we
     // conservatively fail the match since we cannot verify them.
-    m.icmp_type.is_none() && m.icmp_code.is_none()
+    m.icmp_type.is_ignore() && m.icmp_code.is_ignore()
 }
 
 // ---- Helper functions ----
@@ -201,6 +195,7 @@ fn udp_port_in_range(range: PortRange<UdpPort>, port: UdpPort) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::match_expr::FieldMatch;
     use crate::priority::Priority;
     use crate::{AclRuleBuilder, AclTableBuilder};
     use net::headers::builder::HeaderStack;
@@ -256,13 +251,13 @@ fn ipv4_prefix_match() {
         // but adding a .ipv4 after restricts the ethertype match to 0x0800
         .ipv4(|ip| {
             // and here we use the (throwaway) Ipv4Prefix type to restrict the match to 10.0.0.0/8
-            ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+            ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
         })
         // by adding tcp here we scope the ip protocol to tcp exactly, no need to specify in the prior layer
         .tcp(|tcp| {
             // note that we support range matches as well.
             // In this example I'm matching on all privileged dst ports
-            tcp.dst = Some(PortRange {
+            tcp.dst = FieldMatch::Select(PortRange {
                 min: TcpPort::new_checked(1).unwrap(),
                 max: TcpPort::new_checked(1024).unwrap(),
             });
@@ -278,8 +273,9 @@ fn ipv4_prefix_match() {
         // wildcard on eth becomes exact match on Ipv6 ethtype
         .ipv6(|ip| {
             // here we decide to explicitly allow link local traffic
-            ip.dst =
-                Some(Ipv6Prefix::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 64).unwrap());
+            ip.dst = FieldMatch::Select(
+                Ipv6Prefix::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 64).unwrap(),
+            );
         })
         // this rule will match *before* example_rule1
         .permit(pri(50));
@@ -363,14 +359,14 @@ fn ipv4_prefix_match() {
         let broad = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv4(|ip| {
-                ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+                ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .permit(pri(200));
 
         let narrow = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv4(|ip| {
-                ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 1, 0, 0), 16).unwrap());
+                ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 1, 0, 0), 16).unwrap());
             })
             .deny(pri(100));
 
@@ -407,7 +403,7 @@ fn ipv4_prefix_match() {
             .eth(|_| {})
             .ipv4(|_| {})
             .tcp(|tcp| {
-                tcp.dst = Some(
+                tcp.dst = FieldMatch::Select(
                     PortRange::new(
                         TcpPort::new_checked(80).unwrap(),
                         TcpPort::new_checked(443).unwrap(),
@@ -455,7 +451,7 @@ fn ipv4_prefix_match() {
     fn ipv4_rule_does_not_match_ipv6_packet() {
         let rule = AclRuleBuilder::new()
             .eth(|_| {})
-            .ipv4(|ip| ip.src = Some(Ipv4Prefix::any()))
+            .ipv4(|ip| ip.src = FieldMatch::Select(Ipv4Prefix::any()))
             .permit(pri(100));
 
         let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
@@ -475,7 +471,7 @@ fn ipv4_prefix_match() {
         use net::eth::ethtype::EthType;
 
         let rule = AclRuleBuilder::new()
-            .eth(|e| e.ether_type = Some(EthType::IPV4))
+            .eth(|e| e.ether_type = FieldMatch::Select(EthType::IPV4))
             .permit(pri(100));
 
         let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();

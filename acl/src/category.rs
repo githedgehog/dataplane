@@ -283,6 +283,7 @@ pub trait Compiler<C: CategorySet, M: Metadata = ()> {
 mod tests {
     use super::*;
     use crate::category::ClassifyResult;
+    use crate::match_expr::FieldMatch;
     use crate::priority::Priority;
     use crate::range::{Ipv4Prefix, PortRange};
     use crate::AclRuleBuilder;
@@ -324,10 +325,10 @@ mod tests {
         let rule = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv4(|ip| {
-                ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+                ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = Some(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
             })
             .permit(pri(100));
 
@@ -387,7 +388,7 @@ mod tests {
         let rule = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv4(|ip| {
-                ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+                ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .permit(pri(50));
 

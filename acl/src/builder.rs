@@ -23,6 +23,7 @@ use net::eth::ethtype::EthType;
 use net::ip::NextHeader;
 
 use crate::action::Action;
+use crate::match_expr::FieldMatch;
 use crate::match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch};
 use crate::metadata::Metadata;
 use crate::priority::Priority;
@@ -293,43 +294,43 @@ impl Within<()> for EthMatch {
 
 impl Within<EthMatch> for Ipv4Match {
     fn conform(parent: &mut EthMatch) {
-        parent.ether_type = Some(EthType::IPV4);
+        parent.ether_type = FieldMatch::Select(EthType::IPV4);
     }
 }
 
 impl Within<EthMatch> for Ipv6Match {
     fn conform(parent: &mut EthMatch) {
-        parent.ether_type = Some(EthType::IPV6);
+        parent.ether_type = FieldMatch::Select(EthType::IPV6);
     }
 }
 
 impl Within<Ipv4Match> for TcpMatch {
     fn conform(parent: &mut Ipv4Match) {
-        parent.protocol = Some(NextHeader::TCP);
+        parent.protocol = FieldMatch::Select(NextHeader::TCP);
     }
 }
 
 impl Within<Ipv6Match> for TcpMatch {
     fn conform(parent: &mut Ipv6Match) {
-        parent.protocol = Some(NextHeader::TCP);
+        parent.protocol = FieldMatch::Select(NextHeader::TCP);
     }
 }
 
 impl Within<Ipv4Match> for UdpMatch {
     fn conform(parent: &mut Ipv4Match) {
-        parent.protocol = Some(NextHeader::UDP);
+        parent.protocol = FieldMatch::Select(NextHeader::UDP);
     }
 }
 
 impl Within<Ipv6Match> for UdpMatch {
     fn conform(parent: &mut Ipv6Match) {
-        parent.protocol = Some(NextHeader::UDP);
+        parent.protocol = FieldMatch::Select(NextHeader::UDP);
     }
 }
 
 impl Within<Ipv4Match> for Icmp4Match {
     fn conform(parent: &mut Ipv4Match) {
-        parent.protocol = Some(NextHeader::ICMP);
+        parent.protocol = FieldMatch::Select(NextHeader::ICMP);
     }
 }
 
@@ -446,10 +447,10 @@ mod tests {
         let rule = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv4(|ip| {
-                ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+                ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = Some(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
             })
             .permit(pri(100));
 
@@ -457,12 +458,12 @@ mod tests {
         assert_eq!(rule.priority(), pri(100));
 
         let eth = rule.packet_match().eth().unwrap();
-        assert_eq!(eth.ether_type, Some(EthType::IPV4));
+        assert_eq!(eth.ether_type, FieldMatch::Select(EthType::IPV4));
 
         let ipv4 = rule.packet_match().ipv4().unwrap();
-        assert_eq!(ipv4.protocol, Some(NextHeader::TCP));
-        assert!(ipv4.src.is_some());
-        assert!(ipv4.dst.is_none());
+        assert_eq!(ipv4.protocol, FieldMatch::Select(NextHeader::TCP));
+        assert!(ipv4.src.is_select());
+        assert!(ipv4.dst.is_ignore());
     }
 
     #[test]
@@ -470,20 +471,20 @@ mod tests {
         let rule = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv6(|ip| {
-                ip.dst = Some(Ipv6Prefix::host(Ipv6Addr::LOCALHOST));
+                ip.dst = FieldMatch::Select(Ipv6Prefix::host(Ipv6Addr::LOCALHOST));
             })
             .udp(|udp| {
-                udp.dst = Some(PortRange::exact(UdpPort::new_checked(53).unwrap()));
+                udp.dst = FieldMatch::Select(PortRange::exact(UdpPort::new_checked(53).unwrap()));
             })
             .deny(pri(200));
 
         assert_eq!(rule.action(), Action::Deny);
 
         let eth = rule.packet_match().eth().unwrap();
-        assert_eq!(eth.ether_type, Some(EthType::IPV6));
+        assert_eq!(eth.ether_type, FieldMatch::Select(EthType::IPV6));
 
         let ipv6 = rule.packet_match().ipv6().unwrap();
-        assert_eq!(ipv6.protocol, Some(NextHeader::UDP));
+        assert_eq!(ipv6.protocol, FieldMatch::Select(NextHeader::UDP));
     }
 
     #[test]
@@ -492,16 +493,16 @@ mod tests {
             .eth(|_| {})
             .ipv4(|_| {})
             .icmp4(|icmp| {
-                icmp.icmp_type = Some(8);
+                icmp.icmp_type = FieldMatch::Select(8);
             })
             .permit(pri(300));
 
         let ipv4 = rule.packet_match().ipv4().unwrap();
-        assert_eq!(ipv4.protocol, Some(NextHeader::ICMP));
+        assert_eq!(ipv4.protocol, FieldMatch::Select(NextHeader::ICMP));
 
         let icmp = rule.packet_match().icmp4().unwrap();
-        assert_eq!(icmp.icmp_type, Some(8));
-        assert_eq!(icmp.icmp_code, None);
+        assert_eq!(icmp.icmp_type, FieldMatch::Select(8));
+        assert_eq!(icmp.icmp_code, FieldMatch::Ignore);
     }
 
     #[test]
@@ -509,7 +510,7 @@ mod tests {
         let rule = AclRuleBuilder::new().eth(|_| {}).deny(pri(999));
 
         let eth = rule.packet_match().eth().unwrap();
-        assert_eq!(eth.ether_type, None);
+        assert_eq!(eth.ether_type, FieldMatch::Ignore);
         assert!(rule.packet_match().ipv4().is_none());
         assert!(rule.packet_match().tcp().is_none());
     }
@@ -583,7 +584,7 @@ mod tests {
 
         assert_eq!(rule.metadata().vni, Some(ExactMatch(1000)));
         let ipv4 = rule.packet_match().ipv4().unwrap();
-        assert_eq!(ipv4.protocol, Some(NextHeader::TCP));
+        assert_eq!(ipv4.protocol, FieldMatch::Select(NextHeader::TCP));
     }
 
     #[test]

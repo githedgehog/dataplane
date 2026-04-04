@@ -3,73 +3,77 @@
 
 //! Individual match field types for ACL rules.
 //!
-//! Each field is `Option` — `None` means wildcard (don't care).
+//! Each field is [`FieldMatch<T>`] — `Ignore` means the field is not
+//! part of this table's schema, `Select(value)` means the field is
+//! present and constrained.
 
 use net::eth::ethtype::EthType;
 use net::ip::NextHeader;
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 
+use crate::match_expr::FieldMatch;
 use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
 
 /// Ethernet-layer match fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EthMatch {
-    /// `EtherType` to match.  `None` = any.
-    pub ether_type: Option<EthType>,
+    /// `EtherType` constraint.  `Ignore` = field not in table.
+    pub ether_type: FieldMatch<EthType>,
 }
 
 /// IPv4-layer match fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ipv4Match {
-    /// Source prefix.  `None` = any source.
-    pub src: Option<Ipv4Prefix>,
-    /// Destination prefix.  `None` = any destination.
-    pub dst: Option<Ipv4Prefix>,
-    /// IP protocol.  Auto-set by [`conform`](super::Within::conform)
-    /// when a transport match is stacked, but can also be set explicitly
-    /// to match on protocol without caring about transport fields.
-    pub protocol: Option<NextHeader>,
+    /// Source prefix.  `Ignore` = field not in table.
+    pub src: FieldMatch<Ipv4Prefix>,
+    /// Destination prefix.  `Ignore` = field not in table.
+    pub dst: FieldMatch<Ipv4Prefix>,
+    /// IP protocol.  Auto-set to `Select` by
+    /// [`conform`](crate::Within::conform) when a transport match is
+    /// stacked, but can also be set explicitly.
+    pub protocol: FieldMatch<NextHeader>,
 }
 
 /// IPv6-layer match fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ipv6Match {
-    /// Source prefix.  `None` = any source.
-    pub src: Option<Ipv6Prefix>,
-    /// Destination prefix.  `None` = any destination.
-    pub dst: Option<Ipv6Prefix>,
-    /// IP next-header / protocol.  Auto-set by [`conform`](super::Within::conform)
-    /// when a transport match is stacked.
-    pub protocol: Option<NextHeader>,
+    /// Source prefix.  `Ignore` = field not in table.
+    pub src: FieldMatch<Ipv6Prefix>,
+    /// Destination prefix.  `Ignore` = field not in table.
+    pub dst: FieldMatch<Ipv6Prefix>,
+    /// IP next-header / protocol.  Auto-set to `Select` by
+    /// [`conform`](crate::Within::conform) when a transport match is
+    /// stacked.
+    pub protocol: FieldMatch<NextHeader>,
 }
 
 /// TCP-layer match fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TcpMatch {
-    /// Source port range.  `None` = any source port.
-    pub src: Option<PortRange<TcpPort>>,
-    /// Destination port range.  `None` = any destination port.
-    pub dst: Option<PortRange<TcpPort>>,
+    /// Source port range.  `Ignore` = field not in table.
+    pub src: FieldMatch<PortRange<TcpPort>>,
+    /// Destination port range.  `Ignore` = field not in table.
+    pub dst: FieldMatch<PortRange<TcpPort>>,
 }
 
 /// UDP-layer match fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UdpMatch {
-    /// Source port range.  `None` = any source port.
-    pub src: Option<PortRange<UdpPort>>,
-    /// Destination port range.  `None` = any destination port.
-    pub dst: Option<PortRange<UdpPort>>,
+    /// Source port range.  `Ignore` = field not in table.
+    pub src: FieldMatch<PortRange<UdpPort>>,
+    /// Destination port range.  `Ignore` = field not in table.
+    pub dst: FieldMatch<PortRange<UdpPort>>,
 }
 
-/// ICMPv4-layer match fields.
+/// `ICMPv4`-layer match fields.
 ///
 /// Uses raw `u8` values rather than the rich `Icmpv4Type` enum because
 /// ACL classification operates on numeric type/code values.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Icmp4Match {
-    /// ICMP type.  `None` = any type.
-    pub icmp_type: Option<u8>,
-    /// ICMP code.  `None` = any code.
-    pub icmp_code: Option<u8>,
+    /// ICMP type.  `Ignore` = field not in table.
+    pub icmp_type: FieldMatch<u8>,
+    /// ICMP code.  `Ignore` = field not in table.
+    pub icmp_code: FieldMatch<u8>,
 }
