@@ -36,6 +36,7 @@ flow-filter = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tracectl = { workspace = true }
 
 # external
