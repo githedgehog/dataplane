@@ -194,7 +194,6 @@ pub fn resolve_fate<M: Metadata>(
 mod tests {
     use super::*;
     use acl::{AclRuleBuilder, AclTableBuilder, Fate, FieldMatch, Ipv4Prefix, PortRange, Priority};
-    use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
 
     use crate::field_map::StandardEthernetOffsets;
@@ -215,9 +214,7 @@ mod tests {
                         );
                     })
                     .tcp(|tcp| {
-                        tcp.dst = FieldMatch::Select(PortRange::exact(
-                            TcpPort::new_checked(80).unwrap(),
-                        ));
+                        tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
                     })
                     .permit(pri(100)),
             )
@@ -230,9 +227,7 @@ mod tests {
                         );
                     })
                     .tcp(|tcp| {
-                        tcp.dst = FieldMatch::Select(PortRange::exact(
-                            TcpPort::new_checked(443).unwrap(),
-                        ));
+                        tcp.dst = FieldMatch::Select(PortRange::exact(443u16));
                     })
                     .deny(pri(200)),
             )
@@ -265,9 +260,7 @@ mod tests {
                         );
                     })
                     .tcp(|tcp| {
-                        tcp.dst = FieldMatch::Select(PortRange::exact(
-                            TcpPort::new_checked(80).unwrap(),
-                        ));
+                        tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
                     })
                     .permit(pri(100)),
             )

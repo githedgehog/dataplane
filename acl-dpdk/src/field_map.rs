@@ -295,7 +295,6 @@ pub fn build_field_defs(
 mod tests {
     use super::*;
     use acl::{AclRuleBuilder, FieldMatch, Ipv4Prefix, PortRange, Priority};
-    use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
 
     fn pri(n: u32) -> Priority {
@@ -311,7 +310,7 @@ mod tests {
                     FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 

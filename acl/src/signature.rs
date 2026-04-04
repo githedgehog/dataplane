@@ -17,19 +17,24 @@ use crate::builder::AclMatchFields;
 /// These are stable identifiers used in the signature bitset.
 /// The ordering doesn't matter for correctness, only consistency.
 mod bits {
-    pub const ETH_TYPE: u32 = 0;
-    pub const IPV4_SRC: u32 = 1;
-    pub const IPV4_DST: u32 = 2;
-    pub const IPV4_PROTO: u32 = 3;
-    pub const IPV6_SRC: u32 = 4;
-    pub const IPV6_DST: u32 = 5;
-    pub const IPV6_PROTO: u32 = 6;
-    pub const TCP_SRC: u32 = 7;
-    pub const TCP_DST: u32 = 8;
-    pub const UDP_SRC: u32 = 9;
-    pub const UDP_DST: u32 = 10;
-    pub const ICMP4_TYPE: u32 = 11;
-    pub const ICMP4_CODE: u32 = 12;
+    pub const ETH_SRC_MAC: u32 = 0;
+    pub const ETH_DST_MAC: u32 = 1;
+    pub const ETH_TYPE: u32 = 2;
+    pub const VLAN_VID: u32 = 3;
+    pub const VLAN_PCP: u32 = 4;
+    pub const VLAN_INNER_TYPE: u32 = 5;
+    pub const IPV4_SRC: u32 = 6;
+    pub const IPV4_DST: u32 = 7;
+    pub const IPV4_PROTO: u32 = 8;
+    pub const IPV6_SRC: u32 = 9;
+    pub const IPV6_DST: u32 = 10;
+    pub const IPV6_PROTO: u32 = 11;
+    pub const TCP_SRC: u32 = 12;
+    pub const TCP_DST: u32 = 13;
+    pub const UDP_SRC: u32 = 14;
+    pub const UDP_DST: u32 = 15;
+    pub const ICMP4_TYPE: u32 = 16;
+    pub const ICMP4_CODE: u32 = 17;
 }
 
 /// A compact representation of which match fields are active in a rule.
@@ -56,7 +61,14 @@ impl FieldSignature {
         let mut sig = 0u32;
 
         if let Some(eth) = fields.eth() {
+            set_if_select(&mut sig, bits::ETH_SRC_MAC, &eth.src_mac);
+            set_if_select(&mut sig, bits::ETH_DST_MAC, &eth.dst_mac);
             set_if_select(&mut sig, bits::ETH_TYPE, &eth.ether_type);
+        }
+        if let Some(vlan) = fields.vlan() {
+            set_if_select(&mut sig, bits::VLAN_VID, &vlan.vid);
+            set_if_select(&mut sig, bits::VLAN_PCP, &vlan.pcp);
+            set_if_select(&mut sig, bits::VLAN_INNER_TYPE, &vlan.inner_ether_type);
         }
         if let Some(ipv4) = fields.ipv4() {
             set_if_select(&mut sig, bits::IPV4_SRC, &ipv4.src);
@@ -102,10 +114,40 @@ impl FieldSignature {
         self.0 & (1 << bit) != 0
     }
 
+    /// Whether this signature includes Ethernet source MAC.
+    #[must_use]
+    pub fn has_eth_src_mac(&self) -> bool {
+        self.has_field(bits::ETH_SRC_MAC)
+    }
+
+    /// Whether this signature includes Ethernet destination MAC.
+    #[must_use]
+    pub fn has_eth_dst_mac(&self) -> bool {
+        self.has_field(bits::ETH_DST_MAC)
+    }
+
     /// Whether this signature includes `ether_type`.
     #[must_use]
     pub fn has_eth_type(&self) -> bool {
         self.has_field(bits::ETH_TYPE)
+    }
+
+    /// Whether this signature includes VLAN VID.
+    #[must_use]
+    pub fn has_vlan_vid(&self) -> bool {
+        self.has_field(bits::VLAN_VID)
+    }
+
+    /// Whether this signature includes VLAN PCP.
+    #[must_use]
+    pub fn has_vlan_pcp(&self) -> bool {
+        self.has_field(bits::VLAN_PCP)
+    }
+
+    /// Whether this signature includes VLAN inner `ether_type`.
+    #[must_use]
+    pub fn has_vlan_inner_type(&self) -> bool {
+        self.has_field(bits::VLAN_INNER_TYPE)
     }
 
     /// Whether this signature includes IPv4 source.
@@ -237,7 +279,6 @@ mod tests {
     use crate::priority::Priority;
     use crate::range::{Ipv4Prefix, PortRange};
     use crate::AclRuleBuilder;
-    use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
 
     fn pri(n: u32) -> Priority {
@@ -261,7 +302,7 @@ mod tests {
                     FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 
@@ -289,7 +330,7 @@ mod tests {
                     FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 
@@ -302,7 +343,7 @@ mod tests {
             })
             .tcp(|tcp| {
                 tcp.dst =
-                    FieldMatch::Select(PortRange::exact(TcpPort::new_checked(443).unwrap()));
+                    FieldMatch::Select(PortRange::exact(443u16));
             })
             .deny(pri(200));
 
@@ -344,7 +385,7 @@ mod tests {
             .eth(|_| {})
             .ipv4(|_| {})
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 
@@ -384,7 +425,7 @@ mod tests {
                     FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 
@@ -397,7 +438,7 @@ mod tests {
             })
             .tcp(|tcp| {
                 tcp.dst =
-                    FieldMatch::Select(PortRange::exact(TcpPort::new_checked(443).unwrap()));
+                    FieldMatch::Select(PortRange::exact(443u16));
             })
             .deny(pri(200));
 

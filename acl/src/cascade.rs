@@ -258,7 +258,6 @@ mod tests {
     use crate::overlap::analyze_overlaps;
     use crate::range::{Ipv4Prefix, PortRange};
     use crate::{AclRuleBuilder, FieldMatch, Priority};
-    use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
 
     fn pri(n: u32) -> Priority {
@@ -348,7 +347,7 @@ mod tests {
                 })
                 .tcp(|tcp| {
                     tcp.dst =
-                        FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                        FieldMatch::Select(PortRange::exact(80u16));
                 })
                 .permit(pri(100)),
             AclRuleBuilder::new()
@@ -360,7 +359,7 @@ mod tests {
                 })
                 .tcp(|tcp| {
                     tcp.dst =
-                        FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                        FieldMatch::Select(PortRange::exact(80u16));
                 })
                 .deny(pri(200)),
         ];
@@ -435,7 +434,7 @@ mod tests {
                 })
                 .tcp(|tcp| {
                     tcp.dst =
-                        FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                        FieldMatch::Select(PortRange::exact(80u16));
                 })
                 .permit(pri(100)),
             // Lower priority, no ports → NoRangeNic accepts

@@ -294,7 +294,6 @@ fn prefixes_overlap_v6(a: Ipv6Prefix, b: Ipv6Prefix) -> bool {
 mod tests {
     use super::*;
     use crate::{AclRuleBuilder, FieldMatch, Priority};
-    use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
 
     fn pri(n: u32) -> Priority {
@@ -310,7 +309,7 @@ mod tests {
                     FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 
@@ -409,8 +408,8 @@ mod tests {
             .tcp(|tcp| {
                 tcp.dst = FieldMatch::Select(
                     PortRange::new(
-                        TcpPort::new_checked(80).unwrap(),
-                        TcpPort::new_checked(89).unwrap(),
+                        80u16,
+                        89u16,
                     )
                     .unwrap(),
                 );
@@ -423,8 +422,8 @@ mod tests {
             .tcp(|tcp| {
                 tcp.dst = FieldMatch::Select(
                     PortRange::new(
-                        TcpPort::new_checked(443).unwrap(),
-                        TcpPort::new_checked(449).unwrap(),
+                        443u16,
+                        449u16,
                     )
                     .unwrap(),
                 );
@@ -443,8 +442,8 @@ mod tests {
             .tcp(|tcp| {
                 tcp.dst = FieldMatch::Select(
                     PortRange::new(
-                        TcpPort::new_checked(80).unwrap(),
-                        TcpPort::new_checked(443).unwrap(),
+                        80u16,
+                        443u16,
                     )
                     .unwrap(),
                 );
@@ -457,8 +456,8 @@ mod tests {
             .tcp(|tcp| {
                 tcp.dst = FieldMatch::Select(
                     PortRange::new(
-                        TcpPort::new_checked(200).unwrap(),
-                        TcpPort::new_checked(500).unwrap(),
+                        200u16,
+                        500u16,
                     )
                     .unwrap(),
                 );
@@ -480,7 +479,7 @@ mod tests {
                     FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .deny(pri(100));
 

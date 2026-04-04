@@ -74,22 +74,22 @@ pub fn translate_rule<M: Metadata>(
         fields.push(lo);
     }
     if signature.has_tcp_src() {
-        fields.push(translate_port_range_tcp(
+        fields.push(translate_port_range(
             pm.tcp().map(|m| &m.src),
         ));
     }
     if signature.has_tcp_dst() {
-        fields.push(translate_port_range_tcp(
+        fields.push(translate_port_range(
             pm.tcp().map(|m| &m.dst),
         ));
     }
     if signature.has_udp_src() {
-        fields.push(translate_port_range_udp(
+        fields.push(translate_port_range(
             pm.udp().map(|m| &m.src),
         ));
     }
     if signature.has_udp_dst() {
-        fields.push(translate_port_range_udp(
+        fields.push(translate_port_range(
             pm.udp().map(|m| &m.dst),
         ));
     }
@@ -179,23 +179,13 @@ fn translate_ipv6_prefix(
     }
 }
 
-/// Translate a TCP port range field.
-fn translate_port_range_tcp(
-    field: Option<&FieldMatch<acl::PortRange<net::tcp::port::TcpPort>>>,
+/// Translate a port range field (TCP or UDP — both are `PortRange<u16>` now).
+fn translate_port_range(
+    field: Option<&FieldMatch<acl::PortRange<u16>>>,
 ) -> AclField {
     match field.and_then(FieldMatch::as_select) {
-        Some(range) => AclField::from_u16(range.min.as_u16(), range.max.as_u16()),
+        Some(range) => AclField::from_u16(range.min, range.max),
         None => AclField::from_u16(0, u16::MAX), // range wildcard: 0..65535
-    }
-}
-
-/// Translate a UDP port range field.
-fn translate_port_range_udp(
-    field: Option<&FieldMatch<acl::PortRange<net::udp::port::UdpPort>>>,
-) -> AclField {
-    match field.and_then(FieldMatch::as_select) {
-        Some(range) => AclField::from_u16(range.min.as_u16(), range.max.as_u16()),
-        None => AclField::from_u16(0, u16::MAX),
     }
 }
 
@@ -211,7 +201,6 @@ fn translate_icmp_byte(field: Option<&FieldMatch<u8>>) -> AclField {
 mod tests {
     use super::*;
     use acl::{AclRuleBuilder, FieldMatch, Ipv4Prefix, PortRange, Priority};
-    use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
 
     fn pri(n: u32) -> Priority {
@@ -227,7 +216,7 @@ mod tests {
                     FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 

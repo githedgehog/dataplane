@@ -24,7 +24,9 @@ use net::ip::NextHeader;
 
 use crate::action::ActionSequence;
 use crate::match_expr::FieldMatch;
-use crate::match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch};
+use crate::match_fields::{
+    EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch,
+};
 use crate::metadata::Metadata;
 use crate::priority::Priority;
 use crate::rule::AclRule;
@@ -36,6 +38,7 @@ use crate::rule::AclRule;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MatchLayer {
     Eth(EthMatch),
+    Vlan(VlanMatch),
     Ipv4(Ipv4Match),
     Ipv6(Ipv6Match),
     Tcp(TcpMatch),
@@ -70,6 +73,15 @@ impl AclMatchFields {
     pub fn eth(&self) -> Option<&EthMatch> {
         self.0.iter().find_map(|l| match l {
             MatchLayer::Eth(m) => Some(m),
+            _ => None,
+        })
+    }
+
+    /// The VLAN match layer, if present.
+    #[must_use]
+    pub fn vlan(&self) -> Option<&VlanMatch> {
+        self.0.iter().find_map(|l| match l {
+            MatchLayer::Vlan(m) => Some(m),
             _ => None,
         })
     }
@@ -272,6 +284,10 @@ where
         eth, EthMatch
     );
     match_method!(
+        /// Add a VLAN match layer.
+        vlan, VlanMatch
+    );
+    match_method!(
         /// Add an IPv4 match layer.
         ipv4, Ipv4Match
     );
@@ -299,15 +315,39 @@ impl Within<()> for EthMatch {
     fn conform(_parent: &mut ()) {}
 }
 
+impl Within<EthMatch> for VlanMatch {
+    fn conform(parent: &mut EthMatch) {
+        parent.ether_type = FieldMatch::Select(EthType::VLAN);
+    }
+}
+
+impl Within<VlanMatch> for VlanMatch {
+    fn conform(parent: &mut VlanMatch) {
+        parent.inner_ether_type = FieldMatch::Select(EthType::VLAN);
+    }
+}
+
 impl Within<EthMatch> for Ipv4Match {
     fn conform(parent: &mut EthMatch) {
         parent.ether_type = FieldMatch::Select(EthType::IPV4);
     }
 }
 
+impl Within<VlanMatch> for Ipv4Match {
+    fn conform(parent: &mut VlanMatch) {
+        parent.inner_ether_type = FieldMatch::Select(EthType::IPV4);
+    }
+}
+
 impl Within<EthMatch> for Ipv6Match {
     fn conform(parent: &mut EthMatch) {
         parent.ether_type = FieldMatch::Select(EthType::IPV6);
+    }
+}
+
+impl Within<VlanMatch> for Ipv6Match {
+    fn conform(parent: &mut VlanMatch) {
+        parent.inner_ether_type = FieldMatch::Select(EthType::IPV6);
     }
 }
 
@@ -353,6 +393,12 @@ impl Install<EthMatch> for AclMatchFields {
     }
 }
 
+impl Install<VlanMatch> for AclMatchFields {
+    fn install(&mut self, vlan: VlanMatch) {
+        self.0.push(MatchLayer::Vlan(vlan));
+    }
+}
+
 impl Install<Ipv4Match> for AclMatchFields {
     fn install(&mut self, ipv4: Ipv4Match) {
         self.0.push(MatchLayer::Ipv4(ipv4));
@@ -390,6 +436,12 @@ impl Blank for () {
 }
 
 impl Blank for EthMatch {
+    fn blank() -> Self {
+        Self::default()
+    }
+}
+
+impl Blank for VlanMatch {
     fn blank() -> Self {
         Self::default()
     }
@@ -434,8 +486,6 @@ mod tests {
     use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
     use net::eth::ethtype::EthType;
     use net::ip::NextHeader;
-    use net::tcp::port::TcpPort;
-    use net::udp::port::UdpPort;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn pri(n: u32) -> Priority {
@@ -458,7 +508,7 @@ mod tests {
                 ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+                tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
             })
             .permit(pri(100));
 
@@ -482,7 +532,7 @@ mod tests {
                 ip.dst = FieldMatch::Select(Ipv6Prefix::host(Ipv6Addr::LOCALHOST));
             })
             .udp(|udp| {
-                udp.dst = FieldMatch::Select(PortRange::exact(UdpPort::new_checked(53).unwrap()));
+                udp.dst = FieldMatch::Select(PortRange::exact(53u16));
             })
             .deny(pri(200));
 

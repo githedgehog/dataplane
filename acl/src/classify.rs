@@ -21,12 +21,12 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use net::headers::{Headers, Net, Transport};
-use net::tcp::port::TcpPort;
-use net::udp::port::UdpPort;
 
 use crate::action::{ActionSequence, Fate};
 use crate::builder::AclMatchFields;
-use crate::match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch};
+use crate::match_fields::{
+    EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch,
+};
 use crate::metadata::Metadata;
 use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
 use crate::rule::AclRule;
@@ -118,6 +118,7 @@ impl<M: Metadata + Clone> AclTable<M> {
 /// Check if a rule's match fields are satisfied by the given headers.
 fn rule_matches(fields: &AclMatchFields, headers: &Headers) -> bool {
     fields.eth().is_none_or(|m| eth_matches(m, headers))
+        && fields.vlan().is_none_or(|m| vlan_matches(m, headers))
         && fields.ipv4().is_none_or(|m| ipv4_matches(m, headers))
         && fields.ipv6().is_none_or(|m| ipv6_matches(m, headers))
         && fields.tcp().is_none_or(|m| tcp_matches(m, headers))
@@ -127,8 +128,28 @@ fn rule_matches(fields: &AclMatchFields, headers: &Headers) -> bool {
 
 /// Ethernet layer matching.
 fn eth_matches(m: &EthMatch, headers: &Headers) -> bool {
-    m.ether_type
-        .matches(|et| headers.eth().is_some_and(|eth| eth.ether_type() == *et))
+    let eth = headers.eth();
+    m.src_mac
+        .matches(|mac| eth.is_some_and(|e| e.source().inner() == *mac))
+        && m.dst_mac
+            .matches(|mac| eth.is_some_and(|e| e.destination().inner() == *mac))
+        && m.ether_type
+            .matches(|et| eth.is_some_and(|e| e.ether_type() == *et))
+}
+
+/// VLAN layer matching.
+fn vlan_matches(m: &VlanMatch, headers: &Headers) -> bool {
+    let vlans = headers.vlan();
+    if vlans.is_empty() {
+        // Rule requires VLAN but packet has none.
+        return false;
+    }
+    // Match against the first (outermost) VLAN tag.
+    let vlan = &vlans[0];
+    m.vid.matches(|v| vlan.vid() == *v)
+        && m.pcp.matches(|p| vlan.pcp() == *p)
+        && m.inner_ether_type
+            .matches(|et| vlan.inner_ethtype() == *et)
 }
 
 /// IPv4 layer matching.
@@ -159,8 +180,10 @@ fn tcp_matches(m: &TcpMatch, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src.matches(|r| tcp_port_in_range(*r, tcp.source()))
-        && m.dst.matches(|r| tcp_port_in_range(*r, tcp.destination()))
+    m.src
+        .matches(|r| port_in_range(*r, tcp.source().as_u16()))
+        && m.dst
+            .matches(|r| port_in_range(*r, tcp.destination().as_u16()))
 }
 
 /// UDP layer matching.
@@ -169,8 +192,10 @@ fn udp_matches(m: &UdpMatch, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src.matches(|r| udp_port_in_range(*r, udp.source()))
-        && m.dst.matches(|r| udp_port_in_range(*r, udp.destination()))
+    m.src
+        .matches(|r| port_in_range(*r, udp.source().as_u16()))
+        && m.dst
+            .matches(|r| port_in_range(*r, udp.destination().as_u16()))
 }
 
 /// `ICMPv4` layer matching.
@@ -204,13 +229,8 @@ fn ipv6_in_prefix(prefix: Ipv6Prefix, addr: Ipv6Addr) -> bool {
     (u128::from(addr) & mask) == u128::from(prefix.addr())
 }
 
-/// Check if a TCP port falls within a range.
-fn tcp_port_in_range(range: PortRange<TcpPort>, port: TcpPort) -> bool {
-    port >= range.min && port <= range.max
-}
-
-/// Check if a UDP port falls within a range.
-fn udp_port_in_range(range: PortRange<UdpPort>, port: UdpPort) -> bool {
+/// Check if a u16 port value falls within a range.
+fn port_in_range(range: PortRange<u16>, port: u16) -> bool {
     port >= range.min && port <= range.max
 }
 
@@ -222,6 +242,7 @@ mod tests {
     use crate::priority::Priority;
     use crate::{AclRuleBuilder, AclTableBuilder};
     use net::headers::builder::HeaderStack;
+    use net::tcp::port::TcpPort;
     use net::vlan::{Pcp, Vid};
 
     /// Shorthand for creating a Priority in tests.
@@ -275,8 +296,8 @@ mod tests {
             })
             .tcp(|tcp| {
                 tcp.dst = FieldMatch::Select(PortRange {
-                    min: TcpPort::new_checked(1).unwrap(),
-                    max: TcpPort::new_checked(1024).unwrap(),
+                    min: 1u16,
+                    max: 1024u16,
                 });
             })
             .permit(pri(100));
@@ -402,13 +423,7 @@ mod tests {
             .eth(|_| {})
             .ipv4(|_| {})
             .tcp(|tcp| {
-                tcp.dst = FieldMatch::Select(
-                    PortRange::new(
-                        TcpPort::new_checked(80).unwrap(),
-                        TcpPort::new_checked(443).unwrap(),
-                    )
-                    .unwrap(),
-                );
+                tcp.dst = FieldMatch::Select(PortRange::new(80u16, 443u16).unwrap());
             })
             .permit(pri(100));
 

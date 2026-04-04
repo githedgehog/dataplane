@@ -58,6 +58,8 @@ pub enum Fate {
     /// Allow the packet to continue through the pipeline.
     ///
     /// This is the "permit" / "accept" / "pass" action.
+    // AGENT: let's try to use notation more in line with rte_flow or tc-flower for constructs like this.
+    // isn't this called pass or continue in dpdk rte_flow?
     Forward,
     /// Evaluate the packet against another table.
     ///
