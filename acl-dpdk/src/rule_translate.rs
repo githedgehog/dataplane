@@ -120,72 +120,92 @@ fn next_header_to_u8(nh: NextHeader) -> u8 {
 }
 
 /// Translate IPv4 protocol field.
+///
+/// Protocol is FieldType::Mask (1 byte).  mask_range = prefix length
+/// in bits.  8 = exact match on all 8 bits.
 fn translate_proto(ipv4: Option<&Ipv4Match>) -> AclField {
     match ipv4.and_then(|m| m.protocol.as_select()) {
-        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), u8::MAX),
-        None => AclField::wildcard(),
+        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), 8), // 8-bit exact match
+        None => AclField::wildcard(), // mask_range=0 → wildcard
     }
 }
 
 /// Translate IPv6 next-header / protocol field.
 fn translate_proto_v6(ipv6: Option<&Ipv6Match>) -> AclField {
     match ipv6.and_then(|m| m.protocol.as_select()) {
-        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), u8::MAX),
+        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), 8),
         None => AclField::wildcard(),
     }
 }
 
 /// Translate ether_type field.
+///
+/// FieldType::Mask, 2 bytes.  mask_range = prefix length.
+/// 16 = exact match on all 16 bits.
+/// Value in host byte order.
 fn translate_eth_type(eth: Option<&EthMatch>) -> AclField {
     match eth.and_then(|m| m.ether_type.as_select()) {
         Some(et) => {
             let val: u16 = (*et).into();
-            AclField::from_u16(val, u16::MAX)
+            AclField::from_u16(val, 16) // 16-bit exact match
         }
         None => AclField::wildcard(),
     }
 }
 
 /// Translate an IPv4 prefix (src or dst) to a mask-type `AclField`.
+///
+/// FieldType::Mask, 4 bytes.  mask_range = prefix length (0-32).
+/// Value in host byte order: `u32::from(Ipv4Addr)`.
 fn translate_ipv4_prefix(
     field: Option<&FieldMatch<acl::Ipv4Prefix>>,
 ) -> AclField {
     match field.and_then(FieldMatch::as_select) {
         Some(pfx) => {
-            AclField::from_u32(u32::from(pfx.addr()), pfx.mask())
+            AclField::from_u32(
+                u32::from(pfx.addr()),
+                u32::from(pfx.prefix_len()),
+            )
         }
         None => AclField::wildcard(),
     }
 }
 
 /// Translate an IPv6 prefix to two 8-byte mask-type `AclField`s (hi, lo).
+///
+/// FieldType::Mask, 8 bytes each.  For a /48 prefix:
+/// - hi field: prefix_len = min(48, 64) = 48
+/// - lo field: prefix_len = max(0, 48 - 64) = 0 (wildcard)
 fn translate_ipv6_prefix(
     field: Option<&FieldMatch<acl::Ipv6Prefix>>,
 ) -> (AclField, AclField) {
     match field.and_then(FieldMatch::as_select) {
         Some(pfx) => {
             let addr = u128::from(pfx.addr());
-            let mask = pfx.mask();
+            let plen = pfx.prefix_len();
             let hi_val = (addr >> 64) as u64;
-            let hi_mask = (mask >> 64) as u64;
+            let hi_plen = u64::from(plen.min(64));
             let lo_val = addr as u64;
-            let lo_mask = mask as u64;
+            let lo_plen = u64::from(plen.saturating_sub(64));
             (
-                AclField::from_u64(hi_val, hi_mask),
-                AclField::from_u64(lo_val, lo_mask),
+                AclField::from_u64(hi_val, hi_plen),
+                AclField::from_u64(lo_val, lo_plen),
             )
         }
         None => (AclField::wildcard(), AclField::wildcard()),
     }
 }
 
-/// Translate a port range field (TCP or UDP — both are `PortRange<u16>` now).
+/// Translate a port range field (TCP or UDP).
+///
+/// FieldType::Range, 2 bytes.  value = low bound, mask_range = high bound.
+/// Both in host byte order.
 fn translate_port_range(
     field: Option<&FieldMatch<acl::PortRange<u16>>>,
 ) -> AclField {
     match field.and_then(FieldMatch::as_select) {
         Some(range) => AclField::from_u16(range.min, range.max),
-        None => AclField::from_u16(0, u16::MAX), // range wildcard: 0..65535
+        None => AclField::from_u16(0, u16::MAX), // full range wildcard
     }
 }
 

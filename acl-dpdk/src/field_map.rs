@@ -259,10 +259,14 @@ pub fn build_field_defs(
 ) -> Vec<FieldDef> {
     let mut defs = Vec::new();
     let mut field_index: u8 = 0;
-    let mut input_index: u8 = 0;
+    // input_index 0 is reserved for the setup field (field 0, 1 byte).
+    // Subsequent fields get sequential input_index values starting from 1.
+    // Fields that share a 4-byte aligned block can share an input_index,
+    // but for simplicity we give each field its own index.
+    let mut next_input_index: u8 = 0;
 
-    // Helper to add a field def and increment counters.
     let mut add = |meta: FieldMeta, offset: u32| {
+        let input_index = next_input_index;
         defs.push(FieldDef {
             field_type: meta.field_type,
             size: meta.size,
@@ -271,9 +275,7 @@ pub fn build_field_defs(
             offset,
         });
         field_index += 1;
-        // Simplified input_index: increment per field.
-        // A production implementation would compute proper 4-byte grouping.
-        input_index += 1;
+        next_input_index += 1;
     };
 
     // DPDK requires field 0 to be 1 byte.  Protocol fields are 1 byte.

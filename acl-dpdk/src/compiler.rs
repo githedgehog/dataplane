@@ -143,10 +143,14 @@ pub fn compile<M: Metadata>(
 
                     // Convert our Priority (NonZero<u32>) to DPDK's i32 priority.
                     // DPDK: higher numeric value = higher priority.
+                    // DPDK valid range: RTE_ACL_MIN_PRIORITY (1) to
+                    // RTE_ACL_MAX_PRIORITY (536870911).
                     // Our Priority: lower value = higher precedence.
-                    // We invert so that our priority 1 becomes a high DPDK priority.
-                    let dpdk_priority = i32::MAX - i32::try_from(rule.priority().get())
-                        .unwrap_or(i32::MAX);
+                    // We invert within DPDK's valid range.
+                    let max_dpdk_pri = dpdk::acl::rule::priority::MAX;
+                    let our_pri = i32::try_from(rule.priority().get())
+                        .unwrap_or(max_dpdk_pri);
+                    let dpdk_priority = (max_dpdk_pri - our_pri).max(1);
 
                     let data = RuleData {
                         category_mask: 1, // single category for now
