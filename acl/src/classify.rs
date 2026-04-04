@@ -73,7 +73,7 @@ impl<M: Metadata> LinearClassifier<M> {
     #[must_use]
     pub fn classify(&self, headers: &Headers) -> ClassifyOutcome<'_> {
         for rule in &self.rules {
-            if rule_matches(rule.packet_match(), headers) {
+            if rule_matches_headers(rule.packet_match(), headers) {
                 return ClassifyOutcome::Matched(rule.actions());
             }
         }
@@ -116,7 +116,11 @@ impl<M: Metadata + Clone> AclTable<M> {
 // A rule matches if ALL of its match layers match.
 
 /// Check if a rule's match fields are satisfied by the given headers.
-fn rule_matches(fields: &AclMatchFields, headers: &Headers) -> bool {
+/// Check if a rule's match fields are satisfied by the given headers.
+///
+/// Exposed as `pub(crate)` for use by the [`Classifier`](crate::Classifier)
+/// wrapper. Not part of the public API.
+pub(crate) fn rule_matches_headers(fields: &AclMatchFields, headers: &Headers) -> bool {
     fields.eth().is_none_or(|m| eth_matches(m, headers))
         && fields.vlan().is_none_or(|m| vlan_matches(m, headers))
         && fields.ipv4().is_none_or(|m| ipv4_matches(m, headers))
