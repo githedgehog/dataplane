@@ -50,6 +50,8 @@ repository = "https://github.com/githedgehog/dataplane/"
 [workspace.dependencies]
 
 # Internal
+acl = { path = "./acl", package = "dataplane-acl", features = [] }
+acl-dpdk = { path = "./acl-dpdk", package = "dataplane-acl-dpdk", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }

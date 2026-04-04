@@ -37,7 +37,7 @@ mod bits {
 /// Two rules with the same `FieldSignature` can share a DPDK ACL context
 /// because they use the same set of `FieldDef` entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FieldSignature(u32);
+pub struct FieldSignature(u32); // AGENT: is this better suited to a u64 or u128?
 
 impl FieldSignature {
     /// The empty signature (no fields selected).

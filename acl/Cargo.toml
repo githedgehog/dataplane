@@ -6,8 +6,8 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-net = { path = "../net", package = "dataplane-net" }
+net = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-net = { path = "../net", package = "dataplane-net", features = ["builder"] }
+net = { workspace = true, features = ["builder"] }

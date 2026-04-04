@@ -6,8 +6,8 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-acl = { path = "../acl", package = "dataplane-acl" }
-dpdk = { path = "../dpdk", package = "dataplane-dpdk" }
+acl = { workspace = true }
+dpdk = { workspace = true }
 etherparse = { workspace = true }
-net = { path = "../net", package = "dataplane-net" }
+net = { workspace = true }
 thiserror = { workspace = true }
