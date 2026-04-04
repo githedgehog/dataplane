@@ -1,0 +1,61 @@
+%% Type mapping: how our existing abstractions map to update phases
+%%
+%% Left side: the update algorithm steps
+%% Right side: the Rust types that implement each step
+
+flowchart LR
+    subgraph Algorithm["Update Algorithm"]
+        direction TB
+        A1[Receive new rules] --> A2[Diff old vs new]
+        A2 --> A3[Build delta classifier]
+        A3 --> A4[Compose two-tier]
+        A4 --> A5[Atomic swap]
+        A5 --> A6[Background merge]
+        A6 --> A7[Swap to merged]
+    end
+
+    subgraph Types["Rust Types"]
+        direction TB
+        T1["AclTableBuilder::push_rule()
+            AclTableBuilder::remove_by_priority()
+            AclTableBuilder::build()"]
+        T2["TODO: TableDiff
+            (added, removed, modified rules)"]
+        T3["AclTable::compile() → Classifier
+            (LinearClassifier for small k)
+            (DPDK ACL for larger k)"]
+        T4["ClassifierInner::Cascade(vec![
+                delta_classifier,
+                base_classifier,
+            ])"]
+        T5["ArcSwap&lt;Classifier&gt;::store()
+            (or rte_rcu_qsbr for DPDK threads)"]
+        T6["tokio::spawn(async {
+                new_table.compile()
+            })"]
+        T7["ArcSwap&lt;Classifier&gt;::store()"]
+    end
+
+    A1 -.-> T1
+    A2 -.-> T2
+    A3 -.-> T3
+    A4 -.-> T4
+    A5 -.-> T5
+    A6 -.-> T6
+    A7 -.-> T7
+
+    subgraph Existing["✅ Already Implemented"]
+        T1
+        T3
+        T4
+    end
+
+    subgraph Needed["❌ Not Yet Implemented"]
+        T2
+        T5
+        T6
+        T7
+    end
+
+    style Existing fill:#dfd,stroke:#393
+    style Needed fill:#fdd,stroke:#933

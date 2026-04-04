@@ -1,0 +1,38 @@
+%% Update planning: compiler decision flowchart
+%% Shows how the compiler chooses between delta and full rebuild,
+%% and the steps within each strategy.
+
+flowchart TD
+    A[New AclTable arrives] --> B[Diff old vs new table]
+    B --> C{Changed rules k}
+
+    C -->|k = 0| D[No-op: tables are identical]
+
+    C -->|k small| E[Delta Strategy]
+    C -->|k large or k/n > threshold| F[Full Rebuild Strategy]
+
+    %% Delta strategy
+    E --> E1[Compile delta from k changed rules]
+    E1 --> E2{Choose delta backend}
+    E2 -->|k ≤ 10| E3[LinearClassifier delta]
+    E2 -->|k > 10| E4[DPDK ACL delta]
+    E3 --> E5[Assemble Cascade: delta, old_base]
+    E4 --> E5
+    E5 --> E6[Atomic swap root pointer]
+    E6 --> E7[Packets now two-tier]
+    E7 --> E8[Background: compile_full new_table]
+    E8 --> E9[Atomic swap to merged single-tier]
+    E9 --> E10[Free old two-tier after drain]
+    E10 --> Z[Done: steady state]
+
+    %% Full rebuild strategy
+    F --> F1[compile_full new_table]
+    F1 --> F2[Atomic swap root pointer]
+    F2 --> F3[Free old classifier after drain]
+    F3 --> Z
+
+    %% Styling
+    style D fill:#9f9,stroke:#333
+    style Z fill:#9f9,stroke:#333
+    style E fill:#ff9,stroke:#333
+    style F fill:#f99,stroke:#333
