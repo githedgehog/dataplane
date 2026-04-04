@@ -67,6 +67,7 @@ mod classify;
 pub mod match_expr;
 mod match_fields;
 pub mod metadata;
+mod cascade;
 mod overlap;
 mod priority;
 mod range;
@@ -75,6 +76,9 @@ mod signature;
 mod table;
 
 pub use action::Action;
+pub use cascade::{
+    compile_cascade, Assignment, BackendCapabilities, CompilationPlan, TrapRule,
+};
 pub use builder::{AclMatchFields, AclRuleBuilder, Blank, Install, Within};
 pub use category::{CategorizedRule, CategorizedTable, CategoryError, CategorySet, Compiler};
 pub use classify::LinearClassifier;
