@@ -32,8 +32,8 @@ rapidhash = { workspace = true }
 rkyv = { workspace = true, features = ["alloc", "bytecheck"]}
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
-
 
 [dev-dependencies]
 ahash = { workspace = true, features = ["no-rng"] }

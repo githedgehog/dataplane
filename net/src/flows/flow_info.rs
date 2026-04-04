@@ -11,6 +11,7 @@ use std::fmt::{Debug, Display};
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 use super::{AtomicInstant, FlowInfoItem};
 use crate::FlowKey;
@@ -154,6 +155,7 @@ pub struct FlowInfo {
     status: AtomicFlowStatus,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
+    pub token: CancellationToken,
 }
 
 // TODO: We need a way to stuff an Arc<FlowInfo> into the packet
@@ -169,6 +171,7 @@ impl FlowInfo {
             status: AtomicFlowStatus::from(FlowStatus::Active),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
+            token: CancellationToken::new(),
         }
     }
 
@@ -269,6 +272,7 @@ impl FlowInfo {
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(two_weak),
+                token: CancellationToken::new(),
             });
             two_p.write(Self {
                 expires_at: AtomicInstant::new(expires_at),
@@ -277,6 +281,7 @@ impl FlowInfo {
                 status: AtomicFlowStatus::from(FlowStatus::Active),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(one_weak),
+                token: CancellationToken::new(),
             });
             // turn back into Arc's
             (one.assume_init(), two.assume_init())
