@@ -4553,3 +4553,115 @@ struct LoweringConfig {
    it can achieve the *semantic goal* (forward, drop, mark), not
    whether it has a specific hardware instruction.  This keeps the
    capability model clean.
+
+### Rule updates and config generation tagging
+
+Updating hardware-offloaded rules is fundamentally harder than
+rebuilding a software table.  DPDK ACL sidesteps the problem
+(full rebuild).  `rte_flow` rules are created and destroyed
+individually, creating windows of inconsistency during updates.
+
+**The naive approach — trap during migration:**
+
+1. Install broad trap rules that punt affected traffic to software.
+2. Destroy old hardware rules.
+3. Install new hardware rules.
+4. Remove trap rules.
+
+This is correct but disruptive: all affected traffic goes to software
+during the migration window.  For large rule sets the window can be
+significant.
+
+**The preferred approach — config generation tagging:**
+
+Use a metadata exact-match field as a "config generation" tag.
+Both old and new rule sets coexist in hardware simultaneously,
+distinguished by the generation tag.  The switchover is atomic.
+
+*Setup:*
+
+```
+Table 0 (generation tagging — early in the pipeline):
+  match any → SetMeta(generation=N), Jump(Table 1)
+
+Table 1+ (actual ACL rules):
+  All rules include metadata.generation == N as an
+  additional exact-match field.
+```
+
+*Update procedure:*
+
+```
+1. Install new rules in Table 1+ with generation=N+1.
+   (No conflict: old gen N rules and new gen N+1 rules have
+    disjoint metadata match — they never overlap.)
+
+2. Update Table 0: change SetMeta from N to N+1.
+   (This is a single rule update — atomic from the packet's
+    perspective.  Packets now get tagged with N+1.)
+
+3. Wait for pipeline drain.
+   (In-flight packets tagged with gen N flush through.
+    Typically microseconds for a NIC pipeline.)
+
+4. Delete old generation N rules from Table 1+.
+```
+
+*Why this works:*
+
+- Generation N and N+1 rules never overlap — the metadata field
+  is an exact match that differs between the two sets.
+- No trap rules needed during migration.
+- No traffic disruption — both rule sets are fully functional.
+- The switchover is a single metadata value change.
+- The overlap analyzer sees the two generations as disjoint
+  (the metadata dimension doesn't overlap).
+
+*Concerns and open questions:*
+
+1. **Table space doubles during transition.**  Both generations
+   coexist temporarily.  For large rule sets this may exceed
+   hardware capacity.  Need to know the NIC's rule limit.
+
+2. **Metadata field consumption.**  The generation tag uses one
+   metadata field (rte_flow META or TAG register).  NICs have
+   limited metadata slots.  If the generation consumes META,
+   it's unavailable for other purposes (Step::Mark, etc.).
+
+3. **Pipeline drain timing.**  Need a safe bound on how long
+   to wait before deleting old rules.  In practice this is
+   very fast for NIC pipelines, but the compiler should expose
+   a configurable drain timeout.
+
+4. **Multi-table jump support required.**  The generation tagging
+   uses Table 0 → Jump → Table 1.  Not all NICs support jump
+   actions.  Fallback: trap-during-migration for NICs without
+   jump support.
+
+5. **Generation overflow.**  u32 gives ~4 billion updates.
+   Practically infinite, but the code should handle wrap-around
+   gracefully.
+
+**This algorithm still needs refinement.**  The full-replacement
+approach (install all N+1 rules, switch, delete all N rules)
+doubles table space unnecessarily.  A smarter compiler could diff
+the old and new rule sets and narrow the update to only the rules
+that actually changed:
+
+- Rules identical in both generations → keep as-is, no generation
+  tag needed (or tag them with both generations).
+- Rules added in N+1 → install with gen N+1 only.
+- Rules removed in N+1 → delete after switchover.
+- Rules modified → install new version with gen N+1, delete old
+  after switchover.
+
+This narrows the double-capacity window to only the changed rules.
+For small incremental updates (add one rule, modify one rule),
+the overhead is minimal.  The diff algorithm and its interaction
+with the overlap analyzer need further design work.
+
+Another optimization: rules that don't overlap with any changed
+rule are unaffected by the update and don't need generation
+tagging at all.  The overlap analyzer can identify these "stable"
+rules and exclude them from the migration.  This further reduces
+the number of rules that need temporary duplication.
