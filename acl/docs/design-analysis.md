@@ -2435,6 +2435,75 @@ Relevant for a white paper's related-work section.
                the runtime parser evaluates.}
 }
 
+@inproceedings{reitblatt2012,
+  author    = {Reitblatt, Mark and Foster, Nate and Rexford, Jennifer and
+               Schlesinger, Cole and Walker, David},
+  title     = {Abstractions for Network Update},
+  booktitle = {Proceedings of ACM SIGCOMM},
+  year      = {2012},
+  url       = {https://www.cs.cornell.edu/~jnfoster/papers/frenetic-consistent-updates.pdf},
+  keywords  = {rule-update},
+  note      = {Foundational paper defining per-packet and per-flow consistency
+               for network updates. Introduces the two-phase version-tagged
+               update mechanism: install new rules gated behind a version tag,
+               then atomically switch ingress tagging from old to new version.
+               Formally proves per-packet consistency. Our config generation
+               tagging approach is an instance of this technique.}
+}
+
+@inproceedings{mcclurg2015,
+  author    = {McClurg, Jedidiah and Hojjat, Hossein and Cerny, Pavol and Foster, Nate},
+  title     = {Efficient Synthesis of Network Updates},
+  booktitle = {Proceedings of ACM SIGPLAN PLDI},
+  year      = {2015},
+  url       = {https://www.cs.cornell.edu/~jnfoster/papers/frenetic-update-synthesis-pldi15.pdf},
+  keywords  = {rule-update},
+  note      = {Decomposes updates into k rounds, each transferring a subset of
+               traffic to the new configuration. More rounds = less peak rule
+               space, slower convergence. Uses counterexample-guided synthesis
+               and incremental model checking. Directly applicable to our
+               diff-based update narrowing.}
+}
+
+@inproceedings{namjoshi2024,
+  author    = {Namjoshi, Kedar and Gheissi, Ehsan and Sabnani, Krishan},
+  title     = {Algorithms for In-Place, Consistent Network Update},
+  booktitle = {Proceedings of ACM SIGCOMM},
+  year      = {2024},
+  url       = {https://dl.acm.org/doi/10.1145/3651890.3672266},
+  keywords  = {rule-update},
+  note      = {Proves an impossibility result: any in-place (1x space) on-the-fly
+               update must either drop packets or violate per-packet consistency.
+               This formally justifies the 2x space cost of the two-phase
+               approach as the price of zero-drop consistency.}
+}
+
+@inproceedings{canini2013,
+  author    = {Canini, Marco and Kuznetsov, Petr and Levin, Dan and Schmid, Stefan},
+  title     = {Software Transactional Networking},
+  booktitle = {Proceedings of ACM HotSDN},
+  year      = {2013},
+  url       = {https://conferences.sigcomm.org/sigcomm/2013/papers/hotsdn/p1.pdf},
+  keywords  = {rule-update},
+  note      = {Proposes transactional semantics for concurrent network updates
+               from multiple policy modules. Relevant if our ACL tables are
+               updated by independent control plane components.}
+}
+
+@article{lazaris2018,
+  author    = {Lazaris, Aris and others},
+  title     = {Methodology, Measurement and Analysis of Flow Table Update
+               Characteristics in Hardware {OpenFlow} Switches},
+  journal   = {Computer Networks},
+  year      = {2018},
+  url       = {https://www.sciencedirect.com/science/article/abs/pii/S1389128618300811},
+  keywords  = {rule-update},
+  note      = {Empirical study showing 2 of 6 hardware OpenFlow switches cannot
+               perform atomic rule modification. Motivates software-managed
+               consistency (version tagging) rather than relying on hardware
+               atomicity.}
+}
+
 @online{pg-partition-pruning,
   title     = {Table Partitioning: Partition Pruning},
   author    = {{PostgreSQL Global Development Group}},
@@ -4561,6 +4630,25 @@ rebuilding a software table.  DPDK ACL sidesteps the problem
 (full rebuild).  `rte_flow` rules are created and destroyed
 individually, creating windows of inconsistency during updates.
 
+This is a well-studied problem in SDN.  The foundational result is
+`[reitblatt2012]`, which defines **per-packet consistency** (every
+packet sees either entirely the old config or entirely the new
+config) and proves that a two-phase version-tagged update achieves
+it.  Our config generation tagging approach below is an instance
+of this technique.
+
+An **impossibility result** from `[namjoshi2024]` shows that any
+in-place (1x space) on-the-fly update must either drop packets or
+violate per-packet consistency.  This formally justifies the 2x
+space cost of the two-phase approach as the price of zero-drop
+consistency.
+
+`[mcclurg2015]` shows how to decompose updates into multiple rounds,
+each transferring a subset of traffic, reducing peak rule space below
+2x.  `[lazaris2018]` demonstrates that hardware switch atomicity
+cannot be relied upon (2 of 6 tested switches failed atomic
+modification), motivating software-managed consistency.
+
 **The naive approach — trap during migration:**
 
 1. Install broad trap rules that punt affected traffic to software.
@@ -4572,11 +4660,13 @@ This is correct but disruptive: all affected traffic goes to software
 during the migration window.  For large rule sets the window can be
 significant.
 
-**The preferred approach — config generation tagging:**
+**The preferred approach — config generation tagging `[reitblatt2012]`:**
 
 Use a metadata exact-match field as a "config generation" tag.
 Both old and new rule sets coexist in hardware simultaneously,
 distinguished by the generation tag.  The switchover is atomic.
+This is an instance of the Reitblatt two-phase update mechanism
+adapted to `rte_flow` metadata fields (the original used VLAN tags).
 
 *Setup:*
 
@@ -4644,9 +4734,10 @@ Table 1+ (actual ACL rules):
 
 **This algorithm still needs refinement.**  The full-replacement
 approach (install all N+1 rules, switch, delete all N rules)
-doubles table space unnecessarily.  A smarter compiler could diff
-the old and new rule sets and narrow the update to only the rules
-that actually changed:
+doubles table space unnecessarily.  `[mcclurg2015]` shows that
+updates can be decomposed into k rounds, each transferring a
+subset of traffic, with peak rule space strictly less than 2x.
+A simpler version of this for our use case:
 
 - Rules identical in both generations → keep as-is, no generation
   tag needed (or tag them with both generations).
@@ -4665,3 +4756,21 @@ rule are unaffected by the update and don't need generation
 tagging at all.  The overlap analyzer can identify these "stable"
 rules and exclude them from the migration.  This further reduces
 the number of rules that need temporary duplication.
+
+Note the impossibility result from `[namjoshi2024]`: if we want
+to avoid the temporary 2x space entirely and do in-place updates,
+we must accept either packet drops or consistency violations.
+The generation-tagged approach is the correct tradeoff for a
+production dataplane where packet drops and policy violations
+are unacceptable.
+
+For NICs that support the DPDK async template API (ConnectX-7+,
+BlueField-3+), rule insertion can achieve millions of rules per
+second, making the "build new generation" phase very fast.
+Combined with the diff optimization, the practical overhead of
+generation-tagged updates should be small even for large rule
+sets.
+
+See also `[canini2013]` for transactional semantics when multiple
+control plane components update rules concurrently — relevant if
+our ACL tables are updated by independent k8s controllers.
