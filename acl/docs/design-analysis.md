@@ -4428,3 +4428,50 @@ later (promoting `Ignore` to wildcard when the cost is low).
 specific fields to `Select(value)`.  `conform()` sets structural fields
 to `Select(exact_value)` (e.g., protocol = TCP).  A field not mentioned
 in the closure stays `Ignore`.
+
+### Testing cascaded backends with a mock NIC
+
+Hardware offload testing is inherently difficult — real NICs have specific
+capabilities that vary by vendor, firmware version, and configuration.
+To test the cascade compiler without hardware, we need a **configurable
+mock backend** that behaves like a degraded NIC:
+
+```rust
+struct MockNicCapabilities {
+    /// Match field types this "NIC" can express.
+    supported_match_fields: HashSet<FieldBit>,
+    /// Actions this "NIC" supports.
+    supported_actions: HashSet<Action>,
+    /// Whether this "NIC" tolerates overlapping rules.
+    overlap_tolerant: bool,
+    /// Maximum number of rules this "NIC" can hold.
+    max_rules: usize,
+}
+```
+
+The mock backend implements the same `Compiler` trait as real backends.
+When the cascade compiler tries to offload a rule, the mock checks its
+capability set and either accepts or rejects. Rejected rules fall through
+to the software `LinearClassifier`. Trap rules get injected as needed.
+
+This enables testing any capability combination:
+- A "NIC" that only supports exact-match ether_type + IPv4 src/dst
+  (no ranges, no ports) → most rules fall through, many trap rules
+- A "NIC" that supports everything except ICMP → only ICMP rules
+  fall through
+- A "NIC" with max_rules = 10 → capacity-driven fallback
+- A "NIC" that is overlap-intolerant → forces the overlap analyzer
+  to partition rules before offload
+
+The mock is a `LinearClassifier` internally (same reference semantics)
+but with an admission filter that rejects rules beyond its declared
+capabilities. The cascade test then verifies:
+
+1. The combined result (hardware mock + software fallback) matches the
+   pure `LinearClassifier` on the full rule set.
+2. Trap rules are correctly placed for priority inversion cases.
+3. Rules beyond capacity fall through gracefully.
+
+This is not a v1 deliverable but should be kept in mind as the
+`Compiler` trait evolves — the trait must be flexible enough to support
+both real backends and this mock.
