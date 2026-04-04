@@ -184,20 +184,27 @@ impl FlowTable {
             let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!()); // flows have key when inserted
             let mut deadline = flow_info.expires_at();
             loop {
-                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-                let status = flow_info.status();
-                if status != FlowStatus::Active {
-                    debug!("Flow {flow_key} is in status {status}");
-                    break;
+                tokio::select! {
+                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                        let status = flow_info.status();
+                        if status != FlowStatus::Active {
+                            debug!("Flow {flow_key} is in status {status}");
+                            break;
+                        }
+                        let new_deadline = flow_info.expires_at();
+                        if new_deadline > deadline {
+                            deadline = new_deadline;
+                            continue;
+                        }
+                        debug!("Timer for flow {flow_key} expired");
+                        flow_info.update_status(FlowStatus::Expired);
+                        break;
+                    },
+                    () = flow_info.token.cancelled() =>  {
+                        debug!("Timer for {flow_key} was cancelled");
+                        break;
+                    },
                 }
-                let new_deadline = flow_info.expires_at();
-                if new_deadline > deadline {
-                    deadline = new_deadline;
-                    continue;
-                }
-                debug!("Timer for flow {flow_key} expired");
-                flow_info.update_status(FlowStatus::Expired);
-                break;
             }
             // Reached on every break (normal expiry or Cancelled/Expired early exit).
             // `continue` bypasses this, so removal only fires when the loop terminates.
