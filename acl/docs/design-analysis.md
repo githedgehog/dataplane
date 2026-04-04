@@ -4169,6 +4169,57 @@ build on top of. The action path is intentionally deferred:
 Focus now shifts to the classify side: building the linear-scan reference
 implementation and proving the pipeline end-to-end.
 
+### Resolution: categories are an implementation detail, not user-facing
+
+DPDK ACL's "category" concept is a backend optimization (parallel
+classification lanes sharing a single trie). It should not appear in
+the primary user API. The user's mental model is: rules have priorities,
+the table returns the action of the highest-priority match. Categories
+are invisible.
+
+**The `Vec<T, A = Global>` model.**
+
+Rust's `Vec` has an allocator type parameter `A` that defaults to `Global`.
+The vast majority of users never see it — they write `Vec<T>` and the
+allocator is inferred. But when you need a custom allocator (arena, pool,
+DPDK memzone), the parameter is there.
+
+Categories should work the same way. The table type has a category
+parameter that defaults to something trivial. The simple API ignores it:
+
+```rust
+// Normal user: no categories visible
+let table = AclTable::new(Action::Deny)
+    .add_rule(rule1)
+    .add_rule(rule2);
+
+// Advanced user / backend implementor: explicit control
+let table = AclTable::<MyCategories>::new(Action::Deny)
+    .add_rule_categorized(MyCategories::Ipv4Tcp, rule1);
+```
+
+The default category type could be `()` (single-category, all rules in
+one bucket — correct for the linear-scan backend which has no concept of
+categories). When the DPDK ACL compiler is used, it either:
+
+- Auto-derives categories from the rules' match field shapes, or
+- Accepts a user-provided `CategorySet` for explicit control.
+
+**What this means for v1:**
+
+- `AclTable` (no explicit category parameter) is the user-facing API.
+- `CategorizedTable<C, M>` remains available for backend implementors
+  and advanced users, but is not the primary entry point.
+- The linear-scan compiler works on `AclTable` directly — it doesn't
+  need categories at all.
+- The DPDK ACL compiler will need categories, but it can derive them
+  internally from the rule set's field shapes. If the user wants explicit
+  control, they opt in to `CategorizedTable`.
+- Minor API evolution is acceptable. If categories need to become more
+  visible later (e.g., for v2 typed views), adding a defaulted generic
+  parameter to `AclTable` is a minor, backwards-compatible change —
+  existing code that writes `AclTable` continues to work.
+
 ---
 
 ## V1 design constraints and phasing
