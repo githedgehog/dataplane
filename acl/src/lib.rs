@@ -28,8 +28,8 @@
 //!   type, describing where to store the layer.
 //! - [`Blank`] -- produces an all-wildcard (don't-care) match layer.
 //!
-//! [`AclRuleBuilder<T>`] is the state carrier.  Chain `.eth_match(...)`,
-//! `.ipv4_match(...)`, `.tcp_match(...)`, etc., then finalize with
+//! [`AclRuleBuilder<T>`] is the state carrier.  Chain `.eth(...)`,
+//! `.ipv4(...)`, `.tcp(...)`, etc., then finalize with
 //! `.permit(priority)` or `.deny(priority)`.
 //!
 //! # Examples
@@ -39,24 +39,25 @@
 //!
 //! // Match TCP port 80 traffic from 10.0.0.0/8
 //! let rule = AclRuleBuilder::new()
-//!     .eth_match(|_| {})
-//!     .ipv4_match(|ip| {
+//!     .eth(|_| {})
+//!     .ipv4(|ip| {
 //!         ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
 //!     })
-//!     .tcp_match(|tcp| {
+//!     .tcp(|tcp| {
 //!         tcp.dst = Some(PortRange::exact(TcpPort::new_checked(80).unwrap()));
 //!     })
-//!     .permit(100);
+//!     .permit(Priority::new(100).unwrap());
 //!
 //! // Deny all IPv6 traffic
 //! let rule = AclRuleBuilder::new()
-//!     .eth_match(|_| {})
-//!     .ipv6_match(|_| {})
-//!     .deny(200);
+//!     .eth(|_| {})
+//!     .ipv6(|_| {})
+//!     .deny(Priority::new(200).unwrap());
 //!
-//! // Build a table
-//! let table = AclTable::new(Action::Deny)
-//!     .add_rule(rule);
+//! // Build a table and compile
+//! let table = AclTableBuilder::new(Action::Deny)
+//!     .add_rule(rule)
+//!     .build();
 //! ```
 
 mod action;
@@ -66,17 +67,19 @@ mod classify;
 pub mod match_expr;
 mod match_fields;
 pub mod metadata;
+mod priority;
 mod range;
 mod rule;
 mod table;
 
 pub use action::Action;
 pub use builder::{AclMatchFields, AclRuleBuilder, Blank, Install, Within};
-pub use classify::LinearClassifier;
 pub use category::{CategorizedRule, CategorizedTable, CategoryError, CategorySet, Compiler};
+pub use classify::LinearClassifier;
 pub use match_expr::{ExactMatch, MaskedMatch, RangeMatch};
 pub use match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch};
 pub use metadata::Metadata;
+pub use priority::{Priority, PriorityZeroError};
 pub use range::{Ipv4Prefix, Ipv4PrefixError, Ipv6Prefix, Ipv6PrefixError, PortRange};
 pub use rule::AclRule;
-pub use table::AclTable;
+pub use table::{AclTable, AclTableBuilder};

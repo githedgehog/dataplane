@@ -25,6 +25,7 @@ use net::ip::NextHeader;
 use crate::action::Action;
 use crate::match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch};
 use crate::metadata::Metadata;
+use crate::priority::Priority;
 use crate::rule::AclRule;
 
 /// A single match layer in the ordered sequence.
@@ -246,41 +247,41 @@ where
 
     /// Finalize the rule with a [`Permit`](Action::Permit) action.
     #[must_use]
-    pub fn permit(mut self, priority: u32) -> AclRule<M> {
+    pub fn permit(mut self, priority: Priority) -> AclRule<M> {
         self.fields.install(self.working);
         AclRule::new(self.fields, self.metadata, Action::Permit, priority)
     }
 
     /// Finalize the rule with a [`Deny`](Action::Deny) action.
     #[must_use]
-    pub fn deny(mut self, priority: u32) -> AclRule<M> {
+    pub fn deny(mut self, priority: Priority) -> AclRule<M> {
         self.fields.install(self.working);
         AclRule::new(self.fields, self.metadata, Action::Deny, priority)
     }
 
     match_method!(
         /// Add an Ethernet match layer.
-        eth_match, EthMatch
+        eth, EthMatch
     );
     match_method!(
         /// Add an IPv4 match layer.
-        ipv4_match, Ipv4Match
+        ipv4, Ipv4Match
     );
     match_method!(
         /// Add an IPv6 match layer.
-        ipv6_match, Ipv6Match
+        ipv6, Ipv6Match
     );
     match_method!(
         /// Add a TCP match layer.
-        tcp_match, TcpMatch
+        tcp, TcpMatch
     );
     match_method!(
         /// Add a UDP match layer.
-        udp_match, UdpMatch
+        udp, UdpMatch
     );
     match_method!(
         /// Add an `ICMPv4` match layer.
-        icmp4_match, Icmp4Match
+        icmp4, Icmp4Match
     );
 }
 
@@ -420,6 +421,7 @@ impl Blank for Icmp4Match {
 mod tests {
     use super::*;
     use crate::match_expr::ExactMatch;
+    use crate::priority::Priority;
     use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
     use net::eth::ethtype::EthType;
     use net::ip::NextHeader;
@@ -427,7 +429,10 @@ mod tests {
     use net::udp::port::UdpPort;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// Example user-defined metadata.
+    fn pri(n: u32) -> Priority {
+        Priority::new(n).unwrap()
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, Default)]
     struct TestMeta {
         vrf: Option<ExactMatch<u32>>,
@@ -439,22 +444,22 @@ mod tests {
     #[test]
     fn ipv4_tcp_rule() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|ip| {
+            .eth(|_| {})
+            .ipv4(|ip| {
                 ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
-            .tcp_match(|tcp| {
+            .tcp(|tcp| {
                 tcp.dst = Some(PortRange::exact(TcpPort::new_checked(80).unwrap()));
             })
-            .permit(100);
+            .permit(pri(100));
 
         assert_eq!(rule.action(), Action::Permit);
-        assert_eq!(rule.priority(), 100);
+        assert_eq!(rule.priority(), pri(100));
 
-        let eth = rule.match_fields().eth().unwrap();
+        let eth = rule.packet_match().eth().unwrap();
         assert_eq!(eth.ether_type, Some(EthType::IPV4));
 
-        let ipv4 = rule.match_fields().ipv4().unwrap();
+        let ipv4 = rule.packet_match().ipv4().unwrap();
         assert_eq!(ipv4.protocol, Some(NextHeader::TCP));
         assert!(ipv4.src.is_some());
         assert!(ipv4.dst.is_none());
@@ -463,67 +468,68 @@ mod tests {
     #[test]
     fn ipv6_udp_rule() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv6_match(|ip| {
+            .eth(|_| {})
+            .ipv6(|ip| {
                 ip.dst = Some(Ipv6Prefix::host(Ipv6Addr::LOCALHOST));
             })
-            .udp_match(|udp| {
+            .udp(|udp| {
                 udp.dst = Some(PortRange::exact(UdpPort::new_checked(53).unwrap()));
             })
-            .deny(200);
+            .deny(pri(200));
 
         assert_eq!(rule.action(), Action::Deny);
 
-        let eth = rule.match_fields().eth().unwrap();
+        let eth = rule.packet_match().eth().unwrap();
         assert_eq!(eth.ether_type, Some(EthType::IPV6));
 
-        let ipv6 = rule.match_fields().ipv6().unwrap();
+        let ipv6 = rule.packet_match().ipv6().unwrap();
         assert_eq!(ipv6.protocol, Some(NextHeader::UDP));
     }
 
     #[test]
     fn icmp4_rule() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|_| {})
-            .icmp4_match(|icmp| {
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .icmp4(|icmp| {
                 icmp.icmp_type = Some(8);
             })
-            .permit(300);
+            .permit(pri(300));
 
-        let ipv4 = rule.match_fields().ipv4().unwrap();
+        let ipv4 = rule.packet_match().ipv4().unwrap();
         assert_eq!(ipv4.protocol, Some(NextHeader::ICMP));
 
-        let icmp = rule.match_fields().icmp4().unwrap();
+        let icmp = rule.packet_match().icmp4().unwrap();
         assert_eq!(icmp.icmp_type, Some(8));
         assert_eq!(icmp.icmp_code, None);
     }
 
     #[test]
     fn wildcard_eth_only() {
-        let rule = AclRuleBuilder::new().eth_match(|_| {}).deny(999);
+        let rule = AclRuleBuilder::new().eth(|_| {}).deny(pri(999));
 
-        let eth = rule.match_fields().eth().unwrap();
+        let eth = rule.packet_match().eth().unwrap();
         assert_eq!(eth.ether_type, None);
-        assert!(rule.match_fields().ipv4().is_none());
-        assert!(rule.match_fields().tcp().is_none());
+        assert!(rule.packet_match().ipv4().is_none());
+        assert!(rule.packet_match().tcp().is_none());
     }
 
     #[test]
     fn table_collects_rules() {
         let r1 = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|_| {})
-            .permit(100);
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .permit(pri(100));
 
         let r2 = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv6_match(|_| {})
-            .deny(999);
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .deny(pri(999));
 
-        let table = crate::AclTable::new(Action::Deny)
+        let table = crate::AclTableBuilder::new(Action::Deny)
             .add_rule(r1)
-            .add_rule(r2);
+            .add_rule(r2)
+            .build();
 
         assert_eq!(table.rules().len(), 2);
         assert_eq!(table.default_action(), Action::Deny);
@@ -531,23 +537,23 @@ mod tests {
 
     #[test]
     fn permit_without_match_layers() {
-        let rule = AclRuleBuilder::new().permit(0);
+        let rule = AclRuleBuilder::new().permit(pri(1));
         assert_eq!(rule.action(), Action::Permit);
-        assert!(rule.match_fields().is_empty());
+        assert!(rule.packet_match().is_empty());
     }
 
     #[test]
     fn layer_ordering_preserved() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|_| {})
-            .tcp_match(|_| {})
-            .permit(0);
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .permit(pri(1));
 
-        assert_eq!(rule.match_fields().len(), 3);
-        assert!(rule.match_fields().eth().is_some());
-        assert!(rule.match_fields().ipv4().is_some());
-        assert!(rule.match_fields().tcp().is_some());
+        assert_eq!(rule.packet_match().len(), 3);
+        assert!(rule.packet_match().eth().is_some());
+        assert!(rule.packet_match().ipv4().is_some());
+        assert!(rule.packet_match().tcp().is_some());
     }
 
     #[test]
@@ -556,9 +562,9 @@ mod tests {
             .metadata(|m: &mut TestMeta| {
                 m.vrf = Some(ExactMatch(42));
             })
-            .eth_match(|_| {})
-            .ipv4_match(|_| {})
-            .permit(100);
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .permit(pri(100));
 
         assert_eq!(rule.metadata().vrf, Some(ExactMatch(42)));
         assert_eq!(rule.metadata().vni, None);
@@ -567,27 +573,25 @@ mod tests {
     #[test]
     fn metadata_between_layers() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
+            .eth(|_| {})
             .metadata(|m: &mut TestMeta| {
                 m.vni = Some(ExactMatch(1000));
             })
-            .ipv4_match(|_| {})
-            .tcp_match(|_| {})
-            .deny(50);
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .deny(pri(50));
 
         assert_eq!(rule.metadata().vni, Some(ExactMatch(1000)));
-        // Protocol layers still work
-        let ipv4 = rule.match_fields().ipv4().unwrap();
+        let ipv4 = rule.packet_match().ipv4().unwrap();
         assert_eq!(ipv4.protocol, Some(NextHeader::TCP));
     }
 
     #[test]
     fn no_metadata_uses_unit() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .permit(0);
+            .eth(|_| {})
+            .permit(pri(1));
 
-        // M defaults to (), rule.metadata() returns &()
         assert_eq!(rule.metadata(), &());
     }
 }

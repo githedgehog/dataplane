@@ -51,7 +51,7 @@ impl<M: Metadata> LinearClassifier<M> {
     #[must_use]
     pub fn classify(&self, headers: &Headers) -> Action {
         for rule in &self.rules {
-            if rule_matches(rule.match_fields(), headers) {
+            if rule_matches(rule.packet_match(), headers) {
                 return rule.action();
             }
         }
@@ -204,12 +204,18 @@ fn udp_port_in_range(range: PortRange<UdpPort>, port: UdpPort) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AclRuleBuilder;
+    use crate::priority::Priority;
+    use crate::{AclRuleBuilder, AclTableBuilder};
     use net::headers::builder::HeaderStack;
+
+    /// Shorthand for creating a Priority in tests.
+    fn pri(n: u32) -> Priority {
+        Priority::new(n).unwrap()
+    }
 
     #[test]
     fn empty_table_returns_default() {
-        let table: AclTable = AclTable::new(Action::Deny);
+        let table: AclTable = AclTableBuilder::new(Action::Deny).build();
         let classifier = table.compile_linear();
 
         let headers = HeaderStack::new()
@@ -224,8 +230,9 @@ mod tests {
 
     #[test]
     fn permit_all_rule() {
-        let table = AclTable::new(Action::Deny)
-            .add_rule(AclRuleBuilder::new().permit(100));
+        let table = AclTableBuilder::new(Action::Deny)
+            .add_rule(AclRuleBuilder::new().permit(pri(100)))
+            .build();
 
         let classifier = table.compile_linear();
 
@@ -244,16 +251,15 @@ mod tests {
         use std::net::Ipv4Addr;
 
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|ip| {
+            .eth(|_| {})
+            .ipv4(|ip| {
                 ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
-            .permit(100);
+            .permit(pri(100));
 
-        let table = AclTable::new(Action::Deny).add_rule(rule);
+        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
         let classifier = table.compile_linear();
 
-        // Packet from 10.1.2.3 — should match
         let matching = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|ip| {
@@ -264,10 +270,8 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-
         assert_eq!(classifier.classify(&matching), Action::Permit);
 
-        // Packet from 192.168.1.1 — should not match
         let non_matching = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|ip| {
@@ -278,7 +282,6 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-
         assert_eq!(classifier.classify(&non_matching), Action::Deny);
     }
 
@@ -286,29 +289,26 @@ mod tests {
     fn priority_ordering() {
         use std::net::Ipv4Addr;
 
-        // Low priority: permit 10.0.0.0/8
         let broad = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|ip| {
+            .eth(|_| {})
+            .ipv4(|ip| {
                 ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
-            .permit(200);
+            .permit(pri(200));
 
-        // High priority: deny 10.1.0.0/16
         let narrow = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|ip| {
+            .eth(|_| {})
+            .ipv4(|ip| {
                 ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 1, 0, 0), 16).unwrap());
             })
-            .deny(100);
+            .deny(pri(100));
 
-        let table = AclTable::new(Action::Deny)
+        let table = AclTableBuilder::new(Action::Deny)
             .add_rule(broad)
-            .add_rule(narrow);
-
+            .add_rule(narrow)
+            .build();
         let classifier = table.compile_linear();
 
-        // 10.1.2.3 matches both, but deny (priority 100) wins
         let pkt = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|ip| {
@@ -319,10 +319,8 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-
         assert_eq!(classifier.classify(&pkt), Action::Deny);
 
-        // 10.2.0.1 matches only the broad rule → permit
         let pkt2 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|ip| {
@@ -333,16 +331,15 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-
         assert_eq!(classifier.classify(&pkt2), Action::Permit);
     }
 
     #[test]
     fn tcp_port_range_match() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|_| {})
-            .tcp_match(|tcp| {
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|tcp| {
                 tcp.dst = Some(
                     PortRange::new(
                         TcpPort::new_checked(80).unwrap(),
@@ -351,40 +348,31 @@ mod tests {
                     .unwrap(),
                 );
             })
-            .permit(100);
+            .permit(pri(100));
 
-        let table = AclTable::new(Action::Deny).add_rule(rule);
+        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
         let classifier = table.compile_linear();
 
-        // Port 80 — in range
         let pkt80 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|_| {})
-            .tcp(|tcp| {
-                tcp.set_destination(TcpPort::new_checked(80).unwrap());
-            })
+            .tcp(|tcp| { tcp.set_destination(TcpPort::new_checked(80).unwrap()); })
             .build_headers()
             .unwrap();
         assert_eq!(classifier.classify(&pkt80), Action::Permit);
 
-        // Port 443 — in range
         let pkt443 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|_| {})
-            .tcp(|tcp| {
-                tcp.set_destination(TcpPort::new_checked(443).unwrap());
-            })
+            .tcp(|tcp| { tcp.set_destination(TcpPort::new_checked(443).unwrap()); })
             .build_headers()
             .unwrap();
         assert_eq!(classifier.classify(&pkt443), Action::Permit);
 
-        // Port 8080 — out of range
         let pkt8080 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|_| {})
-            .tcp(|tcp| {
-                tcp.set_destination(TcpPort::new_checked(8080).unwrap());
-            })
+            .tcp(|tcp| { tcp.set_destination(TcpPort::new_checked(8080).unwrap()); })
             .build_headers()
             .unwrap();
         assert_eq!(classifier.classify(&pkt8080), Action::Deny);
@@ -393,13 +381,11 @@ mod tests {
     #[test]
     fn ipv4_rule_does_not_match_ipv6_packet() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|ip| {
-                ip.src = Some(Ipv4Prefix::any());
-            })
-            .permit(100);
+            .eth(|_| {})
+            .ipv4(|ip| ip.src = Some(Ipv4Prefix::any()))
+            .permit(pri(100));
 
-        let table = AclTable::new(Action::Deny).add_rule(rule);
+        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
         let classifier = table.compile_linear();
 
         let ipv6_pkt = HeaderStack::new()
@@ -408,7 +394,6 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-
         assert_eq!(classifier.classify(&ipv6_pkt), Action::Deny);
     }
 
@@ -417,12 +402,10 @@ mod tests {
         use net::eth::ethtype::EthType;
 
         let rule = AclRuleBuilder::new()
-            .eth_match(|e| {
-                e.ether_type = Some(EthType::IPV4);
-            })
-            .permit(100);
+            .eth(|e| e.ether_type = Some(EthType::IPV4))
+            .permit(pri(100));
 
-        let table = AclTable::new(Action::Deny).add_rule(rule);
+        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
         let classifier = table.compile_linear();
 
         let ipv4_pkt = HeaderStack::new()
@@ -445,12 +428,12 @@ mod tests {
     #[test]
     fn conform_sets_protocol_for_matching() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|_| {})
-            .tcp_match(|_| {})
-            .permit(100);
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .permit(pri(100));
 
-        let table = AclTable::new(Action::Deny).add_rule(rule);
+        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
         let classifier = table.compile_linear();
 
         let tcp_pkt = HeaderStack::new()

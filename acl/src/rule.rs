@@ -4,8 +4,9 @@
 use crate::action::Action;
 use crate::builder::AclMatchFields;
 use crate::metadata::Metadata;
+use crate::priority::Priority;
 
-/// A complete ACL rule: match fields + metadata + action + priority.
+/// A complete ACL rule: packet match + metadata + action + priority.
 ///
 /// Constructed via [`AclRuleBuilder`](crate::AclRuleBuilder).
 /// Lower priority values are evaluated first.
@@ -13,32 +14,32 @@ use crate::metadata::Metadata;
 /// `M` is the metadata match type, defaulting to `()` (no metadata).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AclRule<M: Metadata = ()> {
-    match_fields: AclMatchFields,
+    packet_match: AclMatchFields,
     metadata: M,
     action: Action,
-    priority: u32,
+    priority: Priority,
 }
 
 impl<M: Metadata> AclRule<M> {
     /// Create a new rule.  Called by the builder's terminal methods.
     pub(super) fn new(
-        match_fields: AclMatchFields,
+        packet_match: AclMatchFields,
         metadata: M,
         action: Action,
-        priority: u32,
+        priority: Priority,
     ) -> Self {
         Self {
-            match_fields,
+            packet_match,
             metadata,
             action,
             priority,
         }
     }
 
-    /// The protocol match fields for this rule.
+    /// The protocol-layer match criteria for this rule.
     #[must_use]
-    pub fn match_fields(&self) -> &AclMatchFields {
-        &self.match_fields
+    pub fn packet_match(&self) -> &AclMatchFields {
+        &self.packet_match
     }
 
     /// The metadata match criteria.
@@ -55,7 +56,7 @@ impl<M: Metadata> AclRule<M> {
 
     /// The rule priority (lower = higher precedence).
     #[must_use]
-    pub fn priority(&self) -> u32 {
+    pub fn priority(&self) -> Priority {
         self.priority
     }
 }

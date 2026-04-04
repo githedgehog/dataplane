@@ -171,7 +171,7 @@ impl<C: CategorySet, M: Metadata> CategorizedTable<C, M> {
     /// match the category's expected shape.
     pub fn add_rule(mut self, category: C, rule: AclRule<M>) -> Result<Self, CategoryError> {
         let idx = category.index();
-        if !category.expects(rule.match_fields()) {
+        if !category.expects(rule.packet_match()) {
             return Err(CategoryError::ShapeMismatch {
                 category_index: idx,
             });
@@ -198,7 +198,7 @@ impl<C: CategorySet, M: Metadata> CategorizedTable<C, M> {
     ) -> Result<Self, CategoryError> {
         let mut mask = 0u16;
         for cat in categories {
-            if !cat.expects(rule.match_fields()) {
+            if !cat.expects(rule.packet_match()) {
                 return Err(CategoryError::ShapeMismatch {
                     category_index: cat.index(),
                 });
@@ -283,10 +283,15 @@ pub trait Compiler<C: CategorySet, M: Metadata = ()> {
 mod tests {
     use super::*;
     use crate::category::ClassifyResult;
+    use crate::priority::Priority;
     use crate::range::{Ipv4Prefix, PortRange};
     use crate::AclRuleBuilder;
     use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
+
+    fn pri(n: u32) -> Priority {
+        Priority::new(n).unwrap()
+    }
 
     #[derive(Debug, Clone, Copy)]
     #[allow(dead_code)] // variants used for index mapping, not all constructed in tests
@@ -317,14 +322,14 @@ mod tests {
     #[test]
     fn add_rule_to_matching_category() {
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|ip| {
+            .eth(|_| {})
+            .ipv4(|ip| {
                 ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
-            .tcp_match(|tcp| {
+            .tcp(|tcp| {
                 tcp.dst = Some(PortRange::exact(TcpPort::new_checked(80).unwrap()));
             })
-            .permit(100);
+            .permit(pri(100));
 
         let table = CategorizedTable::<TestCat>::new(Action::Deny)
             .unwrap()
@@ -339,10 +344,10 @@ mod tests {
     fn reject_rule_with_wrong_shape() {
         // IPv4+UDP rule assigned to Ipv4Tcp category — should fail
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|_| {})
-            .udp_match(|_| {})
-            .deny(100);
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .udp(|_| {})
+            .deny(pri(100));
 
         let result = CategorizedTable::<TestCat>::new(Action::Deny)
             .unwrap()
@@ -380,11 +385,11 @@ mod tests {
         }
 
         let rule = AclRuleBuilder::new()
-            .eth_match(|_| {})
-            .ipv4_match(|ip| {
+            .eth(|_| {})
+            .ipv4(|ip| {
                 ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
             })
-            .permit(50);
+            .permit(pri(50));
 
         // This rule has IPv4 match, should pass AnyIpv4 but fail AnyIpv6
         let result = CategorizedTable::<BroadCat>::new(Action::Deny)
