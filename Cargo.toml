@@ -2,6 +2,7 @@
 
 members = [
     "acl",
+    "acl-dpdk",
     "args",
     "cli",
     "common",
