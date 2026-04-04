@@ -8,3 +8,6 @@ version.workspace = true
 [dependencies]
 net = { path = "../net", package = "dataplane-net" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+net = { path = "../net", package = "dataplane-net", features = ["builder"] }
