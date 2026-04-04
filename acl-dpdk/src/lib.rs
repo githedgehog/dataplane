@@ -17,5 +17,6 @@
 //! by grouping rules by [`FieldSignature`](acl::FieldSignature) and
 //! mapping each signature to a DPDK `FieldDef` array.
 
+pub mod compiler;
 pub mod field_map;
 pub mod rule_translate;
