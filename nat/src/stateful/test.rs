@@ -278,10 +278,10 @@ mod tests {
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[traced_test]
     #[allow(clippy::too_many_lines)]
-    fn test_full_config() {
+    async fn test_full_config() {
         let mut config = build_gwconfig_from_overlay(build_overlay_4vpcs());
         config.validate().unwrap();
 
@@ -498,9 +498,9 @@ mod tests {
         )
     }
 
-    #[test]
+    #[tokio::test]
     #[traced_test]
-    fn test_icmp_echo_nat() {
+    async fn test_icmp_echo_nat() {
         let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs());
         config.validate().unwrap();
 
@@ -669,9 +669,9 @@ mod tests {
         )
     }
 
-    #[test]
+    #[tokio::test]
     #[traced_test]
-    fn test_icmp_error_nat() {
+    async fn test_icmp_error_nat() {
         let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs());
         config.validate().unwrap();
 
@@ -825,8 +825,8 @@ mod tests {
         Overlay::new(vpc_table, peering_table)
     }
 
-    #[test]
-    fn test_default_expose() {
+    #[tokio::test]
+    async fn test_default_expose() {
         let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs_with_default());
         config.validate().unwrap();
 
@@ -1032,9 +1032,9 @@ mod tests {
         )
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn test_full_config_unidirectional_nat_overlapping_destination() {
+    async fn test_full_config_unidirectional_nat_overlapping_destination() {
         let tctl = get_trace_ctl();
         let _ = tctl.setup_from_string("vpc-routing=debug,flow-lookup=debug,stateful-nat=debug");
 
@@ -1329,10 +1329,10 @@ mod tests {
         Overlay::new(vpc_table, peering_table)
     }
 
-    #[test]
+    #[tokio::test]
     #[traced_test]
     #[allow(clippy::too_many_lines)]
-    fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peering() {
+    async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peering() {
         let mut config = build_gwconfig_from_overlay(
             build_overlay_2vpcs_unidirectional_nat_overlapping_exposes(),
         );

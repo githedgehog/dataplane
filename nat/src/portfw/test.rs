@@ -201,8 +201,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_base() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_base() {
         let ruleset = build_test_port_forwarding_ruleset();
 
         // build a pipeline with flow lookup + port forwarder
@@ -301,8 +301,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_tcp_establishment() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_tcp_establishment() {
         let ruleset = build_test_port_forwarding_ruleset();
 
         // build a pipeline with flow lookup + port forwarder
@@ -313,8 +313,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_tcp_close_server() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_tcp_close_server() {
         let ruleset = build_test_port_forwarding_ruleset();
 
         // build a pipeline with flow lookup + port forwarder
@@ -357,8 +357,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_tcp_close_client() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_tcp_close_client() {
         let ruleset = build_test_port_forwarding_ruleset();
 
         // build a pipeline with flow lookup + port forwarder
@@ -399,8 +399,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_tcp_half_close_client() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_tcp_half_close_client() {
         let ruleset = build_test_port_forwarding_ruleset();
 
         // build a pipeline with flow lookup + port forwarder
@@ -451,8 +451,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_tcp_reset() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_tcp_reset() {
         let ruleset = build_test_port_forwarding_ruleset();
         let (flow_table, mut pipeline, _writer) = setup_pipeline(&ruleset);
 
@@ -488,8 +488,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_config_removal_interrupts_traffic() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_config_removal_interrupts_traffic() {
         let ruleset = build_test_port_forwarding_ruleset();
 
         // build a pipeline with flow lookup + port forwarder
@@ -530,7 +530,7 @@ mod nf_test {
 
         println!("{flow_table}");
 
-        std::thread::sleep(Duration::from_secs(4));
+        tokio::time::sleep(Duration::from_secs(4)).await;
         let _ = pipeline.process(std::iter::empty::<Packet<TestBuffer>>());
 
         let packet = tcp_packet_to_port_forward();
@@ -617,8 +617,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_with_port_ranges() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_with_port_ranges() {
         let ruleset = build_test_port_forwarding_table_with_ranges();
         let (flow_table, mut pipeline, mut writer) = setup_pipeline(&ruleset);
 
@@ -658,8 +658,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_with_prefixes_and_port_ranges() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_with_prefixes_and_port_ranges() {
         let ruleset = build_test_port_forwarding_table_with_prefixes_and_port_ranges();
         let (flow_table, mut pipeline, mut writer) = setup_pipeline(&ruleset);
 
@@ -699,8 +699,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_compatible_rule_updates_preserves_flows() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_compatible_rule_updates_preserves_flows() {
         // check that, when updating a rule, existing flows remain if the new rule would allow them
 
         // build rule
@@ -759,8 +759,8 @@ mod nf_test {
     }
 
     #[traced_test]
-    #[test]
-    fn test_nf_port_forwarding_incompatible_rule_updates_remove_flows() {
+    #[tokio::test]
+    async fn test_nf_port_forwarding_incompatible_rule_updates_remove_flows() {
         // check that, when updating a rule, existing flows remain if the new rule would allow them
 
         // build rule
