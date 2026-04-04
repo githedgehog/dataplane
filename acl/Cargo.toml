@@ -5,9 +5,16 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+default = []
+bolero = ["dep:bolero", "net/bolero"]
+
 [dependencies]
+bolero = { workspace = true, features = ["std"], optional = true }
 net = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-net = { workspace = true, features = ["builder"] }
+bolero = { workspace = true, features = ["std"] }
+dataplane-acl = { path = ".", features = ["bolero"] }
+net = { workspace = true, features = ["builder", "bolero", "test_buffer"] }

@@ -17,9 +17,7 @@
 use std::net::Ipv4Addr;
 use std::sync::Once;
 
-use acl::{
-    AclRuleBuilder, AclTableBuilder, Fate, FieldMatch, Ipv4Prefix, PortRange, Priority,
-};
+use acl::{AclRuleBuilder, AclTableBuilder, Fate, FieldMatch, Ipv4Prefix, PortRange, Priority};
 use dpdk::acl::config::{AclBuildConfig, AclCreateParams};
 use dpdk::acl::context::AclContext;
 use dpdk::acl::rule::{AclField, Rule, RuleData};
@@ -61,9 +59,8 @@ fn dpdk_acl_matches_linear_classifier() {
             AclRuleBuilder::new()
                 .eth(|_| {})
                 .ipv4(|ip| {
-                    ip.src = FieldMatch::Select(
-                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
-                    );
+                    ip.src =
+                        FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
                 })
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
@@ -91,12 +88,14 @@ fn dpdk_acl_matches_linear_classifier() {
 
     let group = &groups[0];
     let n = group.field_count();
-    assert_eq!(n, 4, "expected 4 fields: proto, eth_type, ipv4_src, tcp_dst");
+    assert_eq!(
+        n, 4,
+        "expected 4 fields: proto, eth_type, ipv4_src, tcp_dst"
+    );
 
     // Build the DPDK ACL context with N=4
     const N: usize = 4;
-    let params = AclCreateParams::new::<N>("test_acl", SocketId::ANY, 16)
-        .expect("create params");
+    let params = AclCreateParams::new::<N>("test_acl", SocketId::ANY, 16).expect("create params");
     let mut ctx = AclContext::<N>::new(params).expect("create context");
 
     // Assemble Rule<4> from CompiledRule
@@ -182,8 +181,7 @@ fn dpdk_acl_matches_linear_classifier() {
 
         let data = [acl_input.as_ptr()];
         let mut results = [0u32; 1];
-        ctx.classify(&data, &mut results, 1)
-            .expect("classify");
+        ctx.classify(&data, &mut results, 1).expect("classify");
         eprintln!("  DPDK result: userdata={}", results[0]);
         let dpdk_fate = compiler::resolve_fate(&table, results[0], Fate::Drop);
 

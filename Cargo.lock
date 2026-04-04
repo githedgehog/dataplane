@@ -1178,6 +1178,8 @@ dependencies = [
 name = "dataplane-acl"
 version = "0.18.0"
 dependencies = [
+ "bolero",
+ "dataplane-acl",
  "dataplane-net",
  "thiserror 2.0.18",
 ]

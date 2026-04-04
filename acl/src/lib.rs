@@ -69,6 +69,8 @@ mod match_fields;
 pub mod metadata;
 mod cascade;
 mod classifier;
+#[cfg(any(test, feature = "bolero"))]
+mod generators;
 mod overlap;
 mod priority;
 mod range;
