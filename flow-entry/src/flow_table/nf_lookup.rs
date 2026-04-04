@@ -81,8 +81,8 @@ mod test {
     use crate::flow_table::FlowTable;
     use crate::flow_table::nf_lookup::FlowLookup;
 
-    #[test]
-    fn test_lookup_nf() {
+    #[tokio::test]
+    async fn test_lookup_nf() {
         let flow_table = Arc::new(FlowTable::default());
         let mut lookup_nf = FlowLookup::new("test_lookup_nf", flow_table.clone());
         let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());

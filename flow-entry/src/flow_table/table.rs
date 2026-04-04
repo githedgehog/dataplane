@@ -260,48 +260,8 @@ impl FlowTable {
     fn insert_common(&self, flow_key: FlowKey, val: &Arc<FlowInfo>) -> Option<Arc<FlowInfo>> {
         let table = self.table.read().unwrap();
         let result = table.insert(flow_key, val.clone());
-
-        // TODO(smatov): add FlowTable capacity management to prevent unbounded growth of
-        // expired entries in high-throughput scenarios.
-
-        // Spawn a per-flow expiration timer when running inside a tokio runtime.
-        // After the deadline elapses, the timer marks the flow Expired and removes its
-        // own DashMap entry so expired flows are collected
-        // promptly even when no subsequent lookup for the same key ever arrives.
-        // Lazy cleanup in lookup() remains as a fallback for non-tokio contexts and
-        // for entries cancelled or expired via other paths.
-        // In non-tokio contexts (shuttle tests, sync unit tests) a debug is logged
-        // and no timer is spawned; lazy time-checking in `lookup` handles expiration.
-        //
-        // Only spawn a timer for a genuinely new Arc.  If the same Arc is being
-        // reinserted (e.g. via reinsert()), its existing timer loop already handles
-        // extended deadlines via the `new_deadline > deadline` re-check, so spawning
-        // a second task would be redundant and would cause unbounded task growth.
-
-        // Drop the outer read-guard before spawning; the timer task will acquire its
-        // own read-guard later and std::sync::RwLock behaviour on re-entrant locking
-        // is explicitly unspecified.
-        drop(table);
-
-        let need_timer = result.as_ref().is_none_or(|old| !Arc::ptr_eq(old, val));
-        if need_timer {
-            if tokio::runtime::Handle::try_current().is_err() {
-                debug!(
-                    "insert: no tokio runtime present, flow expiration timer not spawned; \
-                     relying on lazy expiration in lookup()"
-                );
-            } else {
-                Self::start_timer(self.table.clone(), val.clone());
-            }
-        }
-
-        let ret = result?;
-
-        if ret.status() == FlowStatus::Expired {
-            return None;
-        }
-
-        Some(ret)
+        Self::start_timer(self.table.clone(), val.clone());
+        result
     }
 
     /// Lookup a flow in the table.
@@ -482,8 +442,8 @@ mod tests {
 
         use super::*;
 
-        #[test]
-        fn test_flow_table_insert_and_remove() {
+        #[tokio::test]
+        async fn test_flow_table_insert_and_remove() {
             let now = Instant::now();
             let five_seconds = Duration::new(5, 0);
             let five_seconds_from_now = now + five_seconds;
@@ -506,8 +466,8 @@ mod tests {
             assert!(result.0 == flow_key);
         }
 
-        #[test]
-        fn test_flow_table_timeout() {
+        #[tokio::test]
+        async fn test_flow_table_timeout() {
             let now = Instant::now();
             let two_seconds = Duration::from_secs(2);
             let one_second = Duration::from_secs(1);
@@ -542,8 +502,8 @@ mod tests {
             );
         }
 
-        #[test]
-        fn test_flow_table_entry_replaced_on_insert() {
+        #[tokio::test]
+        async fn test_flow_table_entry_replaced_on_insert() {
             let now = Instant::now();
             let first_expiry_time = now + Duration::from_secs(5);
             let second_expiry_time = now + Duration::from_secs(10);
@@ -587,8 +547,8 @@ mod tests {
             }
         }
 
-        #[test]
-        fn test_flow_table_expire_bolero() {
+        #[tokio::test]
+        async fn test_flow_table_expire_bolero() {
             let flow_table = FlowTable::default();
             bolero::check!()
                 .with_type::<FlowKey>()
@@ -613,8 +573,8 @@ mod tests {
                 });
         }
 
-        #[test]
-        fn test_flow_table_remove_bolero() {
+        #[tokio::test]
+        async fn test_flow_table_remove_bolero() {
             let flow_table = FlowTable::default();
             bolero::check!()
                 .with_type::<FlowKey>()
@@ -636,8 +596,8 @@ mod tests {
                 });
         }
 
-        #[test]
-        fn test_aggressive_reap_threshold() {
+        #[tokio::test]
+        async fn test_aggressive_reap_threshold() {
             // Must be small enough to stay within u16 port range (< 65_535).
             const REAP_THRESHOLD_TEST: usize = 10_000;
 
