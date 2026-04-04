@@ -21,8 +21,8 @@ pub struct AclRule<M: Metadata = ()> {
 }
 
 impl<M: Metadata> AclRule<M> {
-    /// Create a new rule.  Called by the builder's terminal methods.
-    pub(super) fn new(
+    /// Create a new rule.  Called by the builder and update planner.
+    pub(crate) fn new(
         packet_match: AclMatchFields,
         metadata: M,
         actions: ActionSequence,

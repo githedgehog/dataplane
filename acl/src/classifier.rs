@@ -158,6 +158,15 @@ impl Classifier {
     pub fn default_fate(&self) -> Fate {
         self.0.default_fate()
     }
+
+    /// Build a Cascade classifier from multiple stages.
+    ///
+    /// Stages are tried in order; first match wins.
+    #[must_use]
+    pub fn cascade(stages: Vec<Classifier>) -> Classifier {
+        let inners = stages.into_iter().map(|c| c.0).collect();
+        Classifier(ClassifierInner::Cascade(inners))
+    }
 }
 
 impl<M: Metadata + Clone> AclTable<M> {

@@ -75,6 +75,7 @@ mod range;
 mod rule;
 mod signature;
 mod table;
+mod update;
 
 pub use action::{ActionSequence, Fate, Step};
 pub use cascade::{
@@ -93,3 +94,4 @@ pub use range::{Ipv4Prefix, Ipv4PrefixError, Ipv6Prefix, Ipv6PrefixError, PortRa
 pub use signature::{group_rules_by_signature, FieldSignature, SignatureGroup};
 pub use rule::AclRule;
 pub use table::{AclTable, AclTableBuilder};
+pub use update::{build_tiered, diff_tables, plan_update, TableDiff, UpdatePlan};
