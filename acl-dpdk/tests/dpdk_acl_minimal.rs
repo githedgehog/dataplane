@@ -104,6 +104,136 @@ fn minimal_ipv4_prefix_match() {
     assert_eq!(results[2], 42, "10.255.0.1 should match 10.0.0.0/8");
 }
 
+/// Minimal Range field test: 2 fields, setup byte + 1-byte Range.
+/// Completely independent of our compiler — just raw DPDK ACL API.
+#[test]
+fn range_match_one_byte() {
+    init_eal();
+
+    const N: usize = 2;
+
+    let field_defs: [FieldDef; N] = [
+        FieldDef {
+            field_type: FieldType::Bitmask,
+            size: FieldSize::One,
+            field_index: 0,
+            input_index: 0,
+            offset: 0,
+        },
+        // 1-byte Range field at offset 4
+        FieldDef {
+            field_type: FieldType::Range,
+            size: FieldSize::One,
+            field_index: 1,
+            input_index: 1,
+            offset: 4,
+        },
+    ];
+
+    let params = AclCreateParams::new::<N>("range_1b", SocketId::ANY, 16).expect("params");
+    let mut ctx = AclContext::<N>::new(params).expect("context");
+
+    // Rule: match byte value in range [10, 20]
+    let rule = Rule::new(
+        RuleData { category_mask: 1, priority: 1, userdata: 77.try_into().unwrap() },
+        [
+            AclField::from_u8(0, 0),      // wildcard setup
+            AclField::from_u8(10, 20),     // range [10, 20]
+        ],
+    );
+    ctx.add_rules(&[rule]).expect("add rules");
+
+    let build_cfg = AclBuildConfig::new(1, field_defs, 0).expect("build config");
+    let ctx = ctx.build(&build_cfg).map_err(|f| f.error).expect("build");
+
+    // Test values at offset 4
+    let test_cases: Vec<(u8, bool)> = vec![
+        (9, false),   // below range
+        (10, true),   // lower bound
+        (15, true),   // middle
+        (20, true),   // upper bound
+        (21, false),  // above range
+        (0, false),   // zero
+        (255, false), // max
+    ];
+
+    for (val, should_match) in &test_cases {
+        let mut buf = [0u8; 8];
+        buf[4] = *val;
+
+        let data = [buf.as_ptr()];
+        let mut results = [0u32; 1];
+        ctx.classify(&data, &mut results, 1).expect("classify");
+
+        let matched = results[0] != 0;
+        eprintln!("  val={val:3} → userdata={}, expected_match={should_match}", results[0]);
+        assert_eq!(
+            matched, *should_match,
+            "val={val}: expected match={should_match}, got userdata={}",
+            results[0]
+        );
+    }
+}
+
+/// Minimal Range field test: 5-tuple style layout.
+/// Use the EXACT same offsets and input_index as the 5-tuple example
+/// in dpdk/src/acl/mod.rs to eliminate layout as a variable.
+#[test]
+fn range_match_five_tuple_layout() {
+    init_eal();
+
+    const N: usize = 5;
+
+    // Exact 5-tuple example layout from dpdk/src/acl/mod.rs:
+    let field_defs: [FieldDef; N] = [
+        FieldDef { field_type: FieldType::Bitmask, size: FieldSize::One,  field_index: 0, input_index: 0, offset: 0 },
+        FieldDef { field_type: FieldType::Mask,    size: FieldSize::Four, field_index: 1, input_index: 1, offset: 2 },
+        FieldDef { field_type: FieldType::Mask,    size: FieldSize::Four, field_index: 2, input_index: 2, offset: 6 },
+        FieldDef { field_type: FieldType::Range,   size: FieldSize::Two,  field_index: 3, input_index: 3, offset: 10 },
+        FieldDef { field_type: FieldType::Range,   size: FieldSize::Two,  field_index: 4, input_index: 3, offset: 12 },
+    ];
+
+    let params = AclCreateParams::new::<N>("range_5t", SocketId::ANY, 16).expect("params");
+    let mut ctx = AclContext::<N>::new(params).expect("context");
+
+    // Rule: proto=6(TCP), src=10.0.0.0/8, dst=any, sport=any, dport=80
+    let rule = Rule::new(
+        RuleData { category_mask: 1, priority: 1, userdata: 55.try_into().unwrap() },
+        [
+            AclField::from_u8(6, 0xFF),            // proto=TCP exact
+            AclField::from_u32(0x0A000000, 8),      // src 10.0.0.0/8
+            AclField::from_u32(0, 0),               // dst any
+            AclField::from_u16(0, u16::MAX),        // src port any
+            AclField::from_u16(80, 80),             // dst port 80
+        ],
+    );
+    ctx.add_rules(&[rule]).expect("add rules");
+
+    let build_cfg = AclBuildConfig::new(1, field_defs, 0).expect("build config");
+    let ctx = ctx.build(&build_cfg).map_err(|f| f.error).expect("build");
+
+    // Buffer layout (14 bytes):
+    // [0]     = proto (6=TCP)
+    // [1]     = padding
+    // [2..6]  = src IP in NBO (10.1.2.3)
+    // [6..10] = dst IP in NBO (192.168.1.1)
+    // [10..12] = src port in NBO (12345)
+    // [12..14] = dst port in NBO (80)
+    let mut buf = [0u8; 14];
+    buf[0] = 6;
+    buf[2..6].copy_from_slice(&[10, 1, 2, 3]);
+    buf[6..10].copy_from_slice(&[192, 168, 1, 1]);
+    buf[10..12].copy_from_slice(&12345u16.to_be_bytes());
+    buf[12..14].copy_from_slice(&80u16.to_be_bytes());
+
+    let data = [buf.as_ptr()];
+    let mut results = [0u32; 1];
+    ctx.classify(&data, &mut results, 1).expect("classify");
+
+    eprintln!("  5-tuple range test: buf={:02x?}, result={}", &buf, results[0]);
+    assert_eq!(results[0], 55, "should match TCP 10.x.x.x:* → *:80");
+}
+
 /// Test with 4 fields matching our compiler's layout:
 /// [proto(Bitmask,1B), ethtype(Mask,2B), ipv4_src(Mask,4B), tcp_dst(Range,2B)]
 #[test]
