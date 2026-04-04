@@ -378,13 +378,14 @@ impl FlowInfo {
     }
 
     /// Cancel a flow. In other words, invalidate it so that it is not used to process packets.
-    /// Note: a canceled flow may still remain in the flow table until its timer expires.
+    /// Soon after invalidated, the flow's timer is cancelled and the flow removed from the flow table.
     ///
     /// # Thread Safety
     ///
     /// This method is thread-safe.
     pub fn invalidate(&self) {
         self.update_status(FlowStatus::Cancelled);
+        self.token.cancel();
     }
 
     /// Invalidate a flow and also its related flow if any.
