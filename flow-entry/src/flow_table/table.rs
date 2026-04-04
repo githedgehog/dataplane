@@ -478,6 +478,8 @@ mod tests {
 
     #[concurrency_mode(std)]
     mod std_tests {
+        use tracing_test::traced_test;
+
         use super::*;
 
         #[test]
@@ -682,6 +684,50 @@ mod tests {
             // drain_stale: all Cancelled flows should be purged, leaving exactly 1.
             let reaped = flow_table.drain_stale();
             assert_eq!(reaped, REAP_THRESHOLD_TEST + 100 - 1);
+            assert_eq!(flow_table.active_len().unwrap(), 1);
+        }
+
+        #[tokio::test]
+        #[traced_test]
+        /// Test that invalidating flows causes timer to expire and flows to be removed
+        async fn test_flow_table_flow_invalidation() {
+            const NUM_FLOWS: u16 = 10;
+            let flow_table = FlowTable::default();
+            let now = Instant::now();
+            let deadline = now + Duration::from_secs(3);
+
+            let mut flow_keys = vec![];
+            for src_port in 1..=NUM_FLOWS {
+                let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
+                    Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                    "1.2.3.4".parse::<IpAddr>().unwrap(),
+                    "4.5.6.7".parse::<IpAddr>().unwrap(),
+                    IpProtoKey::Tcp(TcpProtoKey {
+                        src_port: TcpPort::new_checked(src_port).unwrap(),
+                        dst_port: TcpPort::new_checked(2048).unwrap(),
+                    }),
+                ));
+                let flow_info = FlowInfo::new(deadline);
+                flow_table.insert(flow_key, flow_info);
+                flow_keys.push(flow_key);
+            }
+            // all flows in table
+            assert_eq!(flow_table.active_len().unwrap(), NUM_FLOWS.into());
+
+            // look up all flows and: 1) invalidate one 2) extend the deadline of another one
+            for (num, flow_key) in flow_keys.iter().enumerate() {
+                let flow = flow_table.lookup(flow_key).unwrap();
+                match num {
+                    1 => flow.invalidate(),
+                    2 => flow.extend_expiry(Duration::from_secs(2)).unwrap(),
+                    _ => {}
+                }
+            }
+            // invalidated should be gone
+            assert_eq!(flow_table.active_len().unwrap(), (NUM_FLOWS - 1).into());
+
+            // wait 4 > 3 seconds. All except the one extended should be gone
+            tokio::time::sleep(Duration::from_secs(4)).await;
             assert_eq!(flow_table.active_len().unwrap(), 1);
         }
     }
