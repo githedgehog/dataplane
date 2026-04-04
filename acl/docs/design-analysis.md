@@ -4475,3 +4475,81 @@ capabilities. The cascade test then verifies:
 This is not a v1 deliverable but should be kept in mind as the
 `Compiler` trait evolves — the trait must be flexible enough to support
 both real backends and this mock.
+
+### The compiler as a lowering pass
+
+The user-facing `Step` and `Fate` types are **semantic intent**, not
+hardware instructions.  The backend compiler is a **lowering pass**
+that translates intent into backend-specific operations — the same
+relationship as Rust source code to machine instructions.
+
+```
+User intent              Compiler    Backend instructions
+───────────────────────────────────────────────────────────
+Fate::Forward          → rte_flow  → Queue(3) + RSS(cfg)
+                       → DPDK ACL  → userdata = PERMIT
+                       → tc-flower → action pass
+                       → software  → return Forward
+
+Fate::Drop             → rte_flow  → FlowAction::Drop
+                       → DPDK ACL  → userdata = DROP
+                       → software  → return Drop
+
+Step::Mark(42)         → rte_flow  → FlowAction::Mark(42)
+                       → software  → packet.meta.mark = 42
+
+Step::Count(id)        → rte_flow  → FlowAction::Count(id)
+                       → software  → counter[id].fetch_add(1)
+```
+
+**Hardware-only concepts are lowering decisions, not user input.**
+
+Queue assignment, RSS distribution, flow aging, meter binding —
+these are all decisions the compiler makes during lowering, not
+things the user specifies in the rule.  The user says "forward
+this traffic."  The compiler decides which queue, what RSS hash,
+and how long the hardware flow lives before it ages out.
+
+This is why our `Step` and `Fate` enums don't include `Queue`,
+`Rss`, or `Age` — those are rte_flow / tc-flower "assembly
+instructions" that the lowering pass emits.  The compiler takes
+deployment-specific configuration (queue mapping, RSS policy,
+aging parameters) as input alongside the rule set:
+
+```rust
+struct LoweringConfig {
+    /// How to map Fate::Forward to specific queues.
+    queue_policy: QueuePolicy,
+    /// RSS distribution parameters.
+    rss_config: Option<RssConfig>,
+    /// Flow aging timeout for hardware entries.
+    age_timeout_secs: Option<u32>,
+    // ... other backend-specific parameters
+}
+```
+
+**This separation has concrete benefits:**
+
+1. **The user API stays small.**  `Step` and `Fate` have a handful
+   of semantic variants.  Hardware instruction sets (rte_flow has
+   62 action types) are the compiler's problem.
+
+2. **The linear-scan classifier stays trivial.**  It evaluates
+   `Forward` vs `Drop` and never needs to pretend it understands
+   queues.  This keeps the reference implementation correct by
+   construction.
+
+3. **Backend portability is free.**  The same rule set compiles to
+   different backends without the user changing anything.  Only the
+   `LoweringConfig` changes between deployments.
+
+4. **New hardware capabilities don't change the API.**  When a NIC
+   adds support for a new action (e.g., in-hardware NAT64), the
+   compiler learns to lower `Step::SetField` to the hardware action.
+   The user's rule doesn't change.
+
+5. **The cascade compiler reasons about intent, not instructions.**
+   When checking `can_execute_actions()`, the backend reports whether
+   it can achieve the *semantic goal* (forward, drop, mark), not
+   whether it has a specific hardware instruction.  This keeps the
+   capability model clean.
