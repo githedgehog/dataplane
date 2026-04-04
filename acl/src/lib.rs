@@ -71,6 +71,8 @@ mod cascade;
 mod classifier;
 #[cfg(any(test, feature = "bolero"))]
 mod generators;
+#[cfg(any(test, feature = "bolero"))]
+pub use generators::{GenerateAclTable, GenerateTablePair};
 mod overlap;
 mod priority;
 mod range;

@@ -1,57 +1,91 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Property tests for ACL classification.
+//! Property tests for ACL classification and updates.
 //!
-//! Uses bolero to generate random rule sets and verify that the opaque
-//! `Classifier` produces identical results to the reference
-//! `LinearClassifier` on all generated inputs.
+//! Uses bolero to generate random rule sets and verify invariants:
+//! - `Classifier::compile()` matches `LinearClassifier` on all inputs
+//! - Two-tier update produces same results as fresh single-tier compile
+//!
+//! Short tests (1s default) run in normal `cargo test`.
+//! Long tests (60s) are behind `#[ignore]` — run with `--ignored`.
 
 #![allow(clippy::unwrap_used)]
 
-use dataplane_acl::{AclRule, AclTableBuilder, Fate};
+use dataplane_acl::{
+    AclRule, AclTableBuilder, Fate, GenerateAclTable, GenerateTablePair,
+};
 use net::headers::builder::HeaderStack;
+use net::headers::Headers;
 use net::ipv4::UnicastIpv4Addr;
 use net::tcp::port::TcpPort;
+use net::udp::port::UdpPort;
 use std::net::Ipv4Addr;
 
-/// Build a set of test headers to classify against.
-/// These are fixed "probe packets" that exercise different match paths.
-fn probe_packets() -> Vec<net::headers::Headers> {
+/// Build a diverse set of probe packets covering common match dimensions.
+fn generate_probe_packets(count: usize) -> Vec<Headers> {
     let ips = [
         Ipv4Addr::new(10, 0, 0, 1),
         Ipv4Addr::new(10, 1, 2, 3),
-        Ipv4Addr::new(192, 168, 1, 1),
+        Ipv4Addr::new(10, 255, 0, 1),
         Ipv4Addr::new(172, 16, 0, 1),
+        Ipv4Addr::new(192, 168, 1, 1),
+        Ipv4Addr::new(192, 168, 100, 50),
+        Ipv4Addr::new(8, 8, 8, 8),
         Ipv4Addr::new(127, 0, 0, 1),
-        Ipv4Addr::new(255, 255, 255, 255),
+        Ipv4Addr::new(1, 1, 1, 1),
     ];
-    let ports = [1u16, 22, 80, 443, 8080, 65535];
+    let tcp_ports: &[u16] = &[1, 22, 53, 80, 443, 1024, 8080, 8443, 65535];
+    let udp_ports: &[u16] = &[53, 67, 68, 123, 500, 4500, 51820];
 
     let mut packets = Vec::new();
+
+    // TCP packets
     for ip in &ips {
-        for port in &ports {
-            if let (Ok(uip), Ok(tp)) = (
-                UnicastIpv4Addr::new(*ip),
-                TcpPort::new_checked(*port),
-            ) {
-                if let Ok(headers) = HeaderStack::new()
+        for port in tcp_ports {
+            if let (Ok(uip), Ok(tp)) = (UnicastIpv4Addr::new(*ip), TcpPort::new_checked(*port)) {
+                if let Ok(h) = HeaderStack::new()
                     .eth(|_| {})
                     .ipv4(|h| { h.set_source(uip); })
                     .tcp(|h| { h.set_destination(tp); })
                     .build_headers()
                 {
-                    packets.push(headers);
+                    packets.push(h);
                 }
+            }
+            if packets.len() >= count {
+                return packets;
             }
         }
     }
+
+    // UDP packets
+    for ip in &ips {
+        for port in udp_ports {
+            if let (Ok(uip), Ok(up)) = (UnicastIpv4Addr::new(*ip), UdpPort::new_checked(*port)) {
+                if let Ok(h) = HeaderStack::new()
+                    .eth(|_| {})
+                    .ipv4(|h| { h.set_source(uip); })
+                    .udp(|h| { h.set_destination(up); })
+                    .build_headers()
+                {
+                    packets.push(h);
+                }
+            }
+            if packets.len() >= count {
+                return packets;
+            }
+        }
+    }
+
     packets
 }
 
+// ---- Short tests (1s, default) ----
+
 #[test]
 fn compile_matches_linear_on_random_rules() {
-    let packets = probe_packets();
+    let packets = generate_probe_packets(50);
 
     bolero::check!()
         .with_type::<Vec<AclRule<()>>>()
@@ -60,9 +94,6 @@ fn compile_matches_linear_on_random_rules() {
                 return;
             }
 
-            // Build table from generated rules.
-            // Use unique priorities — if there are duplicates, the table
-            // may behave unpredictably.  Deduplicate by priority.
             let mut seen = std::collections::HashSet::new();
             let mut builder = AclTableBuilder::new(Fate::Drop);
             for rule in rules {
@@ -76,11 +107,118 @@ fn compile_matches_linear_on_random_rules() {
             let linear = table.compile_linear();
 
             for pkt in &packets {
-                let opaque_fate = opaque.classify(pkt).fate();
-                let linear_fate = linear.classify(pkt).fate();
                 assert_eq!(
-                    opaque_fate, linear_fate,
-                    "opaque vs linear mismatch on generated table with {} rules",
+                    opaque.classify(pkt).fate(),
+                    linear.classify(pkt).fate(),
+                    "compile vs linear mismatch ({} rules)",
+                    table.rules().len()
+                );
+            }
+        });
+}
+
+#[test]
+fn update_two_tier_matches_fresh_compile() {
+    let packets = generate_probe_packets(100);
+
+    bolero::check!()
+        .with_generator(GenerateTablePair {
+            base_rule_count: 20,
+            add_count: 2,
+            remove_count: 1,
+            modify_count: 1,
+        })
+        .for_each(|(old_table, new_table)| {
+            let old_classifier = old_table.compile();
+
+            let plan = dataplane_acl::plan_update(old_table, &old_classifier, new_table);
+            let fresh = new_table.compile();
+
+            for pkt in &packets {
+                let tiered_fate = plan.immediate.classify(pkt).fate();
+                let fresh_fate = fresh.classify(pkt).fate();
+                assert_eq!(
+                    tiered_fate, fresh_fate,
+                    "two-tier vs fresh mismatch after update ({} → {} rules)",
+                    old_table.rules().len(),
+                    new_table.rules().len()
+                );
+            }
+        });
+}
+
+#[test]
+fn large_table_compile_consistency() {
+    let packets = generate_probe_packets(200);
+
+    bolero::check!()
+        .with_generator(GenerateAclTable { rule_count: 100 })
+        .for_each(|table| {
+            let opaque = table.compile();
+            let linear = table.compile_linear();
+
+            for pkt in &packets {
+                assert_eq!(
+                    opaque.classify(pkt).fate(),
+                    linear.classify(pkt).fate(),
+                    "large table: compile vs linear mismatch ({} rules)",
+                    table.rules().len()
+                );
+            }
+        });
+}
+
+// ---- Long tests (60s, run with --ignored) ----
+
+#[test]
+#[ignore]
+fn long_update_consistency() {
+    let packets = generate_probe_packets(500);
+
+    bolero::check!()
+        .with_generator(GenerateTablePair {
+            base_rule_count: 50,
+            add_count: 5,
+            remove_count: 3,
+            modify_count: 3,
+        })
+        .with_iterations(1_000_000)
+        .with_max_len(4096)
+        .for_each(|(old_table, new_table)| {
+            let old_classifier = old_table.compile();
+
+            let plan = dataplane_acl::plan_update(old_table, &old_classifier, new_table);
+            let fresh = new_table.compile();
+
+            for pkt in &packets {
+                let tiered_fate = plan.immediate.classify(pkt).fate();
+                let fresh_fate = fresh.classify(pkt).fate();
+                assert_eq!(
+                    tiered_fate, fresh_fate,
+                    "long test: two-tier vs fresh mismatch"
+                );
+            }
+        });
+}
+
+#[test]
+#[ignore]
+fn long_large_table_consistency() {
+    let packets = generate_probe_packets(500);
+
+    bolero::check!()
+        .with_generator(GenerateAclTable { rule_count: 200 })
+        .with_iterations(1_000_000)
+        .with_max_len(8192)
+        .for_each(|table| {
+            let opaque = table.compile();
+            let linear = table.compile_linear();
+
+            for pkt in &packets {
+                assert_eq!(
+                    opaque.classify(pkt).fate(),
+                    linear.classify(pkt).fate(),
+                    "long test: compile vs linear mismatch ({} rules)",
                     table.rules().len()
                 );
             }

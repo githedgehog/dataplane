@@ -300,3 +300,117 @@ mod rule_gen {
         }
     }
 }
+
+// ---- ValueGenerators for targeted testing ----
+
+/// Generate an [`AclTable`] with a controlled number of rules.
+///
+/// Rules are deduplicated by priority (last writer wins) to avoid
+/// ambiguous priority ordering.  The actual table size may be smaller
+/// than `rule_count` if priority collisions occur, but will tend
+/// toward `rule_count` for large priority spaces.
+pub struct GenerateAclTable {
+    /// Target number of rules in the generated table.
+    pub rule_count: usize,
+}
+
+impl bolero::ValueGenerator for GenerateAclTable {
+    type Output = crate::table::AclTable;
+
+    fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+        use crate::action::Fate;
+        use crate::rule::AclRule;
+        use crate::table::AclTableBuilder;
+        use std::collections::HashSet;
+
+        let default_fate = if driver.produce::<bool>()? {
+            Fate::Drop
+        } else {
+            Fate::Forward
+        };
+
+        let mut builder = AclTableBuilder::new(default_fate);
+        let mut seen_priorities = HashSet::new();
+
+        for _ in 0..self.rule_count {
+            let rule: AclRule = driver.produce()?;
+            if seen_priorities.insert(rule.priority()) {
+                builder.push_rule(rule);
+            }
+        }
+
+        Some(builder.build())
+    }
+}
+
+/// Generate a pair of [`AclTable`]s where the second is a mutation
+/// of the first (simulating an update).
+///
+/// The mutation adds, removes, and modifies a controlled number of
+/// rules, exercising the update planning logic.
+pub struct GenerateTablePair {
+    /// Target number of rules in the base table.
+    pub base_rule_count: usize,
+    /// Number of rules to add in the updated table.
+    pub add_count: usize,
+    /// Number of rules to remove in the updated table.
+    pub remove_count: usize,
+    /// Number of rules to modify (change action) in the updated table.
+    pub modify_count: usize,
+}
+
+impl bolero::ValueGenerator for GenerateTablePair {
+    type Output = (crate::table::AclTable, crate::table::AclTable);
+
+    fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+        use crate::action::{ActionSequence, Fate};
+        use crate::priority::Priority;
+        use crate::rule::AclRule;
+
+        // Generate the base table.
+        let base = GenerateAclTable {
+            rule_count: self.base_rule_count,
+        }
+        .generate(driver)?;
+
+        // Mutate to produce the updated table.
+        let mut builder = base.to_builder();
+        let old_rules: Vec<_> = base.rules().to_vec();
+
+        // Remove some rules.
+        let removable = old_rules.len().min(self.remove_count);
+        for i in 0..removable {
+            // Remove by priority of the i-th rule.
+            builder.remove_by_priority(old_rules[i].priority());
+        }
+
+        // Modify some rules (change action, keep priority + match).
+        let modifiable = old_rules.len().saturating_sub(removable).min(self.modify_count);
+        for i in removable..removable + modifiable {
+            let old = &old_rules[i];
+            // Toggle the fate: Forward ↔ Drop.
+            let new_fate = if old.actions().fate() == Fate::Forward {
+                Fate::Drop
+            } else {
+                Fate::Forward
+            };
+            builder.remove_by_priority(old.priority());
+            let new_rule = AclRule::new(
+                old.packet_match().clone(),
+                (),
+                ActionSequence::just(new_fate),
+                old.priority(),
+            );
+            builder.push_rule(new_rule);
+        }
+
+        // Add new rules.
+        for _ in 0..self.add_count {
+            let rule: AclRule = driver.produce()?;
+            builder.push_rule(rule);
+        }
+
+        let updated = builder.build();
+        Some((base, updated))
+    }
+}
