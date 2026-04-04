@@ -82,6 +82,6 @@ pub use match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, Udp
 pub use metadata::Metadata;
 pub use priority::{Priority, PriorityZeroError};
 pub use range::{Ipv4Prefix, Ipv4PrefixError, Ipv6Prefix, Ipv6PrefixError, PortRange};
-pub use signature::FieldSignature;
+pub use signature::{group_rules_by_signature, FieldSignature, SignatureGroup};
 pub use rule::AclRule;
 pub use table::{AclTable, AclTableBuilder};

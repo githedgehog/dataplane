@@ -181,6 +181,55 @@ impl FieldSignature {
     }
 }
 
+/// A group of rule indices that share the same [`FieldSignature`].
+///
+/// Each group will become one DPDK ACL context with a `FieldDef` array
+/// matching the signature's selected fields.
+#[derive(Debug, Clone)]
+pub struct SignatureGroup {
+    /// The shared field signature.
+    signature: FieldSignature,
+    /// Indices into the original rule list.
+    rule_indices: Vec<usize>,
+}
+
+impl SignatureGroup {
+    /// The shared field signature for this group.
+    #[must_use]
+    pub fn signature(&self) -> FieldSignature {
+        self.signature
+    }
+
+    /// Indices of rules in this group (into the original table's rule list).
+    #[must_use]
+    pub fn rule_indices(&self) -> &[usize] {
+        &self.rule_indices
+    }
+}
+
+/// Partition a slice of match field sets by their field signature.
+///
+/// Returns one [`SignatureGroup`] per unique signature.  Groups are
+/// sorted by signature for deterministic ordering.
+#[must_use]
+pub fn group_rules_by_signature(rules: &[AclMatchFields]) -> Vec<SignatureGroup> {
+    use std::collections::BTreeMap;
+
+    let mut groups: BTreeMap<FieldSignature, Vec<usize>> = BTreeMap::new();
+    for (i, fields) in rules.iter().enumerate() {
+        let sig = FieldSignature::from_match_fields(fields);
+        groups.entry(sig).or_default().push(i);
+    }
+
+    groups
+        .into_iter()
+        .map(|(signature, rule_indices)| SignatureGroup {
+            signature,
+            rule_indices,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +372,62 @@ mod tests {
         // eth layer is present but ether_type is Ignore → not in signature
         assert!(!sig.has_eth_type());
         assert_eq!(sig.field_count(), 0);
+    }
+
+    #[test]
+    fn group_rules_by_signature_partitions_correctly() {
+        // Two IPv4+TCP rules with ports → same signature
+        let r0 = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.src =
+                    FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+            })
+            .tcp(|tcp| {
+                tcp.dst = FieldMatch::Select(PortRange::exact(TcpPort::new_checked(80).unwrap()));
+            })
+            .permit(pri(100));
+
+        let r1 = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.src = FieldMatch::Select(
+                    Ipv4Prefix::new(Ipv4Addr::new(172, 16, 0, 0), 12).unwrap(),
+                );
+            })
+            .tcp(|tcp| {
+                tcp.dst =
+                    FieldMatch::Select(PortRange::exact(TcpPort::new_checked(443).unwrap()));
+            })
+            .deny(pri(200));
+
+        // One IPv4-only rule (no ports) → different signature
+        let r2 = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.src =
+                    FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+            })
+            .permit(pri(300));
+
+        let match_fields: Vec<AclMatchFields> = [&r0, &r1, &r2]
+            .iter()
+            .map(|r| r.packet_match().clone())
+            .collect();
+
+        let groups = group_rules_by_signature(&match_fields);
+
+        // Should produce 2 groups
+        assert_eq!(groups.len(), 2);
+
+        // Find the group with 2 rules (the TCP port rules)
+        let tcp_group = groups.iter().find(|g| g.rule_indices().len() == 2).unwrap();
+        assert_eq!(tcp_group.rule_indices(), &[0, 1]);
+        assert!(tcp_group.signature().has_tcp_dst());
+
+        // Find the group with 1 rule (the IPv4-only rule)
+        let ip_group = groups.iter().find(|g| g.rule_indices().len() == 1).unwrap();
+        assert_eq!(ip_group.rule_indices(), &[2]);
+        assert!(!ip_group.signature().has_tcp_dst());
     }
 }
