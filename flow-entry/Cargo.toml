@@ -22,7 +22,7 @@ linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 
