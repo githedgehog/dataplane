@@ -8,5 +8,6 @@ version.workspace = true
 [dependencies]
 acl = { path = "../acl", package = "dataplane-acl" }
 dpdk = { path = "../dpdk", package = "dataplane-dpdk" }
+etherparse = { workspace = true }
 net = { path = "../net", package = "dataplane-net" }
 thiserror = { workspace = true }
