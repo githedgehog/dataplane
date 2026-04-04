@@ -180,7 +180,6 @@ impl FlowTable {
     fn start_timer(table: Arc<RwLock<Table>>, flow_info: Arc<FlowInfo>) {
         tokio::task::spawn(async move {
             let table = table;
-            let flow_info = flow_info;
             let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!()); // flows have key when inserted
             let mut deadline = flow_info.expires_at();
             loop {
@@ -196,16 +195,21 @@ impl FlowTable {
                             deadline = new_deadline;
                             continue;
                         }
-                        debug!("Timer for flow {flow_key} expired");
+                        debug!("Timer[EXPIRED] for flow {flow_key}");
                         flow_info.update_status(FlowStatus::Expired);
                         break;
                     },
                     () = flow_info.token.cancelled() =>  {
-                        debug!("Timer for {flow_key} was cancelled");
+                        debug!("Timer[CANCELLED] for flow {flow_key}");
                         break;
                     },
                 }
             }
+            // no need to remove
+            if flow_info.status() == FlowStatus::Detached {
+                return;
+            }
+
             // Reached on every break (normal expiry or Cancelled/Expired early exit).
             // `continue` bypasses this, so removal only fires when the loop terminates.
             // Use remove_if + ptr_eq so a concurrently inserted replacement is left intact.
@@ -247,7 +251,7 @@ impl FlowTable {
                 poisoned.into_inner()
             });
 
-            debug!("Removing flow {flow_key}:{flow_info}...");
+            debug!("Removing flow {flow_key}...");
             if table
                 .remove_if(flow_key, |_, v| Arc::ptr_eq(v, &flow_info))
                 .is_none()
@@ -258,9 +262,14 @@ impl FlowTable {
     }
 
     fn insert_common(&self, flow_key: FlowKey, val: &Arc<FlowInfo>) -> Option<Arc<FlowInfo>> {
+        val.update_status(FlowStatus::Active);
         let table = self.table.read().unwrap();
         let result = table.insert(flow_key, val.clone());
         Self::start_timer(self.table.clone(), val.clone());
+        if let Some(old) = result.as_ref() {
+            old.update_status(FlowStatus::Detached);
+            old.token.cancel();
+        }
         result
     }
 
@@ -309,6 +318,7 @@ impl FlowTable {
                 table.remove_if(flow_key, |_, v| Arc::ptr_eq(v, &item));
                 None
             }
+            FlowStatus::Detached => None,
         }
     }
 
@@ -383,6 +393,7 @@ impl FlowTable {
         table.retain(|_key, val| {
             let stale = match val.status() {
                 FlowStatus::Expired | FlowStatus::Cancelled => true,
+                FlowStatus::Detached => unreachable!(),
                 FlowStatus::Active if val.expires_at() <= now => {
                     // Deadline passed but the tokio timer has not fired yet; mark and remove.
                     val.update_status(FlowStatus::Expired);
@@ -689,6 +700,36 @@ mod tests {
             // wait 4 > 3 seconds. All except the one extended should be gone
             tokio::time::sleep(Duration::from_secs(4)).await;
             assert_eq!(flow_table.active_len().unwrap(), 1);
+        }
+
+        #[tokio::test]
+        #[traced_test]
+        /// Test that invalidating flows causes timer to expire and flows to be removed
+        async fn test_flow_table_flow_reinsertion() {
+            let flow_table = FlowTable::default();
+            let now = Instant::now();
+            let deadline = now + Duration::from_secs(2);
+
+            let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
+                Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                "1.2.3.4".parse::<IpAddr>().unwrap(),
+                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: TcpPort::new_checked(1).unwrap(),
+                    dst_port: TcpPort::new_checked(2048).unwrap(),
+                }),
+            ));
+            let flow_info = FlowInfo::new(deadline);
+            flow_table.insert(flow_key, flow_info);
+
+            let flow_info = FlowInfo::new(deadline + Duration::from_secs(2));
+            let old = flow_table.insert(flow_key, flow_info);
+            assert!(old.is_some());
+            assert_eq!(old.unwrap().expires_at(), deadline);
+            assert_eq!(flow_table.active_len().unwrap(), 1);
+
+            let () = tokio::time::sleep(Duration::from_secs(5)).await;
+            assert_eq!(flow_table.active_len().unwrap(), 0);
         }
     }
 

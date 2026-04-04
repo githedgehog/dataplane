@@ -22,6 +22,8 @@ pub enum FlowInfoError {
     FlowExpired(Instant),
     #[error("flow was cancelled")]
     FlowCancelled,
+    #[error("flow was removed from table")]
+    FlowDetached,
     #[error("no such status")]
     NoSuchStatus(u8),
     #[error("Timeout unchanged: would go backwards")]
@@ -37,6 +39,8 @@ pub enum FlowStatus {
     Cancelled = 1,
     // the flow is invalid because it timed out and will be removed from the flow table
     Expired = 2,
+    // the flow is no longer in the flow table. It may still exist and be referenced, though
+    Detached = 3,
 }
 
 impl Display for FlowStatus {
@@ -45,6 +49,7 @@ impl Display for FlowStatus {
             Self::Active => write!(f, "active"),
             Self::Cancelled => write!(f, "cancelled"),
             Self::Expired => write!(f, "expired"),
+            Self::Detached => write!(f, "detached"),
         }
     }
 }
@@ -57,6 +62,7 @@ impl TryFrom<u8> for FlowStatus {
             0 => Ok(FlowStatus::Active),
             1 => Ok(FlowStatus::Cancelled),
             2 => Ok(FlowStatus::Expired),
+            3 => Ok(FlowStatus::Detached),
             v => Err(FlowInfoError::NoSuchStatus(v)),
         }
     }
@@ -332,6 +338,7 @@ impl FlowInfo {
         match self.status.load(std::sync::atomic::Ordering::Relaxed) {
             FlowStatus::Active => self.reset_expiry_unchecked(duration),
             FlowStatus::Cancelled => Err(FlowInfoError::FlowCancelled),
+            FlowStatus::Detached => Err(FlowInfoError::FlowDetached),
             FlowStatus::Expired => Err(FlowInfoError::FlowExpired(self.expires_at())),
         }
     }
