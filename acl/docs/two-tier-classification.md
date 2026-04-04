@@ -111,6 +111,38 @@ The key property borrowed from LSM trees: **writes are fast**
 structure first, fall through to large).  Background merging
 amortizes the cost of maintaining the large structure.
 
+### Delta backend selection
+
+The delta table doesn't have to be a `LinearClassifier`.  The
+compiler picks the best backend for the delta based on k (the
+number of changed rules):
+
+| k | Delta backend | Rationale |
+|---|---|---|
+| 1–10 | `LinearClassifier` | O(k) per packet, trivially fast to build |
+| 10–100 | DPDK ACL (delta only) | O(1) per packet, builds in µs for small k |
+| 100–1000 | DPDK ACL (delta only) | Still faster than full rebuild; build time grows but acceptable |
+| >1000 or >~10% of n | Full rebuild | Delta is most of the table; two-tier overhead isn't worth it |
+
+The threshold between "use a delta" and "just rebuild" is a
+compiler heuristic.  Factors:
+
+- **k/n ratio**: if the delta is a large fraction of the base,
+  the two-tier overhead (checking delta first for every packet)
+  may exceed the savings from faster update latency.
+- **Base table rebuild time**: if the backend rebuilds fast
+  (DPDK ACL with huge pages, or rte_flow async template API on
+  ConnectX-7+), the threshold for "just rebuild" drops.
+- **Traffic rate**: if the affected traffic is high-rate, a
+  `LinearClassifier` delta with k=50 rules is noticeably slower
+  than a trie.  Use DPDK ACL for the delta.
+- **Update frequency**: if updates arrive every 100ms, the delta
+  must build in <100ms.  This constrains k for slower backends.
+
+The compiler can also mix backends across tiers: delta in software
+(always fast to build), base in hardware (highest throughput).
+The cascade's trap rules handle the tier-1 redirect.
+
 ### Multiple pending deltas
 
 If updates arrive faster than background recompilation, multiple
