@@ -31,7 +31,7 @@ use core::fmt::{self, Display, Formatter};
 /// [`Default`][ClassifyAlgorithm::Default] is always available and is recommended unless you have
 /// a specific reason to select a particular implementation.
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)] // AGENT: should get strum macros to do conversion
 pub enum ClassifyAlgorithm {
     /// Let DPDK choose the best available implementation for the current CPU.
     ///
@@ -107,6 +107,7 @@ impl ClassifyAlgorithm {
         self as u32
     }
 
+    // AGENT: does this work better with strum?
     /// Attempt to parse a raw `u32` into a [`ClassifyAlgorithm`].
     ///
     /// Returns `None` if the value does not correspond to a known algorithm.
@@ -154,6 +155,7 @@ impl ClassifyAlgorithm {
     }
 }
 
+// AGENT: I think strum can do some of this as well
 impl Display for ClassifyAlgorithm {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -180,6 +182,7 @@ impl From<ClassifyAlgorithm> for dpdk_sys::rte_acl_classify_alg::Type {
 // Compile-time assertions
 // ---------------------------------------------------------------------------
 
+// AGENT: This feels like another thing we get for free with strum
 /// Verify that our enum discriminants match the DPDK constants exactly.
 const _: () = {
     use dpdk_sys::rte_acl_classify_alg::*;
@@ -278,9 +281,6 @@ mod tests {
     fn into_dpdk_type() {
         let alg = ClassifyAlgorithm::Avx2;
         let raw: dpdk_sys::rte_acl_classify_alg::Type = alg.into();
-        assert_eq!(
-            raw,
-            dpdk_sys::rte_acl_classify_alg::RTE_ACL_CLASSIFY_AVX2
-        );
+        assert_eq!(raw, dpdk_sys::rte_acl_classify_alg::RTE_ACL_CLASSIFY_AVX2);
     }
 }

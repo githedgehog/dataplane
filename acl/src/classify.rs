@@ -105,9 +105,8 @@ fn rule_matches(fields: &AclMatchFields, headers: &Headers) -> bool {
 
 /// Ethernet layer matching.
 fn eth_matches(m: &EthMatch, headers: &Headers) -> bool {
-    m.ether_type.is_none_or(|et| {
-        headers.eth().is_some_and(|eth| eth.ether_type() == et)
-    })
+    m.ether_type
+        .is_none_or(|et| headers.eth().is_some_and(|eth| eth.ether_type() == et))
 }
 
 /// IPv4 layer matching.
@@ -142,8 +141,7 @@ fn tcp_matches(m: &TcpMatch, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src
-        .is_none_or(|r| tcp_port_in_range(r, tcp.source()))
+    m.src.is_none_or(|r| tcp_port_in_range(r, tcp.source()))
         && m.dst
             .is_none_or(|r| tcp_port_in_range(r, tcp.destination()))
 }
@@ -154,8 +152,7 @@ fn udp_matches(m: &UdpMatch, headers: &Headers) -> bool {
         return false;
     };
 
-    m.src
-        .is_none_or(|r| udp_port_in_range(r, udp.source()))
+    m.src.is_none_or(|r| udp_port_in_range(r, udp.source()))
         && m.dst
             .is_none_or(|r| udp_port_in_range(r, udp.destination()))
 }
@@ -207,6 +204,7 @@ mod tests {
     use crate::priority::Priority;
     use crate::{AclRuleBuilder, AclTableBuilder};
     use net::headers::builder::HeaderStack;
+    use net::vlan::{Pcp, Vid};
 
     /// Shorthand for creating a Priority in tests.
     fn pri(n: u32) -> Priority {
@@ -246,44 +244,117 @@ mod tests {
         assert_eq!(classifier.classify(&headers), Action::Permit);
     }
 
-    #[test]
-    fn ipv4_prefix_match() {
-        use std::net::Ipv4Addr;
+#[test]
+fn ipv4_prefix_match() {
+    use std::net::Ipv4Addr;
 
-        let rule = AclRuleBuilder::new()
-            .eth(|_| {})
-            .ipv4(|ip| {
-                ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
-            })
-            .permit(pri(100));
+    let table_builder = AclTableBuilder::new(Action::Deny /* default action */);
 
-        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
-        let classifier = table.compile_linear();
+    let example_rule1 = AclRuleBuilder::new()
+        // starts with wildcard match on ethernet
+        .eth(|_| {})
+        // but adding a .ipv4 after restricts the ethertype match to 0x0800
+        .ipv4(|ip| {
+            // and here we use the (throwaway) Ipv4Prefix type to restrict the match to 10.0.0.0/8
+            ip.src = Some(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+        })
+        // by adding tcp here we scope the ip protocol to tcp exactly, no need to specify in the prior layer
+        .tcp(|tcp| {
+            // note that we support range matches as well.
+            // In this example I'm matching on all privileged dst ports
+            tcp.dst = Some(PortRange {
+                min: TcpPort::new_checked(1).unwrap(),
+                max: TcpPort::new_checked(1024).unwrap(),
+            });
+        })
+        // the prio of the installed match is 100.  Lower prio currently matches first, but that is something to
+        // discuss.
+        .permit(pri(100));
 
-        let matching = HeaderStack::new()
-            .eth(|_| {})
-            .ipv4(|ip| {
-                ip.set_source(
-                    net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap(),
-                );
-            })
-            .tcp(|_| {})
-            .build_headers()
-            .unwrap();
-        assert_eq!(classifier.classify(&matching), Action::Permit);
+    // More, we can match-act on various protocols at the same time.
+    // Rules don't all need to have the same shape to coexist in the table.
+    let example_rule2 = AclRuleBuilder::new()
+        .eth(|_| {}) // wildcard on eth
+        // wildcard on eth becomes exact match on Ipv6 ethtype
+        .ipv6(|ip| {
+            // here we decide to explicitly allow link local traffic
+            ip.dst =
+                Some(Ipv6Prefix::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 64).unwrap());
+        })
+        // this rule will match *before* example_rule1
+        .permit(pri(50));
 
-        let non_matching = HeaderStack::new()
-            .eth(|_| {})
-            .ipv4(|ip| {
-                ip.set_source(
-                    net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap(),
-                );
-            })
-            .tcp(|_| {})
-            .build_headers()
-            .unwrap();
-        assert_eq!(classifier.classify(&non_matching), Action::Deny);
-    }
+    // The AclTable struct is mutable.  You can add rules to it and assemble them as you like.
+    let table = table_builder
+        .add_rule(example_rule1)
+        .add_rule(example_rule2)
+        .build();
+    // But while our table is abstract, classifiers are not. They come out of compilers on the table and they are
+    // not mutable.
+    // You need to invoke a compiler to get something which actually classifies traffic.
+    // This let's us swap out backends and eventually support hardware offloads and cascaded clasifiers.
+    // Currently we only have a linear scan classifier (reference impl for testing), but will be swapped to dpdk
+    // ACL shortly.
+    let classifier = table.compile_linear();
+
+    // ACL table design can match on a wide number of fields, including, e.g., source ip LPM matches
+    let matching_headers = HeaderStack::new()
+        .eth(|_| {})
+        .ipv4(|ip| {
+            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
+        })
+        .tcp(|tcp| {
+            tcp.set_destination(TcpPort::new_checked(80).unwrap());
+        })
+        .build_headers()
+        .unwrap();
+    assert_eq!(classifier.classify(&matching_headers), Action::Permit);
+
+    // if you aren't in the designated source ip range you won't match
+    let non_matching_headers = HeaderStack::new()
+        .eth(|_| {})
+        .ipv4(|ip| {
+            ip.set_source(
+                net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap(),
+            );
+        })
+        .tcp(|_| {})
+        .build_headers()
+        .unwrap();
+    assert_eq!(classifier.classify(&non_matching_headers), Action::Deny);
+
+    // ACL table design is protocol aware and not confused by priority tagged traffic.
+    let leading_vlan_protocol = HeaderStack::new()
+        .eth(|_| {})
+        .vlan(|v| {
+            v.set_vid(Vid::new(3).unwrap());
+        })
+        .ipv4(|ip| {
+            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
+        })
+        .tcp(|tcp| {
+            tcp.set_destination(TcpPort::new_checked(80).unwrap());
+        })
+        .build_headers()
+        .unwrap();
+    assert_eq!(classifier.classify(&leading_vlan_protocol), Action::Deny);
+
+    // edge cases like vlan 0 are also handled.
+    let priority_tagged = HeaderStack::new()
+        .eth(|_| {})
+        .vlan(|v| {
+            v.set_pcp(Pcp::new(2).unwrap());
+        })
+        .ipv4(|ip| {
+            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
+        })
+        .tcp(|tcp| {
+            tcp.set_destination(TcpPort::new_checked(80).unwrap());
+        })
+        .build_headers()
+        .unwrap();
+    assert_eq!(classifier.classify(&priority_tagged), Action::Deny);
+}
 
     #[test]
     fn priority_ordering() {
@@ -312,9 +383,7 @@ mod tests {
         let pkt = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|ip| {
-                ip.set_source(
-                    net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap(),
-                );
+                ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
             })
             .tcp(|_| {})
             .build_headers()
@@ -324,9 +393,7 @@ mod tests {
         let pkt2 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|ip| {
-                ip.set_source(
-                    net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 2, 0, 1)).unwrap(),
-                );
+                ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 2, 0, 1)).unwrap());
             })
             .tcp(|_| {})
             .build_headers()
@@ -356,7 +423,9 @@ mod tests {
         let pkt80 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|_| {})
-            .tcp(|tcp| { tcp.set_destination(TcpPort::new_checked(80).unwrap()); })
+            .tcp(|tcp| {
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            })
             .build_headers()
             .unwrap();
         assert_eq!(classifier.classify(&pkt80), Action::Permit);
@@ -364,7 +433,9 @@ mod tests {
         let pkt443 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|_| {})
-            .tcp(|tcp| { tcp.set_destination(TcpPort::new_checked(443).unwrap()); })
+            .tcp(|tcp| {
+                tcp.set_destination(TcpPort::new_checked(443).unwrap());
+            })
             .build_headers()
             .unwrap();
         assert_eq!(classifier.classify(&pkt443), Action::Permit);
@@ -372,7 +443,9 @@ mod tests {
         let pkt8080 = HeaderStack::new()
             .eth(|_| {})
             .ipv4(|_| {})
-            .tcp(|tcp| { tcp.set_destination(TcpPort::new_checked(8080).unwrap()); })
+            .tcp(|tcp| {
+                tcp.set_destination(TcpPort::new_checked(8080).unwrap());
+            })
             .build_headers()
             .unwrap();
         assert_eq!(classifier.classify(&pkt8080), Action::Deny);
