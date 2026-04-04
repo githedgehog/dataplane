@@ -4774,3 +4774,108 @@ sets.
 See also `[canini2013]` for transactional semantics when multiple
 control plane components update rules concurrently — relevant if
 our ACL tables are updated by independent k8s controllers.
+
+### Refined update: narrow guard rules (per `[mcclurg2015]`)
+
+The full generation swap (install all N+1 rules, switch, delete all
+N rules) doubles table space unnecessarily for small updates.  A
+narrower approach uses a **guard rule** to scope the transition to
+only the affected traffic:
+
+```
+1. Compute the "affected region" — the union of match space covered
+   by the old and new versions of the changed rules.  The overlap
+   analyzer identifies which existing rules interact with the change.
+
+2. Install a guard rule that matches the affected region and tags
+   matching packets with a metadata flag (META / MARK / TAG).
+
+3. Install new rules with an additional condition: match only
+   packets tagged with the new generation (or equivalently, the
+   old rules match only untagged packets).
+
+4. Remove the guard rule.  New rules now apply to all traffic in
+   the affected region.
+
+5. Remove the old versions of the changed rules.
+```
+
+**Why this is cheaper than full generation swap:**
+
+Only the changed rules (and their overlap neighborhood) are
+duplicated during the transition.  Unchanged rules remain in place
+with no generation tag and no duplication.  For a single-rule
+update in a 1000-rule table, the overhead is ~1 guard rule +
+1 new versioned rule, not 1000 duplicates.
+
+**Bookkeeping complications:**
+
+1. **Computing the guard match.**  The guard must cover the union of
+   old and new affected match regions.  If replacing a rule matching
+   `10.0.0.0/8:80` with `10.0.0.0/16:80`, the guard covers the /8
+   (the broader of the two).  The overlap analyzer provides the
+   input — it identifies which existing rules intersect with the
+   changing rules' match space.
+
+2. **The "tagged" condition.**  `rte_flow` doesn't have a native
+   `NOT` match operator.  The practical implementation uses metadata
+   generations: guard tags with gen N+1, new rules match on
+   `META == N+1`, old rules don't check META (or match `META == N`).
+   This is a scoped version of the two-phase approach — same
+   mechanism, narrower scope.
+
+3. **Multiple concurrent updates.**  If update B arrives while
+   update A's guard is still active, either serialize (wait for A
+   to complete) or use distinct tag values per update.  The
+   transactional approach from `[canini2013]` provides formal
+   semantics for concurrent updates.  For v1, sequential updates
+   are sufficient.
+
+4. **Guard capacity.**  Complex updates affecting many disjoint
+   match regions may require multiple guard rules.  If the guard
+   set grows large, it approaches the cost of full generation swap
+   and the compiler should fall back to that strategy.  A heuristic:
+   if guard rules exceed ~10% of the changed rule count, use full
+   swap instead.
+
+5. **Timing window.**  Between removing the guard (step 4) and
+   removing old rules (step 5), both versions briefly coexist.
+   This is safe because the new rules have appropriate priority
+   and the guard is gone, so traffic flows to the correct version.
+
+**Compiler decision:**  The compiler chooses between narrow guard
+and full generation swap based on the diff size:
+
+- Small incremental update (add/modify/delete 1-10 rules) →
+  narrow guard.  Low overhead, fast transition.
+- Large batch update (>10% of rules changed) → full generation
+  swap.  Simpler, more predictable, avoids guard complexity.
+- New table (no existing rules) → direct install, no guards needed.
+
+**Connection to stateful hardware offloads (NAT, conntrack):**
+
+This is especially important for rules whose match or action state
+mutates as a function of traffic — e.g., hardware-offloaded NAT
+where the NIC maintains connection state.  Updating the NAT rule
+set while preserving in-flight connection state requires that:
+
+- Existing connections continue to match their original NAT rules
+  (the old generation) until they drain or are explicitly migrated.
+- New connections match the updated rules (the new generation).
+- The guard rule tags new connections with the new generation while
+  existing connections retain the old generation through hardware
+  conntrack state.
+
+This is a deeper problem than stateless ACL updates because the
+NIC's internal state machine (conntrack) couples to the rule
+generation.  The generation tag must propagate into the conntrack
+entry so that return traffic for an established connection uses
+the same NAT mapping regardless of which rule generation is active.
+
+Hardware conntrack via `rte_flow` (`rte_flow_action_handle_create`
+with conntrack type) may provide the mechanism: the conntrack
+action can be associated with a generation, and the query/update
+API (`rte_flow_action_handle_query_update`) can migrate state
+between generations.  This needs investigation — it's a v2+
+concern but the generation-tagged update mechanism is the
+foundation it builds on.
