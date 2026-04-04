@@ -7,7 +7,7 @@ use net::FlowKey;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::debug;
 
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard};
@@ -50,11 +50,6 @@ impl FlowTable {
     /// proactively purge all stale (Expired / Cancelled / deadline-passed) entries to
     /// prevent unbounded memory growth.
     pub const AGGRESSIVE_REAP_THRESHOLD: usize = 1_000_000;
-
-    /// When the table is over `reap_threshold`, run the O(n) drain scan at most once
-    /// every this many inserts.  Between scans the table may grow by up to this many
-    /// entries above the threshold, which is an acceptable bounded overshoot.
-    pub const DRAIN_EVERY_N_INSERTS: usize = 1_000;
 
     #[must_use]
     pub fn new(num_shards: usize) -> Self {
@@ -132,7 +127,7 @@ impl FlowTable {
             flow_info.set_flowkey(flow_key);
         }
 
-        debug!("insert: Inserting flow key {:?}", flow_key);
+        debug!("Inserting flow {flow_key}");
         let val = Arc::new(flow_info);
         self.insert_common(flow_key, &val)
     }
@@ -159,7 +154,7 @@ impl FlowTable {
                 "Attempted to insert a flow with key: {key} with a distinct key: {flow_key}"
             );
         });
-        debug!("insert: Inserting flow key {:?}", flow_key);
+        debug!("insert: Inserting flow {flow_key}");
         self.insert_common(flow_key, flow_info)
     }
 
@@ -177,8 +172,82 @@ impl FlowTable {
     /// Panics if this thread already holds the read lock on the table or
     /// if the table lock is poisoned.
     pub fn reinsert(&self, flow_key: FlowKey, flow_info: &Arc<FlowInfo>) -> Option<Arc<FlowInfo>> {
-        debug!("reinsert: Re-inserting flow key {:?}", flow_key);
+        debug!("reinsert: Re-inserting flow key {flow_key}");
         self.insert_common(flow_key, flow_info)
+    }
+
+    /// Start a timer task for a flow
+    fn start_timer(table: Arc<RwLock<Table>>, flow_info: Arc<FlowInfo>) {
+        tokio::task::spawn(async move {
+            let table = table;
+            let flow_info = flow_info;
+            let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!()); // flows have key when inserted
+            let mut deadline = flow_info.expires_at();
+            loop {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                let status = flow_info.status();
+                if status != FlowStatus::Active {
+                    debug!("Flow {flow_key} is in status {status}");
+                    break;
+                }
+                let new_deadline = flow_info.expires_at();
+                if new_deadline > deadline {
+                    deadline = new_deadline;
+                    continue;
+                }
+                debug!("Timer for flow {flow_key} expired");
+                flow_info.update_status(FlowStatus::Expired);
+                break;
+            }
+            // Reached on every break (normal expiry or Cancelled/Expired early exit).
+            // `continue` bypasses this, so removal only fires when the loop terminates.
+            // Use remove_if + ptr_eq so a concurrently inserted replacement is left intact.
+            // Use try_read() rather than read() to avoid undefined behaviour on
+            // platforms where re-entrant locking may panic.  In practice the
+            // write lock is only held by reshard(), which is synchronous and
+            // never yields to the tokio executor, so WouldBlock is virtually
+            // never observed; yield_now() is purely defensive.
+            #[cfg(not(feature = "shuttle"))]
+            let table = loop {
+                // Evaluate try_read() and fully consume the Result before any
+                // await point; RwLockReadGuard is !Send and must not be held
+                // across an await even inside a non-Ok arm.
+                let would_block = match table.try_read() {
+                    Ok(guard) => break guard,
+                    Err(std::sync::TryLockError::Poisoned(p)) => {
+                        debug!(
+                            "flow expiration task: FlowTable RwLock poisoned; \
+                                     proceeding with possibly inconsistent table state"
+                        );
+                        break p.into_inner();
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => true,
+                };
+                // The Result (and any contained guard) is dropped here.
+                if would_block {
+                    tokio::task::yield_now().await;
+                }
+            };
+            // shuttle::sync does not export TryLockError, and the timer task
+            // never runs under shuttle (no tokio runtime), so we fall back to
+            // the plain read() there.
+            #[cfg(feature = "shuttle")]
+            let table = table.read().unwrap_or_else(|poisoned| {
+                debug!(
+                    "flow expiration task: FlowTable RwLock poisoned; \
+                             proceeding with possibly inconsistent table state"
+                );
+                poisoned.into_inner()
+            });
+
+            debug!("Removing flow {flow_key}:{flow_info}...");
+            if table
+                .remove_if(flow_key, |_, v| Arc::ptr_eq(v, &flow_info))
+                .is_none()
+            {
+                debug!("Unable to remove flow {flow_key} from table: not found");
+            }
+        });
     }
 
     fn insert_common(&self, flow_key: FlowKey, val: &Arc<FlowInfo>) -> Option<Arc<FlowInfo>> {
@@ -215,87 +284,7 @@ impl FlowTable {
                      relying on lazy expiration in lookup()"
                 );
             } else {
-                let fi = val.clone();
-                // Get the ref to the table
-                let table_arc = self.table.clone();
-                let initial_deadline = fi.expires_at();
-                tokio::task::spawn(async move {
-                    let mut deadline = initial_deadline;
-                    loop {
-                        // If deadline is too much in the future, sleep for at most 30 seconds and then re-check the deadline.
-                        let wake_at = deadline.min(Instant::now() + Duration::from_secs(30));
-                        tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at)).await;
-                        if fi.status() != FlowStatus::Active {
-                            // Cancelled or externally marked Expired — fall through to removal.
-                            break;
-                        }
-                        let new_deadline = fi.expires_at();
-                        if new_deadline > deadline {
-                            // Deadline was extended (e.g. by StatefulNat); sleep again.
-                            deadline = new_deadline;
-                            continue;
-                        }
-                        if Instant::now() < deadline {
-                            // Woke up from the 30-second check-in before the deadline; loop again.
-                            continue;
-                        }
-                        fi.update_status(FlowStatus::Expired);
-                        break;
-                    }
-                    // Reached on every break (normal expiry or Cancelled/Expired early exit).
-                    // `continue` bypasses this, so removal only fires when the loop terminates.
-                    // Use remove_if + ptr_eq so a concurrently inserted replacement is left intact.
-                    // Use try_read() rather than read() to avoid undefined behaviour on
-                    // platforms where re-entrant locking may panic.  In practice the
-                    // write lock is only held by reshard(), which is synchronous and
-                    // never yields to the tokio executor, so WouldBlock is virtually
-                    // never observed; yield_now() is purely defensive.
-                    //
-                    // shuttle::sync does not export TryLockError, and the timer task
-                    // never runs under shuttle (no tokio runtime), so we fall back to
-                    // the plain read() there.
-                    #[cfg(not(feature = "shuttle"))]
-                    let table = loop {
-                        // Evaluate try_read() and fully consume the Result before any
-                        // await point; RwLockReadGuard is !Send and must not be held
-                        // across an await even inside a non-Ok arm.
-                        let would_block = match table_arc.try_read() {
-                            Ok(guard) => break guard,
-                            Err(std::sync::TryLockError::Poisoned(p)) => {
-                                debug!(
-                                    "flow expiration task: FlowTable RwLock poisoned; \
-                                     proceeding with possibly inconsistent table state"
-                                );
-                                break p.into_inner();
-                            }
-                            Err(std::sync::TryLockError::WouldBlock) => true,
-                        };
-                        // The Result (and any contained guard) is dropped here.
-                        if would_block {
-                            tokio::task::yield_now().await;
-                        }
-                    };
-                    #[cfg(feature = "shuttle")]
-                    let table = table_arc.read().unwrap_or_else(|poisoned| {
-                        debug!(
-                            "flow expiration task: FlowTable RwLock poisoned; \
-                             proceeding with possibly inconsistent table state"
-                        );
-                        poisoned.into_inner()
-                    });
-                    debug!(
-                        "flow expiration task: Removing flow key {flow_key} with status {}",
-                        fi.status()
-                    );
-                    if table
-                        .remove_if(&flow_key, |_, v| Arc::ptr_eq(v, &fi))
-                        .is_none()
-                    {
-                        debug!(
-                            "Unable to remove flow key {flow_key} from table: entry not found or already replaced"
-                        );
-                    }
-                });
+                Self::start_timer(self.table.clone(), val.clone());
             }
         }
 
