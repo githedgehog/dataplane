@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::action::Action;
+use crate::action::Fate;
 use crate::metadata::Metadata;
 use crate::rule::AclRule;
 
 /// Builder for an ACL table.
 ///
-/// Accumulates rules and a default action.  Call [`.build()`](Self::build)
+/// Accumulates rules and a default fate.  Call [`.build()`](Self::build)
 /// to produce an immutable [`AclTable`].
 #[derive(Debug, Clone)]
 pub struct AclTableBuilder<M: Metadata = ()> {
     rules: Vec<AclRule<M>>,
-    default_action: Action,
+    default_fate: Fate,
 }
 
 impl<M: Metadata> AclTableBuilder<M> {
-    /// Create a new builder with the given default action.
+    /// Create a new builder with the given default fate.
     #[must_use]
-    pub fn new(default_action: Action) -> Self {
+    pub fn new(default_fate: Fate) -> Self {
         Self {
             rules: Vec::new(),
-            default_action,
+            default_fate,
         }
     }
 
@@ -37,15 +37,15 @@ impl<M: Metadata> AclTableBuilder<M> {
     pub fn build(self) -> AclTable<M> {
         AclTable {
             rules: self.rules,
-            default_action: self.default_action,
+            default_fate: self.default_fate,
         }
     }
 }
 
-/// An immutable ACL table: a frozen set of rules with a default action.
+/// An immutable ACL table: a frozen set of rules with a default fate.
 ///
 /// Rules are evaluated in priority order (lower priority value = higher
-/// precedence).  If no rule matches, the default action applies.
+/// precedence).  If no rule matches, the default fate applies.
 ///
 /// Construct via [`AclTableBuilder`].
 ///
@@ -54,7 +54,7 @@ impl<M: Metadata> AclTableBuilder<M> {
 #[derive(Debug, Clone)]
 pub struct AclTable<M: Metadata = ()> {
     rules: Vec<AclRule<M>>,
-    default_action: Action,
+    default_fate: Fate,
 }
 
 impl<M: Metadata> AclTable<M> {
@@ -64,9 +64,9 @@ impl<M: Metadata> AclTable<M> {
         &self.rules
     }
 
-    /// The default action when no rule matches.
+    /// The default fate when no rule matches.
     #[must_use]
-    pub fn default_action(&self) -> Action {
-        self.default_action
+    pub fn default_fate(&self) -> Fate {
+        self.default_fate
     }
 }

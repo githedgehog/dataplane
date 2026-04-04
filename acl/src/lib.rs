@@ -55,7 +55,7 @@
 //!     .deny(Priority::new(200).unwrap());
 //!
 //! // Build a table and compile
-//! let table = AclTableBuilder::new(Action::Deny)
+//! let table = AclTableBuilder::new(Fate::Drop)
 //!     .add_rule(rule)
 //!     .build();
 //! ```
@@ -75,7 +75,7 @@ mod rule;
 mod signature;
 mod table;
 
-pub use action::Action;
+pub use action::{ActionSequence, Fate, Step};
 pub use cascade::{
     compile_cascade, Assignment, BackendCapabilities, CompilationPlan, TrapRule,
 };

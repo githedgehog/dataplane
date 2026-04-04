@@ -24,13 +24,36 @@ use net::headers::{Headers, Net, Transport};
 use net::tcp::port::TcpPort;
 use net::udp::port::UdpPort;
 
-use crate::action::Action;
+use crate::action::{ActionSequence, Fate};
 use crate::builder::AclMatchFields;
 use crate::match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch};
 use crate::metadata::Metadata;
 use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
 use crate::rule::AclRule;
 use crate::table::AclTable;
+
+/// The result of classifying a packet.
+///
+/// Either the matched rule's full [`ActionSequence`], or the table's
+/// default [`Fate`] if no rule matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClassifyOutcome<'a> {
+    /// A rule matched — execute this action sequence.
+    Matched(&'a ActionSequence),
+    /// No rule matched — apply the default fate.
+    Default(Fate),
+}
+
+impl ClassifyOutcome<'_> {
+    /// The terminal fate, regardless of whether a rule matched.
+    #[must_use]
+    pub fn fate(&self) -> Fate {
+        match self {
+            Self::Matched(seq) => seq.fate(),
+            Self::Default(fate) => *fate,
+        }
+    }
+}
 
 /// A compiled linear-scan classifier.
 ///
@@ -39,29 +62,28 @@ use crate::table::AclTable;
 #[derive(Debug, Clone)]
 pub struct LinearClassifier<M: Metadata = ()> {
     rules: Vec<AclRule<M>>,
-    default_action: Action,
+    default_fate: Fate,
 }
 
 impl<M: Metadata> LinearClassifier<M> {
     /// Classify a packet's headers against the rule set.
     ///
-    /// Returns the action of the highest-priority (lowest priority value)
-    /// rule whose match fields are satisfied by `headers`, or the default
-    /// action if no rule matches.
+    /// Returns the full [`ClassifyOutcome`]: either the matched rule's
+    /// [`ActionSequence`] or the table's default [`Fate`].
     #[must_use]
-    pub fn classify(&self, headers: &Headers) -> Action {
+    pub fn classify(&self, headers: &Headers) -> ClassifyOutcome<'_> {
         for rule in &self.rules {
             if rule_matches(rule.packet_match(), headers) {
-                return rule.action();
+                return ClassifyOutcome::Matched(rule.actions());
             }
         }
-        self.default_action
+        ClassifyOutcome::Default(self.default_fate)
     }
 
-    /// The default action when no rule matches.
+    /// The default fate when no rule matches.
     #[must_use]
-    pub fn default_action(&self) -> Action {
-        self.default_action
+    pub fn default_fate(&self) -> Fate {
+        self.default_fate
     }
 
     /// The rules, in priority order.
@@ -82,7 +104,7 @@ impl<M: Metadata + Clone> AclTable<M> {
         rules.sort_by_key(AclRule::priority);
         LinearClassifier {
             rules,
-            default_action: self.default_action(),
+            default_fate: self.default_fate(),
         }
     }
 }
@@ -195,6 +217,7 @@ fn udp_port_in_range(range: PortRange<UdpPort>, port: UdpPort) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::Fate;
     use crate::match_expr::FieldMatch;
     use crate::priority::Priority;
     use crate::{AclRuleBuilder, AclTableBuilder};
@@ -208,7 +231,7 @@ mod tests {
 
     #[test]
     fn empty_table_returns_default() {
-        let table: AclTable = AclTableBuilder::new(Action::Deny).build();
+        let table: AclTable = AclTableBuilder::new(Fate::Drop).build();
         let classifier = table.compile_linear();
 
         let headers = HeaderStack::new()
@@ -218,12 +241,12 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers), Action::Deny);
+        assert_eq!(classifier.classify(&headers).fate(), Fate::Drop);
     }
 
     #[test]
     fn permit_all_rule() {
-        let table = AclTableBuilder::new(Action::Deny)
+        let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(AclRuleBuilder::new().permit(pri(100)))
             .build();
 
@@ -236,121 +259,97 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers), Action::Permit);
+        assert_eq!(classifier.classify(&headers).fate(), Fate::Forward);
     }
 
-#[test]
-fn ipv4_prefix_match() {
-    use std::net::Ipv4Addr;
+    #[test]
+    fn ipv4_prefix_match() {
+        use std::net::Ipv4Addr;
 
-    let table_builder = AclTableBuilder::new(Action::Deny /* default action */);
+        let table_builder = AclTableBuilder::new(Fate::Drop);
 
-    let example_rule1 = AclRuleBuilder::new()
-        // starts with wildcard match on ethernet
-        .eth(|_| {})
-        // but adding a .ipv4 after restricts the ethertype match to 0x0800
-        .ipv4(|ip| {
-            // and here we use the (throwaway) Ipv4Prefix type to restrict the match to 10.0.0.0/8
-            ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
-        })
-        // by adding tcp here we scope the ip protocol to tcp exactly, no need to specify in the prior layer
-        .tcp(|tcp| {
-            // note that we support range matches as well.
-            // In this example I'm matching on all privileged dst ports
-            tcp.dst = FieldMatch::Select(PortRange {
-                min: TcpPort::new_checked(1).unwrap(),
-                max: TcpPort::new_checked(1024).unwrap(),
-            });
-        })
-        // the prio of the installed match is 100.  Lower prio currently matches first, but that is something to
-        // discuss.
-        .permit(pri(100));
+        let example_rule1 = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.src = FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
+            })
+            .tcp(|tcp| {
+                tcp.dst = FieldMatch::Select(PortRange {
+                    min: TcpPort::new_checked(1).unwrap(),
+                    max: TcpPort::new_checked(1024).unwrap(),
+                });
+            })
+            .permit(pri(100));
 
-    // More, we can match-act on various protocols at the same time.
-    // Rules don't all need to have the same shape to coexist in the table.
-    let example_rule2 = AclRuleBuilder::new()
-        .eth(|_| {}) // wildcard on eth
-        // wildcard on eth becomes exact match on Ipv6 ethtype
-        .ipv6(|ip| {
-            // here we decide to explicitly allow link local traffic
-            ip.dst = FieldMatch::Select(
-                Ipv6Prefix::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 64).unwrap(),
-            );
-        })
-        // this rule will match *before* example_rule1
-        .permit(pri(50));
+        let example_rule2 = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv6(|ip| {
+                ip.dst = FieldMatch::Select(
+                    Ipv6Prefix::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 64).unwrap(),
+                );
+            })
+            .permit(pri(50));
 
-    // The AclTable struct is mutable.  You can add rules to it and assemble them as you like.
-    let table = table_builder
-        .add_rule(example_rule1)
-        .add_rule(example_rule2)
-        .build();
-    // But while our table is abstract, classifiers are not. They come out of compilers on the table and they are
-    // not mutable.
-    // You need to invoke a compiler to get something which actually classifies traffic.
-    // This let's us swap out backends and eventually support hardware offloads and cascaded clasifiers.
-    // Currently we only have a linear scan classifier (reference impl for testing), but will be swapped to dpdk
-    // ACL shortly.
-    let classifier = table.compile_linear();
+        let table = table_builder
+            .add_rule(example_rule1)
+            .add_rule(example_rule2)
+            .build();
+        let classifier = table.compile_linear();
 
-    // ACL table design can match on a wide number of fields, including, e.g., source ip LPM matches
-    let matching_headers = HeaderStack::new()
-        .eth(|_| {})
-        .ipv4(|ip| {
-            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
-        })
-        .tcp(|tcp| {
-            tcp.set_destination(TcpPort::new_checked(80).unwrap());
-        })
-        .build_headers()
-        .unwrap();
-    assert_eq!(classifier.classify(&matching_headers), Action::Permit);
+        let matching_headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
+            })
+            .tcp(|tcp| {
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            })
+            .build_headers()
+            .unwrap();
+        assert_eq!(classifier.classify(&matching_headers).fate(), Fate::Forward);
 
-    // if you aren't in the designated source ip range you won't match
-    let non_matching_headers = HeaderStack::new()
-        .eth(|_| {})
-        .ipv4(|ip| {
-            ip.set_source(
-                net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap(),
-            );
-        })
-        .tcp(|_| {})
-        .build_headers()
-        .unwrap();
-    assert_eq!(classifier.classify(&non_matching_headers), Action::Deny);
+        let non_matching_headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_source(
+                    net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap(),
+                );
+            })
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        assert_eq!(classifier.classify(&non_matching_headers).fate(), Fate::Drop);
 
-    // ACL table design is protocol aware and not confused by priority tagged traffic.
-    let leading_vlan_protocol = HeaderStack::new()
-        .eth(|_| {})
-        .vlan(|v| {
-            v.set_vid(Vid::new(3).unwrap());
-        })
-        .ipv4(|ip| {
-            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
-        })
-        .tcp(|tcp| {
-            tcp.set_destination(TcpPort::new_checked(80).unwrap());
-        })
-        .build_headers()
-        .unwrap();
-    assert_eq!(classifier.classify(&leading_vlan_protocol), Action::Deny);
+        let leading_vlan_protocol = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_vid(Vid::new(3).unwrap());
+            })
+            .ipv4(|ip| {
+                ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
+            })
+            .tcp(|tcp| {
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            })
+            .build_headers()
+            .unwrap();
+        assert_eq!(classifier.classify(&leading_vlan_protocol).fate(), Fate::Drop);
 
-    // edge cases like vlan 0 are also handled.
-    let priority_tagged = HeaderStack::new()
-        .eth(|_| {})
-        .vlan(|v| {
-            v.set_pcp(Pcp::new(2).unwrap());
-        })
-        .ipv4(|ip| {
-            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
-        })
-        .tcp(|tcp| {
-            tcp.set_destination(TcpPort::new_checked(80).unwrap());
-        })
-        .build_headers()
-        .unwrap();
-    assert_eq!(classifier.classify(&priority_tagged), Action::Deny);
-}
+        let priority_tagged = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_pcp(Pcp::new(2).unwrap());
+            })
+            .ipv4(|ip| {
+                ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
+            })
+            .tcp(|tcp| {
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            })
+            .build_headers()
+            .unwrap();
+        assert_eq!(classifier.classify(&priority_tagged).fate(), Fate::Drop);
+    }
 
     #[test]
     fn priority_ordering() {
@@ -370,7 +369,7 @@ fn ipv4_prefix_match() {
             })
             .deny(pri(100));
 
-        let table = AclTableBuilder::new(Action::Deny)
+        let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(broad)
             .add_rule(narrow)
             .build();
@@ -384,7 +383,7 @@ fn ipv4_prefix_match() {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt), Action::Deny);
+        assert_eq!(classifier.classify(&pkt).fate(), Fate::Drop);
 
         let pkt2 = HeaderStack::new()
             .eth(|_| {})
@@ -394,7 +393,7 @@ fn ipv4_prefix_match() {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt2), Action::Permit);
+        assert_eq!(classifier.classify(&pkt2).fate(), Fate::Forward);
     }
 
     #[test]
@@ -413,7 +412,7 @@ fn ipv4_prefix_match() {
             })
             .permit(pri(100));
 
-        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
+        let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
         let classifier = table.compile_linear();
 
         let pkt80 = HeaderStack::new()
@@ -424,7 +423,7 @@ fn ipv4_prefix_match() {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt80), Action::Permit);
+        assert_eq!(classifier.classify(&pkt80).fate(), Fate::Forward);
 
         let pkt443 = HeaderStack::new()
             .eth(|_| {})
@@ -434,7 +433,7 @@ fn ipv4_prefix_match() {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt443), Action::Permit);
+        assert_eq!(classifier.classify(&pkt443).fate(), Fate::Forward);
 
         let pkt8080 = HeaderStack::new()
             .eth(|_| {})
@@ -444,7 +443,7 @@ fn ipv4_prefix_match() {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt8080), Action::Deny);
+        assert_eq!(classifier.classify(&pkt8080).fate(), Fate::Drop);
     }
 
     #[test]
@@ -454,7 +453,7 @@ fn ipv4_prefix_match() {
             .ipv4(|ip| ip.src = FieldMatch::Select(Ipv4Prefix::any()))
             .permit(pri(100));
 
-        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
+        let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
         let classifier = table.compile_linear();
 
         let ipv6_pkt = HeaderStack::new()
@@ -463,7 +462,7 @@ fn ipv4_prefix_match() {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&ipv6_pkt), Action::Deny);
+        assert_eq!(classifier.classify(&ipv6_pkt).fate(), Fate::Drop);
     }
 
     #[test]
@@ -474,7 +473,7 @@ fn ipv4_prefix_match() {
             .eth(|e| e.ether_type = FieldMatch::Select(EthType::IPV4))
             .permit(pri(100));
 
-        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
+        let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
         let classifier = table.compile_linear();
 
         let ipv4_pkt = HeaderStack::new()
@@ -483,7 +482,7 @@ fn ipv4_prefix_match() {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&ipv4_pkt), Action::Permit);
+        assert_eq!(classifier.classify(&ipv4_pkt).fate(), Fate::Forward);
 
         let ipv6_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -491,7 +490,7 @@ fn ipv4_prefix_match() {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&ipv6_pkt), Action::Deny);
+        assert_eq!(classifier.classify(&ipv6_pkt).fate(), Fate::Drop);
     }
 
     #[test]
@@ -502,7 +501,7 @@ fn ipv4_prefix_match() {
             .tcp(|_| {})
             .permit(pri(100));
 
-        let table = AclTableBuilder::new(Action::Deny).add_rule(rule).build();
+        let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
         let classifier = table.compile_linear();
 
         let tcp_pkt = HeaderStack::new()
@@ -511,7 +510,7 @@ fn ipv4_prefix_match() {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&tcp_pkt), Action::Permit);
+        assert_eq!(classifier.classify(&tcp_pkt).fate(), Fate::Forward);
 
         let udp_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -519,6 +518,6 @@ fn ipv4_prefix_match() {
             .udp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&udp_pkt), Action::Deny);
+        assert_eq!(classifier.classify(&udp_pkt).fate(), Fate::Drop);
     }
 }

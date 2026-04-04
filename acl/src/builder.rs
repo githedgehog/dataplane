@@ -22,7 +22,7 @@
 use net::eth::ethtype::EthType;
 use net::ip::NextHeader;
 
-use crate::action::Action;
+use crate::action::ActionSequence;
 use crate::match_expr::FieldMatch;
 use crate::match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch};
 use crate::metadata::Metadata;
@@ -246,18 +246,25 @@ where
         }
     }
 
-    /// Finalize the rule with a [`Permit`](Action::Permit) action.
+    /// Finalize the rule with a [`Forward`](crate::Fate::Forward) fate (permit).
     #[must_use]
     pub fn permit(mut self, priority: Priority) -> AclRule<M> {
         self.fields.install(self.working);
-        AclRule::new(self.fields, self.metadata, Action::Permit, priority)
+        AclRule::new(self.fields, self.metadata, ActionSequence::forward(), priority)
     }
 
-    /// Finalize the rule with a [`Deny`](Action::Deny) action.
+    /// Finalize the rule with a [`Drop`](crate::Fate::Drop) fate (deny).
     #[must_use]
     pub fn deny(mut self, priority: Priority) -> AclRule<M> {
         self.fields.install(self.working);
-        AclRule::new(self.fields, self.metadata, Action::Deny, priority)
+        AclRule::new(self.fields, self.metadata, ActionSequence::drop_packet(), priority)
+    }
+
+    /// Finalize the rule with a custom [`ActionSequence`].
+    #[must_use]
+    pub fn action(mut self, actions: ActionSequence, priority: Priority) -> AclRule<M> {
+        self.fields.install(self.working);
+        AclRule::new(self.fields, self.metadata, actions, priority)
     }
 
     match_method!(
@@ -421,6 +428,7 @@ impl Blank for Icmp4Match {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::Fate;
     use crate::match_expr::ExactMatch;
     use crate::priority::Priority;
     use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
@@ -454,7 +462,7 @@ mod tests {
             })
             .permit(pri(100));
 
-        assert_eq!(rule.action(), Action::Permit);
+        assert_eq!(rule.actions().fate(), Fate::Forward);
         assert_eq!(rule.priority(), pri(100));
 
         let eth = rule.packet_match().eth().unwrap();
@@ -478,7 +486,7 @@ mod tests {
             })
             .deny(pri(200));
 
-        assert_eq!(rule.action(), Action::Deny);
+        assert_eq!(rule.actions().fate(), Fate::Drop);
 
         let eth = rule.packet_match().eth().unwrap();
         assert_eq!(eth.ether_type, FieldMatch::Select(EthType::IPV6));
@@ -527,19 +535,19 @@ mod tests {
             .ipv6(|_| {})
             .deny(pri(999));
 
-        let table = crate::AclTableBuilder::new(Action::Deny)
+        let table = crate::AclTableBuilder::new(Fate::Drop)
             .add_rule(r1)
             .add_rule(r2)
             .build();
 
         assert_eq!(table.rules().len(), 2);
-        assert_eq!(table.default_action(), Action::Deny);
+        assert_eq!(table.default_fate(), Fate::Drop);
     }
 
     #[test]
     fn permit_without_match_layers() {
         let rule = AclRuleBuilder::new().permit(pri(1));
-        assert_eq!(rule.action(), Action::Permit);
+        assert_eq!(rule.actions().fate(), Fate::Forward);
         assert!(rule.packet_match().is_empty());
     }
 

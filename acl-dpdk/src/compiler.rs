@@ -34,7 +34,7 @@
 
 use std::num::NonZero;
 
-use acl::{AclRule, AclTable, Action, FieldSignature, Metadata};
+use acl::{AclTable, Fate, FieldSignature, Metadata};
 use dpdk::acl::field::FieldDef;
 use dpdk::acl::rule::{AclField, RuleData};
 
@@ -169,31 +169,31 @@ pub fn compile<M: Metadata>(
         .collect()
 }
 
-/// Map a DPDK classification result back to an [`Action`].
+/// Map a DPDK classification result back to a [`Fate`].
 ///
 /// `userdata` is the value returned by `rte_acl_classify`.  If 0
-/// (no match), returns the table's default action.  Otherwise,
-/// decodes the rule index and returns that rule's action.
+/// (no match), returns the table's default fate.  Otherwise,
+/// decodes the rule index and returns that rule's fate.
 #[must_use]
-pub fn resolve_action<M: Metadata>(
+pub fn resolve_fate<M: Metadata>(
     table: &AclTable<M>,
     userdata: u32,
-    default_action: Action,
-) -> Action {
+    default_fate: Fate,
+) -> Fate {
     if userdata == 0 {
-        return default_action;
+        return default_fate;
     }
     let idx = (userdata - 1) as usize;
     table
         .rules()
         .get(idx)
-        .map_or(default_action, acl::AclRule::action)
+        .map_or(default_fate, |r| r.actions().fate())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acl::{AclRuleBuilder, AclTableBuilder, FieldMatch, Ipv4Prefix, PortRange, Priority};
+    use acl::{AclRuleBuilder, AclTableBuilder, Fate, FieldMatch, Ipv4Prefix, PortRange, Priority};
     use net::tcp::port::TcpPort;
     use std::net::Ipv4Addr;
 
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn compile_single_signature_group() {
-        let table = AclTableBuilder::new(Action::Deny)
+        let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(
                 AclRuleBuilder::new()
                     .eth(|_| {})
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn compile_splits_different_signatures() {
-        let table = AclTableBuilder::new(Action::Deny)
+        let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(
                 // IPv4 + TCP with ports
                 AclRuleBuilder::new()
@@ -297,30 +297,30 @@ mod tests {
     }
 
     #[test]
-    fn resolve_action_maps_userdata() {
-        let table = AclTableBuilder::new(Action::Deny)
+    fn resolve_fate_maps_userdata() {
+        let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(AclRuleBuilder::new().eth(|_| {}).permit(pri(100)))
             .add_rule(AclRuleBuilder::new().eth(|_| {}).deny(pri(200)))
             .build();
 
-        // userdata 0 → default (Deny)
-        assert_eq!(resolve_action(&table, 0, Action::Deny), Action::Deny);
+        // userdata 0 → default (Drop)
+        assert_eq!(resolve_fate(&table, 0, Fate::Drop), Fate::Drop);
 
-        // userdata 1 → rule 0 (Permit)
-        assert_eq!(resolve_action(&table, 1, Action::Deny), Action::Permit);
+        // userdata 1 → rule 0 (Forward)
+        assert_eq!(resolve_fate(&table, 1, Fate::Drop), Fate::Forward);
 
-        // userdata 2 → rule 1 (Deny)
-        assert_eq!(resolve_action(&table, 2, Action::Deny), Action::Deny);
+        // userdata 2 → rule 1 (Drop)
+        assert_eq!(resolve_fate(&table, 2, Fate::Drop), Fate::Drop);
 
         // userdata 99 → out of bounds → default
-        assert_eq!(resolve_action(&table, 99, Action::Deny), Action::Deny);
+        assert_eq!(resolve_fate(&table, 99, Fate::Drop), Fate::Drop);
     }
 
     #[test]
     fn priority_inversion() {
         // Our priority 1 (highest precedence) should get a higher DPDK priority
         // than our priority 1000 (lower precedence).
-        let table = AclTableBuilder::new(Action::Deny)
+        let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(
                 AclRuleBuilder::new()
                     .eth(|_| {})

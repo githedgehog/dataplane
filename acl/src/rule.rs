@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::action::Action;
+use crate::action::ActionSequence;
 use crate::builder::AclMatchFields;
 use crate::metadata::Metadata;
 use crate::priority::Priority;
 
-/// A complete ACL rule: packet match + metadata + action + priority.
+/// A complete ACL rule: packet match + metadata + action sequence + priority.
 ///
 /// Constructed via [`AclRuleBuilder`](crate::AclRuleBuilder).
 /// Lower priority values are evaluated first.
@@ -16,7 +16,7 @@ use crate::priority::Priority;
 pub struct AclRule<M: Metadata = ()> {
     packet_match: AclMatchFields,
     metadata: M,
-    action: Action,
+    actions: ActionSequence,
     priority: Priority,
 }
 
@@ -25,13 +25,13 @@ impl<M: Metadata> AclRule<M> {
     pub(super) fn new(
         packet_match: AclMatchFields,
         metadata: M,
-        action: Action,
+        actions: ActionSequence,
         priority: Priority,
     ) -> Self {
         Self {
             packet_match,
             metadata,
-            action,
+            actions,
             priority,
         }
     }
@@ -48,10 +48,10 @@ impl<M: Metadata> AclRule<M> {
         &self.metadata
     }
 
-    /// The action to take when a packet matches.
+    /// The action sequence to execute when a packet matches.
     #[must_use]
-    pub fn action(&self) -> Action {
-        self.action
+    pub fn actions(&self) -> &ActionSequence {
+        &self.actions
     }
 
     /// The rule priority (lower = higher precedence).

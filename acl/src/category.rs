@@ -63,7 +63,7 @@
 //! - **`tc-flower`**: separate filter chains per category
 //! - **Software**: per-category lookup tables
 
-use crate::action::Action;
+use crate::action::Fate;
 use crate::builder::AclMatchFields;
 use crate::metadata::Metadata;
 use crate::rule::AclRule;
@@ -138,7 +138,7 @@ impl<M: Metadata> CategorizedRule<M> {
 #[derive(Debug)]
 pub struct CategorizedTable<C: CategorySet, M: Metadata = ()> {
     rules: Vec<CategorizedRule<M>>,
-    default_action: Action,
+    default_action: Fate,
     _categories: std::marker::PhantomData<C>,
 }
 
@@ -149,7 +149,7 @@ impl<C: CategorySet, M: Metadata> CategorizedTable<C, M> {
     ///
     /// Returns [`CategoryError::TooManyCategories`] if `C::COUNT`
     /// exceeds [`MAX_CATEGORIES`].
-    pub fn new(default_action: Action) -> Result<Self, CategoryError> {
+    pub fn new(default_action: Fate) -> Result<Self, CategoryError> {
         if C::COUNT > MAX_CATEGORIES {
             return Err(CategoryError::TooManyCategories { count: C::COUNT });
         }
@@ -220,7 +220,7 @@ impl<C: CategorySet, M: Metadata> CategorizedTable<C, M> {
 
     /// The default action when no rule matches.
     #[must_use]
-    pub fn default_action(&self) -> Action {
+    pub fn default_action(&self) -> Fate {
         self.default_action
     }
 }
@@ -232,14 +232,14 @@ impl<C: CategorySet, M: Metadata> CategorizedTable<C, M> {
 #[derive(Debug)]
 pub struct ClassifyResult<C: CategorySet> {
     /// Per-category results.  Index by `category.index()`.
-    results: Vec<Action>,
+    results: Vec<Fate>,
     _categories: std::marker::PhantomData<C>,
 }
 
 impl<C: CategorySet> ClassifyResult<C> {
     /// Create a result filled with the default action.
     #[must_use]
-    pub fn with_default(default_action: Action) -> Self {
+    pub fn with_default(default_action: Fate) -> Self {
         Self {
             results: vec![default_action; C::COUNT],
             _categories: std::marker::PhantomData,
@@ -248,7 +248,7 @@ impl<C: CategorySet> ClassifyResult<C> {
 
     /// Get the action for a specific category.
     #[must_use]
-    pub fn action(&self, category: C) -> Action {
+    pub fn action(&self, category: C) -> Fate {
         self.results[category.index()]
     }
 }
@@ -332,7 +332,7 @@ mod tests {
             })
             .permit(pri(100));
 
-        let table = CategorizedTable::<TestCat>::new(Action::Deny)
+        let table = CategorizedTable::<TestCat>::new(Fate::Drop)
             .unwrap()
             .add_rule(TestCat::Ipv4Tcp, rule)
             .unwrap();
@@ -350,7 +350,7 @@ mod tests {
             .udp(|_| {})
             .deny(pri(100));
 
-        let result = CategorizedTable::<TestCat>::new(Action::Deny)
+        let result = CategorizedTable::<TestCat>::new(Fate::Drop)
             .unwrap()
             .add_rule(TestCat::Ipv4Tcp, rule);
 
@@ -393,7 +393,7 @@ mod tests {
             .permit(pri(50));
 
         // This rule has IPv4 match, should pass AnyIpv4 but fail AnyIpv6
-        let result = CategorizedTable::<BroadCat>::new(Action::Deny)
+        let result = CategorizedTable::<BroadCat>::new(Fate::Drop)
             .unwrap()
             .add_rule_multi(&[BroadCat::AnyIpv4], rule);
 
@@ -402,12 +402,12 @@ mod tests {
 
     #[test]
     fn classify_result_dispatch() {
-        let mut result = ClassifyResult::<TestCat>::with_default(Action::Deny);
+        let mut result = ClassifyResult::<TestCat>::with_default(Fate::Drop);
         // Simulate: Ipv4Tcp matched with Permit
-        result.results[TestCat::Ipv4Tcp.index()] = Action::Permit;
+        result.results[TestCat::Ipv4Tcp.index()] = Fate::Forward;
 
-        assert_eq!(result.action(TestCat::Ipv4Tcp), Action::Permit);
-        assert_eq!(result.action(TestCat::Ipv4Udp), Action::Deny); // default
-        assert_eq!(result.action(TestCat::Ipv6Tcp), Action::Deny);
+        assert_eq!(result.action(TestCat::Ipv4Tcp), Fate::Forward);
+        assert_eq!(result.action(TestCat::Ipv4Udp), Fate::Drop); // default
+        assert_eq!(result.action(TestCat::Ipv6Tcp), Fate::Drop);
     }
 }

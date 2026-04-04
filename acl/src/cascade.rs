@@ -30,7 +30,7 @@
 //! cascade compiler preserves this semantics across backends.  The
 //! user never needs to think about which backend handles which rule.
 
-use crate::action::Action;
+use crate::action::ActionSequence;
 use crate::builder::AclMatchFields;
 use crate::metadata::Metadata;
 use crate::overlap::OverlapPair;
@@ -49,12 +49,12 @@ pub trait BackendCapabilities {
     /// port range matching).
     fn can_express_match(&self, signature: FieldSignature) -> bool;
 
-    /// Can this backend execute the given action?
+    /// Can this backend execute the given action sequence?
     ///
-    /// Returns `false` if the backend doesn't support the action
-    /// (e.g., hardware that can't do NAT).  `Permit` and `Deny` are
-    /// always supported; `Trap` is the minimum for cascade to work.
-    fn can_execute_action(&self, action: Action) -> bool;
+    /// Returns `false` if the backend doesn't support any step or
+    /// fate in the sequence (e.g., hardware that can't do NAT
+    /// rewrites, or a NIC that doesn't support `Jump`).
+    fn can_execute_actions(&self, actions: &ActionSequence) -> bool;
 
     /// Does this backend tolerate overlapping rules?
     ///
@@ -181,7 +181,7 @@ pub fn compile_cascade<M: Metadata>(
         }
 
         // Check action.
-        if !backend.can_execute_action(rule.action()) {
+        if !backend.can_execute_actions(rule.actions()) {
             continue;
         }
 
@@ -271,7 +271,7 @@ mod tests {
         fn can_express_match(&self, _sig: FieldSignature) -> bool {
             true
         }
-        fn can_execute_action(&self, _action: Action) -> bool {
+        fn can_execute_actions(&self, _actions: &ActionSequence) -> bool {
             true
         }
         fn overlap_tolerant(&self) -> bool {
@@ -288,7 +288,7 @@ mod tests {
         fn can_express_match(&self, _sig: FieldSignature) -> bool {
             true
         }
-        fn can_execute_action(&self, _action: Action) -> bool {
+        fn can_execute_actions(&self, _actions: &ActionSequence) -> bool {
             true
         }
         fn overlap_tolerant(&self) -> bool {
@@ -309,7 +309,7 @@ mod tests {
                 && !sig.has_udp_src()
                 && !sig.has_udp_dst()
         }
-        fn can_execute_action(&self, _action: Action) -> bool {
+        fn can_execute_actions(&self, _actions: &ActionSequence) -> bool {
             true
         }
         fn overlap_tolerant(&self) -> bool {
@@ -326,7 +326,7 @@ mod tests {
         fn can_express_match(&self, _sig: FieldSignature) -> bool {
             true
         }
-        fn can_execute_action(&self, _action: Action) -> bool {
+        fn can_execute_actions(&self, _actions: &ActionSequence) -> bool {
             true
         }
         fn overlap_tolerant(&self) -> bool {
