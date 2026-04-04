@@ -7,7 +7,6 @@ use net::FlowKey;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::time::Instant;
 use tracing::debug;
 
 use concurrency::sync::{Arc, RwLock};
@@ -25,12 +24,7 @@ type Table = DashMap<FlowKey, Arc<FlowInfo>, RandomState>;
 #[derive(Debug)]
 pub struct FlowTable {
     // TODO(mvachhar) move this to a cross beam sharded lock
-    //
-    // We need to push table lock ref down into tokio tasks
-    // so invoked timer cleans up the table entry instead of just marking
-    // the flow info expired and leaving cleanup to lazy expiration in lookup().
     pub(crate) table: Arc<RwLock<Table>>,
-    reap_threshold: usize,
 }
 
 impl Default for FlowTable {
@@ -46,11 +40,6 @@ fn hasher_state() -> &'static RandomState {
 }
 
 impl FlowTable {
-    /// When the raw `DashMap` entry count exceeds this threshold, `insert_common` will
-    /// proactively purge all stale (Expired / Cancelled / deadline-passed) entries to
-    /// prevent unbounded memory growth.
-    pub const AGGRESSIVE_REAP_THRESHOLD: usize = 1_000_000;
-
     #[must_use]
     pub fn new(num_shards: usize) -> Self {
         Self {
@@ -58,12 +47,7 @@ impl FlowTable {
                 hasher_state().clone(),
                 num_shards,
             ))),
-            reap_threshold: Self::AGGRESSIVE_REAP_THRESHOLD,
         }
-    }
-
-    pub fn set_reap_threshold(&mut self, reap_threshold: usize) {
-        self.reap_threshold = reap_threshold;
     }
 
     /// Reshard the flow table into the given number of shards.
@@ -310,63 +294,6 @@ impl FlowTable {
         result
     }
 
-    /// Remove all stale entries from the table (entries that are `Expired`, `Cancelled`, or
-    /// whose deadline has already passed).
-    ///
-    /// Returns the number of entries removed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if this thread already holds the read lock on the table or if the lock is poisoned.
-    #[must_use]
-    pub fn drain_stale(&self) -> usize {
-        let table = self.table.read().unwrap();
-        Self::drain_stale_with_read_lock(&table)
-    }
-
-    /// Purge all stale entries from the `DashMap` using [`DashMap::retain`].
-    ///
-    /// `retain` acquires the **write** lock on each `DashMap` shard in turn.
-    /// This will deadlock if any caller on the same thread — or any other
-    /// thread — is holding a live shard read guard (a [`dashmap::mapref::one::Ref`]
-    /// obtained via [`DashMap::get`] or similar) at the time of the call.
-    ///
-    /// Currently this function is only reachable through the public
-    /// [`FlowTable::drain_stale`], which holds only the outer `RwLock` read
-    /// guard and never leaks a `DashMap` shard reference to callers.  Any future
-    /// call site must uphold the same guarantee: no live `DashMap` `Ref` guards
-    /// may exist on any thread when this function runs.
-    fn drain_stale_with_read_lock(
-        table: &RwLockReadGuard<DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
-    ) -> usize {
-        let now = Instant::now();
-        let mut removed = 0usize;
-        // `retain` holds the write lock on each DashMap shard while evaluating the
-        // predicate, making the staleness check and the removal atomic per shard.
-        // This closes the race that the previous collect-then-remove-by-key pattern
-        // had: a concurrent insert could no longer slip a fresh entry under a key
-        // between the time we marked it for removal and the time we called remove().
-        // As a bonus, retain is a single O(n) pass with no temporary Vec allocation.
-        table.retain(|_key, val| {
-            let stale = match val.status() {
-                FlowStatus::Expired | FlowStatus::Cancelled => true,
-                FlowStatus::Detached => unreachable!(),
-                FlowStatus::Active if val.expires_at() <= now => {
-                    // Deadline passed but the tokio timer has not fired yet; mark and remove.
-                    val.update_status(FlowStatus::Expired);
-                    true
-                }
-                FlowStatus::Active => false,
-            };
-            if stale {
-                removed += 1;
-            }
-            !stale
-        });
-        debug!("drain_stale: Removed {removed} stale flows");
-        removed
-    }
-
     #[allow(clippy::len_without_is_empty)]
     /// Returns the total number of entries physically stored in the table, regardless of
     /// their expiration status.  This is mostly for testing.
@@ -405,6 +332,7 @@ mod tests {
 
     #[concurrency_mode(std)]
     mod std_tests {
+        use std::time::Instant;
         use tracing_test::traced_test;
 
         use super::*;
@@ -531,57 +459,6 @@ mod tests {
                     assert!(Arc::ptr_eq(&v, &flow_info));
                     assert!(flow_table.lookup(flow_key).is_none());
                 });
-        }
-
-        #[tokio::test]
-        async fn test_aggressive_reap_threshold() {
-            // Must be small enough to stay within u16 port range (< 65_535).
-            const REAP_THRESHOLD_TEST: usize = 10_000;
-
-            let mut flow_table = FlowTable::default();
-            flow_table.set_reap_threshold(REAP_THRESHOLD_TEST);
-
-            let src_vpcd = VpcDiscriminant::VNI(Vni::new_checked(100).unwrap());
-            let src_ip: IpAddr = "1.2.3.4".parse().unwrap();
-            let dst_ip: IpAddr = "5.6.7.8".parse().unwrap();
-
-            // Insert REAP_THRESHOLD_TEST + 100 flows, all Active with a far-future expiry.
-            for src_port in 1..=REAP_THRESHOLD_TEST + 100 {
-                #[allow(clippy::cast_possible_truncation)]
-                let src_port = TcpPort::new_checked(src_port as u16).unwrap();
-                let dst_port = TcpPort::new_checked(100).unwrap();
-                let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
-                    Some(src_vpcd),
-                    src_ip,
-                    dst_ip,
-                    IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
-                ));
-                let flow_info = FlowInfo::new(Instant::now() + Duration::from_secs(3600));
-                flow_table.insert(flow_key, flow_info);
-            }
-
-            // We inserted more flows than the threshold.
-            assert!(flow_table.active_len().unwrap() > REAP_THRESHOLD_TEST);
-
-            // drain_stale: nothing should be reaped because all are Active with far-future expiry.
-            let reaped = flow_table.drain_stale();
-            assert_eq!(reaped, 0);
-            assert!(flow_table.active_len().unwrap() > REAP_THRESHOLD_TEST);
-
-            // Mark all flows except the first one as Cancelled.
-            let mut kept = 0usize;
-            for entry in flow_table.table.read().unwrap().iter() {
-                if kept == 0 {
-                    kept += 1;
-                    continue;
-                }
-                entry.value().update_status(FlowStatus::Cancelled);
-            }
-
-            // drain_stale: all Cancelled flows should be purged, leaving exactly 1.
-            let reaped = flow_table.drain_stale();
-            assert_eq!(reaped, REAP_THRESHOLD_TEST + 100 - 1);
-            assert_eq!(flow_table.active_len().unwrap(), 1);
         }
 
         #[tokio::test]
