@@ -4328,7 +4328,7 @@ implementations when the need arises.
 | Component | Status | Notes |
 |---|---|---|
 | `AclRuleBuilder<T, M>` | Implemented | Typestate builder, compile-time layer ordering |
-| Match types (`EthMatch`, etc.) | Implemented | Simple structs with `Option` fields |
+| Match types (`EthMatch`, etc.) | Implemented | Needs migration from `Option<T>` to `FieldMatch<T>` |
 | `Metadata` trait | Implemented | Marker trait, `M` defaults to `()` |
 | `ExactMatch<T>`, `MaskedMatch<T>`, `RangeMatch<T>` | Implemented | Generic match expression building blocks |
 | `Ipv4Prefix`, `Ipv6Prefix`, `PortRange` | Implemented | Validated range/prefix types |
@@ -4337,8 +4337,9 @@ implementations when the need arises.
 | `CategorizedRule<M>` | Implemented | Rule + category bitmask |
 | `ClassifyResult<C>` | Implemented | Per-category action results |
 | `Compiler<C, M>` trait | Defined | Trait exists; no implementations yet |
-| Linear-scan classifier | Not started | Reference semantics and property test oracle |
-| DPDK ACL compiler | Not started | Primary production backend |
+| `FieldMatch<T>` enum | Design only | Replace `Option<T>` in match field structs |
+| Linear-scan classifier | Implemented | Reference semantics and property test oracle |
+| DPDK ACL compiler | Not started | Groups rules by field signature into contexts |
 | Category-typed field buffers | Design only | Documented above; not yet prototyped |
 | Conditional vector transforms | Design only | Documented above; deferred |
 | Type-space vector runtime | Design only | Documented above; deferred |
@@ -4360,3 +4361,70 @@ A v1 is shippable when:
 Everything else — SIMD gather, hardware offload, type-space vectors,
 hierarchical dispatch — is future work documented here for context but not
 blocking v1.
+
+### FieldMatch: Ignore vs Select and the DPDK compilation strategy
+
+Match fields use a two-variant enum rather than `Option`:
+
+```rust
+enum FieldMatch<T> {
+    Ignore,     // field not part of this table's schema
+    Select(T),  // field in this table, match on this value/range/prefix
+}
+```
+
+**Why not `Option<T>` (where `None` = wildcard)?**
+
+DPDK ACL requires all rules in a context to share the same `FieldDef` array.
+A field that's `None` (wildcard) still occupies a column in every rule and
+adds to the trie width.  This creates a "superset" problem: if some rules
+match on TCP ports and others don't, a naive `Option`-based approach puts
+port columns in every rule, with wildcards for the non-TCP rules.
+
+`Ignore` is structurally different from "wildcard."  An `Ignore`d field
+doesn't exist in the table's schema.  Rules that `Ignore` a field belong in
+a different DPDK context (narrower table, fewer `FieldDef` entries, smaller
+trie).
+
+**"Any" is a special case of `Select`, not a third variant.**
+
+Matching "any source IP" is `Select(Ipv4Prefix::any())` — a prefix of /0.
+Matching "any port" is `Select(PortRange { min: 1, max: 65535 })`.  These
+are just specific values that happen to match everything.  The compiler
+emits them as normal `AclField` entries with appropriate masks.  There's no
+need for a separate `Any` variant — `Select` with a match-everything value
+is semantically identical and simpler.
+
+The fields where "any" might seem non-obvious (ether_type, protocol) use
+`FieldType::Mask` in DPDK with mask=0 for wildcard.  But in practice these
+fields are either constrained by `conform()` (protocol = TCP when a TCP
+match is stacked) or not present at all (`Ignore`).  Matching `*` on
+ether_type is almost always an `Ignore` — you don't care about the ether
+type column, you care about the IP layer.
+
+**Compiler grouping strategy.**
+
+The DPDK ACL compiler groups rules by **field signature** — the set of
+fields that are `Select` (not `Ignore`).  Each unique signature produces
+one DPDK `AclContext` with a `FieldDef` array matching that signature.
+
+```
+Rules with [eth_type, ipv4_src, ipv4_dst, protocol, tcp_src, tcp_dst]
+  → Context A (N=6 fields)
+
+Rules with [eth_type, ipv6_src, ipv6_dst, protocol, udp_src, udp_dst]
+  → Context B (N=6 fields, different layout)
+
+Rules with [ipv4_src, ipv4_dst]
+  → Context C (N=2 fields, very narrow)
+```
+
+V1 groups by exact signature — `Ignore` fields are never promoted to
+wildcard.  This may create more contexts than optimal, but it's correct
+and easy to debug.  A smarter compiler can merge compatible signatures
+later (promoting `Ignore` to wildcard when the cost is low).
+
+**`Blank` returns `Ignore` for all fields.**  The builder closure sets
+specific fields to `Select(value)`.  `conform()` sets structural fields
+to `Select(exact_value)` (e.g., protocol = TCP).  A field not mentioned
+in the closure stays `Ignore`.
