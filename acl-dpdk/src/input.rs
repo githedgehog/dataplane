@@ -59,15 +59,10 @@ pub fn assemble_compact_input(headers: &Headers, signature: FieldSignature) -> A
     }
     // byte 1 = padding (already 0)
 
-    // Remaining fields in the same order as build_field_defs.
-    if signature.has_eth_type() {
-        if let Some(eth) = headers.eth() {
-            let et: u16 = eth.ether_type().into();
-            buf[offset..offset + 2].copy_from_slice(&et.to_be_bytes());
-        }
-        offset += 2;
-    }
+    // Remaining fields in the same order as build_field_defs:
+    // 4B/8B fields first, then 2B, then 1B.
 
+    // 4-byte fields
     if signature.has_ipv4_src() {
         if let Some(Net::Ipv4(ip)) = headers.net() {
             buf[offset..offset + 4].copy_from_slice(&ip.source().inner().octets());
@@ -84,6 +79,15 @@ pub fn assemble_compact_input(headers: &Headers, signature: FieldSignature) -> A
 
     // TODO: ipv6 src/dst (16 bytes each)
     // TODO: vlan fields
+
+    // 2-byte fields
+    if signature.has_eth_type() {
+        if let Some(eth) = headers.eth() {
+            let et: u16 = eth.ether_type().into();
+            buf[offset..offset + 2].copy_from_slice(&et.to_be_bytes());
+        }
+        offset += 2;
+    }
 
     if signature.has_tcp_src() || signature.has_udp_src() {
         if let Some(Transport::Tcp(tcp)) = headers.transport() {
@@ -150,13 +154,14 @@ mod tests {
         let input = assemble_compact_input(&headers, sig);
         let b = &input.buf;
 
+        // New order: proto, ipv4_src, eth_type, tcp_dst
         // byte 0: protocol = 6 (TCP)
         assert_eq!(b[0], 6);
         // byte 1: padding
-        // byte 2-3: ether_type = 0x0800 (big-endian)
-        assert_eq!(&b[2..4], &[0x08, 0x00]);
-        // byte 4-7: ipv4 src = 10.1.2.3
-        assert_eq!(&b[4..8], &[10, 1, 2, 3]);
+        // byte 2-5: ipv4 src = 10.1.2.3 (NBO)
+        assert_eq!(&b[2..6], &[10, 1, 2, 3]);
+        // byte 6-7: ether_type = 0x0800 (big-endian)
+        assert_eq!(&b[6..8], &[0x08, 0x00]);
         // byte 8-9: tcp dst = 80 (big-endian)
         assert_eq!(&b[8..10], &80u16.to_be_bytes());
     }

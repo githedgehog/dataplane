@@ -51,10 +51,10 @@ pub fn translate_rule<M: Metadata>(
         fields.push(translate_wildcard_setup());
     }
 
-    // Remaining fields in canonical order (must match build_field_defs).
-    if signature.has_eth_type() {
-        fields.push(translate_eth_type(pm.eth()));
-    }
+    // Remaining fields in the same order as build_field_defs:
+    // 4B/8B fields first, then 2B, then 1B.
+
+    // 4-byte fields
     if signature.has_ipv4_src() {
         fields.push(translate_ipv4_prefix(
             pm.ipv4().map(|m| &m.src),
@@ -65,6 +65,7 @@ pub fn translate_rule<M: Metadata>(
             pm.ipv4().map(|m| &m.dst),
         ));
     }
+    // 8-byte fields
     if signature.has_ipv6_src() {
         let (hi, lo) = translate_ipv6_prefix(pm.ipv6().map(|m| &m.src));
         fields.push(hi);
@@ -74,6 +75,10 @@ pub fn translate_rule<M: Metadata>(
         let (hi, lo) = translate_ipv6_prefix(pm.ipv6().map(|m| &m.dst));
         fields.push(hi);
         fields.push(lo);
+    }
+    // 2-byte fields
+    if signature.has_eth_type() {
+        fields.push(translate_eth_type(pm.eth()));
     }
     if signature.has_tcp_src() {
         fields.push(translate_port_range(
@@ -259,31 +264,31 @@ mod tests {
         let sig = FieldSignature::from_match_fields(rule.packet_match());
         let fields = translate_rule(sig, &rule);
 
-        // Signature has: ipv4_proto, eth_type, ipv4_src, tcp_dst = 4 fields
+        // New order: proto, ipv4_src, eth_type, tcp_dst = 4 fields
         assert_eq!(fields.len(), 4);
 
-        // Field 0: protocol = TCP (6), mask = 0xFF
+        // Field 0: protocol = TCP (6), bitmask = 0xFF
         #[allow(unsafe_code)]
         unsafe {
-            assert_eq!(fields[0].value_u8(), 6); // TCP
+            assert_eq!(fields[0].value_u8(), 6);
             assert_eq!(fields[0].mask_range_u8(), 0xFF);
         }
 
-        // Field 1: eth_type = 0x0800 (IPv4), mask = 0xFFFF
+        // Field 1: ipv4_src = 10.0.0.0, prefix_len = 8
         #[allow(unsafe_code)]
         unsafe {
-            assert_eq!(fields[1].value_u16(), 0x0800);
-            assert_eq!(fields[1].mask_range_u16(), 0xFFFF);
+            assert_eq!(fields[1].value_u32(), u32::from(Ipv4Addr::new(10, 0, 0, 0)));
+            assert_eq!(fields[1].mask_range_u32(), 8); // prefix length
         }
 
-        // Field 2: ipv4_src = 10.0.0.0, mask = 255.0.0.0 (/8)
+        // Field 2: eth_type = 0x0800, prefix_len = 16
         #[allow(unsafe_code)]
         unsafe {
-            assert_eq!(fields[2].value_u32(), u32::from(Ipv4Addr::new(10, 0, 0, 0)));
-            assert_eq!(fields[2].mask_range_u32(), 0xFF00_0000);
+            assert_eq!(fields[2].value_u16(), 0x0800);
+            assert_eq!(fields[2].mask_range_u16(), 16); // prefix length
         }
 
-        // Field 3: tcp_dst = range 80..80
+        // Field 3: tcp_dst = range [80, 80]
         #[allow(unsafe_code)]
         unsafe {
             assert_eq!(fields[3].value_u16(), 80);

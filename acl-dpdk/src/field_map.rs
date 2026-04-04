@@ -278,12 +278,13 @@ pub fn build_field_defs(signature: FieldSignature) -> Vec<FieldDef> {
     });
     field_index = 1;
 
-    // Helper: collect field metas to add after setup.
+    // Pack fields in 5-tuple order: 4-byte fields first (they align
+    // naturally with 4-byte fetch groups), then 2-byte fields, then
+    // 1-byte fields.  This follows the DPDK 5-tuple example where
+    // 4B IPs come before 2B ports.
     let mut remaining: Vec<FieldMeta> = Vec::new();
 
-    if signature.has_eth_type() {
-        remaining.push(fields::ETH_TYPE);
-    }
+    // 4-byte fields first
     if signature.has_ipv4_src() {
         remaining.push(fields::IPV4_SRC);
     }
@@ -297,6 +298,10 @@ pub fn build_field_defs(signature: FieldSignature) -> Vec<FieldDef> {
     if signature.has_ipv6_dst() {
         remaining.push(fields::IPV6_DST_HI);
         remaining.push(fields::IPV6_DST_LO);
+    }
+    // 2-byte fields after all 4B/8B fields
+    if signature.has_eth_type() {
+        remaining.push(fields::ETH_TYPE);
     }
     if signature.has_tcp_src() || signature.has_udp_src() {
         remaining.push(fields::TCP_SRC);
@@ -313,16 +318,22 @@ pub fn build_field_defs(signature: FieldSignature) -> Vec<FieldDef> {
 
     for meta in remaining {
         let size_bytes = meta.size as u32;
+
+        // input_index = 1 + (offset - 2) / 4
+        // This maps each field to the 4-byte fetch group it belongs to,
+        // matching the DPDK 5-tuple example pattern.
+        #[allow(clippy::cast_possible_truncation)]
+        let input_index = (1 + (next_offset - 2) / 4) as u8;
+
         defs.push(FieldDef {
             field_type: meta.field_type,
             size: meta.size,
             field_index,
-            input_index: next_input_index,
+            input_index,
             offset: next_offset,
         });
         field_index += 1;
         next_offset += size_bytes;
-        next_input_index += 1;
     }
 
     defs
@@ -354,7 +365,7 @@ mod tests {
         let sig = FieldSignature::from_match_fields(rule.packet_match());
         let defs = build_field_defs(sig);
 
-        // Should have: proto (1B), eth_type (2B), ipv4_src (4B), tcp_dst (2B)
+        // New order: proto (1B), ipv4_src (4B), eth_type (2B), tcp_dst (2B)
         assert_eq!(defs.len(), 4);
 
         // Field 0: setup byte at offset 0
@@ -364,15 +375,17 @@ mod tests {
         assert_eq!(defs[0].input_index, 0);
         assert_eq!(defs[0].offset, 0);
 
-        // Field 1: eth_type at offset 2 (compact layout)
-        assert_eq!(defs[1].size, FieldSize::Two);
+        // Field 1: ipv4_src (4B) at offset 2
+        assert_eq!(defs[1].size, FieldSize::Four);
+        assert_eq!(defs[1].field_type, FieldType::Mask);
         assert_eq!(defs[1].offset, 2);
 
-        // Field 2: ipv4_src at offset 4
-        assert_eq!(defs[2].size, FieldSize::Four);
-        assert_eq!(defs[2].offset, 4);
+        // Field 2: eth_type (2B) at offset 6
+        assert_eq!(defs[2].size, FieldSize::Two);
+        assert_eq!(defs[2].field_type, FieldType::Mask);
+        assert_eq!(defs[2].offset, 6);
 
-        // Field 3: tcp_dst at offset 8
+        // Field 3: tcp_dst (2B Range) at offset 8
         assert_eq!(defs[3].size, FieldSize::Two);
         assert_eq!(defs[3].field_type, FieldType::Range);
         assert_eq!(defs[3].offset, 8);
