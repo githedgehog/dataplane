@@ -1,0 +1,12 @@
+[package]
+name = "dataplane-acl-rte-flow"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+acl = { workspace = true }
+dpdk = { workspace = true }
+net = { workspace = true }
+thiserror = { workspace = true }

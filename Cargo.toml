@@ -3,6 +3,7 @@
 members = [
     "acl",
     "acl-dpdk",
+    "acl-rte-flow",
     "args",
     "cli",
     "common",
