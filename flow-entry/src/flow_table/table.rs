@@ -10,7 +10,7 @@ use std::hash::Hash;
 use std::time::Instant;
 use tracing::debug;
 
-use concurrency::sync::{Arc, RwLock, RwLockReadGuard};
+use concurrency::sync::{Arc, RwLock};
 
 use net::flows::{FlowInfo, FlowStatus};
 
@@ -275,11 +275,6 @@ impl FlowTable {
 
     /// Lookup a flow in the table.
     ///
-    /// Performs lazy time-based expiration: if the matched entry is still
-    /// `Active` but its deadline has passed (e.g. because the tokio timer has
-    /// not yet fired, or no tokio runtime is present), the entry is marked
-    /// `Expired` and removed here.
-    ///
     /// # Panics
     ///
     /// Panics if this thread already holds the read lock on the table or
@@ -291,35 +286,7 @@ impl FlowTable {
     {
         debug!("lookup: Looking up flow key {:?}", flow_key);
         let table = self.table.read().unwrap();
-        let item = table.get(flow_key)?.value().clone();
-        // NOTE: the DashMap shard guard from `.get()` is dropped here.  Between this
-        // point and any removal below, another thread may have replaced the entry under
-        // the same key with a fresh flow.  We therefore use `remove_if` with an
-        // `Arc::ptr_eq` guard so that we only delete the specific Arc we examined —
-        // a concurrent replacement will cause `ptr_eq` to be false and the new entry
-        // will be left intact.
-        let status = item.status();
-        match status {
-            FlowStatus::Active => {
-                // Lazy expiration: cover non-tokio contexts and timer scheduling lag.
-                if item.expires_at() <= Instant::now() {
-                    debug!(
-                        "lookup: Flow key {:?} has passed its deadline, expiring",
-                        flow_key
-                    );
-                    item.update_status(FlowStatus::Expired);
-                    table.remove_if(flow_key, |_, v| Arc::ptr_eq(v, &item));
-                    return None;
-                }
-                Some(item)
-            }
-            FlowStatus::Expired | FlowStatus::Cancelled => {
-                debug!("lookup: Flow key {:?} is '{status}', removing", flow_key);
-                table.remove_if(flow_key, |_, v| Arc::ptr_eq(v, &item));
-                None
-            }
-            FlowStatus::Detached => None,
-        }
+        Some(table.get(flow_key)?.value().clone())
     }
 
     /// Remove a flow from the table.
@@ -335,22 +302,12 @@ impl FlowTable {
     {
         debug!("remove: Removing flow key {:?}", flow_key);
         let table = self.table.read().unwrap();
-        Self::remove_with_read_lock(&table, flow_key)
-    }
-
-    fn remove_with_read_lock<Q>(
-        table: &RwLockReadGuard<DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
-        flow_key: &Q,
-    ) -> Option<(FlowKey, Arc<FlowInfo>)>
-    where
-        FlowKey: Borrow<Q>,
-        Q: Hash + Eq + ?Sized + Debug,
-    {
-        let (k, v) = table.remove(flow_key)?;
-        if v.status() == FlowStatus::Expired {
-            return None;
+        let result = table.remove(flow_key);
+        if let Some((_key, flow_info)) = result.as_ref() {
+            flow_info.update_status(FlowStatus::Detached);
+            flow_info.token.cancel();
         }
-        Some((k, v))
+        result
     }
 
     /// Remove all stale entries from the table (entries that are `Expired`, `Cancelled`, or
@@ -440,7 +397,6 @@ mod tests {
     use std::time::Duration;
 
     use concurrency::concurrency_mode;
-    use concurrency::thread;
     use net::packet::VpcDiscriminant;
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
@@ -497,20 +453,16 @@ mod tests {
             let flow_info = FlowInfo::new(now + two_seconds);
             flow_table.insert(flow_key, flow_info);
 
-            // Wait 1 second — flow not yet expired, lazy lookup should return Some.
-            thread::sleep(one_second);
+            // Wait 1 second — flow not yet expired, lookup should return Some.
+            tokio::time::sleep(one_second).await;
             assert!(
                 flow_table.lookup(&flow_key).is_some(),
                 "Flow key should still be present after 1 second"
             );
 
-            // Wait another 2 seconds (total 3s) — flow expired.
-            // Lazy expiration in lookup cleans it up.
-            thread::sleep(two_seconds);
-            assert!(
-                flow_table.lookup(&flow_key).is_none(),
-                "Flow key should have expired and been removed"
-            );
+            // Wait another 2 seconds (total 3s) — flow expired. It should be gone
+            tokio::time::sleep(two_seconds).await;
+            assert!(flow_table.lookup(&flow_key).is_none());
         }
 
         #[tokio::test]
@@ -556,32 +508,6 @@ mod tests {
                 assert_ne!(entry.value().expires_at(), first_expiry_time);
                 assert_eq!(entry.value().expires_at(), second_expiry_time);
             }
-        }
-
-        #[tokio::test]
-        async fn test_flow_table_expire_bolero() {
-            let flow_table = FlowTable::default();
-            bolero::check!()
-                .with_type::<FlowKey>()
-                .for_each(|flow_key| {
-                    // Insert with a future expiry so early lookups see the flow.
-                    flow_table.insert(
-                        *flow_key,
-                        FlowInfo::new(Instant::now() + Duration::from_secs(60)),
-                    );
-                    let flow_info = flow_table.lookup(flow_key).unwrap();
-                    assert!(flow_table.lookup(&flow_key.reverse(None)).is_none());
-
-                    // Simulate expiration (what the tokio timer would do).
-                    flow_info.update_status(FlowStatus::Expired);
-
-                    // Lazy cleanup on next lookup.
-                    let result = flow_table.lookup(flow_key);
-                    assert!(
-                        result.is_none(),
-                        "expired flow should be removed by lookup, inserted {flow_info:?}"
-                    );
-                });
         }
 
         #[tokio::test]
@@ -739,7 +665,7 @@ mod tests {
         use crate::flow_table::FlowInfo;
         use concurrency::sync::Arc;
 
-        #[test]
+        #[tokio::test]
         fn test_flow_table_timeout() {
             shuttle::check_random(
                 move || {
