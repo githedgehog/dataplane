@@ -239,82 +239,90 @@ impl OffsetProvider for StandardEthernetOffsets {
     }
 }
 
-/// Build a DPDK `FieldDef` array from a [`FieldSignature`] and offset provider.
+/// Build a DPDK `FieldDef` array from a [`FieldSignature`].
 ///
-/// Returns the field definitions in the correct order for DPDK ACL:
-/// - 1-byte protocol field first (DPDK requirement for field 0)
-/// - Remaining fields in a consistent order
+/// Fields are laid out in a **compact packed buffer** — each field
+/// immediately follows the previous one (with padding to 4-byte
+/// boundaries for the setup field).  The returned `FieldDef` array
+/// has offsets into this compact buffer, not into the raw Ethernet
+/// frame.
 ///
-/// Also returns the count of fields (which determines `N` for `Rule<N>`).
+/// The caller must assemble an input buffer matching this compact
+/// layout (see `input::assemble_compact_input`).
 ///
-/// # Panics
-///
-/// Panics if the signature has no protocol field (IPv4 or IPv6 protocol).
-/// This should be prevented by the rule builder's `conform()` which always
-/// sets the protocol field when a transport layer is stacked.
+/// Layout: field 0 (1B) + padding to offset 4, then remaining
+/// fields packed sequentially.  This follows the DPDK 5-tuple
+/// example pattern.
 #[must_use]
-pub fn build_field_defs(
-    signature: FieldSignature,
-    offsets: &impl OffsetProvider,
-) -> Vec<FieldDef> {
+pub fn build_field_defs(signature: FieldSignature) -> Vec<FieldDef> {
+    // Compact layout:
+    //   byte 0: field 0 (1 byte, Bitmask, setup)
+    //   byte 1: padding
+    //   byte 2+: remaining fields packed contiguously
+    //
+    // input_index: 0 for setup field, then sequential starting at 1.
+    // Following the 5-tuple example pattern from DPDK docs.
+
     let mut defs = Vec::new();
     let mut field_index: u8 = 0;
-    // input_index 0 is reserved for the setup field (field 0, 1 byte).
-    // Subsequent fields get sequential input_index values starting from 1.
-    // Fields that share a 4-byte aligned block can share an input_index,
-    // but for simplicity we give each field its own index.
-    let mut next_input_index: u8 = 0;
+    let mut next_offset: u32 = 2;
+    let mut next_input_index: u8 = 1;
 
-    let mut add = |meta: FieldMeta, offset: u32| {
-        let input_index = next_input_index;
+    // Field 0: setup byte (always present, Bitmask type).
+    defs.push(FieldDef {
+        field_type: FieldType::Bitmask,
+        size: FieldSize::One,
+        field_index: 0,
+        input_index: 0,
+        offset: 0,
+    });
+    field_index = 1;
+
+    // Helper: collect field metas to add after setup.
+    let mut remaining: Vec<FieldMeta> = Vec::new();
+
+    if signature.has_eth_type() {
+        remaining.push(fields::ETH_TYPE);
+    }
+    if signature.has_ipv4_src() {
+        remaining.push(fields::IPV4_SRC);
+    }
+    if signature.has_ipv4_dst() {
+        remaining.push(fields::IPV4_DST);
+    }
+    if signature.has_ipv6_src() {
+        remaining.push(fields::IPV6_SRC_HI);
+        remaining.push(fields::IPV6_SRC_LO);
+    }
+    if signature.has_ipv6_dst() {
+        remaining.push(fields::IPV6_DST_HI);
+        remaining.push(fields::IPV6_DST_LO);
+    }
+    if signature.has_tcp_src() || signature.has_udp_src() {
+        remaining.push(fields::TCP_SRC);
+    }
+    if signature.has_tcp_dst() || signature.has_udp_dst() {
+        remaining.push(fields::TCP_DST);
+    }
+    if signature.has_icmp4_type() {
+        remaining.push(fields::ICMP4_TYPE);
+    }
+    if signature.has_icmp4_code() {
+        remaining.push(fields::ICMP4_CODE);
+    }
+
+    for meta in remaining {
+        let size_bytes = meta.size as u32;
         defs.push(FieldDef {
             field_type: meta.field_type,
             size: meta.size,
             field_index,
-            input_index,
-            offset,
+            input_index: next_input_index,
+            offset: next_offset,
         });
         field_index += 1;
+        next_offset += size_bytes;
         next_input_index += 1;
-    };
-
-    // DPDK requires field 0 to be 1 byte.  Protocol fields are 1 byte.
-    // We emit the protocol field first if present.
-    if signature.has_ipv4_proto() {
-        add(fields::IPV4_PROTO, offsets.ipv4_proto_offset());
-    } else if signature.has_ipv6_proto() {
-        add(fields::IPV6_PROTO, offsets.ipv6_proto_offset());
-    }
-
-    // Remaining fields in a consistent order.
-    if signature.has_eth_type() {
-        add(fields::ETH_TYPE, offsets.eth_type_offset());
-    }
-    if signature.has_ipv4_src() {
-        add(fields::IPV4_SRC, offsets.ipv4_src_offset());
-    }
-    if signature.has_ipv4_dst() {
-        add(fields::IPV4_DST, offsets.ipv4_dst_offset());
-    }
-    if signature.has_ipv6_src() {
-        add(fields::IPV6_SRC_HI, offsets.ipv6_src_offset());
-        add(fields::IPV6_SRC_LO, offsets.ipv6_src_offset() + 8);
-    }
-    if signature.has_ipv6_dst() {
-        add(fields::IPV6_DST_HI, offsets.ipv6_dst_offset());
-        add(fields::IPV6_DST_LO, offsets.ipv6_dst_offset() + 8);
-    }
-    if signature.has_tcp_src() || signature.has_udp_src() {
-        add(fields::TCP_SRC, offsets.l4_src_port_offset());
-    }
-    if signature.has_tcp_dst() || signature.has_udp_dst() {
-        add(fields::TCP_DST, offsets.l4_dst_port_offset());
-    }
-    if signature.has_icmp4_type() {
-        add(fields::ICMP4_TYPE, offsets.icmp4_type_offset());
-    }
-    if signature.has_icmp4_code() {
-        add(fields::ICMP4_CODE, offsets.icmp4_code_offset());
     }
 
     defs
@@ -331,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn ipv4_tcp_field_defs() {
+    fn ipv4_tcp_compact_field_defs() {
         let rule = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv4(|ip| {
@@ -344,34 +352,34 @@ mod tests {
             .permit(pri(100));
 
         let sig = FieldSignature::from_match_fields(rule.packet_match());
-        let defs = build_field_defs(sig, &StandardEthernetOffsets);
+        let defs = build_field_defs(sig);
 
-        // Should have: ipv4_proto (1B), eth_type (2B), ipv4_src (4B), tcp_dst (2B)
+        // Should have: proto (1B), eth_type (2B), ipv4_src (4B), tcp_dst (2B)
         assert_eq!(defs.len(), 4);
 
-        // Field 0 must be 1 byte (protocol)
+        // Field 0: setup byte at offset 0
         assert_eq!(defs[0].size, FieldSize::One);
-        assert_eq!(defs[0].field_type, FieldType::Mask);
+        assert_eq!(defs[0].field_type, FieldType::Bitmask);
         assert_eq!(defs[0].field_index, 0);
+        assert_eq!(defs[0].input_index, 0);
+        assert_eq!(defs[0].offset, 0);
 
-        // eth_type
+        // Field 1: eth_type at offset 2 (compact layout)
         assert_eq!(defs[1].size, FieldSize::Two);
-        assert_eq!(defs[1].offset, 12); // standard ethernet
+        assert_eq!(defs[1].offset, 2);
 
-        // ipv4_src
+        // Field 2: ipv4_src at offset 4
         assert_eq!(defs[2].size, FieldSize::Four);
-        assert_eq!(defs[2].offset, 26); // 14 + 12
+        assert_eq!(defs[2].offset, 4);
 
-        // tcp_dst
+        // Field 3: tcp_dst at offset 8
         assert_eq!(defs[3].size, FieldSize::Two);
         assert_eq!(defs[3].field_type, FieldType::Range);
-        assert_eq!(defs[3].offset, 36); // 14 + 20 + 2
+        assert_eq!(defs[3].offset, 8);
     }
 
     #[test]
     fn field_0_is_always_one_byte() {
-        // Even if the only field is eth_type (2 bytes), if protocol is
-        // present it goes first.
         let rule = AclRuleBuilder::new()
             .eth(|_| {})
             .ipv4(|_| {})
@@ -379,9 +387,10 @@ mod tests {
             .permit(pri(1));
 
         let sig = FieldSignature::from_match_fields(rule.packet_match());
-        let defs = build_field_defs(sig, &StandardEthernetOffsets);
+        let defs = build_field_defs(sig);
 
         assert!(!defs.is_empty());
         assert_eq!(defs[0].size, FieldSize::One);
+        assert_eq!(defs[0].offset, 0);
     }
 }

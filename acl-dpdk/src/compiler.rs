@@ -104,7 +104,6 @@ impl CompiledGroup {
 #[must_use]
 pub fn compile<M: Metadata>(
     table: &AclTable<M>,
-    offsets: &impl OffsetProvider,
 ) -> Vec<CompiledGroup> {
     let rules = table.rules();
     if rules.is_empty() {
@@ -128,7 +127,7 @@ pub fn compile<M: Metadata>(
                 return None;
             }
 
-            let field_defs = field_map::build_field_defs(sig, offsets);
+            let field_defs = field_map::build_field_defs(sig);
 
             let compiled_rules: Vec<CompiledRule> = group
                 .rule_indices()
@@ -237,7 +236,7 @@ mod tests {
             )
             .build();
 
-        let groups = compile(&table, &StandardEthernetOffsets);
+        let groups = compile(&table);
 
         // Both rules have the same signature → one group
         assert_eq!(groups.len(), 1);
@@ -281,7 +280,7 @@ mod tests {
             )
             .build();
 
-        let groups = compile(&table, &StandardEthernetOffsets);
+        let groups = compile(&table);
 
         // Different signatures → two groups
         assert_eq!(groups.len(), 2);
@@ -334,7 +333,7 @@ mod tests {
             )
             .build();
 
-        let groups = compile(&table, &StandardEthernetOffsets);
+        let groups = compile(&table);
         assert_eq!(groups.len(), 1);
 
         let rules = groups[0].rules();

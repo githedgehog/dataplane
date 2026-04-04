@@ -29,7 +29,6 @@ use net::headers::builder::HeaderStack;
 use net::tcp::port::TcpPort;
 
 use dataplane_acl_dpdk::compiler;
-use dataplane_acl_dpdk::field_map::StandardEthernetOffsets;
 use dataplane_acl_dpdk::input;
 
 static EAL_INIT: Once = Once::new();
@@ -87,7 +86,7 @@ fn dpdk_acl_matches_linear_classifier() {
         .build();
 
     // Compile to DPDK ACL format
-    let groups = compiler::compile(&table, &StandardEthernetOffsets);
+    let groups = compiler::compile(&table);
     assert_eq!(groups.len(), 1, "expected single signature group");
 
     let group = &groups[0];
@@ -156,7 +155,7 @@ fn dpdk_acl_matches_linear_classifier() {
     ];
 
     let linear = table.compile_linear();
-    let offsets = StandardEthernetOffsets;
+    let sig = group.signature();
 
     for (src_ip, dst_port, expected_fate) in &test_cases {
         // Build headers
@@ -174,14 +173,12 @@ fn dpdk_acl_matches_linear_classifier() {
         // Linear classifier result
         let linear_fate = linear.classify(&headers).fate();
 
-        // DPDK ACL result
-        let acl_input = input::assemble_input(&headers, &offsets);
-        let input_bytes = acl_input.as_bytes();
-        eprintln!("Input for {src_ip}:{dst_port}:");
-        eprintln!("  EthType @12: {:02x}{:02x}", input_bytes[12], input_bytes[13]);
-        eprintln!("  Proto @23: {:02x}", input_bytes[23]);
-        eprintln!("  IPv4 src @26: {:02x}.{:02x}.{:02x}.{:02x}", input_bytes[26], input_bytes[27], input_bytes[28], input_bytes[29]);
-        eprintln!("  TCP dst @36: {:02x}{:02x}", input_bytes[36], input_bytes[37]);
+        // DPDK ACL result — compact buffer
+        let acl_input = input::assemble_compact_input(&headers, sig);
+        // Dump first 12 bytes of compact buffer
+        let p = acl_input.as_ptr();
+        let slice = unsafe { std::slice::from_raw_parts(p, 12) };
+        eprintln!("Compact buf for {src_ip}:{dst_port}: {:02x?}", slice);
 
         let data = [acl_input.as_ptr()];
         let mut results = [0u32; 1];

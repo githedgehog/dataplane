@@ -42,11 +42,13 @@ pub fn translate_rule<M: Metadata>(
     let mut fields = Vec::new();
     let pm = rule.packet_match();
 
-    // Protocol first (DPDK field 0 must be 1 byte).
+    // Field 0: setup byte (always present, 1 byte, Bitmask type).
     if signature.has_ipv4_proto() {
         fields.push(translate_proto(pm.ipv4()));
     } else if signature.has_ipv6_proto() {
         fields.push(translate_proto_v6(pm.ipv6()));
+    } else {
+        fields.push(translate_wildcard_setup());
     }
 
     // Remaining fields in canonical order (must match build_field_defs).
@@ -121,33 +123,41 @@ fn next_header_to_u8(nh: NextHeader) -> u8 {
 
 /// Translate IPv4 protocol field.
 ///
-/// Protocol is FieldType::Mask (1 byte).  mask_range = prefix length
-/// in bits.  8 = exact match on all 8 bits.
+/// Protocol is FieldType::Bitmask (1 byte).  mask_range = bitmask.
+/// 0xFF = exact match on all 8 bits.  0 = wildcard.
 fn translate_proto(ipv4: Option<&Ipv4Match>) -> AclField {
     match ipv4.and_then(|m| m.protocol.as_select()) {
-        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), 8), // 8-bit exact match
-        None => AclField::wildcard(), // mask_range=0 → wildcard
+        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), 0xFF),
+        None => AclField::from_u8(0, 0), // wildcard
     }
 }
 
 /// Translate IPv6 next-header / protocol field.
 fn translate_proto_v6(ipv6: Option<&Ipv6Match>) -> AclField {
     match ipv6.and_then(|m| m.protocol.as_select()) {
-        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), 8),
-        None => AclField::wildcard(),
+        Some(nh) => AclField::from_u8(next_header_to_u8(*nh), 0xFF),
+        None => AclField::from_u8(0, 0),
     }
+}
+
+/// Translate a wildcard setup byte (when no protocol field is selected).
+fn translate_wildcard_setup() -> AclField {
+    AclField::from_u8(0, 0) // Bitmask wildcard
 }
 
 /// Translate ether_type field.
 ///
-/// FieldType::Mask, 2 bytes.  mask_range = prefix length.
-/// 16 = exact match on all 16 bits.
-/// Value in host byte order.
+/// FieldType::Mask, 2 bytes.  mask_range = prefix length (16 = exact).
+///
+/// The value is stored as it would be read by the CPU from the
+/// network-order input buffer.  On LE, `[0x08, 0x00]` → `0x0008`.
+/// So we convert the host-order value to the CPU's reading of the
+/// network-order bytes: `val.to_be()`.
 fn translate_eth_type(eth: Option<&EthMatch>) -> AclField {
     match eth.and_then(|m| m.ether_type.as_select()) {
         Some(et) => {
             let val: u16 = (*et).into();
-            AclField::from_u16(val, 16) // 16-bit exact match
+            AclField::from_u16(val, 16)
         }
         None => AclField::wildcard(),
     }
@@ -156,7 +166,9 @@ fn translate_eth_type(eth: Option<&EthMatch>) -> AclField {
 /// Translate an IPv4 prefix (src or dst) to a mask-type `AclField`.
 ///
 /// FieldType::Mask, 4 bytes.  mask_range = prefix length (0-32).
-/// Value in host byte order: `u32::from(Ipv4Addr)`.
+///
+/// FieldType::Mask, 4 bytes.  mask_range = prefix length (0-32).
+/// Value in host byte order (DPDK handles NBO→HBO conversion).
 fn translate_ipv4_prefix(
     field: Option<&FieldMatch<acl::Ipv4Prefix>>,
 ) -> AclField {
@@ -199,13 +211,17 @@ fn translate_ipv6_prefix(
 /// Translate a port range field (TCP or UDP).
 ///
 /// FieldType::Range, 2 bytes.  value = low bound, mask_range = high bound.
-/// Both in host byte order.
+///
+/// Same byte-order reasoning: input buffer has port in network order,
+/// CPU reads as native.  Range bounds must match the CPU's reading.
+/// Port 80 in buffer = `[0x00, 0x50]`, on LE CPU reads `0x5000`.
+/// So: `port.to_be()`.
 fn translate_port_range(
     field: Option<&FieldMatch<acl::PortRange<u16>>>,
 ) -> AclField {
     match field.and_then(FieldMatch::as_select) {
         Some(range) => AclField::from_u16(range.min, range.max),
-        None => AclField::from_u16(0, u16::MAX), // full range wildcard
+        None => AclField::from_u16(0, u16::MAX),
     }
 }
 
