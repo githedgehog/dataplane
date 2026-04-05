@@ -115,9 +115,9 @@ pub fn diff_tables<M: Metadata + Clone + PartialEq>(
 
 /// The result of update planning.
 #[derive(Debug, Clone)]
-pub struct UpdatePlan {
+pub struct UpdatePlan<M: Metadata = ()> {
     /// The classifier to publish immediately.
-    pub immediate: Classifier,
+    pub immediate: Classifier<M>,
     /// Whether the immediate classifier is two-tier and needs
     /// background merge to converge to single-tier.
     pub needs_merge: bool,
@@ -125,7 +125,7 @@ pub struct UpdatePlan {
 
 /// Build a two-tier classifier: delta checked first, base as fallback.
 #[must_use]
-pub fn build_tiered(delta: Classifier, base: Classifier) -> Classifier {
+pub fn build_tiered<M: Metadata>(delta: Classifier<M>, base: Classifier<M>) -> Classifier<M> {
     Classifier::cascade(vec![delta, base])
 }
 
@@ -141,9 +141,9 @@ pub fn build_tiered(delta: Classifier, base: Classifier) -> Classifier {
 #[must_use]
 pub fn plan_update<M: Metadata + Clone + PartialEq>(
     old_table: &AclTable<M>,
-    old_classifier: &Classifier,
+    old_classifier: &Classifier<M>,
     new_table: &AclTable<M>,
-) -> UpdatePlan {
+) -> UpdatePlan<M> {
     let diff = diff_tables(old_table, new_table);
 
     if diff.is_empty() {
@@ -432,8 +432,8 @@ mod tests {
 
         for ip in test_ips {
             let headers = make_headers(ip, 80);
-            let tiered_fate = plan.immediate.classify(&headers).fate();
-            let fresh_fate = fresh.classify(&headers).fate();
+            let tiered_fate = plan.immediate.classify(&headers, &()).fate();
+            let fresh_fate = fresh.classify(&headers, &()).fate();
             assert_eq!(
                 tiered_fate, fresh_fate,
                 "mismatch for {ip}: tiered={tiered_fate:?}, fresh={fresh_fate:?}"
@@ -472,15 +472,15 @@ mod tests {
 
         // 10.0.0.5 should now get the default fate (Drop), not permit.
         let headers = make_headers(Ipv4Addr::new(10, 0, 0, 5), 80);
-        let tiered_fate = plan.immediate.classify(&headers).fate();
-        let fresh_fate = fresh.classify(&headers).fate();
+        let tiered_fate = plan.immediate.classify(&headers, &()).fate();
+        let fresh_fate = fresh.classify(&headers, &()).fate();
         assert_eq!(tiered_fate, Fate::Drop, "removed rule should not match in delta");
         assert_eq!(tiered_fate, fresh_fate);
 
         // 10.0.0.3 should still permit (unchanged rule).
         let headers2 = make_headers(Ipv4Addr::new(10, 0, 0, 3), 80);
-        let tiered_fate2 = plan.immediate.classify(&headers2).fate();
-        let fresh_fate2 = fresh.classify(&headers2).fate();
+        let tiered_fate2 = plan.immediate.classify(&headers2, &()).fate();
+        let fresh_fate2 = fresh.classify(&headers2, &()).fate();
         assert_eq!(tiered_fate2, Fate::Forward);
         assert_eq!(tiered_fate2, fresh_fate2);
     }

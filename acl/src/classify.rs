@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Linear-scan reference classifier.
+//! Classification logic and outcome types.
 //!
-//! This is the simplest possible ACL classifier: it walks the rules in
-//! priority order and returns the action of the first match, or the
-//! default action if no rule matches.
+//! Contains the [`ClassifyOutcome`] type returned by all classifiers,
+//! and the matching functions that check whether a rule's match fields
+//! are satisfied by a packet's headers.
 //!
-//! It exists for two purposes:
-//!
-//! 1. **Reference semantics** — it defines what "correct" means.  Every
-//!    other backend (DPDK ACL, `rte_flow`, `tc-flower`) must produce the
-//!    same result as this linear scan.
-//! 2. **Property testing oracle** — bolero/proptest can generate
-//!    arbitrary rule sets and packets, classify with both this and a
-//!    "smart" backend, and assert identical results.
-//!
-//! Performance is explicitly not a goal.  Clarity and correctness are.
+//! The matching functions define "correct" classification semantics.
+//! Every backend (DPDK ACL, `rte_flow`, `tc-flower`) must produce the
+//! same result as this logic for the same rule set and packet.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -27,10 +20,7 @@ use crate::builder::AclMatchFields;
 use crate::match_fields::{
     EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch,
 };
-use crate::metadata::Metadata;
 use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
-use crate::rule::AclRule;
-use crate::table::AclTable;
 
 /// The result of classifying a packet.
 ///
@@ -55,72 +45,12 @@ impl ClassifyOutcome<'_> {
     }
 }
 
-/// A compiled linear-scan classifier.
-///
-/// Rules are sorted by priority (lower value = higher precedence).
-/// Classification walks the sorted list and returns the first match.
-#[derive(Debug, Clone)]
-pub struct LinearClassifier<M: Metadata = ()> {
-    rules: Vec<AclRule<M>>,
-    default_fate: Fate,
-}
-
-impl<M: Metadata> LinearClassifier<M> {
-    /// Classify a packet's headers and metadata against the rule set.
-    ///
-    /// Returns the full [`ClassifyOutcome`]: either the matched rule's
-    /// [`ActionSequence`] or the table's default [`Fate`].
-    ///
-    /// Both protocol header fields and metadata must match for a rule
-    /// to fire.
-    #[must_use]
-    pub fn classify(&self, headers: &Headers, metadata: &M::Values) -> ClassifyOutcome<'_> {
-        for rule in &self.rules {
-            if rule_matches_headers(rule.packet_match(), headers)
-                && rule.metadata().matches_values(metadata)
-            {
-                return ClassifyOutcome::Matched(rule.actions());
-            }
-        }
-        ClassifyOutcome::Default(self.default_fate)
-    }
-
-    /// The default fate when no rule matches.
-    #[must_use]
-    pub fn default_fate(&self) -> Fate {
-        self.default_fate
-    }
-
-    /// The rules, in priority order.
-    #[must_use]
-    pub fn rules(&self) -> &[AclRule<M>] {
-        &self.rules
-    }
-}
-
-impl<M: Metadata + Clone> AclTable<M> {
-    /// Compile the table into a linear-scan classifier.
-    ///
-    /// Rules are sorted by priority (lower value = higher precedence).
-    /// This is the reference implementation — correct but not fast.
-    #[must_use]
-    pub fn compile_linear(&self) -> LinearClassifier<M> {
-        let mut rules: Vec<AclRule<M>> = self.rules().to_vec();
-        rules.sort_by_key(AclRule::priority);
-        LinearClassifier {
-            rules,
-            default_fate: self.default_fate(),
-        }
-    }
-}
-
 // ---- Matching logic ----
 //
 // Each function below checks whether a single match layer is satisfied
 // by the packet.  `None` fields in the match are wildcards (always match).
 // A rule matches if ALL of its match layers match.
 
-/// Check if a rule's match fields are satisfied by the given headers.
 /// Check if a rule's match fields are satisfied by the given headers.
 ///
 /// Exposed as `pub(crate)` for use by the [`Classifier`](crate::Classifier)
@@ -245,14 +175,16 @@ fn port_in_range(range: PortRange<u16>, port: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::action::Fate;
     use crate::match_expr::FieldMatch;
+    use crate::metadata::Metadata;
     use crate::priority::Priority;
+    use crate::range::{Ipv4Prefix, Ipv6Prefix, PortRange};
     use crate::{AclRuleBuilder, AclTableBuilder};
     use net::headers::builder::HeaderStack;
     use net::tcp::port::TcpPort;
     use net::vlan::{Pcp, Vid};
+    use std::net::Ipv6Addr;
 
     /// Shorthand for creating a Priority in tests.
     fn pri(n: u32) -> Priority {
@@ -261,8 +193,8 @@ mod tests {
 
     #[test]
     fn empty_table_returns_default() {
-        let table: AclTable = AclTableBuilder::new(Fate::Drop).build();
-        let classifier = table.compile_linear();
+        let table: crate::table::AclTable = AclTableBuilder::new(Fate::Drop).build();
+        let classifier = table.compile();
 
         let headers = HeaderStack::new()
             .eth(|_| {})
@@ -280,7 +212,7 @@ mod tests {
             .add_rule(AclRuleBuilder::new().permit(pri(100)))
             .build();
 
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let headers = HeaderStack::new()
             .eth(|_| {})
@@ -324,7 +256,7 @@ mod tests {
             .add_rule(example_rule1)
             .add_rule(example_rule2)
             .build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let matching_headers = HeaderStack::new()
             .eth(|_| {})
@@ -403,7 +335,7 @@ mod tests {
             .add_rule(broad)
             .add_rule(narrow)
             .build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let pkt = HeaderStack::new()
             .eth(|_| {})
@@ -437,7 +369,7 @@ mod tests {
             .permit(pri(100));
 
         let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let pkt80 = HeaderStack::new()
             .eth(|_| {})
@@ -478,7 +410,7 @@ mod tests {
             .permit(pri(100));
 
         let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let ipv6_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -498,7 +430,7 @@ mod tests {
             .permit(pri(100));
 
         let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let ipv4_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -526,7 +458,7 @@ mod tests {
             .permit(pri(100));
 
         let table = AclTableBuilder::new(Fate::Drop).add_rule(rule).build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let tcp_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -571,8 +503,6 @@ mod tests {
     fn metadata_match_filters_rules() {
         use crate::match_expr::ExactMatch;
 
-        // Two rules: same packet match, different VRF metadata.
-        // VRF 10 → permit, VRF 20 → deny.
         let rule_vrf10 = crate::AclRuleBuilder::new()
             .metadata(|m: &mut VrfMeta| m.vrf = Some(ExactMatch(10)))
             .eth(|_| {})
@@ -589,7 +519,7 @@ mod tests {
             .add_rule(rule_vrf10)
             .add_rule(rule_vrf20)
             .build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let pkt = HeaderStack::new()
             .eth(|_| {})
@@ -598,19 +528,14 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        // VRF 10 → matches the permit rule (pri 100, evaluated first)
         assert_eq!(
             classifier.classify(&pkt, &VrfValues { vrf: 10 }).fate(),
             Fate::Forward,
         );
-
-        // VRF 20 → matches the deny rule (pri 200)
         assert_eq!(
             classifier.classify(&pkt, &VrfValues { vrf: 20 }).fate(),
             Fate::Drop,
         );
-
-        // VRF 99 → no match → default Drop
         assert_eq!(
             classifier.classify(&pkt, &VrfValues { vrf: 99 }).fate(),
             Fate::Drop,
@@ -619,7 +544,6 @@ mod tests {
 
     #[test]
     fn wildcard_metadata_matches_any_value() {
-        // Rule with no metadata constraint (default VrfMeta, vrf=None).
         let rule = crate::AclRuleBuilder::new()
             .metadata(|_: &mut VrfMeta| {})
             .eth(|_| {})
@@ -629,7 +553,7 @@ mod tests {
         let table = crate::AclTableBuilder::new(Fate::Drop)
             .add_rule(rule)
             .build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let pkt = HeaderStack::new()
             .eth(|_| {})
@@ -638,7 +562,6 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        // Any VRF should match (metadata wildcard).
         assert_eq!(
             classifier.classify(&pkt, &VrfValues { vrf: 42 }).fate(),
             Fate::Forward,
@@ -648,9 +571,9 @@ mod tests {
     #[test]
     fn metadata_match_with_action_steps() {
         use crate::action::{ActionSequence, Step};
+        use crate::classify::ClassifyOutcome;
         use crate::match_expr::ExactMatch;
 
-        // Rule: VRF 10, mark packet with 0xDEAD, then forward.
         let rule = crate::AclRuleBuilder::new()
             .metadata(|m: &mut VrfMeta| m.vrf = Some(ExactMatch(10)))
             .eth(|_| {})
@@ -663,7 +586,7 @@ mod tests {
         let table = crate::AclTableBuilder::new(Fate::Drop)
             .add_rule(rule)
             .build();
-        let classifier = table.compile_linear();
+        let classifier = table.compile();
 
         let pkt = HeaderStack::new()
             .eth(|_| {})
@@ -672,14 +595,12 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        // Matching VRF → full action sequence with Mark step.
         let outcome = classifier.classify(&pkt, &VrfValues { vrf: 10 });
         assert!(matches!(outcome, ClassifyOutcome::Matched(seq) if seq.fate() == Fate::Forward));
         if let ClassifyOutcome::Matched(seq) = outcome {
             assert_eq!(seq.steps(), &[Step::Mark(0xDEAD)]);
         }
 
-        // Non-matching VRF → default fate, no steps.
         let outcome2 = classifier.classify(&pkt, &VrfValues { vrf: 99 });
         assert!(matches!(outcome2, ClassifyOutcome::Default(Fate::Drop)));
     }

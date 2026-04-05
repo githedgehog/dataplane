@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Opaque compiled classifier.
+//! Compiled ACL classifier.
 //!
-//! [`Classifier`] is the user-facing type returned by
+//! [`Classifier<M>`] is the user-facing type returned by
 //! [`AclTable::compile()`](crate::table::AclTable).  It hides the
 //! backend implementation (linear scan, DPDK ACL trie, two-tier
 //! delta+base) behind a single type.
@@ -14,44 +14,21 @@
 
 use net::headers::Headers;
 
-use crate::action::{ActionSequence, Fate};
-use crate::builder::AclMatchFields;
+use crate::action::Fate;
 use crate::classify::{self, ClassifyOutcome};
 use crate::metadata::Metadata;
-use crate::priority::Priority;
 use crate::rule::AclRule;
 use crate::table::AclTable;
-
-/// A compiled rule with metadata erased.
-///
-/// The classifier only needs match fields, actions, and priority —
-/// it doesn't need the user's metadata type `M`.
-#[derive(Debug, Clone)]
-struct CompiledEntry {
-    packet_match: AclMatchFields,
-    actions: ActionSequence,
-    priority: Priority,
-}
-
-impl CompiledEntry {
-    fn from_rule<M: Metadata>(rule: &AclRule<M>) -> Self {
-        Self {
-            packet_match: rule.packet_match().clone(),
-            actions: rule.actions().clone(),
-            priority: rule.priority(),
-        }
-    }
-}
 
 /// The internal classifier representation.
 ///
 /// Private — users interact with [`Classifier`] and never see this.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Cascade used in update support
-enum ClassifierInner {
+enum ClassifierInner<M: Metadata> {
     /// Linear scan of sorted rules.  Reference implementation.
     Linear {
-        rules: Vec<CompiledEntry>,
+        rules: Vec<AclRule<M>>,
         default_fate: Fate,
     },
 
@@ -59,29 +36,35 @@ enum ClassifierInner {
     /// match.  The last stage's default fate is the cascade's default.
     ///
     /// Used for two-tier delta+base updates:
-    /// - `[Linear(delta), DpdkAcl(base)]` — two-tier update
+    /// - `[Linear(delta), Linear(base)]` — two-tier update
     ///
     /// Per-flow state caches (NAT flow tables, MAC learning) are
     /// owned by the network function and sit *in front of* the
     /// classifier, not inside it.  Rules that require flow state
     /// creation use [`Fate::Learn`] to signal the NF.
-    Cascade(Vec<ClassifierInner>),
+    Cascade(Vec<ClassifierInner<M>>),
 
     // Future variants:
     // DpdkAcl { context: ..., default_fate: Fate },
     // RteFlow { ... },
 }
 
-impl ClassifierInner {
-    fn classify<'a>(&'a self, headers: &Headers) -> ClassifyOutcome<'a> {
+impl<M: Metadata> ClassifierInner<M> {
+    fn classify<'a>(
+        &'a self,
+        headers: &Headers,
+        metadata: &M::Values,
+    ) -> ClassifyOutcome<'a> {
         match self {
             Self::Linear {
                 rules,
                 default_fate,
             } => {
-                for entry in rules {
-                    if classify::rule_matches_headers(&entry.packet_match, headers) {
-                        return ClassifyOutcome::Matched(&entry.actions);
+                for rule in rules {
+                    if classify::rule_matches_headers(rule.packet_match(), headers)
+                        && rule.metadata().matches_values(metadata)
+                    {
+                        return ClassifyOutcome::Matched(rule.actions());
                     }
                 }
                 ClassifyOutcome::Default(*default_fate)
@@ -89,7 +72,7 @@ impl ClassifierInner {
 
             Self::Cascade(stages) => {
                 for stage in stages {
-                    let outcome = stage.classify(headers);
+                    let outcome = stage.classify(headers, metadata);
                     if matches!(outcome, ClassifyOutcome::Matched(_)) {
                         return outcome;
                     }
@@ -114,27 +97,31 @@ impl ClassifierInner {
     }
 }
 
-/// An opaque compiled ACL classifier.
+/// A compiled ACL classifier.
 ///
 /// Created by [`AclTable::compile()`].  The internal representation
 /// (linear scan, trie, two-tier) is hidden — the user calls
 /// [`classify()`](Classifier::classify) and gets a
 /// [`ClassifyOutcome`].
 ///
-/// For testing and debugging, [`AclTable::compile_linear()`] returns
-/// a [`LinearClassifier`](crate::LinearClassifier) with full
-/// introspection (access to sorted rules, priority, etc.).
+/// `M` is the metadata match type, defaulting to `()` (no metadata).
 #[derive(Debug, Clone)]
-pub struct Classifier(ClassifierInner);
+pub struct Classifier<M: Metadata = ()>(ClassifierInner<M>);
 
-impl Classifier {
-    /// Classify a packet's headers against the compiled rule set.
+impl<M: Metadata> Classifier<M> {
+    /// Classify a packet's headers and metadata against the compiled
+    /// rule set.
     ///
     /// Returns the [`ClassifyOutcome`]: either the matched rule's
-    /// [`ActionSequence`] or the table's default [`Fate`].
+    /// [`ActionSequence`](crate::ActionSequence) or the table's
+    /// default [`Fate`].
     #[must_use]
-    pub fn classify<'a>(&'a self, headers: &Headers) -> ClassifyOutcome<'a> {
-        self.0.classify(headers)
+    pub fn classify<'a>(
+        &'a self,
+        headers: &Headers,
+        metadata: &M::Values,
+    ) -> ClassifyOutcome<'a> {
+        self.0.classify(headers, metadata)
     }
 
     /// The default fate when no rule matches.
@@ -143,34 +130,39 @@ impl Classifier {
         self.0.default_fate()
     }
 
+    /// The sorted rules in the classifier (for introspection/testing).
+    #[must_use]
+    pub fn rules(&self) -> &[AclRule<M>] {
+        match &self.0 {
+            ClassifierInner::Linear { rules, .. } => rules,
+            ClassifierInner::Cascade(_) => &[],
+        }
+    }
+
     /// Build a Cascade classifier from multiple stages.
     ///
     /// Stages are tried in order; first match wins.
     #[must_use]
-    pub fn cascade(stages: Vec<Classifier>) -> Classifier {
+    pub fn cascade(stages: Vec<Classifier<M>>) -> Classifier<M> {
         let inners = stages.into_iter().map(|c| c.0).collect();
         Classifier(ClassifierInner::Cascade(inners))
     }
 }
 
 impl<M: Metadata + Clone> AclTable<M> {
-    /// Compile the table into an opaque [`Classifier`].
+    /// Compile the table into a [`Classifier`].
     ///
     /// The compiler picks the best internal representation.
     /// Currently uses linear scan; future versions will select
     /// DPDK ACL, `rte_flow`, or two-tier based on rule set size
     /// and available backends.
     #[must_use]
-    pub fn compile(&self) -> Classifier {
-        let mut entries: Vec<CompiledEntry> = self
-            .rules()
-            .iter()
-            .map(CompiledEntry::from_rule)
-            .collect();
-        entries.sort_by_key(|e| e.priority);
+    pub fn compile(&self) -> Classifier<M> {
+        let mut rules: Vec<AclRule<M>> = self.rules().to_vec();
+        rules.sort_by_key(AclRule::priority);
 
         Classifier(ClassifierInner::Linear {
-            rules: entries,
+            rules,
             default_fate: self.default_fate(),
         })
     }
@@ -190,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_returns_opaque_classifier() {
+    fn compile_returns_classifier() {
         let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(
                 AclRuleBuilder::new()
@@ -223,7 +215,7 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&headers, &()).fate(), Fate::Forward);
 
         // Non-matching packet → default Drop
         let headers2 = HeaderStack::new()
@@ -239,13 +231,11 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers2).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&headers2, &()).fate(), Fate::Drop);
     }
 
     #[test]
-    fn compile_matches_compile_linear() {
-        // The opaque Classifier must produce identical results to
-        // the reference LinearClassifier.
+    fn priority_ordering_through_compile() {
         let table = AclTableBuilder::new(Fate::Drop)
             .add_rule(
                 AclRuleBuilder::new()
@@ -269,17 +259,16 @@ mod tests {
             )
             .build();
 
-        let opaque = table.compile();
-        let reference = table.compile_linear();
+        let classifier = table.compile();
 
-        // Test several packets and verify identical fates
+        // Test several packets
         let test_ips = [
-            Ipv4Addr::new(10, 1, 2, 3),   // matches both → deny (pri 100)
-            Ipv4Addr::new(10, 2, 0, 1),   // matches /8 only → permit
-            Ipv4Addr::new(192, 168, 1, 1), // matches neither → drop (default)
+            (Ipv4Addr::new(10, 1, 2, 3), Fate::Drop),     // matches both → deny (pri 100)
+            (Ipv4Addr::new(10, 2, 0, 1), Fate::Forward),   // matches /8 only → permit
+            (Ipv4Addr::new(192, 168, 1, 1), Fate::Drop),   // matches neither → default
         ];
 
-        for ip in test_ips {
+        for (ip, expected) in test_ips {
             let headers = HeaderStack::new()
                 .eth(|_| {})
                 .ipv4(|ip_hdr| {
@@ -292,8 +281,8 @@ mod tests {
                 .unwrap();
 
             assert_eq!(
-                opaque.classify(&headers).fate(),
-                reference.classify(&headers, &()).fate(),
+                classifier.classify(&headers, &()).fate(),
+                expected,
                 "mismatch for source IP {ip}"
             );
         }

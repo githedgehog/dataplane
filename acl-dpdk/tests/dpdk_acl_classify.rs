@@ -153,7 +153,7 @@ fn dpdk_acl_matches_linear_classifier() {
         (Ipv4Addr::new(10, 1, 2, 3), 443, Fate::Drop),
     ];
 
-    let linear = table.compile_linear();
+    let linear = table.compile();
     let sig = group.signature();
 
     for (src_ip, dst_port, expected_fate) in &test_cases {

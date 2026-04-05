@@ -88,7 +88,6 @@ pub use cascade::{
 pub use builder::{AclMatchFields, AclRuleBuilder, Blank, Install, Within};
 pub use category::{CategorizedRule, CategorizedTable, CategoryError, CategorySet, Compiler};
 pub use classifier::Classifier;
-pub use classify::LinearClassifier;
 pub use match_expr::{ExactMatch, FieldMatch, MaskedMatch, RangeMatch};
 pub use match_fields::{EthMatch, Icmp4Match, Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch};
 pub use metadata::Metadata;

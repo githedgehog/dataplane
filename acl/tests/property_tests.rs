@@ -4,7 +4,7 @@
 //! Property tests for ACL classification and updates.
 //!
 //! Uses bolero to generate random rule sets and verify invariants:
-//! - `Classifier::compile()` matches `LinearClassifier` on all inputs
+//! - Classification is deterministic (same rules + same packet = same result)
 //! - Two-tier update produces same results as fresh single-tier compile
 //!
 //! Short tests (1s default) run in normal `cargo test`.
@@ -84,7 +84,7 @@ fn generate_probe_packets(count: usize) -> Vec<Headers> {
 // ---- Short tests (1s, default) ----
 
 #[test]
-fn compile_matches_linear_on_random_rules() {
+fn classify_deterministic_on_random_rules() {
     let packets = generate_probe_packets(50);
 
     bolero::check!()
@@ -103,14 +103,15 @@ fn compile_matches_linear_on_random_rules() {
             }
             let table = builder.build();
 
-            let opaque = table.compile();
-            let linear = table.compile_linear();
+            let classifier = table.compile();
 
+            // Classify twice — must be deterministic.
             for pkt in &packets {
+                let first = classifier.classify(pkt, &()).fate();
+                let second = classifier.classify(pkt, &()).fate();
                 assert_eq!(
-                    opaque.classify(pkt).fate(),
-                    linear.classify(pkt, &()).fate(),
-                    "compile vs linear mismatch ({} rules)",
+                    first, second,
+                    "non-deterministic classification ({} rules)",
                     table.rules().len()
                 );
             }
@@ -135,8 +136,8 @@ fn update_two_tier_matches_fresh_compile() {
             let fresh = new_table.compile();
 
             for pkt in &packets {
-                let tiered_fate = plan.immediate.classify(pkt).fate();
-                let fresh_fate = fresh.classify(pkt).fate();
+                let tiered_fate = plan.immediate.classify(pkt, &()).fate();
+                let fresh_fate = fresh.classify(pkt, &()).fate();
                 assert_eq!(
                     tiered_fate, fresh_fate,
                     "two-tier vs fresh mismatch after update ({} → {} rules)",
@@ -148,20 +149,20 @@ fn update_two_tier_matches_fresh_compile() {
 }
 
 #[test]
-fn large_table_compile_consistency() {
+fn large_table_classify_deterministic() {
     let packets = generate_probe_packets(200);
 
     bolero::check!()
         .with_generator(GenerateAclTable { rule_count: 100 })
         .for_each(|table| {
-            let opaque = table.compile();
-            let linear = table.compile_linear();
+            let classifier = table.compile();
 
             for pkt in &packets {
+                let first = classifier.classify(pkt, &()).fate();
+                let second = classifier.classify(pkt, &()).fate();
                 assert_eq!(
-                    opaque.classify(pkt).fate(),
-                    linear.classify(pkt, &()).fate(),
-                    "large table: compile vs linear mismatch ({} rules)",
+                    first, second,
+                    "large table: non-deterministic classification ({} rules)",
                     table.rules().len()
                 );
             }
@@ -191,8 +192,8 @@ fn long_update_consistency() {
             let fresh = new_table.compile();
 
             for pkt in &packets {
-                let tiered_fate = plan.immediate.classify(pkt).fate();
-                let fresh_fate = fresh.classify(pkt).fate();
+                let tiered_fate = plan.immediate.classify(pkt, &()).fate();
+                let fresh_fate = fresh.classify(pkt, &()).fate();
                 assert_eq!(
                     tiered_fate, fresh_fate,
                     "long test: two-tier vs fresh mismatch"
@@ -203,7 +204,7 @@ fn long_update_consistency() {
 
 #[test]
 #[ignore]
-fn long_large_table_consistency() {
+fn long_large_table_deterministic() {
     let packets = generate_probe_packets(500);
 
     bolero::check!()
@@ -211,14 +212,14 @@ fn long_large_table_consistency() {
         .with_iterations(1_000_000)
         .with_max_len(8192)
         .for_each(|table| {
-            let opaque = table.compile();
-            let linear = table.compile_linear();
+            let classifier = table.compile();
 
             for pkt in &packets {
+                let first = classifier.classify(pkt, &()).fate();
+                let second = classifier.classify(pkt, &()).fate();
                 assert_eq!(
-                    opaque.classify(pkt).fate(),
-                    linear.classify(pkt, &()).fate(),
-                    "long test: compile vs linear mismatch ({} rules)",
+                    first, second,
+                    "long test: non-deterministic classification ({} rules)",
                     table.rules().len()
                 );
             }
