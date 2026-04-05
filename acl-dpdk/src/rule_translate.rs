@@ -76,41 +76,50 @@ pub fn translate_rule<M: Metadata>(
         fields.push(hi);
         fields.push(lo);
     }
-    // 2-byte fields
+    // 2-byte fields — packed in pairs.  If the count is odd, the last
+    // field is promoted to 4 bytes (value shifted left by 16).
+    let two_byte_count = crate::input::count_two_byte_fields(signature);
+    let mut two_byte_idx = 0;
+
     if signature.has_eth_type() {
-        fields.push(translate_eth_type(pm.eth()));
+        let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
+        fields.push(translate_eth_type(pm.eth(), promoted));
+        two_byte_idx += 1;
     }
     if signature.has_tcp_src() {
-        fields.push(translate_port_range(
-            pm.tcp().map(|m| &m.src),
-        ));
+        let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
+        fields.push(translate_port_range(pm.tcp().map(|m| &m.src), promoted));
+        two_byte_idx += 1;
     }
     if signature.has_tcp_dst() {
-        fields.push(translate_port_range(
-            pm.tcp().map(|m| &m.dst),
-        ));
+        let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
+        fields.push(translate_port_range(pm.tcp().map(|m| &m.dst), promoted));
+        two_byte_idx += 1;
     }
     if signature.has_udp_src() {
-        fields.push(translate_port_range(
-            pm.udp().map(|m| &m.src),
-        ));
+        let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
+        fields.push(translate_port_range(pm.udp().map(|m| &m.src), promoted));
+        two_byte_idx += 1;
     }
     if signature.has_udp_dst() {
-        fields.push(translate_port_range(
-            pm.udp().map(|m| &m.dst),
-        ));
+        let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
+        fields.push(translate_port_range(pm.udp().map(|m| &m.dst), promoted));
+        two_byte_idx += 1;
     }
     if signature.has_icmp4_type() {
         fields.push(translate_icmp_byte(
             pm.icmp4().map(|m| &m.icmp_type),
         ));
+        two_byte_idx += 1;
     }
     if signature.has_icmp4_code() {
         fields.push(translate_icmp_byte(
             pm.icmp4().map(|m| &m.icmp_code),
         ));
+        two_byte_idx += 1;
     }
 
+    let _ = two_byte_idx;
     fields
 }
 
@@ -152,17 +161,20 @@ fn translate_wildcard_setup() -> AclField {
 
 /// Translate ether_type field.
 ///
-/// FieldType::Mask, 2 bytes.  mask_range = prefix length (16 = exact).
-///
-/// The value is stored as it would be read by the CPU from the
-/// network-order input buffer.  On LE, `[0x08, 0x00]` → `0x0008`.
-/// So we convert the host-order value to the CPU's reading of the
-/// network-order bytes: `val.to_be()`.
-fn translate_eth_type(eth: Option<&EthMatch>) -> AclField {
+/// When `promoted` is false: 2-byte Mask, value as u16, prefix=16.
+/// When `promoted` is true: the field was promoted to 4 bytes because
+/// it's a lone 2-byte field.  The value is shifted left by 16 into a
+/// u32, and the prefix length stays the same.
+fn translate_eth_type(eth: Option<&EthMatch>, promoted: bool) -> AclField {
     match eth.and_then(|m| m.ether_type.as_select()) {
         Some(et) => {
             let val: u16 = (*et).into();
-            AclField::from_u16(val, 16)
+            if promoted {
+                // Shift into high 16 bits of u32.
+                AclField::from_u32(u32::from(val) << 16, 16)
+            } else {
+                AclField::from_u16(val, 16)
+            }
         }
         None => AclField::wildcard(),
     }
@@ -215,18 +227,28 @@ fn translate_ipv6_prefix(
 
 /// Translate a port range field (TCP or UDP).
 ///
-/// FieldType::Range, 2 bytes.  value = low bound, mask_range = high bound.
-///
-/// Same byte-order reasoning: input buffer has port in network order,
-/// CPU reads as native.  Range bounds must match the CPU's reading.
-/// Port 80 in buffer = `[0x00, 0x50]`, on LE CPU reads `0x5000`.
-/// So: `port.to_be()`.
+/// When `promoted` is false: 2-byte Range, value=low, mask_range=high.
+/// When `promoted` is true: promoted to 4-byte Range with values
+/// shifted left by 16.
 fn translate_port_range(
     field: Option<&FieldMatch<acl::PortRange<u16>>>,
+    promoted: bool,
 ) -> AclField {
     match field.and_then(FieldMatch::as_select) {
-        Some(range) => AclField::from_u16(range.min, range.max),
-        None => AclField::from_u16(0, u16::MAX),
+        Some(range) => {
+            if promoted {
+                AclField::from_u32(u32::from(range.min) << 16, u32::from(range.max) << 16)
+            } else {
+                AclField::from_u16(range.min, range.max)
+            }
+        }
+        None => {
+            if promoted {
+                AclField::from_u32(0, u32::from(u16::MAX) << 16)
+            } else {
+                AclField::from_u16(0, u16::MAX)
+            }
+        }
     }
 }
 
@@ -308,8 +330,8 @@ mod tests {
         let sig = FieldSignature::from_match_fields(rule.packet_match());
         let fields = translate_rule(sig, &rule);
 
-        // Signature has: ipv4_proto + eth_type = 2 fields
-        // (no src/dst/ports because they're Ignore)
+        // Signature has: ipv4_proto + eth_type = 2 field bits.
+        // eth_type is a lone 2-byte field → promoted to 4 bytes.
         assert_eq!(sig.field_count(), 2);
         assert_eq!(fields.len(), 2);
 
@@ -319,10 +341,12 @@ mod tests {
             assert_eq!(fields[0].value_u8(), 6);
         }
 
-        // eth_type = IPv4 (set by conform)
+        // eth_type = IPv4 (set by conform), promoted to 4B.
+        // Value shifted left by 16: 0x0800 → 0x08000000.
         #[allow(unsafe_code)]
         unsafe {
-            assert_eq!(fields[1].value_u16(), 0x0800);
+            assert_eq!(fields[1].value_u32(), 0x08000000);
+            assert_eq!(fields[1].mask_range_u32(), 16); // prefix length
         }
     }
 }

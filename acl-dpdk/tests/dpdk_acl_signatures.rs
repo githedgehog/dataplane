@@ -118,12 +118,7 @@ fn classify_all_groups(
 
 // ---- Tests ----
 
-/// Known failure: IPv4-only signature group (no transport fields)
-/// produces DPDK ACL classification mismatches.  The compact buffer
-/// layout or field definition alignment may be incorrect for groups
-/// with fewer than 4 fields.  See debug output for details.
 #[test]
-#[ignore = "DPDK ACL multi-signature classification mismatch — investigating field alignment"]
 fn two_signature_groups_ipv4_tcp_vs_ipv4_only() {
     common::test_eal();
 
@@ -244,11 +239,7 @@ fn two_signature_groups_ipv4_tcp_vs_ipv4_only() {
     assert_eq!(dpdk_fate, linear_fate, "no-match mismatch");
 }
 
-/// Known failure: TCP and UDP signature groups classify independently
-/// but the cascade-across-groups logic hits the same field alignment
-/// issue as the IPv4-only test above.
 #[test]
-#[ignore = "DPDK ACL multi-signature classification mismatch — investigating field alignment"]
 fn tcp_and_udp_separate_groups() {
     common::test_eal();
 
@@ -332,10 +323,7 @@ fn tcp_and_udp_separate_groups() {
     assert_eq!(dpdk_fate, linear_fate, "wrong TCP mismatch");
 }
 
-/// Known failure: three signature groups with mixed field counts.
-/// Same underlying issue as the other multi-signature tests.
 #[test]
-#[ignore = "DPDK ACL multi-signature classification mismatch — investigating field alignment"]
 fn three_groups_mixed() {
     common::test_eal();
 

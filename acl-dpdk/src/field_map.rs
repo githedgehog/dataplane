@@ -299,29 +299,29 @@ pub fn build_field_defs(signature: FieldSignature) -> Vec<FieldDef> {
         remaining.push(fields::IPV6_DST_HI);
         remaining.push(fields::IPV6_DST_LO);
     }
-    // 2-byte fields after all 4B/8B fields
+    // Collect 2-byte fields separately — they need special packing.
+    let mut two_byte_fields: Vec<FieldMeta> = Vec::new();
+
     if signature.has_eth_type() {
-        remaining.push(fields::ETH_TYPE);
+        two_byte_fields.push(fields::ETH_TYPE);
     }
     if signature.has_tcp_src() || signature.has_udp_src() {
-        remaining.push(fields::TCP_SRC);
+        two_byte_fields.push(fields::TCP_SRC);
     }
     if signature.has_tcp_dst() || signature.has_udp_dst() {
-        remaining.push(fields::TCP_DST);
+        two_byte_fields.push(fields::TCP_DST);
     }
     if signature.has_icmp4_type() {
-        remaining.push(fields::ICMP4_TYPE);
+        two_byte_fields.push(fields::ICMP4_TYPE);
     }
     if signature.has_icmp4_code() {
-        remaining.push(fields::ICMP4_CODE);
+        two_byte_fields.push(fields::ICMP4_CODE);
     }
 
+    // Pack 4B/8B fields first.
     for meta in remaining {
         let size_bytes = meta.size as u32;
 
-        // input_index = 1 + (offset - 2) / 4
-        // This maps each field to the 4-byte fetch group it belongs to,
-        // matching the DPDK 5-tuple example pattern.
         #[allow(clippy::cast_possible_truncation)]
         let input_index = (1 + (next_offset - 2) / 4) as u8;
 
@@ -334,6 +334,64 @@ pub fn build_field_defs(signature: FieldSignature) -> Vec<FieldDef> {
         });
         field_index += 1;
         next_offset += size_bytes;
+    }
+
+    // Pack 2-byte fields in pairs.  Two adjacent 2-byte fields share
+    // one 4-byte input_index.  If there's an odd number, the last one
+    // is promoted to a 4-byte field (value in high 16 bits, prefix
+    // unchanged).  This is required because DPDK ACL processes 4 bytes
+    // per input_index — a lone 2-byte field leaves 2 unhandled bytes
+    // that cause trie traversal failures.
+    let mut i = 0;
+    while i < two_byte_fields.len() {
+        if i + 1 < two_byte_fields.len() {
+            // Pair: two 2-byte fields at the same input_index.
+            let meta1 = two_byte_fields[i];
+            let meta2 = two_byte_fields[i + 1];
+
+            #[allow(clippy::cast_possible_truncation)]
+            let input_index = (1 + (next_offset - 2) / 4) as u8;
+
+            defs.push(FieldDef {
+                field_type: meta1.field_type,
+                size: meta1.size,
+                field_index,
+                input_index,
+                offset: next_offset,
+            });
+            field_index += 1;
+            next_offset += meta1.size as u32;
+
+            defs.push(FieldDef {
+                field_type: meta2.field_type,
+                size: meta2.size,
+                field_index,
+                input_index, // same input_index as the first
+                offset: next_offset,
+            });
+            field_index += 1;
+            next_offset += meta2.size as u32;
+
+            i += 2;
+        } else {
+            // Lone 2-byte field: promote to 4 bytes.
+            let meta = two_byte_fields[i];
+
+            #[allow(clippy::cast_possible_truncation)]
+            let input_index = (1 + (next_offset - 2) / 4) as u8;
+
+            defs.push(FieldDef {
+                field_type: meta.field_type,
+                size: FieldSize::Four, // promoted
+                field_index,
+                input_index,
+                offset: next_offset,
+            });
+            field_index += 1;
+            next_offset += 4; // 4 bytes, not 2
+
+            i += 1;
+        }
     }
 
     defs
