@@ -155,25 +155,79 @@ With flow-filter removed, the ACL rules can be compiled to
 rte_flow or tc-flower for NIC offload.  Flow-entry remains in
 software (it's per-flow state, not offloadable rules).
 
-## What we expect to revise
+## Design decisions (post-analysis)
 
-This assessment identifies several areas where the ACL
-abstractions may need revision once we integrate with the
-real pipeline:
+Several of the concerns identified above have been resolved
+through design discussion:
 
-1. **`Step` enum** — will need NAT-specific variants
-2. **`Metadata` trait** — needs concrete VPC discriminant type
-3. **`MutableMap` ClassifierInner** — needs real implementation
-   backed by flow-entry's DashMap
-4. **`Cascade` semantics** — need to define precisely how a
-   MutableMap hit interacts with stale generation IDs
-5. **ICMP error handling** — may need a pre-filter stage or
-   special rule priority
-6. **Action coupling to match** — NAT parameters derived from
-   the match may require richer action types than our current
-   `ActionSequence`
+### ACL does classification, not NAT
 
-These are expected.  The ACL system was designed with extension
-points (`#[non_exhaustive]` Step enum, `M: Metadata` generic,
-`MutableMap` variant) precisely for this.  The question is
-whether the extensions fit cleanly or require structural changes.
+The ACL classifier answers "is this traffic allowed, and what
+general category is it?" — not "what specific NAT mapping should
+this packet get."  NAT is a separate lookup, owned by the NAT
+network function, with its own state table (DashMap).
+
+The ACL rule's action annotates the packet with metadata
+(Mark/Meta/Tag) indicating the destination VPC and NAT
+requirements.  The NAT NF reads these annotations and performs
+its own lookup/allocation.
+
+This separation means:
+- ACL rule updates don't invalidate NAT state (different tables)
+- NAT state updates don't require ACL recompilation
+- The ACL is stateless — no learned entries to invalidate on
+  rule change
+
+### Fate::Learn replaces MutableMap
+
+`Fate::Learn` signals the network function to create per-flow
+state (e.g., NAT mappings, MAC learning entries).  In hardware
+backends this lowers to `Trap` (punt to software).
+
+The `MutableMap` variant has been removed from `ClassifierInner`.
+Per-flow state caches are owned by network functions and sit in
+front of the classifier, not inside it.  The NF checks its cache
+before calling classify; on miss, it classifies and optionally
+creates state.
+
+### Step enum expanded, not NAT-specific
+
+Rather than NAT-specific Step variants, the Step enum uses
+generic metadata slots (Mark, Meta, Tag, Flag) that map to
+rte_flow actions.  The NF ascribes meaning to the u32 values.
+For example, Meta carries dst_vpcd, Mark carries NAT requirement
+flags.  Any type implementing `TryFrom<u32>` can be encoded.
+
+### Metadata trait gains matching
+
+The `Metadata` trait now has an associated `Values` type and a
+`matches_values()` method.  `LinearClassifier::classify()` takes
+both headers and metadata values.  This enables VPC discriminant
+matching without special-casing in the ACL engine.
+
+### Priority: semantic vs hardware
+
+Priority in `AclRule` is semantic (which rule wins on overlap).
+Backend lowering (Pass 5) remaps to hardware-specific values
+per table in the cascade.  See `priority-model.md`.
+
+### Rule generation is Pass 0
+
+`build_from_overlay()` becomes a new Pass 0 (external to the
+acl crate) that generates `AclRule<VpcMeta>` from peering config.
+The manual prefix splitting/overlap resolution in flow-filter is
+replaced by priority-ordered rules + the ACL's overlap analysis.
+
+An ordering-based table builder (`build_ordered`) allows Pass 0
+to supply a `PartialOrd`-like comparator instead of explicit
+priority values.  The builder validates that all overlapping
+rules have a defined ordering and assigns priorities automatically.
+
+## Remaining concerns
+
+1. **ICMP error handling** — may need high-priority wildcard
+   rules for ICMP errors, or handling in the NF before classify
+2. **Pass 0 implementation** — peering config → ACL rules,
+   including NAT requirement encoding and priority strategy
+3. **AclClassifierNf** — the NetworkFunction impl that replaces
+   FlowFilter in the pipeline

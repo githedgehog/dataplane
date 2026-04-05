@@ -10,6 +10,16 @@ pass is independently testable.  The composition is verifiable.
 ## Pass inventory
 
 ```
+Pass 0: Rule Generation  (external, per use case)
+  Config (e.g., VPC peerings) → AclTable
+  Translate domain-specific configuration into ACL rules.
+  For VPC peerings: iterate peerings, generate rules per
+  (src_vpcd, src_prefix, dst_prefix, NAT requirements) tuple.
+  Assign priorities via explicit values or ordering-based
+  builder (see priority-model.md).
+  NOT part of the ACL crate — lives in the consumer (e.g.,
+  pipeline code) since it depends on config types.
+
 Pass 1: Validate
   AclTable → ValidatedTable
   Check rules for internal consistency (no contradictory fields,
@@ -35,6 +45,10 @@ Pass 5: Backend Lowering  (per domain, per backend)
   - rte_flow: FlowAttr + FlowMatch + FlowAction
   - tc-flower: TcFilterFlowerOption + TcAction
   - Software: sorted Vec<CompiledEntry> (LinearClassifier)
+  Also remaps semantic priorities to hardware-specific values.
+  This mapping is per-table in the cascade — different tables
+  may use different priority ranges.  Must leave room for
+  synthetic trap rules from Pass 4.  See priority-model.md.
 
 Pass 6: Input Assembly  (per backend)
   Headers + FieldSignature → classification input buffer
@@ -60,6 +74,7 @@ Pass 8: Update Planning  (when rules change)
 
 | Pass | Status | Location |
 |---|---|---|
+| 0. Rule Generation | Not implemented | External to acl crate (consumer-specific) |
 | 1. Validate | Not implemented | Implicit in builder `Within` + `conform` |
 | 2. Overlap Analysis | ✅ Implemented | `acl/src/overlap.rs` |
 | 3. Signature Grouping | ✅ Implemented | `acl/src/signature.rs` |
@@ -75,7 +90,15 @@ Pass 8: Update Planning  (when rules change)
 ## Dependencies between passes
 
 ```
-                    ┌──────────┐
+               ┌────────────────┐
+               │ Config (external)│
+               └───────┬────────┘
+                       │
+               ┌───────▼────────┐
+               │ 0.Rule Generate │  (Pass 0 — external to acl crate)
+               └───────┬────────┘
+                       │
+                    ┌──▼───────┐
                     │ AclTable │
                     └────┬─────┘
                          │
