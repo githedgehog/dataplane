@@ -109,7 +109,7 @@ fn compile_matches_linear_on_random_rules() {
             for pkt in &packets {
                 assert_eq!(
                     opaque.classify(pkt).fate(),
-                    linear.classify(pkt).fate(),
+                    linear.classify(pkt, &()).fate(),
                     "compile vs linear mismatch ({} rules)",
                     table.rules().len()
                 );
@@ -160,7 +160,7 @@ fn large_table_compile_consistency() {
             for pkt in &packets {
                 assert_eq!(
                     opaque.classify(pkt).fate(),
-                    linear.classify(pkt).fate(),
+                    linear.classify(pkt, &()).fate(),
                     "large table: compile vs linear mismatch ({} rules)",
                     table.rules().len()
                 );
@@ -217,7 +217,7 @@ fn long_large_table_consistency() {
             for pkt in &packets {
                 assert_eq!(
                     opaque.classify(pkt).fate(),
-                    linear.classify(pkt).fate(),
+                    linear.classify(pkt, &()).fate(),
                     "long test: compile vs linear mismatch ({} rules)",
                     table.rules().len()
                 );

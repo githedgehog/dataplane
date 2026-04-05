@@ -498,7 +498,20 @@ mod tests {
         vni: Option<ExactMatch<u32>>,
     }
 
-    impl Metadata for TestMeta {}
+    #[derive(Debug)]
+    struct TestMetaValues {
+        vrf: u32,
+        vni: u32,
+    }
+
+    impl Metadata for TestMeta {
+        type Values = TestMetaValues;
+
+        fn matches_values(&self, values: &TestMetaValues) -> bool {
+            self.vrf.as_ref().is_none_or(|m| m.0 == values.vrf)
+                && self.vni.as_ref().is_none_or(|m| m.0 == values.vni)
+        }
+    }
 
     #[test]
     fn ipv4_tcp_rule() {

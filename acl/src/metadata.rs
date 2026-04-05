@@ -50,7 +50,34 @@ use std::fmt::Debug;
 /// to define metadata that can be matched in ACL rules.
 ///
 /// The `Default` impl should produce an all-wildcard (all-`None`) state.
-pub trait Metadata: Default + Clone + Debug + PartialEq + Eq {}
+///
+/// # Associated types
+///
+/// `Values` is the concrete metadata carried by a packet at classification
+/// time.  For example, if the match type has `vrf: Option<ExactMatch<u32>>`,
+/// the values type might have `vrf: u32`.
+///
+/// # Contract
+///
+/// `matches_values` must return `true` when the metadata match criteria
+/// are satisfied by the given values.  A default-constructed metadata
+/// (all wildcards) must match any values.
+pub trait Metadata: Default + Clone + Debug + PartialEq + Eq {
+    /// The concrete metadata values carried by a packet.
+    type Values: Debug;
+
+    /// Returns `true` if the metadata match criteria are satisfied by
+    /// the given packet metadata values.
+    fn matches_values(&self, values: &Self::Values) -> bool;
+}
 
 /// The trivial metadata type — no metadata matching.
-impl Metadata for () {}
+///
+/// Always matches.  `Values = ()` — no metadata to provide.
+impl Metadata for () {
+    type Values = ();
+
+    fn matches_values(&self, _values: &()) -> bool {
+        true
+    }
+}

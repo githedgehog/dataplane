@@ -293,7 +293,7 @@ mod tests {
 
             assert_eq!(
                 opaque.classify(&headers).fate(),
-                reference.classify(&headers).fate(),
+                reference.classify(&headers, &()).fate(),
                 "mismatch for source IP {ip}"
             );
         }

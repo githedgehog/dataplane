@@ -66,14 +66,19 @@ pub struct LinearClassifier<M: Metadata = ()> {
 }
 
 impl<M: Metadata> LinearClassifier<M> {
-    /// Classify a packet's headers against the rule set.
+    /// Classify a packet's headers and metadata against the rule set.
     ///
     /// Returns the full [`ClassifyOutcome`]: either the matched rule's
     /// [`ActionSequence`] or the table's default [`Fate`].
+    ///
+    /// Both protocol header fields and metadata must match for a rule
+    /// to fire.
     #[must_use]
-    pub fn classify(&self, headers: &Headers) -> ClassifyOutcome<'_> {
+    pub fn classify(&self, headers: &Headers, metadata: &M::Values) -> ClassifyOutcome<'_> {
         for rule in &self.rules {
-            if rule_matches_headers(rule.packet_match(), headers) {
+            if rule_matches_headers(rule.packet_match(), headers)
+                && rule.metadata().matches_values(metadata)
+            {
                 return ClassifyOutcome::Matched(rule.actions());
             }
         }
@@ -266,7 +271,7 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&headers, &()).fate(), Fate::Drop);
     }
 
     #[test]
@@ -284,7 +289,7 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&headers, &()).fate(), Fate::Forward);
     }
 
     #[test]
@@ -331,7 +336,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&matching_headers).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&matching_headers, &()).fate(), Fate::Forward);
 
         let non_matching_headers = HeaderStack::new()
             .eth(|_| {})
@@ -343,7 +348,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&non_matching_headers).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&non_matching_headers, &()).fate(), Fate::Drop);
 
         let leading_vlan_protocol = HeaderStack::new()
             .eth(|_| {})
@@ -358,7 +363,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&leading_vlan_protocol).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&leading_vlan_protocol, &()).fate(), Fate::Drop);
 
         let priority_tagged = HeaderStack::new()
             .eth(|_| {})
@@ -373,7 +378,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&priority_tagged).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&priority_tagged, &()).fate(), Fate::Drop);
     }
 
     #[test]
@@ -408,7 +413,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&pkt, &()).fate(), Fate::Drop);
 
         let pkt2 = HeaderStack::new()
             .eth(|_| {})
@@ -418,7 +423,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt2).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&pkt2, &()).fate(), Fate::Forward);
     }
 
     #[test]
@@ -442,7 +447,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt80).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&pkt80, &()).fate(), Fate::Forward);
 
         let pkt443 = HeaderStack::new()
             .eth(|_| {})
@@ -452,7 +457,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt443).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&pkt443, &()).fate(), Fate::Forward);
 
         let pkt8080 = HeaderStack::new()
             .eth(|_| {})
@@ -462,7 +467,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt8080).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&pkt8080, &()).fate(), Fate::Drop);
     }
 
     #[test]
@@ -481,7 +486,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&ipv6_pkt).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&ipv6_pkt, &()).fate(), Fate::Drop);
     }
 
     #[test]
@@ -501,7 +506,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&ipv4_pkt).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&ipv4_pkt, &()).fate(), Fate::Forward);
 
         let ipv6_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -509,7 +514,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&ipv6_pkt).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&ipv6_pkt, &()).fate(), Fate::Drop);
     }
 
     #[test]
@@ -529,7 +534,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&tcp_pkt).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&tcp_pkt, &()).fate(), Fate::Forward);
 
         let udp_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -537,6 +542,145 @@ mod tests {
             .udp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&udp_pkt).fate(), Fate::Drop);
+        assert_eq!(classifier.classify(&udp_pkt, &()).fate(), Fate::Drop);
+    }
+
+    // ---- Metadata matching tests ----
+
+    /// A concrete metadata type for testing VRF-based classification.
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    struct VrfMeta {
+        vrf: Option<crate::match_expr::ExactMatch<u32>>,
+    }
+
+    /// Concrete packet metadata values.
+    #[derive(Debug)]
+    struct VrfValues {
+        vrf: u32,
+    }
+
+    impl Metadata for VrfMeta {
+        type Values = VrfValues;
+
+        fn matches_values(&self, values: &VrfValues) -> bool {
+            self.vrf.as_ref().is_none_or(|m| m.0 == values.vrf)
+        }
+    }
+
+    #[test]
+    fn metadata_match_filters_rules() {
+        use crate::match_expr::ExactMatch;
+
+        // Two rules: same packet match, different VRF metadata.
+        // VRF 10 → permit, VRF 20 → deny.
+        let rule_vrf10 = crate::AclRuleBuilder::new()
+            .metadata(|m: &mut VrfMeta| m.vrf = Some(ExactMatch(10)))
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .permit(pri(100));
+
+        let rule_vrf20 = crate::AclRuleBuilder::new()
+            .metadata(|m: &mut VrfMeta| m.vrf = Some(ExactMatch(20)))
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .deny(pri(200));
+
+        let table = crate::AclTableBuilder::new(Fate::Drop)
+            .add_rule(rule_vrf10)
+            .add_rule(rule_vrf20)
+            .build();
+        let classifier = table.compile_linear();
+
+        let pkt = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+
+        // VRF 10 → matches the permit rule (pri 100, evaluated first)
+        assert_eq!(
+            classifier.classify(&pkt, &VrfValues { vrf: 10 }).fate(),
+            Fate::Forward,
+        );
+
+        // VRF 20 → matches the deny rule (pri 200)
+        assert_eq!(
+            classifier.classify(&pkt, &VrfValues { vrf: 20 }).fate(),
+            Fate::Drop,
+        );
+
+        // VRF 99 → no match → default Drop
+        assert_eq!(
+            classifier.classify(&pkt, &VrfValues { vrf: 99 }).fate(),
+            Fate::Drop,
+        );
+    }
+
+    #[test]
+    fn wildcard_metadata_matches_any_value() {
+        // Rule with no metadata constraint (default VrfMeta, vrf=None).
+        let rule = crate::AclRuleBuilder::new()
+            .metadata(|_: &mut VrfMeta| {})
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .permit(pri(100));
+
+        let table = crate::AclTableBuilder::new(Fate::Drop)
+            .add_rule(rule)
+            .build();
+        let classifier = table.compile_linear();
+
+        let pkt = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+
+        // Any VRF should match (metadata wildcard).
+        assert_eq!(
+            classifier.classify(&pkt, &VrfValues { vrf: 42 }).fate(),
+            Fate::Forward,
+        );
+    }
+
+    #[test]
+    fn metadata_match_with_action_steps() {
+        use crate::action::{ActionSequence, Step};
+        use crate::match_expr::ExactMatch;
+
+        // Rule: VRF 10, mark packet with 0xDEAD, then forward.
+        let rule = crate::AclRuleBuilder::new()
+            .metadata(|m: &mut VrfMeta| m.vrf = Some(ExactMatch(10)))
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .action(
+                ActionSequence::new(vec![Step::Mark(0xDEAD)], Fate::Forward),
+                pri(100),
+            );
+
+        let table = crate::AclTableBuilder::new(Fate::Drop)
+            .add_rule(rule)
+            .build();
+        let classifier = table.compile_linear();
+
+        let pkt = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+
+        // Matching VRF → full action sequence with Mark step.
+        let outcome = classifier.classify(&pkt, &VrfValues { vrf: 10 });
+        assert!(matches!(outcome, ClassifyOutcome::Matched(seq) if seq.fate() == Fate::Forward));
+        if let ClassifyOutcome::Matched(seq) = outcome {
+            assert_eq!(seq.steps(), &[Step::Mark(0xDEAD)]);
+        }
+
+        // Non-matching VRF → default fate, no steps.
+        let outcome2 = classifier.classify(&pkt, &VrfValues { vrf: 99 });
+        assert!(matches!(outcome2, ClassifyOutcome::Default(Fate::Drop)));
     }
 }

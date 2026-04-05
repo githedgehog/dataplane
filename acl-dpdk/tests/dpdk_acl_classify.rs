@@ -170,7 +170,7 @@ fn dpdk_acl_matches_linear_classifier() {
             .unwrap();
 
         // Linear classifier result
-        let linear_fate = linear.classify(&headers).fate();
+        let linear_fate = linear.classify(&headers, &()).fate();
 
         // DPDK ACL result — compact buffer
         let acl_input = input::assemble_compact_input(&headers, sig);
