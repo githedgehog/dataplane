@@ -9,29 +9,19 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::Once;
-
 use dpdk::acl::config::{AclBuildConfig, AclCreateParams};
 use dpdk::acl::context::AclContext;
 use dpdk::acl::field::{FieldDef, FieldSize, FieldType};
 use dpdk::acl::rule::{AclField, Rule, RuleData};
-use dpdk::eal;
 use dpdk::socket::SocketId;
 
-static EAL_INIT: Once = Once::new();
-
-fn init_eal() {
-    EAL_INIT.call_once(|| {
-        let _eal = eal::init(["test", "--no-huge", "--in-memory", "--no-pci"]);
-        std::mem::forget(_eal);
-    });
-}
+mod common;
 
 /// Minimal test: 2-field layout matching the working start_eal test pattern.
 /// Tests /8 prefix matching on IPv4 addresses.
 #[test]
 fn minimal_ipv4_prefix_match() {
-    init_eal();
+    common::test_eal();
 
     const N: usize = 2;
 
@@ -109,7 +99,7 @@ fn minimal_ipv4_prefix_match() {
 /// in dpdk/src/acl/mod.rs to eliminate layout as a variable.
 #[test]
 fn range_match_five_tuple_layout() {
-    init_eal();
+    common::test_eal();
 
     const N: usize = 5;
 

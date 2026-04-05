@@ -15,13 +15,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::net::Ipv4Addr;
-use std::sync::Once;
 
 use acl::{AclRuleBuilder, AclTableBuilder, Fate, FieldMatch, Ipv4Prefix, PortRange, Priority};
 use dpdk::acl::config::{AclBuildConfig, AclCreateParams};
 use dpdk::acl::context::AclContext;
 use dpdk::acl::rule::{AclField, Rule, RuleData};
-use dpdk::eal;
 use dpdk::socket::SocketId;
 use net::headers::builder::HeaderStack;
 use net::tcp::port::TcpPort;
@@ -29,16 +27,7 @@ use net::tcp::port::TcpPort;
 use dataplane_acl_dpdk::compiler;
 use dataplane_acl_dpdk::input;
 
-static EAL_INIT: Once = Once::new();
-
-fn init_eal() {
-    EAL_INIT.call_once(|| {
-        let _eal = eal::init(["test", "--no-huge", "--in-memory", "--no-pci"]);
-        // Eal is leaked intentionally — DPDK doesn't support clean shutdown
-        // in all cases, and we only need it for the duration of the test process.
-        std::mem::forget(_eal);
-    });
-}
+mod common;
 
 fn pri(n: u32) -> Priority {
     Priority::new(n).unwrap()
@@ -51,7 +40,7 @@ fn pri(n: u32) -> Priority {
 /// eth_type + ipv4_proto + ipv4_src + tcp_dst layout.
 #[test]
 fn dpdk_acl_matches_linear_classifier() {
-    init_eal();
+    common::test_eal();
 
     // Build the ACL table
     let table = AclTableBuilder::new(Fate::Drop)

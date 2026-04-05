@@ -12,7 +12,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::net::Ipv4Addr;
-use std::sync::Once;
 
 use acl::{
     AclRuleBuilder, AclTableBuilder, ActionSequence, Fate, FieldMatch,
@@ -21,7 +20,6 @@ use acl::{
 use dpdk::acl::config::{AclBuildConfig, AclCreateParams};
 use dpdk::acl::context::{AclContext, Built};
 use dpdk::acl::rule::{AclField, Rule};
-use dpdk::eal;
 use dpdk::socket::SocketId;
 use net::headers::builder::HeaderStack;
 use net::headers::Headers;
@@ -30,14 +28,7 @@ use net::tcp::port::TcpPort;
 use dataplane_acl_dpdk::compiler;
 use dataplane_acl_dpdk::input;
 
-static EAL_INIT: Once = Once::new();
-
-fn init_eal() {
-    EAL_INIT.call_once(|| {
-        let _eal = eal::init(["test", "--no-huge", "--in-memory", "--no-pci"]);
-        std::mem::forget(_eal);
-    });
-}
+mod common;
 
 fn pri(n: u32) -> Priority {
     Priority::new(n).unwrap()
@@ -226,7 +217,7 @@ fn assert_dpdk_matches_linear(
 
 #[test]
 fn single_rule_all_packets() {
-    init_eal();
+    common::test_eal();
     let packets = probe_packets();
 
     // Single permit rule: 10.0.0.0/8 TCP:80
@@ -243,7 +234,7 @@ fn single_rule_all_packets() {
 
 #[test]
 fn overlapping_rules_priority() {
-    init_eal();
+    common::test_eal();
     let packets = probe_packets();
 
     // Two overlapping rules: /8 permit (pri 2, lower precedence)
@@ -268,7 +259,7 @@ fn overlapping_rules_priority() {
 
 #[test]
 fn port_range_rules() {
-    init_eal();
+    common::test_eal();
     let packets = probe_packets();
 
     let table = build_table(
@@ -291,7 +282,7 @@ fn port_range_rules() {
 
 #[test]
 fn many_rules_random() {
-    init_eal();
+    common::test_eal();
     let packets = probe_packets();
 
     // 20 rules with deterministic "random" parameters.
@@ -323,7 +314,7 @@ fn many_rules_random() {
 
 #[test]
 fn wildcard_prefix_with_port_range() {
-    init_eal();
+    common::test_eal();
     let packets = probe_packets();
 
     // /0 prefix (match all IPs) with specific port range.
@@ -340,7 +331,7 @@ fn wildcard_prefix_with_port_range() {
 
 #[test]
 fn host_routes() {
-    init_eal();
+    common::test_eal();
     let packets = probe_packets();
 
     // Several /32 host routes.
