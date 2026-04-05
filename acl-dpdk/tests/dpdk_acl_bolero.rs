@@ -494,3 +494,112 @@ fn bolero_mixed_signatures() {
             }
         });
 }
+
+/// Bolero fuzz: mixed signatures through the category-aware compilation
+/// path.  Single DPDK ACL context with categories, single classify call.
+#[test]
+fn bolero_mixed_categories() {
+    common::test_eal();
+    let packets = probe_packets();
+
+    bolero::check!()
+        .with_type::<Vec<MixedRule>>()
+        .for_each(|rules: &Vec<MixedRule>| {
+            if rules.is_empty() {
+                return;
+            }
+
+            let mut builder = AclTableBuilder::new(Fate::Drop);
+            let mut seen = HashSet::new();
+            for rule in rules {
+                if seen.insert(rule.priority()) {
+                    builder.push_rule(rule.to_acl_rule());
+                }
+            }
+            let table = builder.build();
+
+            if table.rules().is_empty() {
+                return;
+            }
+
+            let Some(comp) = compiler::compile_categories(&table) else {
+                return;
+            };
+
+            let linear = table.compile();
+            let sig = comp.group.signature();
+            let cats = comp.num_categories;
+            let n = comp.group.field_count();
+
+            match n {
+                2 => classify_cat_packets::<2>(&table, &comp, &linear, &packets, cats, sig),
+                3 => classify_cat_packets::<3>(&table, &comp, &linear, &packets, cats, sig),
+                4 => classify_cat_packets::<4>(&table, &comp, &linear, &packets, cats, sig),
+                5 => classify_cat_packets::<5>(&table, &comp, &linear, &packets, cats, sig),
+                6 => classify_cat_packets::<6>(&table, &comp, &linear, &packets, cats, sig),
+                7 => classify_cat_packets::<7>(&table, &comp, &linear, &packets, cats, sig),
+                8 => classify_cat_packets::<8>(&table, &comp, &linear, &packets, cats, sig),
+                _ => { /* skip unsupported field counts */ }
+            }
+        });
+}
+
+fn classify_cat_packets<const N: usize>(
+    table: &acl::AclTable,
+    comp: &compiler::CategorizedCompilation,
+    linear: &acl::Classifier,
+    packets: &[Headers],
+    cats: u32,
+    sig: acl::FieldSignature,
+) {
+    let max_rules = comp.group.rules().len().max(1);
+    let params =
+        AclCreateParams::new::<N>("bolero_cat", SocketId::ANY, max_rules as u32)
+            .expect("create params");
+    let mut ctx = AclContext::<N>::new(params).expect("create context");
+
+    let rules: Vec<Rule<N>> = comp
+        .group
+        .rules()
+        .iter()
+        .map(|cr| {
+            let mut fields = [AclField::wildcard(); N];
+            for (i, f) in cr.fields.iter().enumerate() {
+                fields[i] = *f;
+            }
+            Rule {
+                data: cr.data,
+                fields,
+            }
+        })
+        .collect();
+
+    ctx.add_rules(&rules).expect("add rules");
+
+    let mut field_defs = [comp.group.field_defs()[0]; N];
+    for (i, fd) in comp.group.field_defs().iter().enumerate() {
+        field_defs[i] = *fd;
+    }
+    let build_cfg = AclBuildConfig::new(cats, field_defs, 0).expect("build config");
+    let ctx = ctx.build(&build_cfg).expect("build context");
+
+    for pkt in packets {
+        let linear_fate = linear.classify(pkt, &()).fate();
+
+        let acl_input = input::assemble_compact_input(pkt, sig);
+        let data = [acl_input.as_ptr()];
+        let mut results = vec![0u32; cats as usize];
+        ctx.classify(&data, &mut results, cats).expect("classify");
+
+        let best = compiler::resolve_categories(table, &results, cats);
+        let dpdk_fate = compiler::resolve_fate(table, best, table.default_fate());
+
+        assert_eq!(
+            linear_fate, dpdk_fate,
+            "linear vs categorized DPDK disagree ({} rules, {} groups, {} categories)",
+            table.rules().len(),
+            comp.num_groups,
+            cats,
+        );
+    }
+}

@@ -108,6 +108,12 @@ impl FieldSignature {
         self.0
     }
 
+    /// Compute the union of two signatures (all fields from either).
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
     /// Whether a specific field bit is set.
     #[must_use]
     pub fn has_field(&self, bit: u32) -> bool {

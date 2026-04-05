@@ -89,6 +89,9 @@ impl CompiledGroup {
     }
 }
 
+// AGENT: should this method be pub?
+// This feel like the kind of thing which should be transparent to the user or disguised behind a trait.
+// Still reviewing so I'm not sure.
 /// Compile an [`AclTable`] into groups of DPDK-ready rules.
 ///
 /// Returns one [`CompiledGroup`] per unique [`FieldSignature`] in the
@@ -102,19 +105,15 @@ impl CompiledGroup {
 /// Multi-category support can be added when the category system is
 /// wired up.
 #[must_use]
-pub fn compile<M: Metadata>(
-    table: &AclTable<M>,
-) -> Vec<CompiledGroup> {
+pub fn compile<M: Metadata>(table: &AclTable<M>) -> Vec<CompiledGroup> {
     let rules = table.rules();
     if rules.is_empty() {
         return Vec::new();
     }
 
     // Extract match fields for signature computation.
-    let match_fields: Vec<acl::AclMatchFields> = rules
-        .iter()
-        .map(|r| r.packet_match().clone())
-        .collect();
+    let match_fields: Vec<acl::AclMatchFields> =
+        rules.iter().map(|r| r.packet_match().clone()).collect();
     let groups = acl::group_rules_by_signature(&match_fields);
 
     groups
@@ -137,8 +136,8 @@ pub fn compile<M: Metadata>(
 
                     // userdata = rule index + 1 (0 is reserved for "no match")
                     #[allow(clippy::unwrap_used)] // idx + 1 is always > 0
-                    let userdata = NonZero::new(u32::try_from(idx + 1).unwrap_or(u32::MAX))
-                        .unwrap();
+                    let userdata =
+                        NonZero::new(u32::try_from(idx + 1).unwrap_or(u32::MAX)).unwrap();
 
                     // Convert our Priority (NonZero<u32>) to DPDK's i32 priority.
                     // DPDK: higher numeric value = higher priority.
@@ -147,8 +146,7 @@ pub fn compile<M: Metadata>(
                     // Our Priority: lower value = higher precedence.
                     // We invert within DPDK's valid range.
                     let max_dpdk_pri = dpdk::acl::rule::priority::MAX;
-                    let our_pri = i32::try_from(rule.priority().get())
-                        .unwrap_or(max_dpdk_pri);
+                    let our_pri = i32::try_from(rule.priority().get()).unwrap_or(max_dpdk_pri);
                     let dpdk_priority = (max_dpdk_pri - our_pri).max(1);
 
                     let data = RuleData {
@@ -172,17 +170,171 @@ pub fn compile<M: Metadata>(
         .collect()
 }
 
+/// Result of category-aware compilation.
+///
+/// All rules are merged into a single DPDK ACL context using the
+/// union of all field signatures.  Each original signature group is
+/// assigned a category, and rules are tagged with the appropriate
+/// `category_mask`.
+///
+/// At classify time, pass `num_categories` to `classify()` and
+/// use [`resolve_categories()`] to pick the highest-priority match
+/// across all categories.
+#[derive(Debug, Clone)]
+pub struct CategorizedCompilation {
+    /// The single merged group containing all rules.
+    pub group: CompiledGroup,
+    /// Number of categories to pass to `classify()`.
+    /// Always 1 or a multiple of 4 (DPDK constraint).
+    pub num_categories: u32,
+    /// Number of original signature groups (≤ num_categories).
+    pub num_groups: usize,
+}
+
+/// Compile an [`AclTable`] into a single DPDK ACL context using
+/// categories to distinguish signature groups.
+///
+/// All rules are padded to the union field signature and assigned
+/// to categories based on their original signature group.  This
+/// enables a single `classify()` call with multiple category results,
+/// avoiding the need for per-group classification and cross-group
+/// priority resolution.
+///
+/// # Panics
+///
+/// Panics if the table has more than 16 distinct field signatures
+/// (DPDK's `RTE_ACL_MAX_CATEGORIES` limit).
+#[must_use]
+pub fn compile_categories<M: Metadata>(table: &AclTable<M>) -> Option<CategorizedCompilation> {
+    let rules = table.rules();
+    if rules.is_empty() {
+        return None;
+    }
+
+    // Group rules by signature.
+    let match_fields: Vec<acl::AclMatchFields> = rules
+        .iter()
+        .map(|r| r.packet_match().clone())
+        .collect();
+    let groups = acl::group_rules_by_signature(&match_fields);
+
+    // Filter out empty signatures (match-everything rules).
+    let non_empty_groups: Vec<_> = groups
+        .into_iter()
+        .filter(|g| g.signature() != FieldSignature::EMPTY)
+        .collect();
+
+    if non_empty_groups.is_empty() {
+        return None;
+    }
+
+    assert!(
+        non_empty_groups.len() <= dpdk::acl::config::MAX_CATEGORIES as usize,
+        "too many signature groups ({}) for DPDK ACL categories (max {})",
+        non_empty_groups.len(),
+        dpdk::acl::config::MAX_CATEGORIES,
+    );
+
+    // Compute union signature.
+    let union_sig = non_empty_groups
+        .iter()
+        .fold(FieldSignature::EMPTY, |acc, g| acc.union(g.signature()));
+
+    let field_defs = field_map::build_field_defs(union_sig);
+
+    // Compute num_categories: must be 1 or a multiple of 4.
+    let raw_cats = non_empty_groups.len() as u32;
+    let num_categories = if raw_cats == 1 {
+        1
+    } else {
+        // Round up to next multiple of RESULTS_MULTIPLIER (4).
+        let m = dpdk::acl::config::RESULTS_MULTIPLIER;
+        ((raw_cats + m - 1) / m) * m
+    };
+
+    // Compile all rules with category assignments.
+    let mut compiled_rules = Vec::new();
+
+    for (group_idx, group) in non_empty_groups.iter().enumerate() {
+        // Category mask: bit corresponding to this group.
+        let category_mask: u32 = 1 << group_idx;
+
+        for &rule_idx in group.rule_indices() {
+            let rule = &rules[rule_idx];
+
+            #[allow(clippy::unwrap_used)]
+            let userdata = NonZero::new(u32::try_from(rule_idx + 1).unwrap_or(u32::MAX)).unwrap();
+
+            let max_dpdk_pri = dpdk::acl::rule::priority::MAX;
+            let our_pri = i32::try_from(rule.priority().get()).unwrap_or(max_dpdk_pri);
+            let dpdk_priority = (max_dpdk_pri - our_pri).max(1);
+
+            let data = RuleData {
+                category_mask,
+                priority: dpdk_priority,
+                userdata,
+            };
+
+            // Translate against the UNION signature — fields not in
+            // the rule's original signature produce wildcards.
+            let fields = rule_translate::translate_rule(union_sig, rule);
+
+            compiled_rules.push(CompiledRule { data, fields });
+        }
+    }
+
+    Some(CategorizedCompilation {
+        group: CompiledGroup {
+            signature: union_sig,
+            field_defs,
+            rules: compiled_rules,
+        },
+        num_categories,
+        num_groups: non_empty_groups.len(),
+    })
+}
+
+/// Resolve the best match across category results.
+///
+/// Given the results array from a multi-category `classify()` call,
+/// returns the userdata of the highest-priority match across all
+/// categories.  Returns 0 if no category matched.
+///
+/// This is needed because each category independently produces its
+/// best match, but the caller needs the overall best.
+#[must_use]
+pub fn resolve_categories<M: Metadata>(
+    table: &AclTable<M>,
+    results: &[u32],
+    num_categories: u32,
+) -> u32 {
+    let mut best_userdata: u32 = 0;
+    let mut best_priority: Option<acl::Priority> = None;
+
+    for &userdata in results.iter().take(num_categories as usize) {
+        if userdata == 0 {
+            continue;
+        }
+        let idx = (userdata - 1) as usize;
+        if let Some(rule) = table.rules().get(idx) {
+            let pri = rule.priority();
+            if best_priority.is_none_or(|bp| pri < bp) {
+                best_priority = Some(pri);
+                best_userdata = userdata;
+            }
+        }
+    }
+
+    best_userdata
+}
+
 /// Map a DPDK classification result back to a [`Fate`].
 ///
 /// `userdata` is the value returned by `rte_acl_classify`.  If 0
 /// (no match), returns the table's default fate.  Otherwise,
 /// decodes the rule index and returns that rule's fate.
 #[must_use]
-pub fn resolve_fate<M: Metadata>(
-    table: &AclTable<M>,
-    userdata: u32,
-    default_fate: Fate,
-) -> Fate {
+pub fn resolve_fate<M: Metadata>(table: &AclTable<M>, userdata: u32, default_fate: Fate) -> Fate {
     if userdata == 0 {
         return default_fate;
     }

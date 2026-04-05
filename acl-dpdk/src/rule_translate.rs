@@ -86,24 +86,23 @@ pub fn translate_rule<M: Metadata>(
         fields.push(translate_eth_type(pm.eth(), promoted));
         two_byte_idx += 1;
     }
-    if signature.has_tcp_src() {
+    // TCP/UDP src and dst ports share the same byte offset in the packet,
+    // so they produce a single column each (not separate TCP and UDP columns).
+    // This matches the OR logic in build_field_defs.
+    if signature.has_tcp_src() || signature.has_udp_src() {
         let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
-        fields.push(translate_port_range(pm.tcp().map(|m| &m.src), promoted));
+        let tcp_field = pm.tcp().map(|m| &m.src);
+        let udp_field = pm.udp().map(|m| &m.src);
+        // Use whichever is present; if both, prefer TCP (they can't coexist
+        // on the same packet, so only one will be non-wildcard).
+        fields.push(translate_port_range(tcp_field.or(udp_field), promoted));
         two_byte_idx += 1;
     }
-    if signature.has_tcp_dst() {
+    if signature.has_tcp_dst() || signature.has_udp_dst() {
         let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
-        fields.push(translate_port_range(pm.tcp().map(|m| &m.dst), promoted));
-        two_byte_idx += 1;
-    }
-    if signature.has_udp_src() {
-        let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
-        fields.push(translate_port_range(pm.udp().map(|m| &m.src), promoted));
-        two_byte_idx += 1;
-    }
-    if signature.has_udp_dst() {
-        let promoted = crate::input::is_promoted(two_byte_idx, two_byte_count);
-        fields.push(translate_port_range(pm.udp().map(|m| &m.dst), promoted));
+        let tcp_field = pm.tcp().map(|m| &m.dst);
+        let udp_field = pm.udp().map(|m| &m.dst);
+        fields.push(translate_port_range(tcp_field.or(udp_field), promoted));
         two_byte_idx += 1;
     }
     if signature.has_icmp4_type() {

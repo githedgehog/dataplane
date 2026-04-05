@@ -471,3 +471,284 @@ fn three_groups_mixed() {
         );
     }
 }
+
+// ---- Category-aware tests ----
+
+/// Helper: classify using the categorized compilation path.
+fn classify_categorized(
+    table: &acl::AclTable,
+    comp: &compiler::CategorizedCompilation,
+    packet: &Headers,
+) -> Fate {
+    let sig = comp.group.signature();
+    let acl_input = input::assemble_compact_input(packet, sig);
+    let data = [acl_input.as_ptr()];
+
+    let n = comp.group.field_count();
+    let cats = comp.num_categories;
+    let mut results = vec![0u32; cats as usize];
+
+    match n {
+        2 => classify_cat_n::<2>(&comp.group, &data, &mut results, cats),
+        3 => classify_cat_n::<3>(&comp.group, &data, &mut results, cats),
+        4 => classify_cat_n::<4>(&comp.group, &data, &mut results, cats),
+        5 => classify_cat_n::<5>(&comp.group, &data, &mut results, cats),
+        6 => classify_cat_n::<6>(&comp.group, &data, &mut results, cats),
+        7 => classify_cat_n::<7>(&comp.group, &data, &mut results, cats),
+        8 => classify_cat_n::<8>(&comp.group, &data, &mut results, cats),
+        _ => panic!("unsupported field count {n}"),
+    }
+
+    let best = compiler::resolve_categories(table, &results, cats);
+    compiler::resolve_fate(table, best, table.default_fate())
+}
+
+fn classify_cat_n<const N: usize>(
+    group: &CompiledGroup,
+    data: &[*const u8],
+    results: &mut [u32],
+    categories: u32,
+) {
+    let max_rules = group.rules().len().max(1);
+    let params =
+        AclCreateParams::new::<N>("cat_test", SocketId::ANY, max_rules as u32)
+            .expect("create params");
+    let mut ctx = AclContext::<N>::new(params).expect("create context");
+
+    let rules: Vec<Rule<N>> = group
+        .rules()
+        .iter()
+        .map(|cr| {
+            let mut fields = [AclField::wildcard(); N];
+            for (i, f) in cr.fields.iter().enumerate() {
+                fields[i] = *f;
+            }
+            Rule {
+                data: cr.data,
+                fields,
+            }
+        })
+        .collect();
+
+    ctx.add_rules(&rules).expect("add rules");
+
+    let mut field_defs = [group.field_defs()[0]; N];
+    for (i, fd) in group.field_defs().iter().enumerate() {
+        field_defs[i] = *fd;
+    }
+    let build_cfg = AclBuildConfig::new(categories, field_defs, 0)
+        .expect("build config with categories");
+    let ctx = ctx.build(&build_cfg).expect("build context");
+
+    ctx.classify(data, results, categories).expect("classify");
+}
+
+#[test]
+fn categories_two_groups_ipv4_tcp_vs_ipv4_only() {
+    common::test_eal();
+
+    let table = AclTableBuilder::new(Fate::Drop)
+        .add_rule(
+            AclRuleBuilder::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.src = FieldMatch::Select(
+                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
+                    );
+                })
+                .tcp(|tcp| {
+                    tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
+                })
+                .permit(pri(100)),
+        )
+        .add_rule(
+            AclRuleBuilder::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.src = FieldMatch::Select(
+                        Ipv4Prefix::new(Ipv4Addr::new(172, 16, 0, 0), 12).unwrap(),
+                    );
+                })
+                .permit(pri(200)),
+        )
+        .build();
+
+    let comp = compiler::compile_categories(&table).expect("should compile");
+    eprintln!(
+        "Categories: {} groups, {} categories, {} fields, {} rules",
+        comp.num_groups,
+        comp.num_categories,
+        comp.group.field_count(),
+        comp.group.rules().len(),
+    );
+
+    let classifier = table.compile();
+
+    let test_cases: Vec<(Headers, &str)> = vec![
+        (
+            HeaderStack::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.set_source(
+                        net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap(),
+                    );
+                })
+                .tcp(|tcp| {
+                    tcp.set_destination(TcpPort::new_checked(80).unwrap());
+                })
+                .build_headers()
+                .unwrap(),
+            "10.x TCP:80",
+        ),
+        (
+            HeaderStack::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.set_source(
+                        net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(172, 16, 1, 1)).unwrap(),
+                    );
+                })
+                .udp(|udp| {
+                    udp.set_destination(UdpPort::new_checked(53).unwrap());
+                })
+                .build_headers()
+                .unwrap(),
+            "172.16.x UDP:53",
+        ),
+        (
+            HeaderStack::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.set_source(
+                        net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap(),
+                    );
+                })
+                .tcp(|tcp| {
+                    tcp.set_destination(TcpPort::new_checked(443).unwrap());
+                })
+                .build_headers()
+                .unwrap(),
+            "192.168.x (no match)",
+        ),
+    ];
+
+    for (pkt, label) in &test_cases {
+        let linear_fate = classifier.classify(pkt, &()).fate();
+        let cat_fate = classify_categorized(&table, &comp, pkt);
+
+        assert_eq!(
+            linear_fate, cat_fate,
+            "linear vs categorized mismatch for {label}"
+        );
+    }
+}
+
+#[test]
+fn categories_three_groups_priority_across_groups() {
+    common::test_eal();
+
+    // IPv4-only rule (pri 1, highest) — Forward
+    // IPv4+TCP rule (pri 2) — Drop
+    // IPv4+UDP rule (pri 3) — Drop
+    // A TCP packet from 10.x should match both the IPv4-only (Forward)
+    // and the IPv4+TCP (Drop) rules. Priority 1 wins → Forward.
+    let table = AclTableBuilder::new(Fate::Drop)
+        .add_rule(
+            AclRuleBuilder::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.src = FieldMatch::Select(
+                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
+                    );
+                })
+                .permit(pri(1)),
+        )
+        .add_rule(
+            AclRuleBuilder::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.src = FieldMatch::Select(
+                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
+                    );
+                })
+                .tcp(|tcp| {
+                    tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
+                })
+                .deny(pri(2)),
+        )
+        .add_rule(
+            AclRuleBuilder::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.src = FieldMatch::Select(
+                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
+                    );
+                })
+                .udp(|udp| {
+                    udp.dst = FieldMatch::Select(PortRange::exact(53u16));
+                })
+                .deny(pri(3)),
+        )
+        .build();
+
+    let comp = compiler::compile_categories(&table).expect("should compile");
+    eprintln!(
+        "3-group categories: {} groups, {} categories, {} field_defs, rules have {} fields each",
+        comp.num_groups,
+        comp.num_categories,
+        comp.group.field_count(),
+        comp.group.rules().first().map(|r| r.fields.len()).unwrap_or(0),
+    );
+    let classifier = table.compile();
+
+    // TCP packet: matches IPv4-only (pri 1, Forward) AND IPv4+TCP (pri 2, Drop).
+    // Priority 1 wins → Forward.
+    let tcp_pkt = HeaderStack::new()
+        .eth(|_| {})
+        .ipv4(|ip| {
+            ip.set_source(
+                net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap(),
+            );
+        })
+        .tcp(|tcp| {
+            tcp.set_destination(TcpPort::new_checked(80).unwrap());
+        })
+        .build_headers()
+        .unwrap();
+
+    assert_eq!(
+        classifier.classify(&tcp_pkt, &()).fate(),
+        Fate::Forward,
+        "linear should say Forward (pri 1 wins)"
+    );
+    assert_eq!(
+        classify_categorized(&table, &comp, &tcp_pkt),
+        Fate::Forward,
+        "categorized should say Forward (pri 1 wins across categories)"
+    );
+
+    // UDP packet: matches IPv4-only (pri 1, Forward) AND IPv4+UDP (pri 3, Drop).
+    // Priority 1 wins → Forward.
+    let udp_pkt = HeaderStack::new()
+        .eth(|_| {})
+        .ipv4(|ip| {
+            ip.set_source(
+                net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap(),
+            );
+        })
+        .udp(|udp| {
+            udp.set_destination(UdpPort::new_checked(53).unwrap());
+        })
+        .build_headers()
+        .unwrap();
+
+    assert_eq!(
+        classifier.classify(&udp_pkt, &()).fate(),
+        Fate::Forward,
+    );
+    assert_eq!(
+        classify_categorized(&table, &comp, &udp_pkt),
+        Fate::Forward,
+        "categorized should resolve cross-category priority correctly"
+    );
+}
