@@ -47,7 +47,7 @@ impl CompiledEntry {
 ///
 /// Private — users interact with [`Classifier`] and never see this.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // MutableMap and Cascade used in future update support
+#[allow(dead_code)] // Cascade used in update support
 enum ClassifierInner {
     /// Linear scan of sorted rules.  Reference implementation.
     Linear {
@@ -55,25 +55,16 @@ enum ClassifierInner {
         default_fate: Fate,
     },
 
-    /// Mutable fast-path stage.  Supports O(1) insert/delete while
-    /// live — used for data-plane-driven entries (NAT connections,
-    /// flow state).
-    ///
-    /// The internal lookup strategy is an implementation detail
-    /// (hash map for exact match, concurrent trie for prefixes, etc.).
-    /// The defining property is mutability without rebuild.
-    MutableMap {
-        // TODO: actual map implementation (DashMap, MultiIndexMap, etc.)
-        default_fate: Fate,
-    },
-
     /// Ordered cascade: try each stage in sequence, return the first
     /// match.  The last stage's default fate is the cascade's default.
     ///
-    /// Subsumes the old two-tier model and extends to any depth:
-    /// - `[MutableMap, Linear]` — NAT fast path + policy fallback
+    /// Used for two-tier delta+base updates:
     /// - `[Linear(delta), DpdkAcl(base)]` — two-tier update
-    /// - `[MutableMap, Linear(delta), DpdkAcl(base)]` — all three
+    ///
+    /// Per-flow state caches (NAT flow tables, MAC learning) are
+    /// owned by the network function and sit *in front of* the
+    /// classifier, not inside it.  Rules that require flow state
+    /// creation use [`Fate::Learn`] to signal the NF.
     Cascade(Vec<ClassifierInner>),
 
     // Future variants:
@@ -96,11 +87,6 @@ impl ClassifierInner {
                 ClassifyOutcome::Default(*default_fate)
             }
 
-            Self::MutableMap { default_fate, .. } => {
-                // TODO: actual map lookup
-                ClassifyOutcome::Default(*default_fate)
-            }
-
             Self::Cascade(stages) => {
                 for stage in stages {
                     let outcome = stage.classify(headers);
@@ -120,9 +106,7 @@ impl ClassifierInner {
 
     fn default_fate(&self) -> Fate {
         match self {
-            Self::Linear { default_fate, .. } | Self::MutableMap { default_fate, .. } => {
-                *default_fate
-            }
+            Self::Linear { default_fate, .. } => *default_fate,
             Self::Cascade(stages) => stages
                 .last()
                 .map_or(Fate::Drop, ClassifierInner::default_fate),

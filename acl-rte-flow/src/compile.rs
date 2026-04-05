@@ -227,6 +227,20 @@ fn compile_actions(actions: &ActionSequence) -> Result<Vec<FlowAction>, CompileE
             Step::Mark(v) => {
                 flow_actions.push(FlowAction::Mark(dpdk::flow::FlowMark(*v)));
             }
+            Step::Meta(v) => {
+                flow_actions.push(FlowAction::ModifyField(dpdk::flow::SetFlowField::Meta(
+                    dpdk::flow::MatchMeta { data: *v },
+                )));
+            }
+            Step::Tag { .. } => {
+                // The dpdk crate's SetFlowField::Tag doesn't expose the
+                // tag index (level) yet.  Return unsupported until the
+                // binding is extended.
+                return Err(CompileError::UnsupportedStep);
+            }
+            Step::Flag => {
+                flow_actions.push(FlowAction::Flag);
+            }
             Step::Count(id) => {
                 flow_actions.push(FlowAction::Count(dpdk::flow::CounterId(*id)));
             }
@@ -242,6 +256,11 @@ fn compile_actions(actions: &ActionSequence) -> Result<Vec<FlowAction>, CompileE
             // Trap = punt to software. In rte_flow this is typically
             // a Mark + Queue(software_rx_queue), but without knowing
             // the software queue we use PassThrough as a placeholder.
+            flow_actions.push(FlowAction::PassThrough);
+        }
+        Fate::Learn => {
+            // Learn lowers to Trap in hardware — punt to software
+            // so the NF can create flow state.
             flow_actions.push(FlowAction::PassThrough);
         }
         fate @ Fate::Jump(_) => {
@@ -440,5 +459,65 @@ mod tests {
             .actions
             .iter()
             .any(|a| matches!(a, FlowAction::Mark(_))));
+    }
+
+    #[test]
+    fn compile_with_meta_step() {
+        let rule = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.src = FieldMatch::Select(Ipv4Prefix::host(Ipv4Addr::new(10, 0, 0, 1)));
+            })
+            .action(
+                acl::ActionSequence::new(vec![Step::Meta(7)], Fate::Forward),
+                pri(100),
+            );
+
+        let config = FlowLoweringConfig::default();
+        let compiled = compile_rule(&rule, &config).unwrap();
+
+        assert!(compiled
+            .actions
+            .iter()
+            .any(|a| matches!(a, FlowAction::ModifyField(_))));
+    }
+
+    #[test]
+    fn compile_with_flag_step() {
+        let rule = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.dst = FieldMatch::Select(Ipv4Prefix::host(Ipv4Addr::new(192, 168, 1, 1)));
+            })
+            .action(
+                acl::ActionSequence::new(vec![Step::Flag], Fate::Drop),
+                pri(50),
+            );
+
+        let config = FlowLoweringConfig::default();
+        let compiled = compile_rule(&rule, &config).unwrap();
+
+        assert!(compiled
+            .actions
+            .iter()
+            .any(|a| matches!(a, FlowAction::Flag)));
+    }
+
+    #[test]
+    fn reject_tag_step() {
+        let rule = AclRuleBuilder::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .action(
+                acl::ActionSequence::new(
+                    vec![Step::Tag { index: 0, value: 1 }],
+                    Fate::Forward,
+                ),
+                pri(100),
+            );
+
+        let config = FlowLoweringConfig::default();
+        let result = compile_rule(&rule, &config);
+        assert!(matches!(result, Err(CompileError::UnsupportedStep)));
     }
 }

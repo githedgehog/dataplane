@@ -190,19 +190,26 @@ mod action_gen {
 
     impl TypeGenerator for Step {
         fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
-            match driver.produce::<u8>()? % 2 {
-                0 => Some(Step::Count(driver.produce()?)),
-                _ => Some(Step::Mark(driver.produce()?)),
+            match driver.produce::<u8>()? % 5 {
+                0 => Some(Step::Mark(driver.produce()?)),
+                1 => Some(Step::Meta(driver.produce()?)),
+                2 => Some(Step::Tag {
+                    index: driver.produce::<u8>()? % 8,
+                    value: driver.produce()?,
+                }),
+                3 => Some(Step::Flag),
+                _ => Some(Step::Count(driver.produce()?)),
             }
         }
     }
 
     impl TypeGenerator for Fate {
         fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
-            match driver.produce::<u8>()? % 4 {
+            match driver.produce::<u8>()? % 5 {
                 0 => Some(Fate::Drop),
                 1 => Some(Fate::Trap),
                 2 => Some(Fate::Forward),
+                3 => Some(Fate::Learn),
                 _ => Some(Fate::Jump(driver.produce::<TableId>()?)),
             }
         }
@@ -364,7 +371,6 @@ impl bolero::ValueGenerator for GenerateTablePair {
 
     fn generate<D: bolero::Driver>(&self, driver: &mut D) -> Option<Self::Output> {
         use crate::action::{ActionSequence, Fate};
-        use crate::priority::Priority;
         use crate::rule::AclRule;
 
         // Generate the base table.

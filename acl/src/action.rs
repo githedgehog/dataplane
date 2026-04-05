@@ -29,11 +29,49 @@ pub type TableId = u32;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Step {
-    // ---- Observation (side effects, no packet modification) ----
+    // ---- Metadata annotation ----
+    //
+    // These attach opaque u32 values to the packet.  The ACL system
+    // does not interpret them — the caller ascribes meaning.
+    //
+    // Maps to rte_flow metadata actions.  Any type implementing
+    // `TryFrom<u32>` can be encoded as a metadata value.
+
+    /// Attach a mark value to the packet.
+    ///
+    /// Maps to `rte_flow` `MARK` action.  One per packet.
+    /// The mark is readable after classification via the matched
+    /// rule's action sequence.
+    Mark(u32),
+
+    /// Attach a metadata value to the packet.
+    ///
+    /// Maps to `rte_flow` `META` action.  One per packet.
+    /// Semantically identical to `Mark` but uses a different
+    /// hardware slot on NICs that distinguish them.
+    Meta(u32),
+
+    /// Attach a tagged value to an indexed slot.
+    ///
+    /// Maps to `rte_flow` `TAG` action.  Multiple slots available
+    /// (typically up to 8, NIC-dependent).  The index selects which
+    /// slot; the value is the u32 payload.
+    Tag {
+        /// Slot index (0-based, NIC-dependent maximum).
+        index: u8,
+        /// The u32 value to store in this slot.
+        value: u32,
+    },
+
+    /// Set a boolean flag on the packet (no value payload).
+    ///
+    /// Maps to `rte_flow` `FLAG` action.
+    Flag,
+
+    // ---- Observation ----
+
     /// Increment a counter associated with this rule.
     Count(u32),
-    /// Attach a u32 mark value to the packet metadata.
-    Mark(u32),
 
     // ---- Mutation (packet modification) ----
     // Placeholder variants — will grow as we integrate rte_flow
@@ -66,6 +104,17 @@ pub enum Fate {
     /// Enables multi-stage classification.  Jump cycle detection
     /// is a compiler-pass concern.
     Jump(TableId),
+    /// The matched rule requires the network function to create
+    /// per-flow state (e.g., NAT mappings, MAC learning entries).
+    ///
+    /// The NF inspects the action sequence's metadata steps
+    /// (Mark/Meta/Tag) to determine what state to create and how
+    /// to populate its own flow cache.  The ACL system does not
+    /// prescribe the learning mechanism — that is NF-specific.
+    ///
+    /// In hardware backends this lowers to [`Trap`](Fate::Trap)
+    /// (punt to software), since hardware cannot create flow state.
+    Learn,
 }
 
 /// An ordered sequence of action steps followed by a terminal fate.
@@ -132,6 +181,16 @@ impl ActionSequence {
         Self::just(Fate::Trap)
     }
 
+    /// Shorthand for `Learn` with no steps.
+    ///
+    /// Typically combined with metadata steps so the NF knows
+    /// what to learn: e.g.,
+    /// `ActionSequence::new(vec![Step::Meta(dst_vpcd)], Fate::Learn)`.
+    #[must_use]
+    pub fn learn() -> Self {
+        Self::just(Fate::Learn)
+    }
+
     /// The ordered non-terminal steps.
     #[must_use]
     pub fn steps(&self) -> &[Step] {
@@ -142,5 +201,137 @@ impl ActionSequence {
     #[must_use]
     pub fn fate(&self) -> Fate {
         self.fate
+    }
+
+    // ---- Metadata accessors ----
+    //
+    // Convenience methods for extracting metadata values set by action
+    // steps.  Each returns the value from the first matching step in
+    // the sequence (if any).  `None` means "no such step present" —
+    // `Some(0)` is a legitimate value.
+
+    /// The mark value, if a [`Step::Mark`] is present.
+    ///
+    /// Returns the value from the first `Mark` step.  In `rte_flow`
+    /// this maps to `mbuf->hash.fdir.hi` (one per packet).
+    #[must_use]
+    pub fn mark(&self) -> Option<u32> {
+        self.steps.iter().find_map(|s| match s {
+            Step::Mark(v) => Some(*v),
+            _ => None,
+        })
+    }
+
+    /// The metadata value, if a [`Step::Meta`] is present.
+    ///
+    /// Returns the value from the first `Meta` step.  In `rte_flow`
+    /// this maps to the dynamic metadata field (one per packet).
+    #[must_use]
+    pub fn meta(&self) -> Option<u32> {
+        self.steps.iter().find_map(|s| match s {
+            Step::Meta(v) => Some(*v),
+            _ => None,
+        })
+    }
+
+    /// The tag value at the given index, if a [`Step::Tag`] with
+    /// that index is present.
+    ///
+    /// Returns the value from the first `Tag` step matching `index`.
+    /// In `rte_flow` tags are pipeline-internal (NIC-side only,
+    /// not delivered to software).
+    #[must_use]
+    pub fn tag(&self, index: u8) -> Option<u32> {
+        self.steps.iter().find_map(|s| match s {
+            Step::Tag { index: i, value } if *i == index => Some(*value),
+            _ => None,
+        })
+    }
+
+    /// Whether a [`Step::Flag`] is present in the sequence.
+    ///
+    /// In `rte_flow` this sets `RTE_MBUF_F_RX_FDIR` on the mbuf.
+    #[must_use]
+    pub fn flag(&self) -> bool {
+        self.steps.iter().any(|s| matches!(s, Step::Flag))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_accessor() {
+        let seq = ActionSequence::new(vec![Step::Mark(42)], Fate::Forward);
+        assert_eq!(seq.mark(), Some(42));
+    }
+
+    #[test]
+    fn mark_zero_is_valid() {
+        let seq = ActionSequence::new(vec![Step::Mark(0)], Fate::Forward);
+        assert_eq!(seq.mark(), Some(0));
+    }
+
+    #[test]
+    fn mark_absent() {
+        let seq = ActionSequence::just(Fate::Drop);
+        assert_eq!(seq.mark(), None);
+    }
+
+    #[test]
+    fn meta_accessor() {
+        let seq = ActionSequence::new(vec![Step::Meta(7)], Fate::Forward);
+        assert_eq!(seq.meta(), Some(7));
+    }
+
+    #[test]
+    fn tag_accessor() {
+        let seq = ActionSequence::new(
+            vec![
+                Step::Tag { index: 0, value: 100 },
+                Step::Tag { index: 3, value: 999 },
+            ],
+            Fate::Forward,
+        );
+        assert_eq!(seq.tag(0), Some(100));
+        assert_eq!(seq.tag(3), Some(999));
+        assert_eq!(seq.tag(1), None);
+    }
+
+    #[test]
+    fn flag_accessor() {
+        let with_flag = ActionSequence::new(vec![Step::Flag], Fate::Forward);
+        assert!(with_flag.flag());
+
+        let without = ActionSequence::just(Fate::Forward);
+        assert!(!without.flag());
+    }
+
+    #[test]
+    fn first_mark_wins() {
+        let seq = ActionSequence::new(
+            vec![Step::Mark(1), Step::Mark(2)],
+            Fate::Forward,
+        );
+        assert_eq!(seq.mark(), Some(1));
+    }
+
+    #[test]
+    fn mixed_steps() {
+        let seq = ActionSequence::new(
+            vec![
+                Step::Count(0),
+                Step::Mark(0xDEAD),
+                Step::Meta(0xBEEF),
+                Step::Tag { index: 2, value: 42 },
+                Step::Flag,
+            ],
+            Fate::Forward,
+        );
+        assert_eq!(seq.mark(), Some(0xDEAD));
+        assert_eq!(seq.meta(), Some(0xBEEF));
+        assert_eq!(seq.tag(2), Some(42));
+        assert!(seq.flag());
     }
 }
