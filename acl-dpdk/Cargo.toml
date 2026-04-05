@@ -13,4 +13,6 @@ net = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+acl = { workspace = true, features = ["bolero"] }
 net = { workspace = true, features = ["builder"] }

@@ -13,7 +13,7 @@ mod stats_display;
 
 pub use stats::PacketStats;
 
-#[cfg(any(test, feature = "bolero"))]
+#[cfg(all(any(test, feature = "bolero"), feature = "test_buffer"))]
 pub use contract::*;
 
 #[cfg(any(doc, test, feature = "test_buffer"))]
@@ -452,7 +452,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     }
 }
 
-#[cfg(any(test, feature = "bolero"))]
+#[cfg(all(any(test, feature = "bolero"), feature = "test_buffer"))]
 /// The fuzz testing contract for the `Packet` type
 pub mod contract {
     use crate::buffer::{GenerateTestBufferForHeaders, TestBuffer};
