@@ -101,19 +101,30 @@ fn classify_n<const N: usize>(
 }
 
 /// Classify a packet against ALL compiled groups, returning the
-/// first match (mimicking cascade behavior across groups).
+/// highest-priority match across all groups.
 fn classify_all_groups(
     table: &acl::AclTable,
     groups: &[CompiledGroup],
     packet: &Headers,
 ) -> Fate {
+    let mut best_userdata: u32 = 0;
+    let mut best_priority: Option<acl::Priority> = None;
+
     for group in groups {
         let userdata = classify_with_group(group, packet);
         if userdata != 0 {
-            return compiler::resolve_fate(table, userdata, table.default_fate());
+            let idx = (userdata - 1) as usize;
+            if let Some(rule) = table.rules().get(idx) {
+                let pri = rule.priority();
+                if best_priority.is_none_or(|bp| pri < bp) {
+                    best_priority = Some(pri);
+                    best_userdata = userdata;
+                }
+            }
         }
     }
-    table.default_fate()
+
+    compiler::resolve_fate(table, best_userdata, table.default_fate())
 }
 
 // ---- Tests ----

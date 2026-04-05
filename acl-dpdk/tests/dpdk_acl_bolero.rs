@@ -33,6 +33,16 @@ mod common;
 
 // ---- Constrained rule generator ----
 
+/// Maximum priority value for DPDK ACL.  Priorities above this
+/// clamp to DPDK priority 1, losing relative ordering.
+const MAX_DPDK_PRIORITY: u32 = 536870911;
+
+/// Generate a priority within DPDK's valid range.
+fn dpdk_safe_priority<D: bolero::Driver>(driver: &mut D) -> Option<Priority> {
+    let raw = driver.produce::<u32>()? % MAX_DPDK_PRIORITY + 1;
+    Priority::new(raw).ok()
+}
+
 /// A rule spec that only produces IPv4+TCP rules with the same
 /// field signature (eth + ipv4.src + tcp.dst).  This ensures all
 /// rules land in a single DPDK ACL group with a fixed field count.
@@ -53,7 +63,7 @@ impl TypeGenerator for Ipv4TcpRule {
         } else {
             Fate::Drop
         };
-        let priority = driver.produce::<Priority>()?;
+        let priority = dpdk_safe_priority(driver)?;
         Some(Ipv4TcpRule {
             src_prefix,
             dst_port_range,
@@ -132,7 +142,7 @@ impl TypeGenerator for MixedRule {
         } else {
             Fate::Drop
         };
-        let priority = driver.produce::<Priority>()?;
+        let priority = dpdk_safe_priority(driver)?;
 
         match driver.produce::<u8>()? % 3 {
             0 => Some(MixedRule::Ipv4Only {
@@ -266,14 +276,18 @@ fn probe_packets() -> Vec<Headers> {
 // ---- DPDK ACL classification helpers ----
 
 /// Classify a packet through ALL compiled groups, returning the
-/// first match (by rule index priority — lower userdata = earlier rule).
+/// highest-priority match across all groups.
+///
+/// Each group is an independent DPDK ACL context.  We classify the
+/// packet against each, collect all matches, and return the one with
+/// the lowest priority value (highest precedence).
 fn classify_through_dpdk(
     table: &acl::AclTable,
     groups: &[compiler::CompiledGroup],
     packet: &Headers,
 ) -> Fate {
-    // Try each group; collect the match with lowest userdata (highest priority).
     let mut best_userdata: u32 = 0;
+    let mut best_priority: Option<Priority> = None;
 
     for group in groups {
         let sig = group.signature();
@@ -293,11 +307,15 @@ fn classify_through_dpdk(
         }
 
         if results[0] != 0 {
-            // DPDK matched — check if this is a better (lower userdata = lower rule index) match.
-            // We need to compare by the actual rule priority, not userdata directly.
-            // For now, take the first match since groups contain non-overlapping signatures.
-            if best_userdata == 0 {
-                best_userdata = results[0];
+            // Resolve the matched rule's priority.
+            let idx = (results[0] - 1) as usize;
+            if let Some(rule) = table.rules().get(idx) {
+                let pri = rule.priority();
+                // Lower priority value = higher precedence.
+                if best_priority.is_none_or(|bp| pri < bp) {
+                    best_priority = Some(pri);
+                    best_userdata = results[0];
+                }
             }
         }
     }
@@ -418,6 +436,54 @@ fn bolero_mixed_signatures() {
             for pkt in &packets {
                 let linear_fate = linear.classify(pkt, &()).fate();
                 let dpdk_fate = classify_through_dpdk(&table, &groups, pkt);
+
+                if linear_fate != dpdk_fate {
+                    // Diagnostic output for debugging
+                    eprintln!("=== MISMATCH: linear={linear_fate:?} dpdk={dpdk_fate:?} ===");
+                    eprintln!("Table: {} rules, {} groups", table.rules().len(), groups.len());
+                    for (gi, group) in groups.iter().enumerate() {
+                        let sig = group.signature();
+                        let acl_input = input::assemble_compact_input(pkt, sig);
+                        let d = [acl_input.as_ptr()];
+                        let mut r = [0u32; 1];
+                        match group.field_count() {
+                            2 => classify_n::<2>(group, &d, &mut r),
+                            3 => classify_n::<3>(group, &d, &mut r),
+                            4 => classify_n::<4>(group, &d, &mut r),
+                            5 => classify_n::<5>(group, &d, &mut r),
+                            6 => classify_n::<6>(group, &d, &mut r),
+                            7 => classify_n::<7>(group, &d, &mut r),
+                            8 => classify_n::<8>(group, &d, &mut r),
+                            _ => {}
+                        }
+                        let fate = compiler::resolve_fate(&table, r[0], table.default_fate());
+                        let matched_pri = if r[0] != 0 {
+                            table.rules().get((r[0] - 1) as usize)
+                                .map(|ru| ru.priority().get())
+                        } else {
+                            None
+                        };
+                        eprintln!(
+                            "  group[{gi}]: sig={:?} fields={} rules={} -> userdata={} pri={matched_pri:?} fate={fate:?}",
+                            group.signature(), group.field_count(), group.rules().len(), r[0],
+                        );
+                    }
+                    // Show ALL rules that match this packet, sorted by priority
+                    let mut matching = Vec::new();
+                    for (idx, rule) in table.rules().iter().enumerate() {
+                        let single_table = AclTableBuilder::new(Fate::Drop)
+                            .add_rule(rule.clone())
+                            .build();
+                        let single = single_table.compile();
+                        if single.classify(pkt, &()).fate() != Fate::Drop {
+                            matching.push((idx, rule.priority().get(), rule.actions().fate()));
+                        }
+                    }
+                    matching.sort_by_key(|m| m.1);
+                    for (idx, pri, fate) in &matching {
+                        eprintln!("  matching rule: idx={idx} pri={pri} fate={fate:?}");
+                    }
+                }
 
                 assert_eq!(
                     linear_fate, dpdk_fate,
