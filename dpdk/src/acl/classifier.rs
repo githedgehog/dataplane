@@ -79,9 +79,13 @@ impl AclClassifierBuilder {
         let name_str = name.as_ref();
         let c_name = CString::new(name_str).map_err(|_| AclCreateError::InvalidParams)?;
 
-        // rule_size = size_of::<RuleData>() + num_fields * size_of::<AclField>()
-        let rule_size = core::mem::size_of::<RuleData>()
-            + num_fields * core::mem::size_of::<AclField>();
+        // rule_size must match the C struct layout: RuleData + alignment padding + fields.
+        // AclField has 8-byte alignment (contains u64 union), so there may be padding
+        // between the 12-byte RuleData and the first AclField.
+        let field_align = core::mem::align_of::<AclField>();
+        let data_size = core::mem::size_of::<RuleData>();
+        let padded_data = (data_size + field_align - 1) & !(field_align - 1);
+        let rule_size = padded_data + num_fields * core::mem::size_of::<AclField>();
 
         let raw_params = dpdk_sys::rte_acl_param {
             name: c_name.as_ptr(),
@@ -148,25 +152,30 @@ impl AclClassifierBuilder {
             );
         }
 
-        // Pack rules into contiguous memory with C layout.
-        // Each rule is: RuleData (12 bytes) + N × AclField (8 bytes each).
-        let rule_size = core::mem::size_of::<RuleData>()
-            + self.num_fields * core::mem::size_of::<AclField>();
+        // Pack rules into contiguous memory matching the C struct layout.
+        // Each rule is: RuleData + alignment padding + N × AclField.
+        let field_align = core::mem::align_of::<AclField>();
+        let data_size = core::mem::size_of::<RuleData>();
+        let padded_data = (data_size + field_align - 1) & !(field_align - 1);
+        let rule_size = padded_data + self.num_fields * core::mem::size_of::<AclField>();
         let mut buf = vec![0u8; rules.len() * rule_size];
 
         for (i, rule) in rules.iter().enumerate() {
             let offset = i * rule_size;
-            // Write RuleData.
+            // Write RuleData at the start.
+            // SAFETY: RuleData is #[repr(C)] and we're reading its bytes.
             let data_bytes: &[u8] = unsafe {
                 core::slice::from_raw_parts(
                     &rule.data as *const RuleData as *const u8,
-                    core::mem::size_of::<RuleData>(),
+                    data_size,
                 )
             };
-            buf[offset..offset + data_bytes.len()].copy_from_slice(data_bytes);
+            buf[offset..offset + data_size].copy_from_slice(data_bytes);
+            // Padding bytes (offset + data_size .. offset + padded_data) are already zero.
 
-            // Write fields.
-            let fields_offset = offset + core::mem::size_of::<RuleData>();
+            // Write fields after the padding.
+            let fields_offset = offset + padded_data;
+            // SAFETY: AclField is #[repr(C)] and we're reading the array bytes.
             let fields_bytes: &[u8] = unsafe {
                 core::slice::from_raw_parts(
                     rule.fields.as_ptr() as *const u8,
