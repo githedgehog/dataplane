@@ -114,6 +114,7 @@
 #![deny(clippy::all)]
 
 pub mod classify;
+pub mod classifier;
 pub mod config;
 pub mod context;
 pub mod error;
@@ -129,6 +130,9 @@ pub mod round3;
 
 // Context & typestate markers
 pub use context::{AclBuildFailure, AclContext, Built, Configuring};
+
+// Runtime-sized classifier
+pub use classifier::{AclClassifier, AclClassifierBuilder, AclRule as ClassifierRule};
 
 // Configuration
 pub use config::{AclBuildConfig, AclCreateParams, InvalidAclBuildConfig};
