@@ -159,28 +159,28 @@ jobs:
 
       - &check-dependencies
         name: "check-dependencies"
-        uses: "./.github/actions/just"
+        uses: &just "./.github/actions/just"
         with:
           recipe: "check-dependencies"
 
       - name: "fmt"
-        uses: "./.github/actions/just"
+        uses: *just
         with:
           recipe: "fmt"
           recipe_args: "--check"
 
       - name: "test"
-        uses: "./.github/actions/just"
+        uses: *just
         with:
           recipe: "test"
 
       - name: "lint"
-        uses: "./.github/actions/just"
+        uses: *just
         with:
           recipe: "lint"
 
       - name: "doctest"
-        uses: "./.github/actions/just"
+        uses: *just
         with:
           recipe: "doctest"
 
@@ -287,7 +287,7 @@ jobs:
       - *checkout
       - *nix-setup
       - name: "test"
-        uses: "./.github/actions/just"
+        uses: *just
         with:
           recipe: "test"
       - *tmate
@@ -316,7 +316,7 @@ jobs:
       - *checkout
       - *nix-setup
       - name: "test-each"
-        uses: "./.github/actions/just"
+        uses: *just
         with:
           recipe: "test-each"
       - *tmate
@@ -347,7 +347,7 @@ jobs:
       - *checkout
       - *nix-setup
       - name: "test/${{ matrix.features }}"
-        uses: "./.github/actions/just"
+        uses: *just
         with:
           recipe: "test"
       - *tmate
