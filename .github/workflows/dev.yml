@@ -79,6 +79,7 @@ jobs:
             devfiles:
               - '!(README.md|LICENSE|NOTICE|.zed/**|.vscode/**|CLAUDE.md|.rules|development/**|testing.md|workspace-deps.svg|codebook.toml|.markdownlint.json|.gitattributes|.gitignore|.github/**)'
               - '.github/workflows/dev.yml'
+              - '.github/actions/**'
 
   version:
     runs-on: lab
@@ -91,9 +92,11 @@ jobs:
       ref: "${{ steps.version-gen.outputs.ref }}"
 
     steps:
-      - name: Checkout repository
+      - &checkout
+        name: Checkout repository
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Generate temp artifacts version
@@ -103,6 +106,89 @@ jobs:
         run: |
           echo "version=v0-${commit_sha::9}" >> "$GITHUB_OUTPUT"
           echo "ref=${commit_sha}" >> "$GITHUB_OUTPUT"
+
+  check:
+    if: >-
+      ${{
+        needs.check_changes.outputs.devfiles == 'true'
+        || startsWith(github.event.ref, 'refs/tags/v')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    name: "check/${{ matrix.build.name }}"
+    runs-on: "lab"
+    needs:
+      - check_changes
+    permissions: &check-perms
+      checks: "write"
+      pull-requests: "write"
+      contents: "read"
+      packages: "write"
+      id-token: "write"
+    env: &check-env
+      USER: "runner"
+      JUST_VARS: >-
+        docker_sock=/run/docker/docker.sock
+        debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
+        profile=${{ matrix.build.profile }}
+        sanitize=${{ matrix.build.sanitize }}
+        instrument=${{ matrix.build.instrument }}
+        features=${{ matrix.features }}
+        oci_repo=ghcr.io
+    strategy:
+      fail-fast: false
+      matrix:
+        build: &default-build
+          - name: "debug"
+            profile: "debug"
+            sanitize: ""
+            instrument: "none"
+          - name: "release"
+            profile: "release"
+            sanitize: "" # TODO: enable cfi and safe-stack when possible
+            instrument: "none"
+    steps:
+      - *checkout
+
+      - &nix-setup
+        uses: "./.github/actions/nix-setup"
+        with:
+          cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
+          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - &check-dependencies
+        name: "check-dependencies"
+        uses: "./.github/actions/just"
+        with:
+          recipe: "check-dependencies"
+
+      - name: "fmt"
+        uses: "./.github/actions/just"
+        with:
+          recipe: "fmt"
+          recipe_args: "--check"
+
+      - name: "test"
+        uses: "./.github/actions/just"
+        with:
+          recipe: "test"
+
+      - name: "lint"
+        uses: "./.github/actions/just"
+        with:
+          recipe: "lint"
+
+      - name: "doctest"
+        uses: "./.github/actions/just"
+        with:
+          recipe: "doctest"
+
+      - &tmate
+        name: "Setup tmate session for debug"
+        if: "${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}"
+        uses: "mxschmitt/action-tmate@v3"
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true
 
   build:
     if: >-
@@ -125,94 +211,28 @@ jobs:
       id-token: "write"
     env:
       USER: "runner"
+      JUST_VARS: >-
+        debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
     strategy:
       fail-fast: false
       matrix:
         nix-target:
-          - tests.all
           - frr.dataplane
           - dataplane
           - validator
-        build:
-          - name: "debug"
-            profile: "debug"
-            sanitize: ""
-            instrument: "none"
-          - name: "release"
-            profile: "release"
-            sanitize: "" # TODO: enable cfi and safe-stack when possible
-            instrument: "none"
-        debug_justfile:
-          - "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}"
+        build: *default-build
         exclude:
           - nix-target: validator
             build:
               name: "debug"
     steps:
-      - name: "login to ghcr.io"
-        uses: "docker/login-action@v4"
-        with:
-          registry: ghcr.io
-          username: "${{ github.actor }}"
-          password: "${{ secrets.GITHUB_TOKEN }}"
-
-      - name: "Install nix"
-        uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_path: nixpkgs=channel:nixpkgs-unstable
-
-      - name: "Checkout"
-        uses: "actions/checkout@v6"
-        with:
-          persist-credentials: "false"
-          fetch-depth: "0"
-
-      - uses: "cachix/cachix-action@v17"
-        with:
-          name: "hedgehog"
-          # prettier-ignore
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-          # prettier-ignore
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-
-      # this step exists to avoid attributing the amount of time it takes to fetch the nix-shell dependencies to
-      # whatever step happens to access the nix-shell first.
-      - name: "setup nix shell"
-        run: |
-          nix-shell --run "set -euo pipefail; echo nix shell env cached"
-
-      - name: "login to image cache"
-        run: |
-          docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL" <<<"${REGISTRY_PASSWORD}"
-          nix-shell --run "set -euo pipefail; oras login -u \"$REGISTRY_USERNAME\" --password-stdin \"$REGISTRY_URL\" <<<\"${REGISTRY_PASSWORD}\""
-
-      - name: "run pre-flight checks"
-        if: ${{ matrix.nix-target == 'tests.all' }}
-        run: |
-          nix-shell --run '
-            set -euo pipefail;
-            for features in "" "shuttle"; do
-              just \
-                  docker_sock=/run/docker/docker.sock \
-                  debug_justfile=${{matrix.debug_justfile}} \
-                  profile="${{matrix.build.profile}}" \
-                  sanitize="${{matrix.build.sanitize}}" \
-                  instrument="${{matrix.build.instrument}}" \
-                  features="${features}" \
-                  oci_repo="ghcr.io" \
-                  pre-flight
-            done
-          '
-
+      - *checkout
+      - *nix-setup
+      - *check-dependencies
       - name: "push container"
-        if: ${{ matrix.nix-target != 'tests.all' }}
         run: |
           nix-shell --run '
             set -euo pipefail;
-            just \
-                debug_justfile=${{matrix.debug_justfile}} \
-                check-dependencies
             for v in "" "version=${{ needs.version.outputs.version }}-${{ matrix.build.profile }}"; do
               if [ "${{ matrix.nix-target }}" = "validator" ]; then
                 platform="wasm32-wasip1"
@@ -231,20 +251,14 @@ jobs:
                   push-container ${{ matrix.nix-target }}
             done
           '
-
-      - name: "Setup tmate session for debug"
-        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: "mxschmitt/action-tmate@v3"
-        timeout-minutes: 60
-        with:
-          limit-access-to-actor: true
+      - *tmate
 
   vlab:
     if: "${{ needs.check_changes.outputs.devfiles == 'true' || (startsWith(github.event.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/v')) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}"
     needs:
-      - check_changes
-      - build
       - version
+      - build
+      - check_changes
 
     name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
 
@@ -326,17 +340,22 @@ jobs:
     name: "Summary"
     runs-on: "ubuntu-latest"
     needs:
+      - check
       - build
       - vlab
-    # Run always, except when the "build" job was skipped.
+    # Run always so this job can aggregate results even when one of its
+    # dependencies failed or was skipped.
     #
-    # When the build job is skipped, summary will be marked as skipped, and
-    # it's OK for CI (it's not a failure).
-    # Why don't we do the same for build jobs? Because their names depend on
-    # matrix values, and if we skip them the names won't be generated and
-    # GitHub won't be able to find skipped jobs for required status checks.
+    # Skipped dependency jobs are handled explicitly by the step-level
+    # conditions below, so a skipped "build" or "check" job does not cause
+    # "summary" itself to be skipped.
     if: ${{ always() }}
     steps:
+      - name: "Flag any check matrix failures"
+        if: ${{ needs.check.result != 'success' && needs.check.result != 'skipped' }}
+        run: |
+          echo '::error:: Some check job(s) failed'
+          exit 1
       - name: "Flag any build matrix failures"
         if: ${{ needs.build.result != 'success' && needs.build.result != 'skipped' }}
         run: |

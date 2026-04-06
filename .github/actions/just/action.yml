@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+# Composite action that runs a just recipe inside nix-shell.
+#
+# Expects the nix-setup action to have already run in this job.
+#
+# Just variable assignments (profile=debug, sanitize=, etc.) are read from the
+# JUST_VARS environment variable.  Set it once at the job level and every step
+# that uses this action will pick it up:
+#
+#   env:
+#     JUST_VARS: >-
+#       profile=${{ matrix.build.profile }}
+#       sanitize=${{ matrix.build.sanitize }}
+#       ...
+#
+#   steps:
+#     - uses: ./.github/actions/just
+#       with:
+#         recipe: test
+#
+# To override or extend for a single step, set JUST_VARS at the step level.
+
+name: "Run just recipe"
+description: "Run a just recipe inside nix-shell using JUST_VARS for variable assignments"
+
+inputs:
+  recipe:
+    description: "The just recipe to run (e.g. test, lint, fmt)"
+    required: true
+  recipe_args:
+    description: "Positional arguments to pass after the recipe name"
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: "just ${{ inputs.recipe }} ${{ inputs.recipe_args }}"
+      shell: "bash"
+      env:
+        RECIPE: "${{ inputs.recipe }}"
+        RECIPE_ARGS: "${{ inputs.recipe_args }}"
+      run: |
+        nix-shell --run "set -euo pipefail; just ${JUST_VARS} \"${RECIPE}\" ${RECIPE_ARGS}"
