@@ -128,6 +128,20 @@ test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" 
     cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
 
 [script]
+test-each *args: (build "tests.pkg" args)
+    {{ _just_debuggable_ }}
+    declare -a fail=()
+    for test_archive in results/tests.pkg*/*.tar.zst; do
+        if ! cargo nextest run --archive-file "${test_archive}" --workspace-remap "$(pwd)" --no-tests pass; then
+            fail+=("${test_archive} failed")
+        fi
+    done
+    if [ "${#fail[@]}" -gt 0 ]; then
+        >&2 printf '%s\n' "${fail[@]}"
+        exit 1
+    fi
+
+[script]
 docs package="" *args: (build (if package == "" { "docs.all" } else { "docs.pkg." + package }) args)
     {{ _just_debuggable_ }}
 

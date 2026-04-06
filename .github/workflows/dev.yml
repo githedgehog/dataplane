@@ -138,7 +138,8 @@ jobs:
       fail-fast: false
       matrix:
         build: &default-build
-          - name: "debug"
+          - &debug-build
+            name: "debug"
             profile: "debug"
             sanitize: ""
             instrument: "none"
@@ -291,6 +292,35 @@ jobs:
           recipe: "test"
       - *tmate
 
+  test_each:
+    if: >-
+      ${{
+        needs.check_changes.outputs.devfiles == 'true'
+        || startsWith(github.event.ref, 'refs/tags/v')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    name: "test_each"
+    runs-on: "lab"
+    needs:
+      - check_changes
+      - check
+    permissions: *check-perms
+    env: *check-env
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        build:
+          - *debug-build
+    steps:
+      - *checkout
+      - *nix-setup
+      - name: "test-each"
+        uses: "./.github/actions/just"
+        with:
+          recipe: "test-each"
+      - *tmate
+
   features:
     if: >-
       ${{
@@ -414,6 +444,7 @@ jobs:
       - features
       - build
       - vlab
+      - test_each
     # Run always so this job can aggregate results even when one of its
     # dependencies failed or was skipped.
     #
@@ -431,6 +462,11 @@ jobs:
         if: ${{ needs.features.result != 'success' && needs.features.result != 'skipped' }}
         run: |
           echo '::error:: Some features job(s) failed'
+          exit 1
+      - name: "Flag any test_each matrix failures"
+        if: ${{ needs.test_each.result != 'success' && needs.test_each.result != 'skipped' }}
+        run: |
+          echo '::error:: Some test_each job(s) failed'
           exit 1
       - name: "Flag any sanitize matrix failures"
         if: ${{ needs.sanitize.result != 'success' && needs.sanitize.result != 'skipped' }}
