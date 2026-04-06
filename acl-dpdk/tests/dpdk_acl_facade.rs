@@ -209,3 +209,76 @@ fn facade_mixed_signatures() {
 
     assert_eq!(dpdk.classify_fate(&no_match), Fate::Drop);
 }
+
+#[test]
+fn facade_classify_returns_action_sequence() {
+    common::test_eal();
+
+    let table = AclTableBuilder::new(Fate::Drop)
+        .add_rule(
+            AclRuleBuilder::new()
+                .eth(|_| {})
+                .ipv4(|ip| {
+                    ip.src = FieldMatch::Select(
+                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
+                    );
+                })
+                .tcp(|tcp| {
+                    tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
+                })
+                .action(
+                    ActionSequence::new(
+                        vec![
+                            acl::Step::Meta(42),
+                            acl::Step::Mark(0xBEEF),
+                        ],
+                        Fate::Forward,
+                    ),
+                    pri(100),
+                ),
+        )
+        .build();
+
+    let dpdk = DpdkAclClassifier::compile(&table).unwrap();
+
+    // Matching packet — should return the full action sequence.
+    let pkt = HeaderStack::new()
+        .eth(|_| {})
+        .ipv4(|ip| {
+            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(10, 1, 2, 3)).unwrap());
+        })
+        .tcp(|tcp| {
+            tcp.set_destination(TcpPort::new_checked(80).unwrap());
+        })
+        .build_headers()
+        .unwrap();
+
+    let outcome = dpdk.classify(&pkt);
+    match outcome {
+        acl::ClassifyOutcome::Matched(seq) => {
+            assert_eq!(seq.fate(), Fate::Forward);
+            assert_eq!(seq.meta(), Some(42));
+            assert_eq!(seq.mark(), Some(0xBEEF));
+            assert!(!seq.flag());
+            assert_eq!(seq.tag(0), None);
+        }
+        acl::ClassifyOutcome::Default(_) => {
+            panic!("expected Matched, got Default");
+        }
+    }
+
+    // Non-matching packet — should return Default.
+    let no_match = HeaderStack::new()
+        .eth(|_| {})
+        .ipv4(|ip| {
+            ip.set_source(net::ipv4::UnicastIpv4Addr::new(Ipv4Addr::new(192, 168, 1, 1)).unwrap());
+        })
+        .tcp(|tcp| {
+            tcp.set_destination(TcpPort::new_checked(80).unwrap());
+        })
+        .build_headers()
+        .unwrap();
+
+    let outcome2 = dpdk.classify(&no_match);
+    assert!(matches!(outcome2, acl::ClassifyOutcome::Default(Fate::Drop)));
+}

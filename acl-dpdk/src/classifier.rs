@@ -126,17 +126,29 @@ impl<M: Metadata + Clone> DpdkAclClassifier<M> {
 
     /// Classify a packet's headers against the compiled rule set.
     ///
-    /// Returns the terminal [`Fate`] for the packet: the action of
-    /// the highest-priority matching rule, or the table's default
-    /// fate if no rule matches.
+    /// Returns a [`ClassifyOutcome`] — either the matched rule's
+    /// full [`ActionSequence`](acl::ActionSequence) (with Mark, Meta,
+    /// Tag, Flag values accessible via convenience methods), or the
+    /// table's default [`Fate`] if no rule matched.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let outcome = classifier.classify(&headers);
+    /// match outcome {
+    ///     ClassifyOutcome::Matched(seq) => {
+    ///         let fate = seq.fate();
+    ///         let vpc_id = seq.meta();    // Option<u32>
+    ///         let nat_flags = seq.mark(); // Option<u32>
+    ///     }
+    ///     ClassifyOutcome::Default(fate) => { /* no rule matched */ }
+    /// }
+    /// ```
     #[must_use]
-    pub fn classify_fate(&self, headers: &Headers) -> Fate {
+    pub fn classify<'a>(&'a self, headers: &Headers) -> acl::ClassifyOutcome<'a> {
         let acl_input = input::assemble_compact_input(headers, self.signature);
         let mut results = vec![0u32; self.num_categories as usize];
 
-        // SAFETY: the compact input buffer is assembled by our compiler
-        // to match the field layout used to build the DPDK context.
-        // The results buffer is correctly sized for num_categories.
         // SAFETY: the compact input buffer is assembled by our compiler
         // to match the field layout used to build the DPDK context.
         // The results buffer is correctly sized for num_categories.
@@ -146,7 +158,7 @@ impl<M: Metadata + Clone> DpdkAclClassifier<M> {
                 .classify(acl_input.as_ptr(), &mut results, self.num_categories)
         };
         if classify_result.is_err() {
-            return self.table.default_fate();
+            return acl::ClassifyOutcome::Default(self.table.default_fate());
         }
 
         let best = compiler::resolve_categories(
@@ -154,7 +166,25 @@ impl<M: Metadata + Clone> DpdkAclClassifier<M> {
             &results,
             self.num_categories,
         );
-        compiler::resolve_fate(&self.table, best, self.table.default_fate())
+
+        if best == 0 {
+            return acl::ClassifyOutcome::Default(self.table.default_fate());
+        }
+
+        let idx = (best - 1) as usize;
+        match self.table.rules().get(idx) {
+            Some(rule) => acl::ClassifyOutcome::Matched(rule.actions()),
+            None => acl::ClassifyOutcome::Default(self.table.default_fate()),
+        }
+    }
+
+    /// Classify and return just the terminal [`Fate`].
+    ///
+    /// Convenience wrapper around [`classify`](Self::classify) for
+    /// callers that only need the fate, not the full action sequence.
+    #[must_use]
+    pub fn classify_fate(&self, headers: &Headers) -> Fate {
+        self.classify(headers).fate()
     }
 
     /// The union field signature used by this classifier.
