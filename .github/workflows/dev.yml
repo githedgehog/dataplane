@@ -254,6 +254,43 @@ jobs:
           '
       - *tmate
 
+  sanitize:
+    if: >-
+      ${{
+        needs.check_changes.outputs.devfiles == 'true'
+        || startsWith(github.event.ref, 'refs/tags/v')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    name: "sanitize/${{ matrix.build.profile }}/${{ matrix.build.sanitize }}"
+    continue-on-error: true
+    runs-on: "lab"
+    needs:
+      - check_changes
+      - check
+    permissions: *check-perms
+    env: *check-env
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        build:
+          - name: "address"
+            profile: "debug"
+            sanitize: "address"
+            instrument: "none"
+          - name: "thread"
+            profile: "fuzz"
+            sanitize: "thread"
+            instrument: "none"
+    steps:
+      - *checkout
+      - *nix-setup
+      - name: "test"
+        uses: "./.github/actions/just"
+        with:
+          recipe: "test"
+      - *tmate
+
   features:
     if: >-
       ${{
@@ -373,6 +410,7 @@ jobs:
     runs-on: "ubuntu-latest"
     needs:
       - check
+      - sanitize
       - features
       - build
       - vlab
@@ -393,6 +431,12 @@ jobs:
         if: ${{ needs.features.result != 'success' && needs.features.result != 'skipped' }}
         run: |
           echo '::error:: Some features job(s) failed'
+          exit 1
+      - name: "Flag any sanitize matrix failures"
+        if: ${{ needs.sanitize.result != 'success' && needs.sanitize.result != 'skipped' }}
+        continue-on-error: true
+        run: |
+          echo '::warning:: Some sanitize job(s) failed'
           exit 1
       - name: "Flag any build matrix failures"
         if: ${{ needs.build.result != 'success' && needs.build.result != 'skipped' }}
