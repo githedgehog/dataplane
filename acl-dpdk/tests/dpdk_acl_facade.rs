@@ -60,7 +60,7 @@ fn facade_simple_permit_deny() {
         )
         .build();
 
-    let dpdk = DpdkAclClassifier::compile(&table, SocketId::ANY).unwrap();
+    let dpdk = DpdkAclClassifier::compile(&table).unwrap();
     eprintln!("simple: sig={:?} cats={}", dpdk.signature(), dpdk.num_categories());
 
     // Also check via the raw path for comparison
@@ -162,7 +162,7 @@ fn facade_mixed_signatures() {
         )
         .build();
 
-    let dpdk = DpdkAclClassifier::compile(&table, SocketId::ANY).unwrap();
+    let dpdk = DpdkAclClassifier::compile(&table).unwrap();
     let linear = table.compile();
 
     // TCP:80 from 10.x — matches IPv4-only (pri 1, Forward) and IPv4+TCP (pri 2, Forward).

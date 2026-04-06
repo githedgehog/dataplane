@@ -62,20 +62,30 @@ pub struct DpdkAclClassifier<M: Metadata = ()> {
 impl<M: Metadata + Clone> DpdkAclClassifier<M> {
     /// Compile an [`AclTable`] into a DPDK ACL classifier.
     ///
-    /// Uses the category-aware compilation path: all signature groups
-    /// are merged into a single DPDK ACL context with per-group
-    /// categories.  Classification requires only a single DPDK call.
-    ///
-    /// # Arguments
-    ///
-    /// * `table` — the ACL table to compile.
-    /// * `socket_id` — NUMA socket for DPDK memory allocation.
+    /// Allocates DPDK memory on [`SocketId::ANY`].  Use
+    /// [`compile_for_socket`](Self::compile_for_socket) to pin
+    /// allocation to a specific NUMA socket.
     ///
     /// # Errors
     ///
     /// Returns [`CompileError`] if the table is empty, or if DPDK
     /// rejects the rules or configuration.
-    pub fn compile(
+    pub fn compile(table: &AclTable<M>) -> Result<Self, CompileError> {
+        Self::compile_for_socket(table, SocketId::ANY)
+    }
+
+    /// Compile an [`AclTable`] into a DPDK ACL classifier, allocating
+    /// memory on the specified NUMA socket.
+    ///
+    /// Uses the category-aware compilation path: all signature groups
+    /// are merged into a single DPDK ACL context with per-group
+    /// categories.  Classification requires only a single DPDK call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompileError`] if the table is empty, or if DPDK
+    /// rejects the rules or configuration.
+    pub fn compile_for_socket(
         table: &AclTable<M>,
         socket_id: SocketId,
     ) -> Result<Self, CompileError> {
