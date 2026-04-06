@@ -208,7 +208,7 @@ mod action_gen {
             match driver.produce::<u8>()? % 5 {
                 0 => Some(Fate::Drop),
                 1 => Some(Fate::Trap),
-                2 => Some(Fate::Forward),
+                2 => Some(Fate::Accept),
                 3 => Some(Fate::Learn),
                 _ => Some(Fate::Jump(driver.produce::<TableId>()?)),
             }
@@ -333,7 +333,7 @@ impl bolero::ValueGenerator for GenerateAclTable {
         let default_fate = if driver.produce::<bool>()? {
             Fate::Drop
         } else {
-            Fate::Forward
+            Fate::Accept
         };
 
         let mut builder = AclTableBuilder::new(default_fate);
@@ -394,11 +394,11 @@ impl bolero::ValueGenerator for GenerateTablePair {
         let modifiable = old_rules.len().saturating_sub(removable).min(self.modify_count);
         for i in removable..removable + modifiable {
             let old = &old_rules[i];
-            // Toggle the fate: Forward ↔ Drop.
-            let new_fate = if old.actions().fate() == Fate::Forward {
+            // Toggle the fate: Accept ↔ Drop.
+            let new_fate = if old.actions().fate() == Fate::Accept {
                 Fate::Drop
             } else {
-                Fate::Forward
+                Fate::Accept
             };
             builder.remove_by_priority(old.priority());
             let new_rule = AclRule::new(

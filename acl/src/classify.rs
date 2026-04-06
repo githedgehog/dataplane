@@ -221,7 +221,7 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&headers, &()).fate(), Fate::Accept);
     }
 
     #[test]
@@ -268,7 +268,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&matching_headers, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&matching_headers, &()).fate(), Fate::Accept);
 
         let non_matching_headers = HeaderStack::new()
             .eth(|_| {})
@@ -355,7 +355,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt2, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&pkt2, &()).fate(), Fate::Accept);
     }
 
     #[test]
@@ -379,7 +379,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt80, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&pkt80, &()).fate(), Fate::Accept);
 
         let pkt443 = HeaderStack::new()
             .eth(|_| {})
@@ -389,7 +389,7 @@ mod tests {
             })
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&pkt443, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&pkt443, &()).fate(), Fate::Accept);
 
         let pkt8080 = HeaderStack::new()
             .eth(|_| {})
@@ -438,7 +438,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&ipv4_pkt, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&ipv4_pkt, &()).fate(), Fate::Accept);
 
         let ipv6_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -466,7 +466,7 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        assert_eq!(classifier.classify(&tcp_pkt, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&tcp_pkt, &()).fate(), Fate::Accept);
 
         let udp_pkt = HeaderStack::new()
             .eth(|_| {})
@@ -530,7 +530,7 @@ mod tests {
 
         assert_eq!(
             classifier.classify(&pkt, &VrfValues { vrf: 10 }).fate(),
-            Fate::Forward,
+            Fate::Accept,
         );
         assert_eq!(
             classifier.classify(&pkt, &VrfValues { vrf: 20 }).fate(),
@@ -564,7 +564,7 @@ mod tests {
 
         assert_eq!(
             classifier.classify(&pkt, &VrfValues { vrf: 42 }).fate(),
-            Fate::Forward,
+            Fate::Accept,
         );
     }
 
@@ -579,7 +579,7 @@ mod tests {
             .eth(|_| {})
             .ipv4(|_| {})
             .action(
-                ActionSequence::new(vec![Step::Mark(0xDEAD)], Fate::Forward),
+                ActionSequence::new(vec![Step::Mark(0xDEAD)], Fate::Accept),
                 pri(100),
             );
 
@@ -596,7 +596,7 @@ mod tests {
             .unwrap();
 
         let outcome = classifier.classify(&pkt, &VrfValues { vrf: 10 });
-        assert!(matches!(outcome, ClassifyOutcome::Matched(seq) if seq.fate() == Fate::Forward));
+        assert!(matches!(outcome, ClassifyOutcome::Matched(seq) if seq.fate() == Fate::Accept));
         if let ClassifyOutcome::Matched(seq) = outcome {
             assert_eq!(seq.steps(), &[Step::Mark(0xDEAD)]);
         }

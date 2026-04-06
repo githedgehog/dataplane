@@ -84,7 +84,7 @@ fn simple_permit_deny() {
         .unwrap();
 
     // No metadata — pass &() for the trivial metadata type.
-    println!("  10.1.2.3:80  → {:?}", classifier.classify(&allowed, &()).fate());   // Forward
+    println!("  10.1.2.3:80  → {:?}", classifier.classify(&allowed, &()).fate());   // Accept
     println!("  192.168.1.1:80 → {:?}", classifier.classify(&blocked, &()).fate()); // Drop
 }
 
@@ -177,7 +177,7 @@ fn action_metadata() {
                             Step::Meta(42),       // destination VPC ID
                             Step::Mark(0x01),     // NAT required flag
                         ],
-                        Fate::Forward,
+                        Fate::Accept,
                     ),
                     Priority::new(100).unwrap(),
                 ),

@@ -215,7 +215,7 @@ mod tests {
             .build_headers()
             .unwrap();
 
-        assert_eq!(classifier.classify(&headers, &()).fate(), Fate::Forward);
+        assert_eq!(classifier.classify(&headers, &()).fate(), Fate::Accept);
 
         // Non-matching packet → default Drop
         let headers2 = HeaderStack::new()
@@ -264,7 +264,7 @@ mod tests {
         // Test several packets
         let test_ips = [
             (Ipv4Addr::new(10, 1, 2, 3), Fate::Drop),     // matches both → deny (pri 100)
-            (Ipv4Addr::new(10, 2, 0, 1), Fate::Forward),   // matches /8 only → permit
+            (Ipv4Addr::new(10, 2, 0, 1), Fate::Accept),   // matches /8 only → permit
             (Ipv4Addr::new(192, 168, 1, 1), Fate::Drop),   // matches neither → default
         ];
 

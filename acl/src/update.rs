@@ -481,7 +481,7 @@ mod tests {
         let headers2 = make_headers(Ipv4Addr::new(10, 0, 0, 3), 80);
         let tiered_fate2 = plan.immediate.classify(&headers2, &()).fate();
         let fresh_fate2 = fresh.classify(&headers2, &()).fate();
-        assert_eq!(tiered_fate2, Fate::Forward);
+        assert_eq!(tiered_fate2, Fate::Accept);
         assert_eq!(tiered_fate2, fresh_fate2);
     }
 }

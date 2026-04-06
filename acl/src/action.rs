@@ -71,6 +71,19 @@ pub enum Step {
     // ---- Observation ----
 
     /// Increment a counter associated with this rule.
+    ///
+    /// The counter ID is scoped per cascade tier.  Each tier
+    /// (hardware base, software delta, etc.) maintains its own
+    /// counter state.  A packet that matches at multiple tiers
+    /// increments counters at each tier independently — the
+    /// counts represent "packets seen at this tier," not "packets
+    /// that ultimately matched this rule."
+    ///
+    /// The observation API (to be developed) reports counters
+    /// per-tier.  Backends implement counting differently:
+    /// hardware via NIC counter resources, software via atomics.
+    /// The compiler ensures counter IDs don't collide across
+    /// tiers within a cascade.
     Count(u32),
 
     // ---- Mutation (packet modification) ----
@@ -95,10 +108,9 @@ pub enum Fate {
     Trap,
     /// Allow the packet to continue through the pipeline.
     ///
-    /// This is the "permit" / "accept" / "pass" action.
-    // AGENT: let's try to use notation more in line with rte_flow or tc-flower for constructs like this.
-    // isn't this called pass or continue in dpdk rte_flow?
-    Forward,
+    /// Equivalent to `TC_ACT_OK` (tc-flower), `PASSTHRU` (rte_flow),
+    /// `ACCEPT` (iptables/nftables).
+    Accept,
     /// Evaluate the packet against another table.
     ///
     /// Enables multi-stage classification.  Jump cycle detection
@@ -128,7 +140,7 @@ pub enum Fate {
 /// ```
 /// # use dataplane_acl::{ActionSequence, Fate, Step};
 /// // Simple permit (no steps)
-/// let permit = ActionSequence::just(Fate::Forward);
+/// let permit = ActionSequence::just(Fate::Accept);
 ///
 /// // Drop with counter
 /// let deny = ActionSequence::new(vec![Step::Count(1)], Fate::Drop);
@@ -136,13 +148,13 @@ pub enum Fate {
 /// // Mark then forward
 /// let mark_and_pass = ActionSequence::new(
 ///     vec![Step::Mark(42)],
-///     Fate::Forward,
+///     Fate::Accept,
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActionSequence {
     /// Ordered non-terminal steps.
-    steps: Vec<Step>,
+    steps: Vec<Step>, // AGENT: I'm wondering about making this an ArrayVec<Step, 16> or something.
     /// Terminal fate.
     fate: Fate,
 }
@@ -163,10 +175,10 @@ impl ActionSequence {
         }
     }
 
-    /// Shorthand for `Forward` with no steps (the common "permit" case).
+    /// Shorthand for `Accept` with no steps (the common "permit" case).
     #[must_use]
-    pub fn forward() -> Self {
-        Self::just(Fate::Forward)
+    pub fn accept() -> Self {
+        Self::just(Fate::Accept)
     }
 
     /// Shorthand for `Drop` with no steps (the common "deny" case).
@@ -263,13 +275,13 @@ mod tests {
 
     #[test]
     fn mark_accessor() {
-        let seq = ActionSequence::new(vec![Step::Mark(42)], Fate::Forward);
+        let seq = ActionSequence::new(vec![Step::Mark(42)], Fate::Accept);
         assert_eq!(seq.mark(), Some(42));
     }
 
     #[test]
     fn mark_zero_is_valid() {
-        let seq = ActionSequence::new(vec![Step::Mark(0)], Fate::Forward);
+        let seq = ActionSequence::new(vec![Step::Mark(0)], Fate::Accept);
         assert_eq!(seq.mark(), Some(0));
     }
 
@@ -281,7 +293,7 @@ mod tests {
 
     #[test]
     fn meta_accessor() {
-        let seq = ActionSequence::new(vec![Step::Meta(7)], Fate::Forward);
+        let seq = ActionSequence::new(vec![Step::Meta(7)], Fate::Accept);
         assert_eq!(seq.meta(), Some(7));
     }
 
@@ -292,7 +304,7 @@ mod tests {
                 Step::Tag { index: 0, value: 100 },
                 Step::Tag { index: 3, value: 999 },
             ],
-            Fate::Forward,
+            Fate::Accept,
         );
         assert_eq!(seq.tag(0), Some(100));
         assert_eq!(seq.tag(3), Some(999));
@@ -301,10 +313,10 @@ mod tests {
 
     #[test]
     fn flag_accessor() {
-        let with_flag = ActionSequence::new(vec![Step::Flag], Fate::Forward);
+        let with_flag = ActionSequence::new(vec![Step::Flag], Fate::Accept);
         assert!(with_flag.flag());
 
-        let without = ActionSequence::just(Fate::Forward);
+        let without = ActionSequence::just(Fate::Accept);
         assert!(!without.flag());
     }
 
@@ -312,7 +324,7 @@ mod tests {
     fn first_mark_wins() {
         let seq = ActionSequence::new(
             vec![Step::Mark(1), Step::Mark(2)],
-            Fate::Forward,
+            Fate::Accept,
         );
         assert_eq!(seq.mark(), Some(1));
     }
@@ -327,7 +339,7 @@ mod tests {
                 Step::Tag { index: 2, value: 42 },
                 Step::Flag,
             ],
-            Fate::Forward,
+            Fate::Accept,
         );
         assert_eq!(seq.mark(), Some(0xDEAD));
         assert_eq!(seq.meta(), Some(0xBEEF));

@@ -80,10 +80,10 @@ fn simple_dpdk_classify() {
     // - resolves the best match across categories
     // - maps the result back to a Fate
     let packets = [
-        ("10.1.2.3", 80, "matches /16 deny (pri 50) → Drop"),
-        ("10.2.0.1", 80, "matches /8 permit (pri 100) → Forward"),
-        ("192.168.1.1", 80, "no match → Drop (default)"),
-        ("10.1.2.3", 443, "wrong port → Drop (default)"),
+        ("10.1.2.3", 80, "matches /16 deny (pri 50) -> Drop"),
+        ("10.2.0.1", 80, "matches /8 permit (pri 100) -> Accept"),
+        ("192.168.1.1", 80, "no match -> Drop (default)"),
+        ("10.1.2.3", 443, "wrong port -> Drop (default)"),
     ];
 
     for (ip_str, port, description) in &packets {
@@ -102,7 +102,7 @@ fn simple_dpdk_classify() {
             .unwrap();
 
         let fate = classifier.classify_fate(&pkt);
-        println!("  {ip_str}:{port} → {fate:?}  ({description})");
+        println!("  {ip_str}:{port} -> {fate:?}  ({description})");
     }
 }
 
@@ -110,7 +110,7 @@ fn simple_dpdk_classify() {
 ///
 /// Rules with different protocol layers (TCP, UDP, IP-only) have
 /// different field signatures.  The compiler merges them into a
-/// single DPDK context using categories — the user doesn't need
+/// single DPDK context using categories - the user doesn't need
 /// to know about any of this.
 fn mixed_signature_classify() {
     println!("\n=== DPDK ACL: Mixed signatures ===");
@@ -164,7 +164,7 @@ fn mixed_signature_classify() {
                 .action(
                     ActionSequence::new(
                         vec![Step::Mark(0xBEEF)],
-                        Fate::Forward,
+                        Fate::Accept,
                     ),
                     Priority::new(150).unwrap(),
                 ),
@@ -178,11 +178,11 @@ fn mixed_signature_classify() {
     println!("  Compiled: {} categories", classifier.num_categories());
 
     let packets = [
-        ("172.16.1.1", 8080u16, "tcp", "mgmt network → Forward (pri 10)"),
-        ("8.8.8.8", 80, "tcp", "HTTP → Forward (pri 100)"),
-        ("8.8.8.8", 53, "udp", "DNS → Forward (pri 200)"),
-        ("8.8.8.8", 22, "tcp", "SSH → Forward + Mark (pri 150)"),
-        ("8.8.8.8", 8080, "tcp", "no match → Drop"),
+        ("172.16.1.1", 8080u16, "tcp", "mgmt network -> Accept (pri 10)"),
+        ("8.8.8.8", 80, "tcp", "HTTP -> Accept (pri 100)"),
+        ("8.8.8.8", 53, "udp", "DNS -> Accept (pri 200)"),
+        ("8.8.8.8", 22, "tcp", "SSH -> Accept + Mark (pri 150)"),
+        ("8.8.8.8", 8080, "tcp", "no match -> Drop"),
     ];
 
     for (ip_str, port, proto, description) in &packets {

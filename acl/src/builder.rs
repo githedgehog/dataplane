@@ -258,11 +258,11 @@ where
         }
     }
 
-    /// Finalize the rule with a [`Forward`](crate::Fate::Forward) fate (permit).
+    /// Finalize the rule with an [`Accept`](crate::Fate::Accept) fate (permit).
     #[must_use]
     pub fn permit(mut self, priority: Priority) -> AclRule<M> {
         self.fields.install(self.working);
-        AclRule::new(self.fields, self.metadata, ActionSequence::forward(), priority)
+        AclRule::new(self.fields, self.metadata, ActionSequence::accept(), priority)
     }
 
     /// Finalize the rule with a [`Drop`](crate::Fate::Drop) fate (deny).
@@ -525,7 +525,7 @@ mod tests {
             })
             .permit(pri(100));
 
-        assert_eq!(rule.actions().fate(), Fate::Forward);
+        assert_eq!(rule.actions().fate(), Fate::Accept);
         assert_eq!(rule.priority(), pri(100));
 
         let eth = rule.packet_match().eth().unwrap();
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn permit_without_match_layers() {
         let rule = AclRuleBuilder::new().permit(pri(1));
-        assert_eq!(rule.actions().fate(), Fate::Forward);
+        assert_eq!(rule.actions().fate(), Fate::Accept);
         assert!(rule.packet_match().is_empty());
     }
 

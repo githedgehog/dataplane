@@ -59,7 +59,7 @@ impl TypeGenerator for Ipv4TcpRule {
         let src_prefix = driver.produce::<Ipv4Prefix>()?;
         let dst_port_range = driver.produce::<PortRange<u16>>()?;
         let fate = if driver.produce::<bool>()? {
-            Fate::Forward
+            Fate::Accept
         } else {
             Fate::Drop
         };
@@ -138,7 +138,7 @@ impl TypeGenerator for MixedRule {
     fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
         let src_prefix = driver.produce::<Ipv4Prefix>()?;
         let fate = if driver.produce::<bool>()? {
-            Fate::Forward
+            Fate::Accept
         } else {
             Fate::Drop
         };
@@ -363,7 +363,7 @@ fn classify_n<const N: usize>(
 
 // ---- Tests ----
 
-/// Bolero fuzz: random IPv4+TCP rules, single signature group.
+/// Bolero fuzz: generated IPv4+TCP rules, single signature group.
 /// DPDK ACL must agree with linear classifier on all probe packets.
 #[test]
 fn bolero_ipv4_tcp_single_group() {

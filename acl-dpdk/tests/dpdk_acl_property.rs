@@ -225,7 +225,7 @@ fn single_rule_all_packets() {
         &[TestRuleSpec {
             src_prefix: Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
             dst_ports: PortRange::exact(80u16),
-            fate: Fate::Forward,
+            fate: Fate::Accept,
         }],
         Fate::Drop,
     );
@@ -249,7 +249,7 @@ fn overlapping_rules_priority() {
             TestRuleSpec {
                 src_prefix: Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
                 dst_ports: PortRange::exact(80u16),
-                fate: Fate::Forward,
+                fate: Fate::Accept,
             },
         ],
         Fate::Drop,
@@ -267,12 +267,12 @@ fn port_range_rules() {
             TestRuleSpec {
                 src_prefix: Ipv4Prefix::any(),
                 dst_ports: random_port_range(80, 443),
-                fate: Fate::Forward,
+                fate: Fate::Accept,
             },
             TestRuleSpec {
                 src_prefix: Ipv4Prefix::any(),
                 dst_ports: random_port_range(8000, 9000),
-                fate: Fate::Forward,
+                fate: Fate::Accept,
             },
         ],
         Fate::Drop,
@@ -302,7 +302,7 @@ fn many_rules_random() {
                 fate: if i % 3 == 0 {
                     Fate::Drop
                 } else {
-                    Fate::Forward
+                    Fate::Accept
                 },
             }
         })
@@ -322,7 +322,7 @@ fn wildcard_prefix_with_port_range() {
         &[TestRuleSpec {
             src_prefix: Ipv4Prefix::any(),
             dst_ports: random_port_range(1, 1024),
-            fate: Fate::Forward,
+            fate: Fate::Accept,
         }],
         Fate::Drop,
     );
@@ -340,12 +340,12 @@ fn host_routes() {
             TestRuleSpec {
                 src_prefix: Ipv4Prefix::host(Ipv4Addr::new(10, 0, 0, 1)),
                 dst_ports: PortRange::exact(80u16),
-                fate: Fate::Forward,
+                fate: Fate::Accept,
             },
             TestRuleSpec {
                 src_prefix: Ipv4Prefix::host(Ipv4Addr::new(192, 168, 1, 1)),
                 dst_ports: PortRange::exact(443u16),
-                fate: Fate::Forward,
+                fate: Fate::Accept,
             },
             TestRuleSpec {
                 src_prefix: Ipv4Prefix::host(Ipv4Addr::new(8, 8, 8, 8)),
@@ -353,7 +353,7 @@ fn host_routes() {
                 fate: Fate::Drop,
             },
         ],
-        Fate::Forward,
+        Fate::Accept,
     );
     assert_dpdk_matches_linear(&table, &packets);
 }

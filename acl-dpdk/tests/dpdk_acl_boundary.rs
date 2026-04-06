@@ -348,7 +348,7 @@ fn fifty_rules() {
                 })
                 .action(
                     ActionSequence::just(if i % 2 == 0 {
-                        Fate::Forward
+                        Fate::Accept
                     } else {
                         Fate::Drop
                     }),
@@ -390,7 +390,7 @@ fn two_hundred_rules() {
                 })
                 .action(
                     ActionSequence::just(if i % 3 == 0 {
-                        Fate::Forward
+                        Fate::Accept
                     } else {
                         Fate::Drop
                     }),
@@ -423,14 +423,14 @@ fn empty_table_default_fate() {
     common::test_eal();
 
     // No rules — compiler should produce no groups.
-    let table: acl::AclTable = AclTableBuilder::new(Fate::Forward).build();
+    let table: acl::AclTable = AclTableBuilder::new(Fate::Accept).build();
     let groups = compiler::compile(&table);
     assert!(groups.is_empty(), "empty table should produce no DPDK groups");
 
     // Classification should return the default fate.
     let classifier = table.compile();
     let pkt = make_tcp_packet(Ipv4Addr::new(10, 0, 0, 1), 80);
-    assert_eq!(classifier.classify(&pkt, &()).fate(), Fate::Forward);
+    assert_eq!(classifier.classify(&pkt, &()).fate(), Fate::Accept);
 }
 
 #[test]
@@ -449,7 +449,7 @@ fn adjacent_non_overlapping_port_ranges() {
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::new(1u16, 79u16).unwrap());
                 })
-                .action(ActionSequence::just(Fate::Forward), pri(1)),
+                .action(ActionSequence::just(Fate::Accept), pri(1)),
         )
         .add_rule(
             AclRuleBuilder::new()
@@ -460,7 +460,7 @@ fn adjacent_non_overlapping_port_ranges() {
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::new(80u16, 443u16).unwrap());
                 })
-                .action(ActionSequence::just(Fate::Forward), pri(2)),
+                .action(ActionSequence::just(Fate::Accept), pri(2)),
         )
         .build();
 
@@ -490,7 +490,7 @@ fn nested_prefixes_priority_ordering() {
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
                 })
-                .action(ActionSequence::just(Fate::Forward), pri(3)),
+                .action(ActionSequence::just(Fate::Accept), pri(3)),
         )
         .add_rule(
             AclRuleBuilder::new()
@@ -516,7 +516,7 @@ fn nested_prefixes_priority_ordering() {
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
                 })
-                .action(ActionSequence::just(Fate::Forward), pri(1)),
+                .action(ActionSequence::just(Fate::Accept), pri(1)),
         )
         .build();
 

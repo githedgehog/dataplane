@@ -403,9 +403,9 @@ mod tests {
     fn classify_result_dispatch() {
         let mut result = ClassifyResult::<TestCat>::with_default(Fate::Drop);
         // Simulate: Ipv4Tcp matched with Permit
-        result.results[TestCat::Ipv4Tcp.index()] = Fate::Forward;
+        result.results[TestCat::Ipv4Tcp.index()] = Fate::Accept;
 
-        assert_eq!(result.action(TestCat::Ipv4Tcp), Fate::Forward);
+        assert_eq!(result.action(TestCat::Ipv4Tcp), Fate::Accept);
         assert_eq!(result.action(TestCat::Ipv4Udp), Fate::Drop); // default
         assert_eq!(result.action(TestCat::Ipv6Tcp), Fate::Drop);
     }

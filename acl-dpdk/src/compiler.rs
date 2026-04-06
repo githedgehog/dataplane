@@ -454,8 +454,8 @@ mod tests {
         // userdata 0 → default (Drop)
         assert_eq!(resolve_fate(&table, 0, Fate::Drop), Fate::Drop);
 
-        // userdata 1 → rule 0 (Forward)
-        assert_eq!(resolve_fate(&table, 1, Fate::Drop), Fate::Forward);
+        // userdata 1 → rule 0 (Accept)
+        assert_eq!(resolve_fate(&table, 1, Fate::Drop), Fate::Accept);
 
         // userdata 2 → rule 1 (Drop)
         assert_eq!(resolve_fate(&table, 2, Fate::Drop), Fate::Drop);

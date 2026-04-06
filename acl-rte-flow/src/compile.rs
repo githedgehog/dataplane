@@ -251,7 +251,7 @@ fn compile_actions(actions: &ActionSequence) -> Result<Vec<FlowAction>, CompileE
     // Fate
     match actions.fate() {
         Fate::Drop => flow_actions.push(FlowAction::Drop),
-        Fate::Forward => flow_actions.push(FlowAction::PassThrough),
+        Fate::Accept => flow_actions.push(FlowAction::PassThrough),
         Fate::Trap => {
             // Trap = punt to software. In rte_flow this is typically
             // a Mark + Queue(software_rx_queue), but without knowing
@@ -448,7 +448,7 @@ mod tests {
                 ip.src = FieldMatch::Select(Ipv4Prefix::host(Ipv4Addr::new(10, 0, 0, 1)));
             })
             .action(
-                acl::ActionSequence::new(vec![Step::Mark(42)], Fate::Forward),
+                acl::ActionSequence::new(vec![Step::Mark(42)], Fate::Accept),
                 pri(100),
             );
 
@@ -469,7 +469,7 @@ mod tests {
                 ip.src = FieldMatch::Select(Ipv4Prefix::host(Ipv4Addr::new(10, 0, 0, 1)));
             })
             .action(
-                acl::ActionSequence::new(vec![Step::Meta(7)], Fate::Forward),
+                acl::ActionSequence::new(vec![Step::Meta(7)], Fate::Accept),
                 pri(100),
             );
 
@@ -511,7 +511,7 @@ mod tests {
             .action(
                 acl::ActionSequence::new(
                     vec![Step::Tag { index: 0, value: 1 }],
-                    Fate::Forward,
+                    Fate::Accept,
                 ),
                 pri(100),
             );

@@ -135,7 +135,7 @@ fn dpdk_acl_matches_linear_classifier() {
         // 10.1.2.3:80 — matches both rules, pri 50 (deny) wins
         (Ipv4Addr::new(10, 1, 2, 3), 80, Fate::Drop),
         // 10.2.0.1:80 — matches /8 rule only → permit
-        (Ipv4Addr::new(10, 2, 0, 1), 80, Fate::Forward),
+        (Ipv4Addr::new(10, 2, 0, 1), 80, Fate::Accept),
         // 192.168.1.1:80 — matches neither → default drop
         (Ipv4Addr::new(192, 168, 1, 1), 80, Fate::Drop),
         // 10.1.2.3:443 — matches neither (wrong port) → default drop

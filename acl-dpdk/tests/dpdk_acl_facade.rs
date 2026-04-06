@@ -11,8 +11,8 @@
 use std::net::Ipv4Addr;
 
 use acl::{
-    AclRuleBuilder, AclTableBuilder, ActionSequence, Fate, FieldMatch,
-    Ipv4Prefix, PortRange, Priority,
+    AclRuleBuilder, AclTableBuilder, ActionSequence, Fate, FieldMatch, Ipv4Prefix, PortRange,
+    Priority,
 };
 use dpdk::socket::SocketId;
 use net::headers::builder::HeaderStack;
@@ -36,9 +36,8 @@ fn facade_simple_permit_deny() {
             AclRuleBuilder::new()
                 .eth(|_| {})
                 .ipv4(|ip| {
-                    ip.src = FieldMatch::Select(
-                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
-                    );
+                    ip.src =
+                        FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
                 })
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
@@ -61,11 +60,19 @@ fn facade_simple_permit_deny() {
         .build();
 
     let dpdk = DpdkAclClassifier::compile(&table).unwrap();
-    eprintln!("simple: sig={:?} cats={}", dpdk.signature(), dpdk.num_categories());
+    eprintln!(
+        "simple: sig={:?} cats={}",
+        dpdk.signature(),
+        dpdk.num_categories()
+    );
 
     // Also check via the raw path for comparison
     let groups = dataplane_acl_dpdk::compiler::compile(&table);
-    eprintln!("raw groups: {} groups, field_count={}", groups.len(), groups.first().map(|g| g.field_count()).unwrap_or(0));
+    eprintln!(
+        "raw groups: {} groups, field_count={}",
+        groups.len(),
+        groups.first().map(|g| g.field_count()).unwrap_or(0)
+    );
 
     let linear = table.compile();
 
@@ -83,7 +90,10 @@ fn facade_simple_permit_deny() {
 
     let dpdk_fate1 = dpdk.classify_fate(&pkt1);
     let linear_fate1 = linear.classify(&pkt1, &()).fate();
-    eprintln!("pkt1: dpdk={dpdk_fate1:?} linear={linear_fate1:?} cats={}", dpdk.num_categories());
+    eprintln!(
+        "pkt1: dpdk={dpdk_fate1:?} linear={linear_fate1:?} cats={}",
+        dpdk.num_categories()
+    );
     assert_eq!(dpdk_fate1, Fate::Drop);
     assert_eq!(dpdk_fate1, linear_fate1);
 
@@ -99,8 +109,11 @@ fn facade_simple_permit_deny() {
         .build_headers()
         .unwrap();
 
-    assert_eq!(dpdk.classify_fate(&pkt2), Fate::Forward);
-    assert_eq!(dpdk.classify_fate(&pkt2), linear.classify(&pkt2, &()).fate());
+    assert_eq!(dpdk.classify_fate(&pkt2), Fate::Accept);
+    assert_eq!(
+        dpdk.classify_fate(&pkt2),
+        linear.classify(&pkt2, &()).fate()
+    );
 
     // 192.168.1.1:80 — no match → default drop
     let pkt3 = HeaderStack::new()
@@ -115,7 +128,10 @@ fn facade_simple_permit_deny() {
         .unwrap();
 
     assert_eq!(dpdk.classify_fate(&pkt3), Fate::Drop);
-    assert_eq!(dpdk.classify_fate(&pkt3), linear.classify(&pkt3, &()).fate());
+    assert_eq!(
+        dpdk.classify_fate(&pkt3),
+        linear.classify(&pkt3, &()).fate()
+    );
 }
 
 #[test]
@@ -128,9 +144,8 @@ fn facade_mixed_signatures() {
             AclRuleBuilder::new()
                 .eth(|_| {})
                 .ipv4(|ip| {
-                    ip.src = FieldMatch::Select(
-                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
-                    );
+                    ip.src =
+                        FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
                 })
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
@@ -141,9 +156,8 @@ fn facade_mixed_signatures() {
             AclRuleBuilder::new()
                 .eth(|_| {})
                 .ipv4(|ip| {
-                    ip.src = FieldMatch::Select(
-                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
-                    );
+                    ip.src =
+                        FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
                 })
                 .permit(pri(1)), // highest priority — matches all 10.x traffic
         )
@@ -151,9 +165,8 @@ fn facade_mixed_signatures() {
             AclRuleBuilder::new()
                 .eth(|_| {})
                 .ipv4(|ip| {
-                    ip.src = FieldMatch::Select(
-                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
-                    );
+                    ip.src =
+                        FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
                 })
                 .udp(|udp| {
                     udp.dst = FieldMatch::Select(PortRange::exact(53u16));
@@ -178,7 +191,10 @@ fn facade_mixed_signatures() {
         .build_headers()
         .unwrap();
 
-    assert_eq!(dpdk.classify_fate(&tcp_pkt), linear.classify(&tcp_pkt, &()).fate());
+    assert_eq!(
+        dpdk.classify_fate(&tcp_pkt),
+        linear.classify(&tcp_pkt, &()).fate()
+    );
 
     // UDP:53 from 10.x — matches IPv4-only (pri 1, Forward) and IPv4+UDP (pri 3, Drop).
     // Pri 1 wins → Forward.
@@ -193,7 +209,10 @@ fn facade_mixed_signatures() {
         .build_headers()
         .unwrap();
 
-    assert_eq!(dpdk.classify_fate(&udp_pkt), linear.classify(&udp_pkt, &()).fate());
+    assert_eq!(
+        dpdk.classify_fate(&udp_pkt),
+        linear.classify(&udp_pkt, &()).fate()
+    );
 
     // 192.168.1.1 — no match → Drop.
     let no_match = HeaderStack::new()
@@ -219,9 +238,8 @@ fn facade_classify_returns_action_sequence() {
             AclRuleBuilder::new()
                 .eth(|_| {})
                 .ipv4(|ip| {
-                    ip.src = FieldMatch::Select(
-                        Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
-                    );
+                    ip.src =
+                        FieldMatch::Select(Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap());
                 })
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
@@ -231,8 +249,16 @@ fn facade_classify_returns_action_sequence() {
                         vec![
                             acl::Step::Meta(42),
                             acl::Step::Mark(0xBEEF),
+                            acl::Step::Tag {
+                                index: 2,
+                                value: 17,
+                            },
+                            acl::Step::Tag {
+                                index: 7,
+                                value: 128,
+                            },
                         ],
-                        Fate::Forward,
+                        Fate::Accept,
                     ),
                     pri(100),
                 ),
@@ -256,11 +282,12 @@ fn facade_classify_returns_action_sequence() {
     let outcome = dpdk.classify(&pkt);
     match outcome {
         acl::ClassifyOutcome::Matched(seq) => {
-            assert_eq!(seq.fate(), Fate::Forward);
+            assert_eq!(seq.fate(), Fate::Accept);
             assert_eq!(seq.meta(), Some(42));
             assert_eq!(seq.mark(), Some(0xBEEF));
             assert!(!seq.flag());
-            assert_eq!(seq.tag(0), None);
+            assert_eq!(seq.tag(2), Some(17));
+            assert_eq!(seq.tag(7), Some(128));
         }
         acl::ClassifyOutcome::Default(_) => {
             panic!("expected Matched, got Default");
@@ -280,5 +307,8 @@ fn facade_classify_returns_action_sequence() {
         .unwrap();
 
     let outcome2 = dpdk.classify(&no_match);
-    assert!(matches!(outcome2, acl::ClassifyOutcome::Default(Fate::Drop)));
+    assert!(matches!(
+        outcome2,
+        acl::ClassifyOutcome::Default(Fate::Drop)
+    ));
 }

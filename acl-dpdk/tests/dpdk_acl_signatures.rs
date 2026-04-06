@@ -207,7 +207,7 @@ fn two_signature_groups_ipv4_tcp_vs_ipv4_only() {
 
     let linear_fate = classifier.classify(&tcp_pkt, &()).fate();
     let dpdk_fate = classify_all_groups(&table, &groups, &tcp_pkt);
-    assert_eq!(linear_fate, Fate::Forward);
+    assert_eq!(linear_fate, Fate::Accept);
     assert_eq!(dpdk_fate, linear_fate, "TCP rule mismatch");
 
     // Packet matching rule 2 (172.16.x.x, any transport)
@@ -227,7 +227,7 @@ fn two_signature_groups_ipv4_tcp_vs_ipv4_only() {
 
     let linear_fate = classifier.classify(&udp_pkt, &()).fate();
     let dpdk_fate = classify_all_groups(&table, &groups, &udp_pkt);
-    assert_eq!(linear_fate, Fate::Forward);
+    assert_eq!(linear_fate, Fate::Accept);
     assert_eq!(dpdk_fate, linear_fate, "IPv4-only rule mismatch");
 
     // Packet matching neither rule.
@@ -300,7 +300,7 @@ fn tcp_and_udp_separate_groups() {
 
     let linear_fate = classifier.classify(&tcp_pkt, &()).fate();
     let dpdk_fate = classify_all_groups(&table, &groups, &tcp_pkt);
-    assert_eq!(linear_fate, Fate::Forward);
+    assert_eq!(linear_fate, Fate::Accept);
     assert_eq!(dpdk_fate, linear_fate, "TCP packet mismatch");
 
     // UDP packet matching rule 2.
@@ -315,7 +315,7 @@ fn tcp_and_udp_separate_groups() {
 
     let linear_fate = classifier.classify(&udp_pkt, &()).fate();
     let dpdk_fate = classify_all_groups(&table, &groups, &udp_pkt);
-    assert_eq!(linear_fate, Fate::Forward);
+    assert_eq!(linear_fate, Fate::Accept);
     assert_eq!(dpdk_fate, linear_fate, "UDP packet mismatch");
 
     // TCP packet NOT matching (wrong ports).
@@ -354,7 +354,7 @@ fn three_groups_mixed() {
                 .tcp(|tcp| {
                     tcp.dst = FieldMatch::Select(PortRange::exact(80u16));
                 })
-                .action(ActionSequence::just(Fate::Forward), pri(1)),
+                .action(ActionSequence::just(Fate::Accept), pri(1)),
         )
         .add_rule(
             AclRuleBuilder::new()
@@ -367,7 +367,7 @@ fn three_groups_mixed() {
                 .udp(|udp| {
                     udp.dst = FieldMatch::Select(PortRange::exact(53u16));
                 })
-                .action(ActionSequence::just(Fate::Forward), pri(2)),
+                .action(ActionSequence::just(Fate::Accept), pri(2)),
         )
         .add_rule(
             AclRuleBuilder::new()
@@ -377,7 +377,7 @@ fn three_groups_mixed() {
                         Ipv4Prefix::new(Ipv4Addr::new(192, 168, 0, 0), 16).unwrap(),
                     );
                 })
-                .action(ActionSequence::just(Fate::Forward), pri(3)),
+                .action(ActionSequence::just(Fate::Accept), pri(3)),
         )
         .build();
 
@@ -404,7 +404,7 @@ fn three_groups_mixed() {
                 })
                 .build_headers()
                 .unwrap(),
-            Fate::Forward,
+            Fate::Accept,
             "10.x TCP:80 → Forward",
         ),
         (
@@ -420,7 +420,7 @@ fn three_groups_mixed() {
                 })
                 .build_headers()
                 .unwrap(),
-            Fate::Forward,
+            Fate::Accept,
             "10.x UDP:53 → Forward",
         ),
         (
@@ -436,7 +436,7 @@ fn three_groups_mixed() {
                 })
                 .build_headers()
                 .unwrap(),
-            Fate::Forward,
+            Fate::Accept,
             "192.168.x any → Forward",
         ),
         (
@@ -718,12 +718,12 @@ fn categories_three_groups_priority_across_groups() {
 
     assert_eq!(
         classifier.classify(&tcp_pkt, &()).fate(),
-        Fate::Forward,
+        Fate::Accept,
         "linear should say Forward (pri 1 wins)"
     );
     assert_eq!(
         classify_categorized(&table, &comp, &tcp_pkt),
-        Fate::Forward,
+        Fate::Accept,
         "categorized should say Forward (pri 1 wins across categories)"
     );
 
@@ -744,11 +744,11 @@ fn categories_three_groups_priority_across_groups() {
 
     assert_eq!(
         classifier.classify(&udp_pkt, &()).fate(),
-        Fate::Forward,
+        Fate::Accept,
     );
     assert_eq!(
         classify_categorized(&table, &comp, &udp_pkt),
-        Fate::Forward,
+        Fate::Accept,
         "categorized should resolve cross-category priority correctly"
     );
 }
