@@ -1,0 +1,495 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! DPDK ACL compiler: translates an [`AclTable`] into compilation
+//! artifacts that can be fed to DPDK's `AclContext`.
+//!
+//! # Design
+//!
+//! The compiler does NOT create `AclContext` directly.  Instead it
+//! produces [`CompiledGroup`]s — one per unique [`FieldSignature`] —
+//! each containing:
+//!
+//! - The `FieldDef` array (table schema)
+//! - The translated `AclField` arrays (rule data)
+//! - The `RuleData` for each rule (priority, category, userdata)
+//!
+//! The caller assembles these into `Rule<N>` and `AclContext<N>` at
+//! the point where `N` is known.  This avoids the const-generic `N`
+//! problem: the compiler works with runtime-sized field lists, and
+//! the caller picks the right `N` at the FFI boundary.
+//!
+//! ## Why not produce `AclContext` directly?
+//!
+//! `AclContext<N>` requires `N` as a const generic, but the field count
+//! is determined at runtime by the rule set's field signatures.  Rather
+//! than enumerate all possible `N` values or use unsafe casts, we
+//! produce the compilation artifacts and let the caller (who knows `N`
+//! statically for their use case) assemble the DPDK objects.
+//!
+//! This is a pragmatic choice documented for future reconsideration.
+//! If a runtime-`N` `AclContext` proves necessary, the compiler's
+//! output (`CompiledGroup`) contains all the information needed to
+//! build one via raw FFI calls.
+
+use std::num::NonZero;
+
+use acl::{IpPrefix, AclTable, Fate, FieldSignature, Metadata};
+use dpdk::acl::field::FieldDef;
+use dpdk::acl::rule::{AclField, RuleData};
+
+use crate::field_map::{self, OffsetProvider};
+use crate::rule_translate;
+
+/// A group of compiled rules sharing the same field signature.
+///
+/// Each `CompiledGroup` corresponds to one DPDK `AclContext`.
+#[derive(Debug, Clone)]
+pub struct CompiledGroup {
+    /// The field signature shared by all rules in this group.
+    signature: FieldSignature,
+    /// DPDK field definitions (the table schema).
+    field_defs: Vec<FieldDef>,
+    /// Compiled rules: each entry is `(RuleData, Vec<AclField>)`.
+    rules: Vec<CompiledRule>,
+}
+
+/// A single compiled rule ready for DPDK.
+#[derive(Debug, Clone)]
+pub struct CompiledRule {
+    /// DPDK rule metadata.
+    pub data: RuleData,
+    /// Field values in the same order as the group's `field_defs`.
+    pub fields: Vec<AclField>,
+}
+
+impl CompiledGroup {
+    /// The field signature for this group.
+    #[must_use]
+    pub fn signature(&self) -> FieldSignature {
+        self.signature
+    }
+
+    /// The DPDK field definitions (column schema).
+    #[must_use]
+    pub fn field_defs(&self) -> &[FieldDef] {
+        &self.field_defs
+    }
+
+    /// The compiled rules.
+    #[must_use]
+    pub fn rules(&self) -> &[CompiledRule] {
+        &self.rules
+    }
+
+    /// The number of fields per rule (determines `N` for `Rule<N>`).
+    #[must_use]
+    pub fn field_count(&self) -> usize {
+        self.field_defs.len()
+    }
+}
+
+// AGENT: should this method be pub?
+// This feel like the kind of thing which should be transparent to the user or disguised behind a trait.
+// Still reviewing so I'm not sure.
+/// Compile an [`AclTable`] into groups of DPDK-ready rules.
+///
+/// Returns one [`CompiledGroup`] per unique [`FieldSignature`] in the
+/// table.  Each group can be used to create one DPDK `AclContext`.
+///
+/// Rules are assigned `userdata` values starting from 1 (since DPDK
+/// reserves 0 for "no match").  The `userdata` encodes the original
+/// rule index so the caller can map results back to actions.
+///
+/// All rules get `category_mask = 1` (single category) for now.
+/// Multi-category support can be added when the category system is
+/// wired up.
+#[must_use]
+pub fn compile<M: Metadata>(table: &AclTable<M>) -> Vec<CompiledGroup> {
+    let rules = table.rules();
+    if rules.is_empty() {
+        return Vec::new();
+    }
+
+    // Extract match fields for signature computation.
+    let match_fields: Vec<acl::AclMatchFields> =
+        rules.iter().map(|r| r.packet_match().clone()).collect();
+    let groups = acl::group_rules_by_signature(&match_fields);
+
+    groups
+        .into_iter()
+        .filter_map(|group| {
+            let sig = group.signature();
+            if sig == FieldSignature::EMPTY {
+                // Rules with no selected fields can't produce a DPDK context.
+                // They match everything — handled by the default action.
+                return None;
+            }
+
+            let field_defs = field_map::build_field_defs(sig);
+
+            let compiled_rules: Vec<CompiledRule> = group
+                .rule_indices()
+                .iter()
+                .map(|&idx| {
+                    let rule = &rules[idx];
+
+                    // userdata = rule index + 1 (0 is reserved for "no match")
+                    #[allow(clippy::unwrap_used)] // idx + 1 is always > 0
+                    let userdata =
+                        NonZero::new(u32::try_from(idx + 1).unwrap_or(u32::MAX)).unwrap();
+
+                    // Convert our Priority (NonZero<u32>) to DPDK's i32 priority.
+                    // DPDK: higher numeric value = higher priority.
+                    // DPDK valid range: RTE_ACL_MIN_PRIORITY (1) to
+                    // RTE_ACL_MAX_PRIORITY (536870911).
+                    // Our Priority: lower value = higher precedence.
+                    // We invert within DPDK's valid range.
+                    let max_dpdk_pri = dpdk::acl::rule::priority::MAX;
+                    let our_pri = i32::try_from(rule.priority().get()).unwrap_or(max_dpdk_pri);
+                    let dpdk_priority = (max_dpdk_pri - our_pri).max(1);
+
+                    let data = RuleData {
+                        category_mask: 1, // single category for now
+                        priority: dpdk_priority,
+                        userdata,
+                    };
+
+                    let fields = rule_translate::translate_rule(sig, rule);
+
+                    CompiledRule { data, fields }
+                })
+                .collect();
+
+            Some(CompiledGroup {
+                signature: sig,
+                field_defs,
+                rules: compiled_rules,
+            })
+        })
+        .collect()
+}
+
+/// Result of category-aware compilation.
+///
+/// All rules are merged into a single DPDK ACL context using the
+/// union of all field signatures.  Each original signature group is
+/// assigned a category, and rules are tagged with the appropriate
+/// `category_mask`.
+///
+/// At classify time, pass `num_categories` to `classify()` and
+/// use [`resolve_categories()`] to pick the highest-priority match
+/// across all categories.
+#[derive(Debug, Clone)]
+pub struct CategorizedCompilation {
+    /// The single merged group containing all rules.
+    pub group: CompiledGroup,
+    /// Number of categories to pass to `classify()`.
+    /// Always 1 or a multiple of 4 (DPDK constraint).
+    pub num_categories: u32,
+    /// Number of original signature groups (≤ num_categories).
+    pub num_groups: usize,
+}
+
+/// Compile an [`AclTable`] into a single DPDK ACL context using
+/// categories to distinguish signature groups.
+///
+/// All rules are padded to the union field signature and assigned
+/// to categories based on their original signature group.  This
+/// enables a single `classify()` call with multiple category results,
+/// avoiding the need for per-group classification and cross-group
+/// priority resolution.
+///
+/// # Panics
+///
+/// Panics if the table has more than 16 distinct field signatures
+/// (DPDK's `RTE_ACL_MAX_CATEGORIES` limit).
+#[must_use]
+pub fn compile_categories<M: Metadata>(table: &AclTable<M>) -> Option<CategorizedCompilation> {
+    let rules = table.rules();
+    if rules.is_empty() {
+        return None;
+    }
+
+    // Group rules by signature.
+    let match_fields: Vec<acl::AclMatchFields> = rules
+        .iter()
+        .map(|r| r.packet_match().clone())
+        .collect();
+    let groups = acl::group_rules_by_signature(&match_fields);
+
+    // Filter out empty signatures (match-everything rules).
+    let non_empty_groups: Vec<_> = groups
+        .into_iter()
+        .filter(|g| g.signature() != FieldSignature::EMPTY)
+        .collect();
+
+    if non_empty_groups.is_empty() {
+        return None;
+    }
+
+    assert!(
+        non_empty_groups.len() <= dpdk::acl::config::MAX_CATEGORIES as usize,
+        "too many signature groups ({}) for DPDK ACL categories (max {})",
+        non_empty_groups.len(),
+        dpdk::acl::config::MAX_CATEGORIES,
+    );
+
+    // Compute union signature.
+    let union_sig = non_empty_groups
+        .iter()
+        .fold(FieldSignature::EMPTY, |acc, g| acc.union(g.signature()));
+
+    let field_defs = field_map::build_field_defs(union_sig);
+
+    // Compute num_categories: must be 1 or a multiple of 4.
+    let raw_cats = non_empty_groups.len() as u32;
+    let num_categories = if raw_cats == 1 {
+        1
+    } else {
+        // Round up to next multiple of RESULTS_MULTIPLIER (4).
+        let m = dpdk::acl::config::RESULTS_MULTIPLIER;
+        ((raw_cats + m - 1) / m) * m
+    };
+
+    // Compile all rules with category assignments.
+    let mut compiled_rules = Vec::new();
+
+    for (group_idx, group) in non_empty_groups.iter().enumerate() {
+        // Category mask: bit corresponding to this group.
+        let category_mask: u32 = 1 << group_idx;
+
+        for &rule_idx in group.rule_indices() {
+            let rule = &rules[rule_idx];
+
+            #[allow(clippy::unwrap_used)]
+            let userdata = NonZero::new(u32::try_from(rule_idx + 1).unwrap_or(u32::MAX)).unwrap();
+
+            let max_dpdk_pri = dpdk::acl::rule::priority::MAX;
+            let our_pri = i32::try_from(rule.priority().get()).unwrap_or(max_dpdk_pri);
+            let dpdk_priority = (max_dpdk_pri - our_pri).max(1);
+
+            let data = RuleData {
+                category_mask,
+                priority: dpdk_priority,
+                userdata,
+            };
+
+            // Translate against the UNION signature — fields not in
+            // the rule's original signature produce wildcards.
+            let fields = rule_translate::translate_rule(union_sig, rule);
+
+            compiled_rules.push(CompiledRule { data, fields });
+        }
+    }
+
+    Some(CategorizedCompilation {
+        group: CompiledGroup {
+            signature: union_sig,
+            field_defs,
+            rules: compiled_rules,
+        },
+        num_categories,
+        num_groups: non_empty_groups.len(),
+    })
+}
+
+/// Resolve the best match across category results.
+///
+/// Given the results array from a multi-category `classify()` call,
+/// returns the userdata of the highest-priority match across all
+/// categories.  Returns 0 if no category matched.
+///
+/// This is needed because each category independently produces its
+/// best match, but the caller needs the overall best.
+#[must_use]
+pub fn resolve_categories<M: Metadata>(
+    table: &AclTable<M>,
+    results: &[u32],
+    num_categories: u32,
+) -> u32 {
+    let mut best_userdata: u32 = 0;
+    let mut best_priority: Option<acl::Priority> = None;
+
+    for &userdata in results.iter().take(num_categories as usize) {
+        if userdata == 0 {
+            continue;
+        }
+        let idx = (userdata - 1) as usize;
+        if let Some(rule) = table.rules().get(idx) {
+            let pri = rule.priority();
+            if best_priority.is_none_or(|bp| pri < bp) {
+                best_priority = Some(pri);
+                best_userdata = userdata;
+            }
+        }
+    }
+
+    best_userdata
+}
+
+/// Map a DPDK classification result back to a [`Fate`].
+///
+/// `userdata` is the value returned by `rte_acl_classify`.  If 0
+/// (no match), returns the table's default fate.  Otherwise,
+/// decodes the rule index and returns that rule's fate.
+#[must_use]
+pub fn resolve_fate<M: Metadata>(table: &AclTable<M>, userdata: u32, default_fate: Fate) -> Fate {
+    if userdata == 0 {
+        return default_fate;
+    }
+    let idx = (userdata - 1) as usize;
+    table
+        .rules()
+        .get(idx)
+        .map_or(default_fate, |r| r.actions().fate())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acl::{IpPrefix, AclRuleBuilder, AclTableBuilder, Fate, FieldMatch, Ipv4Prefix, Priority};
+    use std::net::Ipv4Addr;
+
+    use crate::field_map::StandardEthernetOffsets;
+
+    fn pri(n: u32) -> Priority {
+        Priority::new(n).unwrap()
+    }
+
+    #[test]
+    fn compile_single_signature_group() {
+        let table = AclTableBuilder::new(Fate::Drop)
+            .add_rule(
+                AclRuleBuilder::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        ip.src = FieldMatch::Select(
+                            Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
+                        );
+                    })
+                    .tcp(|tcp| {
+                        tcp.dst = FieldMatch::Select(80u16..=80u16);
+                    })
+                    .permit(pri(100)),
+            )
+            .add_rule(
+                AclRuleBuilder::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        ip.src = FieldMatch::Select(
+                            Ipv4Prefix::new(Ipv4Addr::new(192, 168, 0, 0), 16).unwrap(),
+                        );
+                    })
+                    .tcp(|tcp| {
+                        tcp.dst = FieldMatch::Select(443u16..=443u16);
+                    })
+                    .deny(pri(200)),
+            )
+            .build();
+
+        let groups = compile(&table);
+
+        // Both rules have the same signature → one group
+        assert_eq!(groups.len(), 1);
+
+        let group = &groups[0];
+        assert_eq!(group.rules().len(), 2);
+        assert_eq!(group.field_count(), 4); // proto, eth_type, ipv4_src, tcp_dst
+
+        // userdata is rule_index + 1
+        assert_eq!(group.rules()[0].data.userdata.get(), 1);
+        assert_eq!(group.rules()[1].data.userdata.get(), 2);
+    }
+
+    #[test]
+    fn compile_splits_different_signatures() {
+        let table = AclTableBuilder::new(Fate::Drop)
+            .add_rule(
+                // IPv4 + TCP with ports
+                AclRuleBuilder::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        ip.src = FieldMatch::Select(
+                            Ipv4Prefix::new(Ipv4Addr::new(10, 0, 0, 0), 8).unwrap(),
+                        );
+                    })
+                    .tcp(|tcp| {
+                        tcp.dst = FieldMatch::Select(80u16..=80u16);
+                    })
+                    .permit(pri(100)),
+            )
+            .add_rule(
+                // IPv4 only (no ports) → different signature
+                AclRuleBuilder::new()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        ip.src = FieldMatch::Select(
+                            Ipv4Prefix::new(Ipv4Addr::new(172, 16, 0, 0), 12).unwrap(),
+                        );
+                    })
+                    .permit(pri(200)),
+            )
+            .build();
+
+        let groups = compile(&table);
+
+        // Different signatures → two groups
+        assert_eq!(groups.len(), 2);
+
+        // One group has tcp_dst, the other doesn't
+        let has_ports = groups.iter().any(|g| g.field_count() == 4);
+        let no_ports = groups.iter().any(|g| g.field_count() < 4);
+        assert!(has_ports);
+        assert!(no_ports);
+    }
+
+    #[test]
+    fn resolve_fate_maps_userdata() {
+        let table = AclTableBuilder::new(Fate::Drop)
+            .add_rule(AclRuleBuilder::new().eth(|_| {}).permit(pri(100)))
+            .add_rule(AclRuleBuilder::new().eth(|_| {}).deny(pri(200)))
+            .build();
+
+        // userdata 0 → default (Drop)
+        assert_eq!(resolve_fate(&table, 0, Fate::Drop), Fate::Drop);
+
+        // userdata 1 → rule 0 (Accept)
+        assert_eq!(resolve_fate(&table, 1, Fate::Drop), Fate::Accept);
+
+        // userdata 2 → rule 1 (Drop)
+        assert_eq!(resolve_fate(&table, 2, Fate::Drop), Fate::Drop);
+
+        // userdata 99 → out of bounds → default
+        assert_eq!(resolve_fate(&table, 99, Fate::Drop), Fate::Drop);
+    }
+
+    #[test]
+    fn priority_inversion() {
+        // Our priority 1 (highest precedence) should get a higher DPDK priority
+        // than our priority 1000 (lower precedence).
+        let table = AclTableBuilder::new(Fate::Drop)
+            .add_rule(
+                AclRuleBuilder::new()
+                    .eth(|_| {})
+                    .ipv4(|_| {})
+                    .tcp(|_| {})
+                    .permit(pri(1)),
+            )
+            .add_rule(
+                AclRuleBuilder::new()
+                    .eth(|_| {})
+                    .ipv4(|_| {})
+                    .tcp(|_| {})
+                    .deny(pri(1000)),
+            )
+            .build();
+
+        let groups = compile(&table);
+        assert_eq!(groups.len(), 1);
+
+        let rules = groups[0].rules();
+        // Priority 1 should have higher DPDK priority (larger number)
+        assert!(rules[0].data.priority > rules[1].data.priority);
+    }
+}

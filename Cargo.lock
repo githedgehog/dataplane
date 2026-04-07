@@ -1167,6 +1167,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-acl-dpdk"
+version = "0.18.0"
+dependencies = [
+ "bolero",
+ "dataplane-acl",
+ "dataplane-dpdk",
+ "dataplane-net",
+ "etherparse",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dataplane-args"
 version = "0.18.0"
 dependencies = [
