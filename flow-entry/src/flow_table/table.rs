@@ -195,19 +195,15 @@ impl FlowTable {
                 return;
             }
 
-            // Reached on every break (normal expiry or Cancelled/Expired early exit).
-            // `continue` bypasses this, so removal only fires when the loop terminates.
-            // Use remove_if + ptr_eq so a concurrently inserted replacement is left intact.
-            // Use try_read() rather than read() to avoid undefined behaviour on
-            // platforms where re-entrant locking may panic.  In practice the
-            // write lock is only held by reshard(), which is synchronous and
-            // never yields to the tokio executor, so WouldBlock is virtually
-            // never observed; yield_now() is purely defensive.
-            #[cfg(not(feature = "shuttle"))]
+            // The timer for a flow expired or was cancelled. Therefore the flow should be removed.
+            // We use remove_if + ptr_eq so that a concurrently-inserted replacement is left intact.
+
             let table = loop {
-                // Evaluate try_read() and fully consume the Result before any
-                // await point; RwLockReadGuard is !Send and must not be held
-                // across an await even inside a non-Ok arm.
+                // Use try_read() rather than read() to avoid undefined behaviour on
+                // platforms where re-entrant locking may panic.  In practice the
+                // write lock is only held by reshard(), which is synchronous and
+                // never yields to the tokio executor, so WouldBlock is virtually
+                // never observed; yield_now() is purely defensive.
                 let would_block = match table.try_read() {
                     Ok(guard) => break guard,
                     Err(std::sync::TryLockError::Poisoned(p)) => {
@@ -224,17 +220,6 @@ impl FlowTable {
                     tokio::task::yield_now().await;
                 }
             };
-            // shuttle::sync does not export TryLockError, and the timer task
-            // never runs under shuttle (no tokio runtime), so we fall back to
-            // the plain read() there.
-            #[cfg(feature = "shuttle")]
-            let table = table.read().unwrap_or_else(|poisoned| {
-                debug!(
-                    "flow expiration task: FlowTable RwLock poisoned; \
-                             proceeding with possibly inconsistent table state"
-                );
-                poisoned.into_inner()
-            });
 
             debug!("Removing flow {flow_key}...");
             if table
