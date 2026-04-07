@@ -161,6 +161,7 @@ impl FlowTable {
     }
 
     /// Start a timer task for a flow
+    #[allow(unused)]
     fn start_timer(table: Arc<RwLock<Table>>, flow_info: Arc<FlowInfo>) {
         tokio::task::spawn(async move {
             let table = table;
@@ -249,9 +250,13 @@ impl FlowTable {
         val.update_status(FlowStatus::Active);
         let table = self.table.read().unwrap();
         let result = table.insert(flow_key, val.clone());
+
+        #[cfg(not(feature = "shuttle"))]
         Self::start_timer(self.table.clone(), val.clone());
+
         if let Some(old) = result.as_ref() {
             old.update_status(FlowStatus::Detached);
+            #[cfg(not(feature = "shuttle"))]
             old.token.cancel();
         }
         result
@@ -289,6 +294,7 @@ impl FlowTable {
         let result = table.remove(flow_key);
         if let Some((_key, flow_info)) = result.as_ref() {
             flow_info.update_status(FlowStatus::Detached);
+            #[cfg(not(feature = "shuttle"))]
             flow_info.token.cancel();
         }
         result
@@ -541,8 +547,10 @@ mod tests {
         use super::*;
         use crate::flow_table::FlowInfo;
         use concurrency::sync::Arc;
+        use concurrency::thread;
+        use std::time::Instant;
 
-        #[tokio::test]
+        #[test]
         fn test_flow_table_timeout() {
             shuttle::check_random(
                 move || {
@@ -574,11 +582,9 @@ mod tests {
                         fi.update_status(FlowStatus::Expired);
                     }
 
-                    // Lazy cleanup on next lookup.
-                    assert!(
-                        flow_table.lookup(&flow_key).is_none(),
-                        "Flow key should be gone after expiration"
-                    );
+                    // Lookup: will find it because we don't expire without tokio nor do lazy removals
+                    let found = flow_table.lookup(&flow_key).unwrap();
+                    assert_eq!(found.status(), FlowStatus::Expired);
                 },
                 100,
             );
@@ -702,10 +708,11 @@ mod tests {
                     }
 
                     // After all threads, flow[0] should be expired/gone (expirer thread ran).
-                    assert!(
-                        flow_table.lookup(&flow_keys[0]).is_none(),
-                        "Flow key[0] should have been expired"
-                    );
+                    // Since timers are not started in shuttle tests, the flow should be there
+                    // but appear as Expired or Detached. Re-inserting a flow makes it active again,
+                    // therefore, the only non-feasible status is Cancellled.
+                    let found = flow_table.lookup(&flow_keys[0]).unwrap();
+                    assert_ne!(found.status(), FlowStatus::Cancelled);
                 },
                 100,
             );
