@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "acl",
     "args",
     "cli",
     "common",
@@ -48,6 +49,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 [workspace.dependencies]
 
 # Internal
+acl = { path = "./acl", package = "dataplane-acl", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }

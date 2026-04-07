@@ -1,0 +1,21 @@
+[package]
+name = "dataplane-acl"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+default = []
+bolero = ["dep:bolero", "net/bolero", "lpm/testing"]
+
+[dependencies]
+bolero = { workspace = true, features = ["std"], optional = true }
+lpm = { workspace = true }
+net = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+dataplane-acl = { path = ".", features = ["bolero"] }
+net = { workspace = true, features = ["builder", "bolero", "test_buffer"] }
