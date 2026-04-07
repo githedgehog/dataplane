@@ -4,9 +4,9 @@
 use ahash::RandomState;
 use dashmap::DashMap;
 use net::FlowKey;
-use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::{borrow::Borrow, time::Duration};
 use tracing::debug;
 
 use concurrency::sync::{Arc, RwLock};
@@ -172,21 +172,21 @@ impl FlowTable {
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                         let status = flow_info.status();
                         if status != FlowStatus::Active {
-                            debug!("Timer[EXPIRED]: Flow {flow_key} is in status {status}");
+                            debug!("Flow-timer[EXPIRED]: Flow {flow_key} is in status {status}");
                             break;
                         }
                         let new_deadline = flow_info.expires_at();
                         if new_deadline > deadline {
-                            debug!("Timer[EXTENDED] for Flow {flow_key}");
+                            debug!("Flow-timer[EXTENDED] for Flow {flow_key}");
                             deadline = new_deadline;
                             continue;
                         }
-                        debug!("Timer[EXPIRED] for flow {flow_key}");
+                        debug!("Flow-timer[EXPIRED] for flow {flow_key}");
                         flow_info.update_status(FlowStatus::Expired);
                         break;
                     },
                     () = flow_info.token.cancelled() =>  {
-                        debug!("Timer[CANCELLED] for flow {flow_key}");
+                        debug!("Flow-timer[CANCELLED] for flow {flow_key}");
                         break;
                     },
                 }
@@ -197,37 +197,29 @@ impl FlowTable {
             }
 
             // The timer for a flow expired or was cancelled. Therefore the flow should be removed.
-            // We use remove_if + ptr_eq so that a concurrently-inserted replacement is left intact.
-
-            let table = loop {
-                // Use try_read() rather than read() to avoid undefined behaviour on
-                // platforms where re-entrant locking may panic.  In practice the
-                // write lock is only held by reshard(), which is synchronous and
-                // never yields to the tokio executor, so WouldBlock is virtually
-                // never observed; yield_now() is purely defensive.
-                let would_block = match table.try_read() {
-                    Ok(guard) => break guard,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        debug!(
-                            "flow expiration task: FlowTable RwLock poisoned; \
-                                     proceeding with possibly inconsistent table state"
-                        );
-                        break p.into_inner();
+            // We use remove_if + ptr_eq so that a concurrently-inserted replacement is left intact
+            // and try_read() instead of read() so as not to block
+            loop {
+                let result = table.try_read();
+                match result {
+                    Ok(table) => {
+                        let res = table.remove_if(flow_key, |_, v| Arc::ptr_eq(v, &flow_info));
+                        if res.is_none() {
+                            debug!("Flow-timer: Unable to remove flow {flow_key}: not found");
+                        }
+                        return;
                     }
-                    Err(std::sync::TryLockError::WouldBlock) => true,
-                };
-                // The Result (and any contained guard) is dropped here.
-                if would_block {
-                    tokio::task::yield_now().await;
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        // let other work get done while we wait. We need to drop the result first
+                        drop(result);
+                        debug!("Flow-timer: Waiting for table read access");
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(std::sync::TryLockError::Poisoned(p)) => {
+                        debug!("Flow-timer: FlowTable RwLock poisoned!");
+                        return;
+                    }
                 }
-            };
-
-            debug!("Timer: removing flow {flow_key}...");
-            if table
-                .remove_if(flow_key, |_, v| Arc::ptr_eq(v, &flow_info))
-                .is_none()
-            {
-                debug!("Timer: Unable to remove flow {flow_key} from table: not found");
             }
         });
     }
