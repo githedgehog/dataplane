@@ -7,11 +7,12 @@
 use tracing::{debug, trace, warn};
 
 use crate::evpn::RmacStore;
+use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
 use crate::rib::encapsulation::{Encapsulation, VxlanEncapsulation};
 use crate::rib::nexthop::{FwAction, Nhop};
 use crate::rib::vrf::RouteOrigin;
 
-use crate::fib::fibobjects::{EgressObject, FibEntry, FibGroup, PktInstruction};
+use std::rc::Weak;
 
 impl Nhop {
     //////////////////////////////////////////////////////////////////////
@@ -89,7 +90,7 @@ impl Nhop {
             entry.squash(); /* squash entry before committing it to the group */
             fibgroup.add(entry); /* add fib entry to group */
         } else {
-            for resolver in resolvers.iter() {
+            for resolver in resolvers.iter().filter_map(Weak::upgrade) {
                 resolver.build_nhop_fibgroup_rec(fibgroup, entry.clone());
             }
         }

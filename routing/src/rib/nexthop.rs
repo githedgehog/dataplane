@@ -18,7 +18,7 @@ use std::option::Option;
 
 use net::interface::InterfaceIndex;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 #[cfg(test)]
 use std::str::FromStr;
 use tracing::{debug, error};
@@ -36,7 +36,7 @@ pub(crate) struct NhopStore(BTreeSet<Rc<Nhop>>);
 /// references to other next-hops in this (or other) table.
 pub struct Nhop {
     pub(crate) key: NhopKey,
-    pub(crate) resolvers: RefCell<Vec<Rc<Nhop>>>,
+    pub(crate) resolvers: RefCell<Vec<Weak<Nhop>>>,
     pub(crate) instructions: RefCell<Vec<PktInstruction>>,
     pub(crate) fibgroup: RefCell<FibGroup>,
 }
@@ -160,10 +160,8 @@ impl Hash for Nhop {
 }
 
 impl Nhop {
-    //////////////////////////////////////////////////////////////////
     /// Create a new Nhop object from a key object
-    //////////////////////////////////////////////////////////////////
-    fn new_from_key(key: &NhopKey) -> Self {
+    fn from_key(key: &NhopKey) -> Self {
         Self {
             key: key.clone(),
             resolvers: RefCell::new(Vec::new()),
@@ -172,23 +170,14 @@ impl Nhop {
         }
     }
 
-    //////////////////////////////////////////////////////////////////////////////////////////////////////
-    /// Store a reference to some Nhop 'resolver' in the current next-hop Self.
-    /// Note well:
-    ///   * this increments/keeps the Rc count of the "resolver" since we're storing an Rc as parameter
-    ///   * this should be called when we find out that Self resolves to 'resolver' according to some
-    ///     routing table. Other than that, the reference has no semantics in this module, except that
-    ///     the 'routing resolution' semantic is implicitly assumed in the functions that allow resolving
-    ///     nexthops from such references. In other words, the "resolution" in this module will be as (in)
-    ///     correct as those with explicit recursion, as long as the references are kept up to date.
-    //////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Store a weak reference to some Nhop 'resolver' in the current next-hop
     #[cfg(test)]
-    pub fn add_resolver(&self, resolver: Rc<Nhop>) -> &Self {
+    pub fn add_resolver(&self, resolver: &Rc<Nhop>) -> &Self {
         let Ok(mut resolvers) = self.resolvers.try_borrow_mut() else {
             error!("Failed to add resolver: try-borrow-mut failed!. Nhop={self:#?}");
             return self;
         };
-        resolvers.push(resolver);
+        resolvers.push(Rc::downgrade(resolver));
         self
     }
 
@@ -205,7 +194,10 @@ impl Nhop {
         }
         // resolvers should not refer back to the checked next-hop
         let resolvers = self.resolvers.borrow();
-        resolvers.iter().any(|res| res.resolves_with(checked))
+        resolvers
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|res| res.resolves_with(checked))
     }
 
     /// Resolve a next-hop with a VRF, non-recursively, assuming that its resolvers are resolved already
@@ -224,7 +216,7 @@ impl Nhop {
         for nh in &route.s_nhops {
             if !nh.rc.resolves_with(self) {
                 debug!(" -> {}", nh.rc);
-                resolvers.push(nh.rc.clone());
+                resolvers.push(Rc::downgrade(&nh.rc));
             }
         }
         // update resolvers
@@ -251,7 +243,7 @@ impl Nhop {
             }
         } else {
             // check resolvers
-            for r in resolvers.iter() {
+            for r in resolvers.iter().filter_map(Weak::upgrade) {
                 if let Some(i) = r.key.ifindex {
                     // Take into account that some nhops may already be partially resolved, meaning
                     // they include an address AND an ifindex
@@ -285,38 +277,30 @@ impl Nhop {
 }
 
 impl NhopStore {
-    //////////////////////////////////////////////////////////////////
     /// Create a next-hop map object.
-    //////////////////////////////////////////////////////////////////
     #[must_use]
     pub(crate) fn new() -> Self {
         Self(BTreeSet::new())
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Get the number of next-hops in the store
-    //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Tell if the next-hop store is empty
-    //////////////////////////////////////////////////////////////////
     #[must_use]
     #[allow(unused)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Add a next hop with a given key (if it does not exist already)
-    /// and return a shared reference to it.
-    //////////////////////////////////////////////////////////////////
+    /// and return an owning reference to it.
     #[must_use]
     pub(crate) fn add_nhop(&mut self, key: &NhopKey) -> Rc<Nhop> {
-        let nh = Rc::new(Nhop::new_from_key(key));
+        let nh = Rc::new(Nhop::from_key(key));
         if let Some(e) = self.0.get(&nh) {
             Rc::clone(e)
         } else {
@@ -326,78 +310,69 @@ impl NhopStore {
         }
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// Get the Rc count of the next-hop with some key.
-    //////////////////////////////////////////////////////////////////
+    /// Get the Rc strong count of the next-hop with some key.
     #[must_use]
     #[allow(unused)]
-    pub(crate) fn get_nhop_rc_count(&self, key: &NhopKey) -> usize {
+    pub(crate) fn nhop_strong_count(&self, key: &NhopKey) -> usize {
         self.get_nhop(key).map_or(0, Rc::strong_count)
     }
 
-    //////////////////////////////////////////////////////////////////
+    /// Get the Rc weak count of the next-hop with some key.
+    #[must_use]
+    #[allow(unused)]
+    pub(crate) fn nhop_weak_count(&self, key: &NhopKey) -> usize {
+        self.get_nhop(key).map_or(0, Rc::weak_count)
+    }
+
     /// Get a reference to the next-hop with a given key, if it exists.
-    /// Unlike `add_nhop()`, this returns a `&Rc<Nhop>` and not `Rc<Nhop>`,
+    /// Unlike `add_nhop()`, this returns a `&Rc<Nhop>` and not `Rc<Nhop>`
     /// thereby not increasing the refcount of the next-hop.
-    //////////////////////////////////////////////////////////////////
     #[must_use]
     #[allow(unused)]
     pub(crate) fn get_nhop(&self, key: &NhopKey) -> Option<&Rc<Nhop>> {
-        let nh = Nhop::new_from_key(key);
+        let nh = Nhop::from_key(key);
         self.0.get(&nh)
     }
 
-    /////////////////////////////////////////////////////////////////////////////////////
-    /// Declare that a next-hop is no longer of our interest. The nhop may be removed or
+    /// Declare that a next-hop is no longer of interest. The nhop may be removed or
     /// not, depending on whether there are other references to it. This method returns
     /// true if the next-hop was removed and false otherwise.
-    /////////////////////////////////////////////////////////////////////////////////////
     pub(crate) fn del_nhop(&mut self, key: &NhopKey) -> bool {
-        let target = Nhop::new_from_key(key);
+        let target = Nhop::from_key(key);
         if let Some(existing) = self.0.get(&target) {
             if Rc::strong_count(existing) == 1 {
-                self.0.remove(&target);
-                return true;
+                let r = self.0.remove(&target);
+                debug_assert!(r);
+                if r {
+                    debug!("Removed next-hop {key}");
+                }
+                return r;
             }
         }
         false
     }
 
-    //////////////////////////////////////////////////////////////////
     /// Iterate over all next-hops in the next-hop store
-    //////////////////////////////////////////////////////////////////
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Rc<Nhop>> {
         self.0.iter()
     }
 
-    #[cfg(test)]
-    pub(crate) fn flush_resolvers(&self) {
-        for nhop in self.iter() {
-            nhop.resolvers.borrow_mut().clear();
-            nhop.instructions.borrow_mut().clear();
-            nhop.fibgroup.take();
-        }
-    }
-    ///////////////////////////////////////////////////////////////////
     /// Rebuild the instructions for each next-hop
-    ///////////////////////////////////////////////////////////////////
     pub fn resolve_nhop_instructions(&self, rstore: &RmacStore) {
         for nhop in self.iter() {
             nhop.build_nhop_instructions(rstore);
         }
     }
-    //////////////////////////////////////////////////////////////////
+
     /// Lazily resolve all next-hops in this store.
-    //////////////////////////////////////////////////////////////////
     pub fn lazy_resolve_all(&self, vrf: &Vrf) {
         self.iter().for_each(|nhop| nhop.lazy_resolve(vrf));
     }
-    ///////////////////////////////////////////////////////////////////
+
     /// Rebuild the fibgroup for every next-hop. This method visits every next-hop and
     /// rebuilds its fibgroup. It returns a vector with only those next-hops whose
     /// fibgroup changed. We return a Vector and not an iterator to force the rebuild
     /// of the fibgroups.
-    ///////////////////////////////////////////////////////////////////////////////////
     pub fn rebuild_fibgroups(&self, rstore: &RmacStore) -> Vec<&Rc<Nhop>> {
         self.iter()
             .filter(|nhop| nhop.set_fibgroup(rstore))
@@ -407,21 +382,26 @@ impl NhopStore {
 
 #[cfg(test)]
 impl NhopStore {
-    //////////////////////////////////////////////////////////////////
-    /// (**test-only**): Tell if there exists a next-hop with a given key.
-    //////////////////////////////////////////////////////////////////
+    /// Tell if there exists a next-hop with a given key.
     #[must_use]
     pub(crate) fn contains(&self, key: &NhopKey) -> bool {
-        let nh = Nhop::new_from_key(key);
+        let nh = Nhop::from_key(key);
         self.0.contains(&nh)
     }
 
-    //////////////////////////////////////////////////////////////////
-    /// (**test-only**): Resolve a next-hop by address. If no next-hop
+    /// Flush all resolution state of all next-hops
+    pub(crate) fn flush_resolvers(&self) {
+        for nhop in self.iter() {
+            nhop.resolvers.borrow_mut().clear();
+            nhop.instructions.borrow_mut().clear();
+            nhop.fibgroup.take();
+        }
+    }
+
+    /// Resolve a next-hop by address. If no next-hop
     /// exists for that address, returns None. Otherwise, it returns the
     /// result of `quick_resolve()` on the next-hop found.
     /// This function is probably only useful for testing.
-    //////////////////////////////////////////////////////////////////
     pub(crate) fn resolve_by_addr(&self, address: &IpAddr) -> Option<BTreeSet<NhopKey>> {
         let key = NhopKey::with_address(address);
         self.get_nhop(&key).map(|nh| nh.quick_resolve())
@@ -446,23 +426,21 @@ mod tests {
         let mut store = NhopStore::new();
         let nh_key = NhopKey::from_address("10.0.1.1");
 
-        /* add a nhop */
+        // add a nhop
         let nhref = store.add_nhop(&nh_key);
-        assert_eq!(store.get_nhop_rc_count(&nh_key), 2);
-
-        /* if we drop the reference, the refcount is updated */
+        assert_eq!(store.nhop_strong_count(&nh_key), 2);
         drop(nhref);
-        assert_eq!(store.get_nhop_rc_count(&nh_key), 1);
+        assert_eq!(store.nhop_strong_count(&nh_key), 1);
 
-        /* check it's there */
+        // check presence
         assert!(store.contains(&nh_key));
 
-        /* get method does not increment the refcount */
+        // check get() does not increment the refcount
         let nh = store.get_nhop(&nh_key).expect("Should find it");
         assert_eq!(Rc::strong_count(nh), 1, "Must be 1");
 
-        /* check refcount */
-        let num_refs = store.get_nhop_rc_count(&nh_key);
+        // check refcount
+        let num_refs = store.nhop_strong_count(&nh_key);
         assert_eq!(num_refs, 1);
         store.dump();
     }
@@ -474,43 +452,43 @@ mod tests {
         let mut store = NhopStore::new();
         let nh_key = NhopKey::from_address("10.0.1.1");
 
-        /* add a nhop and keep a reference to it */
+        // add a nhop and keep a reference to it
         let r1 = store.add_nhop(&nh_key);
         assert_eq!(Rc::strong_count(&r1), 2);
 
-        /* check it's there */
+        // check it's there
         assert!(store.contains(&nh_key));
 
-        /* add it again. No new next-hop should be added */
+        // add again: no new next-hop should be added
         let r2 = store.add_nhop(&nh_key);
         assert_eq!(store.len(), 1);
 
-        /* get it: since add_nhop returns a reference and we keep it, refcount should be 3 */
+        // get it: since add_nhop returns a reference and we keep it, refcount should be 3
         let nh = store.get_nhop(&nh_key).unwrap();
         assert_eq!(Rc::strong_count(nh), 3);
 
-        /* check refcount */
-        let num_refs = store.get_nhop_rc_count(&nh_key);
+        // check refcount
+        let num_refs = store.nhop_strong_count(&nh_key);
         assert_eq!(num_refs, 3);
 
-        /* drop references */
+        // drop references
         let _ = nh;
         drop(r1);
         assert!(!store.del_nhop(&nh_key));
-        assert_eq!(store.get_nhop_rc_count(&nh_key), 2);
+        assert_eq!(store.nhop_strong_count(&nh_key), 2);
         drop(r2);
-        assert_eq!(store.get_nhop_rc_count(&nh_key), 1);
+        assert_eq!(store.nhop_strong_count(&nh_key), 1);
         assert!(store.del_nhop(&nh_key));
         assert_eq!(store.len(), 0);
     }
 
     #[traced_test]
     #[test]
-    /// Tests the correct next-hops reference counts
+    /// Tests the correctness of next-hops reference counts
     fn test_nhop_ref_counts() {
         let mut store = NhopStore::new();
 
-        /* Create KEYS for some next-hop */
+        // Create KEYS for some next-hops
         let n1_k = NhopKey::from_address("10.0.1.1");
         let n2_k = NhopKey::from_address("10.0.2.1");
         let n3_k = NhopKey::from_address("10.0.3.1");
@@ -519,7 +497,7 @@ mod tests {
         let i2_k = NhopKey::with_ifindex(2);
         let i3_k = NhopKey::with_ifindex(3);
 
-        /* Add some next-hops and references */
+        // Add some next-hops and references
         {
             /* Use separate scope so that all refs the APIs returns
             get dropped at the end of it. This is just for testing. */
@@ -530,12 +508,12 @@ mod tests {
             let i1 = store.add_nhop(&i1_k);
             let i2 = store.add_nhop(&i2_k);
             let i3 = store.add_nhop(&i3_k);
-            n1.add_resolver(i1);
-            n2.add_resolver(i2);
-            n3.add_resolver(i3);
+            n1.add_resolver(&i1);
+            n2.add_resolver(&i2);
+            n3.add_resolver(&i3);
         }
 
-        /* check that were added */
+        // check they were added
         assert_eq!(store.len(), 6);
         assert!(store.contains(&n1_k));
         assert!(store.contains(&n2_k));
@@ -544,13 +522,13 @@ mod tests {
         assert!(store.contains(&i2_k));
         assert!(store.contains(&i3_k));
 
-        /* check rc counts */
-        assert_eq!(store.get_nhop_rc_count(&n1_k), 1);
-        assert_eq!(store.get_nhop_rc_count(&n2_k), 1);
-        assert_eq!(store.get_nhop_rc_count(&n3_k), 1);
-        assert_eq!(store.get_nhop_rc_count(&i1_k), 2);
-        assert_eq!(store.get_nhop_rc_count(&i2_k), 2);
-        assert_eq!(store.get_nhop_rc_count(&i3_k), 2);
+        // counts
+        assert_eq!(store.nhop_strong_count(&n1_k), 1);
+        assert_eq!(store.nhop_strong_count(&n2_k), 1);
+        assert_eq!(store.nhop_strong_count(&n3_k), 1);
+        assert_eq!(store.nhop_weak_count(&i1_k), 1);
+        assert_eq!(store.nhop_weak_count(&i2_k), 1);
+        assert_eq!(store.nhop_weak_count(&i3_k), 1);
 
         store.dump();
     }
@@ -569,20 +547,20 @@ mod tests {
 
         /* create 5 next-hops all resolving to the same one */
         let i1 = store.add_nhop(&i1_k);
-        store.add_nhop(&n1_k).add_resolver(i1.clone());
-        store.add_nhop(&n2_k).add_resolver(i1.clone());
-        store.add_nhop(&n3_k).add_resolver(i1.clone());
-        store.add_nhop(&n4_k).add_resolver(i1.clone());
-        store.add_nhop(&n5_k).add_resolver(i1.clone());
+        store.add_nhop(&n1_k).add_resolver(&i1);
+        store.add_nhop(&n2_k).add_resolver(&i1);
+        store.add_nhop(&n3_k).add_resolver(&i1);
+        store.add_nhop(&n4_k).add_resolver(&i1);
+        store.add_nhop(&n5_k).add_resolver(&i1);
         store.dump();
 
         assert_eq!(store.len(), 6);
-        assert_eq!(store.get_nhop_rc_count(&i1_k), 7);
+        assert_eq!(store.nhop_strong_count(&i1_k), 2);
 
         /* remove one next-hop */
         store.del_nhop(&n5_k);
         assert_eq!(store.len(), 5);
-        assert_eq!(store.get_nhop_rc_count(&i1_k), 6);
+        assert_eq!(store.nhop_strong_count(&i1_k), 2);
         store.dump();
 
         /* remove rest of next-hops */
@@ -614,16 +592,16 @@ mod tests {
 
         /* create 5 next-hops all resolving to the same one */
         let i1 = store.add_nhop(&i1_k);
-        store.add_nhop(&n1_k).add_resolver(i1.clone());
-        store.add_nhop(&n2_k).add_resolver(i1.clone());
-        store.add_nhop(&n3_k).add_resolver(i1.clone());
-        store.add_nhop(&n4_k).add_resolver(i1.clone());
-        store.add_nhop(&n5_k).add_resolver(i1.clone());
+        store.add_nhop(&n1_k).add_resolver(&i1);
+        store.add_nhop(&n2_k).add_resolver(&i1);
+        store.add_nhop(&n3_k).add_resolver(&i1);
+        store.add_nhop(&n4_k).add_resolver(&i1);
+        store.add_nhop(&n5_k).add_resolver(&i1);
         drop(i1);
-        assert_eq!(store.get_nhop_rc_count(&i1_k), 6);
+        assert_eq!(store.nhop_weak_count(&i1_k), 5); // used to resolve 5 nexthops
         store.dump();
         store.flush_resolvers();
-        assert_eq!(store.get_nhop_rc_count(&i1_k), 1);
+        assert_eq!(store.nhop_weak_count(&i1_k), 0); // used to resolve 0 nexthops
         store.dump();
     }
 
@@ -650,18 +628,18 @@ mod tests {
         let n = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
 
         /* Add resolvers */
-        a1.add_resolver(i1);
-        a2.add_resolver(i2);
-        a3.add_resolver(i3);
+        a1.add_resolver(&i1);
+        a2.add_resolver(&i2);
+        a3.add_resolver(&i3);
 
-        b1.add_resolver(a1);
-        b1.add_resolver(a2.clone());
+        b1.add_resolver(&a1);
+        b1.add_resolver(&a2);
 
-        b2.add_resolver(a2);
-        b2.add_resolver(a3);
+        b2.add_resolver(&a2);
+        b2.add_resolver(&a3);
 
-        n.add_resolver(b1);
-        n.add_resolver(b2);
+        n.add_resolver(&b1);
+        n.add_resolver(&b2);
 
         store
     }
@@ -684,14 +662,14 @@ mod tests {
         let n = store.add_nhop(&NhopKey::from_address("7.0.0.1"));
 
         /* Add resolutions */
-        b1.add_resolver(a1);
-        b1.add_resolver(a2.clone());
+        b1.add_resolver(&a1);
+        b1.add_resolver(&a2);
 
-        b2.add_resolver(a2);
-        b2.add_resolver(a3);
+        b2.add_resolver(&a2);
+        b2.add_resolver(&a3);
 
-        n.add_resolver(b1);
-        n.add_resolver(b2);
+        n.add_resolver(&b1);
+        n.add_resolver(&b2);
 
         store
     }
@@ -706,16 +684,16 @@ mod tests {
         /* direct resolution to drop */
         store
             .add_nhop(&NhopKey::from_address("172.16.0.1"))
-            .add_resolver(nh_drop.clone());
+            .add_resolver(&nh_drop);
 
         /* indirect resolution to drop */
         let intermediate = store.add_nhop(&NhopKey::from_address("10.0.0.1"));
-        intermediate.add_resolver(nh_drop);
+        intermediate.add_resolver(&nh_drop);
 
         /* nh that resolves to intermediate */
         store
             .add_nhop(&NhopKey::from_address("7.0.0.1"))
-            .add_resolver(intermediate);
+            .add_resolver(&intermediate);
 
         /* add next-hop that does not resolve to anything */
         let _ = store.add_nhop(&NhopKey::from_address("8.0.0.1"));
@@ -734,17 +712,17 @@ mod tests {
         let key = NhopKey::from_address("7.0.0.1");
 
         /* It has no extra reference */
-        assert_eq!(store.get_nhop_rc_count(&key), 1);
+        assert_eq!(store.nhop_strong_count(&key), 1);
         store.dump();
 
         /* check resolvers refcount */
         assert_eq!(
-            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.1")),
-            2
+            store.nhop_weak_count(&NhopKey::from_address("172.16.0.1")),
+            1
         );
         assert_eq!(
-            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.2")),
-            2
+            store.nhop_weak_count(&NhopKey::from_address("172.16.0.2")),
+            1
         );
 
         /* Delete nexthop. Since it has no extra reference it should be gone */
@@ -753,12 +731,12 @@ mod tests {
 
         /* resolvers refcount is decreased */
         assert_eq!(
-            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.1")),
-            1
+            store.nhop_weak_count(&NhopKey::from_address("172.16.0.1")),
+            0
         );
         assert_eq!(
-            store.get_nhop_rc_count(&NhopKey::from_address("172.16.0.2")),
-            1
+            store.nhop_weak_count(&NhopKey::from_address("172.16.0.2")),
+            0
         );
     }
 
@@ -854,12 +832,13 @@ mod tests {
         let y = store.add_nhop(&y);
         let checked = store.add_nhop(&checked);
 
-        a.add_resolver(i1.clone());
-        b.add_resolver(i2.clone());
-        x.add_resolver(a.clone());
-        y.add_resolver(b.clone());
-        checked.add_resolver(x.clone());
-        checked.add_resolver(y.clone());
+        a.add_resolver(&i1);
+        b.add_resolver(&i2);
+        x.add_resolver(&a);
+        y.add_resolver(&b);
+        checked.add_resolver(&x);
+        checked.add_resolver(&y);
+
         store.dump();
 
         assert!(!i1.resolves_with(checked.as_ref()));
@@ -875,7 +854,7 @@ mod tests {
         assert!(!a.resolves_with(checked.as_ref()));
         assert!(!x.resolves_with(checked.as_ref()));
 
-        a.add_resolver(checked.clone());
+        a.add_resolver(&checked);
         assert!(a.resolves_with(checked.as_ref()));
     }
 }
