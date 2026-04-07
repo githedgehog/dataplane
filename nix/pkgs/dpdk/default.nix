@@ -47,7 +47,6 @@ stdenv.mkDerivation {
   mesonFlags =
     let
       disabledLibs = [
-        "acl"
         "argparse"
         "bbdev"
         "bitratestats"
@@ -86,6 +85,7 @@ stdenv.mkDerivation {
         "table"
       ];
       enabledLibs = [
+        "acl"
         "cryptodev" # required for vhost
         "dmadev" # required by vhost
         "ethdev"
