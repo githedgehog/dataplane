@@ -131,8 +131,10 @@ fn fmt_nhop_resolvers(f: &mut std::fmt::Formatter<'_>, rc: &Nhop, depth: u8) -> 
     let indent = " ".repeat(tab);
     if !resolvers.is_empty() {
         for r in resolvers.iter() {
-            write!(f, "\n{indent} {}", r.key)?;
-            fmt_nhop_resolvers(f, r, depth + 1)?;
+            if let Some(r) = r.upgrade().as_ref() {
+                write!(f, "\n{indent} {}", r.key)?;
+                fmt_nhop_resolvers(f, r, depth + 1)?;
+            }
         }
     }
     Ok(())
@@ -175,7 +177,9 @@ fn fmt_nhop_rec(f: &mut std::fmt::Formatter<'_>, rc: &Rc<Nhop>, depth: u8) -> st
         return Ok(());
     };
     for r in resolvers.iter() {
-        fmt_nhop_rec(f, r, depth + 1)?;
+        if let Some(r) = r.upgrade().as_ref() {
+            fmt_nhop_rec(f, r, depth + 1)?;
+        }
     }
     //    if let Ok(fg) = rc.as_ref().fibgroup.read() {
     //        writeln!(f, "FibG {}", fg)?;

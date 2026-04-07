@@ -414,7 +414,7 @@ impl Vrf {
         // resolve next-hops
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
-            let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
+            let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
             if refc == 2 {
                 shim.rc.lazy_resolve(rvrf);
             }
@@ -466,7 +466,7 @@ impl Vrf {
         // resolve the next-hops of the received route
         let rvrf = vrf0.unwrap_or(self);
         for shim in &route.s_nhops {
-            let refc = self.nhstore.get_nhop_rc_count(&shim.rc.key);
+            let refc = self.nhstore.nhop_strong_count(&shim.rc.key);
             shim.rc.build_nhop_instructions(rstore);
             if refc == 2 {
                 shim.rc.lazy_resolve(rvrf);
