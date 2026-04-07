@@ -111,7 +111,7 @@ impl FlowTable {
             flow_info.set_flowkey(flow_key);
         }
 
-        debug!("Inserting flow {flow_key}");
+        debug!("insert: Inserting flow {flow_key}");
         let val = Arc::new(flow_info);
         self.insert_common(flow_key, &val)
     }
@@ -172,11 +172,12 @@ impl FlowTable {
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                         let status = flow_info.status();
                         if status != FlowStatus::Active {
-                            debug!("Flow {flow_key} is in status {status}");
+                            debug!("Timer[EXPIRED]: Flow {flow_key} is in status {status}");
                             break;
                         }
                         let new_deadline = flow_info.expires_at();
                         if new_deadline > deadline {
+                            debug!("Timer[EXTENDED] for Flow {flow_key}");
                             deadline = new_deadline;
                             continue;
                         }
@@ -221,12 +222,12 @@ impl FlowTable {
                 }
             };
 
-            debug!("Removing flow {flow_key}...");
+            debug!("Timer: removing flow {flow_key}...");
             if table
                 .remove_if(flow_key, |_, v| Arc::ptr_eq(v, &flow_info))
                 .is_none()
             {
-                debug!("Unable to remove flow {flow_key} from table: not found");
+                debug!("Timer: Unable to remove flow {flow_key} from table: not found");
             }
         });
     }
