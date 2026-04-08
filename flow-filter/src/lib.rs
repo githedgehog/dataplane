@@ -123,6 +123,7 @@ impl FlowFilter {
     ) -> bool {
         let nfi = &self.name;
         let Some(flow_info) = packet.active_flow_info() else {
+            debug!("Packet does not contain any active flow-info");
             return false;
         };
         let Some(vpcd) = flow_info.get_dst_vpcd() else {
@@ -154,6 +155,7 @@ impl FlowFilter {
         let nfi = &self.name;
 
         let Some(flow_info) = packet.active_flow_info() else {
+            debug!("Packet does not contain any active flow-info");
             return Ok(None);
         };
 
@@ -280,6 +282,7 @@ impl FlowFilter {
         needs_flow_verif: bool,
     ) -> Result<(), ()> {
         if needs_flow_verif && packet.active_flow_info().is_some() {
+            debug!("Packet refers to active flow-info");
             return Ok(());
         }
 
