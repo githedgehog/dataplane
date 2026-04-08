@@ -36,7 +36,6 @@ pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
 use std::num::NonZero;
-use tracing::debug;
 
 pub mod utils;
 
@@ -120,12 +119,10 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Return the active flow-info for the packet, if any.
     pub fn active_flow_info(&self) -> Option<&Arc<FlowInfo>> {
         let Some(flow_info) = &self.meta().flow_info else {
-            debug!("Packet does not contain any flow-info");
             return None;
         };
         let status = flow_info.status();
         if status != FlowStatus::Active {
-            debug!("Found flow-info but its status is {status}, cannot use it");
             return None;
         }
         Some(flow_info)
