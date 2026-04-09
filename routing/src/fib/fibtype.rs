@@ -386,9 +386,9 @@ impl FibWriter {
     }
     pub fn destroy(mut self) {
         self.0.append(FibChange::Invalidate);
-        self.publish();
-        // this is sanity and should not be needed
-        while self.as_fibreader().enter().is_some() {}
+        self.0.publish();
+        let taken_fib = self.0.take();
+        assert!(!taken_fib.valid);
     }
 }
 

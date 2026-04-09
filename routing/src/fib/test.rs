@@ -28,6 +28,7 @@ mod tests {
     use rand::rngs::ThreadRng;
     use std::str::FromStr;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU16;
     use std::thread;
     use std::thread::Builder;
@@ -245,6 +246,7 @@ mod tests {
     // or aggressively changing the fibgroup (and fib entries) used for the prefix of that route. The fuzzer in this
     // test also removes the FIB and adds it again. The workers use a thread-local cache to access the FIB.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_concurrency_fibtable() {
         // number of threads looking up fibtable
         const NUM_WORKERS: u16 = 6;
@@ -271,6 +273,7 @@ mod tests {
             Builder::new()
                 .name(format!("WORKER-{n}"))
                 .spawn(move || {
+                    println!("Worker-{n} started");
                     let mut rng = rand::rng();
                     let mut packet = test_packet();
                     let mut prefix_hits: u64 = 0;
@@ -285,17 +288,13 @@ mod tests {
                                 if hit == prefix {
                                     prefix_hits += 1;
                                     if prefix_hits.is_multiple_of(TENTH) {
-                                        println!("Worker {n} is {} % done", prefix_hits * 100 / NUM_PACKETS);
+                                        println!(
+                                            "Worker {n} is {} % done",
+                                            prefix_hits * 100 / NUM_PACKETS
+                                        );
                                     }
 
                                     if prefix_hits >= NUM_PACKETS {
-                                        println!("=== Worker {n} finished ====");
-                                        println!("Stats:");
-                                        println!("  {prefix_hits:>8} packets hit {prefix}");
-                                        println!("  {other_hits:>8} packets hit other prefix (0.0.0.0/0)");
-                                        println!("  {nofibs:>8} packets found no fib");
-                                        println!("  {nofib_enter:>8} packets found fib but could not enter");
-                                        worker_done.fetch_add(1, Ordering::Relaxed);
                                         break;
                                     }
                                 } else {
@@ -308,6 +307,14 @@ mod tests {
                             nofibs += 1;
                         }
                     }
+                    println!("=== Worker {n} finished ====");
+                    println!("Stats:");
+                    println!("  {prefix_hits:>8} packets hit {prefix}");
+                    println!("  {other_hits:>8} packets hit other prefix (0.0.0.0/0)");
+                    println!("  {nofibs:>8} packets found no fib");
+                    println!("  {nofib_enter:>8} packets found fib but could not enter");
+
+                    worker_done.fetch_add(1, Ordering::Relaxed);
                 })
                 .unwrap();
         }
@@ -320,7 +327,7 @@ mod tests {
         let randomrouter = RandomRouter::load();
         let mut updates = 0u64;
 
-        let mut fibw = Some(fibtw.add_fib(vrfid, None));
+        let mut fibw: Option<FibWriter> = Some(fibtw.add_fib(vrfid, None));
         let fibgroup = randomrouter.random_pick_fibgroup(&mut rng);
         if let Some(fibw) = &mut fibw {
             fibw.register_fibgroup(&nhkey, fibgroup, true);
@@ -331,6 +338,7 @@ mod tests {
             if fibw.is_none() {
                 fibw = Some(fibtw.add_fib(vrfid, None));
             }
+
             if let Some(fibw) = &mut fibw {
                 if updates.is_multiple_of(100) {
                     let fibgroup = randomrouter.random_pick_fibgroup(&mut rng);
@@ -345,12 +353,11 @@ mod tests {
 
             if updates.is_multiple_of(50) && fibw.is_some() {
                 fibtw.del_fib(1, None);
-                thread::sleep(Duration::from_millis(15));
-                if true {
-                    // fib gets deleted here
-                    let fib = fibw.take();
-                    fib.unwrap().destroy();
+                if let Some(fib) = fibw.take() {
+                    // fib is destroyed here
+                    fib.destroy();
                 }
+                assert!(fibw.is_none());
             }
 
             // iterations
@@ -359,11 +366,59 @@ mod tests {
             // stop when all workers are done
             if done.load(Ordering::Relaxed) == NUM_WORKERS {
                 println!("All workers finished!");
+                if let Some(fib) = fibw.take() {
+                    // fib is destroyed here
+                    fib.destroy();
+                }
                 break;
             }
         }
         let duration = start.elapsed();
         println!("Test duration: {duration:?}");
+    }
+
+    #[test]
+    fn test_fib_removals() {
+        // create fibtable (empty, without any fib)
+        let (mut fibtw, fibtr) = FibTableWriter::new();
+        let fibtrfactory = fibtr.factory();
+        let vrfid = 1;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+
+        let handle = thread::spawn(move || {
+            let fibtr = fibtrfactory.handle();
+            let mut enters = 0;
+            let packet = test_packet();
+            loop {
+                if let Ok(fib) = fibtr.get_fib_reader(FibKey::Id(vrfid)) {
+                    if let Some(fib) = fib.enter() {
+                        let (_hit, _fibentry) = fib.lpm_entry_prefix(&packet);
+                        enters += 1;
+                    }
+                }
+                if thread_stop.load(Ordering::Relaxed) {
+                    println!("entered: {enters} times");
+                    break;
+                }
+            }
+        });
+
+        let mut iterations = 0;
+        loop {
+            let fibw = fibtw.add_fib(vrfid, None);
+            thread::sleep(Duration::from_millis(5));
+            fibtw.del_fib(vrfid, None);
+            fibw.destroy();
+            iterations += 1;
+            if iterations == 1000 {
+                stop.store(true, Ordering::Relaxed);
+                println!("created/deleted fib {iterations} times");
+                break;
+            }
+        }
+        handle.join().unwrap();
     }
 
     // Tests fib reader utilities returning guards
