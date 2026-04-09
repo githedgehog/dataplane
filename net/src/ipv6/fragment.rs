@@ -68,6 +68,12 @@ impl Fragment {
     }
 }
 
+impl From<Ipv6FragmentHeader> for Fragment {
+    fn from(inner: Ipv6FragmentHeader) -> Self {
+        Self(inner)
+    }
+}
+
 impl Parse for Fragment {
     type Error = etherparse::err::LenError;
 

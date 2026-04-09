@@ -51,14 +51,20 @@
 //!   fields only.  Use when checksums are irrelevant (e.g., ACL matching
 //!   tests).
 //!
-//! # Not yet supported
+//! # IPv6 Extension Headers
 //!
-//! - **IPv6 extension headers** (`Ipv6Ext`, `IpAuth`).  These chain via
-//!   `net_ext` on [`Headers`] and need their own `next_header` management
-//!   (the extension's `next_header` field, not the base `Ipv6` header's).
-//!   Requires constructors and `TypeGenerator` impls that don't exist yet.
+//! Extension headers are supported as individual typed layers:
+//! [`HopByHop`], [`DestOpts`], [`Routing`], [`Fragment`], [`Ipv6Auth`].
+//! [`Within`] bounds enforce [RFC 8200 section 4.1] ordering at compile time
+//! (e.g. `HopByHop` may only follow `Ipv6`).
+//!
+//! IPv4 authentication headers use [`Ipv4Auth`], which can only follow `Ipv4`.
+//!
+//! [RFC 8200 section 4.1]: https://datatracker.ietf.org/doc/html/rfc8200#section-4.1
 
 use std::num::NonZero;
+
+use etherparse::IpNumber;
 
 use crate::checksum::Checksum;
 use crate::eth::Eth;
@@ -70,9 +76,10 @@ use crate::icmp4::TruncatedIcmp4;
 use crate::icmp6::Icmp6;
 use crate::icmp6::TruncatedIcmp6;
 use crate::ip::NextHeader;
+use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
 use crate::ipv4::Ipv4LengthError;
-use crate::ipv6::Ipv6;
+use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
 use crate::parse::DeParse;
 use crate::tcp::port::TcpPort;
 use crate::tcp::{Tcp, TruncatedTcp};
@@ -81,7 +88,7 @@ use crate::udp::{Udp, UdpChecksum, UdpEncap};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::{Vni, Vxlan};
 
-use super::{Net, Transport};
+use super::{Net, NetExt, Transport};
 
 /// Errors that can occur when finalizing a header stack.
 ///
@@ -429,6 +436,33 @@ where
         vxlan, Vxlan
     );
 
+    // IPv6 extension header layers
+
+    layer_method!(
+        /// Push a `HopByHop` extension header (RFC 8200 section 4.3).
+        hop_by_hop, HopByHop
+    );
+    layer_method!(
+        /// Push a `DestOpts` extension header (RFC 8200 section 4.6).
+        dest_opts, DestOpts
+    );
+    layer_method!(
+        /// Push a `Routing` extension header (RFC 8200 section 4.4).
+        routing, Routing
+    );
+    layer_method!(
+        /// Push a `Fragment` extension header (RFC 8200 section 4.5).
+        fragment, Fragment
+    );
+    layer_method!(
+        /// Push an `Ipv4Auth` extension header (RFC 4302, IPv4 context).
+        ipv4_auth, Ipv4Auth
+    );
+    layer_method!(
+        /// Push an `Ipv6Auth` extension header (RFC 4302, IPv6 context).
+        ipv6_auth, Ipv6Auth
+    );
+
     // ICMPv4 subtype layers -- available after `.icmp4()`
 
     layer_method!(
@@ -573,6 +607,238 @@ impl Within<Udp> for Vxlan {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Within impls for IPv6 extension headers (RFC 8200 section 4.1 ordering)
+// ---------------------------------------------------------------------------
+//
+// Recommended order:
+//   IPv6 -> HopByHop -> DestOpts -> Routing -> Fragment -> AH -> DestOpts -> upper
+//
+// HopByHop MUST immediately follow IPv6 when present.
+// DestOpts may appear in two positions (before Routing, and after AH).
+// The `Within` bounds encode valid parent->child transitions; absence of
+// an impl = compile error = invalid ordering.
+
+// -- HopByHop: only after Ipv6 --
+impl Within<Ipv6> for HopByHop {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::HOP_BY_HOP);
+    }
+}
+
+// -- DestOpts: after Ipv6, HopByHop, or Routing (two legal positions) --
+impl Within<Ipv6> for DestOpts {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::DEST_OPTS);
+    }
+}
+
+impl Within<HopByHop> for DestOpts {
+    fn conform(parent: &mut HopByHop) {
+        parent.set_next_header(NextHeader::DEST_OPTS);
+    }
+}
+
+impl Within<Routing> for DestOpts {
+    fn conform(parent: &mut Routing) {
+        parent.set_next_header(NextHeader::DEST_OPTS);
+    }
+}
+
+// -- Routing: after Ipv6, HopByHop, or DestOpts --
+impl Within<Ipv6> for Routing {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::ROUTING);
+    }
+}
+
+impl Within<HopByHop> for Routing {
+    fn conform(parent: &mut HopByHop) {
+        parent.set_next_header(NextHeader::ROUTING);
+    }
+}
+
+impl Within<DestOpts> for Routing {
+    fn conform(parent: &mut DestOpts) {
+        parent.set_next_header(NextHeader::ROUTING);
+    }
+}
+
+// -- Fragment: after Ipv6, HopByHop, DestOpts, or Routing --
+impl Within<Ipv6> for Fragment {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::FRAGMENT);
+    }
+}
+
+impl Within<HopByHop> for Fragment {
+    fn conform(parent: &mut HopByHop) {
+        parent.set_next_header(NextHeader::FRAGMENT);
+    }
+}
+
+impl Within<DestOpts> for Fragment {
+    fn conform(parent: &mut DestOpts) {
+        parent.set_next_header(NextHeader::FRAGMENT);
+    }
+}
+
+impl Within<Routing> for Fragment {
+    fn conform(parent: &mut Routing) {
+        parent.set_next_header(NextHeader::FRAGMENT);
+    }
+}
+
+// -- Ipv4Auth: after Ipv4 only --
+impl Within<Ipv4> for Ipv4Auth {
+    fn conform(parent: &mut Ipv4) {
+        parent.set_next_header(NextHeader::AUTH);
+    }
+}
+
+// -- Ipv6Auth: after Ipv6, HopByHop, DestOpts, Routing, or Fragment --
+impl Within<Ipv6> for Ipv6Auth {
+    fn conform(parent: &mut Ipv6) {
+        parent.set_next_header(NextHeader::AUTH);
+    }
+}
+
+impl Within<HopByHop> for Ipv6Auth {
+    fn conform(parent: &mut HopByHop) {
+        parent.set_next_header(NextHeader::AUTH);
+    }
+}
+
+impl Within<DestOpts> for Ipv6Auth {
+    fn conform(parent: &mut DestOpts) {
+        parent.set_next_header(NextHeader::AUTH);
+    }
+}
+
+impl Within<Routing> for Ipv6Auth {
+    fn conform(parent: &mut Routing) {
+        parent.set_next_header(NextHeader::AUTH);
+    }
+}
+
+impl Within<Fragment> for Ipv6Auth {
+    fn conform(parent: &mut Fragment) {
+        parent.set_next_header(NextHeader::AUTH);
+    }
+}
+
+// -- Transport after extension headers --
+// Tcp, Udp, Icmp6 can follow any IPv6 extension header.
+// Icmp4 can follow Ipv4Auth (IPv4 context).
+
+impl Within<HopByHop> for Tcp {
+    fn conform(parent: &mut HopByHop) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<DestOpts> for Tcp {
+    fn conform(parent: &mut DestOpts) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<Routing> for Tcp {
+    fn conform(parent: &mut Routing) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<Fragment> for Tcp {
+    fn conform(parent: &mut Fragment) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<Ipv4Auth> for Tcp {
+    fn conform(parent: &mut Ipv4Auth) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<Ipv6Auth> for Tcp {
+    fn conform(parent: &mut Ipv6Auth) {
+        parent.set_next_header(NextHeader::TCP);
+    }
+}
+
+impl Within<HopByHop> for Udp {
+    fn conform(parent: &mut HopByHop) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<DestOpts> for Udp {
+    fn conform(parent: &mut DestOpts) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<Routing> for Udp {
+    fn conform(parent: &mut Routing) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<Fragment> for Udp {
+    fn conform(parent: &mut Fragment) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<Ipv4Auth> for Udp {
+    fn conform(parent: &mut Ipv4Auth) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<Ipv6Auth> for Udp {
+    fn conform(parent: &mut Ipv6Auth) {
+        parent.set_next_header(NextHeader::UDP);
+    }
+}
+
+impl Within<Ipv4Auth> for Icmp4 {
+    fn conform(parent: &mut Ipv4Auth) {
+        parent.set_next_header(NextHeader::ICMP);
+    }
+}
+
+impl Within<HopByHop> for Icmp6 {
+    fn conform(parent: &mut HopByHop) {
+        parent.set_next_header(NextHeader::ICMP6);
+    }
+}
+
+impl Within<DestOpts> for Icmp6 {
+    fn conform(parent: &mut DestOpts) {
+        parent.set_next_header(NextHeader::ICMP6);
+    }
+}
+
+impl Within<Routing> for Icmp6 {
+    fn conform(parent: &mut Routing) {
+        parent.set_next_header(NextHeader::ICMP6);
+    }
+}
+
+impl Within<Fragment> for Icmp6 {
+    fn conform(parent: &mut Fragment) {
+        parent.set_next_header(NextHeader::ICMP6);
+    }
+}
+
+impl Within<Ipv6Auth> for Icmp6 {
+    fn conform(parent: &mut Ipv6Auth) {
+        parent.set_next_header(NextHeader::ICMP6);
+    }
+}
+
 // Install impls -- how Headers absorbs each layer
 
 impl Install<()> for Headers {
@@ -637,6 +903,78 @@ impl Install<Icmp6> for Headers {
 impl Install<Vxlan> for Headers {
     fn install(&mut self, vxlan: Vxlan) {
         self.udp_encap = Some(UdpEncap::Vxlan(vxlan));
+    }
+}
+
+impl Install<HopByHop> for Headers {
+    /// # Panics
+    ///
+    /// Panics if the extension header stack is full.
+    fn install(&mut self, hbh: HopByHop) {
+        #[allow(clippy::expect_used)]
+        self.net_ext
+            .try_push(NetExt::HopByHop(hbh))
+            .expect("too many extension headers (exceeded MAX_NET_EXTENSIONS)");
+    }
+}
+
+impl Install<DestOpts> for Headers {
+    /// # Panics
+    ///
+    /// Panics if the extension header stack is full.
+    fn install(&mut self, d: DestOpts) {
+        #[allow(clippy::expect_used)]
+        self.net_ext
+            .try_push(NetExt::DestOpts(d))
+            .expect("too many extension headers (exceeded MAX_NET_EXTENSIONS)");
+    }
+}
+
+impl Install<Routing> for Headers {
+    /// # Panics
+    ///
+    /// Panics if the extension header stack is full.
+    fn install(&mut self, r: Routing) {
+        #[allow(clippy::expect_used)]
+        self.net_ext
+            .try_push(NetExt::Routing(r))
+            .expect("too many extension headers (exceeded MAX_NET_EXTENSIONS)");
+    }
+}
+
+impl Install<Fragment> for Headers {
+    /// # Panics
+    ///
+    /// Panics if the extension header stack is full.
+    fn install(&mut self, f: Fragment) {
+        #[allow(clippy::expect_used)]
+        self.net_ext
+            .try_push(NetExt::Fragment(f))
+            .expect("too many extension headers (exceeded MAX_NET_EXTENSIONS)");
+    }
+}
+
+impl Install<Ipv4Auth> for Headers {
+    /// # Panics
+    ///
+    /// Panics if the extension header stack is full.
+    fn install(&mut self, a: Ipv4Auth) {
+        #[allow(clippy::expect_used)]
+        self.net_ext
+            .try_push(NetExt::Ipv4Auth(a))
+            .expect("too many extension headers (exceeded MAX_NET_EXTENSIONS)");
+    }
+}
+
+impl Install<Ipv6Auth> for Headers {
+    /// # Panics
+    ///
+    /// Panics if the extension header stack is full.
+    fn install(&mut self, a: Ipv6Auth) {
+        #[allow(clippy::expect_used)]
+        self.net_ext
+            .try_push(NetExt::Ipv6Auth(a))
+            .expect("too many extension headers (exceeded MAX_NET_EXTENSIONS)");
     }
 }
 
@@ -713,6 +1051,66 @@ impl Blank for Vxlan {
     fn blank() -> Self {
         #[allow(clippy::unwrap_used)] // VNI 1 is always valid
         Vxlan::new(Vni::new_checked(1).unwrap())
+    }
+}
+
+impl Blank for HopByHop {
+    fn blank() -> Self {
+        use etherparse::Ipv6RawExtHeader;
+        // Minimum valid payload: 6 zero bytes (8-byte aligned with the 2-byte header prefix).
+        #[allow(clippy::unwrap_used)]
+        HopByHop::from(Box::new(
+            Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
+        ))
+    }
+}
+
+impl Blank for DestOpts {
+    fn blank() -> Self {
+        use etherparse::Ipv6RawExtHeader;
+        #[allow(clippy::unwrap_used)]
+        DestOpts::from(Box::new(
+            Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
+        ))
+    }
+}
+
+impl Blank for Routing {
+    fn blank() -> Self {
+        use etherparse::Ipv6RawExtHeader;
+        #[allow(clippy::unwrap_used)]
+        Routing::from(Box::new(
+            Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
+        ))
+    }
+}
+
+impl Blank for Fragment {
+    fn blank() -> Self {
+        use etherparse::{IpFragOffset, Ipv6FragmentHeader};
+        Fragment::from(Ipv6FragmentHeader::new(
+            IpNumber::TCP,
+            IpFragOffset::ZERO,
+            false,
+            0,
+        ))
+    }
+}
+
+impl Blank for Ipv4Auth {
+    fn blank() -> Self {
+        use crate::ip_auth::IpAuth;
+        use etherparse::IpAuthHeader;
+        // Default IpAuthHeader has zero-length ICV -- the minimum valid AH.
+        Ipv4Auth::new(IpAuth::from(Box::new(IpAuthHeader::default())))
+    }
+}
+
+impl Blank for Ipv6Auth {
+    fn blank() -> Self {
+        use crate::ip_auth::IpAuth;
+        use etherparse::IpAuthHeader;
+        Ipv6Auth::new(IpAuth::from(Box::new(IpAuthHeader::default())))
     }
 }
 
