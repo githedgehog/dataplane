@@ -66,6 +66,22 @@ impl Fragment {
     pub fn is_fragmenting_payload(&self) -> bool {
         self.0.is_fragmenting_payload()
     }
+
+    /// Parse the next header after this one.
+    pub(crate) fn parse_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::Header> {
+        super::ext_parse::parse_ext_payload(self.next_header(), cursor)
+    }
+
+    /// Parse the next header in an ICMP-embedded context.
+    pub(crate) fn parse_embedded_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::EmbeddedHeader> {
+        super::ext_parse::parse_ext_embedded_payload(self.next_header(), cursor)
+    }
 }
 
 impl From<Ipv6FragmentHeader> for Fragment {

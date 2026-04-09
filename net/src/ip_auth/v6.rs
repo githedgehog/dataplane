@@ -36,6 +36,22 @@ impl Ipv6Auth {
     pub fn into_inner(self) -> IpAuth {
         self.0
     }
+
+    /// Parse the next header after this one.
+    pub(crate) fn parse_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::Header> {
+        crate::ipv6::ext_parse::parse_ext_payload(self.next_header(), cursor)
+    }
+
+    /// Parse the next header in an ICMP-embedded context.
+    pub(crate) fn parse_embedded_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::EmbeddedHeader> {
+        crate::ipv6::ext_parse::parse_ext_embedded_payload(self.next_header(), cursor)
+    }
 }
 
 impl Deref for Ipv6Auth {
