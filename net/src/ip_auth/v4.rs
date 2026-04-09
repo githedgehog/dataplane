@@ -69,6 +69,7 @@ impl Ipv4Auth {
         cursor: &mut crate::parse::Reader,
     ) -> Option<crate::headers::EmbeddedHeader> {
         use crate::headers::EmbeddedHeader;
+        use crate::icmp4::TruncatedIcmp4;
         use crate::parse::ParseHeader;
         use crate::tcp::TruncatedTcp;
         use crate::udp::TruncatedUdp;
@@ -78,6 +79,7 @@ impl Ipv4Auth {
         match self.next_header().into() {
             IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedHeader>(),
             IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedHeader>(),
+            IpNumber::ICMP => cursor.parse_header::<TruncatedIcmp4, EmbeddedHeader>(),
             IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv4Auth, EmbeddedHeader>(),
             _ => {
                 trace!("unsupported protocol: {:?}", self.next_header());

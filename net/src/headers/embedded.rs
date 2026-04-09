@@ -325,22 +325,46 @@ impl ParseWith for EmbeddedHeaders {
                     this.net = Some(Net::Ipv6(ipv6));
                 }
                 EmbeddedHeader::Ipv4Auth(h) => {
-                    this.net_ext.push(NetExt::Ipv4Auth(h));
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Ipv4Auth(h));
+                    } else {
+                        break;
+                    }
                 }
                 EmbeddedHeader::Ipv6Auth(h) => {
-                    this.net_ext.push(NetExt::Ipv6Auth(h));
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Ipv6Auth(h));
+                    } else {
+                        break;
+                    }
                 }
                 EmbeddedHeader::HopByHop(h) => {
-                    this.net_ext.push(NetExt::HopByHop(h));
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::HopByHop(h));
+                    } else {
+                        break;
+                    }
                 }
                 EmbeddedHeader::DestOpts(h) => {
-                    this.net_ext.push(NetExt::DestOpts(h));
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::DestOpts(h));
+                    } else {
+                        break;
+                    }
                 }
                 EmbeddedHeader::Routing(h) => {
-                    this.net_ext.push(NetExt::Routing(h));
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Routing(h));
+                    } else {
+                        break;
+                    }
                 }
                 EmbeddedHeader::Fragment(h) => {
-                    this.net_ext.push(NetExt::Fragment(h));
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Fragment(h));
+                    } else {
+                        break;
+                    }
                 }
                 EmbeddedHeader::Tcp(tcp) => {
                     this.transport = Some(EmbeddedTransport::Tcp(tcp));

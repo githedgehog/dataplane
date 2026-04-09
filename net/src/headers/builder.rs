@@ -55,8 +55,10 @@
 //!
 //! Extension headers are supported as individual typed layers:
 //! [`HopByHop`], [`DestOpts`], [`Routing`], [`Fragment`], [`Ipv6Auth`].
-//! [`Within`] bounds enforce [RFC 8200 section 4.1] ordering at compile time
-//! (e.g. `HopByHop` may only follow `Ipv6`).
+//! [`Within`] bounds enforce key [RFC 8200 section 4.1] ordering constraints
+//! at compile time (e.g. `HopByHop` may only follow `Ipv6`).  The bounds
+//! prevent clearly invalid chains but do not enforce the full recommended
+//! ordering -- for example, two `DestOpts` layers are both permitted.
 //!
 //! IPv4 authentication headers use [`Ipv4Auth`], which can only follow `Ipv4`.
 //!
@@ -466,7 +468,7 @@ where
     // ICMPv4 subtype layers -- available after `.icmp4()`
 
     layer_method!(
-        /// Specialize as `ICMPv4` Destination Unreachable (type 3).
+        /// Specialize as `Icmp4` Destination Unreachable (type 3).
         dest_unreachable, Icmp4DestUnreachable
     );
     layer_method!(
@@ -626,7 +628,9 @@ impl Within<Ipv6> for HopByHop {
     }
 }
 
-// -- DestOpts: after Ipv6, HopByHop, or Routing (two legal positions) --
+// -- DestOpts: after Ipv6, HopByHop, Routing, Fragment, or Ipv6Auth --
+// RFC 8200 section 4.1 allows DestOpts in two positions: before Routing
+// (first occurrence) and as the final extension before the upper layer.
 impl Within<Ipv6> for DestOpts {
     fn conform(parent: &mut Ipv6) {
         parent.set_next_header(NextHeader::DEST_OPTS);
@@ -641,6 +645,18 @@ impl Within<HopByHop> for DestOpts {
 
 impl Within<Routing> for DestOpts {
     fn conform(parent: &mut Routing) {
+        parent.set_next_header(NextHeader::DEST_OPTS);
+    }
+}
+
+impl Within<Fragment> for DestOpts {
+    fn conform(parent: &mut Fragment) {
+        parent.set_next_header(NextHeader::DEST_OPTS);
+    }
+}
+
+impl Within<Ipv6Auth> for DestOpts {
+    fn conform(parent: &mut Ipv6Auth) {
         parent.set_next_header(NextHeader::DEST_OPTS);
     }
 }
@@ -1058,42 +1074,55 @@ impl Blank for HopByHop {
     fn blank() -> Self {
         use etherparse::Ipv6RawExtHeader;
         // Minimum valid payload: 6 zero bytes (8-byte aligned with the 2-byte header prefix).
-        #[allow(clippy::unwrap_used)]
-        HopByHop::from(Box::new(
-            Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
-        ))
+        #[allow(clippy::unwrap_used, unsafe_code)]
+        // SAFETY: we are constructing this as a HopByHop by definition.
+        unsafe {
+            HopByHop::from_raw_unchecked(Box::new(
+                Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
+            ))
+        }
     }
 }
 
 impl Blank for DestOpts {
     fn blank() -> Self {
         use etherparse::Ipv6RawExtHeader;
-        #[allow(clippy::unwrap_used)]
-        DestOpts::from(Box::new(
-            Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
-        ))
+        #[allow(clippy::unwrap_used, unsafe_code)]
+        // SAFETY: we are constructing this as a DestOpts by definition.
+        unsafe {
+            DestOpts::from_raw_unchecked(Box::new(
+                Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
+            ))
+        }
     }
 }
 
 impl Blank for Routing {
     fn blank() -> Self {
         use etherparse::Ipv6RawExtHeader;
-        #[allow(clippy::unwrap_used)]
-        Routing::from(Box::new(
-            Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
-        ))
+        #[allow(clippy::unwrap_used, unsafe_code)]
+        // SAFETY: we are constructing this as a Routing by definition.
+        unsafe {
+            Routing::from_raw_unchecked(Box::new(
+                Ipv6RawExtHeader::new_raw(IpNumber::TCP, &[0; 6]).unwrap(),
+            ))
+        }
     }
 }
 
 impl Blank for Fragment {
     fn blank() -> Self {
         use etherparse::{IpFragOffset, Ipv6FragmentHeader};
-        Fragment::from(Ipv6FragmentHeader::new(
-            IpNumber::TCP,
-            IpFragOffset::ZERO,
-            false,
-            0,
-        ))
+        #[allow(unsafe_code)]
+        // SAFETY: we are constructing this as a Fragment by definition.
+        unsafe {
+            Fragment::from_raw_unchecked(Ipv6FragmentHeader::new(
+                IpNumber::TCP,
+                IpFragOffset::ZERO,
+                false,
+                0,
+            ))
+        }
     }
 }
 
@@ -1367,21 +1396,26 @@ fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError
 
     let payload_u16 = u16::try_from(payload.len()).map_err(|_| BuildError::PayloadTooLarge)?;
 
-    // It is safe to combine values this way because the mutually exclusive values are mapped back
-    // to zero (e.g. embedded_size is 0 when transport is UDP, encap_size is 0 when transport is
-    // ICMP, etc.).
-    // TODO: include net_ext size once IPv6 extension headers are supported.
-    let ip_payload = transport_size
+    let net_ext_size: u16 = headers.net_ext.iter().map(|e| e.size().get()).sum();
+
+    // Transport payload (used for UDP length -- excludes extension headers
+    // since they sit between IP and transport, not inside UDP).
+    let base_payload = transport_size
         .checked_add(payload_u16)
         .and_then(|v| v.checked_add(encap_size))
         .and_then(|v| v.checked_add(embedded_size))
         .ok_or(BuildError::PayloadTooLarge)?;
 
+    // IP payload includes extension headers + transport payload.
+    let ip_payload = base_payload
+        .checked_add(net_ext_size)
+        .ok_or(BuildError::PayloadTooLarge)?;
+
     match headers.transport {
         Some(Transport::Udp(ref mut udp)) => {
-            // SAFETY: `transport_size >= Udp::MIN_LENGTH` when transport is UDP, so `ip_payload`
-            // is guaranteed non-zero.
-            let udp_len = NonZero::new(ip_payload).unwrap_or_else(|| unreachable!());
+            // SAFETY: `transport_size >= Udp::MIN_LENGTH` when transport is UDP, so
+            // `base_payload` is guaranteed non-zero.
+            let udp_len = NonZero::new(base_payload).unwrap_or_else(|| unreachable!());
             #[allow(unsafe_code)]
             // SAFETY: `udp_len >= Udp::MIN_LENGTH` by construction.
             unsafe {
@@ -1651,6 +1685,38 @@ mod fuzz {
             /// Push a `Vxlan` layer.
             vxlan,
             crate::vxlan::Vxlan
+        );
+
+        // IPv6 extension header layers
+        fuzz_layer_method!(
+            /// Push a `HopByHop` extension header.
+            hop_by_hop,
+            crate::ipv6::HopByHop
+        );
+        fuzz_layer_method!(
+            /// Push a `DestOpts` extension header.
+            dest_opts,
+            crate::ipv6::DestOpts
+        );
+        fuzz_layer_method!(
+            /// Push a `Routing` extension header.
+            routing,
+            crate::ipv6::Routing
+        );
+        fuzz_layer_method!(
+            /// Push a `Fragment` extension header.
+            fragment,
+            crate::ipv6::Fragment
+        );
+        fuzz_layer_method!(
+            /// Push an `Ipv4Auth` extension header.
+            ipv4_auth,
+            crate::ip_auth::Ipv4Auth
+        );
+        fuzz_layer_method!(
+            /// Push an `Ipv6Auth` extension header.
+            ipv6_auth,
+            crate::ip_auth::Ipv6Auth
         );
 
         // ICMPv4 subtype layers
@@ -2766,6 +2832,27 @@ mod tests {
                     panic!("no embedded ipv4");
                 };
                 assert_eq!(inner_ip.destination().octets(), [169, 254, 32, 53]);
+            });
+    }
+
+    #[test]
+    fn fuzz_ipv6_ext_headers() {
+        let generator = ChainBase::new().eth(|_| {}).ipv6(|_| {}).hop_by_hop(|_| {});
+
+        bolero::check!()
+            .with_generator(generator)
+            .cloned()
+            .for_each(|headers| {
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
+                assert!(
+                    !headers.net_ext().is_empty(),
+                    "should have extension headers"
+                );
+                let mut buf = vec![0u8; headers.size().get() as usize];
+                headers.deparse(&mut buf).unwrap();
+                let (reparsed, consumed) = Headers::parse(&buf).unwrap();
+                assert_eq!(consumed.get() as usize, buf.len());
+                assert_eq!(headers, reparsed, "deparse->parse round-trip failed");
             });
     }
 }
