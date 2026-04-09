@@ -13,3 +13,6 @@ CARGO_LLVM_COV_BUILD_DIR = { value = "target/llvm-cov/target", relative = true, 
 
 [build]
 rustflags = ["--cfg=tokio_unstable"]
+
+[alias]
+nt = "nextest"
