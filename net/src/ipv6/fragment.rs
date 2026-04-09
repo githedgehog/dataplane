@@ -119,3 +119,49 @@ impl DeParse for Fragment {
         Ok(size)
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::Fragment;
+    use bolero::{Driver, TypeGenerator};
+    use etherparse::{IpFragOffset, IpNumber, Ipv6FragmentHeader};
+
+    impl TypeGenerator for Fragment {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let next_header: u8 = driver.produce()?;
+            let offset_raw: u16 = driver.gen_u16(
+                std::ops::Bound::Included(&0),
+                std::ops::Bound::Included(&IpFragOffset::MAX_U16),
+            )?;
+            #[allow(unsafe_code)]
+            // SAFETY: offset_raw is bounded to <= MAX_U16 by gen_u16 above.
+            let offset = unsafe { IpFragOffset::new_unchecked(offset_raw) };
+            let more_fragments: bool = driver.produce()?;
+            let identification: u32 = driver.produce()?;
+            Some(Fragment::from(Ipv6FragmentHeader::new(
+                IpNumber(next_header),
+                offset,
+                more_fragments,
+                identification,
+            )))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Fragment;
+    use crate::parse::{DeParse, IntoNonZeroUSize, Parse};
+
+    #[test]
+    fn parse_back() {
+        bolero::check!().with_type().for_each(|header: &Fragment| {
+            let mut buf = [0u8; 8];
+            let len = header.deparse(&mut buf).unwrap();
+            let (header2, consumed) =
+                Fragment::parse(&buf[..len.into_non_zero_usize().get()]).unwrap();
+            assert_eq!(consumed, len);
+            assert_eq!(header, &header2);
+        });
+    }
+}
