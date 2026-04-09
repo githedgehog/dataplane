@@ -9,19 +9,10 @@ pub mod v6;
 pub use v4::Ipv4Auth;
 pub use v6::Ipv6Auth;
 
-use crate::headers::{EmbeddedHeader, Header};
-use crate::icmp4::Icmp4;
-use crate::icmp6::Icmp6;
-use crate::impl_from_for_enum;
 use crate::ip::NextHeader;
-use crate::parse::{
-    DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader, Reader,
-};
-use crate::tcp::{Tcp, TruncatedTcp};
-use crate::udp::{TruncatedUdp, Udp};
-use etherparse::{IpAuthHeader, IpNumber};
+use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
+use etherparse::IpAuthHeader;
 use std::num::NonZero;
-use tracing::{debug, trace};
 
 /// An Ip authentication header.
 ///
@@ -45,50 +36,6 @@ impl IpAuth {
     /// Set the next-header protocol number.
     pub fn set_next_header(&mut self, nh: NextHeader) {
         self.0.next_header = nh.into();
-    }
-
-    /// Parse the payload of the IP authentication header.
-    ///
-    /// # Returns
-    ///
-    /// * `Some(IpAuthNext)`: the parsed next header, if supported.
-    /// * `None`: if parsing the next header is not supported.
-    pub(crate) fn parse_payload(&self, cursor: &mut Reader) -> Option<IpAuthNext> {
-        match self.0.next_header {
-            IpNumber::TCP => cursor.parse_header::<Tcp, IpAuthNext>(),
-            IpNumber::UDP => cursor.parse_header::<Udp, IpAuthNext>(),
-            IpNumber::ICMP => cursor.parse_header::<Icmp4, IpAuthNext>(),
-            IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, IpAuthNext>(),
-            IpNumber::AUTHENTICATION_HEADER => {
-                debug!("nested ip auth header");
-                cursor.parse_header::<IpAuth, IpAuthNext>()
-            }
-            _ => {
-                trace!("unsupported protocol: {:?}", self.0.next_header);
-                None
-            }
-        }
-    }
-
-    /// Parse the payload of the IP authentication header embedded in an ICMP Error message.
-    ///
-    /// # Returns
-    ///
-    /// * `Some(EmbeddedIpAuthNext)`: the parsed next header, if supported.
-    /// * `None`: if parsing the next header is not supported.
-    pub(crate) fn parse_embedded_payload(&self, cursor: &mut Reader) -> Option<EmbeddedIpAuthNext> {
-        match self.0.next_header {
-            IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedIpAuthNext>(),
-            IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedIpAuthNext>(),
-            IpNumber::AUTHENTICATION_HEADER => {
-                debug!("nested ip auth header");
-                cursor.parse_header::<IpAuth, EmbeddedIpAuthNext>()
-            }
-            _ => {
-                trace!("unsupported protocol: {:?}", self.0.next_header);
-                None
-            }
-        }
     }
 }
 
@@ -134,58 +81,6 @@ impl DeParse for IpAuth {
         let bytes = self.0.to_bytes();
         buf[..bytes.len()].copy_from_slice(&bytes);
         Ok(self.size())
-    }
-}
-
-pub(crate) enum IpAuthNext {
-    Tcp(Tcp),
-    Udp(Udp),
-    Icmp4(Icmp4),
-    Icmp6(Icmp6),
-    IpAuth(IpAuth),
-}
-
-impl_from_for_enum![
-    IpAuthNext,
-    Tcp(Tcp),
-    Udp(Udp),
-    Icmp4(Icmp4),
-    Icmp6(Icmp6),
-    IpAuth(IpAuth)
-];
-
-impl From<IpAuthNext> for Header {
-    fn from(value: IpAuthNext) -> Self {
-        match value {
-            IpAuthNext::Tcp(x) => Header::Tcp(x),
-            IpAuthNext::Udp(x) => Header::Udp(x),
-            IpAuthNext::Icmp4(x) => Header::Icmp4(x),
-            IpAuthNext::Icmp6(x) => Header::Icmp6(x),
-            IpAuthNext::IpAuth(x) => Header::IpAuth(x),
-        }
-    }
-}
-
-pub(crate) enum EmbeddedIpAuthNext {
-    Tcp(TruncatedTcp),
-    Udp(TruncatedUdp),
-    IpAuth(IpAuth),
-}
-
-impl_from_for_enum![
-    EmbeddedIpAuthNext,
-    Tcp(TruncatedTcp),
-    Udp(TruncatedUdp),
-    IpAuth(IpAuth)
-];
-
-impl From<EmbeddedIpAuthNext> for EmbeddedHeader {
-    fn from(value: EmbeddedIpAuthNext) -> Self {
-        match value {
-            EmbeddedIpAuthNext::Tcp(x) => EmbeddedHeader::Tcp(x),
-            EmbeddedIpAuthNext::Udp(x) => EmbeddedHeader::Udp(x),
-            EmbeddedIpAuthNext::IpAuth(x) => EmbeddedHeader::IpAuth(x),
-        }
     }
 }
 

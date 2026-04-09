@@ -37,6 +37,54 @@ impl Ipv4Auth {
     pub fn into_inner(self) -> IpAuth {
         self.0
     }
+
+    /// Parse the next header after this one (IPv4 context).
+    pub(crate) fn parse_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::Header> {
+        use crate::headers::Header;
+        use crate::icmp4::Icmp4;
+        use crate::parse::ParseHeader;
+        use crate::tcp::Tcp;
+        use crate::udp::Udp;
+        use etherparse::IpNumber;
+        use tracing::trace;
+
+        match self.next_header().into() {
+            IpNumber::TCP => cursor.parse_header::<Tcp, Header>(),
+            IpNumber::UDP => cursor.parse_header::<Udp, Header>(),
+            IpNumber::ICMP => cursor.parse_header::<Icmp4, Header>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv4Auth, Header>(),
+            _ => {
+                trace!("unsupported protocol: {:?}", self.next_header());
+                None
+            }
+        }
+    }
+
+    /// Parse the next header in an ICMP-embedded context (IPv4).
+    pub(crate) fn parse_embedded_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::EmbeddedHeader> {
+        use crate::headers::EmbeddedHeader;
+        use crate::parse::ParseHeader;
+        use crate::tcp::TruncatedTcp;
+        use crate::udp::TruncatedUdp;
+        use etherparse::IpNumber;
+        use tracing::trace;
+
+        match self.next_header().into() {
+            IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedHeader>(),
+            IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedHeader>(),
+            IpNumber::AUTHENTICATION_HEADER => cursor.parse_header::<Ipv4Auth, EmbeddedHeader>(),
+            _ => {
+                trace!("unsupported protocol: {:?}", self.next_header());
+                None
+            }
+        }
+    }
 }
 
 impl Deref for Ipv4Auth {

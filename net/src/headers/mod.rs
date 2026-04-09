@@ -12,9 +12,9 @@ use crate::icmp4::Icmp4;
 use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
 use crate::impl_from_for_enum;
 use crate::ip::{NextHeader, UnicastIpAddr};
-use crate::ip_auth::{IpAuth, Ipv4Auth, Ipv6Auth};
+use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
-use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Ipv6Ext, Routing};
+use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
     Reader, Writer,
@@ -162,13 +162,6 @@ impl DeParse for Net {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetExt {
-    // -- legacy variants (used by the current parser, will be removed) --
-    /// Untyped IP Authentication Header (legacy -- prefer [`Ipv4Auth`]/[`Ipv6Auth`]).
-    IpAuth(IpAuth),
-    /// Monolithic IPv6 extension header chain (legacy -- prefer individual types).
-    Ipv6Ext(Ipv6Ext),
-
-    // -- new individual extension header variants --
     /// IPv6 Hop-by-Hop Options (RFC 8200 section 4.3).
     HopByHop(HopByHop),
     /// IPv6 Destination Options (RFC 8200 section 4.6).
@@ -188,8 +181,6 @@ impl DeParse for NetExt {
 
     fn size(&self) -> NonZero<u16> {
         match self {
-            NetExt::IpAuth(h) => h.size(),
-            NetExt::Ipv6Ext(h) => h.size(),
             NetExt::HopByHop(h) => h.size(),
             NetExt::DestOpts(h) => h.size(),
             NetExt::Routing(h) => h.size(),
@@ -201,8 +192,6 @@ impl DeParse for NetExt {
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         match self {
-            NetExt::IpAuth(h) => h.deparse(buf),
-            NetExt::Ipv6Ext(h) => h.deparse(buf),
             NetExt::HopByHop(h) => h.deparse(buf),
             NetExt::DestOpts(h) => h.deparse(buf),
             NetExt::Routing(h) => h.deparse(buf),
@@ -439,28 +428,33 @@ pub enum Header {
     Udp(Udp),
     Icmp4(Icmp4),
     Icmp6(Icmp6),
-    IpAuth(IpAuth),
-    IpV6Ext(Ipv6Ext), // TODO: break out nested enum.  Nesting is counter productive here
+    HopByHop(HopByHop),
+    DestOpts(DestOpts),
+    Routing(Routing),
+    Fragment(Fragment),
+    Ipv4Auth(Ipv4Auth),
+    Ipv6Auth(Ipv6Auth),
     Encap(UdpEncap),
     EmbeddedIp(EmbeddedHeaders),
 }
 
 impl Header {
     fn parse_payload(&self, cursor: &mut Reader) -> Option<Header> {
-        use Header::{
-            EmbeddedIp, Encap, Eth, Icmp4, Icmp6, IpAuth, IpV6Ext, Ipv4, Ipv6, Tcp, Udp, Vlan,
-        };
         match self {
-            Eth(eth) => eth.parse_payload(cursor).map(Header::from),
-            Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
-            Ipv4(ipv4) => ipv4.parse_payload(cursor).map(Header::from),
-            Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
-            IpAuth(auth) => auth.parse_payload(cursor).map(Header::from),
-            IpV6Ext(ext) => ext.parse_payload(cursor).map(Header::from),
-            Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
-            Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
-            Udp(udp) => udp.parse_payload(cursor).map(Header::from),
-            Encap(_) | Tcp(_) | EmbeddedIp(_) => None,
+            Header::Eth(eth) => eth.parse_payload(cursor).map(Header::from),
+            Header::Vlan(vlan) => vlan.parse_payload(cursor).map(Header::from),
+            Header::Ipv4(ipv4) => ipv4.parse_payload(cursor).map(Header::from),
+            Header::Ipv6(ipv6) => ipv6.parse_payload(cursor).map(Header::from),
+            Header::Ipv4Auth(auth) => auth.parse_payload(cursor),
+            Header::Ipv6Auth(auth) => auth.parse_payload(cursor),
+            Header::HopByHop(h) => h.parse_payload(cursor),
+            Header::DestOpts(h) => h.parse_payload(cursor),
+            Header::Routing(h) => h.parse_payload(cursor),
+            Header::Fragment(h) => h.parse_payload(cursor),
+            Header::Icmp4(icmp4) => icmp4.parse_payload(cursor).map(Header::from),
+            Header::Icmp6(icmp6) => icmp6.parse_payload(cursor).map(Header::from),
+            Header::Udp(udp) => udp.parse_payload(cursor).map(Header::from),
+            Header::Encap(_) | Header::Tcp(_) | Header::EmbeddedIp(_) => None,
         }
     }
 }
@@ -500,16 +494,44 @@ impl Parse for Headers {
                         break;
                     }
                 }
-                Header::IpAuth(auth) => {
+                Header::HopByHop(h) => {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::IpAuth(auth));
+                        this.net_ext.push(NetExt::HopByHop(h));
                     } else {
                         break;
                     }
                 }
-                Header::IpV6Ext(ext) => {
+                Header::DestOpts(h) => {
                     if this.net_ext.len() < MAX_NET_EXTENSIONS {
-                        this.net_ext.push(NetExt::Ipv6Ext(ext));
+                        this.net_ext.push(NetExt::DestOpts(h));
+                    } else {
+                        break;
+                    }
+                }
+                Header::Routing(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Routing(h));
+                    } else {
+                        break;
+                    }
+                }
+                Header::Fragment(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Fragment(h));
+                    } else {
+                        break;
+                    }
+                }
+                Header::Ipv4Auth(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Ipv4Auth(h));
+                    } else {
+                        break;
+                    }
+                }
+                Header::Ipv6Auth(h) => {
+                    if this.net_ext.len() < MAX_NET_EXTENSIONS {
+                        this.net_ext.push(NetExt::Ipv6Auth(h));
                     } else {
                         break;
                     }
@@ -942,8 +964,12 @@ impl_from_for_enum![
     Udp(Udp),
     Icmp4(Icmp4),
     Icmp6(Icmp6),
-    IpAuth(IpAuth),
-    IpV6Ext(Ipv6Ext),
+    HopByHop(HopByHop),
+    DestOpts(DestOpts),
+    Routing(Routing),
+    Fragment(Fragment),
+    Ipv4Auth(Ipv4Auth),
+    Ipv6Auth(Ipv6Auth),
     Encap(UdpEncap),
     EmbeddedIp(EmbeddedHeaders),
 ];
@@ -1994,8 +2020,8 @@ mod test {
             "expected one IPv6 extension header"
         );
         assert!(
-            matches!(headers.net_ext[0], super::NetExt::Ipv6Ext(_)),
-            "expected Ipv6Ext variant in net_ext"
+            matches!(headers.net_ext[0], super::NetExt::HopByHop(_)),
+            "expected HopByHop variant in net_ext"
         );
 
         // IPv6 and TCP should be present.
