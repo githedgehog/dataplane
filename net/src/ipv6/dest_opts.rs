@@ -68,14 +68,23 @@ impl DestOpts {
     }
 }
 
-impl From<Box<Ipv6RawExtHeader>> for DestOpts {
-    fn from(inner: Box<Ipv6RawExtHeader>) -> Self {
+impl DestOpts {
+    /// Wrap a raw extension header as a `DestOpts`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `inner` was reached via a preceding
+    /// header whose `next_header` field was 60 (`IPV6_DESTINATION_OPTIONS`),
+    /// confirming these bytes are a Destination Options header and not
+    /// some other extension header sharing the [`Ipv6RawExtHeader`] format.
+    #[allow(unsafe_code, dead_code)] // only called from test/builder cfg
+    pub(crate) unsafe fn from_raw_unchecked(inner: Box<Ipv6RawExtHeader>) -> Self {
         Self(inner)
     }
 }
 
 impl Parse for DestOpts {
-    type Error = etherparse::err::LenError;
+    type Error = std::convert::Infallible;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         if buf.len() > u16::MAX as usize {
@@ -87,7 +96,12 @@ impl Parse for DestOpts {
                 actual: buf.len(),
             }));
         }
-        let (inner, rest) = Ipv6RawExtHeader::from_slice(buf).map_err(ParseError::Invalid)?;
+        let (inner, rest) = Ipv6RawExtHeader::from_slice(buf).map_err(|e| {
+            ParseError::Length(LengthError {
+                expected: NonZero::new(e.required_len).unwrap_or_else(|| unreachable!()),
+                actual: e.len,
+            })
+        })?;
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
@@ -130,7 +144,9 @@ mod contract {
 
     impl TypeGenerator for DestOpts {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            Some(DestOpts::from(gen_raw_ext_header(driver)?))
+            #[allow(unsafe_code)]
+            // SAFETY: we are declaring the generated raw header to be DestOpts.
+            Some(unsafe { DestOpts::from_raw_unchecked(gen_raw_ext_header(driver)?) })
         }
     }
 }

@@ -13,11 +13,11 @@ use etherparse::{IpNumber, Ipv6RawExtHeader};
 /// Valid payload lengths for [`Ipv6RawExtHeader`].
 ///
 /// The payload must be at least 6 bytes and `(len + 2) % 8 == 0`,
-/// giving lengths 6, 14, 22, 30, ...  We cap at a handful of small
-/// sizes to keep fuzz inputs tractable (the `payload_buffer` is 2 KiB,
-/// but generating huge headers is unlikely to find interesting bugs
-/// and slows the fuzzer).
-const VALID_PAYLOAD_LENS: [usize; 4] = [6, 14, 22, 30];
+/// giving lengths 6, 14, 22, 30, ...
+///
+/// Includes small values for fast fuzzing plus the maximum
+/// (`MAX_PAYLOAD_LEN` = 2046) to cover the upper boundary.
+const VALID_PAYLOAD_LENS: [usize; 5] = [6, 14, 22, 30, Ipv6RawExtHeader::MAX_PAYLOAD_LEN];
 
 /// Generate an arbitrary boxed [`Ipv6RawExtHeader`].
 ///

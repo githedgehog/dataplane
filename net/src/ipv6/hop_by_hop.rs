@@ -62,14 +62,23 @@ impl HopByHop {
     }
 }
 
-impl From<Box<Ipv6RawExtHeader>> for HopByHop {
-    fn from(inner: Box<Ipv6RawExtHeader>) -> Self {
+impl HopByHop {
+    /// Wrap a raw extension header as a `HopByHop`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `inner` was reached via a preceding
+    /// header whose `next_header` field was 0 (`IPV6_HEADER_HOP_BY_HOP`),
+    /// confirming these bytes are a Hop-by-Hop Options header and not
+    /// some other extension header sharing the [`Ipv6RawExtHeader`] format.
+    #[allow(unsafe_code, dead_code)] // only called from test/builder cfg
+    pub(crate) unsafe fn from_raw_unchecked(inner: Box<Ipv6RawExtHeader>) -> Self {
         Self(inner)
     }
 }
 
 impl Parse for HopByHop {
-    type Error = etherparse::err::LenError;
+    type Error = std::convert::Infallible;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         if buf.len() > u16::MAX as usize {
@@ -81,7 +90,12 @@ impl Parse for HopByHop {
                 actual: buf.len(),
             }));
         }
-        let (inner, rest) = Ipv6RawExtHeader::from_slice(buf).map_err(ParseError::Invalid)?;
+        let (inner, rest) = Ipv6RawExtHeader::from_slice(buf).map_err(|e| {
+            ParseError::Length(LengthError {
+                expected: NonZero::new(e.required_len).unwrap_or_else(|| unreachable!()),
+                actual: e.len,
+            })
+        })?;
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
@@ -124,7 +138,10 @@ mod contract {
 
     impl TypeGenerator for HopByHop {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            Some(HopByHop::from(gen_raw_ext_header(driver)?))
+            #[allow(unsafe_code)]
+            // SAFETY: gen_raw_ext_header produces a valid raw header and we are
+            // declaring it to be a HopByHop, which is the type we're generating.
+            Some(unsafe { HopByHop::from_raw_unchecked(gen_raw_ext_header(driver)?) })
         }
     }
 }
