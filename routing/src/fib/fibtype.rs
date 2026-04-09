@@ -5,9 +5,9 @@
 
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use left_right_tlcache::Identity;
+use std::hash::Hash;
 use std::net::IpAddr;
 use std::rc::Rc;
-use std::{hash::Hash, sync::atomic::AtomicBool};
 
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix, Prefix};
 use lpm::trie::{PrefixMapTrie, TrieMap, TrieMapFactory};
@@ -57,7 +57,7 @@ pub struct Fib {
     routesv6: PrefixMapTrie<Ipv6Prefix, FibRoute>,
     groupstore: FibGroupStore,
     vtep: Vtep,
-    valid: AtomicBool,
+    valid: bool,
 }
 impl Hash for Fib {
     // We implement explicitly `std::hash::Hash` for `Fib` instead of deriving it because:
@@ -81,7 +81,7 @@ impl Default for Fib {
             routesv6: PrefixMapTrie::create(),
             groupstore: FibGroupStore::new(),
             vtep: Vtep::new(),
-            valid: AtomicBool::new(true),
+            valid: true,
         };
         // default route
         let route = FibRoute::with_fibgroup(fib.groupstore.get_drop_fibgroup_ref());
@@ -310,9 +310,7 @@ impl Absorb<FibChange> for Fib {
             FibChange::AddFibRoute((prefix, keys)) => self.build_add_fibroute(*prefix, keys),
             FibChange::DelFibRoute(prefix) => self.del_fibroute(*prefix),
             FibChange::SetVtep(vtep) => self.set_vtep(vtep),
-            FibChange::Invalidate => {
-                self.valid.store(false, std::sync::atomic::Ordering::SeqCst);
-            }
+            FibChange::Invalidate => self.valid = false,
         }
     }
     fn sync_with(&mut self, first: &Self) {
@@ -406,18 +404,14 @@ impl FibReader {
     #[inline]
     pub fn is_valid(&self) -> bool {
         match self.0.enter() {
-            Some(fib) => fib.valid.load(std::sync::atomic::Ordering::Acquire),
+            Some(fib) => fib.valid,
             None => false,
         }
     }
     pub fn enter(&self) -> Option<ReadGuard<'_, Fib>> {
-        self.0.enter().map(|fib| {
-            if fib.valid.load(std::sync::atomic::Ordering::Acquire) {
-                Some(fib)
-            } else {
-                None
-            }
-        })?
+        self.0
+            .enter()
+            .map(|fib| if fib.valid { Some(fib) } else { None })?
     }
 
     /// Convert `Rc<ReadHandle<Fib>>` -> `FibReader`
