@@ -14,7 +14,7 @@ use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, 
 use etherparse::IpAuthHeader;
 use std::num::NonZero;
 
-/// An Ip authentication header.
+/// An IP authentication header.
 ///
 /// This may appear in IPv4 and IPv6 headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,8 +90,11 @@ mod contract {
     use bolero::{Driver, TypeGenerator};
     use etherparse::{IpAuthHeader, IpNumber};
 
-    /// Valid ICV lengths (multiples of 4, capped to keep fuzz inputs small).
-    const VALID_ICV_LENS: [usize; 4] = [0, 4, 8, 12];
+    /// Valid ICV lengths (multiples of 4).
+    ///
+    /// Includes the boundaries: 0 (minimum), small values for fast fuzzing,
+    /// and `MAX_ICV_LEN` (1016) to cover the upper limit.
+    const VALID_ICV_LENS: [usize; 5] = [0, 4, 8, 12, IpAuthHeader::MAX_ICV_LEN];
 
     impl TypeGenerator for IpAuth {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
