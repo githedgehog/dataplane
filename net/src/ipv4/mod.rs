@@ -179,8 +179,8 @@ impl Ipv4 {
     ///
     /// Note(manish) Why do we even have this function?
     #[allow(unsafe_code)]
-    pub unsafe fn set_source_unchecked(&mut self, source: Ipv4Addr) -> &mut Self {
-        self.0.source = source.octets();
+    pub unsafe fn set_source_unchecked(&mut self, source: impl Into<Ipv4Addr>) -> &mut Self {
+        self.0.source = source.into().octets();
         self
     }
 
