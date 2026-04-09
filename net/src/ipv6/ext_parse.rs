@@ -5,7 +5,7 @@
 //!
 //! Every extension header carries a `next_header` field that identifies
 //! the type following it.  The dispatch logic is the same for all of
-//! `HopByHop`, `DestOpts`, Routing, Fragment, and `Ipv6Auth`.
+//! `HopByHop`, `DestOpts`, `Routing`, `Fragment`, and `Ipv6Auth`.
 
 use crate::headers::Header;
 use crate::icmp6::Icmp6;

@@ -84,14 +84,22 @@ impl Fragment {
     }
 }
 
-impl From<Ipv6FragmentHeader> for Fragment {
-    fn from(inner: Ipv6FragmentHeader) -> Self {
+impl Fragment {
+    /// Wrap a fragment header as a `Fragment`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `inner` was reached via a preceding
+    /// header whose `next_header` field was 44 (`IPV6_FRAGMENTATION_HEADER`),
+    /// confirming these bytes are a Fragment header.
+    #[allow(unsafe_code, dead_code)] // only called from test/builder cfg
+    pub(crate) unsafe fn from_raw_unchecked(inner: Ipv6FragmentHeader) -> Self {
         Self(inner)
     }
 }
 
 impl Parse for Fragment {
-    type Error = etherparse::err::LenError;
+    type Error = std::convert::Infallible;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         if buf.len() > u16::MAX as usize {
@@ -103,7 +111,12 @@ impl Parse for Fragment {
                 actual: buf.len(),
             }));
         }
-        let (inner, rest) = Ipv6FragmentHeader::from_slice(buf).map_err(ParseError::Invalid)?;
+        let (inner, rest) = Ipv6FragmentHeader::from_slice(buf).map_err(|e| {
+            ParseError::Length(LengthError {
+                expected: NonZero::new(e.required_len).unwrap_or_else(|| unreachable!()),
+                actual: e.len,
+            })
+        })?;
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
@@ -154,12 +167,16 @@ mod contract {
             let offset = unsafe { IpFragOffset::new_unchecked(offset_raw) };
             let more_fragments: bool = driver.produce()?;
             let identification: u32 = driver.produce()?;
-            Some(Fragment::from(Ipv6FragmentHeader::new(
-                IpNumber(next_header),
-                offset,
-                more_fragments,
-                identification,
-            )))
+            #[allow(unsafe_code)]
+            // SAFETY: we are constructing this as a Fragment by definition.
+            Some(unsafe {
+                Fragment::from_raw_unchecked(Ipv6FragmentHeader::new(
+                    IpNumber(next_header),
+                    offset,
+                    more_fragments,
+                    identification,
+                ))
+            })
         }
     }
 }
