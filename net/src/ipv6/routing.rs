@@ -48,6 +48,12 @@ impl Routing {
     }
 }
 
+impl From<Box<Ipv6RawExtHeader>> for Routing {
+    fn from(inner: Box<Ipv6RawExtHeader>) -> Self {
+        Self(inner)
+    }
+}
+
 impl Parse for Routing {
     type Error = etherparse::err::LenError;
 

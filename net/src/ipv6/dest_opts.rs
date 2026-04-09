@@ -52,6 +52,12 @@ impl DestOpts {
     }
 }
 
+impl From<Box<Ipv6RawExtHeader>> for DestOpts {
+    fn from(inner: Box<Ipv6RawExtHeader>) -> Self {
+        Self(inner)
+    }
+}
+
 impl Parse for DestOpts {
     type Error = etherparse::err::LenError;
 
