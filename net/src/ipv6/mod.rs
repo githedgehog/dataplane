@@ -25,7 +25,16 @@ use std::num::NonZero;
 use tracing::{debug, trace};
 
 pub mod addr;
+pub mod dest_opts;
 pub mod flow_label;
+pub mod fragment;
+pub mod hop_by_hop;
+pub mod routing;
+
+pub use dest_opts::DestOpts;
+pub use fragment::Fragment;
+pub use hop_by_hop::HopByHop;
+pub use routing::Routing;
 
 #[cfg(any(test, feature = "bolero"))]
 pub use contract::*;
