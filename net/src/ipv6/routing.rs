@@ -101,3 +101,34 @@ impl DeParse for Routing {
         Ok(size)
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::Routing;
+    use crate::ipv6::raw_ext_gen::gen_raw_ext_header;
+    use bolero::{Driver, TypeGenerator};
+
+    impl TypeGenerator for Routing {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(Routing::from(gen_raw_ext_header(driver)?))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Routing;
+    use crate::parse::{DeParse, IntoNonZeroUSize, Parse};
+
+    #[test]
+    fn parse_back() {
+        bolero::check!().with_type().for_each(|header: &Routing| {
+            let mut buf = [0u8; 2048];
+            let len = header.deparse(&mut buf).unwrap();
+            let (header2, consumed) =
+                Routing::parse(&buf[..len.into_non_zero_usize().get()]).unwrap();
+            assert_eq!(consumed, len);
+            assert_eq!(header, &header2);
+        });
+    }
+}

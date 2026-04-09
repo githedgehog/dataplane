@@ -85,3 +85,15 @@ impl DeParse for Ipv4Auth {
         self.0.deparse(buf)
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::Ipv4Auth;
+    use bolero::{Driver, TypeGenerator};
+
+    impl TypeGenerator for Ipv4Auth {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(Ipv4Auth::new(driver.produce()?))
+        }
+    }
+}

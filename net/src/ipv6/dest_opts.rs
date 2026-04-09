@@ -105,3 +105,34 @@ impl DeParse for DestOpts {
         Ok(size)
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::DestOpts;
+    use crate::ipv6::raw_ext_gen::gen_raw_ext_header;
+    use bolero::{Driver, TypeGenerator};
+
+    impl TypeGenerator for DestOpts {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(DestOpts::from(gen_raw_ext_header(driver)?))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DestOpts;
+    use crate::parse::{DeParse, IntoNonZeroUSize, Parse};
+
+    #[test]
+    fn parse_back() {
+        bolero::check!().with_type().for_each(|header: &DestOpts| {
+            let mut buf = [0u8; 2048];
+            let len = header.deparse(&mut buf).unwrap();
+            let (header2, consumed) =
+                DestOpts::parse(&buf[..len.into_non_zero_usize().get()]).unwrap();
+            assert_eq!(consumed, len);
+            assert_eq!(header, &header2);
+        });
+    }
+}
