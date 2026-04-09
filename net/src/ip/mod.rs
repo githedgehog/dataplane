@@ -45,6 +45,21 @@ impl NextHeader {
     /// ICMP6 next header
     pub const ICMP6: NextHeader = NextHeader(IpNumber::IPV6_ICMP);
 
+    /// IPv6 Hop-by-Hop Options (RFC 8200 section 4.3)
+    pub const HOP_BY_HOP: NextHeader = NextHeader(IpNumber::IPV6_HEADER_HOP_BY_HOP);
+
+    /// IPv6 Routing Header (RFC 8200 section 4.4)
+    pub const ROUTING: NextHeader = NextHeader(IpNumber::IPV6_ROUTE_HEADER);
+
+    /// IPv6 Fragment Header (RFC 8200 section 4.5)
+    pub const FRAGMENT: NextHeader = NextHeader(IpNumber::IPV6_FRAGMENTATION_HEADER);
+
+    /// IPv6 Destination Options (RFC 8200 section 4.6)
+    pub const DEST_OPTS: NextHeader = NextHeader(IpNumber::IPV6_DESTINATION_OPTIONS);
+
+    /// IP Authentication Header (RFC 4302)
+    pub const AUTH: NextHeader = NextHeader(IpNumber::AUTHENTICATION_HEADER);
+
     /// Generate a new [`NextHeader`]
     #[must_use]
     pub fn new(inner: u8) -> Self {

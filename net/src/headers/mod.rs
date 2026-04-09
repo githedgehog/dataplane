@@ -12,9 +12,9 @@ use crate::icmp4::Icmp4;
 use crate::icmp6::{Icmp6, Icmp6ChecksumPayload};
 use crate::impl_from_for_enum;
 use crate::ip::{NextHeader, UnicastIpAddr};
-use crate::ip_auth::IpAuth;
+use crate::ip_auth::{IpAuth, Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
-use crate::ipv6::{Ipv6, Ipv6Ext};
+use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Ipv6Ext, Routing};
 use crate::parse::{
     DeParse, DeParseError, IllegalBufferLength, IntoNonZeroUSize, LengthError, Parse, ParseError,
     Reader, Writer,
@@ -43,7 +43,7 @@ pub use embedded::*;
 pub mod builder;
 
 const MAX_VLANS: usize = 4;
-const MAX_NET_EXTENSIONS: usize = 2;
+const MAX_NET_EXTENSIONS: usize = 6;
 
 /// A parsed set of network packet headers.
 ///
@@ -162,8 +162,25 @@ impl DeParse for Net {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetExt {
+    // -- legacy variants (used by the current parser, will be removed) --
+    /// Untyped IP Authentication Header (legacy -- prefer [`Ipv4Auth`]/[`Ipv6Auth`]).
     IpAuth(IpAuth),
+    /// Monolithic IPv6 extension header chain (legacy -- prefer individual types).
     Ipv6Ext(Ipv6Ext),
+
+    // -- new individual extension header variants --
+    /// IPv6 Hop-by-Hop Options (RFC 8200 section 4.3).
+    HopByHop(HopByHop),
+    /// IPv6 Destination Options (RFC 8200 section 4.6).
+    DestOpts(DestOpts),
+    /// IPv6 Routing Header (RFC 8200 section 4.4).
+    Routing(Routing),
+    /// IPv6 Fragment Header (RFC 8200 section 4.5).
+    Fragment(Fragment),
+    /// IP Authentication Header in IPv4 context (RFC 4302).
+    Ipv4Auth(Ipv4Auth),
+    /// IP Authentication Header in IPv6 context (RFC 4302).
+    Ipv6Auth(Ipv6Auth),
 }
 
 impl DeParse for NetExt {
@@ -171,15 +188,27 @@ impl DeParse for NetExt {
 
     fn size(&self) -> NonZero<u16> {
         match self {
-            NetExt::IpAuth(auth) => auth.size(),
-            NetExt::Ipv6Ext(ext) => ext.size(),
+            NetExt::IpAuth(h) => h.size(),
+            NetExt::Ipv6Ext(h) => h.size(),
+            NetExt::HopByHop(h) => h.size(),
+            NetExt::DestOpts(h) => h.size(),
+            NetExt::Routing(h) => h.size(),
+            NetExt::Fragment(h) => h.size(),
+            NetExt::Ipv4Auth(h) => h.size(),
+            NetExt::Ipv6Auth(h) => h.size(),
         }
     }
 
     fn deparse(&self, buf: &mut [u8]) -> Result<NonZero<u16>, DeParseError<Self::Error>> {
         match self {
-            NetExt::IpAuth(auth) => auth.deparse(buf),
-            NetExt::Ipv6Ext(ext) => ext.deparse(buf),
+            NetExt::IpAuth(h) => h.deparse(buf),
+            NetExt::Ipv6Ext(h) => h.deparse(buf),
+            NetExt::HopByHop(h) => h.deparse(buf),
+            NetExt::DestOpts(h) => h.deparse(buf),
+            NetExt::Routing(h) => h.deparse(buf),
+            NetExt::Fragment(h) => h.deparse(buf),
+            NetExt::Ipv4Auth(h) => h.deparse(buf),
+            NetExt::Ipv6Auth(h) => h.deparse(buf),
         }
     }
 }
@@ -400,6 +429,7 @@ impl DeParse for Transport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Header {
     Eth(Eth),
     Vlan(Vlan),
