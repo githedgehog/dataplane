@@ -405,6 +405,14 @@ impl TryFrom<&Vec<u8>> for SourceMac {
     }
 }
 
+impl TryFrom<Mac> for DestinationMac {
+    type Error = DestinationMacAddressError;
+
+    fn try_from(value: Mac) -> Result<Self, Self::Error> {
+        DestinationMac::new(value)
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::eth::mac::{DestinationMac, Mac, SourceMac};
