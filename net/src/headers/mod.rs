@@ -43,7 +43,7 @@ pub use embedded::*;
 pub mod builder;
 
 const MAX_VLANS: usize = 4;
-const MAX_NET_EXTENSIONS: usize = 6;
+const MAX_NET_EXTENSIONS: usize = 3;
 
 /// A parsed set of network packet headers.
 ///
@@ -475,6 +475,17 @@ impl Parse for Headers {
             udp_encap: None,
             embedded_ip: None,
         };
+        // TODO: after parsing, validate RFC 8200 section 4.1 extension header
+        // ordering constraints (e.g. HopByHop must be first and appear at most
+        // once, DestOpts may appear at most twice, etc.).  The parser currently
+        // accepts any ordering from the wire.  A validate() method or post-parse
+        // check would catch malformed chains without rejecting packets outright.
+        //
+        // TODO: consider returning a parse error instead of silently stopping
+        // when MAX_NET_EXTENSIONS is exceeded.  The current `break` exits the
+        // entire parse loop, so transport and embedded headers that follow the
+        // overflow point are also not parsed.  This matches the MAX_VLANS
+        // handling but the caller has no way to detect a partial parse.
         let mut prior = Header::Eth(eth);
         loop {
             let header = prior.parse_payload(&mut cursor);
