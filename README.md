@@ -271,6 +271,9 @@ Save the following to the `.zed/settings.json` file:
 Zed wraps rust-analyzer and the debugger with `nix-shell --run`, so it does not need to be launched from the
 nix-shell.
 
+If using Zed's Flatpak integration, make sure to give it read-only access to
+`/nix`, and read/write access to `/nix/var/nix` for the LSP to work.
+
 ## Code organization
 
 The dataplane code is organized in a set of crates.
