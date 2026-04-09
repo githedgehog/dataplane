@@ -3,6 +3,12 @@
 
 //! IP authentication header type and logic.
 
+pub mod v4;
+pub mod v6;
+
+pub use v4::Ipv4Auth;
+pub use v6::Ipv6Auth;
+
 use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
