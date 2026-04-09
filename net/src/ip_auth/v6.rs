@@ -11,7 +11,7 @@
 use crate::ip_auth::IpAuth;
 use crate::parse::{DeParse, DeParseError, Parse, ParseError};
 use std::num::NonZero;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 /// IP Authentication Header in an IPv6 context ([RFC 4302]).
 ///
@@ -43,6 +43,12 @@ impl Deref for Ipv6Auth {
 
     fn deref(&self) -> &IpAuth {
         &self.0
+    }
+}
+
+impl DerefMut for Ipv6Auth {
+    fn deref_mut(&mut self) -> &mut IpAuth {
+        &mut self.0
     }
 }
 
