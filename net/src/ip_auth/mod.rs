@@ -188,3 +188,34 @@ impl From<EmbeddedIpAuthNext> for EmbeddedHeader {
         }
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::IpAuth;
+    use bolero::{Driver, TypeGenerator};
+    use etherparse::{IpAuthHeader, IpNumber};
+
+    /// Valid ICV lengths (multiples of 4, capped to keep fuzz inputs small).
+    const VALID_ICV_LENS: [usize; 4] = [0, 4, 8, 12];
+
+    impl TypeGenerator for IpAuth {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let next_header: u8 = driver.produce()?;
+            let spi: u32 = driver.produce()?;
+            let sequence_number: u32 = driver.produce()?;
+            let idx = driver.gen_usize(
+                std::ops::Bound::Included(&0),
+                std::ops::Bound::Excluded(&VALID_ICV_LENS.len()),
+            )?;
+            let icv_len = VALID_ICV_LENS[idx];
+            let mut icv = vec![0u8; icv_len];
+            for byte in &mut icv {
+                *byte = driver.produce()?;
+            }
+            #[allow(clippy::unwrap_used)] // lengths are valid by construction
+            let header =
+                IpAuthHeader::new(IpNumber(next_header), spi, sequence_number, &icv).unwrap();
+            Some(IpAuth::from(Box::new(header)))
+        }
+    }
+}

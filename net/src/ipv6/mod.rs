@@ -29,6 +29,8 @@ pub mod dest_opts;
 pub mod flow_label;
 pub mod fragment;
 pub mod hop_by_hop;
+#[cfg(any(test, feature = "bolero"))]
+pub(crate) mod raw_ext_gen;
 pub mod routing;
 
 pub use dest_opts::DestOpts;

@@ -99,3 +99,34 @@ impl DeParse for HopByHop {
         Ok(size)
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::HopByHop;
+    use crate::ipv6::raw_ext_gen::gen_raw_ext_header;
+    use bolero::{Driver, TypeGenerator};
+
+    impl TypeGenerator for HopByHop {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(HopByHop::from(gen_raw_ext_header(driver)?))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HopByHop;
+    use crate::parse::{DeParse, IntoNonZeroUSize, Parse};
+
+    #[test]
+    fn parse_back() {
+        bolero::check!().with_type().for_each(|header: &HopByHop| {
+            let mut buf = [0u8; 2048];
+            let len = header.deparse(&mut buf).unwrap();
+            let (header2, consumed) =
+                HopByHop::parse(&buf[..len.into_non_zero_usize().get()]).unwrap();
+            assert_eq!(consumed, len);
+            assert_eq!(header, &header2);
+        });
+    }
+}
