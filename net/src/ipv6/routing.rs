@@ -46,6 +46,22 @@ impl Routing {
     pub fn payload(&self) -> &[u8] {
         self.0.payload()
     }
+
+    /// Parse the next header after this one.
+    pub(crate) fn parse_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::Header> {
+        super::ext_parse::parse_ext_payload(self.next_header(), cursor)
+    }
+
+    /// Parse the next header in an ICMP-embedded context.
+    pub(crate) fn parse_embedded_payload(
+        &self,
+        cursor: &mut crate::parse::Reader,
+    ) -> Option<crate::headers::EmbeddedHeader> {
+        super::ext_parse::parse_ext_embedded_payload(self.next_header(), cursor)
+    }
 }
 
 impl From<Box<Ipv6RawExtHeader>> for Routing {
