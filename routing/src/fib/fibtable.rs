@@ -208,7 +208,7 @@ impl ReadHandleProvider for FibTable {
         &self,
     ) -> (
         u64,
-        impl Iterator<Item = (FibKey, &ReadHandleFactory<Fib>, FibKey)>,
+        impl Iterator<Item = (Self::Key, &ReadHandleFactory<Fib>, Self::Key)>,
     ) {
         let iter = self
             .entries
