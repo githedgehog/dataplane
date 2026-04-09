@@ -184,9 +184,7 @@ impl Vpc {
             })
             .collect();
 
-        if self.peerings.is_empty() {
-            warn!("Warning, VPC {} has no configured peerings", &self.name);
-        } else {
+        if !self.peerings.is_empty() {
             debug!("Vpc '{}' has {} peerings", self.name, self.peerings.len());
         }
     }
