@@ -13,6 +13,7 @@ use crate::headers::{EmbeddedHeader, Header};
 use crate::icmp4::Icmp4;
 use crate::icmp6::Icmp6;
 use crate::impl_from_for_enum;
+use crate::ip::NextHeader;
 use crate::parse::{
     DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError, ParseHeader, Reader,
 };
@@ -28,7 +29,24 @@ use tracing::{debug, trace};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpAuth(Box<IpAuthHeader>);
 
+impl From<Box<IpAuthHeader>> for IpAuth {
+    fn from(inner: Box<IpAuthHeader>) -> Self {
+        Self(inner)
+    }
+}
+
 impl IpAuth {
+    /// Get the next-header protocol number.
+    #[must_use]
+    pub fn next_header(&self) -> NextHeader {
+        NextHeader::from(self.0.next_header)
+    }
+
+    /// Set the next-header protocol number.
+    pub fn set_next_header(&mut self, nh: NextHeader) {
+        self.0.next_header = nh.into();
+    }
+
     /// Parse the payload of the IP authentication header.
     ///
     /// # Returns

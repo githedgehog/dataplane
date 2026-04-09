@@ -46,6 +46,12 @@ impl HopByHop {
     }
 }
 
+impl From<Box<Ipv6RawExtHeader>> for HopByHop {
+    fn from(inner: Box<Ipv6RawExtHeader>) -> Self {
+        Self(inner)
+    }
+}
+
 impl Parse for HopByHop {
     type Error = etherparse::err::LenError;
 
