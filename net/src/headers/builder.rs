@@ -220,6 +220,7 @@ fn fixup_embedded(
     mut net: Option<Net>,
     transport: Option<EmbeddedTransport>,
 ) -> super::EmbeddedHeaders {
+    // Set NextHeader based on transport type.
     let nh = match &transport {
         Some(EmbeddedTransport::Tcp(_)) => Some(NextHeader::TCP),
         Some(EmbeddedTransport::Udp(_)) => Some(NextHeader::UDP),
@@ -235,6 +236,7 @@ fn fixup_embedded(
 
     match &mut net {
         Some(Net::Ipv4(ip)) => {
+            // transport_size is always small enough; ignore the error.
             let _ = ip.set_payload_len(transport_size);
             ip.update_checksum(&()).unwrap_or_else(|()| unreachable!());
         }
@@ -425,6 +427,65 @@ where
     layer_method!(
         /// Push a `Vxlan` layer.
         vxlan, Vxlan
+    );
+
+    // ICMPv4 subtype layers -- available after `.icmp4()`
+
+    layer_method!(
+        /// Specialize as `ICMPv4` Destination Unreachable (type 3).
+        dest_unreachable, Icmp4DestUnreachable
+    );
+    layer_method!(
+        /// Specialize as `ICMPv4` Redirect (type 5).
+        redirect, Icmp4Redirect
+    );
+    layer_method!(
+        /// Specialize as `ICMPv4` Time Exceeded (type 11).
+        time_exceeded, Icmp4TimeExceeded
+    );
+    layer_method!(
+        /// Specialize as `ICMPv4` Parameter Problem (type 12).
+        param_problem, Icmp4ParamProblem
+    );
+    layer_method!(
+        /// Specialize as `ICMPv4` Echo Request (type 8).
+        echo_request, Icmp4EchoRequest
+    );
+    layer_method!(
+        /// Specialize as `ICMPv4` Echo Reply (type 0).
+        echo_reply, Icmp4EchoReply
+    );
+
+    // ICMPv6 subtype layers -- available after `.icmp6()`
+    //
+    // ICMPv6 subtypes use a `6` suffix to avoid ambiguity with
+    // the ICMPv4 methods above. Both sets live in the same generic impl
+    // block, and Rust resolves the correct one via the `Within<T>` bound
+    // on `T` (the current top-of-stack).
+
+    layer_method!(
+        /// Specialize as `ICMPv6` Destination Unreachable (type 1).
+        dest_unreachable6, Icmp6DestUnreachable
+    );
+    layer_method!(
+        /// Specialize as `ICMPv6` Packet Too Big (type 2).
+        packet_too_big6, Icmp6PacketTooBig
+    );
+    layer_method!(
+        /// Specialize as `ICMPv6` Time Exceeded (type 3).
+        time_exceeded6, Icmp6TimeExceeded
+    );
+    layer_method!(
+        /// Specialize as `ICMPv6` Parameter Problem (type 4).
+        param_problem6, Icmp6ParamProblem
+    );
+    layer_method!(
+        /// Specialize as `ICMPv6` Echo Request (type 128).
+        echo_request6, Icmp6EchoRequest
+    );
+    layer_method!(
+        /// Specialize as `ICMPv6` Echo Reply (type 129).
+        echo_reply6, Icmp6EchoReply
     );
 }
 
@@ -635,7 +696,7 @@ impl Blank for Udp {
 impl Blank for Icmp4 {
     fn blank() -> Self {
         Icmp4::with_type(crate::icmp4::Icmp4Type::EchoRequest(
-            crate::icmp4::Icmp4EchoRequest { id: 0, seq: 0 },
+            Icmp4EchoRequest::blank(),
         ))
     }
 }
@@ -643,7 +704,7 @@ impl Blank for Icmp4 {
 impl Blank for Icmp6 {
     fn blank() -> Self {
         Icmp6::with_type(crate::icmp6::Icmp6Type::EchoRequest(
-            crate::icmp6::Icmp6EchoRequest { id: 0, seq: 0 },
+            Icmp6EchoRequest::blank(),
         ))
     }
 }
@@ -655,10 +716,211 @@ impl Blank for Vxlan {
     }
 }
 
-// Embedded ICMP headers -- modifier on HeaderStack<Icmp4> / HeaderStack<Icmp6>
+// ---------------------------------------------------------------------------
+// ICMP subtype newtypes
+// ---------------------------------------------------------------------------
+//
+// Each newtype wraps the etherparse inner header/code for one ICMP message
+// type.  They participate in the builder chain via `Within<Icmp4>` (or
+// `Icmp6`) and `Install` -- conform sets the variant on the parent ICMP
+// header, then install patches the inner value into the already-stored
+// transport slot.
+//
+// Error subtypes enable `.embedded()` / `.embed_*()` for attaching the
+// offending original packet.  Query subtypes (echo) are terminal.
+
+use crate::icmp4::{
+    Icmp4DestUnreachable, Icmp4EchoReply, Icmp4EchoRequest, Icmp4ParamProblem, Icmp4Redirect,
+    Icmp4RedirectCode, Icmp4TimeExceeded,
+};
+use crate::icmp6::{
+    Icmp6DestUnreachable, Icmp6EchoReply, Icmp6EchoRequest, Icmp6PacketTooBig, Icmp6ParamProblem,
+    Icmp6ParamProblemCode, Icmp6TimeExceeded,
+};
+
+// -- Within impls: ICMP subtypes after Icmp4 / Icmp6 ------------------------
+
+macro_rules! within_icmp4_subtype {
+    ($subtype:ty, $to_icmp4_type:expr) => {
+        impl Within<Icmp4> for $subtype {
+            fn conform(parent: &mut Icmp4) {
+                parent.set_type($to_icmp4_type(<$subtype>::blank()));
+            }
+        }
+    };
+}
+
+within_icmp4_subtype!(
+    Icmp4DestUnreachable,
+    crate::icmp4::Icmp4Type::DestUnreachable
+);
+within_icmp4_subtype!(Icmp4Redirect, crate::icmp4::Icmp4Type::Redirect);
+within_icmp4_subtype!(Icmp4TimeExceeded, crate::icmp4::Icmp4Type::TimeExceeded);
+within_icmp4_subtype!(Icmp4ParamProblem, crate::icmp4::Icmp4Type::ParamProblem);
+within_icmp4_subtype!(Icmp4EchoRequest, crate::icmp4::Icmp4Type::EchoRequest);
+within_icmp4_subtype!(Icmp4EchoReply, crate::icmp4::Icmp4Type::EchoReply);
+
+macro_rules! within_icmp6_subtype {
+    ($subtype:ty, $to_icmp6_type:expr) => {
+        impl Within<Icmp6> for $subtype {
+            fn conform(parent: &mut Icmp6) {
+                parent.set_type($to_icmp6_type(<$subtype>::blank()));
+            }
+        }
+    };
+}
+
+within_icmp6_subtype!(
+    Icmp6DestUnreachable,
+    crate::icmp6::Icmp6Type::DestUnreachable
+);
+within_icmp6_subtype!(Icmp6PacketTooBig, crate::icmp6::Icmp6Type::PacketTooBig);
+within_icmp6_subtype!(Icmp6TimeExceeded, crate::icmp6::Icmp6Type::TimeExceeded);
+within_icmp6_subtype!(Icmp6ParamProblem, crate::icmp6::Icmp6Type::ParamProblem);
+within_icmp6_subtype!(Icmp6EchoRequest, crate::icmp6::Icmp6Type::EchoRequest);
+within_icmp6_subtype!(Icmp6EchoReply, crate::icmp6::Icmp6Type::EchoReply);
+
+// -- Install impls: set the ICMP type on the already-stored transport --------
+
+macro_rules! install_icmp4_subtype {
+    ($subtype:ty, $to_icmp4_type:expr) => {
+        impl Install<$subtype> for Headers {
+            fn install(&mut self, value: $subtype) {
+                match &mut self.transport {
+                    Some(Transport::Icmp4(icmp)) => {
+                        icmp.set_type($to_icmp4_type(value));
+                    }
+                    _ => unreachable!("conform should have installed Icmp4 transport"),
+                }
+            }
+        }
+    };
+}
+
+install_icmp4_subtype!(
+    Icmp4DestUnreachable,
+    crate::icmp4::Icmp4Type::DestUnreachable
+);
+install_icmp4_subtype!(Icmp4Redirect, crate::icmp4::Icmp4Type::Redirect);
+install_icmp4_subtype!(Icmp4TimeExceeded, crate::icmp4::Icmp4Type::TimeExceeded);
+install_icmp4_subtype!(Icmp4ParamProblem, crate::icmp4::Icmp4Type::ParamProblem);
+install_icmp4_subtype!(Icmp4EchoRequest, crate::icmp4::Icmp4Type::EchoRequest);
+install_icmp4_subtype!(Icmp4EchoReply, crate::icmp4::Icmp4Type::EchoReply);
+
+macro_rules! install_icmp6_subtype {
+    ($subtype:ty, $to_icmp6_type:expr) => {
+        impl Install<$subtype> for Headers {
+            fn install(&mut self, value: $subtype) {
+                match &mut self.transport {
+                    Some(Transport::Icmp6(icmp)) => {
+                        icmp.set_type($to_icmp6_type(value));
+                    }
+                    _ => unreachable!("conform should have installed Icmp6 transport"),
+                }
+            }
+        }
+    };
+}
+
+install_icmp6_subtype!(
+    Icmp6DestUnreachable,
+    crate::icmp6::Icmp6Type::DestUnreachable
+);
+install_icmp6_subtype!(Icmp6PacketTooBig, crate::icmp6::Icmp6Type::PacketTooBig);
+install_icmp6_subtype!(Icmp6TimeExceeded, crate::icmp6::Icmp6Type::TimeExceeded);
+install_icmp6_subtype!(Icmp6ParamProblem, crate::icmp6::Icmp6Type::ParamProblem);
+install_icmp6_subtype!(Icmp6EchoRequest, crate::icmp6::Icmp6Type::EchoRequest);
+install_icmp6_subtype!(Icmp6EchoReply, crate::icmp6::Icmp6Type::EchoReply);
+
+// -- Blank impls -------------------------------------------------------------
+
+impl Blank for Icmp4DestUnreachable {
+    fn blank() -> Self {
+        Self::Network
+    }
+}
+
+impl Blank for Icmp4Redirect {
+    fn blank() -> Self {
+        #[allow(clippy::unwrap_used)] // 10.0.0.1 is always unicast
+        Self::new(
+            Icmp4RedirectCode::Network,
+            crate::ipv4::UnicastIpv4Addr::new(std::net::Ipv4Addr::new(10, 0, 0, 1)).unwrap(),
+        )
+    }
+}
+
+impl Blank for Icmp4TimeExceeded {
+    fn blank() -> Self {
+        Self::TtlExceeded
+    }
+}
+
+impl Blank for Icmp4ParamProblem {
+    fn blank() -> Self {
+        Self::PointerIndicatesError(0)
+    }
+}
+
+impl Blank for Icmp4EchoRequest {
+    fn blank() -> Self {
+        Self { id: 0, seq: 0 }
+    }
+}
+
+impl Blank for Icmp4EchoReply {
+    fn blank() -> Self {
+        Self { id: 0, seq: 0 }
+    }
+}
+
+impl Blank for Icmp6DestUnreachable {
+    fn blank() -> Self {
+        Self::NoRoute
+    }
+}
+
+impl Blank for Icmp6PacketTooBig {
+    fn blank() -> Self {
+        Self::new(1280).unwrap_or_else(|_| unreachable!())
+    }
+}
+
+impl Blank for Icmp6TimeExceeded {
+    fn blank() -> Self {
+        Self::HopLimitExceeded
+    }
+}
+
+impl Blank for Icmp6ParamProblem {
+    fn blank() -> Self {
+        Self {
+            code: Icmp6ParamProblemCode::ErroneousHeaderField,
+            pointer: 0,
+        }
+    }
+}
+
+impl Blank for Icmp6EchoRequest {
+    fn blank() -> Self {
+        Self { id: 0, seq: 0 }
+    }
+}
+
+impl Blank for Icmp6EchoReply {
+    fn blank() -> Self {
+        Self { id: 0, seq: 0 }
+    }
+}
+
+// -- Embedded ICMP headers (HeaderStack) -------------------------------------
+//
+// `.embedded()` is only available on error subtype layers, not on bare
+// `Icmp4` / `Icmp6`.
+
 macro_rules! impl_embedded {
-    ($icmp_ty:ty) => {
-        impl HeaderStack<$icmp_ty> {
+    ($subtype:ty) => {
+        impl HeaderStack<$subtype> {
             /// Attach ICMP-error embedded headers.
             ///
             /// The closure receives a fresh [`EmbeddedAssembler`] and should
@@ -677,8 +939,17 @@ macro_rules! impl_embedded {
     };
 }
 
-impl_embedded!(Icmp4);
-impl_embedded!(Icmp6);
+// ICMPv4 error subtypes
+impl_embedded!(Icmp4DestUnreachable);
+impl_embedded!(Icmp4Redirect);
+impl_embedded!(Icmp4TimeExceeded);
+impl_embedded!(Icmp4ParamProblem);
+
+// ICMPv6 error subtypes
+impl_embedded!(Icmp6DestUnreachable);
+impl_embedded!(Icmp6PacketTooBig);
+impl_embedded!(Icmp6TimeExceeded);
+impl_embedded!(Icmp6ParamProblem);
 
 /// Compute length fields over the fully-assembled headers.
 ///
@@ -736,7 +1007,6 @@ fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError
 
     Ok(())
 }
-
 // ---------------------------------------------------------------------------
 // Fuzz header-stack generator (bolero integration)
 // ---------------------------------------------------------------------------
@@ -752,24 +1022,18 @@ fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError
 ///
 /// Where [`HeaderStack`] eagerly builds headers using [`Blank`] values,
 /// a fuzz chain stores a *recipe* -- a chain of
-/// `(TypeGenerator, Fn(&mut T))` pairs.  At generation time the chain
-/// walks itself recursively:
-///
-/// 1. Generate the inner (preceding) layers -> `(Headers, PrevLayer)`.
-/// 2. Conform `PrevLayer` and install it into `Headers`.
-/// 3. Generate the current layer via `TypeGenerator`.
-/// 4. Apply the mutation closure.
-/// 5. Return `(Headers, CurrentLayer)`.
+/// `(TypeGenerator::generate, mutation)` pairs -- and replays it each time
+/// the fuzzer calls [`ValueGenerator::generate`](bolero::ValueGenerator::generate).
 ///
 /// The chain is encoded in nested generics ([`ChainBase`] -> [`FuzzLayer`] -> ...),
-/// so each variant of the chain is a unique type -- Rust monomorphizes the
-/// entire build at compile time.
+/// so all closure types are monomorphised and the hot path is zero-overhead.
 ///
 /// # Examples
 ///
 /// ```ignore
 /// use net::headers::builder::*;
 ///
+/// // All TCP packets with dst port 80, everything else fuzzed.
 /// bolero::check!()
 ///     .with_generator(
 ///         ChainBase::new()
@@ -799,22 +1063,18 @@ mod fuzz {
 
     /// Recursive generation of the fuzz header chain.
     ///
-    /// Each implementor can produce a `(Headers, Top)` pair from a
-    /// [`Driver`], where `Top` is the layer that has been generated
-    /// but **not yet installed** (so the next layer can [`Within::conform`]
-    /// it first).
+    /// Each link generates all preceding layers, installs them into
+    /// [`Headers`], and returns the not-yet-installed top layer so the
+    /// next link can [`conform`](Within::conform) and install it.
     ///
-    /// This trait is used internally by the
+    /// This trait is sealed --
     /// only [`ChainBase`]
     /// and [`FuzzLayer`] implement it.
     pub trait GenerateChain: sealed::Sealed {
-        /// The type of the layer currently held at the top of the chain.
-        ///
-        /// For [`ChainBase`] this is `()` (no layer yet).
+        /// The header type sitting at the top of the stack (not yet installed).
         type Top;
 
-        /// Walk the chain, producing a [`Headers`] and the not-yet-installed
-        /// top layer.
+        /// Generate all layers up to and including the top.
         fn generate_chain<D: Driver>(&self, driver: &mut D) -> Option<(Headers, Self::Top)>;
     }
 
@@ -827,24 +1087,25 @@ mod fuzz {
         ChainBase::new()
     }
 
-    /// The starting point for a fuzz chain -- analogous to [`super::HeaderStack<()>`].
+    /// Base of a fuzz header stack - no layers yet.
+    ///
+    /// Start here, then chain layer methods (`.eth(...)`, `.ipv4(...)`, ...).
+    /// The resulting chain implements [`ValueGenerator`] directly.
     #[derive(Default)]
     #[non_exhaustive]
     pub struct ChainBase;
 
     impl ChainBase {
-        /// Create a new fuzz chain.
-        ///
-        /// Always starts empty, just like [`super::HeaderStack::new`].
+        /// Create a new, empty fuzz header stack.
         #[must_use]
         pub const fn new() -> Self {
-            ChainBase
+            Self
         }
 
-        /// Push a new layer onto the chain.
+        /// Push a layer onto the stack.
         ///
-        /// This is the generic version; most callers use the named
-        /// convenience methods (`.eth(...)`, `.ipv4(...)`, ...).
+        /// The layer type `U` is created via [`TypeGenerator::generate`] at
+        /// generation time, then `mutate` is applied to pin specific fields.
         pub fn stack<U, N>(self, mutate: N) -> FuzzLayer<Self, U, N>
         where
             U: TypeGenerator + Within<()>,
@@ -860,9 +1121,9 @@ mod fuzz {
         /// Push an `Eth` layer.
         pub fn eth(
             self,
-            mutate: impl Fn(&mut crate::eth::Eth),
+            f: impl Fn(&mut crate::eth::Eth),
         ) -> FuzzLayer<Self, crate::eth::Eth, impl Fn(&mut crate::eth::Eth)> {
-            self.stack(mutate)
+            self.stack(f)
         }
     }
 
@@ -874,11 +1135,12 @@ mod fuzz {
         }
     }
 
-    /// One link in a fuzz header chain.
+    /// One layer in a fuzz header stack recipe.
     ///
     /// - `Inner` -- the preceding chain ([`ChainBase`] or another `FuzzLayer`).
-    /// - `Layer` -- the header type held at this position.
-    /// - `Mutation`     -- the mutation closure `Fn(&mut Layer)`.
+    /// - `Layer` -- the header type at this position.
+    /// - `Mutation` -- the mutation closure that pins field values after
+    ///   [`TypeGenerator`] produces a fuzzed instance.
     pub struct FuzzLayer<Inner, Layer, Mutation> {
         inner: Inner,
         mutate: Mutation,
@@ -890,7 +1152,7 @@ mod fuzz {
         Inner: GenerateChain,
         Layer: TypeGenerator + Within<Inner::Top>,
         Mutation: Fn(&mut Layer),
-        Headers: Install<Inner::Top> + Install<Layer>,
+        Headers: Install<Inner::Top>,
     {
         type Top = Layer;
 
@@ -898,8 +1160,7 @@ mod fuzz {
             let (mut headers, mut prev) = self.inner.generate_chain(driver)?;
             Layer::conform(&mut prev);
             headers.install(prev);
-
-            let mut layer: Layer = driver.produce()?;
+            let mut layer = Layer::generate(driver)?;
             (self.mutate)(&mut layer);
             Some((headers, layer))
         }
@@ -908,7 +1169,7 @@ mod fuzz {
     /// Helper macro to generate named layer methods on [`FuzzLayer`].
     ///
     /// Each method delegates to [`FuzzLayer::stack`] with the concrete
-    /// header type, enforcing the `TypeGenerator + Within<Layer>` bound.
+    /// header type, mirroring the named methods on [`super::HeaderStack`].
     macro_rules! fuzz_layer_method {
         ($(#[$meta:meta])* $method:ident, $header:ty) => {
             $(#[$meta])*
@@ -1008,9 +1269,11 @@ mod fuzz {
     {
         type Output = Headers;
 
-        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Headers> {
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let (mut headers, top) = self.generate_chain(driver)?;
             headers.install(top);
+            // Discard packets whose lengths overflow u16 -- the fuzzer will
+            // try again with different inputs.
             fixup_lengths(&mut headers, &[]).ok()?;
             Some(headers)
         }
@@ -1023,15 +1286,12 @@ mod fuzz {
         Mutation: Fn(&mut Layer),
         Headers: Install<Inner::Top> + Install<Layer>,
     {
-        /// Generate headers with an explicit payload.
+        /// Generate headers with an explicit payload for length computation.
         ///
-        /// Unlike the `ValueGenerator` impl (which uses an empty payload),
-        /// this method takes a `payload` slice and passes it to
-        /// [`fixup_lengths`](super::fixup_lengths) so that IP/UDP length
-        /// fields account for the trailing data.
-        ///
-        /// Returns `None` if generation fails, or `Some(Err(...))` if
-        /// length fixup overflows.
+        /// Unlike the [`ValueGenerator`] impl (which silently discards
+        /// packets whose lengths overflow `u16`), this method propagates
+        /// length errors as `Some(Err(...))`, returning `None` only when
+        /// the driver cannot produce enough bytes.
         #[must_use]
         pub fn generate_with_payload<D: Driver>(
             &self,
@@ -1051,6 +1311,7 @@ pub use fuzz::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headers::TryInnerIpv4;
     use crate::ipv4::UnicastIpv4Addr;
     use std::net::Ipv4Addr;
 
@@ -1150,6 +1411,7 @@ mod tests {
                 ip.set_destination(Ipv4Addr::new(10, 0, 0, 1));
             })
             .icmp4(|_| {})
+            .dest_unreachable(|_| {})
             .embedded(|inner| {
                 inner
                     .ipv4(|ip| {
@@ -1230,6 +1492,7 @@ mod tests {
             .eth(|_| {})
             .ipv4(|_| {})
             .icmp4(|_| {})
+            .time_exceeded(|_| {})
             .embedded(|inner| {
                 inner.ipv4(|_| {}).tcp(
                     TcpPort::new_checked(1).unwrap(),
@@ -1256,6 +1519,7 @@ mod tests {
             .eth(|_| {})
             .ipv6(|_| {})
             .icmp6(|_| {})
+            .dest_unreachable6(|_| {})
             .embedded(|inner| {
                 inner.ipv6(|_| {}).udp(
                     UdpPort::new_checked(1).unwrap(),
@@ -1439,64 +1703,5 @@ mod tests {
                 );
             },
         );
-    }
-
-    // -- Fuzz ValueGenerator tests -------------------------------------------
-
-    #[test]
-    fn fuzz_ipv4_tcp_dst_port_pinned() {
-        bolero::check!()
-            .with_generator(header_chain().eth(|_| {}).ipv4(|_| {}).tcp(|tcp| {
-                tcp.set_destination(TcpPort::new_checked(80).unwrap());
-            }))
-            .cloned()
-            .for_each(|headers| {
-                let Transport::Tcp(tcp) = headers.transport().unwrap() else {
-                    panic!("expected Tcp");
-                };
-                assert_eq!(
-                    tcp.destination(),
-                    TcpPort::new_checked(80).unwrap(),
-                    "destination port should have been pinned by the mutation"
-                );
-            });
-    }
-
-    #[test]
-    fn fuzz_ipv6_udp_vxlan_conforms() {
-        let generator = ChainBase::new()
-            .eth(|_| {})
-            .ipv6(|_| {})
-            .udp(|_| {})
-            .vxlan(|_| {});
-
-        bolero::check!()
-            .with_generator(generator)
-            .cloned()
-            .for_each(|headers| {
-                // Eth -> IPV6
-                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
-                // UDP -> VXLAN port
-                let Transport::Udp(udp) = headers.transport().unwrap() else {
-                    panic!("expected Udp");
-                };
-                assert_eq!(udp.destination(), Vxlan::PORT);
-            });
-    }
-
-    #[test]
-    fn fuzz_round_trips_through_parse() {
-        let generator = ChainBase::new().eth(|_| {}).ipv4(|_| {}).tcp(|_| {});
-
-        bolero::check!()
-            .with_generator(generator)
-            .cloned()
-            .for_each(|headers| {
-                let mut test_buffer = vec![0u8; headers.size().get() as usize];
-                headers.deparse(&mut test_buffer).unwrap();
-                let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
-                assert_eq!(consumed.get() as usize, headers.size().get() as usize);
-                assert_eq!(headers, headers2, "fuzz round-trip failed");
-            });
     }
 }
