@@ -1298,6 +1298,7 @@ mod test {
         use crate::icmp4::Icmp4;
         use crate::icmp4::{Icmp4EchoRequest, Icmp4Type};
         use crate::icmp6::Icmp6;
+        use crate::icmp6::{Icmp6EchoRequest, Icmp6Type};
         use crate::ip::NextHeader;
         use crate::ip::dscp::Dscp;
         use crate::ip::ecn::Ecn;
@@ -1306,7 +1307,6 @@ mod test {
         use crate::parse::DeParse;
         use crate::tcp::Tcp;
         use crate::udp::Udp;
-        use etherparse::{IcmpEchoHeader, Icmpv6Type};
         use std::net::{Ipv4Addr, Ipv6Addr};
 
         pub(super) fn eth(ethertype: EthType) -> Eth {
@@ -1366,7 +1366,7 @@ mod test {
 
         pub(super) fn icmp6() -> Icmp6 {
             let mut icmp6 =
-                Icmp6::with_type(Icmpv6Type::EchoRequest(IcmpEchoHeader { id: 18, seq: 2 }));
+                Icmp6::with_type(Icmp6Type::EchoRequest(Icmp6EchoRequest { id: 18, seq: 2 }));
             icmp6.set_checksum(1234.into()).unwrap();
             icmp6
         }

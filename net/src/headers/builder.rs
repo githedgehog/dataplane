@@ -60,8 +60,6 @@
 
 use std::num::NonZero;
 
-use etherparse::{IcmpEchoHeader, Icmpv6Type};
-
 use crate::checksum::Checksum;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
@@ -644,7 +642,9 @@ impl Blank for Icmp4 {
 
 impl Blank for Icmp6 {
     fn blank() -> Self {
-        Icmp6::with_type(Icmpv6Type::EchoRequest(IcmpEchoHeader { id: 0, seq: 0 }))
+        Icmp6::with_type(crate::icmp6::Icmp6Type::EchoRequest(
+            crate::icmp6::Icmp6EchoRequest { id: 0, seq: 0 },
+        ))
     }
 }
 
