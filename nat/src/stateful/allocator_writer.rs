@@ -146,15 +146,24 @@ impl NatAllocatorWriter {
             return;
         }
 
-        // build a new allocator
+        // pull the current allocator out of the data path. While we build the new allocator,
+        // no reservation will be possible. However, this is better than adding any locking in data path.
+        // New flows requiring masquerading won't get any IP/port. That's fine, they will retry.
+        // We don't yet drop the old allocator: the flows that used it will in fact keep it alive until
+        // they release their ports.
+        let old_allocator = self.allocator.swap(None);
+        debug!("Disabled stateful NAT allocator");
+
+        // build a new allocator. The allocator is not yet visible in data path
         let mut allocator = NatDefaultAllocator::from_config(&nat_config);
-        if curr_allocator.is_some() {
+        if old_allocator.is_some() {
             check_masquerading_flows(flow_table, &nat_config, &mut allocator);
         }
-
-        // replace
+        // make new allocator visible
+        debug!("Installing new stateful NAT allocator...");
         self.allocator.store(Some(Arc::new(allocator)));
         self.config = nat_config;
+        drop(old_allocator);
         debug!("Updated stateful NAT allocator");
     }
 }
