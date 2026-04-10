@@ -88,7 +88,8 @@ use super::{Net, Transport};
 /// Errors that can occur when finalizing a header stack.
 ///
 /// Many invalid combinations (e.g. ICMP4 on IPv6, VXLAN without UDP) are
-/// compile-time impossible via [`Within`] bounds.  The errors here cover
+/// compile-time impossible via [`Within`] bounds (which also prevent
+/// headers from "dangling" without a valid parent).  The errors here cover
 /// length-computation failures that can only be detected at finalization.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -186,43 +187,12 @@ impl EmbeddedAssembler {
     /// and sets IP payload length to the transport header size.
     /// This is done here rather than in the transport methods so that
     /// the call order (net vs transport) does not matter.
-    pub(crate) fn finish(mut self) -> super::EmbeddedHeaders {
+    pub(crate) fn finish(self) -> super::EmbeddedHeaders {
         assert!(
             self.transport.is_none() || self.net.is_some(),
             "embedded transport requires a network layer"
         );
-
-        // Set NextHeader based on transport type.  Done in finish() so
-        // it works regardless of whether net or transport was set first.
-        let nh = match &self.transport {
-            Some(EmbeddedTransport::Tcp(_)) => Some(NextHeader::TCP),
-            Some(EmbeddedTransport::Udp(_)) => Some(NextHeader::UDP),
-            Some(EmbeddedTransport::Icmp4(_)) => Some(NextHeader::ICMP),
-            Some(EmbeddedTransport::Icmp6(_)) => Some(NextHeader::ICMP6),
-            None => None,
-        };
-        if let Some(nh) = nh {
-            set_net_next_header(&mut self.net, nh);
-        }
-
-        let transport_size = self.transport.as_ref().map_or(0u16, |t| t.size().get());
-
-        match &mut self.net {
-            Some(Net::Ipv4(ip)) => {
-                // transport_size is always small enough; ignore the error.
-                let _ = ip.set_payload_len(transport_size);
-                ip.update_checksum(&()).unwrap_or_else(|()| unreachable!());
-            }
-            Some(Net::Ipv6(ip)) => {
-                ip.set_payload_length(transport_size);
-            }
-            None => {}
-        }
-
-        let mut b = EmbeddedHeadersBuilder::default();
-        b.net(self.net).transport(self.transport);
-        #[allow(clippy::unwrap_used)] // all fields have #[builder(default)]
-        b.build().unwrap()
+        fixup_embedded(self.net, self.transport)
     }
 }
 
@@ -237,6 +207,49 @@ fn set_net_next_header(net: &mut Option<Net>, nh: NextHeader) {
         }
         None => {}
     }
+}
+
+/// Build [`EmbeddedHeaders`](super::EmbeddedHeaders) from raw net/transport
+/// layers, applying protocol fixups.
+///
+/// Sets:
+/// 1. `NextHeader` on the IP layer to match the transport variant
+/// 2. IP payload length to the transport header size
+/// 3. IPv4 header checksum (if applicable)
+///
+/// Used by [`EmbeddedAssembler::finish`].
+fn fixup_embedded(
+    mut net: Option<Net>,
+    transport: Option<EmbeddedTransport>,
+) -> super::EmbeddedHeaders {
+    let nh = match &transport {
+        Some(EmbeddedTransport::Tcp(_)) => Some(NextHeader::TCP),
+        Some(EmbeddedTransport::Udp(_)) => Some(NextHeader::UDP),
+        Some(EmbeddedTransport::Icmp4(_)) => Some(NextHeader::ICMP),
+        Some(EmbeddedTransport::Icmp6(_)) => Some(NextHeader::ICMP6),
+        None => None,
+    };
+    if let Some(nh) = nh {
+        set_net_next_header(&mut net, nh);
+    }
+
+    let transport_size = transport.as_ref().map_or(0u16, |t| t.size().get());
+
+    match &mut net {
+        Some(Net::Ipv4(ip)) => {
+            let _ = ip.set_payload_len(transport_size);
+            ip.update_checksum(&()).unwrap_or_else(|()| unreachable!());
+        }
+        Some(Net::Ipv6(ip)) => {
+            ip.set_payload_length(transport_size);
+        }
+        None => {}
+    }
+
+    let mut b = EmbeddedHeadersBuilder::default();
+    b.net(net).transport(transport);
+
+    b.build().unwrap_or_else(|_| unreachable!())
 }
 
 /// Declares that `Self` is a valid child of layer `T`.
@@ -722,6 +735,317 @@ fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Fuzz header-stack generator (bolero integration)
+// ---------------------------------------------------------------------------
+
+/// Fuzz-driven header stacking for property-based tests.
+///
+/// [`FuzzLayer`] chains implement [`ValueGenerator`](bolero::ValueGenerator),
+/// producing [`Headers`] by using [`TypeGenerator`](bolero::TypeGenerator) to
+/// create each layer, then applying caller-supplied mutation closures to pin
+/// specific field values.
+///
+/// # Design
+///
+/// Where [`HeaderStack`] eagerly builds headers using [`Blank`] values,
+/// a fuzz chain stores a *recipe* -- a chain of
+/// `(TypeGenerator, Fn(&mut T))` pairs.  At generation time the chain
+/// walks itself recursively:
+///
+/// 1. Generate the inner (preceding) layers -> `(Headers, PrevLayer)`.
+/// 2. Conform `PrevLayer` and install it into `Headers`.
+/// 3. Generate the current layer via `TypeGenerator`.
+/// 4. Apply the mutation closure.
+/// 5. Return `(Headers, CurrentLayer)`.
+///
+/// The chain is encoded in nested generics ([`ChainBase`] -> [`FuzzLayer`] -> ...),
+/// so each variant of the chain is a unique type -- Rust monomorphizes the
+/// entire build at compile time.
+///
+/// # Examples
+///
+/// ```ignore
+/// use net::headers::builder::*;
+///
+/// bolero::check!()
+///     .with_generator(
+///         ChainBase::new()
+///             .eth(|_| {})
+///             .ipv4(|_| {})
+///             .tcp(|tcp| {
+///                 tcp.set_destination(TcpPort::new_checked(80).unwrap());
+///             }),
+///     )
+///     .for_each(|headers: &Headers| {
+///         // `headers` has fuzzed values everywhere except dst port.
+///     });
+/// ```
+#[cfg(any(test, feature = "bolero"))]
+mod fuzz {
+    use std::marker::PhantomData;
+
+    use bolero::{Driver, TypeGenerator, ValueGenerator};
+
+    use super::{BuildError, Headers, Install, Within, fixup_lengths};
+
+    mod sealed {
+        pub trait Sealed {}
+        impl Sealed for super::ChainBase {}
+        impl<Inner, Layer, Mutation> Sealed for super::FuzzLayer<Inner, Layer, Mutation> {}
+    }
+
+    /// Recursive generation of the fuzz header chain.
+    ///
+    /// Each implementor can produce a `(Headers, Top)` pair from a
+    /// [`Driver`], where `Top` is the layer that has been generated
+    /// but **not yet installed** (so the next layer can [`Within::conform`]
+    /// it first).
+    ///
+    /// This trait is used internally by the
+    /// only [`ChainBase`]
+    /// and [`FuzzLayer`] implement it.
+    pub trait GenerateChain: sealed::Sealed {
+        /// The type of the layer currently held at the top of the chain.
+        ///
+        /// For [`ChainBase`] this is `()` (no layer yet).
+        type Top;
+
+        /// Walk the chain, producing a [`Headers`] and the not-yet-installed
+        /// top layer.
+        fn generate_chain<D: Driver>(&self, driver: &mut D) -> Option<(Headers, Self::Top)>;
+    }
+
+    /// Convenience entry point for fuzz header generation.
+    ///
+    /// Equivalent to [`ChainBase::new()`] -- returns a fresh chain ready
+    /// for `.eth(...)`, `.ipv4(...)`, etc.
+    #[must_use]
+    pub fn header_chain() -> ChainBase {
+        ChainBase::new()
+    }
+
+    /// The starting point for a fuzz chain -- analogous to [`super::HeaderStack<()>`].
+    #[derive(Default)]
+    #[non_exhaustive]
+    pub struct ChainBase;
+
+    impl ChainBase {
+        /// Create a new fuzz chain.
+        ///
+        /// Always starts empty, just like [`super::HeaderStack::new`].
+        #[must_use]
+        pub const fn new() -> Self {
+            ChainBase
+        }
+
+        /// Push a new layer onto the chain.
+        ///
+        /// This is the generic version; most callers use the named
+        /// convenience methods (`.eth(...)`, `.ipv4(...)`, ...).
+        pub fn stack<U, N>(self, mutate: N) -> FuzzLayer<Self, U, N>
+        where
+            U: TypeGenerator + Within<()>,
+            N: Fn(&mut U),
+        {
+            FuzzLayer {
+                inner: self,
+                mutate,
+                _layer: PhantomData,
+            }
+        }
+
+        /// Push an `Eth` layer.
+        pub fn eth(
+            self,
+            mutate: impl Fn(&mut crate::eth::Eth),
+        ) -> FuzzLayer<Self, crate::eth::Eth, impl Fn(&mut crate::eth::Eth)> {
+            self.stack(mutate)
+        }
+    }
+
+    impl GenerateChain for ChainBase {
+        type Top = ();
+
+        fn generate_chain<D: Driver>(&self, _driver: &mut D) -> Option<(Headers, ())> {
+            Some((Headers::default(), ()))
+        }
+    }
+
+    /// One link in a fuzz header chain.
+    ///
+    /// - `Inner` -- the preceding chain ([`ChainBase`] or another `FuzzLayer`).
+    /// - `Layer` -- the header type held at this position.
+    /// - `Mutation`     -- the mutation closure `Fn(&mut Layer)`.
+    pub struct FuzzLayer<Inner, Layer, Mutation> {
+        inner: Inner,
+        mutate: Mutation,
+        _layer: PhantomData<Layer>,
+    }
+
+    impl<Inner, Layer, Mutation> GenerateChain for FuzzLayer<Inner, Layer, Mutation>
+    where
+        Inner: GenerateChain,
+        Layer: TypeGenerator + Within<Inner::Top>,
+        Mutation: Fn(&mut Layer),
+        Headers: Install<Inner::Top> + Install<Layer>,
+    {
+        type Top = Layer;
+
+        fn generate_chain<D: Driver>(&self, driver: &mut D) -> Option<(Headers, Layer)> {
+            let (mut headers, mut prev) = self.inner.generate_chain(driver)?;
+            Layer::conform(&mut prev);
+            headers.install(prev);
+
+            let mut layer: Layer = driver.produce()?;
+            (self.mutate)(&mut layer);
+            Some((headers, layer))
+        }
+    }
+
+    /// Helper macro to generate named layer methods on [`FuzzLayer`].
+    ///
+    /// Each method delegates to [`FuzzLayer::stack`] with the concrete
+    /// header type, enforcing the `TypeGenerator + Within<Layer>` bound.
+    macro_rules! fuzz_layer_method {
+        ($(#[$meta:meta])* $method:ident, $header:ty) => {
+            $(#[$meta])*
+            pub fn $method(
+                self,
+                f: impl Fn(&mut $header),
+            ) -> FuzzLayer<Self, $header, impl Fn(&mut $header)>
+            where
+                $header: TypeGenerator + Within<Layer>,
+            {
+                self.stack(f)
+            }
+        };
+    }
+
+    impl<Inner, Layer, Mutation> FuzzLayer<Inner, Layer, Mutation>
+    where
+        Inner: GenerateChain,
+        Layer: TypeGenerator + Within<Inner::Top>,
+        Mutation: Fn(&mut Layer),
+        Headers: Install<Inner::Top> + Install<Layer>,
+    {
+        /// Push a new layer onto the stack.
+        ///
+        /// At generation time, the layer is created via
+        /// [`TypeGenerator::generate`], then `mutate` is applied.
+        pub fn stack<U, N>(self, mutate: N) -> FuzzLayer<Self, U, N>
+        where
+            U: TypeGenerator + Within<Layer>,
+            N: Fn(&mut U),
+        {
+            FuzzLayer {
+                inner: self,
+                mutate,
+                _layer: PhantomData,
+            }
+        }
+
+        fuzz_layer_method!(
+            /// Push an `Eth` layer.
+            eth,
+            crate::eth::Eth
+        );
+        fuzz_layer_method!(
+            /// Push a `Vlan` layer.
+            vlan,
+            crate::vlan::Vlan
+        );
+        fuzz_layer_method!(
+            /// Push an `Ipv4` layer.
+            ipv4,
+            crate::ipv4::Ipv4
+        );
+        fuzz_layer_method!(
+            /// Push an `Ipv6` layer.
+            ipv6,
+            crate::ipv6::Ipv6
+        );
+        fuzz_layer_method!(
+            /// Push a `Tcp` layer.
+            tcp,
+            crate::tcp::Tcp
+        );
+        fuzz_layer_method!(
+            /// Push a `Udp` layer.
+            udp,
+            crate::udp::Udp
+        );
+        fuzz_layer_method!(
+            /// Push an `Icmp4` layer.
+            icmp4,
+            crate::icmp4::Icmp4
+        );
+        fuzz_layer_method!(
+            /// Push an `Icmp6` layer.
+            icmp6,
+            crate::icmp6::Icmp6
+        );
+        fuzz_layer_method!(
+            /// Push a `Vxlan` layer.
+            vxlan,
+            crate::vxlan::Vxlan
+        );
+    }
+
+    // -- ValueGenerator impls ------------------------------------------------
+    //
+    // Any fuzz chain can be passed directly to `bolero::check!().with_generator(...)`
+    // without an intermediate wrapper -- no `.finish()` needed.
+
+    impl<Inner, Layer, Mutation> ValueGenerator for FuzzLayer<Inner, Layer, Mutation>
+    where
+        Inner: GenerateChain,
+        Layer: TypeGenerator + Within<Inner::Top>,
+        Mutation: Fn(&mut Layer),
+        Headers: Install<Inner::Top> + Install<Layer>,
+    {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Headers> {
+            let (mut headers, top) = self.generate_chain(driver)?;
+            headers.install(top);
+            fixup_lengths(&mut headers, &[]).ok()?;
+            Some(headers)
+        }
+    }
+
+    impl<Inner, Layer, Mutation> FuzzLayer<Inner, Layer, Mutation>
+    where
+        Inner: GenerateChain,
+        Layer: TypeGenerator + Within<Inner::Top>,
+        Mutation: Fn(&mut Layer),
+        Headers: Install<Inner::Top> + Install<Layer>,
+    {
+        /// Generate headers with an explicit payload.
+        ///
+        /// Unlike the `ValueGenerator` impl (which uses an empty payload),
+        /// this method takes a `payload` slice and passes it to
+        /// [`fixup_lengths`](super::fixup_lengths) so that IP/UDP length
+        /// fields account for the trailing data.
+        ///
+        /// Returns `None` if generation fails, or `Some(Err(...))` if
+        /// length fixup overflows.
+        #[must_use]
+        pub fn generate_with_payload<D: Driver>(
+            &self,
+            driver: &mut D,
+            payload: &[u8],
+        ) -> Option<Result<Headers, BuildError>> {
+            let (mut headers, top) = self.generate_chain(driver)?;
+            headers.install(top);
+            Some(fixup_lengths(&mut headers, payload).map(|()| headers))
+        }
+    }
+}
+
+#[cfg(any(test, feature = "bolero"))]
+pub use fuzz::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1113,5 +1437,64 @@ mod tests {
                 );
             },
         );
+    }
+
+    // -- Fuzz ValueGenerator tests -------------------------------------------
+
+    #[test]
+    fn fuzz_ipv4_tcp_dst_port_pinned() {
+        bolero::check!()
+            .with_generator(header_chain().eth(|_| {}).ipv4(|_| {}).tcp(|tcp| {
+                tcp.set_destination(TcpPort::new_checked(80).unwrap());
+            }))
+            .cloned()
+            .for_each(|headers| {
+                let Transport::Tcp(tcp) = headers.transport().unwrap() else {
+                    panic!("expected Tcp");
+                };
+                assert_eq!(
+                    tcp.destination(),
+                    TcpPort::new_checked(80).unwrap(),
+                    "destination port should have been pinned by the mutation"
+                );
+            });
+    }
+
+    #[test]
+    fn fuzz_ipv6_udp_vxlan_conforms() {
+        let generator = ChainBase::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .udp(|_| {})
+            .vxlan(|_| {});
+
+        bolero::check!()
+            .with_generator(generator)
+            .cloned()
+            .for_each(|headers| {
+                // Eth -> IPV6
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
+                // UDP -> VXLAN port
+                let Transport::Udp(udp) = headers.transport().unwrap() else {
+                    panic!("expected Udp");
+                };
+                assert_eq!(udp.destination(), Vxlan::PORT);
+            });
+    }
+
+    #[test]
+    fn fuzz_round_trips_through_parse() {
+        let generator = ChainBase::new().eth(|_| {}).ipv4(|_| {}).tcp(|_| {});
+
+        bolero::check!()
+            .with_generator(generator)
+            .cloned()
+            .for_each(|headers| {
+                let mut test_buffer = vec![0u8; headers.size().get() as usize];
+                headers.deparse(&mut test_buffer).unwrap();
+                let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
+                assert_eq!(consumed.get() as usize, headers.size().get() as usize);
+                assert_eq!(headers, headers2, "fuzz round-trip failed");
+            });
     }
 }
