@@ -224,14 +224,13 @@ fn translate_inner_tcp_udp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use etherparse::icmpv4::DestUnreachableHeader;
-    use etherparse::{IcmpEchoHeader, Icmpv4Type};
     use net::buffer::TestBuffer;
     use net::eth::Eth;
     use net::eth::ethtype::EthType;
     use net::eth::mac::{DestinationMac, Mac, SourceMac};
     use net::headers::{HeadersBuilder, Net, Transport};
     use net::icmp4::Icmp4;
+    use net::icmp4::{Icmp4DestUnreachable, Icmp4EchoRequest, Icmp4Type};
     use net::ip::NextHeader;
     use net::ipv4::Ipv4;
     use net::packet::Packet;
@@ -309,8 +308,7 @@ mod tests {
         ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
         ipv4.set_next_header(NextHeader::ICMP);
 
-        let icmp_type = Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 1, seq: 1 });
-        let icmp = Icmp4::with_type(icmp_type);
+        let icmp = Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 1, seq: 1 }));
 
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
@@ -333,8 +331,7 @@ mod tests {
         ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
         ipv4.set_next_header(NextHeader::ICMP);
 
-        let icmp_type = Icmpv4Type::DestinationUnreachable(DestUnreachableHeader::Network);
-        let icmp = Icmp4::with_type(icmp_type);
+        let icmp = Icmp4::with_type(Icmp4Type::DestUnreachable(Icmp4DestUnreachable::Network));
 
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));

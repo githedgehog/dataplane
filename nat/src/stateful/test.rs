@@ -12,7 +12,6 @@ mod tests {
     use config::external::overlay::vpcpeering::{
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
-    use etherparse::Icmpv4Type;
     use flow_entry::flow_table::{FlowLookup, FlowTable};
     use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
     use net::buffer::{PacketBufferMut, TestBuffer};
@@ -21,6 +20,7 @@ mod tests {
     use net::headers::{
         EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
     };
+    use net::icmp4::Icmp4Type;
     use net::icmp4::TruncatedIcmp4;
     use net::ip::NextHeader;
     use net::packet::test_utils::{
@@ -649,10 +649,10 @@ mod tests {
                 (udp.source().into(), udp.destination().into())
             }
             EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)) => {
-                let Icmpv4Type::EchoRequest(echo_header) = icmp.icmp_type() else {
+                let Icmp4Type::EchoRequest(echo) = icmp.icmp_type() else {
                     unreachable!();
                 };
-                (echo_header.id, echo_header.seq)
+                (echo.id, echo.seq)
             }
             _ => unreachable!(),
         };
