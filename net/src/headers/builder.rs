@@ -60,7 +60,7 @@
 
 use std::num::NonZero;
 
-use etherparse::{IcmpEchoHeader, Icmpv4Type, Icmpv6Type};
+use etherparse::{IcmpEchoHeader, Icmpv6Type};
 
 use crate::checksum::Checksum;
 use crate::eth::Eth;
@@ -636,7 +636,9 @@ impl Blank for Udp {
 
 impl Blank for Icmp4 {
     fn blank() -> Self {
-        Icmp4::with_type(Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 0, seq: 0 }))
+        Icmp4::with_type(crate::icmp4::Icmp4Type::EchoRequest(
+            crate::icmp4::Icmp4EchoRequest { id: 0, seq: 0 },
+        ))
     }
 }
 

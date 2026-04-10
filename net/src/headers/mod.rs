@@ -1296,6 +1296,7 @@ mod test {
         use crate::eth::mac::{DestinationMac, Mac, SourceMac};
         use crate::headers::{Headers, HeadersBuilder, Net, Transport};
         use crate::icmp4::Icmp4;
+        use crate::icmp4::{Icmp4EchoRequest, Icmp4Type};
         use crate::icmp6::Icmp6;
         use crate::ip::NextHeader;
         use crate::ip::dscp::Dscp;
@@ -1305,7 +1306,7 @@ mod test {
         use crate::parse::DeParse;
         use crate::tcp::Tcp;
         use crate::udp::Udp;
-        use etherparse::{IcmpEchoHeader, Icmpv4Type, Icmpv6Type};
+        use etherparse::{IcmpEchoHeader, Icmpv6Type};
         use std::net::{Ipv4Addr, Ipv6Addr};
 
         pub(super) fn eth(ethertype: EthType) -> Eth {
@@ -1358,7 +1359,7 @@ mod test {
 
         pub(super) fn icmp4() -> Icmp4 {
             let mut icmp4 =
-                Icmp4::with_type(Icmpv4Type::EchoRequest(IcmpEchoHeader { id: 18, seq: 2 }));
+                Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 18, seq: 2 }));
             icmp4.set_checksum(1234.into()).unwrap();
             icmp4
         }
