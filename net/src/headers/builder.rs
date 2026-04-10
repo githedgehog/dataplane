@@ -1007,6 +1007,7 @@ fn fixup_lengths(headers: &mut Headers, payload: &[u8]) -> Result<(), BuildError
 
     Ok(())
 }
+
 // ---------------------------------------------------------------------------
 // Fuzz header-stack generator (bolero integration)
 // ---------------------------------------------------------------------------
@@ -1068,8 +1069,8 @@ mod fuzz {
     /// next link can [`conform`](Within::conform) and install it.
     ///
     /// This trait is sealed --
-    /// only [`ChainBase`]
-    /// and [`FuzzLayer`] implement it.
+    /// only [`ChainBase`], [`FuzzLayer`],
+    /// [`FuzzEmbeddedNet`], and [`FuzzEmbeddedFull`] implement it.
     pub trait GenerateChain: sealed::Sealed {
         /// The header type sitting at the top of the stack (not yet installed).
         type Top;
@@ -1253,6 +1254,58 @@ mod fuzz {
             vxlan,
             crate::vxlan::Vxlan
         );
+
+        // ICMPv4 subtype layers
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv4` Destination Unreachable.
+            dest_unreachable, super::Icmp4DestUnreachable
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv4` Redirect.
+            redirect, super::Icmp4Redirect
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv4` Time Exceeded.
+            time_exceeded, super::Icmp4TimeExceeded
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv4` Parameter Problem.
+            param_problem, super::Icmp4ParamProblem
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv4` Echo Request.
+            echo_request, super::Icmp4EchoRequest
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv4` Echo Reply.
+            echo_reply, super::Icmp4EchoReply
+        );
+
+        // ICMPv6 subtype layers
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv6` Destination Unreachable.
+            dest_unreachable6, super::Icmp6DestUnreachable
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv6` Packet Too Big.
+            packet_too_big6, super::Icmp6PacketTooBig
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv6` Time Exceeded.
+            time_exceeded6, super::Icmp6TimeExceeded
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv6` Parameter Problem.
+            param_problem6, super::Icmp6ParamProblem
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv6` Echo Request.
+            echo_request6, super::Icmp6EchoRequest
+        );
+        fuzz_layer_method!(
+            /// Specialize as `ICMPv6` Echo Reply.
+            echo_reply6, super::Icmp6EchoReply
+        );
     }
 
     // -- ValueGenerator impls ------------------------------------------------
@@ -1303,6 +1356,453 @@ mod fuzz {
             Some(fixup_lengths(&mut headers, payload).map(|()| headers))
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Fuzz: ICMP subtypes and embedded header generation
+    // -----------------------------------------------------------------------
+
+    use super::{
+        EmbeddedTransport, Icmp4DestUnreachable, Icmp4EchoReply, Icmp4EchoRequest,
+        Icmp4ParamProblem, Icmp4Redirect, Icmp4RedirectCode, Icmp4TimeExceeded,
+        Icmp6DestUnreachable, Icmp6EchoReply, Icmp6EchoRequest, Icmp6PacketTooBig,
+        Icmp6ParamProblem, Icmp6ParamProblemCode, Icmp6TimeExceeded, fixup_embedded,
+    };
+    use crate::headers::Net;
+    use crate::icmp4::{Icmp4, TruncatedIcmp4};
+    use crate::icmp6::{Icmp6, TruncatedIcmp6};
+    use crate::ipv4::Ipv4;
+    use crate::ipv6::Ipv6;
+    use crate::tcp::{Tcp, TruncatedTcp};
+    use crate::udp::{TruncatedUdp, Udp};
+
+    // -- TypeGenerator impls for ICMP subtypes --------------------------------
+
+    fn pick<D: Driver, const N: usize, T: Copy>(driver: &mut D, items: [T; N]) -> Option<T> {
+        let idx = driver.gen_usize(std::ops::Bound::Included(&0), std::ops::Bound::Excluded(&N))?;
+        Some(items[idx])
+    }
+
+    impl TypeGenerator for Icmp4DestUnreachable {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let variant: u8 =
+                driver.gen_u8(std::ops::Bound::Included(&0), std::ops::Bound::Included(&5))?;
+            Some(match variant {
+                0 => Self::Network,
+                1 => Self::Host,
+                2 => Self::Protocol,
+                3 => Self::Port,
+                4 => Self::FragmentationNeeded {
+                    next_hop_mtu: std::num::NonZero::new(
+                        driver
+                            .gen_u16(std::ops::Bound::Included(&68), std::ops::Bound::Unbounded)?,
+                    ),
+                },
+                _ => Self::SourceRouteFailed,
+            })
+        }
+    }
+
+    impl TypeGenerator for Icmp4Redirect {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let code = pick(
+                driver,
+                [
+                    Icmp4RedirectCode::Network,
+                    Icmp4RedirectCode::Host,
+                    Icmp4RedirectCode::TosNetwork,
+                    Icmp4RedirectCode::TosHost,
+                ],
+            )?;
+            let gateway: crate::ipv4::UnicastIpv4Addr = driver.produce()?;
+            Some(Self::new(code, gateway))
+        }
+    }
+
+    impl TypeGenerator for Icmp4TimeExceeded {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            pick(driver, [Self::TtlExceeded, Self::FragmentReassembly])
+        }
+    }
+
+    impl TypeGenerator for Icmp4ParamProblem {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let variant: u8 =
+                driver.gen_u8(std::ops::Bound::Included(&0), std::ops::Bound::Included(&2))?;
+            Some(match variant {
+                0 => Self::PointerIndicatesError(driver.produce()?),
+                1 => Self::MissingRequiredOption,
+                _ => Self::BadLength,
+            })
+        }
+    }
+
+    impl TypeGenerator for Icmp4EchoRequest {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(Self {
+                id: driver.produce()?,
+                seq: driver.produce()?,
+            })
+        }
+    }
+
+    impl TypeGenerator for Icmp4EchoReply {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(Self {
+                id: driver.produce()?,
+                seq: driver.produce()?,
+            })
+        }
+    }
+
+    impl TypeGenerator for Icmp6DestUnreachable {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            pick(
+                driver,
+                [
+                    Self::NoRoute,
+                    Self::Prohibited,
+                    Self::BeyondScope,
+                    Self::Address,
+                    Self::Port,
+                    Self::SourceAddressFailedPolicy,
+                    Self::RejectRoute,
+                ],
+            )
+        }
+    }
+
+    impl TypeGenerator for Icmp6PacketTooBig {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let mtu =
+                driver.gen_u32(std::ops::Bound::Included(&1280), std::ops::Bound::Unbounded)?;
+            Some(Self::new(mtu).unwrap_or_else(|_| unreachable!()))
+        }
+    }
+
+    impl TypeGenerator for Icmp6TimeExceeded {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            pick(driver, [Self::HopLimitExceeded, Self::FragmentReassembly])
+        }
+    }
+
+    impl TypeGenerator for Icmp6ParamProblem {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let code = pick(
+                driver,
+                [
+                    Icmp6ParamProblemCode::ErroneousHeaderField,
+                    Icmp6ParamProblemCode::UnrecognizedNextHeader,
+                    Icmp6ParamProblemCode::UnrecognizedIpv6Option,
+                ],
+            )?;
+            Some(Self {
+                code,
+                pointer: driver.produce()?,
+            })
+        }
+    }
+
+    impl TypeGenerator for Icmp6EchoRequest {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(Self {
+                id: driver.produce()?,
+                seq: driver.produce()?,
+            })
+        }
+    }
+
+    impl TypeGenerator for Icmp6EchoReply {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            Some(Self {
+                id: driver.produce()?,
+                seq: driver.produce()?,
+            })
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Embedded ICMP header generation (flattened into the main chain)
+    // -----------------------------------------------------------------------
+
+    /// Helper to generate a net layer via [`TypeGenerator`], apply the
+    /// mutation, and wrap in [`Net`].
+    trait GenerateNet: TypeGenerator {
+        fn generate_and_wrap<D: Driver>(driver: &mut D, mutate: &impl Fn(&mut Self))
+        -> Option<Net>;
+    }
+
+    impl GenerateNet for Ipv4 {
+        fn generate_and_wrap<D: Driver>(
+            driver: &mut D,
+            mutate: &impl Fn(&mut Self),
+        ) -> Option<Net> {
+            let mut ip = Ipv4::generate(driver)?;
+            mutate(&mut ip);
+            Some(Net::Ipv4(ip))
+        }
+    }
+
+    impl GenerateNet for Ipv6 {
+        fn generate_and_wrap<D: Driver>(
+            driver: &mut D,
+            mutate: &impl Fn(&mut Self),
+        ) -> Option<Net> {
+            let mut ip = Ipv6::generate(driver)?;
+            mutate(&mut ip);
+            Some(Net::Ipv6(ip))
+        }
+    }
+
+    /// Helper to generate a transport layer via [`TypeGenerator`], apply the
+    /// mutation, and wrap in [`EmbeddedTransport`].
+    trait GenerateEmbeddedTransport: TypeGenerator {
+        fn generate_and_wrap<D: Driver>(
+            driver: &mut D,
+            mutate: &impl Fn(&mut Self),
+        ) -> Option<EmbeddedTransport>;
+    }
+
+    impl GenerateEmbeddedTransport for Tcp {
+        fn generate_and_wrap<D: Driver>(
+            driver: &mut D,
+            mutate: &impl Fn(&mut Self),
+        ) -> Option<EmbeddedTransport> {
+            let mut tcp = Tcp::generate(driver)?;
+            mutate(&mut tcp);
+            Some(EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(tcp)))
+        }
+    }
+
+    impl GenerateEmbeddedTransport for Udp {
+        fn generate_and_wrap<D: Driver>(
+            driver: &mut D,
+            mutate: &impl Fn(&mut Self),
+        ) -> Option<EmbeddedTransport> {
+            let mut udp = Udp::generate(driver)?;
+            mutate(&mut udp);
+            Some(EmbeddedTransport::Udp(TruncatedUdp::FullHeader(udp)))
+        }
+    }
+
+    impl GenerateEmbeddedTransport for Icmp4 {
+        fn generate_and_wrap<D: Driver>(
+            driver: &mut D,
+            mutate: &impl Fn(&mut Self),
+        ) -> Option<EmbeddedTransport> {
+            let mut icmp = Icmp4::generate(driver)?;
+            mutate(&mut icmp);
+            Some(EmbeddedTransport::Icmp4(TruncatedIcmp4::FullHeader(icmp)))
+        }
+    }
+
+    impl GenerateEmbeddedTransport for Icmp6 {
+        fn generate_and_wrap<D: Driver>(
+            driver: &mut D,
+            mutate: &impl Fn(&mut Self),
+        ) -> Option<EmbeddedTransport> {
+            let mut icmp = Icmp6::generate(driver)?;
+            mutate(&mut icmp);
+            Some(EmbeddedTransport::Icmp6(TruncatedIcmp6::FullHeader(icmp)))
+        }
+    }
+
+    // -- FuzzEmbeddedNet: ICMP layer + embedded net, no transport ------------
+
+    /// An ICMP fuzz layer with an embedded network header but no transport.
+    ///
+    /// Obtained by calling `.embed_ipv4(...)` or `.embed_ipv6(...)` on a
+    /// an ICMP error subtype layer (e.g. `Icmp4DestUnreachable`).
+    ///
+    /// Chain `.embed_tcp(...)`, `.embed_udp(...)`, etc. to add an embedded
+    /// transport, or use directly as a [`ValueGenerator`] (net-only
+    /// embedded headers).
+    pub struct FuzzEmbeddedNet<S, N, NM> {
+        layer: S,
+        net_mutate: NM,
+        _net: PhantomData<N>,
+    }
+
+    impl<S, N, NM> sealed::Sealed for FuzzEmbeddedNet<S, N, NM> {}
+
+    impl<S, N, NM> GenerateChain for FuzzEmbeddedNet<S, N, NM>
+    where
+        S: GenerateChain,
+        N: GenerateNet,
+        NM: Fn(&mut N),
+    {
+        type Top = S::Top;
+
+        fn generate_chain<D: Driver>(&self, driver: &mut D) -> Option<(Headers, Self::Top)> {
+            let (mut headers, top) = self.layer.generate_chain(driver)?;
+            let net = N::generate_and_wrap(driver, &self.net_mutate)?;
+            headers.embedded_ip = Some(fixup_embedded(Some(net), None));
+            Some((headers, top))
+        }
+    }
+
+    impl<S, N, NM> ValueGenerator for FuzzEmbeddedNet<S, N, NM>
+    where
+        S: GenerateChain,
+        N: GenerateNet,
+        NM: Fn(&mut N),
+        Headers: Install<S::Top>,
+    {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let (mut headers, top) = self.generate_chain(driver)?;
+            headers.install(top);
+            fixup_lengths(&mut headers, &[]).ok()?;
+            Some(headers)
+        }
+    }
+
+    macro_rules! fuzz_embedded_transport_method {
+        ($(#[$meta:meta])* $method:ident, $transport:ty) => {
+            $(#[$meta])*
+            pub fn $method(
+                self,
+                f: impl Fn(&mut $transport),
+            ) -> FuzzEmbeddedFull<S, N, NM, $transport, impl Fn(&mut $transport)> {
+                FuzzEmbeddedFull {
+                    layer: self.layer,
+                    net_mutate: self.net_mutate,
+                    transport_mutate: f,
+                    _net: PhantomData,
+                    _transport: PhantomData,
+                }
+            }
+        };
+    }
+
+    impl<S, N, NM> FuzzEmbeddedNet<S, N, NM> {
+        fuzz_embedded_transport_method!(
+            /// Add a fuzzed `Tcp` embedded transport layer.
+            embed_tcp,
+            Tcp
+        );
+        fuzz_embedded_transport_method!(
+            /// Add a fuzzed `Udp` embedded transport layer.
+            embed_udp,
+            Udp
+        );
+        fuzz_embedded_transport_method!(
+            /// Add a fuzzed `Icmp4` embedded transport layer.
+            embed_icmp4,
+            Icmp4
+        );
+        fuzz_embedded_transport_method!(
+            /// Add a fuzzed `Icmp6` embedded transport layer.
+            embed_icmp6,
+            Icmp6
+        );
+    }
+
+    // -- FuzzEmbeddedFull: ICMP layer + embedded net + embedded transport ----
+
+    /// An ICMP fuzz layer with both embedded network and transport headers.
+    ///
+    /// Obtained by calling `.embed_tcp(...)`, `.embed_udp(...)`, etc. on a
+    /// [`FuzzEmbeddedNet`].  This is a terminal chain element -- it
+    /// implements [`ValueGenerator`] and can be passed directly to
+    /// `bolero::check!().with_generator(...)`.
+    pub struct FuzzEmbeddedFull<S, N, NM, T, TM> {
+        layer: S,
+        net_mutate: NM,
+        transport_mutate: TM,
+        _net: PhantomData<N>,
+        _transport: PhantomData<T>,
+    }
+
+    impl<S, N, NM, T, TM> sealed::Sealed for FuzzEmbeddedFull<S, N, NM, T, TM> {}
+
+    impl<S, N, NM, T, TM> GenerateChain for FuzzEmbeddedFull<S, N, NM, T, TM>
+    where
+        S: GenerateChain,
+        N: GenerateNet,
+        NM: Fn(&mut N),
+        T: GenerateEmbeddedTransport,
+        TM: Fn(&mut T),
+    {
+        type Top = S::Top;
+
+        fn generate_chain<D: Driver>(&self, driver: &mut D) -> Option<(Headers, Self::Top)> {
+            let (mut headers, top) = self.layer.generate_chain(driver)?;
+            let net = N::generate_and_wrap(driver, &self.net_mutate)?;
+            let transport = T::generate_and_wrap(driver, &self.transport_mutate)?;
+            headers.embedded_ip = Some(fixup_embedded(Some(net), Some(transport)));
+            Some((headers, top))
+        }
+    }
+
+    impl<S, N, NM, T, TM> ValueGenerator for FuzzEmbeddedFull<S, N, NM, T, TM>
+    where
+        S: GenerateChain,
+        N: GenerateNet,
+        NM: Fn(&mut N),
+        T: GenerateEmbeddedTransport,
+        TM: Fn(&mut T),
+        Headers: Install<S::Top>,
+    {
+        type Output = Headers;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let (mut headers, top) = self.generate_chain(driver)?;
+            headers.install(top);
+            fixup_lengths(&mut headers, &[]).ok()?;
+            Some(headers)
+        }
+    }
+
+    // -- .embed_ipv4() / .embed_ipv6() on ICMP FuzzLayers ---------------------
+
+    macro_rules! impl_fuzz_embedded {
+        ($icmp_ty:ty) => {
+            impl<Inner, Mutation> FuzzLayer<Inner, $icmp_ty, Mutation>
+            where
+                Inner: GenerateChain,
+                $icmp_ty: TypeGenerator + Within<Inner::Top>,
+                Mutation: Fn(&mut $icmp_ty),
+                Headers: Install<Inner::Top> + Install<$icmp_ty>,
+            {
+                /// Add a fuzzed `Ipv4` embedded network layer.
+                pub fn embed_ipv4(
+                    self,
+                    f: impl Fn(&mut Ipv4),
+                ) -> FuzzEmbeddedNet<Self, Ipv4, impl Fn(&mut Ipv4)> {
+                    FuzzEmbeddedNet {
+                        layer: self,
+                        net_mutate: f,
+                        _net: PhantomData,
+                    }
+                }
+
+                /// Add a fuzzed `Ipv6` embedded network layer.
+                pub fn embed_ipv6(
+                    self,
+                    f: impl Fn(&mut Ipv6),
+                ) -> FuzzEmbeddedNet<Self, Ipv6, impl Fn(&mut Ipv6)> {
+                    FuzzEmbeddedNet {
+                        layer: self,
+                        net_mutate: f,
+                        _net: PhantomData,
+                    }
+                }
+            }
+        };
+    }
+
+    // ICMPv4 error subtypes
+    impl_fuzz_embedded!(super::Icmp4DestUnreachable);
+    impl_fuzz_embedded!(super::Icmp4Redirect);
+    impl_fuzz_embedded!(super::Icmp4TimeExceeded);
+    impl_fuzz_embedded!(super::Icmp4ParamProblem);
+
+    // ICMPv6 error subtypes
+    impl_fuzz_embedded!(super::Icmp6DestUnreachable);
+    impl_fuzz_embedded!(super::Icmp6PacketTooBig);
+    impl_fuzz_embedded!(super::Icmp6TimeExceeded);
+    impl_fuzz_embedded!(super::Icmp6ParamProblem);
 }
 
 #[cfg(any(test, feature = "bolero"))]
@@ -1703,5 +2203,171 @@ mod tests {
                 );
             },
         );
+    }
+
+    // -- Fuzz ValueGenerator tests -------------------------------------------
+
+    #[test]
+    fn fuzz_ipv4_tcp_dst_port_pinned() {
+        bolero::check!()
+            .with_generator(
+                header_chain()
+                    .eth(|_| {})
+                    .ipv4(|ip| {
+                        ip.set_source(Ipv4Addr::new(169, 254, 32, 53).try_into().unwrap());
+                    })
+                    .tcp(|tcp| {
+                        tcp.set_destination(TcpPort::new_checked(80).unwrap());
+                    }),
+            )
+            .for_each(|headers| {
+                // Layer ordering invariants (same as HeaderStack).
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV4);
+                let Some(Net::Ipv4(ipv4)) = headers.net() else {
+                    panic!("expected Ipv4");
+                };
+                // source ip is pinned
+                assert_eq!(ipv4.source().inner().octets(), [169, 254, 32, 53]);
+                // next_header is pinned
+                assert_eq!(ipv4.next_header(), NextHeader::TCP);
+
+                let Some(Transport::Tcp(tcp)) = headers.transport() else {
+                    panic!("expected Tcp");
+                };
+                // dst port is pinned
+                assert_eq!(
+                    tcp.destination(),
+                    TcpPort::new_checked(80).unwrap(),
+                    "mutation closure should pin TCP dst port to 80",
+                );
+            });
+    }
+
+    #[test]
+    fn fuzz_ipv6_udp_vxlan_conforms() {
+        let generator = ChainBase::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .udp(|_| {})
+            .vxlan(|_| {});
+
+        bolero::check!()
+            .with_generator(generator)
+            .for_each(|headers| {
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
+                let Some(Net::Ipv6(ipv6)) = headers.net() else {
+                    panic!("expected Ipv6");
+                };
+                assert_eq!(ipv6.next_header(), NextHeader::UDP);
+
+                let Some(Transport::Udp(udp)) = headers.transport() else {
+                    panic!("expected Udp");
+                };
+                assert_eq!(
+                    udp.destination(),
+                    Vxlan::PORT,
+                    "Vxlan conform must set UDP dst to 4789",
+                );
+            });
+    }
+
+    #[test]
+    fn fuzz_round_trips_through_parse() {
+        let generator = ChainBase::new().eth(|_| {}).ipv4(|_| {}).tcp(|_| {});
+
+        bolero::check!()
+            .with_generator(generator)
+            .for_each(|headers| {
+                let mut test_buffer = TestBuffer::new();
+                headers.deparse(test_buffer.as_mut()).unwrap();
+                let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
+                assert_eq!(consumed.get() as usize, headers.size().get() as usize);
+                assert_eq!(headers, &headers2, "fuzz round-trip failed");
+            });
+    }
+
+    #[test]
+    fn fuzz_icmp4_with_embedded_ipv4_tcp() {
+        bolero::check!()
+            .with_generator(
+                header_chain()
+                    .eth(|_| {})
+                    .ipv4(|_| {})
+                    .icmp4(|_| {})
+                    .dest_unreachable(|_| {})
+                    .embed_ipv4(|ip| {
+                        ip.set_destination(std::net::Ipv4Addr::new(10, 0, 0, 1));
+                    })
+                    .embed_tcp(|tcp| {
+                        tcp.set_destination(TcpPort::new_checked(80).unwrap());
+                    }),
+            )
+            .for_each(|headers| {
+                // Outer stack invariants.
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV4);
+                assert!(matches!(headers.transport(), Some(Transport::Icmp4(_))));
+
+                // Embedded headers must be present.
+                let embedded = headers.embedded_ip().expect("embedded should exist");
+                assert!(embedded.net_headers_len() > 0, "inner IP should be present");
+                assert!(
+                    embedded.transport_headers_len() > 0,
+                    "inner transport should be present",
+                );
+            });
+    }
+
+    #[test]
+    fn fuzz_icmp6_with_embedded_ipv6_udp() {
+        let generator = ChainBase::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .icmp6(|_| {})
+            .dest_unreachable6(|_| {})
+            .embed_ipv6(|_| {})
+            .embed_udp(|_| {});
+
+        bolero::check!()
+            .with_generator(generator)
+            .for_each(|headers| {
+                assert_eq!(headers.eth().unwrap().ether_type(), EthType::IPV6);
+                assert!(matches!(headers.transport(), Some(Transport::Icmp6(_))));
+                assert!(headers.embedded_ip().is_some());
+            });
+    }
+
+    #[test]
+    fn fuzz_icmp4_embedded_net_with_udp() {
+        bolero::check!()
+            .with_generator(
+                header_chain()
+                    .eth(|eth| {
+                        eth.set_destination(
+                            Mac([0x02, 0xCA, 0xFA, 0xBA, 0xBE, 0x01])
+                                .try_into()
+                                .unwrap(),
+                        );
+                    })
+                    .ipv4(|ip| {
+                        ip.set_destination([192, 168, 1, 2].into());
+                    })
+                    .icmp4(|_| {})
+                    .dest_unreachable(|_| {})
+                    .embed_ipv4(|ip| {
+                        ip.set_destination([169, 254, 32, 53].into());
+                    })
+                    .embed_udp(|udp| {
+                        udp.set_destination(80.try_into().unwrap());
+                    }),
+            )
+            .for_each(|headers| {
+                assert!(matches!(headers.transport(), Some(Transport::Icmp4(_))));
+                let embedded = headers.embedded_ip().expect("embedded should exist");
+                assert!(embedded.net_headers_len() > 0);
+                let Some(inner_ip) = embedded.try_inner_ipv4() else {
+                    panic!("no embedded ipv4");
+                };
+                assert_eq!(inner_ip.destination().octets(), [169, 254, 32, 53]);
+            });
     }
 }
