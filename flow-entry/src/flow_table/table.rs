@@ -310,6 +310,59 @@ impl FlowTable {
     pub fn lock_read(&self) -> RwLockReadGuard<'_, DashMap<FlowKey, Arc<FlowInfo>, RandomState>> {
         self.table.read().unwrap()
     }
+
+    /// Execute a function for each flow in the table. This is meant to be a replacement to lock_read()
+    /// to avoid exposing any lock.
+    pub fn for_each_flow<F, P>(&self, filter: P, func: F)
+    where
+        F: Fn(&FlowKey, &FlowInfo),
+        P: Fn(&FlowKey, &FlowInfo) -> bool,
+    {
+        let table = self.table.read().unwrap();
+        for flow in table.iter().filter(|flow| filter(flow.key(), flow)) {
+            func(flow.key(), &flow)
+        }
+    }
+
+    /// Build an iterator of all flows in the table. Depending on how costly the processing of `f` in `for_each_flow`
+    /// is, taking a snapshot first may be faster. This is just possible because flow-info's are stored in 'Arc's.
+    /// There is little to no advantage of returning an iterator here because this method allocates anyway (FIXME)
+    /// The snapshot can be restricted with the filter.
+    pub fn snapshot<P>(&self, filter: P) -> impl Iterator<Item = Arc<FlowInfo>>
+    where
+        P: Fn(&FlowKey, &FlowInfo) -> bool,
+    {
+        let table = self.table.read().unwrap();
+        let v: Vec<_> = table
+            .iter()
+            .filter(|flow| filter(flow.key(), flow))
+            .map(|f| f.value().clone())
+            .collect();
+
+        v.into_iter()
+    }
+
+    /// FIXME: this does not provide any advantage
+    /// Need to interleave reads() with periods where we release lock/guard
+    /// I.e. need to chunk it
+    pub fn for_each_flow_sharded<F>(&self, f: F)
+    where
+        F: Fn(&FlowKey, &FlowInfo),
+    {
+        let table = self.table.read().unwrap();
+        for shard in table.shards() {
+            let g = shard.read();
+            unsafe {
+                for (flowkey, flow_info) in g
+                    .iter()
+                    .map(|bucket| bucket.as_ref())
+                    .map(|(key, val)| (key, val.get().as_ref()))
+                {
+                    f(flowkey, flow_info)
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
