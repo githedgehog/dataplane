@@ -311,7 +311,10 @@ impl IcmpProtoKey {
         match icmp.icmp_type() {
             Icmp4Type::EchoRequest(v) => IcmpProtoKey::QueryMsgData(v.id),
             Icmp4Type::EchoReply(v) => IcmpProtoKey::QueryMsgData(v.id),
-            Icmp4Type::TimeExceeded(_) | Icmp4Type::DestUnreachable(_) => {
+            Icmp4Type::DestUnreachable(_)
+            | Icmp4Type::Redirect(_)
+            | Icmp4Type::TimeExceeded(_)
+            | Icmp4Type::ParamProblem(_) => {
                 IcmpProtoKey::ErrorMsgData(EmbeddedPacketData::try_from_packet(packet))
             }
             _ => IcmpProtoKey::Unsupported,
@@ -322,7 +325,10 @@ impl IcmpProtoKey {
         match icmp.icmp_type() {
             Icmp6Type::EchoRequest(v) => IcmpProtoKey::QueryMsgData(v.id),
             Icmp6Type::EchoReply(v) => IcmpProtoKey::QueryMsgData(v.id),
-            Icmp6Type::TimeExceeded(_) | Icmp6Type::DestUnreachable(_) => {
+            Icmp6Type::DestUnreachable(_)
+            | Icmp6Type::PacketTooBig(_)
+            | Icmp6Type::TimeExceeded(_)
+            | Icmp6Type::ParamProblem(_) => {
                 IcmpProtoKey::ErrorMsgData(EmbeddedPacketData::try_from_packet(packet))
             }
             _ => IcmpProtoKey::Unsupported,
