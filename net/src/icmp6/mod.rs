@@ -730,7 +730,7 @@ impl DeParse for Icmp6 {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net};
-    use crate::icmp6::{Icmp6, TruncatedIcmp6};
+    use crate::icmp6::{Icmp6, Icmp6PacketTooBig, TruncatedIcmp6};
     use crate::icmp6::{Icmp6DestUnreachable, Icmp6ParamProblemCode, Icmp6TimeExceeded};
     use crate::ip::NextHeader;
     use crate::ipv6::GenWithNextHeader;
@@ -799,10 +799,12 @@ mod contract {
         type Output = Icmp6;
 
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            // MTU must be >= 1280 (Icmp6PacketTooBig::MIN_MTU) or the
+            // value is rejected to Unknown during type conversion.
+            let mtu = Icmp6PacketTooBig::MIN_MTU
+                + driver.produce::<u32>()? % (u32::MAX - Icmp6PacketTooBig::MIN_MTU + 1);
             let icmp_header = Icmpv6Header {
-                icmp_type: Icmpv6Type::PacketTooBig {
-                    mtu: driver.produce()?,
-                },
+                icmp_type: Icmpv6Type::PacketTooBig { mtu },
                 checksum: driver.produce()?,
             };
             Some(Icmp6(icmp_header))
