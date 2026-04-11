@@ -1036,7 +1036,10 @@ mod tests {
                     Icmp4Type::EchoRequest(_) | Icmp4Type::EchoReply(_) => Some(IpProtoKey::Icmp(
                         IcmpProtoKey::QueryMsgData(driver.produce()?),
                     )),
-                    Icmp4Type::DestUnreachable(_) | Icmp4Type::TimeExceeded(_) => {
+                    Icmp4Type::DestUnreachable(_)
+                    | Icmp4Type::Redirect(_)
+                    | Icmp4Type::TimeExceeded(_)
+                    | Icmp4Type::ParamProblem(_) => {
                         Some(IpProtoKey::Icmp(IcmpProtoKey::ErrorMsgData(None)))
                     }
                     _ => Some(IpProtoKey::Icmp(IcmpProtoKey::Unsupported)),
@@ -1046,7 +1049,10 @@ mod tests {
                     Icmp6Type::EchoRequest(_) | Icmp6Type::EchoReply(_) => Some(IpProtoKey::Icmp(
                         IcmpProtoKey::QueryMsgData(driver.produce()?),
                     )),
-                    Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_) => {
+                    Icmp6Type::DestUnreachable(_)
+                    | Icmp6Type::PacketTooBig(_)
+                    | Icmp6Type::TimeExceeded(_)
+                    | Icmp6Type::ParamProblem(_) => {
                         Some(IpProtoKey::Icmp(IcmpProtoKey::ErrorMsgData(None)))
                     }
                     _ => Some(IpProtoKey::Icmp(IcmpProtoKey::Unsupported)),
