@@ -311,7 +311,7 @@ impl IcmpProtoKey {
         match icmp.icmp_type() {
             Icmp4Type::EchoRequest(v) => IcmpProtoKey::QueryMsgData(v.id),
             Icmp4Type::EchoReply(v) => IcmpProtoKey::QueryMsgData(v.id),
-            Icmp4Type::TimeExceeded(_) | Icmp4Type::DestUnreachable(_) => {
+            _ if icmp.is_error_message() => {
                 IcmpProtoKey::ErrorMsgData(EmbeddedPacketData::try_from_packet(packet))
             }
             _ => IcmpProtoKey::Unsupported,
@@ -322,7 +322,7 @@ impl IcmpProtoKey {
         match icmp.icmp_type() {
             Icmp6Type::EchoRequest(v) => IcmpProtoKey::QueryMsgData(v.id),
             Icmp6Type::EchoReply(v) => IcmpProtoKey::QueryMsgData(v.id),
-            Icmp6Type::TimeExceeded(_) | Icmp6Type::DestUnreachable(_) => {
+            _ if icmp.is_error_message() => {
                 IcmpProtoKey::ErrorMsgData(EmbeddedPacketData::try_from_packet(packet))
             }
             _ => IcmpProtoKey::Unsupported,
@@ -1025,22 +1025,20 @@ mod tests {
                     src_port: driver.produce()?,
                     dst_port: driver.produce()?,
                 })),
-                // To keep in sync with IcmpProtoKey::new_icmp_v4()
                 Transport::Icmp4(icmp) => match icmp.icmp_type() {
                     Icmp4Type::EchoRequest(_) | Icmp4Type::EchoReply(_) => Some(IpProtoKey::Icmp(
                         IcmpProtoKey::QueryMsgData(driver.produce()?),
                     )),
-                    Icmp4Type::DestUnreachable(_) | Icmp4Type::TimeExceeded(_) => {
+                    _ if icmp.is_error_message() => {
                         Some(IpProtoKey::Icmp(IcmpProtoKey::ErrorMsgData(None)))
                     }
                     _ => Some(IpProtoKey::Icmp(IcmpProtoKey::Unsupported)),
                 },
-                // To keep in sync with IcmpProtoKey::new_icmp_v6()
                 Transport::Icmp6(icmp) => match icmp.icmp_type() {
                     Icmp6Type::EchoRequest(_) | Icmp6Type::EchoReply(_) => Some(IpProtoKey::Icmp(
                         IcmpProtoKey::QueryMsgData(driver.produce()?),
                     )),
-                    Icmp6Type::DestUnreachable(_) | Icmp6Type::TimeExceeded(_) => {
+                    _ if icmp.is_error_message() => {
                         Some(IpProtoKey::Icmp(IcmpProtoKey::ErrorMsgData(None)))
                     }
                     _ => Some(IpProtoKey::Icmp(IcmpProtoKey::Unsupported)),
