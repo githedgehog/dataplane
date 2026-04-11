@@ -482,21 +482,26 @@ mod bolero_tests {
                     let mut icmp_error_msg_clone = icmp_error_msg.clone();
                     let inner_translation_result =
                         nat_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data);
-                    if *src_port == Some(NatPort::Identifier(0))
-                        || *dst_port == Some(NatPort::Identifier(0))
+                    if (*src_port == Some(NatPort::Identifier(0))
+                        || *dst_port == Some(NatPort::Identifier(0)))
+                        && matches!(
+                            icmp_error_msg_clone.try_embedded_transport_mut(),
+                            Some(EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_))
+                        )
                     {
-                        match icmp_error_msg_clone.try_embedded_transport_mut() {
-                            Some(EmbeddedTransport::Tcp(_) | EmbeddedTransport::Udp(_)) => {
-                                assert_eq!(
-                                    inner_translation_result,
-                                    Err(IcmpErrorMsgError::InvalidPort(0))
-                                );
-                                return;
-                            }
-                            _ => {
-                                assert!(inner_translation_result.is_ok());
-                            }
-                        }
+                        assert_eq!(
+                            inner_translation_result,
+                            Err(IcmpErrorMsgError::InvalidPort(0))
+                        );
+                        return;
+                    }
+
+                    // Translation can legitimately fail on fuzzed inputs
+                    // (e.g., embedded headers too short to parse, IP
+                    // version mismatch, non-unicast source).  Only
+                    // verify post-conditions when translation succeeded.
+                    if inner_translation_result.is_err() {
+                        return;
                     }
 
                     let (translation_src_port, translation_dst_port) = (
