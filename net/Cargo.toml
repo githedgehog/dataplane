@@ -31,6 +31,9 @@ multi_index_map = { workspace = true, default-features = false, features = ["ser
 rapidhash = { workspace = true }
 rkyv = { workspace = true, features = ["alloc", "bytecheck"]}
 serde = { workspace = true, features = ["derive", "std"] }
+static_assertions = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

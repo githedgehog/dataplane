@@ -36,22 +36,41 @@ pub struct Icmp6(pub(crate) Icmpv6Header);
 // -- ICMPv6 message subtypes ------------------------------------------------
 
 /// `ICMPv6` Destination Unreachable (type 1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::Display,
+    strum_macros::IntoStaticStr,
+    strum_macros::AsRefStr,
+    strum_macros::EnumMessage,
+)]
+#[repr(u8)]
 pub enum Icmp6DestUnreachable {
     /// Code 0: No Route to Destination.
-    NoRoute,
+    #[strum(message = "no route to destination")]
+    NoRoute = 0,
     /// Code 1: Administratively Prohibited.
-    Prohibited,
+    #[strum(message = "administratively prohibited")]
+    Prohibited = 1,
     /// Code 2: Beyond Scope of Source Address.
-    BeyondScope,
+    #[strum(message = "beyond scope of source address")]
+    BeyondScope = 2,
     /// Code 3: Address Unreachable.
-    Address,
+    #[strum(message = "address unreachable")]
+    Address = 3,
     /// Code 4: Port Unreachable.
-    Port,
+    #[strum(message = "port unreachable")]
+    Port = 4,
     /// Code 5: Source Address Failed Ingress/Egress Policy.
-    SourceAddressFailedPolicy,
+    #[strum(message = "source address failed ingress/egress policy")]
+    SourceAddressFailedPolicy = 5,
     /// Code 6: Reject Route to Destination.
-    RejectRoute,
+    #[strum(message = "reject route to destination")]
+    RejectRoute = 6,
 }
 
 impl From<icmpv6::DestUnreachableCode> for Icmp6DestUnreachable {
@@ -134,12 +153,32 @@ impl Icmp6PacketTooBig {
 }
 
 /// `ICMPv6` Time Exceeded (type 3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::Display,
+    strum_macros::IntoStaticStr,
+    strum_macros::AsRefStr,
+    strum_macros::EnumMessage,
+)]
+#[repr(u8)]
 pub enum Icmp6TimeExceeded {
     /// Code 0: Hop Limit Exceeded in Transit.
-    HopLimitExceeded,
+    #[strum(
+        message = "hop limit exceeded",
+        detailed_message = "Hop limit exceeded in transit"
+    )]
+    HopLimitExceeded = 0,
     /// Code 1: Fragment Reassembly Time Exceeded.
-    FragmentReassembly,
+    #[strum(
+        message = "reassembly time exceeded",
+        detailed_message = "Fragment reassembly time exceeded"
+    )]
+    FragmentReassembly = 1,
 }
 
 impl From<icmpv6::TimeExceededCode> for Icmp6TimeExceeded {
@@ -161,30 +200,52 @@ impl From<Icmp6TimeExceeded> for icmpv6::TimeExceededCode {
 }
 
 /// `ICMPv6` Parameter Problem code (type 4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::Display,
+    strum_macros::IntoStaticStr,
+    strum_macros::AsRefStr,
+    strum_macros::EnumMessage,
+)]
 #[repr(u8)]
 pub enum Icmp6ParamProblemCode {
     /// Code 0: Erroneous Header Field Encountered.
+    #[strum(message = "erroneous header field")]
     ErroneousHeaderField = 0,
     /// Code 1: Unrecognized Next Header Type Encountered.
+    #[strum(message = "unrecognized next header")]
     UnrecognizedNextHeader = 1,
     /// Code 2: Unrecognized IPv6 Option Encountered.
+    #[strum(message = "unrecognized IPv6 option")]
     UnrecognizedIpv6Option = 2,
     /// Code 3: IPv6 First Fragment has incomplete IPv6 Header Chain.
+    #[strum(message = "incomplete header chain in first fragment")]
     Ipv6FirstFragmentIncompleteHeaderChain = 3,
     /// Code 4: SR Upper-layer Header Error.
+    #[strum(message = "SR upper-layer header error")]
     SrUpperLayerHeaderError = 4,
     /// Code 5: Unrecognized Next Header type encountered by intermediate node.
+    #[strum(message = "unrecognized next header by intermediate node")]
     UnrecognizedNextHeaderByIntermediateNode = 5,
     /// Code 6: Extension header too big.
+    #[strum(message = "extension header too big")]
     ExtensionHeaderTooBig = 6,
     /// Code 7: Extension header chain too long.
+    #[strum(message = "extension header chain too long")]
     ExtensionHeaderChainTooLong = 7,
     /// Code 8: Too many extension headers.
+    #[strum(message = "too many extension headers")]
     TooManyExtensionHeaders = 8,
     /// Code 9: Too many options in extension header.
+    #[strum(message = "too many options in extension header")]
     TooManyOptionsInExtensionHeader = 9,
     /// Code 10: Option too big.
+    #[strum(message = "option too big")]
     OptionTooBig = 10,
 }
 
@@ -670,9 +731,10 @@ impl DeParse for Icmp6 {
 mod contract {
     use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net};
     use crate::icmp6::{Icmp6, TruncatedIcmp6};
+    use crate::icmp6::{Icmp6DestUnreachable, Icmp6ParamProblemCode, Icmp6TimeExceeded};
     use crate::ip::NextHeader;
     use crate::ipv6::GenWithNextHeader;
-    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse};
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError};
     use crate::tcp::TruncatedTcp;
     use crate::udp::TruncatedUdp;
     use arrayvec::ArrayVec;
@@ -680,20 +742,36 @@ mod contract {
     use etherparse::icmpv6::{
         DestUnreachableCode, ParameterProblemCode, ParameterProblemHeader, TimeExceededCode,
     };
-    use etherparse::{Icmpv6Header, Icmpv6Type};
+    use etherparse::{IcmpEchoHeader, Icmpv6Header, Icmpv6Type};
     use std::num::NonZero;
+    use strum::EnumCount;
+
+    // ICMP code enums must fit in u8 for generator modulus arithmetic.
+    static_assertions::const_assert!(Icmp6DestUnreachable::COUNT <= u8::MAX as usize);
+    static_assertions::const_assert!(Icmp6TimeExceeded::COUNT <= u8::MAX as usize);
+    static_assertions::const_assert!(Icmp6ParamProblemCode::COUNT <= u8::MAX as usize);
 
     /// The number of bytes to use in parsing arbitrary test values for [`Icmp6`]
     pub const BYTE_SLICE_SIZE: usize = 128;
 
     impl TypeGenerator for Icmp6 {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let buf: [u8; BYTE_SLICE_SIZE] = driver.produce()?;
-            let header = match Icmp6::parse(&buf) {
-                Ok((h, _)) => h,
-                Err(e) => unreachable!("{e:?}", e = e),
-            };
-            Some(header)
+            match driver.produce::<u8>()? % 13 {
+                0 => Icmp6DestUnreachableGenerator.generate(driver),
+                1 => Icmp6PacketTooBigGenerator.generate(driver),
+                2 => Icmp6TimeExceededGenerator.generate(driver),
+                3 => Icmp6ParameterProblemGenerator.generate(driver),
+                4 => Icmp6EchoRequestGenerator.generate(driver),
+                5 => Icmp6EchoReplyGenerator.generate(driver),
+                6 => Icmp6RouterSolicitationGenerator.generate(driver),
+                7 => Icmp6RouterAdvertisementGenerator.generate(driver),
+                8 => Icmp6NeighborSolicitationGenerator.generate(driver),
+                9 => Icmp6NeighborAdvertisementGenerator.generate(driver),
+                10 => Icmp6RedirectGenerator.generate(driver),
+                11 => Icmp6InvalidCodeGenerator.generate(driver),
+                // NOTE: if you add a variant, update the modulo above!
+                _ => Icmp6UnknownGenerator.generate(driver),
+            }
         }
     }
 
@@ -701,11 +779,14 @@ mod contract {
     impl ValueGenerator for Icmp6DestUnreachableGenerator {
         type Output = Icmp6;
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv6Header {
                 icmp_type: Icmpv6Type::DestinationUnreachable(
-                    DestUnreachableCode::from_u8(driver.produce::<u8>()? % 7).unwrap(),
+                    DestUnreachableCode::from_u8(
+                        driver.produce::<u8>()? % Icmp6DestUnreachable::COUNT as u8,
+                    )
+                    .unwrap(),
                 ),
                 checksum: driver.produce()?,
             };
@@ -732,11 +813,14 @@ mod contract {
     impl ValueGenerator for Icmp6TimeExceededGenerator {
         type Output = Icmp6;
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv6Header {
                 icmp_type: Icmpv6Type::TimeExceeded(
-                    TimeExceededCode::from_u8(driver.produce::<u8>()? % 2).unwrap(),
+                    TimeExceededCode::from_u8(
+                        driver.produce::<u8>()? % Icmp6TimeExceeded::COUNT as u8,
+                    )
+                    .unwrap(),
                 ),
                 checksum: driver.produce()?,
             };
@@ -748,13 +832,209 @@ mod contract {
     impl ValueGenerator for Icmp6ParameterProblemGenerator {
         type Output = Icmp6;
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv6Header {
                 icmp_type: Icmpv6Type::ParameterProblem(ParameterProblemHeader {
-                    code: ParameterProblemCode::from_u8(driver.produce::<u8>()? % 11).unwrap(),
+                    code: ParameterProblemCode::from_u8(
+                        driver.produce::<u8>()? % Icmp6ParamProblemCode::COUNT as u8,
+                    )
+                    .unwrap(),
                     pointer: driver.produce()?,
                 }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6EchoRequestGenerator;
+    impl ValueGenerator for Icmp6EchoRequestGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::EchoRequest(IcmpEchoHeader {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6EchoReplyGenerator;
+    impl ValueGenerator for Icmp6EchoReplyGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::EchoReply(IcmpEchoHeader {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6RouterSolicitationGenerator;
+    impl ValueGenerator for Icmp6RouterSolicitationGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::RouterSolicitation,
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6RouterAdvertisementGenerator;
+    impl ValueGenerator for Icmp6RouterAdvertisementGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::RouterAdvertisement(
+                    etherparse::icmpv6::RouterAdvertisementHeader {
+                        cur_hop_limit: driver.produce()?,
+                        managed_address_config: driver.produce()?,
+                        other_config: driver.produce()?,
+                        router_lifetime: driver.produce()?,
+                    },
+                ),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6NeighborSolicitationGenerator;
+    impl ValueGenerator for Icmp6NeighborSolicitationGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::NeighborSolicitation,
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6NeighborAdvertisementGenerator;
+    impl ValueGenerator for Icmp6NeighborAdvertisementGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::NeighborAdvertisement(
+                    etherparse::icmpv6::NeighborAdvertisementHeader {
+                        router: driver.produce()?,
+                        solicited: driver.produce()?,
+                        r#override: driver.produce()?,
+                    },
+                ),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6RedirectGenerator;
+    impl ValueGenerator for Icmp6RedirectGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::Redirect,
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    /// Generates `ICMPv6` headers with a known type byte but an
+    /// out-of-range code, which etherparse (or our fixup) maps to
+    /// `Unknown`.  This covers the portion of the `Unknown` value
+    /// space that [`Icmp6UnknownGenerator`] intentionally avoids.
+    struct Icmp6InvalidCodeGenerator;
+    impl ValueGenerator for Icmp6InvalidCodeGenerator {
+        type Output = Icmp6;
+
+        #[allow(clippy::cast_possible_truncation)] // code enums have < 256 variants
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            use etherparse::icmpv6 as c;
+            // (type_u8, first invalid code value)
+            let (type_u8, min_invalid) = match driver.produce::<u8>()? % 11 {
+                0 => (c::TYPE_DST_UNREACH, Icmp6DestUnreachable::COUNT as u8),
+                1 => (c::TYPE_PACKET_TOO_BIG, 1),
+                2 => (c::TYPE_TIME_EXCEEDED, Icmp6TimeExceeded::COUNT as u8),
+                3 => (
+                    c::TYPE_PARAMETER_PROBLEM,
+                    Icmp6ParamProblemCode::COUNT as u8,
+                ),
+                4 => (c::TYPE_ECHO_REQUEST, 1),
+                5 => (c::TYPE_ECHO_REPLY, 1),
+                6 => (c::TYPE_ROUTER_SOLICITATION, 1),
+                7 => (c::TYPE_ROUTER_ADVERTISEMENT, 1),
+                8 => (c::TYPE_NEIGHBOR_SOLICITATION, 1),
+                9 => (c::TYPE_NEIGHBOR_ADVERTISEMENT, 1),
+                _ => (c::TYPE_REDIRECT_MESSAGE, 1),
+            };
+            let range = u8::MAX - min_invalid + 1;
+            let code_u8 = min_invalid + driver.produce::<u8>()? % range;
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::Unknown {
+                    type_u8,
+                    code_u8,
+                    bytes5to8: driver.produce()?,
+                },
+                checksum: driver.produce()?,
+            };
+            Some(Icmp6(icmp_header))
+        }
+    }
+
+    struct Icmp6UnknownGenerator;
+    impl Icmp6UnknownGenerator {
+        /// Map a raw byte to a type value that will not be recognized
+        /// as a known `ICMPv6` type, ensuring round-trip fidelity through
+        /// deparse/parse.
+        fn unknown_type(raw: u8) -> u8 {
+            use etherparse::icmpv6 as c;
+            // Known ICMPv6 type bytes (parsed by etherparse or our
+            // fixup_ndp_types).  Remap collisions to nearby unused values.
+            match raw {
+                c::TYPE_DST_UNREACH => 0,
+                c::TYPE_PACKET_TOO_BIG => 5,
+                c::TYPE_TIME_EXCEEDED => 6,
+                c::TYPE_PARAMETER_PROBLEM => 7,
+                c::TYPE_ECHO_REQUEST => 127,
+                c::TYPE_ECHO_REPLY => 130,
+                c::TYPE_ROUTER_SOLICITATION => 131,
+                c::TYPE_ROUTER_ADVERTISEMENT => 132,
+                c::TYPE_NEIGHBOR_SOLICITATION => 138,
+                c::TYPE_NEIGHBOR_ADVERTISEMENT => 139,
+                c::TYPE_REDIRECT_MESSAGE => 140,
+                v => v,
+            }
+        }
+    }
+    impl ValueGenerator for Icmp6UnknownGenerator {
+        type Output = Icmp6;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv6Header {
+                icmp_type: Icmpv6Type::Unknown {
+                    type_u8: Self::unknown_type(driver.produce()?),
+                    code_u8: driver.produce()?,
+                    bytes5to8: driver.produce()?,
+                },
                 checksum: driver.produce()?,
             };
             Some(Icmp6(icmp_header))

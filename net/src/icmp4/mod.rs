@@ -42,7 +42,7 @@ pub struct Icmp4(pub(crate) Icmpv4Header);
 // compile time (e.g. `.embedded()` is only available on error subtypes).
 
 /// `ICMPv4` Destination Unreachable (type 3).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, strum_macros::EnumCount)]
 pub enum Icmp4DestUnreachable {
     /// Code 0.
     Network,
@@ -138,16 +138,32 @@ impl From<Icmp4DestUnreachable> for icmpv4::DestUnreachableHeader {
 }
 
 /// `ICMPv4` Redirect code (type 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::Display,
+    strum_macros::IntoStaticStr,
+    strum_macros::AsRefStr,
+    strum_macros::EnumMessage,
+)]
+#[repr(u8)]
 pub enum Icmp4RedirectCode {
     /// Code 0: Redirect for the Network.
-    Network,
+    #[strum(message = "redirect for network")]
+    Network = 0,
     /// Code 1: Redirect for the Host.
-    Host,
+    #[strum(message = "redirect for host")]
+    Host = 1,
     /// Code 2: Redirect for Type-of-Service and Network.
-    TosNetwork,
+    #[strum(message = "redirect for ToS and network")]
+    TosNetwork = 2,
     /// Code 3: Redirect for Type-of-Service and Host.
-    TosHost,
+    #[strum(message = "redirect for ToS and host")]
+    TosHost = 3,
 }
 
 impl From<icmpv4::RedirectCode> for Icmp4RedirectCode {
@@ -204,12 +220,29 @@ impl Icmp4Redirect {
 }
 
 /// `ICMPv4` Time Exceeded code (type 11).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::Display,
+    strum_macros::IntoStaticStr,
+    strum_macros::AsRefStr,
+    strum_macros::EnumMessage,
+)]
+#[repr(u8)]
 pub enum Icmp4TimeExceeded {
     /// Code 0: TTL exceeded in transit.
-    TtlExceeded,
+    #[strum(message = "ttl exceeded", detailed_message = "TTL exceeded in transit")]
+    TtlExceeded = 0,
     /// Code 1: Fragment reassembly time exceeded.
-    FragmentReassembly,
+    #[strum(
+        message = "reassembly time exceeded",
+        detailed_message = "Fragment reassembly time exceeded"
+    )]
+    FragmentReassembly = 1,
 }
 
 impl From<icmpv4::TimeExceededCode> for Icmp4TimeExceeded {
@@ -231,14 +264,28 @@ impl From<Icmp4TimeExceeded> for icmpv4::TimeExceededCode {
 }
 
 /// `ICMPv4` Parameter Problem (type 12).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::Display,
+    strum_macros::IntoStaticStr,
+    strum_macros::AsRefStr,
+    strum_macros::EnumMessage,
+)]
+#[repr(u8)]
 pub enum Icmp4ParamProblem {
     /// Code 0: Pointer indicates the error.
-    PointerIndicatesError(u8),
+    #[strum(message = "pointer indicates problem {0}")]
+    PointerIndicatesError(u8) = 0,
     /// Code 1: Missing required option.
-    MissingRequiredOption,
+    #[strum(message = "missing required option")]
+    MissingRequiredOption = 1,
     /// Code 2: Bad length.
-    BadLength,
+    #[strum(message = "bad length")]
+    BadLength = 2,
 }
 
 impl From<icmpv4::ParameterProblemHeader> for Icmp4ParamProblem {
@@ -646,35 +693,46 @@ impl DeParse for Icmp4 {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Net};
-    use crate::icmp4::{Icmp4, TruncatedIcmp4};
+    use crate::icmp4::{
+        Icmp4, Icmp4DestUnreachable, Icmp4ParamProblem, Icmp4RedirectCode, Icmp4TimeExceeded,
+        TruncatedIcmp4,
+    };
     use crate::ip::NextHeader;
     use crate::ipv4::GenWithNextHeader;
-    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
+    use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError};
     use crate::tcp::TruncatedTcp;
     use crate::udp::TruncatedUdp;
     use arrayvec::ArrayVec;
     use bolero::{Driver, TypeGenerator, ValueGenerator};
     use etherparse::icmpv4::{
         DestUnreachableHeader, ParameterProblemHeader, RedirectCode, RedirectHeader,
-        TimeExceededCode,
+        TimeExceededCode, TimestampMessage,
     };
-    use etherparse::{Icmpv4Header, Icmpv4Type};
+    use etherparse::{IcmpEchoHeader, Icmpv4Header, Icmpv4Type};
     use std::num::NonZero;
+    use strum::EnumCount;
+
+    // ICMP code enums must fit in u8 for generator modulus arithmetic.
+    static_assertions::const_assert!(Icmp4DestUnreachable::COUNT <= u8::MAX as usize);
+    static_assertions::const_assert!(Icmp4RedirectCode::COUNT <= u8::MAX as usize);
+    static_assertions::const_assert!(Icmp4TimeExceeded::COUNT <= u8::MAX as usize);
+    static_assertions::const_assert!(Icmp4ParamProblem::COUNT <= u8::MAX as usize);
 
     impl TypeGenerator for Icmp4 {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            // TODO: 20 bytes is far too small to properly test the space of `Icmp4`
-            // We will need better error handling if we want to bump it up tho.
-            let buffer: [u8; 20] = driver.produce()?;
-            let icmp4 = match Icmp4::parse(&buffer) {
-                Ok((icmp4, _)) => icmp4,
-                Err(ParseError::Length(l)) => unreachable!("{:?}", l),
-                Err(ParseError::Invalid(e)) => unreachable!("{:?}", e),
-                Err(ParseError::BufferTooLong(_)) => {
-                    unreachable!()
-                }
-            };
-            Some(icmp4)
+            match driver.produce::<u8>()? % 10 {
+                0 => Icmp4DestUnreachableGenerator.generate(driver),
+                1 => Icmp4RedirectGenerator.generate(driver),
+                2 => Icmp4TimeExceededGenerator.generate(driver),
+                3 => Icmp4ParameterProblemGenerator.generate(driver),
+                4 => Icmp4EchoRequestGenerator.generate(driver),
+                5 => Icmp4EchoReplyGenerator.generate(driver),
+                6 => Icmp4TimestampRequestGenerator.generate(driver),
+                7 => Icmp4TimestampReplyGenerator.generate(driver),
+                8 => Icmp4InvalidCodeGenerator.generate(driver),
+                // NOTE: if you add a variant, update the modulo above!
+                _ => Icmp4UnknownGenerator.generate(driver),
+            }
         }
     }
 
@@ -682,15 +740,15 @@ mod contract {
     impl ValueGenerator for Icmp4DestUnreachableGenerator {
         type Output = Icmp4;
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::cast_possible_truncation)] // code enums have < 256 variants
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv4Header {
                 icmp_type: Icmpv4Type::DestinationUnreachable(
                     DestUnreachableHeader::from_values(
-                        driver.produce::<u8>()? % 16,
+                        driver.produce::<u8>()? % Icmp4DestUnreachable::COUNT as u8,
                         driver.produce()?,
                     )
-                    .unwrap(),
+                    .unwrap_or_else(|| unreachable!()),
                 ),
                 checksum: driver.produce()?,
             };
@@ -702,12 +760,15 @@ mod contract {
     impl ValueGenerator for Icmp4RedirectGenerator {
         type Output = Icmp4;
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::cast_possible_truncation)] // code enums have < 256 variants
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let gateway: crate::ipv4::UnicastIpv4Addr = driver.produce()?;
             let icmp_header = Icmpv4Header {
                 icmp_type: Icmpv4Type::Redirect(RedirectHeader {
-                    code: RedirectCode::from_u8(driver.produce::<u8>()? % 4).unwrap(),
+                    code: RedirectCode::from_u8(
+                        driver.produce::<u8>()? % Icmp4RedirectCode::COUNT as u8,
+                    )
+                    .unwrap_or_else(|| unreachable!()),
                     gateway_internet_address: gateway.inner().octets(),
                 }),
                 checksum: driver.produce()?,
@@ -720,11 +781,16 @@ mod contract {
     impl ValueGenerator for Icmp4TimeExceededGenerator {
         type Output = Icmp4;
 
-        #[allow(clippy::unwrap_used)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            // assert that truncation is impossible by construction
+            static_assertions::const_assert!(Icmp4TimeExceeded::COUNT <= u8::MAX as _);
             let icmp_header = Icmpv4Header {
                 icmp_type: Icmpv4Type::TimeExceeded(
-                    TimeExceededCode::from_u8(driver.produce::<u8>()? % 2).unwrap(),
+                    #[allow(clippy::cast_possible_truncation)] // impossible
+                    TimeExceededCode::from_u8(
+                        driver.produce::<u8>()? % Icmp4TimeExceeded::COUNT as u8,
+                    )
+                    .unwrap_or_else(|| unreachable!()),
                 ),
                 checksum: driver.produce()?,
             };
@@ -736,16 +802,160 @@ mod contract {
     impl ValueGenerator for Icmp4ParameterProblemGenerator {
         type Output = Icmp4;
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
             let icmp_header = Icmpv4Header {
                 icmp_type: Icmpv4Type::ParameterProblem(
                     ParameterProblemHeader::from_values(
-                        driver.produce::<u8>()? % 3,
+                        driver.produce::<u8>()? % Icmp4ParamProblem::COUNT as u8,
                         driver.produce()?,
                     )
                     .unwrap(),
                 ),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4EchoRequestGenerator;
+    impl ValueGenerator for Icmp4EchoRequestGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::EchoRequest(IcmpEchoHeader {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4EchoReplyGenerator;
+    impl ValueGenerator for Icmp4EchoReplyGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::EchoReply(IcmpEchoHeader {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4TimestampRequestGenerator;
+    impl ValueGenerator for Icmp4TimestampRequestGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::TimestampRequest(TimestampMessage {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                    originate_timestamp: driver.produce()?,
+                    receive_timestamp: driver.produce()?,
+                    transmit_timestamp: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4TimestampReplyGenerator;
+    impl ValueGenerator for Icmp4TimestampReplyGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::TimestampReply(TimestampMessage {
+                    id: driver.produce()?,
+                    seq: driver.produce()?,
+                    originate_timestamp: driver.produce()?,
+                    receive_timestamp: driver.produce()?,
+                    transmit_timestamp: driver.produce()?,
+                }),
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    /// Generates `ICMPv4` headers with a known type byte but an
+    /// out-of-range code, which etherparse maps to `Unknown`.  This
+    /// covers the portion of the `Unknown` value space that
+    /// [`Icmp4UnknownGenerator`] intentionally avoids.
+    struct Icmp4InvalidCodeGenerator;
+    impl ValueGenerator for Icmp4InvalidCodeGenerator {
+        type Output = Icmp4;
+
+        #[allow(clippy::cast_possible_truncation)] // code enums have < 256 variants
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            use etherparse::icmpv4 as c;
+            // (type_u8, first invalid code value)
+            let (type_u8, min_invalid) = match driver.produce::<u8>()? % 8 {
+                0 => (c::TYPE_ECHO_REPLY, 1u8),
+                1 => (c::TYPE_DEST_UNREACH, Icmp4DestUnreachable::COUNT as u8),
+                2 => (c::TYPE_REDIRECT, Icmp4RedirectCode::COUNT as u8),
+                3 => (c::TYPE_ECHO_REQUEST, 1),
+                4 => (c::TYPE_TIME_EXCEEDED, Icmp4TimeExceeded::COUNT as u8),
+                5 => (c::TYPE_PARAMETER_PROBLEM, Icmp4ParamProblem::COUNT as u8),
+                6 => (c::TYPE_TIMESTAMP, 1),
+                _ => (c::TYPE_TIMESTAMP_REPLY, 1),
+            };
+            let range = u8::MAX - min_invalid + 1;
+            let code_u8 = min_invalid + driver.produce::<u8>()? % range;
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::Unknown {
+                    type_u8,
+                    code_u8,
+                    bytes5to8: driver.produce()?,
+                },
+                checksum: driver.produce()?,
+            };
+            Some(Icmp4(icmp_header))
+        }
+    }
+
+    struct Icmp4UnknownGenerator;
+    impl Icmp4UnknownGenerator {
+        /// Map a raw byte to a type value that etherparse will not
+        /// recognize as a known `ICMPv4` type, ensuring round-trip
+        /// fidelity through deparse/parse.
+        fn unknown_type(raw: u8) -> u8 {
+            use etherparse::icmpv4 as c;
+            // Known ICMPv4 type bytes.  Remap collisions to nearby
+            // unused values.
+            match raw {
+                c::TYPE_ECHO_REPLY => 1,
+                c::TYPE_DEST_UNREACH => 2,
+                c::TYPE_REDIRECT => 4,
+                c::TYPE_ECHO_REQUEST => 6,
+                c::TYPE_TIME_EXCEEDED => 7,
+                c::TYPE_PARAMETER_PROBLEM => 9,
+                c::TYPE_TIMESTAMP => 10,
+                c::TYPE_TIMESTAMP_REPLY => 15,
+                v => v,
+            }
+        }
+    }
+    impl ValueGenerator for Icmp4UnknownGenerator {
+        type Output = Icmp4;
+
+        fn generate<D: Driver>(&self, driver: &mut D) -> Option<Self::Output> {
+            let icmp_header = Icmpv4Header {
+                icmp_type: Icmpv4Type::Unknown {
+                    type_u8: Self::unknown_type(driver.produce()?),
+                    code_u8: driver.produce()?,
+                    bytes5to8: driver.produce()?,
+                },
                 checksum: driver.produce()?,
             };
             Some(Icmp4(icmp_header))
@@ -902,7 +1112,8 @@ mod contract {
 #[cfg(test)]
 mod test {
     use crate::icmp4::{Icmp4, Icmp4Type};
-    use crate::parse::{DeParse, DeParseError, Parse, ParseError};
+    use crate::parse::{DeParse, IntoNonZeroUSize, Parse};
+    use etherparse::Icmpv4Header;
 
     /// A redirect with a multicast gateway should be treated as unknown
     /// ICMP, since RFC 1122 section 3.2.2.2 requires unicast.
@@ -925,28 +1136,41 @@ mod test {
         );
     }
 
+    fn parse_back_test_helper(input: &Icmp4) {
+        // etherparse requires timestamp slices to be exactly 20 bytes,
+        // so size the buffer to match the header.
+        let size = input.size().into_non_zero_usize().get();
+        let mut buffer = vec![0u8; size];
+        let bytes_written = input
+            .deparse(&mut buffer)
+            .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        let (parsed, bytes_read) =
+            Icmp4::parse(&buffer).unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+        assert_eq!(input, &parsed);
+        assert_eq!(bytes_written, bytes_read);
+        assert_eq!(input.size(), bytes_read);
+    }
+
     #[test]
     fn parse_back() {
-        bolero::check!().with_type().for_each(|input: &Icmp4| {
-            // TODO: 20 bytes is far too small to properly test the space of `Icmp4`
-            // We will need better error handling if we want to bump it up tho.
-            let mut buffer = [0u8; 20];
-            let bytes_written = match input.deparse(&mut buffer) {
-                Ok(bytes_written) => bytes_written,
-                Err(DeParseError::Length(l)) => unreachable!("{:?}", l),
-                Err(DeParseError::Invalid(())) => {
-                    unreachable!()
-                }
-                Err(DeParseError::BufferTooLong(_)) => unreachable!(),
-            };
-            let (parsed, bytes_read) = match Icmp4::parse(&buffer) {
-                Ok((parsed, bytes_read)) => (parsed, bytes_read),
-                Err(ParseError::Invalid(e)) => unreachable!("{e:?}"),
-                Err(ParseError::Length(l)) => unreachable!("{l:?}"),
-                Err(ParseError::BufferTooLong(_)) => unreachable!(),
-            };
-            assert_eq!(input, &parsed);
-            assert_eq!(bytes_written, bytes_read);
-        });
+        bolero::check!()
+            .with_type()
+            .for_each(parse_back_test_helper);
+    }
+
+    /// Parse arbitrary bytes as `ICMPv4` and verify round-trip.
+    ///
+    /// Uses a 20-byte buffer because etherparse requires timestamp
+    /// messages to be exactly 20 bytes (`Icmpv4Header::MAX_LEN`).
+    #[test]
+    fn parse_arbitrary_bytes() {
+        bolero::check!()
+            .with_type()
+            .for_each(|buffer: &[u8; Icmpv4Header::MAX_LEN]| {
+                let (parsed, bytes_read) =
+                    Icmp4::parse(buffer).unwrap_or_else(|e| unreachable!("{e:?}", e = e));
+                assert_eq!(parsed.size(), bytes_read);
+                parse_back_test_helper(&parsed);
+            });
     }
 }
