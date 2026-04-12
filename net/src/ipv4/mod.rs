@@ -267,7 +267,7 @@ impl Ipv4 {
     /// This function does not (and can-not)
     /// check if the assigned [`IpNumber`] is valid for this packet.
     pub fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
-        self.0.protocol = next_header.0;
+        self.0.protocol = next_header.to_ip_number();
         self
     }
 

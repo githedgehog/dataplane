@@ -26,7 +26,7 @@ use tracing::trace;
 /// This is called by the `parse_payload` method on each extension header
 /// type.  The `nh` parameter is the extension header's `next_header` field.
 pub(crate) fn parse_ext_payload(nh: NextHeader, cursor: &mut Reader) -> Option<Header> {
-    match nh.into() {
+    match nh.to_ip_number() {
         IpNumber::TCP => cursor.parse_header::<Tcp, Header>(),
         IpNumber::UDP => cursor.parse_header::<Udp, Header>(),
         IpNumber::IPV6_ICMP => cursor.parse_header::<Icmp6, Header>(),
@@ -52,7 +52,7 @@ pub(crate) fn parse_ext_embedded_payload(
     use crate::tcp::TruncatedTcp;
     use crate::udp::TruncatedUdp;
 
-    match nh.into() {
+    match nh.to_ip_number() {
         IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedHeader>(),
         IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedHeader>(),
         IpNumber::IPV6_ICMP => cursor.parse_header::<TruncatedIcmp6, EmbeddedHeader>(),

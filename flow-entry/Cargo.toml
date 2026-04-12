@@ -17,7 +17,6 @@ bolero = { workspace = true, optional = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }
-etherparse = { workspace = true }
 linkme = { workspace = true }
 net = { workspace = true }
 pipeline = { workspace = true }

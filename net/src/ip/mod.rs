@@ -20,14 +20,16 @@ pub mod ecn;
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Ord, PartialOrd)]
 pub struct NextHeader(pub(crate) IpNumber);
 
-impl From<NextHeader> for IpNumber {
-    fn from(value: NextHeader) -> Self {
-        value.0
+impl NextHeader {
+    /// Convert to the inner etherparse `IpNumber`.
+    #[must_use]
+    pub(crate) fn to_ip_number(self) -> IpNumber {
+        self.0
     }
-}
 
-impl From<IpNumber> for NextHeader {
-    fn from(value: IpNumber) -> Self {
+    /// Wrap an etherparse `IpNumber`.
+    #[must_use]
+    pub(crate) fn from_ip_number(value: IpNumber) -> Self {
         Self(value)
     }
 }

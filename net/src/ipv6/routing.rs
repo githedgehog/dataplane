@@ -33,12 +33,12 @@ impl Routing {
     /// Get the next-header protocol number.
     #[must_use]
     pub fn next_header(&self) -> NextHeader {
-        NextHeader::from(self.0.next_header)
+        NextHeader::from_ip_number(self.0.next_header)
     }
 
     /// Set the next-header protocol number.
     pub fn set_next_header(&mut self, nh: NextHeader) {
-        self.0.next_header = nh.into();
+        self.0.next_header = nh.to_ip_number();
     }
 
     /// The raw payload (excluding next-header and length fields).
