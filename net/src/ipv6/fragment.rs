@@ -11,6 +11,7 @@
 //! [RFC 8200 section 4.5]: https://datatracker.ietf.org/doc/html/rfc8200#section-4.5
 
 use crate::ip::NextHeader;
+use crate::ipv4::frag_offset::FragOffset;
 use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
 use etherparse::Ipv6FragmentHeader;
 use std::num::NonZero;
@@ -30,18 +31,18 @@ impl Fragment {
     /// Get the next-header protocol number.
     #[must_use]
     pub fn next_header(&self) -> NextHeader {
-        NextHeader::from(self.0.next_header)
+        NextHeader::from_ip_number(self.0.next_header)
     }
 
     /// Set the next-header protocol number.
     pub fn set_next_header(&mut self, nh: NextHeader) {
-        self.0.next_header = nh.into();
+        self.0.next_header = nh.to_ip_number();
     }
 
     /// The 13-bit fragment offset in 8-octet units.
     #[must_use]
-    pub fn fragment_offset(&self) -> etherparse::IpFragOffset {
-        self.0.fragment_offset
+    pub fn fragment_offset(&self) -> FragOffset {
+        FragOffset(self.0.fragment_offset)
     }
 
     /// Whether more fragments follow this one.

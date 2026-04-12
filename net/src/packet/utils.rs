@@ -149,7 +149,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Returns None if the packet does not have an IP header
     pub fn ip_proto(&self) -> Option<NextHeader> {
         self.try_ip().map(|net| match net {
-            Ipv4(ipv4) => NextHeader(ipv4.protocol()),
+            Ipv4(ipv4) => ipv4.protocol(),
             Ipv6(ipv6) => ipv6.next_header(),
         })
     }

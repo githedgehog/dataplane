@@ -131,8 +131,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     #[inline]
     fn underlay_qos_from_outer_headers(headers: &Headers) -> (Option<Dscp>, Option<Ecn>) {
         match &headers.net {
-            Some(Net::Ipv4(ipv4)) => (Some(Dscp::from(ipv4.dscp())), Some(Ecn::from(ipv4.ecn()))),
-            Some(Net::Ipv6(ipv6)) => (Some(Dscp::from(ipv6.dscp())), Some(Ecn::from(ipv6.ecn()))),
+            Some(Net::Ipv4(ipv4)) => (Some(ipv4.dscp()), Some(ipv4.ecn())),
+            Some(Net::Ipv6(ipv6)) => (Some(ipv6.dscp()), Some(ipv6.ecn())),
             None => (None, None),
         }
     }
@@ -813,8 +813,8 @@ mod qos_roundtrip_tests {
 
         match &p.get_headers().net {
             Some(Net::Ipv4(ipv4)) => {
-                assert_eq!(Dscp::from(ipv4.dscp()), in_dscp);
-                assert_eq!(Ecn::from(ipv4.ecn()), in_ecn);
+                assert_eq!(ipv4.dscp(), in_dscp);
+                assert_eq!(ipv4.ecn(), in_ecn);
             }
             _ => unreachable!(),
         }
@@ -834,8 +834,8 @@ mod qos_roundtrip_tests {
 
         match &p.get_headers().net {
             Some(Net::Ipv6(ipv6)) => {
-                assert_eq!(Dscp::from(ipv6.dscp()), in_dscp);
-                assert_eq!(Ecn::from(ipv6.ecn()), in_ecn);
+                assert_eq!(ipv6.dscp(), in_dscp);
+                assert_eq!(ipv6.ecn(), in_ecn);
             }
             _ => unreachable!(),
         }

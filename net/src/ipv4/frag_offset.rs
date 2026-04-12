@@ -20,6 +20,12 @@ pub enum IllegalFragOffset {
     TooBig(u16),
 }
 
+impl core::fmt::Display for FragOffset {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0.value())
+    }
+}
+
 impl FragOffset {
     /// The maximum possible [`FragOffset`]
     pub const MIN: FragOffset = FragOffset(IpFragOffset::ZERO);

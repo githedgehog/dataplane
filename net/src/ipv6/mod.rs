@@ -16,7 +16,7 @@ use crate::parse::{
 };
 use crate::tcp::{Tcp, TruncatedTcp};
 use crate::udp::{TruncatedUdp, Udp};
-use etherparse::{IpDscp, IpEcn, IpNumber, Ipv6Header};
+use etherparse::{IpNumber, Ipv6Header};
 use std::net::Ipv6Addr;
 use std::num::NonZero;
 use tracing::trace;
@@ -53,7 +53,7 @@ impl Ipv6 {
     /// # Errors
     ///
     /// Returns an [`Ipv6Error::InvalidSourceAddr`] error if the source address is invalid.
-    pub fn new(header: Ipv6Header) -> Result<Self, Ipv6Error> {
+    pub(crate) fn new(header: Ipv6Header) -> Result<Self, Ipv6Error> {
         UnicastIpv6Addr::new(Ipv6Addr::from(header.source))
             .map_err(Ipv6Error::InvalidSourceAddr)?;
         Ok(Self(header))
@@ -71,10 +71,10 @@ impl Ipv6 {
         Ipv6Addr::from(self.0.destination)
     }
 
-    /// Get the [`IpNumber`] type of the next header.
+    /// Get the next header protocol number.
     #[must_use]
     pub fn next_header(&self) -> NextHeader {
-        NextHeader::new(self.0.next_header.0)
+        NextHeader::from_ip_number(self.0.next_header)
     }
 
     /// Get the hop limit for this header (analogous to [`crate::ipv4::Ipv4::ttl`])
@@ -92,22 +92,20 @@ impl Ipv6 {
         self.0.traffic_class
     }
 
-    // TODO: wrapper type (low priority)
     /// Get the header's [differentiated services code point].
     ///
     /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
     #[must_use]
-    pub fn dscp(&self) -> IpDscp {
-        self.0.dscp()
+    pub fn dscp(&self) -> Dscp {
+        Dscp(self.0.dscp())
     }
 
-    // TODO: wrapper type (low priority)
     /// Get the header's [explicit congestion notification]
     ///
     /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
     #[must_use]
-    pub fn ecn(&self) -> IpEcn {
-        self.0.ecn()
+    pub fn ecn(&self) -> Ecn {
+        Ecn(self.0.ecn())
     }
 
     // TODO: proper wrapper type (low priority)
@@ -199,7 +197,7 @@ impl Ipv6 {
     ///
     /// [explicit congestion notification]: https://en.wikipedia.org/wiki/Explicit_Congestion_Notification
     pub fn set_ecn(&mut self, ecn: Ecn) -> &mut Self {
-        self.0.set_ecn(ecn.into());
+        self.0.set_ecn(ecn.0);
         self
     }
 
@@ -207,7 +205,7 @@ impl Ipv6 {
     ///
     /// [differentiated services code point]: https://en.wikipedia.org/wiki/Differentiated_services
     pub fn set_dscp(&mut self, dscp: Dscp) -> &mut Self {
-        self.0.set_dscp(dscp.into());
+        self.0.set_dscp(dscp.0);
         self
     }
 
@@ -228,7 +226,7 @@ impl Ipv6 {
     ///
     /// [`next_header`]: NextHeader
     pub fn set_next_header(&mut self, next_header: NextHeader) -> &mut Self {
-        self.0.next_header = next_header.0;
+        self.0.next_header = next_header.to_ip_number();
         self
     }
 
@@ -295,15 +293,18 @@ impl Ipv6 {
 #[error("hop limit already zero")]
 pub struct HopLimitAlreadyZeroError;
 
-/// Error which is triggered during construction of an [`Ipv6`] object.
+/// Errors which can occur when parsing an [`Ipv6`] header.
 #[derive(thiserror::Error, Debug)]
 pub enum Ipv6Error {
-    /// source-address is invalid because it is a multicast address
+    /// Source address is invalid because it is a multicast address.
     #[error("multicast source forbidden (received {0})")]
     InvalidSourceAddr(Ipv6Addr),
-    /// error triggered when etherparse fails to parse the header
-    #[error(transparent)]
-    Invalid(etherparse::err::ipv6::HeaderSliceError),
+    /// The version field is not 6.
+    #[error("unexpected IP version: {version_number} (expected 6)")]
+    UnexpectedVersion {
+        /// The version number found in the header.
+        version_number: u8,
+    },
 }
 
 impl Parse for Ipv6 {
@@ -319,8 +320,18 @@ impl Parse for Ipv6 {
                 actual: buf.len(),
             }));
         }
-        let (header, rest) =
-            Ipv6Header::from_slice(buf).map_err(|e| ParseError::Invalid(Ipv6Error::Invalid(e)))?;
+        let (header, rest) = Ipv6Header::from_slice(buf).map_err(|e| {
+            use etherparse::err::ipv6::{HeaderError, HeaderSliceError};
+            match e {
+                HeaderSliceError::Len(len) => ParseError::Length(LengthError {
+                    expected: NonZero::new(len.required_len).unwrap_or_else(|| unreachable!()),
+                    actual: buf.len(),
+                }),
+                HeaderSliceError::Content(HeaderError::UnexpectedVersion { version_number }) => {
+                    ParseError::Invalid(Ipv6Error::UnexpectedVersion { version_number })
+                }
+            }
+        })?;
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
@@ -501,7 +512,6 @@ mod contract {
 mod test {
     use crate::ipv6::{Ipv6, Ipv6Error};
     use crate::parse::{DeParse, IntoNonZeroUSize, Parse, ParseError};
-    use etherparse::err::ipv6::{HeaderError, HeaderSliceError};
 
     const MIN_LEN: usize = Ipv6::MIN_LEN.get() as usize;
 
@@ -528,9 +538,7 @@ mod test {
                         assert!(source.is_multicast());
                         return;
                     }
-                    Err(ParseError::Invalid(Ipv6Error::Invalid(HeaderSliceError::Content(
-                        HeaderError::UnexpectedVersion { version_number },
-                    )))) => {
+                    Err(ParseError::Invalid(Ipv6Error::UnexpectedVersion { version_number })) => {
                         assert_ne!(version_number, 6);
                         return;
                     }
@@ -573,9 +581,7 @@ mod test {
                         assert!(source.is_multicast());
                         return;
                     }
-                    Err(ParseError::Invalid(Ipv6Error::Invalid(HeaderSliceError::Content(
-                        HeaderError::UnexpectedVersion { version_number },
-                    )))) => {
+                    Err(ParseError::Invalid(Ipv6Error::UnexpectedVersion { version_number })) => {
                         assert_ne!(version_number, 6);
                         return;
                     }

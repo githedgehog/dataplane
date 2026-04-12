@@ -94,7 +94,7 @@ impl Net {
     #[must_use]
     pub fn next_header(&self) -> NextHeader {
         match self {
-            Net::Ipv4(ip) => ip.protocol().into(),
+            Net::Ipv4(ip) => ip.protocol(),
             Net::Ipv6(ip) => ip.next_header(),
         }
     }

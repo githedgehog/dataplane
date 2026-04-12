@@ -53,18 +53,6 @@ impl Display for Ecn {
     }
 }
 
-impl From<IpEcn> for Ecn {
-    fn from(v: IpEcn) -> Self {
-        Ecn(v)
-    }
-}
-
-impl From<Ecn> for IpEcn {
-    fn from(v: Ecn) -> Self {
-        v.0
-    }
-}
-
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::Ecn;

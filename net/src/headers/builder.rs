@@ -1129,17 +1129,15 @@ impl Blank for Fragment {
 impl Blank for Ipv4Auth {
     fn blank() -> Self {
         use crate::ip_auth::IpAuth;
-        use etherparse::IpAuthHeader;
         // Default IpAuthHeader has zero-length ICV -- the minimum valid AH.
-        Ipv4Auth::new(IpAuth::from(Box::new(IpAuthHeader::default())))
+        Ipv4Auth::new(IpAuth::from_inner(Box::default()))
     }
 }
 
 impl Blank for Ipv6Auth {
     fn blank() -> Self {
         use crate::ip_auth::IpAuth;
-        use etherparse::IpAuthHeader;
-        Ipv6Auth::new(IpAuth::from(Box::new(IpAuthHeader::default())))
+        Ipv6Auth::new(IpAuth::from_inner(Box::default()))
     }
 }
 

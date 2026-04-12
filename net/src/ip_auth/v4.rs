@@ -51,7 +51,7 @@ impl Ipv4Auth {
         use etherparse::IpNumber;
         use tracing::trace;
 
-        match self.next_header().into() {
+        match self.next_header().to_ip_number() {
             IpNumber::TCP => cursor.parse_header::<Tcp, Header>(),
             IpNumber::UDP => cursor.parse_header::<Udp, Header>(),
             IpNumber::ICMP => cursor.parse_header::<Icmp4, Header>(),
@@ -76,7 +76,7 @@ impl Ipv4Auth {
         use etherparse::IpNumber;
         use tracing::trace;
 
-        match self.next_header().into() {
+        match self.next_header().to_ip_number() {
             IpNumber::TCP => cursor.parse_header::<TruncatedTcp, EmbeddedHeader>(),
             IpNumber::UDP => cursor.parse_header::<TruncatedUdp, EmbeddedHeader>(),
             IpNumber::ICMP => cursor.parse_header::<TruncatedIcmp4, EmbeddedHeader>(),

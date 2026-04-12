@@ -59,18 +59,6 @@ impl Display for Dscp {
     }
 }
 
-impl From<IpDscp> for Dscp {
-    fn from(v: IpDscp) -> Self {
-        Dscp(v)
-    }
-}
-
-impl From<Dscp> for IpDscp {
-    fn from(v: Dscp) -> Self {
-        v.0
-    }
-}
-
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::Dscp;

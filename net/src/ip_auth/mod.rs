@@ -12,6 +12,7 @@ pub use v6::Ipv6Auth;
 use crate::ip::NextHeader;
 use crate::parse::{DeParse, DeParseError, IntoNonZeroUSize, LengthError, Parse, ParseError};
 use etherparse::IpAuthHeader;
+use etherparse::err::ip_auth as ep_err;
 use std::num::NonZero;
 
 /// An IP authentication header.
@@ -20,8 +21,9 @@ use std::num::NonZero;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpAuth(Box<IpAuthHeader>);
 
-impl From<Box<IpAuthHeader>> for IpAuth {
-    fn from(inner: Box<IpAuthHeader>) -> Self {
+impl IpAuth {
+    /// Construct from a boxed etherparse header.
+    pub(crate) fn from_inner(inner: Box<IpAuthHeader>) -> Self {
         Self(inner)
     }
 }
@@ -30,17 +32,26 @@ impl IpAuth {
     /// Get the next-header protocol number.
     #[must_use]
     pub fn next_header(&self) -> NextHeader {
-        NextHeader::from(self.0.next_header)
+        NextHeader::from_ip_number(self.0.next_header)
     }
 
     /// Set the next-header protocol number.
     pub fn set_next_header(&mut self, nh: NextHeader) {
-        self.0.next_header = nh.into();
+        self.0.next_header = nh.to_ip_number();
     }
 }
 
+/// Errors which can occur when parsing an IP authentication header.
+#[derive(Debug, thiserror::Error)]
+pub enum IpAuthParseError {
+    /// The payload length field was zero, which is too small to contain the
+    /// minimum authentication header fields.
+    #[error("IP authentication header payload length is zero")]
+    ZeroPayloadLen,
+}
+
 impl Parse for IpAuth {
-    type Error = etherparse::err::ip_auth::HeaderSliceError;
+    type Error = IpAuthParseError;
 
     fn parse(buf: &[u8]) -> Result<(Self, NonZero<u16>), ParseError<Self::Error>> {
         if buf.len() > u16::MAX as usize {
@@ -48,7 +59,15 @@ impl Parse for IpAuth {
         }
         let (inner, rest) = IpAuthHeader::from_slice(buf)
             .map(|(h, rest)| (Box::new(h), rest))
-            .map_err(ParseError::Invalid)?;
+            .map_err(|e| match e {
+                ep_err::HeaderSliceError::Len(len) => ParseError::Length(LengthError {
+                    expected: NonZero::new(len.required_len).unwrap_or_else(|| unreachable!()),
+                    actual: buf.len(),
+                }),
+                ep_err::HeaderSliceError::Content(ep_err::HeaderError::ZeroPayloadLen) => {
+                    ParseError::Invalid(IpAuthParseError::ZeroPayloadLen)
+                }
+            })?;
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
@@ -113,7 +132,7 @@ mod contract {
             #[allow(clippy::unwrap_used)] // lengths are valid by construction
             let header =
                 IpAuthHeader::new(IpNumber(next_header), spi, sequence_number, &icv).unwrap();
-            Some(IpAuth::from(Box::new(header)))
+            Some(IpAuth::from_inner(Box::new(header)))
         }
     }
 }
