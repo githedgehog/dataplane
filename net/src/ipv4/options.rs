@@ -81,3 +81,39 @@ mod contract {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn empty_options() {
+        let opts = Ipv4Options(etherparse::Ipv4Options::new());
+        assert!(opts.is_empty());
+        assert_eq!(opts.len(), 0);
+        assert_eq!(opts.as_bytes(), &[] as &[u8]);
+    }
+
+    #[test]
+    fn options_len_consistency() {
+        bolero::check!().with_type().for_each(|opts: &Ipv4Options| {
+            assert!(opts.len() <= Ipv4Options::MAX_LEN);
+            assert_eq!(opts.len() % 4, 0);
+            assert_eq!(opts.as_bytes().len(), opts.len());
+            assert_eq!(opts.is_empty(), opts.as_bytes().is_empty());
+        });
+    }
+
+    #[test]
+    fn options_byte_round_trip() {
+        bolero::check!().with_type().for_each(|opts: &Ipv4Options| {
+            let bytes = opts.as_bytes();
+            if bytes.is_empty() {
+                return;
+            }
+            let reconstructed =
+                etherparse::Ipv4Options::try_from(bytes).unwrap_or_else(|_| unreachable!());
+            assert_eq!(opts.0, reconstructed);
+        });
+    }
+}
