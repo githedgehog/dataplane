@@ -16,7 +16,7 @@ use dataplane_cli::cliproto::CliLocalError;
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse};
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
-use std::rc::Rc;
+use std::sync::Arc;
 use terminal::{TermInput, Terminal};
 
 mod argsparse;
@@ -145,7 +145,7 @@ fn process_args(input: &TermInput) -> Result<CliArgs, ()> {
 
 fn process_command(
     terminal: &mut Terminal,
-    cmds: &Rc<Node>,
+    cmds: &Arc<Node>,
     cmdline: &Cmdline,
     input: &mut TermInput,
 ) {
@@ -170,7 +170,7 @@ fn process_command(
 
 fn proc_cmdline_commands(
     terminal: &mut Terminal,
-    cmds: &Rc<Node>,
+    cmds: &Arc<Node>,
     cmdline: &Cmdline,
     input_cmds: &Vec<String>,
 ) {
@@ -192,7 +192,7 @@ fn main() {
     let cmdline = cmdline::Cmdline::parse();
 
     // build command tree
-    let cmdtree = Rc::new(gw_cmd_tree());
+    let cmdtree = Arc::new(gw_cmd_tree());
     let mut terminal = Terminal::new("dataplane", &cmdtree);
 
     // if a command is specified, handle it and exit
@@ -216,6 +216,5 @@ fn main() {
         if !input.get_line().starts_with('#') {
             process_command(&mut terminal, &cmdtree, &cmdline, &mut input);
         }
-        terminal.add_history_entry(input.get_line().to_owned());
     }
 }

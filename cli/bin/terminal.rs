@@ -7,9 +7,11 @@ use crate::cmdtree::Node;
 use colored::Colorize;
 use dataplane_cli::cliproto::CLI_RX_BUFF_SIZE;
 use nix::sys::socket::{setsockopt, sockopt::RcvBuf};
-use rustyline::config::{ColorMode, CompletionType, Config};
-use rustyline::history::MemHistory;
-use rustyline::{Cmd, Event, KeyCode, KeyEvent, Modifiers};
+use reedline::{
+    ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
+    PromptHistorySearch, Reedline, ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
+};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
@@ -19,7 +21,7 @@ use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 // our completer
 use crate::completions::CmdCompleter;
@@ -36,23 +38,36 @@ macro_rules! print_err {
     }};
 }
 
-fn rustyline_editor_config() -> Config {
-    Config::builder()
-        .auto_add_history(false)
-        .history_ignore_dups(true)
-        .expect("Editor config:'history ignore dups' failed")
-        .max_history_size(400)
-        .expect("Editor config:'max-history size' failed")
-        .color_mode(ColorMode::Enabled)
-        .completion_type(CompletionType::List)
-        .build()
+struct CliPrompt {
+    text: String,
+}
+
+impl Prompt for CliPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed(&self.text)
+    }
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_indicator(&self, _edit_mode: PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
 }
 
 pub struct Terminal {
     prompt: String,
     prompt_name: String,
-    cmdtree: Rc<Node>,
-    editor: rustyline::Editor<CmdCompleter, MemHistory>,
+    cmdtree: Arc<Node>,
+    editor: Reedline,
     run: bool,
     connected: bool,
     pub sock: UnixDatagram,
@@ -79,20 +94,35 @@ impl TermInput {
 
 #[allow(unused)]
 impl Terminal {
-    pub fn new(prompt: &str, cmdtree: &Rc<Node>) -> Self {
+    pub fn new(prompt: &str, cmdtree: &Arc<Node>) -> Self {
+        let completer = Box::new(CmdCompleter::new(cmdtree.clone()));
+        let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
+
+        let mut keybindings = default_emacs_keybindings();
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Tab,
+            ReedlineEvent::UntilFound(vec![
+                ReedlineEvent::Menu("completion_menu".to_string()),
+                ReedlineEvent::MenuNext,
+            ]),
+        );
+        let edit_mode = Box::new(Emacs::new(keybindings));
+
+        let editor = Reedline::create()
+            .with_completer(completer)
+            .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+            .with_edit_mode(edit_mode);
+
         let mut term = Self {
             prompt: prompt.to_owned(),
             prompt_name: prompt.to_owned(),
             cmdtree: cmdtree.clone(),
-            editor: rustyline::Editor::<CmdCompleter, MemHistory>::with_config(
-                rustyline_editor_config(),
-            )
-            .expect("Editor config failed"),
+            editor,
             run: true,
             connected: false,
             sock: UnixDatagram::unbound().expect("Failed to create unix socket"),
-        }
-        .set_helper(CmdCompleter::new(cmdtree.clone()));
+        };
         term.set_prompt();
         term
     }
@@ -104,22 +134,6 @@ impl Terminal {
     }
     pub fn get_cmd_tree(&self) -> &Node {
         self.cmdtree.as_ref()
-    }
-    pub fn set_helper(mut self, helper: CmdCompleter) -> Self {
-        self.editor.set_helper(Some(helper));
-        self.editor.bind_sequence(
-            Event::KeySeq(vec![KeyEvent(KeyCode::Tab, Modifiers::NONE)]),
-            Cmd::Complete,
-        );
-        self
-    }
-    pub fn add_history_entry<S: AsRef<str> + Into<String>>(&mut self, line: S) {
-        self.editor.add_history_entry(line);
-    }
-
-    #[allow(unused)]
-    pub fn get_helper(&self) -> Option<&CmdCompleter> {
-        self.editor.helper()
     }
     #[allow(clippy::unused_self)]
     pub fn clear(&self) {
@@ -159,8 +173,10 @@ impl Terminal {
     }
     pub fn prompt(&mut self) -> TermInput {
         loop {
-            let input = self.editor.readline(&self.prompt);
-            if let Ok(line) = input {
+            let cli_prompt = CliPrompt {
+                text: self.prompt.clone(),
+            };
+            if let Ok(Signal::Success(line)) = self.editor.read_line(&cli_prompt) {
                 let line = line.trim();
                 if line.is_empty() {
                     continue;
