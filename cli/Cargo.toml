@@ -15,7 +15,7 @@ clap = { workspace = true, features = ["derive", "std", "usage"] }
 colored = { workspace = true, features = [] }
 nix = { workspace = true, features = ["socket"] }
 rkyv = { workspace = true, features = ["alloc", "bytecheck", "std"] }
-rustyline = { workspace = true, features = ["custom-bindings", "with-fuzzy"] }
+reedline = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
