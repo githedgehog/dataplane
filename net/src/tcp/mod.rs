@@ -4,10 +4,14 @@
 //! TCP header type and logic.
 
 mod checksum;
+mod option;
+mod options;
 pub mod port;
 mod truncated;
 
 pub use checksum::*;
+pub use option::*;
+pub use options::*;
 pub use port::*;
 pub use truncated::*;
 
@@ -378,7 +382,7 @@ impl DeParse for Tcp {
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::checksum::Checksum;
-    use crate::tcp::Tcp;
+    use crate::tcp::{Tcp, TcpOptions};
     use bolero::{Driver, TypeGenerator};
     use etherparse::TcpHeader;
 
@@ -402,6 +406,10 @@ mod contract {
                 .set_urg(u.produce()?)
                 .set_window_size(u.produce()?)
                 .set_urgent_pointer(u.produce()?);
+
+            let options: TcpOptions = u.produce()?;
+            header.0.options = options.0;
+
             Some(header)
         }
     }
@@ -444,6 +452,7 @@ mod test {
             assert_eq!(tcp.urg(), parsed.urg());
             assert_eq!(tcp.window_size(), parsed.window_size());
             assert_eq!(tcp.urgent_pointer(), parsed.urgent_pointer());
+            assert_eq!(tcp.options(), parsed.options());
             assert_eq!(tcp, &parsed);
             assert_eq!(consumed, consumed2);
         });
