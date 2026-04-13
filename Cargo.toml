@@ -85,8 +85,8 @@ vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { version = "0.8.12", default-features = false, features = [] }
-arc-swap = { version = "1.9.1", default-features = false, features = [] }
 anyhow = { version = "1.0.102", default-features = false, features = ["std"] }
+arc-swap = { version = "1.9.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 async-trait = { version = "0.1.89", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
@@ -138,9 +138,9 @@ mio = { version = "1.2.0", default-features = false, features = [] }
 multi_index_map = { version = "0.15.1", default-features = false, features = [] }
 n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.9", default-features = false, features = [], package = "n-vm" }
 netdev = { version = "0.41.0", default-features = false, features = [] }
-nix = { version = "0.31.2", default-features = false, features = [] }
 netgauze-bgp-pkt = { version = "0.10.0", features = [] }
 netgauze-bmp-pkt = { version = "0.10.0", features = ["codec"] }
+nix = { version = "0.31.2", default-features = false, features = [] }
 num-derive = { version = "0.4.2", default-features = false, features = [] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
 once_cell = { version = "1.21.4", default-features = false, features = [] }
@@ -157,11 +157,11 @@ pyroscope = { version = "2.0.0", default-features = false, features = ["backend-
 quote = { version = "1.0.45", default-features = false, features = [] }
 rand = { version = "0.10.0", default-features = false, features = [] }
 rapidhash = { version = "4.4.1", default-features = false, features = [] }
+reedline = { version = "0.47.0", default-features = false, features = [] }
 rkyv = { version = "0.8.15", default-features = false, features = [] }
 roaring = { version = "0.11.3", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
 rustls = { version = "0.23.37", default-features = false, features = [] }
-reedline = { version = "0.47.0", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = [] }
 serde_json = { version = "1.0.149", default-features = false, features = [] }
@@ -177,9 +177,9 @@ syn = { version = "2.0.117", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
 tokio = { version = "1.51.0", default-features = false, features = [] }
-tracing = { version = "0.1.44", default-features = false, features = [] }
 tokio-util = { version = "0.7.18", default-features = false, features = [] }
 tonic = { version = "0.14.5", default-features = false, features = [] }
+tracing = { version = "0.1.44", default-features = false, features = [] }
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [] }
 tracing-test = { version = "0.2.6", default-features = false, features = [] }
