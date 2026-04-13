@@ -109,3 +109,54 @@ mod contract {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn empty_options() {
+        let opts = TcpOptions(etherparse::TcpOptions::new());
+        assert!(opts.is_empty());
+        assert_eq!(opts.len(), 0);
+        assert_eq!(opts.as_bytes(), None);
+        assert_eq!(opts.iter().count(), 0);
+    }
+
+    #[test]
+    fn options_len_consistency() {
+        bolero::check!().with_type().for_each(|opts: &TcpOptions| {
+            if opts.is_empty() {
+                assert_eq!(opts.len(), 0);
+                assert_eq!(opts.as_bytes(), None);
+            } else {
+                assert!(!opts.is_empty());
+                assert!(opts.len() <= TcpOptions::MAX_LEN);
+                // TCP options are 32-bit aligned
+                assert_eq!(opts.len() % 4, 0);
+                let bytes = opts.as_bytes().unwrap_or_else(|| unreachable!());
+                assert_eq!(bytes.len(), opts.len());
+            }
+        });
+    }
+
+    #[test]
+    fn options_iter_round_trip() {
+        bolero::check!().with_type().for_each(|opts: &TcpOptions| {
+            for result in opts {
+                let option = result.unwrap_or_else(|e| unreachable!("{e}"));
+                let ep = option.to_etherparse();
+                let back = TcpOption::from_etherparse(&ep).unwrap_or_else(|e| unreachable!("{e}"));
+                assert_eq!(option, back);
+            }
+        });
+    }
+
+    #[test]
+    fn options_into_iter() {
+        bolero::check!().with_type().for_each(|opts: &TcpOptions| {
+            let count_iter = opts.iter().count();
+            let count_into = opts.into_iter().count();
+            assert_eq!(count_iter, count_into);
+        });
+    }
+}
