@@ -453,6 +453,35 @@ impl From<Icmp6Type> for Icmpv6Type {
 }
 
 impl Icmp6 {
+    /// Work around an etherparse 0.19 bug where `RouterSolicitation` (133),
+    /// `RouterAdvertisement` (134), and `Redirect` (137) are not recognised by
+    /// `Icmpv6Slice::icmp_type()`, so they arrive as `Unknown` after
+    /// `from_slice`.  This method corrects them.
+    fn fixup_ndp_types(mut header: Icmpv6Header) -> Icmpv6Header {
+        if let Icmpv6Type::Unknown {
+            type_u8,
+            code_u8: 0,
+            bytes5to8,
+        } = header.icmp_type
+        {
+            header.icmp_type = match type_u8 {
+                // RS and Redirect are unit variants; bytes 5-8 are
+                // reserved and must be zero (RFC 4861).  Keep Unknown
+                // when the reserved field is non-zero.
+                icmpv6::TYPE_ROUTER_SOLICITATION if bytes5to8 == [0; 4] => {
+                    Icmpv6Type::RouterSolicitation
+                }
+                icmpv6::TYPE_REDIRECT_MESSAGE if bytes5to8 == [0; 4] => Icmpv6Type::Redirect,
+                // RA carries data in bytes 5-8 (cur_hop_limit, flags, router_lifetime).
+                icmpv6::TYPE_ROUTER_ADVERTISEMENT => Icmpv6Type::RouterAdvertisement(
+                    icmpv6::RouterAdvertisementHeader::from_bytes(bytes5to8),
+                ),
+                _ => return header,
+            };
+        }
+        header
+    }
+
     /// Get the ICMP message type.
     #[must_use]
     pub fn icmp_type(&self) -> Icmp6Type {
@@ -599,6 +628,10 @@ impl Parse for Icmp6 {
                 actual: buf.len(),
             })
         })?;
+        // etherparse 0.19 does not parse RS/RA/Redirect, so they fall
+        // through to Unknown.  Remap them here until an upstream fix
+        // lands (see https://github.com/JulianSchmid/etherparse).
+        let inner = Self::fixup_ndp_types(inner);
         assert!(
             rest.len() < buf.len(),
             "rest.len() >= buf.len() ({rest} >= {buf})",
