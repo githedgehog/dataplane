@@ -161,7 +161,7 @@ rkyv = { version = "0.8.15", default-features = false, features = [] }
 roaring = { version = "0.11.3", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
 rustls = { version = "0.23.37", default-features = false, features = [] }
-rustyline = { version = "18.0.0", default-features = false, features = [] }
+reedline = { version = "0.47.0", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = [] }
 serde_json = { version = "1.0.149", default-features = false, features = [] }
