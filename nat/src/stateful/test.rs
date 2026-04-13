@@ -625,7 +625,7 @@ fn check_packet_icmp_error(
     )
     .unwrap();
     packet.meta_mut().set_overlay(true);
-    packet.meta_mut().set_stateful_nat(true); // set to false since ICMP error handler will take care
+    packet.meta_mut().set_stateful_nat(false); // set to false since ICMP error handler will take care
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     packet.meta_mut().dst_vpcd.take(); // remove to force processing by stateful
