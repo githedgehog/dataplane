@@ -244,7 +244,7 @@ mod contract {
             if driver.produce::<bool>()? {
                 Some(full_header)
             } else {
-                let mut buffer = driver.produce::<[u8; Tcp::MIN_LENGTH.get() as usize]>()?;
+                let mut buffer = [0u8; Tcp::MAX_LENGTH];
                 #[allow(clippy::unwrap_used)] // We want to catch errors when deparsing, if any
                 full_header.deparse(&mut buffer).unwrap();
 
