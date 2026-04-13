@@ -12,6 +12,7 @@ use crate::tcp::option::{TcpOption, TcpOptionParseError};
 ///
 // TODO: implement Parse/DeParse for standalone options parsing/serialization
 // TODO: add mutation API (add/remove/modify individual options)
+// TODO: align Tcp::options() to return &TcpOptions (matching Ipv4::options())
 // TODO: add construction from a list of TcpOption values
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TcpOptions(pub(in crate::tcp) etherparse::TcpOptions);
