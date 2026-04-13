@@ -499,11 +499,14 @@ mod contract {
                 .set_more_fragments(u.produce()?)
                 .set_identification(u.produce()?)
                 .set_fragment_offset(u.produce()?);
+            // Payload length is independent of header length. Use 0..=1500
+            // (standard MTU) to keep generated packets manageable while
+            // covering the empty-payload and typical-payload cases.
             header
                 .set_payload_len(u16::gen_bounded(
                     u,
-                    Bound::Included(&Ipv4::MIN_LEN.get()),
-                    Bound::Included(&Ipv4::MAX_LEN.get()),
+                    Bound::Included(&0),
+                    Bound::Included(&1500),
                 )?)
                 .ok();
             Some(header)
