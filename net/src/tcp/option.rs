@@ -363,3 +363,94 @@ mod contract {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // -- TcpMss ---------------------------------------------------------------
+
+    #[test]
+    fn mss_rejects_zero() {
+        assert!(TcpMss::new(0).is_err());
+        assert!(TcpMss::try_from(0u16).is_err());
+    }
+
+    #[test]
+    fn mss_round_trip() {
+        bolero::check!().with_type().for_each(|mss: &TcpMss| {
+            let raw = mss.get();
+            assert_ne!(raw, 0);
+            let from_new = TcpMss::new(raw).unwrap_or_else(|_| unreachable!());
+            let from_try: TcpMss = raw.try_into().unwrap_or_else(|_| unreachable!());
+            assert_eq!(*mss, from_new);
+            assert_eq!(*mss, from_try);
+            assert_eq!(u16::from(*mss), raw);
+        });
+    }
+
+    // -- TcpSackBlock ---------------------------------------------------------
+
+    #[test]
+    fn sack_block_round_trip() {
+        bolero::check!()
+            .with_type()
+            .for_each(|block: &TcpSackBlock| {
+                let reconstructed = TcpSackBlock::new(block.left_edge(), block.right_edge());
+                assert_eq!(*block, reconstructed);
+            });
+    }
+
+    // -- TcpSack --------------------------------------------------------------
+
+    #[test]
+    fn sack_rejects_empty() {
+        assert!(TcpSack::new(&[]).is_err());
+    }
+
+    #[test]
+    fn sack_rejects_five_blocks() {
+        let blocks = [TcpSackBlock::default(); 5];
+        assert!(TcpSack::new(&blocks).is_err());
+    }
+
+    #[test]
+    fn sack_accepts_one_to_four() {
+        for count in 1..=4u8 {
+            let blocks =
+                vec![TcpSackBlock::new(u32::from(count), u32::from(count) + 1); count as usize];
+            let sack = TcpSack::new(&blocks).unwrap_or_else(|_| unreachable!());
+            assert_eq!(sack.len().get(), count);
+        }
+    }
+
+    #[test]
+    fn sack_round_trip() {
+        bolero::check!().with_type().for_each(|sack: &TcpSack| {
+            let blocks = sack.blocks();
+            assert!(!blocks.is_empty());
+            assert!(blocks.len() <= TcpSack::MAX_BLOCKS);
+            let reconstructed = TcpSack::new(blocks).unwrap_or_else(|_| unreachable!());
+            assert_eq!(*sack, reconstructed);
+        });
+    }
+
+    // -- TcpOption ------------------------------------------------------------
+
+    #[test]
+    fn option_etherparse_round_trip() {
+        bolero::check!().with_type().for_each(|option: &TcpOption| {
+            let ep = option.to_etherparse();
+            let back = TcpOption::from_etherparse(&ep).unwrap_or_else(|e| unreachable!("{e}"));
+            assert_eq!(*option, back);
+        });
+    }
+
+    #[test]
+    fn option_wire_size_bounded() {
+        bolero::check!().with_type().for_each(|option: &TcpOption| {
+            let size = option.wire_size();
+            assert!(size >= 1);
+            assert!(size <= 40);
+        });
+    }
+}
