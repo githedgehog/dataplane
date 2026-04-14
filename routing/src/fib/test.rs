@@ -265,12 +265,14 @@ mod tests {
 
         let vrfid = 1;
 
+        let mut handles = vec![];
+
         /* Spawn workers: each has its own reader for the fibtable */
         for n in 1..=NUM_WORKERS {
             let fibtr = fibtrfactory.handle();
             let worker_done = done.clone();
 
-            Builder::new()
+            let handle = Builder::new()
                 .name(format!("WORKER-{n}"))
                 .spawn(move || {
                     println!("Worker-{n} started");
@@ -317,6 +319,7 @@ mod tests {
                     worker_done.fetch_add(1, Ordering::Relaxed);
                 })
                 .unwrap();
+            handles.push(handle);
         }
 
         /*****************************************************************/
@@ -352,7 +355,7 @@ mod tests {
             }
 
             if updates.is_multiple_of(50) && fibw.is_some() {
-                fibtw.del_fib(1, None);
+                fibtw.del_fib(vrfid, None);
                 if let Some(fib) = fibw.take() {
                     // fib is destroyed here
                     fib.destroy();
@@ -373,6 +376,11 @@ mod tests {
                 break;
             }
         }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
         let duration = start.elapsed();
         println!("Test duration: {duration:?}");
     }
