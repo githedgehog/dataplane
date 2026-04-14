@@ -183,6 +183,7 @@ tracing = { version = "0.1.44", default-features = false, features = [] }
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [] }
 tracing-test = { version = "0.2.6", default-features = false, features = [] }
+tracing-throttle = { version = "0.4.2", default-features = false, features = [] }
 ureq = { version = "3.3.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.23.1", default-features = false, features = [] }

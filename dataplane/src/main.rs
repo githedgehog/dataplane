@@ -21,7 +21,9 @@ use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::PyroscopeAgentBuilder;
 
 use routing::{BmpServerParams, RouterParamsBuilder};
-use tracectl::{custom_target, get_trace_ctl, trace_target};
+use tracectl::{
+    TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
+};
 
 use tracing::{error, info, level_filters::LevelFilter};
 
@@ -50,15 +52,24 @@ fn init_name(args: &CmdArgs) -> Result<String, String> {
         Ok(name.to_string())
     }
 }
-fn init_logging(gwname: &str) {
+fn init_logging(args: &CmdArgs, gwname: &str) {
+    TracingControl::init_with_rate_limit(args.tracing_rate_limit().map(|rate_limit| {
+        TracingRateLimitConfig {
+            burst: rate_limit.burst,
+            replenish_per_second: rate_limit.replenish_per_second,
+        }
+    }));
+
     let tctl = get_trace_ctl();
     info!(
         " ━━━━━━ Starting dataplane for gateway '{gwname}' (Version = {}) ━━━━━━",
         option_env!("VERSION").unwrap_or("dev").to_string()
     );
 
-    tctl.set_default_level(LevelFilter::DEBUG)
-        .expect("Setting default loglevel failed");
+    if args.tracing().is_none() {
+        tctl.set_default_level(LevelFilter::DEBUG)
+            .expect("Setting default loglevel failed");
+    }
 }
 
 fn process_tracing_cmds(args: &CmdArgs) {
@@ -131,7 +142,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    init_logging(&gwname);
+    init_logging(&args, &gwname);
 
     let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
 
