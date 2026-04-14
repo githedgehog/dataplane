@@ -106,10 +106,10 @@ impl<T: Identity<K>, K: PartialEq> ReadHandleEntry<T, K> {
         if self.rhandle.was_dropped() {
             return false;
         }
-        if *key == self.identity {
-            return true;
+        if self.version != provider.get_version() {
+            return false;
         }
-        if self.version == provider.get_version() {
+        if *key == self.identity {
             return true;
         }
         let Some(identity) = provider.get_identity(key) else {
