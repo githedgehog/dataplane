@@ -73,7 +73,7 @@ pub struct Terminal {
     pub sock: UnixDatagram,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TermInput {
     line: String,
     tokens: VecDeque<String>,
@@ -89,6 +89,9 @@ impl TermInput {
     }
     pub fn get_args(&self) -> &HashMap<String, String> {
         &self.args
+    }
+    fn empty() -> Self {
+        Self::default()
     }
 }
 
@@ -176,14 +179,21 @@ impl Terminal {
             let cli_prompt = CliPrompt {
                 text: self.prompt.clone(),
             };
-            if let Ok(Signal::Success(line)) = self.editor.read_line(&cli_prompt) {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
+            match self.editor.read_line(&cli_prompt) {
+                Ok(Signal::Success(line)) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Some(c) = self.proc_line(line) {
+                        return c;
+                    }
                 }
-                if let Some(c) = self.proc_line(line) {
-                    return c;
+                Ok(Signal::CtrlD | Signal::CtrlC) => {
+                    self.run = false;
+                    return TermInput::empty();
                 }
+                _ => {}
             }
         }
     }

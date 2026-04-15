@@ -209,6 +209,9 @@ fn main() {
     // infinite loop until user quits
     while terminal.runs() {
         let mut input = terminal.prompt();
+        if !terminal.runs() {
+            break;
+        }
         if !terminal.is_connected() {
             terminal.connect(&cmdline.bind_address, &cmdline.path);
         }
