@@ -41,9 +41,9 @@ pub enum EmbeddedIpVersion {
 #[derive(Debug, PartialEq, Eq, Clone, Default, Builder)]
 #[builder(default)]
 pub struct EmbeddedHeaders {
-    net: Option<Net>,
-    net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
-    transport: Option<EmbeddedTransport>,
+    pub(super) net: Option<Net>,
+    pub(super) net_ext: ArrayVec<NetExt, MAX_NET_EXTENSIONS>,
+    pub(super) transport: Option<EmbeddedTransport>,
     full_payload_length: Option<u16>,
 }
 
