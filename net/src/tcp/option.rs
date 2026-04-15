@@ -82,6 +82,7 @@ impl TcpOption {
     }
 
     /// Convert to an etherparse option element.
+    #[cfg(any(test, feature = "bolero"))]
     pub(in crate::tcp) fn to_etherparse(&self) -> etherparse::TcpOptionElement {
         use etherparse::TcpOptionElement;
         match self {
@@ -103,6 +104,7 @@ impl TcpOption {
     }
 
     /// Wire size of this option in bytes.
+    #[cfg(any(test, feature = "bolero"))]
     pub(in crate::tcp) fn wire_size(&self) -> usize {
         match self {
             TcpOption::Noop => 1,
