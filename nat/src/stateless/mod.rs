@@ -15,8 +15,8 @@ use crate::icmp_handler::icmp_error_msg::{
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
 use net::headers::{
-    Net, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp, TryIp,
-    TryIpMut, TryTransportMut,
+    Net, NetError, Transport, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp,
+    TryIp, TryIpMut, TryTransportMut,
 };
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -35,15 +35,27 @@ trace_target!("stateless-nat", LevelFilter::INFO, &["nat", "pipeline"]);
 enum StatelessNatError {
     #[error("No IP header")]
     NoIpHeader,
-    #[error("Unsupported NAT translation")]
-    UnsupportedTranslation,
     #[error("Invalid address {0}")]
     // this should not happen if the nat tables contained sanitized data
     InvalidAddress(IpAddr),
+    #[error("Failed to set source IP: {0}")]
+    FailedToSetSourceIp(NetError),
+    #[error("Failed to set destination IP: {0}")]
+    FailedToSetDestIp(NetError),
+    #[error("No transport header")]
+    NoTransportHeader,
+    #[error("TCP or UDP port cannot be zero")]
+    ZeroPort,
+    #[error("Failed to set source port")]
+    FailedToSetSourcePort,
+    #[error("Failed to set destination port")]
+    FailedToSetDestPort,
     #[error("Can't find NAT tables for VNI {0}")]
     MissingTable(Vni),
     #[error("Failed to translate ICMP inner packet: {0}")]
     IcmpErrorMsg(IcmpErrorMsgError),
+    #[error("No mapping found")]
+    NoMappingFound,
 }
 
 /// A NAT processor, implementing the [`NetworkFunction`] trait. [`StatelessNat`] processes packets
@@ -89,14 +101,14 @@ impl StatelessNat {
         let nfi = self.name();
         debug!("{nfi}: Changing IP src: {} -> {new_src}", net.src_addr());
         net.try_set_source(new_src)
-            .map_err(|_| StatelessNatError::UnsupportedTranslation)
+            .map_err(StatelessNatError::FailedToSetSourceIp)
     }
 
     fn translate_dst(&self, net: &mut Net, target_dst: IpAddr) -> Result<(), StatelessNatError> {
         let nfi = self.name();
         debug!("{nfi}: Changing IP dst: {} -> {target_dst}", net.dst_addr());
         net.try_set_destination(target_dst)
-            .map_err(|_| StatelessNatError::UnsupportedTranslation)
+            .map_err(StatelessNatError::FailedToSetDestIp)
     }
 
     fn translate_src_port<Buf: PacketBufferMut>(
@@ -107,7 +119,7 @@ impl StatelessNat {
         let nfi = self.name();
         let transport = packet
             .try_transport_mut()
-            .ok_or(StatelessNatError::UnsupportedTranslation)?;
+            .ok_or(StatelessNatError::NoTransportHeader)?;
         match transport {
             Transport::Tcp(_) | Transport::Udp(_) => {
                 debug!(
@@ -116,10 +128,9 @@ impl StatelessNat {
                 );
                 packet
                     .set_source_port(
-                        NonZero::try_from(new_port)
-                            .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                        NonZero::try_from(new_port).map_err(|_| StatelessNatError::ZeroPort)?,
                     )
-                    .map_err(|_| StatelessNatError::UnsupportedTranslation)?;
+                    .map_err(|_| StatelessNatError::FailedToSetSourcePort)?;
             }
             Transport::Icmp4(_) | Transport::Icmp6(_) => {
                 todo!()
@@ -136,7 +147,7 @@ impl StatelessNat {
         let nfi = self.name();
         let transport = packet
             .try_transport_mut()
-            .ok_or(StatelessNatError::UnsupportedTranslation)?;
+            .ok_or(StatelessNatError::NoTransportHeader)?;
         match transport {
             Transport::Tcp(_) | Transport::Udp(_) => {
                 debug!(
@@ -145,10 +156,9 @@ impl StatelessNat {
                 );
                 packet
                     .set_destination_port(
-                        NonZero::try_from(new_port)
-                            .map_err(|_| StatelessNatError::UnsupportedTranslation)?,
+                        NonZero::try_from(new_port).map_err(|_| StatelessNatError::ZeroPort)?,
                     )
-                    .map_err(|_| StatelessNatError::UnsupportedTranslation)?;
+                    .map_err(|_| StatelessNatError::FailedToSetDestPort)?;
             }
             Transport::Icmp4(_) | Transport::Icmp6(_) => {
                 todo!()
@@ -185,7 +195,7 @@ impl StatelessNat {
         // We're sending the inner packet back without swapping source and destination in the
         // header, so we need to swap the ranges we get from the tables lookup.
         let Some((src_addr, src_port)) = table.find_dst_mapping(&addr, port) else {
-            return Err(StatelessNatError::UnsupportedTranslation);
+            return Err(StatelessNatError::NoMappingFound);
         };
         let src_port = src_port.and_then(|p| NatPort::new_port_checked(p).ok());
         nat_translate_icmp_inner_src::<Buf>(packet, src_addr, src_port)
@@ -209,7 +219,7 @@ impl StatelessNat {
         // We're sending the inner packet back without swapping source and destination in the
         // header, so we need to swap the ranges we get from the tables lookup.
         let Some((dst_addr, dst_port)) = table.find_src_mapping(&addr, port, dst_vni) else {
-            return Err(StatelessNatError::UnsupportedTranslation);
+            return Err(StatelessNatError::NoMappingFound);
         };
         let dst_port = dst_port.and_then(|p| NatPort::new_port_checked(p).ok());
         nat_translate_icmp_inner_dst::<Buf>(packet, dst_addr, dst_port)
@@ -348,6 +358,7 @@ impl StatelessNat {
         /* do the translations needed according to the NAT tables */
         match self.translate(nat_tables, packet, src_vni, dst_vni) {
             Err(error) => {
+                debug!("{nfi}: Translation failed: {error}");
                 packet.done(translate_error(&error));
             }
             Ok(modified) => {
@@ -368,7 +379,10 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
         StatelessNatError::NoIpHeader
         | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::BadIpHeader) => DoneReason::NotIp,
 
-        StatelessNatError::UnsupportedTranslation => DoneReason::NatUnsupportedProto,
+        StatelessNatError::FailedToSetSourcePort
+        | StatelessNatError::FailedToSetDestPort
+        | StatelessNatError::ZeroPort
+        | StatelessNatError::NoTransportHeader => DoneReason::NatUnsupportedProto,
 
         StatelessNatError::MissingTable(_) => DoneReason::Unroutable,
 
@@ -379,11 +393,14 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
             DoneReason::NatFailure
         }
 
-        StatelessNatError::IcmpErrorMsg(
+        StatelessNatError::FailedToSetDestIp(_)
+        | StatelessNatError::FailedToSetSourceIp(_)
+        | StatelessNatError::IcmpErrorMsg(
             IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoTranslationPossible,
         ) => DoneReason::InternalFailure,
 
-        StatelessNatError::IcmpErrorMsg(
+        StatelessNatError::NoMappingFound
+        | StatelessNatError::IcmpErrorMsg(
             IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_),
         ) => DoneReason::InvalidChecksum,
     }
