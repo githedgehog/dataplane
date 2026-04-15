@@ -9,6 +9,7 @@ mod display;
 mod hash;
 mod meta;
 mod stats;
+mod stats_display;
 
 pub use stats::PacketStats;
 
