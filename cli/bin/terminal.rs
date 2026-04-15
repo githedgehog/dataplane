@@ -8,9 +8,10 @@ use colored::Colorize;
 use dataplane_cli::cliproto::CLI_RX_BUFF_SIZE;
 use nix::sys::socket::{setsockopt, sockopt::RcvBuf};
 use reedline::{
-    ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
+    Emacs, IdeMenu, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
     PromptHistorySearch, Reedline, ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
 };
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -99,7 +100,7 @@ impl TermInput {
 impl Terminal {
     pub fn new(prompt: &str, cmdtree: &Arc<Node>) -> Self {
         let completer = Box::new(CmdCompleter::new(cmdtree.clone()));
-        let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
+        let completion_menu = Box::new(IdeMenu::default().with_name("completion_menu"));
 
         let mut keybindings = default_emacs_keybindings();
         keybindings.add_binding(
@@ -114,8 +115,10 @@ impl Terminal {
 
         let editor = Reedline::create()
             .with_completer(completer)
+            .with_quick_completions(true)
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
-            .with_edit_mode(edit_mode);
+            .with_edit_mode(edit_mode)
+            .with_ansi_colors(false);
 
         let mut term = Self {
             prompt: prompt.to_owned(),
