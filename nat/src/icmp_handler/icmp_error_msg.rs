@@ -22,7 +22,11 @@ use std::num::NonZero;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IcmpErrorMsgError {
     #[error("failure to get IP header")]
-    BadIpHeader,
+    NoIpHeader,
+    #[error("failure to get embedded headers")]
+    NoEmbeddedHeaders,
+    #[error("failure to get inner IP header")]
+    NoInnerIpHeader,
     #[error("failed to validate ICMP checksum")]
     BadChecksumIcmp(ChecksumError<IcmpAnyChecksumErrorPlaceholder>),
     #[error("failed to validate ICMP inner IP checksum")]
@@ -45,7 +49,7 @@ pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
 ) -> Result<(), IcmpErrorMsgError> {
     let Some(net) = packet.try_ip() else {
-        return Err(IcmpErrorMsgError::BadIpHeader);
+        return Err(IcmpErrorMsgError::NoIpHeader);
     };
     let Some(icmp) = packet.try_icmp_any() else {
         return Err(IcmpErrorMsgError::NoTranslationPossible);
@@ -119,11 +123,11 @@ pub(crate) fn nat_translate_icmp_inner_src<Buf: PacketBufferMut>(
 ) -> Result<(), IcmpErrorMsgError> {
     let embedded_headers = packet
         .embedded_headers_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
+        .ok_or(IcmpErrorMsgError::NoEmbeddedHeaders)?;
 
     embedded_headers
         .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?
+        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?
         .try_set_source(
             target_addr
                 .try_into()
@@ -161,11 +165,11 @@ pub(crate) fn nat_translate_icmp_inner_dst<Buf: PacketBufferMut>(
 ) -> Result<(), IcmpErrorMsgError> {
     let embedded_headers = packet
         .embedded_headers_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?;
+        .ok_or(IcmpErrorMsgError::NoEmbeddedHeaders)?;
 
     embedded_headers
         .try_inner_ip_mut()
-        .ok_or(IcmpErrorMsgError::BadIpHeader)?
+        .ok_or(IcmpErrorMsgError::NoInnerIpHeader)?
         .try_set_destination(target_addr)
         .map_err(|_| IcmpErrorMsgError::InvalidIpVersion)?;
 
@@ -288,7 +292,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::BadIpHeader));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoIpHeader));
     }
 
     #[test]
