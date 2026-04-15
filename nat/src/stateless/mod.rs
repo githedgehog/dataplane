@@ -377,7 +377,7 @@ impl StatelessNat {
 fn translate_error(error: &StatelessNatError) -> DoneReason {
     match error {
         StatelessNatError::NoIpHeader
-        | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::BadIpHeader) => DoneReason::NotIp,
+        | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::NoIpHeader) => DoneReason::NotIp,
 
         StatelessNatError::FailedToSetSourcePort
         | StatelessNatError::FailedToSetDestPort
@@ -403,6 +403,10 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
         | StatelessNatError::IcmpErrorMsg(
             IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_),
         ) => DoneReason::InvalidChecksum,
+
+        StatelessNatError::IcmpErrorMsg(
+            IcmpErrorMsgError::NoEmbeddedHeaders | IcmpErrorMsgError::NoInnerIpHeader,
+        ) => DoneReason::Filtered,
     }
 }
 
