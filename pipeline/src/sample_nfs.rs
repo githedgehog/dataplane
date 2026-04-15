@@ -8,12 +8,13 @@ use net::eth::mac::{DestinationMac, Mac};
 use net::headers::TryIcmp4;
 use net::headers::TryUdp;
 use net::headers::{TryEthMut, TryHeaders, TryIpv4Mut, TryIpv6Mut};
-use net::packet::{Packet, PacketStats};
+use net::packet::{DoneReason, Packet, PacketStats};
 use net::vxlan::Vxlan;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use strum::EnumCount;
 use tracectl::custom_target;
 use tracectl::tdebug;
 use tracing::{debug, trace};
@@ -238,10 +239,36 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for PacketStatsNF {
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
-        input.inspect(|packet| {
-            if let Some(reason) = packet.get_done() {
-                self.pkt_stats.incr(reason);
-            }
-        })
+        PacketStatsIter {
+            inner: input,
+            counts: [0u64; DoneReason::COUNT],
+            pkt_stats: &self.pkt_stats,
+        }
+    }
+}
+
+struct PacketStatsIter<'a, Buf: PacketBufferMut, I: Iterator<Item = Packet<Buf>>> {
+    inner: I,
+    counts: [u64; DoneReason::COUNT],
+    pkt_stats: &'a PacketStats,
+}
+
+impl<Buf: PacketBufferMut, I: Iterator<Item = Packet<Buf>>> Iterator
+    for PacketStatsIter<'_, Buf, I>
+{
+    type Item = Packet<Buf>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let packet = self.inner.next()?;
+        if let Some(reason) = packet.get_done() {
+            self.counts[reason as usize] += 1;
+        }
+        Some(packet)
+    }
+}
+
+impl<Buf: PacketBufferMut, I: Iterator<Item = Packet<Buf>>> Drop for PacketStatsIter<'_, Buf, I> {
+    fn drop(&mut self) {
+        self.pkt_stats.incr_batch(&self.counts);
     }
 }

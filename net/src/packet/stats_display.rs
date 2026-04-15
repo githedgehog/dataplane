@@ -61,7 +61,8 @@ impl Display for PacketStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading("Packet stats").fmt(f)?;
         writeln!(f, PKT_STATS!(), "Packet result", "count")?;
-        for (reason, counter) in self.snapshot() {
+        for (index, counter) in self.snapshot().iter().enumerate() {
+            let reason = index; //FIXME
             writeln!(f, PKT_STATS!(), reason, counter)?;
         }
         Ok(())
