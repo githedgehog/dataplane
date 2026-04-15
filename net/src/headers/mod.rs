@@ -39,6 +39,11 @@ mod accessor_macros;
 mod embedded;
 pub use embedded::*;
 
+pub(crate) mod within;
+pub use within::{EmbeddedStart, Within};
+
+pub mod pat;
+
 #[cfg(any(test, feature = "builder"))]
 pub mod builder;
 
