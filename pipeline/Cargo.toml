@@ -12,6 +12,7 @@ id = { workspace = true }
 linkme = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 ordermap = { workspace = true, features = ["std"] }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
