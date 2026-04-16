@@ -20,17 +20,19 @@ impl Display for DoneReason {
             Self::InterfaceUnknown => f.pad("Interface: unknown"),
             Self::InterfaceUnsupported => f.pad("Interface: unsupported"),
 
-            Self::NotEthernet => f.pad("Not Ethernet"),
-            Self::Unhandled => f.pad("Unhandled"),
-            Self::MacNotForUs => f.pad("Frame not for us"),
-            Self::MissingEtherType => f.pad("Missing ether type"),
-            Self::InvalidDstMac => f.pad("Invalid dst MAC"),
+            Self::NotEthernet => f.pad("Eth: Not Ethernet"),
+            Self::Unhandled => f.pad("Eth: Unhandled"),
+            Self::MacNotForUs => f.pad("Eth: not for us"),
+            Self::MissingEtherType => f.pad("Eth: Missing ethernet type"),
+            Self::InvalidDstMac => f.pad("Eth: Invalid dst MAC"),
 
             Self::NotIp => f.pad("IP:  packet is not IP"),
             Self::RouteFailure => f.pad("IP:  missing routing info"),
             Self::RouteDrop => f.pad("IP:  route drop"),
             Self::HopLimitExceeded => f.pad("IP:  TTL exceeded"),
             Self::MissL2resolution => f.pad("IP:  L2 resolution failure"),
+            Self::VxlanEncapFailure => f.pad("VxLAN: encap failure"),
+            Self::VxlanDecapFailure => f.pad("VxLAN: decap failure"),
 
             Self::Filtered => f.pad("Filtered"),
 
@@ -42,7 +44,7 @@ impl Display for DoneReason {
             Self::Malformed => f.pad("Malformed packet"),
             Self::Unroutable => f.pad("Unroutable"),
             Self::InvalidChecksum => f.pad("Invalid checksum"),
-            Self::IcmpErrorIncomplete => f.pad("Incomplete ICMP error"),
+            Self::IcmpErrorIncomplete => f.pad("Incomplete ICMP error message"),
 
             Self::InternalDrop => f.pad("Internal drop"),
             Self::Local => f.pad("Locally delivered"),

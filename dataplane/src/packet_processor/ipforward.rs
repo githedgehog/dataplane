@@ -162,7 +162,7 @@ impl IpForwarder {
             }
             Some(Err(bad)) => {
                 debug!("The decapsulated packet is malformed!: {bad:#?}");
-                packet.done(DoneReason::Malformed);
+                packet.done(DoneReason::VxlanDecapFailure);
             }
             None => {
                 /* send to kernel, among other options */
@@ -229,26 +229,26 @@ impl IpForwarder {
 
         let Some(src_mac) = &vtep.get_mac() else {
             error!("{nfi}: VxLAN encap FAILED: VTEP has no mac associated!");
-            packet.done(DoneReason::InternalFailure);
+            packet.done(DoneReason::VxlanEncapFailure);
             return;
         };
         let Some(dst_mac) = &vxlan.dmac else {
             error!("{nfi}: VxLAN encap FAILED: unknown dst rmac!");
-            packet.done(DoneReason::InternalFailure);
+            packet.done(DoneReason::VxlanEncapFailure);
             return;
         };
 
         // set current packet src mac (inner)
         if let Err(e) = packet.set_eth_source(*src_mac) {
             error!("{nfi}: VxLAN encap FAILED: can't set src mac '{src_mac}': {e}");
-            packet.done(DoneReason::InternalFailure);
+            packet.done(DoneReason::VxlanEncapFailure);
             return;
         }
 
         // set current packet dst mac (inner)
         if let Err(e) = packet.set_eth_destination(*dst_mac) {
             error!("{nfi}: VxLAN encap FAILED: can't set dst mac '{dst_mac}': {e}");
-            packet.done(DoneReason::InternalFailure);
+            packet.done(DoneReason::VxlanEncapFailure);
             return;
         }
 
@@ -267,7 +267,7 @@ impl IpForwarder {
         match Self::build_vxlan_headers(vxlan, vtep) {
             Err(e) => {
                 warn!("{nfi}: Failed to build VxLAN headers: {e}");
-                packet.done(DoneReason::InternalFailure);
+                packet.done(DoneReason::VxlanEncapFailure);
             }
             Ok(vxlan_headers) => match packet.vxlan_encap(&vxlan_headers) {
                 Ok(()) => {
@@ -282,7 +282,7 @@ impl IpForwarder {
                 }
                 Err(e) => {
                     error!("{nfi}: Failed to ENCAPSULATE packet with VxLAN: {e}");
-                    packet.done(DoneReason::InternalFailure);
+                    packet.done(DoneReason::VxlanEncapFailure);
                 }
             },
         }
