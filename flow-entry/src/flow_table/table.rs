@@ -3,7 +3,7 @@
 
 use ahash::RandomState;
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
-use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+use concurrency::sync::{Arc, RwLock, Weak};
 use dashmap::DashMap;
 use net::FlowKey;
 use net::flows::{FlowInfo, FlowStatus};
@@ -392,17 +392,6 @@ impl FlowTable {
                 .filter(|e| e.value().status() == FlowStatus::Active)
                 .count(),
         )
-    }
-
-    /// Take a read lock to the flow table
-    ///
-    /// # Panics
-    ///
-    /// This method panics if the `RwLock` is poisoned and may panic if, when called, the thread
-    /// already holds a lock to the table
-    #[allow(clippy::type_complexity)]
-    pub fn lock_read(&self) -> RwLockReadGuard<'_, DashMap<FlowKey, Arc<FlowInfo>, RandomState>> {
-        self.table.read().unwrap()
     }
 
     /// Execute a function for each flow in the table. This locks the table for reading.
