@@ -160,7 +160,6 @@ impl NatAllocatorWriter {
         debug!("Installing new stateful NAT allocator...");
         self.allocator.store(Some(Arc::new(allocator)));
         self.config = nat_config;
-        drop(old_allocator);
         debug!("Updated stateful NAT allocator");
     }
 }
