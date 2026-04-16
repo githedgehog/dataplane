@@ -92,12 +92,14 @@ pub enum DoneReason {
     MacNotForUs,          /* frame is not broadcast nor for us */
     InvalidDstMac,        /* dropped the packet since it had to have an invalid destination mac */
     MissingEtherType,     /* couldn't determine ethertype to use */
-    Filtered,             /* The packet was administratively filtered */
     NotIp,                /* could not get IP header or packet is not IP */
     RouteFailure,         /* missing routing information */
     RouteDrop,            /* routing explicitly requests pkts to be dropped */
     HopLimitExceeded,     /* TTL / Hop count was exceeded */
     MissL2resolution,     /* adjacency failure: we don't know mac of some ip next-hop */
+    VxlanDecapFailure,    /* Failed to decap a Vxlan packet */
+    VxlanEncapFailure,    /* Failed to encap a packet in vxlan */
+    Filtered,             /* The packet was administratively filtered */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
     NatUnsupportedProto,  /* unsupported transport protocol for NATing */
     NatFailure,           /* It was not possible to NAT the packet */
