@@ -239,10 +239,12 @@ fn build_reserved_prefixes_ports(
     }
     let mut reserved_prefixes_ports = DisjointRangesBTreeMap::new();
     for prefix in prefixes_and_ports_to_exclude_from_pools {
-        reserved_prefixes_ports.insert(
-            prefix.prefix().into(),
-            prefix.ports().expect("Missing ports. This is a bug"),
-        );
+        debug_assert!(prefix.ports().is_some());
+        let Some(ports) = prefix.ports() else {
+            error!("Stepped on a port-forwarding prefix without ports. This is a bug");
+            continue;
+        };
+        reserved_prefixes_ports.insert(prefix.prefix().into(), ports);
     }
     Some(reserved_prefixes_ports)
 }
