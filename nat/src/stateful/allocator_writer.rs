@@ -79,10 +79,7 @@ impl StatefulNatConfig {
         self.peerings
             .iter()
             .map(|p| &p.peering)
-            .filter(|p| {
-                p.local.exposes.iter().any(VpcExpose::has_stateful_nat)
-                    || p.remote.exposes.iter().any(VpcExpose::has_stateful_nat)
-            })
+            .filter(|p| p.local.exposes.iter().any(VpcExpose::has_stateful_nat))
             .count()
     }
 

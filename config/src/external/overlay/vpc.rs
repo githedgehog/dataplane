@@ -314,17 +314,13 @@ impl Vpc {
             > 0
     }
 
-    /// Provide an iterator over all peerings that have either masquerade or port-forwarding exposes
+    /// Provide an iterator over all peerings that have either masquerade or port-forwarding exposes locally
     pub fn stateful_nat_peerings(&self) -> impl Iterator<Item = &Peering> {
         self.peerings.iter().filter(|p| {
             p.local
                 .exposes
                 .iter()
                 .any(|e| e.has_port_forwarding() || e.has_stateful_nat())
-                || p.remote
-                    .exposes
-                    .iter()
-                    .any(|e| e.has_port_forwarding() || e.has_stateful_nat())
         })
     }
 }
