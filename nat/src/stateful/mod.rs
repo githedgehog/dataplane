@@ -251,7 +251,7 @@ impl StatefulNat {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn stateful_translate<Buf: PacketBufferMut>(
+    fn translate<Buf: PacketBufferMut>(
         nfi: &String,
         packet: &mut Packet<Buf>,
         translate: &NatTranslationData,
@@ -394,7 +394,8 @@ impl StatefulNat {
         ))
     }
 
-    fn translate_packet<Buf: PacketBufferMut>(
+    /// Main entry point for masquerading logic
+    fn masquerade_packet<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
     ) -> Result<bool, StatefulNatError> {
@@ -405,9 +406,10 @@ impl StatefulNat {
         // configuration is applied.
         if let Some(translate) = Self::lookup_session(packet) {
             debug!("{nfi}: Found session, translating packet");
-            return Self::stateful_translate(self.name(), packet, &translate).and(Ok(true));
+            return Self::translate(self.name(), packet, &translate).and(Ok(true));
         }
 
+        // If no allocator has been configured, drop the packet
         let Some(allocator) = self.allocator.get() else {
             debug!("{nfi}: Can't masquerade packet: no NAT allocator present");
             return Err(StatefulNatError::NoAllocator);
@@ -415,7 +417,7 @@ impl StatefulNat {
 
         let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
-        // build flow key
+        // build flow key for the current packet
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::FlowKeyError)?;
 
@@ -431,19 +433,7 @@ impl StatefulNat {
 
         self.create_flow_pair(packet, &flow_key, alloc)?;
 
-        Self::stateful_translate(self.name(), packet, &translation_data).and(Ok(true))
-    }
-
-    fn nat_packet<Buf: PacketBufferMut>(
-        &self,
-        packet: &mut Packet<Buf>,
-    ) -> Result<bool, StatefulNatError> {
-        let nfi = self.name();
-        if packet.try_ip().is_none() {
-            error!("{nfi}: Failed to get IP headers!");
-            return Err(StatefulNatError::BadIpHeader);
-        }
-        self.translate_packet(packet)
+        Self::translate(self.name(), packet, &translation_data).and(Ok(true))
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
@@ -467,10 +457,17 @@ impl StatefulNat {
             return;
         }
 
+        // packet must be ip
+        if packet.try_ip().is_none() {
+            error!("Failed to get IP headers!");
+            packet.done(DoneReason::NotIp);
+            return;
+        }
+
         // TODO: Check whether the packet is fragmented
         // TODO: Check whether we need protocol-aware processing
 
-        match self.nat_packet(packet) {
+        match self.masquerade_packet(packet) {
             Err(error) => {
                 packet.done(translate_error(&error));
                 error!("{}: Error masquerading packet: {error}", self.name());
