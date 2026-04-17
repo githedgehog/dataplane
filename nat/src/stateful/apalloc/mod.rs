@@ -67,14 +67,13 @@ use super::NatIp;
 use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
-use net::IcmpProtoKey;
 use net::IpProtoKey;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use net::{ExtendedFlowKey, FlowKey};
 use std::collections::BTreeMap;
 use std::fmt::Display;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error};
 
 mod alloc;
@@ -239,14 +238,12 @@ impl NatAllocator {
             return Err(AllocatorError::Denied);
         }
 
-        // Allocate IP and ports from pools, for source and destination NAT
+        // Allocate IP and ports from pools
         let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
         let src_mapping = Self::get_mapping(pool_src_opt, allow_null)?;
-        let reverse_dst_mapping = Self::get_reverse_mapping(flow_key)?;
 
         Ok(AllocationResult {
             src: src_mapping,
-            return_dst: reverse_dst_mapping,
             idle_timeout: pool_src_opt.and_then(alloc::IpAllocator::idle_timeout),
         })
     }
@@ -287,29 +284,6 @@ impl NatAllocator {
         };
 
         Ok(src_mapping)
-    }
-
-    fn get_reverse_mapping(
-        flow_key: &FlowKey,
-    ) -> Result<Option<(IpAddr, NatPort)>, AllocatorError> {
-        let reverse_target_ip = *flow_key.data().src_ip();
-        let reverse_target_port = match flow_key.data().proto_key_info() {
-            IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
-            IpProtoKey::Udp(udp) => udp.src_port.into(),
-            IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
-        };
-        Ok(Some((reverse_target_ip, reverse_target_port)))
-    }
-
-    fn get_icmp_query_id(key: &IcmpProtoKey) -> Result<u16, AllocatorError> {
-        match key {
-            IcmpProtoKey::QueryMsgData(id) => Ok(*id),
-            IcmpProtoKey::ErrorMsgData(_) => Err(AllocatorError::InternalIssue(
-                "ICMP Error message should have been processed without allocating new mappings"
-                    .to_string(),
-            )),
-            IcmpProtoKey::Unsupported => Err(AllocatorError::UnsupportedIcmpCategory),
-        }
     }
 
     pub(crate) fn reserve_ipv4_port(

@@ -2,205 +2,118 @@
 // Copyright Open Network Fabric Authors
 
 use super::NatIpWithBitmap;
-use super::allocation::AllocationResult;
 use super::apalloc::AllocatedIpPort;
 use crate::{NatPort, NatTranslationData};
 use std::fmt::Display;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
-pub(crate) enum NatFlowState<I: NatIpWithBitmap> {
-    Allocated(AllocatedFlowState<I>),
-    Computed(ComputedFlowState<I>),
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MasqueradeAction {
+    DstNat,
+    SrcNat,
 }
 
-impl<I: NatIpWithBitmap> NatFlowState<I> {
-    pub(crate) fn new_pair_from_alloc(
-        alloc: AllocationResult<AllocatedIpPort<I>>,
+#[derive(Debug)]
+pub struct MasqueradeState<I: NatIpWithBitmap> {
+    action: MasqueradeAction,
+    use_ip: I,
+    use_port: NatPort,
+    idle_timeout: Duration,
+    allocation: Option<AllocatedIpPort<I>>,
+}
+impl<I: NatIpWithBitmap> MasqueradeState<I> {
+    fn snat(allocation: AllocatedIpPort<I>, idle_timeout: Duration) -> Self {
+        Self {
+            action: MasqueradeAction::SrcNat,
+            use_ip: allocation.ip(),
+            use_port: allocation.port(),
+            allocation: Some(allocation),
+            idle_timeout,
+        }
+    }
+    fn dnat(use_ip: I, use_port: NatPort, idle_timeout: Duration) -> Self {
+        Self {
+            action: MasqueradeAction::DstNat,
+            use_ip,
+            use_port,
+            allocation: None,
+            idle_timeout,
+        }
+    }
+    pub(crate) fn new_pair(
+        alloc: AllocatedIpPort<I>,
+        src_ip: I,
+        src_port: NatPort,
         idle_timeout: Duration,
     ) -> (Self, Self) {
-        (
-            Self::Allocated(AllocatedFlowState {
-                src_alloc: alloc.src,
-                dst_alloc: None,
-                idle_timeout,
-            }),
-            Self::Computed(ComputedFlowState {
-                src: None,
-                dst: alloc.return_dst.map(|(addr, port)| {
-                    (
-                        I::try_from_addr(addr).unwrap_or_else(|()| unreachable!()),
-                        port,
-                    )
-                }),
-                idle_timeout,
-            }),
-        )
+        let snat = Self::snat(alloc, idle_timeout);
+        let dnat = Self::dnat(src_ip, src_port, idle_timeout);
+        (snat, dnat)
     }
-
     pub(crate) fn idle_timeout(&self) -> Duration {
-        match self {
-            NatFlowState::Allocated(allocated) => allocated.idle_timeout,
-            NatFlowState::Computed(computed) => computed.idle_timeout,
-        }
+        self.idle_timeout
     }
-
+    pub(crate) fn allocation(&self) -> Option<&AllocatedIpPort<I>> {
+        self.allocation.as_ref()
+    }
+    pub(crate) fn action(&self) -> MasqueradeAction {
+        self.action
+    }
     pub(crate) fn translation_data(&self) -> NatTranslationData {
-        match self {
-            NatFlowState::Allocated(allocated) => allocated.translation_data(),
-            NatFlowState::Computed(computed) => computed.translation_data(),
+        match self.action {
+            MasqueradeAction::SrcNat => NatTranslationData::new(
+                Some(self.use_ip.to_ip_addr()),
+                None,
+                Some(self.use_port),
+                None,
+            ),
+            MasqueradeAction::DstNat => NatTranslationData::new(
+                None,
+                Some(self.use_ip.to_ip_addr()),
+                None,
+                Some(self.use_port),
+            ),
         }
     }
-
     pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
-        match self {
-            NatFlowState::Allocated(allocated) => allocated.reverse_translation_data(),
-            NatFlowState::Computed(computed) => computed.reverse_translation_data(),
+        match self.action {
+            MasqueradeAction::SrcNat => NatTranslationData::new(
+                None,
+                Some(self.use_ip.to_ip_addr()),
+                None,
+                Some(self.use_port),
+            ),
+            MasqueradeAction::DstNat => NatTranslationData::new(
+                Some(self.use_ip.to_ip_addr()),
+                None,
+                Some(self.use_port),
+                None,
+            ),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AllocatedFlowState<I: NatIpWithBitmap> {
-    src_alloc: Option<AllocatedIpPort<I>>,
-    dst_alloc: Option<AllocatedIpPort<I>>,
-    idle_timeout: Duration,
-}
-
-impl<I: NatIpWithBitmap> AllocatedFlowState<I> {
-    pub(crate) fn update_src_alloc(&mut self, alloc: AllocatedIpPort<I>) {
-        self.src_alloc = Some(alloc);
-    }
-
-    fn build_translation_data(
-        src: Option<&AllocatedIpPort<I>>,
-        dst: Option<&AllocatedIpPort<I>>,
-    ) -> NatTranslationData {
-        let (src_addr, src_port) = src
-            .as_ref()
-            .map(|a| (a.ip().to_ip_addr(), a.port()))
-            .unzip();
-        let (dst_addr, dst_port) = dst
-            .as_ref()
-            .map(|a| (a.ip().to_ip_addr(), a.port()))
-            .unzip();
-        NatTranslationData::new(src_addr, dst_addr, src_port, dst_port)
-    }
-
-    pub(crate) fn translation_data(&self) -> NatTranslationData {
-        Self::build_translation_data(self.src_alloc.as_ref(), self.dst_alloc.as_ref())
-    }
-
-    pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
-        Self::build_translation_data(self.dst_alloc.as_ref(), self.src_alloc.as_ref())
+    pub(crate) fn set_allocation(&mut self, allocation: AllocatedIpPort<I>) {
+        self.allocation = Some(allocation);
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ComputedFlowState<I: NatIpWithBitmap> {
-    src: Option<(I, NatPort)>,
-    dst: Option<(I, NatPort)>,
-    idle_timeout: Duration,
-}
-
-impl<I: NatIpWithBitmap> ComputedFlowState<I> {
-    fn build_translation_data(
-        src: Option<(I, NatPort)>,
-        dst: Option<(I, NatPort)>,
-    ) -> NatTranslationData {
-        let (src_addr, src_port) = src.map(|(ip, port)| (ip.to_ip_addr(), port)).unzip();
-        let (dst_addr, dst_port) = dst.map(|(ip, port)| (ip.to_ip_addr(), port)).unzip();
-        NatTranslationData::new(src_addr, dst_addr, src_port, dst_port)
-    }
-
-    fn translation_data(&self) -> NatTranslationData {
-        Self::build_translation_data(self.src, self.dst)
-    }
-
-    fn reverse_translation_data(&self) -> NatTranslationData {
-        Self::build_translation_data(self.dst, self.src)
-    }
-}
-
-// From / TryFrom
-
-impl<I: NatIpWithBitmap> From<AllocatedFlowState<I>> for NatFlowState<I> {
-    fn from(value: AllocatedFlowState<I>) -> Self {
-        NatFlowState::Allocated(value)
-    }
-}
-
-impl<I: NatIpWithBitmap> From<ComputedFlowState<I>> for NatFlowState<I> {
-    fn from(value: ComputedFlowState<I>) -> Self {
-        NatFlowState::Computed(value)
-    }
-}
-
-impl<I: NatIpWithBitmap> TryFrom<NatFlowState<I>> for AllocatedFlowState<I> {
-    type Error = ();
-
-    fn try_from(value: NatFlowState<I>) -> Result<Self, Self::Error> {
-        match value {
-            NatFlowState::Allocated(allocated) => Ok(allocated),
-            NatFlowState::Computed(_) => Err(()),
-        }
-    }
-}
-
-impl<I: NatIpWithBitmap> From<AllocatedFlowState<I>> for ComputedFlowState<I> {
-    fn from(value: AllocatedFlowState<I>) -> Self {
-        ComputedFlowState {
-            src: value.src_alloc.map(|a| (a.ip(), a.port())),
-            dst: value.dst_alloc.map(|a| (a.ip(), a.port())),
-            idle_timeout: value.idle_timeout,
-        }
-    }
-}
-
-impl<I: NatIpWithBitmap> From<NatFlowState<I>> for ComputedFlowState<I> {
-    fn from(value: NatFlowState<I>) -> Self {
-        match value {
-            NatFlowState::Allocated(allocated) => allocated.into(),
-            NatFlowState::Computed(computed) => computed,
-        }
-    }
-}
-
-// Display
-
-impl<I: NatIpWithBitmap> Display for NatFlowState<I> {
+impl Display for MasqueradeAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NatFlowState::Allocated(allocated) => allocated.fmt(f),
-            NatFlowState::Computed(computed) => computed.fmt(f),
+            Self::SrcNat => write!(f, "src-nat"),
+            Self::DstNat => write!(f, "dst-nat"),
         }
     }
 }
-
-impl<I: NatIpWithBitmap> Display for AllocatedFlowState<I> {
+impl<I: NatIpWithBitmap> Display for MasqueradeState<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.src_alloc.as_ref() {
-            Some(a) => write!(f, "({}:{}, ", a.ip(), a.port().as_u16()),
-            None => write!(f, "(unchanged, "),
-        }?;
-        match self.dst_alloc.as_ref() {
-            Some(a) => write!(f, "{}:{})", a.ip(), a.port().as_u16()),
-            None => write!(f, "unchanged)"),
-        }?;
-        write!(f, "[{}s]", self.idle_timeout.as_secs())
-    }
-}
-
-impl<I: NatIpWithBitmap> Display for ComputedFlowState<I> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.src.as_ref() {
-            Some((ip, port)) => write!(f, "({ip}:{}, ", port.as_u16()),
-            None => write!(f, "(unchanged, "),
-        }?;
-        match self.dst.as_ref() {
-            Some((ip, port)) => write!(f, "{ip}:{})", port.as_u16()),
-            None => write!(f, "unchanged)"),
-        }?;
-        write!(f, "[{}s]", self.idle_timeout.as_secs())
+        write!(
+            f,
+            " {} ip: {} port|Id: {} timeout: {} {}",
+            self.action,
+            self.use_ip,
+            self.use_port.as_u16(),
+            self.idle_timeout.as_secs(),
+            self.allocation.as_ref().map_or("", |_| "(allocated)")
+        )
     }
 }

@@ -3,11 +3,9 @@
 
 //! Interface for the NAT allocator managing IP addresses and ports for masquerading.
 
-use crate::NatPort;
 use crate::port::NatPortError;
 use net::ip::NextHeader;
 use std::fmt::{Debug, Display};
-use std::net::IpAddr;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
@@ -22,8 +20,6 @@ pub enum AllocatorError {
     PortAllocationFailed(NatPortError),
     #[error("unsupported protocol: {0:?}")]
     UnsupportedProtocol(NextHeader),
-    #[error("unsupported ICMP message category")]
-    UnsupportedIcmpCategory,
     #[error("missing VPC discriminant")]
     MissingDiscriminant,
     #[error("unsupported VPC discriminant type")]
@@ -37,14 +33,12 @@ pub enum AllocatorError {
 }
 
 /// `AllocationResult` is a struct to represent the result of an allocation.
-///
-/// It contains the allocated IP addresses and ports for source NAT for the packet forwarded. In
-/// addition, it contains IP addresses and ports for packets on the return path for this flow, so
-/// that the stateful NAT pipeline stage can update the flow table to prepare for the reply.
+/// It contains the allocated IP address and port for source NAT for the packet forwarded
+/// and the time for the allocation. This should be changed as it probably does not pertain
+/// to the allocator.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllocationResult<T: Debug> {
     pub src: Option<T>,
-    pub return_dst: Option<(IpAddr, NatPort)>,
     pub idle_timeout: Option<Duration>,
 }
 
@@ -52,15 +46,8 @@ impl<T: Debug + Display> Display for AllocationResult<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "src: {}, return_dst: {}, idle_timeout: {:?}",
+            "src: {} idle_timeout: {:?}",
             self.src.as_ref().map_or("None".to_string(), T::to_string),
-            self.return_dst
-                .as_ref()
-                .map_or("None".to_string(), |(ip, port)| format!(
-                    "{}:{}",
-                    ip,
-                    port.as_u16()
-                )),
             self.idle_timeout,
         )
     }

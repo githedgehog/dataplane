@@ -254,20 +254,8 @@ mod std_tests {
         print_allocation(&allocation);
 
         assert!(allocation.src.is_some());
-        assert!(allocation.return_dst.is_some());
 
         assert_eq!(allocation.src.as_ref().unwrap().ip(), addr_v4("10.1.0.0"));
-        assert_eq!(
-            allocation.return_dst.as_ref().map(|(ip, _)| ip),
-            Some(&ipaddr("1.1.0.0"))
-        );
-        assert_eq!(
-            allocation
-                .return_dst
-                .as_ref()
-                .map(|(_, port)| port.as_u16()),
-            Some(1234)
-        );
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,

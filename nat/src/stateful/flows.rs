@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use crate::NatPort;
-use crate::stateful::NatFlowState;
 use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::apalloc::NatAllocator;
+use crate::stateful::{MasqueradeAction, MasqueradeState};
 
 use config::GenId;
 use flow_entry::flow_table::FlowTable;
@@ -53,31 +53,17 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
 
 fn flow_ipv4_masquerade_state(locked: &FlowInfoLocked) -> Option<(IpAddr, NatPort)> {
     let state = locked.nat_state.as_ref();
-    let src_state = state.extract_ref::<NatFlowState<Ipv4Addr>>()?;
-    let NatFlowState::Allocated(src_alloc) = src_state else {
-        // If this flow state has not been allocated, meaning it was inserted as a reverse flow,
-        // then no processing is required. We will update or invalidate this flow when processing
-        // the associated flow.
-        return None;
-    };
-    let data = src_alloc.translation_data();
-    Some((data.src_addr?, data.src_port?))
+    let state = state.extract_ref::<MasqueradeState<Ipv4Addr>>()?;
+    let alloc = state.allocation()?;
+    Some((alloc.ip().into(), alloc.port()))
 }
-
 fn flow_ipv6_masquerade_state(locked: &FlowInfoLocked) -> Option<(IpAddr, NatPort)> {
     let state = locked.nat_state.as_ref();
-    let src_state = state.extract_ref::<NatFlowState<Ipv6Addr>>()?;
-    let NatFlowState::Allocated(src_alloc) = src_state else {
-        // If this flow state has not been allocated, meaning it was inserted as a reverse flow,
-        // then no processing is required. We will update or invalidate this flow when processing
-        // the associated flow.
-        return None;
-    };
-    let data = src_alloc.translation_data();
-    Some((data.src_addr?, data.src_port?))
+    let state = state.extract_ref::<MasqueradeState<Ipv6Addr>>()?;
+    let alloc = state.allocation()?;
+    Some((alloc.ip().into(), alloc.port()))
 }
-
-fn get_flow_src_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, NatPort)> {
+fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, NatPort)> {
     let locked = flow_info.locked.read().ok()?;
     if let Some(ipv4) = flow_ipv4_masquerade_state(&locked) {
         return Some(ipv4);
@@ -108,18 +94,12 @@ fn re_reserve_ip_and_port(
                     debug!("Successfully re-reserved ip {ip} port {port_u16}");
                     let mut guard = flow_info.locked.write().map_err(|_| ())?;
                     let nat_state = guard.nat_state.as_mut().ok_or(())?;
-                    let NatFlowState::Allocated(nat_state) = nat_state
-                        .extract_mut::<NatFlowState<Ipv4Addr>>()
-                        .unwrap_or_else(|| unreachable!())
-                    else {
-                        error!("Expected Allocated flow state");
-                        return Err(());
-                    };
-                    let data = nat_state.translation_data();
-                    debug_assert!(data.src_addr.is_some() && data.src_port.is_some());
-
-                    nat_state.update_src_alloc(alloc);
-                    debug!("Successfully linked ip {ip} port/Id {port_u16} to flow {flow_key}");
+                    let nat_state = nat_state
+                        .extract_mut::<MasqueradeState<Ipv4Addr>>()
+                        .unwrap_or_else(|| unreachable!());
+                    debug_assert!(matches!(nat_state.action(), MasqueradeAction::SrcNat));
+                    nat_state.set_allocation(alloc);
+                    debug!("Successfully associated ip {ip} port/Id {port_u16} to flow {flow_key}");
                     Ok(())
                 }
                 Err(e) => {
@@ -134,18 +114,13 @@ fn re_reserve_ip_and_port(
                     debug!("Successfully re-reserved ip {ip} port {port_u16}");
                     let mut guard = flow_info.locked.write().map_err(|_| ())?;
                     let nat_state = guard.nat_state.as_mut().ok_or(())?;
-                    let NatFlowState::Allocated(nat_state) = nat_state
-                        .extract_mut::<NatFlowState<Ipv6Addr>>()
-                        .unwrap_or_else(|| unreachable!())
-                    else {
-                        error!("Expected Allocated flow state");
-                        return Err(());
-                    };
-                    let data = nat_state.translation_data();
-                    debug_assert!(data.src_addr.is_some() && data.src_port.is_some());
+                    let nat_state = nat_state
+                        .extract_mut::<MasqueradeState<Ipv6Addr>>()
+                        .unwrap_or_else(|| unreachable!());
 
-                    nat_state.update_src_alloc(alloc);
-                    debug!("Successfully linked ip {ip} port/Id {port_u16} to flow {flow_key}");
+                    debug_assert!(matches!(nat_state.action(), MasqueradeAction::SrcNat));
+                    nat_state.set_allocation(alloc);
+                    debug!("Successfully associated ip {ip} port/Id {port_u16} to flow {flow_key}");
                     Ok(())
                 }
                 Err(e) => {
@@ -176,8 +151,9 @@ pub(crate) fn check_masquerading_flows(
     flow_table.for_each_flow_filtered(
         |_, f| f.is_active(),
         |flow_key, flow_info| {
-            // ip and port used for masquerading the flow
-            let Some((ip, port)) = get_flow_src_masquerading_allocation(flow_info) else {
+            // ip and port allocated to masquerade a flow. If masquerading flow did not have allocated port
+            // we skip it since we will invalidate it (or upgrade it) with the related flow that has an allocation.
+            let Some((ip, port)) = get_flow_masquerading_allocation(flow_info) else {
                 return;
             };
 

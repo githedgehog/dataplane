@@ -4,7 +4,7 @@
 //! Handling of ICMP errors in stateful NAT (masquerading)
 
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
-use crate::stateful::NatFlowState;
+use crate::stateful::state::MasqueradeState;
 use net::buffer::PacketBufferMut;
 use net::flows::ExtractRef;
 use net::flows::FlowInfo;
@@ -17,8 +17,11 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
 ) {
-    let f = flow_info.logfmt();
-    debug!("Processing ICMP error message with flow {f}");
+    let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
+    debug!(
+        "Processing ICMP error message from {src_vpcd} with flow {}",
+        flow_info.logfmt()
+    );
 
     let flow_info_locked = flow_info.locked.read().unwrap();
 
@@ -30,13 +33,13 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     {
         flow_info_locked
             .nat_state
-            .extract_ref::<NatFlowState<Ipv4Addr>>()
+            .extract_ref::<MasqueradeState<Ipv4Addr>>()
             .unwrap_or_else(|| unreachable!())
             .reverse_translation_data()
     } else {
         flow_info_locked
             .nat_state
-            .extract_ref::<NatFlowState<Ipv6Addr>>()
+            .extract_ref::<MasqueradeState<Ipv6Addr>>()
             .unwrap_or_else(|| unreachable!())
             .reverse_translation_data()
     };
