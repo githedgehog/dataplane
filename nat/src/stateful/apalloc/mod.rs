@@ -202,12 +202,18 @@ pub struct NatAllocator {
 }
 
 impl NatAllocator {
+    #[must_use]
     fn new() -> Self {
         Self {
             pools_src44: PoolTable::new(),
             pools_src66: PoolTable::new(),
             randomize: true,
         }
+    }
+    #[must_use]
+    fn set_randomize(mut self, randomize: bool) -> Self {
+        self.randomize = randomize;
+        self
     }
 
     fn allocate_v4(
@@ -229,7 +235,7 @@ impl NatAllocator {
     }
 
     /// Allocate an IP address and port for the given source IP, dispatching on IP version.
-    pub fn allocate(
+    pub(crate) fn allocate(
         &self,
         dst_vpcd: VpcDiscriminant,
         src_ip: IpAddr,
@@ -252,30 +258,6 @@ impl NatAllocator {
             }
         }
     }
-
-    /// Re-reserve a specific IP and port in the new allocator during a config change
-    /// depending on the ip version of the address
-    pub(crate) fn reserve_port(
-        &self,
-        protocol: NextHeader,
-        dst_vpcd: VpcDiscriminant,
-        src_ip: IpAddr,
-        ip: IpAddr,
-        port: NatPort,
-    ) -> Result<Allocation, AllocatorError> {
-        match (src_ip, ip) {
-            (IpAddr::V4(src), IpAddr::V4(allocated)) => self
-                .reserve_ipv4_port(protocol, dst_vpcd, src, allocated, port)
-                .map(Allocation::V4),
-            (IpAddr::V6(src), IpAddr::V6(allocated)) => self
-                .reserve_ipv6_port(protocol, dst_vpcd, src, allocated, port)
-                .map(Allocation::V6),
-            _ => Err(AllocatorError::InternalIssue(format!(
-                "IP version mismatch: src={src_ip} allocated={ip}"
-            ))),
-        }
-    }
-
     fn allocate_from_tables<I: NatIpWithBitmap>(
         src_ip: IpAddr,
         dst_vpcd: VpcDiscriminant,
@@ -333,7 +315,6 @@ impl NatAllocator {
         pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
     }
-
     fn reserve_ipv6_port(
         &self,
         protocol: NextHeader,
@@ -353,11 +334,27 @@ impl NatAllocator {
         pool.reserve(ip, port)
             .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
     }
-
-    #[must_use]
-    pub fn set_randomize(mut self, randomize: bool) -> Self {
-        self.randomize = randomize;
-        self
+    /// Re-reserve a specific IP and port in the new allocator during a config change
+    /// depending on the ip version of the address
+    pub(crate) fn reserve_port(
+        &self,
+        protocol: NextHeader,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: IpAddr,
+        ip: IpAddr,
+        port: NatPort,
+    ) -> Result<Allocation, AllocatorError> {
+        match (src_ip, ip) {
+            (IpAddr::V4(src), IpAddr::V4(allocated)) => self
+                .reserve_ipv4_port(protocol, dst_vpcd, src, allocated, port)
+                .map(Allocation::V4),
+            (IpAddr::V6(src), IpAddr::V6(allocated)) => self
+                .reserve_ipv6_port(protocol, dst_vpcd, src, allocated, port)
+                .map(Allocation::V6),
+            _ => Err(AllocatorError::InternalIssue(format!(
+                "IP version mismatch: src={src_ip} allocated={ip}"
+            ))),
+        }
     }
 }
 
