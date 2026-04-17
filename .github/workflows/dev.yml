@@ -231,25 +231,32 @@ jobs:
       - *nix-setup
       - *check-dependencies
       - name: "push container"
+        env:
+          VERSION: "${{ needs.version.outputs.version }}"
+          PROFILE: "${{ matrix.build.profile }}"
+          NIX_TARGET: "${{ matrix.nix-target }}"
+          SANITIZE: "${{ matrix.build.sanitize }}"
+          INSTRUMENT: "${{ matrix.build.instrument }}"
+          DEBUG_JUSTFILE: "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}"
         run: |
           nix-shell --run '
             set -euo pipefail;
-            for v in "" "version=${{ needs.version.outputs.version }}-${{ matrix.build.profile }}"; do
-              if [ "${{ matrix.nix-target }}" = "validator" ]; then
+            for v in "" "version=${VERSION}-${PROFILE}"; do
+              if [ "${NIX_TARGET}" = "validator" ]; then
                 platform="wasm32-wasip1"
               else
                 platform="x86-64-v3"
               fi
               just \
                   docker_sock=/run/docker/docker.sock \
-                  debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }} \
-                  profile=${{ matrix.build.profile }} \
-                  platform=${platform} \
-                  sanitize=${{ matrix.build.sanitize }} \
-                  instrument=${{ matrix.build.instrument }} \
+                  debug_justfile="${DEBUG_JUSTFILE}" \
+                  profile="${PROFILE}" \
+                  platform="${platform}" \
+                  sanitize="${SANITIZE}" \
+                  instrument="${INSTRUMENT}" \
                   oci_repo=ghcr.io \
                   $v \
-                  push-container ${{ matrix.nix-target }}
+                  push-container "${NIX_TARGET}"
             done
           '
       - *tmate
