@@ -51,7 +51,7 @@ run-extra-args = []
 status-level = "pass"
 
 # Similar to status-level, show these test statuses at the end of the run.
-final-status-level = "all"
+final-status-level = "slow"
 
 # "failure-output" defines when standard output and standard error for failing tests are produced.
 # Accepted values are
