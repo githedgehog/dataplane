@@ -109,7 +109,7 @@ impl Display for MasqueradeState {
             " {} ip: {} port|Id: {} timeout: {} {}",
             self.action,
             self.use_ip,
-            self.use_port.as_u16(),
+            self.use_port,
             self.idle_timeout.as_secs(),
             self.allocation.as_ref().map_or("", |_| "(allocated)")
         )

@@ -24,6 +24,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
 use std::thread::ThreadId;
 
+use tracing::debug;
+
 #[concurrency_mode(std)]
 use rand::seq::SliceRandom;
 #[concurrency_mode(shuttle)]
@@ -546,17 +548,18 @@ pub struct AllocatedPort<I: NatIpWithBitmap> {
 }
 
 impl<I: NatIpWithBitmap> AllocatedPort<I> {
+    #[must_use]
     fn new(port: NatPort, block_allocator: Arc<AllocatedPortBlock<I>>) -> Self {
         Self {
             port,
             block_allocator,
         }
     }
-
+    #[must_use]
     pub fn port(&self) -> NatPort {
         self.port
     }
-
+    #[must_use]
     pub fn ip(&self) -> I {
         self.block_allocator.ip()
     }
@@ -564,6 +567,7 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
 
 impl<I: NatIpWithBitmap> Drop for AllocatedPort<I> {
     fn drop(&mut self) {
+        debug!("Dropping allocated port {self}...");
         let _ = self.block_allocator.deallocate_port_from_block(self.port);
     }
 }
@@ -622,10 +626,7 @@ struct AllocatedPortBlockMap<I: NatIpWithBitmap>(
 
 impl<I: NatIpWithBitmap> Display for AllocatedPort<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.port() {
-            NatPort::Port(port) => write!(f, "{}:{}", self.ip(), port.get()),
-            NatPort::Identifier(id) => write!(f, "{}<id:{id}>", self.ip()),
-        }
+        write!(f, "{}:{}", self.ip(), self.port())
     }
 }
 

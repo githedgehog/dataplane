@@ -24,6 +24,15 @@ pub enum NatPort {
     Identifier(u16),
 }
 
+impl std::fmt::Display for NatPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NatPort::Port(port) => write!(f, "{} (port)", port.get()),
+            NatPort::Identifier(id) => write!(f, "{id} (id)"),
+        }
+    }
+}
+
 impl NatPort {
     #[must_use]
     pub fn new_port(port: NonZero<u16>) -> NatPort {
