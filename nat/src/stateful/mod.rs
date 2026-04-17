@@ -48,8 +48,8 @@ enum StatefulNatError {
     BadIpHeader,
     #[error("failure to get transport header")]
     BadTransportHeader,
-    #[error("failure to extract tuple")]
-    TupleParseError,
+    #[error("failure to build flow key")]
+    FlowKeyError,
     #[error("no allocator available")]
     NoAllocator,
     #[error("allocation failed: {0}")]
@@ -417,7 +417,7 @@ impl StatefulNat {
 
         // build flow key
         let flow_key =
-            FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
+            FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::FlowKeyError)?;
 
         // Create a new session and translate the address
         let src_ip = *flow_key.data().src_ip();
@@ -496,9 +496,7 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
             DoneReason::NatUnsupportedProto
         }
 
-        StatefulNatError::TupleParseError | StatefulNatError::InvalidPort(_) => {
-            DoneReason::Malformed
-        }
+        StatefulNatError::FlowKeyError | StatefulNatError::InvalidPort(_) => DoneReason::Malformed,
 
         StatefulNatError::AllocationFailure(
             AllocatorError::NoFreeIp | AllocatorError::NoPortBlock | AllocatorError::NoFreePort(_),
