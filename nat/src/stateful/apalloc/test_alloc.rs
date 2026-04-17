@@ -418,28 +418,6 @@ mod tests_shuttle {
     #[test]
     fn test_concurrent_allocations() {
         run_shuttle(|| {
-            let flow_key1 = FlowKey::uni(
-                Some(vpcd1()),
-                ipaddr("1.1.0.0"),
-                ipaddr("10.3.0.2"),
-                tcp_proto_key(1111, 1112),
-            )
-            .extend_with_dst_vpcd(vpcd2());
-            let flow_key2 = FlowKey::uni(
-                Some(vpcd1()),
-                ipaddr("1.1.0.0"),
-                ipaddr("10.3.0.2"),
-                tcp_proto_key(3333, 3334),
-            )
-            .extend_with_dst_vpcd(vpcd2());
-            let flow_key3 = FlowKey::uni(
-                Some(vpcd1()),
-                ipaddr("1.1.0.0"),
-                ipaddr("10.3.0.3"),
-                tcp_proto_key(4444, 4445),
-            )
-            .extend_with_dst_vpcd(vpcd2());
-
             let allocator = build_allocator();
             let allocator_arc = Arc::new(allocator);
             let allocator1 = allocator_arc.clone();
@@ -449,22 +427,19 @@ mod tests_shuttle {
             let mut handles = vec![];
 
             handles.push(thread::spawn(move || {
-                let allocation1 = allocator1.allocate_v4(&flow_key1);
-                let res = allocation1.unwrap();
-                assert!(res.src.is_some());
-                assert!(res.return_dst.is_some());
+                let allocation1 = allocator1
+                    .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                    .unwrap();
             }));
             handles.push(thread::spawn(move || {
-                let allocation2 = allocator2.allocate_v4(&flow_key2);
-                let res = allocation2.unwrap();
-                assert!(res.src.is_some());
-                assert!(res.return_dst.is_some());
+                let allocation2 = allocator2
+                    .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                    .unwrap();
             }));
             handles.push(thread::spawn(move || {
-                let allocation3 = allocator3.allocate_v4(&flow_key3);
-                let res = allocation3.unwrap();
-                assert!(res.src.is_some());
-                assert!(res.return_dst.is_some());
+                let allocation3 = allocator3
+                    .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                    .unwrap();
             }));
 
             let _results: Vec<()> = handles
