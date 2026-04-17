@@ -4,7 +4,7 @@
 use crate::NatPort;
 use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::apalloc::NatAllocator;
-use crate::stateful::{MasqueradeAction, MasqueradeState};
+use crate::stateful::state::{MasqueradeAction, MasqueradeState};
 
 use config::GenId;
 use flow_entry::flow_table::FlowTable;
@@ -13,8 +13,7 @@ use lpm::prefix::PrefixWithOptionalPorts;
 use net::flows::ExtractMut;
 use net::flows::ExtractRef;
 use net::flows::FlowInfo;
-use net::flows::FlowInfoLocked;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use tracing::{debug, error};
 
 /// Invalidate all of the flows that have masquerading state
@@ -51,27 +50,13 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
     debug!("Upgraded {count} flows");
 }
 
-fn flow_ipv4_masquerade_state(locked: &FlowInfoLocked) -> Option<(IpAddr, NatPort)> {
-    let state = locked.nat_state.as_ref();
-    let state = state.extract_ref::<MasqueradeState<Ipv4Addr>>()?;
-    let alloc = state.allocation()?;
-    Some((alloc.ip().into(), alloc.port()))
-}
-fn flow_ipv6_masquerade_state(locked: &FlowInfoLocked) -> Option<(IpAddr, NatPort)> {
-    let state = locked.nat_state.as_ref();
-    let state = state.extract_ref::<MasqueradeState<Ipv6Addr>>()?;
-    let alloc = state.allocation()?;
-    Some((alloc.ip().into(), alloc.port()))
-}
 fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, NatPort)> {
     let locked = flow_info.locked.read().ok()?;
-    if let Some(ipv4) = flow_ipv4_masquerade_state(&locked) {
-        return Some(ipv4);
-    }
-    if let Some(ipv6) = flow_ipv6_masquerade_state(&locked) {
-        return Some(ipv6);
-    }
-    None
+    let alloc = locked
+        .nat_state
+        .extract_ref::<MasqueradeState>()?
+        .allocation()?;
+    Some((alloc.ip(), alloc.port()))
 }
 
 fn re_reserve_ip_and_port(
@@ -87,50 +72,21 @@ fn re_reserve_ip_and_port(
     let port_u16 = port.as_u16();
     debug!("Attempting to reserve {ip} {port_u16} {proto}...");
 
-    match (src_ip, ip) {
-        (IpAddr::V4(src_ip), IpAddr::V4(allocated_ip)) => {
-            match new_allocator.reserve_ipv4_port(proto, dst_vpcd, src_ip, allocated_ip, port) {
-                Ok(alloc) => {
-                    debug!("Successfully re-reserved ip {ip} port {port_u16}");
-                    let mut guard = flow_info.locked.write().map_err(|_| ())?;
-                    let nat_state = guard.nat_state.as_mut().ok_or(())?;
-                    let nat_state = nat_state
-                        .extract_mut::<MasqueradeState<Ipv4Addr>>()
-                        .unwrap_or_else(|| unreachable!());
-                    debug_assert!(matches!(nat_state.action(), MasqueradeAction::SrcNat));
-                    nat_state.set_allocation(alloc);
-                    debug!("Successfully associated ip {ip} port/Id {port_u16} to flow {flow_key}");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to reserve {ip} {port_u16}: {e}");
-                    Err(())
-                }
-            }
+    match new_allocator.reserve_port(proto, dst_vpcd, src_ip, ip, port) {
+        Ok(alloc) => {
+            debug!("Successfully re-reserved ip {ip} port {port_u16}");
+            let mut guard = flow_info.locked.write().map_err(|_| ())?;
+            let nat_state = guard.nat_state.as_mut().ok_or(())?;
+            let nat_state = nat_state
+                .extract_mut::<MasqueradeState>()
+                .unwrap_or_else(|| unreachable!());
+            debug_assert!(matches!(nat_state.action(), MasqueradeAction::SrcNat));
+            nat_state.set_allocation(alloc);
+            debug!("Successfully associated ip {ip} port/Id {port_u16} to flow {flow_key}");
+            Ok(())
         }
-        (IpAddr::V6(src_ip), IpAddr::V6(allocated_ip)) => {
-            match new_allocator.reserve_ipv6_port(proto, dst_vpcd, src_ip, allocated_ip, port) {
-                Ok(alloc) => {
-                    debug!("Successfully re-reserved ip {ip} port {port_u16}");
-                    let mut guard = flow_info.locked.write().map_err(|_| ())?;
-                    let nat_state = guard.nat_state.as_mut().ok_or(())?;
-                    let nat_state = nat_state
-                        .extract_mut::<MasqueradeState<Ipv6Addr>>()
-                        .unwrap_or_else(|| unreachable!());
-
-                    debug_assert!(matches!(nat_state.action(), MasqueradeAction::SrcNat));
-                    nat_state.set_allocation(alloc);
-                    debug!("Successfully associated ip {ip} port/Id {port_u16} to flow {flow_key}");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to reserve {ip} {port_u16}: {e}");
-                    Err(())
-                }
-            }
-        }
-        _ => {
-            error!("Unsupported NAT combination: src_ip: {src_ip} ip: {ip}");
+        Err(e) => {
+            error!("Failed to reserve {ip} {port_u16}: {e}");
             Err(())
         }
     }

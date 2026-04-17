@@ -8,9 +8,8 @@ use crate::stateful::state::MasqueradeState;
 use net::buffer::PacketBufferMut;
 use net::flows::ExtractRef;
 use net::flows::FlowInfo;
-use net::headers::{TryInnerIp, TryIp, TryIpMut};
+use net::headers::{TryInnerIp, TryIpMut};
 use net::packet::{DoneReason, Packet};
-use std::net::{Ipv4Addr, Ipv6Addr};
 use tracing::debug;
 
 pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
@@ -25,24 +24,11 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
 
     let flow_info_locked = flow_info.locked.read().unwrap();
 
-    let nat_translation = if packet
-        .try_ip()
+    let nat_translation = flow_info_locked
+        .nat_state
+        .extract_ref::<MasqueradeState>()
         .unwrap_or_else(|| unreachable!())
-        .src_addr()
-        .is_ipv4()
-    {
-        flow_info_locked
-            .nat_state
-            .extract_ref::<MasqueradeState<Ipv4Addr>>()
-            .unwrap_or_else(|| unreachable!())
-            .reverse_translation_data()
-    } else {
-        flow_info_locked
-            .nat_state
-            .extract_ref::<MasqueradeState<Ipv6Addr>>()
-            .unwrap_or_else(|| unreachable!())
-            .reverse_translation_data()
-    };
+        .reverse_translation_data();
 
     // translate inner packet fragment
     if let Err(e) = nat_translate_icmp_inner(packet, &nat_translation) {

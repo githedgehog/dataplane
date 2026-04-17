@@ -332,7 +332,7 @@ async fn test_full_config() {
     assert_eq!(done_reason, None);
 
     // Get corresponding session table entries and check idle timeout
-    let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
+    let Some((_, idle_timeout)) = nat.get_session(
         Some(vpcd(100)),
         IpAddr::from_str(orig_src).unwrap(),
         IpAddr::from_str(orig_dst).unwrap(),
@@ -345,7 +345,7 @@ async fn test_full_config() {
     };
     assert_eq!(idle_timeout, ONE_MINUTE);
     // Reverse path
-    let Some((_, idle_timeout)) = nat.get_session::<Ipv4Addr>(
+    let Some((_, idle_timeout)) = nat.get_session(
         Some(vpcd(200)),
         IpAddr::from_str(orig_dst).unwrap(),
         IpAddr::from_str(target_src).unwrap(),
