@@ -10,7 +10,8 @@ use super::super::allocation::{AllocationResult, AllocatorError};
 use super::alloc::{map_address, map_offset};
 use super::{AllocatedIpPort, NatAllocator};
 use concurrency::sync::Arc;
-use net::ExtendedFlowKey;
+use net::ip::NextHeader;
+use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -31,7 +32,9 @@ pub trait NatIpWithBitmap: NatIp {
     // Allocate a new IP address from the allocator
     fn allocate(
         allocator: Arc<NatAllocator>,
-        eflow_key: &ExtendedFlowKey,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: Self,
+        next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError>;
 }
 
@@ -52,9 +55,11 @@ impl NatIpWithBitmap for Ipv4Addr {
 
     fn allocate(
         allocator: Arc<NatAllocator>,
-        eflow_key: &ExtendedFlowKey,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: Self,
+        next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
-        allocator.allocate_v4(eflow_key)
+        allocator.allocate_v4(dst_vpcd, src_ip, next_header)
     }
 }
 
@@ -81,8 +86,10 @@ impl NatIpWithBitmap for Ipv6Addr {
 
     fn allocate(
         allocator: Arc<NatAllocator>,
-        eflow_key: &ExtendedFlowKey,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: Self,
+        next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedIpPort<Self>>, AllocatorError> {
-        allocator.allocate_v6(eflow_key)
+        allocator.allocate_v6(dst_vpcd, src_ip, next_header)
     }
 }

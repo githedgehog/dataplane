@@ -564,28 +564,6 @@ impl FlowKeyData {
     }
 }
 
-pub struct ExtendedFlowKey {
-    flow_key: FlowKey,
-    dst_vpcd: Option<VpcDiscriminant>,
-}
-impl ExtendedFlowKey {
-    #[must_use]
-    pub fn flow_key(&self) -> &FlowKey {
-        &self.flow_key
-    }
-    #[must_use]
-    pub fn dst_vpcd(&self) -> Option<VpcDiscriminant> {
-        self.dst_vpcd
-    }
-    #[must_use]
-    pub fn reverse(&self) -> Self {
-        Self {
-            flow_key: self.flow_key.reverse(self.dst_vpcd),
-            dst_vpcd: self.flow_key.data().src_vpcd,
-        }
-    }
-}
-
 impl Hash for FlowKeyData {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.src_vpcd.hash(state);
@@ -612,14 +590,6 @@ impl FlowKey {
     pub fn data_mut(&mut self) -> &mut FlowKeyData {
         match self {
             FlowKey::Unidirectional(data) => data,
-        }
-    }
-
-    #[must_use]
-    pub fn extend_with_dst_vpcd(&self, dst_vpcd: VpcDiscriminant) -> ExtendedFlowKey {
-        ExtendedFlowKey {
-            flow_key: *self,
-            dst_vpcd: Some(dst_vpcd),
         }
     }
 

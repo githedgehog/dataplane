@@ -17,10 +17,9 @@ mod context {
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
-    use net::tcp::TcpPort;
     use net::udp::UdpPort;
     use net::vxlan::Vni;
-    use net::{IpProtoKey, TcpProtoKey, UdpProtoKey};
+    use net::{IpProtoKey, UdpProtoKey};
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
@@ -50,12 +49,6 @@ mod context {
         VpcDiscriminant::from_vni(vni2())
     }
 
-    pub fn tcp_proto_key(src_port: u16, dst_port: u16) -> IpProtoKey {
-        IpProtoKey::Tcp(TcpProtoKey {
-            src_port: TcpPort::new_checked(src_port).unwrap(),
-            dst_port: TcpPort::new_checked(dst_port).unwrap(),
-        })
-    }
     #[allow(unused)]
     pub fn udp_proto_key(src_port: u16, dst_port: u16) -> IpProtoKey {
         IpProtoKey::Udp(UdpProtoKey {
@@ -163,7 +156,6 @@ mod std_tests {
     use crate::stateful::apalloc::PoolTableKey;
     use concurrency::sync::Arc;
     use concurrency::thread;
-    use net::FlowKey;
     use net::ip::NextHeader;
 
     #[test]
@@ -231,14 +223,6 @@ mod std_tests {
     // objects are dropped.
     #[test]
     fn test_allocate() {
-        let tuple = FlowKey::uni(
-            Some(vpcd1()),
-            ipaddr("1.1.0.0"),
-            ipaddr("10.3.0.2"),
-            tcp_proto_key(1234, 5678),
-        )
-        .extend_with_dst_vpcd(vpcd2());
-
         let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
@@ -250,7 +234,9 @@ mod std_tests {
         assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
         assert_eq!(in_use.len(), 0); // None allocated yet
 
-        let allocation = allocator.allocate_v4(&tuple).unwrap();
+        let allocation = allocator
+            .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+            .unwrap();
         print_allocation(&allocation);
 
         assert!(allocation.src.is_some());
@@ -285,21 +271,6 @@ mod std_tests {
     #[test]
     // Allocate an IP for a TCP packet, then for a UDP packet.
     fn test_tcp_udp() {
-        let tcp_flow_key = FlowKey::uni(
-            Some(vpcd1()),
-            ipaddr("1.1.0.0"),
-            ipaddr("10.3.0.2"),
-            tcp_proto_key(1234, 5678),
-        )
-        .extend_with_dst_vpcd(vpcd2());
-        let udp_flow_key = FlowKey::uni(
-            Some(vpcd1()),
-            ipaddr("1.1.0.0"),
-            ipaddr("10.3.0.2"),
-            udp_proto_key(1234, 5678),
-        )
-        .extend_with_dst_vpcd(vpcd2());
-
         let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
@@ -322,7 +293,9 @@ mod std_tests {
         assert_eq!(in_use.len(), 0); // None allocated yet
 
         // Allocate for TCP
-        let tcp_allocation = allocator.allocate_v4(&tcp_flow_key).unwrap();
+        let tcp_allocation = allocator
+            .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+            .unwrap();
         print_allocation(&tcp_allocation);
 
         // Check number of allocated IPs for TCP after we have allocated for TCP
@@ -348,7 +321,9 @@ mod std_tests {
         assert_eq!(in_use.len(), 0); // None allocated yet
 
         // Allocate for UDP
-        let udp_allocation = allocator.allocate_v4(&udp_flow_key).unwrap();
+        let udp_allocation = allocator
+            .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::UDP)
+            .unwrap();
         print_allocation(&udp_allocation);
 
         // Check number of allocated IPs for TCP after we have allocated for UDP
@@ -381,30 +356,19 @@ mod std_tests {
     // we do here was not broken - we just needed to increase stack memory for shuttle's runner.
     #[test]
     fn test_concurrent_allocations_without_shuttle() {
-        let flow_key1 = FlowKey::uni(
-            Some(vpcd1()),
-            ipaddr("1.1.0.0"),
-            ipaddr("10.3.0.2"),
-            tcp_proto_key(1111, 1112),
-        )
-        .extend_with_dst_vpcd(vpcd2());
-        let flow_key2 = FlowKey::uni(
-            Some(vpcd1()),
-            ipaddr("2.0.1.3"),
-            ipaddr("10.4.1.1"),
-            tcp_proto_key(2222, 2223),
-        )
-        .extend_with_dst_vpcd(vpcd2());
-
         let allocator = build_allocator();
         let allocator1 = Arc::new(allocator);
         let allocator2 = allocator1.clone();
 
         thread::spawn(move || {
-            let _allocation1 = allocator1.allocate_v4(&flow_key1).unwrap();
+            let _allocation1 = allocator1
+                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .unwrap();
         });
         thread::spawn(move || {
-            let _allocation2 = allocator2.allocate_v4(&flow_key2).unwrap();
+            let _allocation2 = allocator2
+                .allocate_v4(vpcd2(), addr_v4("2.0.1.3"), NextHeader::TCP)
+                .unwrap();
         });
     }
 }
