@@ -442,18 +442,20 @@ impl StatefulNat {
             return Err(StatefulNatError::NoAllocator);
         };
 
-        let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
+        let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
         // build flow key
         let flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::TupleParseError)?;
 
-        // build extended flow key, with the dst vpc discriminant
-        let e_flow_key = flow_key.extend_with_dst_vpcd(dst_vpc_id);
-
         // Create a new session and translate the address
-        let alloc =
-            I::allocate(allocator, &e_flow_key).map_err(StatefulNatError::AllocationFailure)?;
+        let alloc = I::allocate(
+            allocator,
+            dst_vpcd,
+            I::try_from_addr(*flow_key.data().src_ip()).unwrap(), // FIXME
+            flow_key.data().proto(),
+        )
+        .map_err(StatefulNatError::AllocationFailure)?;
 
         // If we didn't find source NAT translation information, we should deny the creation of a
         // new session: we don't allow packets "from the outside" to create new sessions.

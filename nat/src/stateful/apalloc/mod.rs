@@ -67,13 +67,11 @@ use super::NatIp;
 use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
-use net::IpProtoKey;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
-use net::{ExtendedFlowKey, FlowKey};
 use std::collections::BTreeMap;
 use std::fmt::Display;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error};
 
 mod alloc;
@@ -190,38 +188,36 @@ impl NatAllocator {
 
     fn allocate_v4(
         &self,
-        eflow_key: &ExtendedFlowKey,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: Ipv4Addr,
+        next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src44)
+        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src44)
     }
 
     fn allocate_v6(
         &self,
-        eflow_key: &ExtendedFlowKey,
+        dst_vpcd: VpcDiscriminant,
+        src_ip: Ipv6Addr,
+        next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedIpPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(eflow_key, &self.pools_src66)
+        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src66)
     }
 
     fn allocate_from_tables<I: NatIpWithBitmap>(
-        eflow_key: &ExtendedFlowKey,
+        src_ip: IpAddr,
+        dst_vpcd: VpcDiscriminant,
+        next_header: NextHeader,
         pools_src: &PoolTable<I, I>,
     ) -> Result<AllocationResult<AllocatedIpPort<I>>, AllocatorError> {
-        // get flow key from extended flow key
-        let flow_key = eflow_key.flow_key();
-        let next_header = Self::get_next_header(flow_key);
         Self::check_proto(next_header)?;
-        let dst_vpc_id = eflow_key
-            .dst_vpcd()
-            .ok_or(AllocatorError::MissingDiscriminant)?;
 
         // Get address pools for source
         let pool_src_opt = pools_src.get_entry(
             next_header,
-            dst_vpc_id,
-            NatIp::try_from_addr(*flow_key.data().src_ip()).map_err(|()| {
-                AllocatorError::InternalIssue(
-                    "Failed to convert IP address to Ipv4Addr".to_string(),
-                )
+            dst_vpcd,
+            NatIp::try_from_addr(src_ip).map_err(|()| {
+                AllocatorError::InternalIssue("Failed to convert src IP address".to_string())
             })?,
         );
 
@@ -231,15 +227,12 @@ impl NatAllocator {
         // we need to drop the packet instead.
         if pool_src_opt.is_none() {
             // Given that we mark packets that require NAT, this case should never happen. Log an error.
-            error!(
-                "No address pool found for source address {}. Did we hit a bug when building the stateful NAT allocator?",
-                flow_key.data().src_ip()
-            );
+            error!("No address pool found for src ip {src_ip}. This is a bug");
             return Err(AllocatorError::Denied);
         }
 
         // Allocate IP and ports from pools
-        let allow_null = matches!(flow_key.data().proto_key_info(), IpProtoKey::Icmp(_));
+        let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
         let src_mapping = Self::get_mapping(pool_src_opt, allow_null)?;
 
         Ok(AllocationResult {
@@ -252,14 +245,6 @@ impl NatAllocator {
         match next_header {
             NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6 => Ok(()),
             _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
-        }
-    }
-
-    fn get_next_header(flow_key: &FlowKey) -> NextHeader {
-        match flow_key.data().proto_key_info() {
-            IpProtoKey::Tcp(_) => NextHeader::TCP,
-            IpProtoKey::Udp(_) => NextHeader::UDP,
-            IpProtoKey::Icmp(_) => NextHeader::ICMP,
         }
     }
 
