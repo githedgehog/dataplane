@@ -74,6 +74,9 @@ use std::fmt::{Debug, Display};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error};
 
+use tracectl::trace_target;
+trace_target!("nat-allocation", LevelFilter::ERROR, &["stateful-nat"]);
+
 mod alloc;
 mod display;
 mod natip_with_bitmap;

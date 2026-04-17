@@ -25,6 +25,7 @@ use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
+use tracing::debug;
 
 ///////////////////////////////////////////////////////////////////////////////
 // IpAllocator
@@ -75,7 +76,10 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
                 continue;
             }
             match ip.allocate_port_for_ip(allow_null) {
-                Ok(port) => return Ok(port),
+                Ok(port) => {
+                    debug!("Allocated port {port}");
+                    return Ok(port);
+                }
                 // If there is no free port left, loop again to try another IP address
                 Err(AllocatorError::NoFreePort(_)) => {}
                 Err(e) => return Err(e),
@@ -89,6 +93,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         let new_ip = allocated_ips.use_new_ip(self.clone(), self.randomize)?;
         let arc_ip = Arc::new(new_ip);
         allocated_ips.add_in_use(&arc_ip);
+        debug!("Allocated new ip {}", arc_ip.ip());
         Ok(arc_ip)
     }
 
@@ -115,7 +120,6 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         if let Ok(port) = self.reuse_allocated_ip(allow_null) {
             return Ok(port);
         }
-
         self.allocate_from_new_ip(allow_null)
     }
 
@@ -193,7 +197,16 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         self: Arc<Self>,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        self.port_allocator.allocate_port(self.clone(), allow_null)
+        let alloc_port = self
+            .port_allocator
+            .allocate_port(self.clone(), allow_null)?;
+
+        debug!(
+            "Allocated port {} for ip {}",
+            alloc_port.port().as_u16(),
+            alloc_port.ip()
+        );
+        Ok(alloc_port)
     }
 
     fn reserve_port_for_ip(
@@ -298,6 +311,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
     }
 
     fn deallocate_from_pool(&mut self, ip: I) {
+        debug!("Address {ip} was deallocated");
         let offset = I::try_to_offset(ip, &self.reverse_bitmap_mapping).unwrap();
         self.bitmap.set_ip_free(offset);
     }
@@ -315,6 +329,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
                 && ip_arc.ip() == ip
             {
                 // We found the allocated IP in the list of IPs in use, return it
+                debug!("Reserved ip {ip_arc}");
                 return Ok(ip_arc);
             }
         }
