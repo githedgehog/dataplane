@@ -47,7 +47,7 @@ impl Display for FlowInfoLocked {
             writeln!(f, "      port-forwarding:{data}")?;
         }
         if let Some(data) = &self.nat_state {
-            writeln!(f, "      nat-state:{data}")?;
+            writeln!(f, "      masquerading:{data}")?;
         }
         Ok(())
     }
@@ -92,7 +92,7 @@ impl Display for FlowInfoLockedOneLiner<'_> {
             write!(f, "port-forwarding:{data} ")?;
         }
         if let Some(data) = &locked.nat_state {
-            write!(f, "nat-state:{data} ")?;
+            write!(f, "masquerading:{data} ")?;
         }
         Ok(())
     }

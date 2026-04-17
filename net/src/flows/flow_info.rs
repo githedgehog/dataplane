@@ -141,7 +141,7 @@ pub struct FlowInfoLocked {
     // VpcDiscriminant
     pub dst_vpcd: Option<VpcDiscriminant>,
 
-    // State information for stateful NAT, (see NatFlowState)
+    // State information for stateful NAT, (see MasqueradeState)
     pub nat_state: Option<Box<dyn FlowInfoItem>>,
 
     // State information for port forwarding
