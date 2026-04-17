@@ -140,6 +140,8 @@ impl NatAllocatorWriter {
                 invalidate_all_masquerading_flows(flow_table);
                 self.allocator.store(None);
             }
+            // flush config
+            self.config = nat_config;
             return;
         }
 
