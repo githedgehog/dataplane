@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use super::NatIpWithBitmap;
-use super::apalloc::AllocatedIpPort;
+use super::apalloc::Allocation;
 use crate::{NatPort, NatTranslationData};
 use std::fmt::Display;
+use std::net::IpAddr;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -14,15 +14,16 @@ pub enum MasqueradeAction {
 }
 
 #[derive(Debug)]
-pub struct MasqueradeState<I: NatIpWithBitmap> {
+pub struct MasqueradeState {
     action: MasqueradeAction,
-    use_ip: I,
+    use_ip: IpAddr,
     use_port: NatPort,
     idle_timeout: Duration,
-    allocation: Option<AllocatedIpPort<I>>,
+    allocation: Option<Allocation>,
 }
-impl<I: NatIpWithBitmap> MasqueradeState<I> {
-    fn snat(allocation: AllocatedIpPort<I>, idle_timeout: Duration) -> Self {
+
+impl MasqueradeState {
+    fn snat(allocation: Allocation, idle_timeout: Duration) -> Self {
         Self {
             action: MasqueradeAction::SrcNat,
             use_ip: allocation.ip(),
@@ -31,7 +32,8 @@ impl<I: NatIpWithBitmap> MasqueradeState<I> {
             idle_timeout,
         }
     }
-    fn dnat(use_ip: I, use_port: NatPort, idle_timeout: Duration) -> Self {
+
+    fn dnat(use_ip: IpAddr, use_port: NatPort, idle_timeout: Duration) -> Self {
         Self {
             action: MasqueradeAction::DstNat,
             use_ip,
@@ -40,9 +42,10 @@ impl<I: NatIpWithBitmap> MasqueradeState<I> {
             idle_timeout,
         }
     }
+
     pub(crate) fn new_pair(
-        alloc: AllocatedIpPort<I>,
-        src_ip: I,
+        alloc: Allocation,
+        src_ip: IpAddr,
         src_port: NatPort,
         idle_timeout: Duration,
     ) -> (Self, Self) {
@@ -50,48 +53,42 @@ impl<I: NatIpWithBitmap> MasqueradeState<I> {
         let dnat = Self::dnat(src_ip, src_port, idle_timeout);
         (snat, dnat)
     }
+
     pub(crate) fn idle_timeout(&self) -> Duration {
         self.idle_timeout
     }
-    pub(crate) fn allocation(&self) -> Option<&AllocatedIpPort<I>> {
+
+    pub(crate) fn allocation(&self) -> Option<&Allocation> {
         self.allocation.as_ref()
     }
+
     pub(crate) fn action(&self) -> MasqueradeAction {
         self.action
     }
+
     pub(crate) fn translation_data(&self) -> NatTranslationData {
         match self.action {
-            MasqueradeAction::SrcNat => NatTranslationData::new(
-                Some(self.use_ip.to_ip_addr()),
-                None,
-                Some(self.use_port),
-                None,
-            ),
-            MasqueradeAction::DstNat => NatTranslationData::new(
-                None,
-                Some(self.use_ip.to_ip_addr()),
-                None,
-                Some(self.use_port),
-            ),
+            MasqueradeAction::SrcNat => {
+                NatTranslationData::new(Some(self.use_ip), None, Some(self.use_port), None)
+            }
+            MasqueradeAction::DstNat => {
+                NatTranslationData::new(None, Some(self.use_ip), None, Some(self.use_port))
+            }
         }
     }
+
     pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
         match self.action {
-            MasqueradeAction::SrcNat => NatTranslationData::new(
-                None,
-                Some(self.use_ip.to_ip_addr()),
-                None,
-                Some(self.use_port),
-            ),
-            MasqueradeAction::DstNat => NatTranslationData::new(
-                Some(self.use_ip.to_ip_addr()),
-                None,
-                Some(self.use_port),
-                None,
-            ),
+            MasqueradeAction::SrcNat => {
+                NatTranslationData::new(None, Some(self.use_ip), None, Some(self.use_port))
+            }
+            MasqueradeAction::DstNat => {
+                NatTranslationData::new(Some(self.use_ip), None, Some(self.use_port), None)
+            }
         }
     }
-    pub(crate) fn set_allocation(&mut self, allocation: AllocatedIpPort<I>) {
+
+    pub(crate) fn set_allocation(&mut self, allocation: Allocation) {
         self.allocation = Some(allocation);
     }
 }
@@ -104,7 +101,8 @@ impl Display for MasqueradeAction {
         }
     }
 }
-impl<I: NatIpWithBitmap> Display for MasqueradeState<I> {
+
+impl Display for MasqueradeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

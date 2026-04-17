@@ -34,21 +34,20 @@ pub enum AllocatorError {
 
 /// `AllocationResult` is a struct to represent the result of an allocation.
 /// It contains the allocated IP address and port for source NAT for the packet forwarded
-/// and the time for the allocation. This should be changed as it probably does not pertain
-/// to the allocator.
+/// and the time for the allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllocationResult<T: Debug> {
-    pub src: Option<T>,
-    pub idle_timeout: Option<Duration>,
+    pub src: T,
+    pub idle_timeout: Duration,
 }
 
 impl<T: Debug + Display> Display for AllocationResult<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "src: {} idle_timeout: {:?}",
-            self.src.as_ref().map_or("None".to_string(), T::to_string),
-            self.idle_timeout,
+            "src: {} idle_timeout: {}s",
+            self.src,
+            self.idle_timeout.as_secs()
         )
     }
 }

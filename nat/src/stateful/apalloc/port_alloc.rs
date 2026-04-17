@@ -21,6 +21,7 @@ use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};
 use lpm::prefix::PortRange;
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Display;
 use std::thread::ThreadId;
 
 #[concurrency_mode(std)]
@@ -618,6 +619,15 @@ impl ThreadPortMap {
 struct AllocatedPortBlockMap<I: NatIpWithBitmap>(
     RwLock<HashMap<usize, Weak<AllocatedPortBlock<I>>>>,
 );
+
+impl<I: NatIpWithBitmap> Display for AllocatedPort<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.port() {
+            NatPort::Port(port) => write!(f, "{}:{}", self.ip(), port.get()),
+            NatPort::Identifier(id) => write!(f, "{}<id:{id}>", self.ip()),
+        }
+    }
+}
 
 impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
     fn new() -> Self {
