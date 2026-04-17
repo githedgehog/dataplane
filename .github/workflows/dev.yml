@@ -200,7 +200,6 @@ jobs:
         || github.event_name == 'workflow_dispatch'
       }}
     name: "${{matrix.nix-target}}/${{matrix.build.name}}"
-    continue-on-error: ${{ matrix.build.optional || false }}
     runs-on: lab
     needs:
       - check_changes
@@ -263,7 +262,6 @@ jobs:
         || github.event_name == 'workflow_dispatch'
       }}
     name: "sanitize/${{ matrix.build.profile }}/${{ matrix.build.sanitize }}"
-    continue-on-error: true
     runs-on: "lab"
     needs:
       - check_changes
@@ -470,9 +468,8 @@ jobs:
           exit 1
       - name: "Flag any sanitize matrix failures"
         if: ${{ needs.sanitize.result != 'success' && needs.sanitize.result != 'skipped' }}
-        continue-on-error: true
         run: |
-          echo '::warning:: Some sanitize job(s) failed'
+          echo '::error:: Some sanitize job(s) failed'
           exit 1
       - name: "Flag any build matrix failures"
         if: ${{ needs.build.result != 'success' && needs.build.result != 'skipped' }}
@@ -490,6 +487,7 @@ jobs:
     if: startsWith(github.event.ref, 'refs/tags/v') && github.event_name == 'push'
     needs:
       - build
+      - sanitize
       - vlab
 
     permissions:
