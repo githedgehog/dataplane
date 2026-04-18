@@ -4,8 +4,14 @@
 
 set -euxo pipefail
 
-declare -r MERMAID_VERSION="11.12.2"
-declare -r KATEX_VERSION="0.16.28"
+pushd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+declare MERMAID_VERSION
+MERMAID_VERSION="$(jq --exit-status --raw-output .pins.mermaid.version ./npins/sources.json | sed 's/mermaid@//')"
+declare -r MERMAID_VERSION
+declare KATEX_VERSION
+KATEX_VERSION="$(jq --exit-status --raw-output .pins.KaTeX.version ./npins/sources.json | sed 's/^v//')"
+declare -r KATEX_VERSION
 
 declare -rx MERMAID_JS_URL="https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.min.js"
 declare -rx KATEX_JS_URL="https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.js"
@@ -30,4 +36,4 @@ declare -rx KATEX_AUTO_RENDER_INTEGRITY
 
 declare -rx EDIT_WARNING="automatically generated file, do not edit!"
 
-envsubst < ./templates/custom-header.template.html > ./doc/custom-header.html
+envsubst < ./scripts/templates/custom-header.template.html > ./scripts/doc/custom-header.html
