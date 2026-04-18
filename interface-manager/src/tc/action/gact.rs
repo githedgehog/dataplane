@@ -235,10 +235,8 @@ impl<'a> TryFrom<&'a TcAction> for GenericAction {
         let mut builder = GenericActionBuilder::create_empty();
         for attr in &value.attributes {
             match attr {
-                TcActionAttribute::Kind(kind) => {
-                    if kind != GenericAction::KIND {
-                        return Err(());
-                    }
+                TcActionAttribute::Kind(kind) if kind != GenericAction::KIND => {
+                    return Err(());
                 }
                 TcActionAttribute::Options(options) => {
                     for option in options {

@@ -372,10 +372,11 @@ impl Display for VrfV4Nexthops<'_> {
         Heading("Ipv4 Next-hops").fmt(f)?;
         fmt_vrf_oneline(self.0, f)?;
 
-        let iter =
-            self.0.nhstore.iter().filter(|nh| {
-                nh.key.address.is_some_and(|a| a.is_ipv4()) || nh.key.address.is_none()
-            });
+        let iter = self
+            .0
+            .nhstore
+            .iter()
+            .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv4()));
 
         for nhop in iter {
             fmt_nhop_rec(f, nhop, 0)?;
@@ -389,10 +390,11 @@ impl Display for VrfV6Nexthops<'_> {
         Heading("Ipv6 Next-hops").fmt(f)?;
         fmt_vrf_oneline(self.0, f)?;
 
-        let iter =
-            self.0.nhstore.iter().filter(|nh| {
-                nh.key.address.is_some_and(|a| a.is_ipv6()) || nh.key.address.is_none()
-            });
+        let iter = self
+            .0
+            .nhstore
+            .iter()
+            .filter(|nh| nh.key.address.is_none_or(|a| a.is_ipv6()));
 
         for nhop in iter {
             fmt_nhop_rec(f, nhop, 0)?;

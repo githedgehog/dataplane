@@ -299,11 +299,9 @@ impl Observe for Manager<Qdisc> {
             };
             for attr in &message.attributes {
                 match attr {
-                    TcAttribute::Kind(kind) => {
-                        if kind == "clsact" {
-                            builder.properties(QdiscProperties::ClsAct);
-                        }
-                        // TODO: handle other kinds of qdiscs
+                    // TODO: handle other kinds of qdiscs
+                    TcAttribute::Kind(kind) if kind == "clsact" => {
+                        builder.properties(QdiscProperties::ClsAct);
                     }
                     TcAttribute::IngressBlock(block) => {
                         let index = match NonZero::new(*block) {

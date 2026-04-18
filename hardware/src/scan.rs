@@ -210,7 +210,7 @@ impl<'a> IntoIterator for &'a Node {
         let mut elems = vec![];
         elems.push(self);
         for child in self.children() {
-            elems.extend(child.into_iter());
+            elems.extend(child);
         }
         elems.into_iter()
     }

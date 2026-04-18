@@ -581,7 +581,7 @@ mod test {
     fn test_default_expose_with_ips_rejected() {
         let expose = VpcExpose::empty().set_default().ip("10.0.0.0/16".into());
         let result = expose.validate();
-        assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}",);
+        assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}");
 
         let expose = VpcExpose::empty()
             .set_default()

@@ -24,7 +24,7 @@ macro_rules! PORTFW_ENTRY {
 }
 impl Display for PortFwKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", PORTFW_KEY!(self.src_vpcd(), self.proto()),)
+        write!(f, "{}", PORTFW_KEY!(self.src_vpcd(), self.proto()))
     }
 }
 impl Display for PortFwEntry {

@@ -352,13 +352,11 @@ impl Reconcile for Manager<Action> {
         match (requirement, observation) {
             (Some(requirement), Some(observation)) => {
                 match observation.as_requirement() {
-                    None => {}
-                    Some(as_req) => {
-                        if *requirement == as_req {
-                            trace!("already reconciled: {requirement:#?} with {observation:#?}");
-                            return Ok(());
-                        }
+                    Some(as_req) if *requirement == as_req => {
+                        trace!("already reconciled: {requirement:#?} with {observation:#?}");
+                        return Ok(());
                     }
+                    Some(_) | None => {}
                 }
                 self.update(requirement, observation).await
             }
