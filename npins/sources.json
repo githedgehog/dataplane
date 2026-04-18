@@ -165,6 +165,22 @@
       "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre980800.566acc07c54d/nixexprs.tar.xz",
       "hash": "sha256-bo9Hbl5yPjDRldsn1Stnbsmn/nPF0cVlowuLSGHduuA="
     },
+    "opengrep": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "opengrep",
+        "repo": "opengrep"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v1.19.0",
+      "revision": "9a4c0a68220618441608cd2bad4ff2eddccf8113",
+      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.19.0",
+      "hash": "sha256-rKbgS3KGJt+lAFBQlnYVq2Y7YWH9NiRvgC806FgI7cs="
+    },
     "perftest": {
       "type": "Git",
       "repository": {

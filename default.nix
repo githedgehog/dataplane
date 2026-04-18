@@ -132,15 +132,20 @@ let
       cargo-nextest
       direnv
       gateway-crd
+      gettext
+      jq
       just
       kopium
       llvmPackages'.clang # you need the host compiler in order to link proc macros
       llvmPackages'.llvm # needed for coverage
       npins
+      opengrep
+      openssl
       oras
       pkg-config
       rust-toolchain
       skopeo
+      wget
       yq
     ]);
   };
