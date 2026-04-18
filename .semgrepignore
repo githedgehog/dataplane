@@ -1,0 +1,5 @@
+# checking in a minimal etc/{passwd,group} provokes opengrep lints, but
+# that is silly in this case: we are actually just minimizing the
+# acknowledged users in the image, not leaking our files.
+nix/pkgs/frr-config/config/etc/passwd
+nix/pkgs/frr-config/config/etc/group
