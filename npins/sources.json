@@ -97,9 +97,9 @@
       },
       "branch": "stable/10.5",
       "submodules": false,
-      "revision": "1e938d470de6e53cecf956f562eb19b9fc9afd11",
-      "url": "https://github.com/FRRouting/frr/archive/1e938d470de6e53cecf956f562eb19b9fc9afd11.tar.gz",
-      "hash": "sha256-fve8inXzAfYtmWOPIfGVegPDj/qxdHeEO29XnjjELsE="
+      "revision": "da06a71fe42442cc94bb7617a9d309cc0f24435a",
+      "url": "https://github.com/FRRouting/frr/archive/da06a71fe42442cc94bb7617a9d309cc0f24435a.tar.gz",
+      "hash": "sha256-fOXkXalFeAkVWpgRhRwvC56XyHEq36U+g3wEJAPVPww="
     },
     "frr-agent": {
       "type": "Git",
@@ -232,9 +232,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "8087ff1f47fff983a1fba70fa88b759f2fd8ae97",
-      "url": "https://github.com/oxalica/rust-overlay/archive/8087ff1f47fff983a1fba70fa88b759f2fd8ae97.tar.gz",
-      "hash": "sha256-Mi1uF5f2FsdBIvy+v7MtsqxD3Xjhd0ARJdwoqqqPtJo="
+      "revision": "e611106c527e8ab0adbb641183cda284411d575c",
+      "url": "https://github.com/oxalica/rust-overlay/archive/e611106c527e8ab0adbb641183cda284411d575c.tar.gz",
+      "hash": "sha256-Xq7p+Ex3YHFAd+fFFLOYw2Wv67582X7SAmrEDtIDZQ4="
     }
   },
   "version": 7
