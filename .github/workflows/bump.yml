@@ -57,6 +57,19 @@ jobs:
           # prettier-ignore
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
+      - name: "nix pin updates"
+        run: |
+          nix-shell --run '
+            set -euo pipefail
+            git config user.name "github-actions[bot]"
+            git config user.email "<224724778+hedgehog-dataplane-update[bot]@users.noreply.github.com>"
+            bash scripts/bump.sh
+            if ! git diff --quiet; then
+                git add -u
+                git commit -sm "bump: pins"
+            fi
+          '
+
       - name: "check-dependencies (pre)"
         # Confirm that upstream licenses have not changed in some way that prevents us from using them.
         # We want to do this both before and after we run cargo upgrade to make it easier to decide if
