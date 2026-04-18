@@ -12,7 +12,8 @@ Find logic errors in the code under review.
 
 ## Style
 
-Consider the contents of the [repository's development guide][dev-guide]
+Consider the contents of the repository's development guide (located in development/README.md at the root of the
+project).
 
 - Contributors are expected to consider and follow these guidelines.
 - Provide feedback about places where we deviate from our stated goals.
@@ -96,7 +97,6 @@ Multiple tags may apply to a single comment.
 If you decide to comment on something that is not covered by the above categories, mark the comment as `other`.
 The `other` tag should only be used if no other tag is appropriate.
 
-[dev-guide]: ../development/README.md
 [dpdk-sys]: https://github.com/githedgehog/dpdk-sys
 [fabric]: https://github.com/githedgehog/fabric
 [testn]: https://github.com/githedgehog/testn
