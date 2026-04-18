@@ -19,6 +19,9 @@ concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
   cancel-in-progress: true
 
+permissions:
+  contents: "read"
+
 jobs:
   fossa-scan:
     name: "FOSSA Scan"
