@@ -1,5 +1,21 @@
 {
   "pins": {
+    "KaTeX": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "KaTeX",
+        "repo": "KaTeX"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.16.45",
+      "revision": "90de97946bb60aa82108d6dbb217cf10602d8709",
+      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.16.45",
+      "hash": "sha256-jODZp0M6OvUU+vqIhVT5DE+FusCjBC7fww2JKdZOPzA="
+    },
     "crane": {
       "type": "GitRelease",
       "repository": {
@@ -126,6 +142,22 @@
       "revision": "1845872bfe6da7987f6f88e2ebf3dc9b011e3c04",
       "url": "https://api.github.com/repos/kube-rs/kopium/tarball/refs/tags/0.23.0",
       "hash": "sha256-QEdUALde9BVRioUlu6Y/zz7tZ0/lLxcteWQD92x4kvI="
+    },
+    "mermaid": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "mermaid-js",
+        "repo": "mermaid"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": "mermaid@",
+      "submodules": false,
+      "version": "mermaid@11.14.0",
+      "revision": "88e8e5e25c6a07d67dc024c13333b6e72bdb4b34",
+      "url": "https://api.github.com/repos/mermaid-js/mermaid/tarball/refs/tags/mermaid@11.14.0",
+      "hash": "sha256-TytcEn4Nf2Vg6ib+SPAanqjJKzCn/4vmRTIhvG1UAXY="
     },
     "nixpkgs": {
       "type": "Channel",
