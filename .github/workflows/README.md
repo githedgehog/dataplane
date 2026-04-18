@@ -7,7 +7,7 @@ management, and validate changes before they are merged.
 ## Table of Contents
 
 - [Main Development Workflow](#main-development-workflow-devyml)
-- [Linting and Validation Workflows](#linting-and-validation-workflows)
+- [Linting and Validation Workflows](#linting-and-validation-workflows-for-pull-requests)
 - [Dependency Management](#dependency-management)
 - [Version Management](#version-management)
 - [License and Security Scanning](#license-and-security-scanning)
