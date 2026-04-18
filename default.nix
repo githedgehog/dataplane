@@ -123,6 +123,7 @@ let
       lld
     ])
     ++ (with pkgs.pkgsBuildHost; [
+      actionlint
       bash
       cargo-bolero
       cargo-deny
@@ -143,7 +144,9 @@ let
       openssl
       oras
       pkg-config
+      python3Packages.pyflakes
       rust-toolchain
+      shellcheck
       skopeo
       wget
       yq

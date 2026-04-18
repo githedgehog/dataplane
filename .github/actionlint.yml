@@ -1,0 +1,16 @@
+self-hosted-runner:
+  labels:
+    - "lab"
+
+checker:
+  run-step-shellcheck: true
+  run-step-pyflakes: true
+  check-env: true
+  check-actions: true
+  check-outputs: true
+
+paths:
+  .github/workflows/*.yml:
+    ignore:
+      - 'property "features" is not defined'
+      - 'property "mesh" is not defined'

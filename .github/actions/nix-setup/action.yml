@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
 
-# Composite action that sets up a nix-shell environment with cachix and registry logins.
-#
-# Use this once per job, then run recipes via the just composite action.
+# Composite action that sets up the nix dev-shell environment plus logins to
+# ghcr.io and the image cache registry.  Use in jobs that need to push or
+# pull container images; use the lighter `nix-shell` composite if you only
+# need the dev-shell tooling.
 
 name: "Setup nix environment"
-description: "Install nix, configure cachix, warm the nix-shell cache, and login to registries"
+description: "Enter the nix dev-shell and login to ghcr.io + the image cache registry"
 
 inputs:
   cachix_signing_key:
@@ -26,28 +27,14 @@ runs:
         username: "${{ github.actor }}"
         password: "${{ github.token }}"
 
-    - name: "Install nix"
-      uses: "cachix/install-nix-action@v31"
+    - uses: "./.github/actions/nix-shell"
       with:
-        github_access_token: "${{ github.token }}"
-        nix_path: "nixpkgs=channel:nixpkgs-unstable"
-
-    - uses: "cachix/cachix-action@v17"
-      with:
-        name: "hedgehog"
-        # prettier-ignore
-        signingKey: '${{ inputs.cachix_signing_key }}'
-        # prettier-ignore
-        authToken: '${{ inputs.cachix_auth_token }}'
-
-    # Avoid attributing nix-shell fetch time to whatever step runs first.
-    - name: "setup nix shell"
-      shell: "bash"
-      run: |
-        nix-shell --run "set -euo pipefail; echo nix shell env cached"
+        cachix_signing_key: "${{ inputs.cachix_signing_key }}"
+        cachix_auth_token: "${{ inputs.cachix_auth_token }}"
 
     - name: "login to image cache"
       shell: "bash"
       run: |
+        set -euo pipefail
         docker login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL" <<<"${REGISTRY_PASSWORD}"
-        nix-shell --run "set -euo pipefail; oras login -u \"$REGISTRY_USERNAME\" --password-stdin \"$REGISTRY_URL\" <<<\"${REGISTRY_PASSWORD}\""
+        oras login -u "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_URL" <<<"${REGISTRY_PASSWORD}"

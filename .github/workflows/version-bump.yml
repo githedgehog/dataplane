@@ -54,33 +54,22 @@ jobs:
           persist-credentials: "false"
           fetch-depth: "0"
 
-      - name: "Install nix"
-        uses: "cachix/install-nix-action@v31"
+      - uses: "./.github/actions/nix-shell"
         with:
-          github_access_token: "${{ secrets.GITHUB_TOKEN }}"
-          nix_path: "nixpkgs=channel:nixpkgs-unstable"
-
-      - uses: "cachix/cachix-action@v17"
-        with:
-          name: "hedgehog"
-          # prettier-ignore
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-          # prettier-ignore
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
+          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: "Bump version"
         env:
           NEW_VERSION: "${{ inputs.new_version }}"
         run: |
-          nix-shell --run '
-            set -euo pipefail;
-            if [ -n "${NEW_VERSION}" ]; then
-              just bump_version "${NEW_VERSION}"
-            else
-              just bump_minor_version
-            fi
-            echo "new_version=$(tomlq --raw-output ".workspace.package.version" Cargo.toml)" >> "${GITHUB_ENV}"
-          '
+          set -euo pipefail;
+          if [ -n "${NEW_VERSION}" ]; then
+            just bump_version "${NEW_VERSION}"
+          else
+            just bump_minor_version
+          fi
+          echo "new_version=$(tomlq --raw-output ".workspace.package.version" Cargo.toml)" >> "${GITHUB_ENV}"
 
       - name: "Commit changes"
         run: |

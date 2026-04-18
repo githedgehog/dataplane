@@ -1,7 +1,7 @@
 # Make sure we don't have obvious vulns / anti patterns in our code or
 # actions config.
 
-name: "lint-opengrep.yml"
+name: "lint-actionlint.yml"
 
 on:
     pull_request: {}
@@ -16,8 +16,8 @@ permissions:
     contents: "read"
 
 jobs:
-    opengrep:
-        name: "Run opengrep"
+    actionlint:
+        name: "Run actionlint"
         runs-on: "lab"
         # Skip this job in merge group checks; but we need the workflow to run,
         # given that the status check is required for merging.
@@ -36,8 +36,8 @@ jobs:
                   cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
                   cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
-            - name: "Run opengrep"
+            - name: "Run actionlint"
               shell: "bash"
               run: |
                   set -euo pipefail
-                  opengrep scan --experimental
+                  actionlint

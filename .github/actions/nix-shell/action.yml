@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Open Network Fabric Authors
+
+# Composite action that installs nix, configures Cachix, and exports the
+# dataplane dev-shell environment into the job so subsequent steps can invoke
+# tools like `just`, `oras`, and `actionlint` directly.
+
+name: "Set up nix shell"
+description: "Install nix, configure Cachix, and enter the dataplane dev-shell"
+
+inputs:
+  cachix_signing_key:
+    description: "Cachix signing key"
+    required: true
+  cachix_auth_token:
+    description: "Cachix auth token"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Install nix"
+      uses: "cachix/install-nix-action@v31"
+      with:
+        github_access_token: "${{ github.token }}"
+        nix_path: "nixpkgs=channel:nixpkgs-unstable"
+
+    - uses: "cachix/cachix-action@v17"
+      with:
+        name: "hedgehog"
+        # prettier-ignore
+        signingKey: '${{ inputs.cachix_signing_key }}'
+        # prettier-ignore
+        authToken: '${{ inputs.cachix_auth_token }}'
+
+    - name: "use nix shell"
+      uses: "rrbutani/use-nix-shell-action@v1"
+      with:
+        file: "shell.nix"
