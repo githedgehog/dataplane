@@ -27,10 +27,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.23.2",
-      "revision": "d01ed44f4c494d2e65a30c78249e00a4e2139619",
-      "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.23.2",
-      "hash": "sha256-BEp040fMklOW2+ttpNUKivlE0hzpv0AAP+0kG47uVCk="
+      "version": "v0.23.3",
+      "revision": "9db02d41c4107fab6914b772dc3a27f7adfa2279",
+      "url": "https://api.github.com/repos/ipetkov/crane/tarball/refs/tags/v0.23.3",
+      "hash": "sha256-K0i9GoNk2To1RQkW348EY4c7RYf3mD74hWlGSc/9sk0="
     },
     "dpdk": {
       "type": "Git",
@@ -97,9 +97,9 @@
       },
       "branch": "stable/10.5",
       "submodules": false,
-      "revision": "d8971dfa5ec4cd747feeaad8912008a621f0c537",
-      "url": "https://github.com/FRRouting/frr/archive/d8971dfa5ec4cd747feeaad8912008a621f0c537.tar.gz",
-      "hash": "sha256-JEl8ljX7ZMbFd9Yw4iOQ9Dk4CuOW3dOcu8mqEgMlFPs="
+      "revision": "1e938d470de6e53cecf956f562eb19b9fc9afd11",
+      "url": "https://github.com/FRRouting/frr/archive/1e938d470de6e53cecf956f562eb19b9fc9afd11.tar.gz",
+      "hash": "sha256-fve8inXzAfYtmWOPIfGVegPDj/qxdHeEO29XnjjELsE="
     },
     "frr-agent": {
       "type": "Git",
@@ -162,8 +162,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre978638.13043924aaa7/nixexprs.tar.xz",
-      "hash": "sha256-qTVvODr6edFBLD2lncXPF8yTQeCafZUuKVtpV3Xb3yM="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre980800.566acc07c54d/nixexprs.tar.xz",
+      "hash": "sha256-bo9Hbl5yPjDRldsn1Stnbsmn/nPF0cVlowuLSGHduuA="
     },
     "perftest": {
       "type": "Git",
@@ -174,9 +174,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "a9f846efb25f82a6e9443f45ea4e220292b72114",
-      "url": "https://github.com/linux-rdma/perftest/archive/a9f846efb25f82a6e9443f45ea4e220292b72114.tar.gz",
-      "hash": "sha256-Bq0qA5TCfcevbb4oxADRr0dJdxYGWLfT6YkYPU5uXM8="
+      "revision": "c94e53866e28f8f66779c5656222109cd314997a",
+      "url": "https://github.com/linux-rdma/perftest/archive/c94e53866e28f8f66779c5656222109cd314997a.tar.gz",
+      "hash": "sha256-vimuYq7TFFFSmk17/yX15lBc48tcE3+PM/Gmrs8ecxo="
     },
     "rdma-core": {
       "type": "Git",
@@ -202,10 +202,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "1.94.1",
-      "revision": "4c540d92e07b57f8a961905e3c391feaa0a8cc95",
-      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.94.1",
-      "hash": "sha256-+urozYqxqT4T2aKZfNLVhJmbQm4/zEJZkwkalGrswFU="
+      "version": "1.95.0",
+      "revision": "60d4c03b1c63ee2d4046af32b9182b9600d28858",
+      "url": "https://api.github.com/repos/rust-lang/rust/tarball/refs/tags/1.95.0",
+      "hash": "sha256-+ME3g+ceS6QPVGQ2DoLu36KyTKn46f5WRzLrkqHy0rM="
     },
     "rust-overlay": {
       "type": "Git",
@@ -216,9 +216,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "3c27f4c92a7d977556dd2c10bb564d9c61b375e9",
-      "url": "https://github.com/oxalica/rust-overlay/archive/3c27f4c92a7d977556dd2c10bb564d9c61b375e9.tar.gz",
-      "hash": "sha256-/f/6/1WOfBJaGMfqV3VxWD9lpFRbPpF+Cx4MO+0mGok="
+      "revision": "8087ff1f47fff983a1fba70fa88b759f2fd8ae97",
+      "url": "https://github.com/oxalica/rust-overlay/archive/8087ff1f47fff983a1fba70fa88b759f2fd8ae97.tar.gz",
+      "hash": "sha256-Mi1uF5f2FsdBIvy+v7MtsqxD3Xjhd0ARJdwoqqqPtJo="
     }
   },
   "version": 7
