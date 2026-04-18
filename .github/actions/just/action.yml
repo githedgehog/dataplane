@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Open Network Fabric Authors
 
-# Composite action that runs a just recipe inside nix-shell.
+# Composite action that runs a just recipe.
 #
-# Expects the nix-setup action to have already run in this job.
+# Expects the nix-setup action to have already run in this job; nix-setup
+# exports the nix-shell environment (including `just` on PATH) into the job
+# via rrbutani/use-nix-shell-action, so no `nix-shell --run` wrapper is needed.
 #
 # Just variable assignments (profile=debug, sanitize=, etc.) are read from the
 # JUST_VARS environment variable.  Set it once at the job level and every step
@@ -23,7 +25,7 @@
 # To override or extend for a single step, set JUST_VARS at the step level.
 
 name: "Run just recipe"
-description: "Run a just recipe inside nix-shell using JUST_VARS for variable assignments"
+description: "Run a just recipe using JUST_VARS for variable assignments"
 
 inputs:
   recipe:
@@ -42,4 +44,5 @@ runs:
         RECIPE: "${{ inputs.recipe }}"
         RECIPE_ARGS: "${{ inputs.recipe_args }}"
       run: |
-        nix-shell --run "set -euo pipefail; just ${JUST_VARS} \"${RECIPE}\" ${RECIPE_ARGS}"
+        set -euo pipefail
+        just ${JUST_VARS} "${RECIPE}" ${RECIPE_ARGS}

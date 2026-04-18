@@ -230,6 +230,7 @@ jobs:
       - *checkout
       - *nix-setup
       - *check-dependencies
+
       - name: "push container"
         env:
           VERSION: "${{ needs.version.outputs.version }}"
@@ -239,26 +240,23 @@ jobs:
           INSTRUMENT: "${{ matrix.build.instrument }}"
           DEBUG_JUSTFILE: "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}"
         run: |
-          nix-shell --run '
-            set -euo pipefail;
-            for v in "" "version=${VERSION}-${PROFILE}"; do
-              if [ "${NIX_TARGET}" = "validator" ]; then
-                platform="wasm32-wasip1"
-              else
-                platform="x86-64-v3"
-              fi
-              just \
-                  docker_sock=/run/docker/docker.sock \
-                  debug_justfile="${DEBUG_JUSTFILE}" \
-                  profile="${PROFILE}" \
-                  platform="${platform}" \
-                  sanitize="${SANITIZE}" \
-                  instrument="${INSTRUMENT}" \
-                  oci_repo=ghcr.io \
-                  $v \
-                  push-container "${NIX_TARGET}"
-            done
-          '
+          set -euo pipefail
+          if [ "${NIX_TARGET}" = "validator" ]; then
+            platform="wasm32-wasip1"
+          else
+            platform="x86-64-v3"
+          fi
+          base_args=(
+            docker_sock=/run/docker/docker.sock
+            debug_justfile="${DEBUG_JUSTFILE}"
+            profile="${PROFILE}"
+            platform="${platform}"
+            sanitize="${SANITIZE}"
+            instrument="${INSTRUMENT}"
+            oci_repo=ghcr.io
+          )
+          just "${base_args[@]}" push-container "${NIX_TARGET}"
+          just "${base_args[@]}" "version=${VERSION}-${PROFILE}" push-container "${NIX_TARGET}"
       - *tmate
 
   sanitize:
@@ -524,30 +522,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Install nix"
-        uses: cachix/install-nix-action@v31
+      - uses: "./.github/actions/nix-shell"
         with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          nix_path: nixpkgs=channel:nixpkgs-unstable
-
-      - uses: "cachix/cachix-action@v17"
-        with:
-          name: "hedgehog"
-          # prettier-ignore
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-          # prettier-ignore
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
+          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: "push containers"
         run: |
-          nix-shell --run "
-            set -euo pipefail;
-            just \
-              docker_sock=/run/docker/docker.sock \
-              oci_repo=ghcr.io \
-              version=${{ github.ref_name }} \
-              push
-          "
+          set -euo pipefail;
+          just \
+            docker_sock=/run/docker/docker.sock \
+            oci_repo=ghcr.io \
+            version="${{ github.ref_name }}" \
+            push
 
       # Bump dataplane in the fabricator repository
 

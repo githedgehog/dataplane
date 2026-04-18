@@ -33,23 +33,16 @@ jobs:
           fetch-depth: "1"
           persist-credentials: "false"
 
-      - name: "Install nix"
-        uses: "cachix/install-nix-action@v31"
+      - uses: "./.github/actions/nix-shell"
         with:
-          github_access_token: "${{ secrets.GITHUB_TOKEN }}"
-          nix_path: "nixpkgs=channel:nixpkgs-unstable"
-
-      - uses: "cachix/cachix-action@v17"
-        with:
-          name: "hedgehog"
-          # prettier-ignore
-          signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-          # prettier-ignore
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
+          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: "Check formatting"
+        shell: "bash"
         run: |
-          nix-shell --run "set -euo pipefail; just fmt --check"
+          set -euo pipefail
+          just fmt --check
 
       - name: "How to fix"
         if: ${{ failure() }}
