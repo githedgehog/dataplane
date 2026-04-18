@@ -37,7 +37,7 @@ use std::time::Duration;
 use tracectl::get_trace_ctl;
 use tracing_test::traced_test;
 
-const ONE_MINUTE: Duration = Duration::from_secs(60);
+const ONE_MINUTE: Duration = Duration::from_mins(1);
 use crate::stateless::test::build_gwconfig_from_overlay;
 
 fn addr_v4(addr: &str) -> Ipv4Addr {

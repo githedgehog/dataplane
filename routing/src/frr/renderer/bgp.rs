@@ -625,8 +625,8 @@ pub mod tests {
             "127.0.0.1",
             TcpPort::try_from(5000).expect("Bad port"),
         )
-        .set_retry(Duration::from_millis(1_000), Duration::from_millis(20_000))
-        .set_stats_interval(Duration::from_millis(60_000))
+        .set_retry(Duration::from_secs(1), Duration::from_secs(20))
+        .set_stats_interval(Duration::from_mins(1))
         .monitor_ipv4(true, true)
         .monitor_ipv6(false, false);
         let bmp = BmpOptions {

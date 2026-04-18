@@ -20,7 +20,7 @@ pub struct ConfigBuilder {
 impl Display for ConfigBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for s in &self.lines {
-            writeln!(f, "{s}",)?;
+            writeln!(f, "{s}")?;
         }
         Ok(())
     }

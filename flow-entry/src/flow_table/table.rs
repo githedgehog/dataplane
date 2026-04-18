@@ -431,7 +431,7 @@ mod tests {
                     // Use a future expiry so the flow stays active long enough for remove().
                     flow_table.insert(
                         *flow_key,
-                        FlowInfo::new(Instant::now() + Duration::from_secs(60)),
+                        FlowInfo::new(Instant::now() + Duration::from_mins(1)),
                     );
                     let flow_info = flow_table.lookup(flow_key).unwrap();
                     assert!(flow_table.lookup(&flow_key.reverse(None)).is_none());

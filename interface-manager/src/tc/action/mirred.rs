@@ -406,12 +406,10 @@ impl<'a> TryFrom<&'a TcAction> for Mirred {
         let mut builder = MirredBuilder::create_empty();
         for attr in &value.attributes {
             match attr {
-                TcActionAttribute::Kind(kind) => {
-                    if kind != Mirred::KIND {
-                        return Err(rtnetlink::Error::InvalidNla(
-                            "expected mirred kind".to_string(),
-                        ));
-                    }
+                TcActionAttribute::Kind(kind) if kind != Mirred::KIND => {
+                    return Err(rtnetlink::Error::InvalidNla(
+                        "expected mirred kind".to_string(),
+                    ));
                 }
                 TcActionAttribute::Options(options) => {
                     for option in options {

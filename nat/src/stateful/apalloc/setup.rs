@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tracing::debug;
 
-const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
 impl NatAllocator {
     /// Build a [`NatAllocator`] from information collected from a [`VpcTable`] object. This

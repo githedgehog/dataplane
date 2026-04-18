@@ -196,7 +196,7 @@ mod test {
             assert_eq!(Arc::strong_count(&flow_2), 1);
 
             // extend flow2's timeout so that it does not expire
-            flow_2.extend_expiry_unchecked(Duration::from_secs(60));
+            flow_2.extend_expiry_unchecked(Duration::from_mins(1));
 
             // ... and insert the two flows in the flow table
             flow_table.insert_from_arc(key_1, &flow_1);
