@@ -345,3 +345,60 @@ bump_version version:
 [script]
 shell:
    nix-shell
+
+# OCI repo used by the vlab Zot registry
+[private]
+vlab_oci_repo := "192.168.19.1:30000"
+
+# Start the vlab environment
+[script]
+vlab-up: (build "containers.vlab")
+    {{ _just_debuggable_ }}
+    docker load < ./results/containers.vlab
+    pushd ./scripts/vlab
+    ./run.sh
+    popd
+
+# Open a shell or run a command on the vlab control plane
+[script]
+vlab-control *args:
+    {{ _just_debuggable_ }}
+    pushd ./scripts/vlab
+    ./control.sh {{ args }}
+    popd
+
+# Stop the vlab container and remove the docker network
+[confirm]
+[script]
+vlab-down:
+    {{ _just_debuggable_ }}
+    docker stop vlab || true
+    docker rm vlab || true
+    docker network rm zot || true
+
+# Stop vlab and remove all associated docker volumes
+[confirm]
+[script]
+vlab-purge: vlab-down
+    {{ _just_debuggable_ }}
+    docker volume rm vlab || true
+    docker volume rm zot || true
+    docker volume rm vlab-secrets || true
+
+# Build, push the dataplane image to the vlab registry, and patch the running fabric
+[script]
+vlab-patch-dataplane:
+    {{ _just_debuggable_ }}
+    just oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container dataplane
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"overrides":{"versions":{"gateway":{"dataplane":"{{version}}"}}}}}'
+    popd
+
+# Build, push the FRR image to the vlab registry, and patch the running fabric
+[script]
+vlab-patch-frr:
+    {{ _just_debuggable_ }}
+    just oci_insecure=true oci_repo="{{ vlab_oci_repo }}" push-container frr.dataplane
+    pushd ./scripts/vlab
+    ./control.sh kubectl -n fab patch fab/default --type=merge -p '{"spec":{"overrides":{"versions":{"gateway":{"frr":"{{version}}"}}}}}'
+    popd

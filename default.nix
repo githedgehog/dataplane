@@ -754,6 +754,117 @@ let
     config.Cmd = [ "/libexec/frr/docker-start" ];
   };
 
+  # Local dev-only container image for the vlab test environment.  Replaces
+  # the old Ubuntu-based scripts/vlab/Dockerfile: every tool the vlab runtime
+  # needs comes from nix (pinned via npins), not apt + wget + `curl | bash`,
+  # so there is no unverified download in the image build.
+  #
+  # The hhfab CLI is still fetched at runtime via i.hhdev.io/hhfab -- it is
+  # a fast-moving test tool that we intentionally track against master rather
+  # than pin into the image closure.
+  #
+  # Fixed tag "latest" so scripts/vlab/run.sh can refer to `vlab` unambiguously
+  # without threading the dataplane's `tag` argstr through.
+  containers.vlab = pkgs.dockerTools.buildLayeredImage {
+    name = "vlab";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "vlab-env";
+      pathsToLink = [ "/" ];
+      paths = with pkgs.pkgsHostHost; [
+        bashInteractive
+        cacert
+        coreutils
+        curl
+        docker-client
+        dockerTools.binSh
+        dockerTools.fakeNss
+        dockerTools.usrBinEnv
+        findutils
+        gawk
+        git
+        gnugrep
+        gnused
+        gnutar
+        gzip
+        iproute2
+        jq
+        less
+        neovim
+        openssh
+        openssl
+        oras
+        qemu_kvm
+        socat
+        sudo
+        wget
+        # Python's kislyuk yq (supports the `-y` flag used by run.sh);
+        # nixpkgs.yq-go is mikefarah's Go port with a different CLI surface.
+        yq
+        zot
+
+        # nixpkgs' sudo is always built with PAM on linux, so we need to ship
+        # a /etc/pam.d/sudo config or sudo aborts with "unable to initialize
+        # PAM: Critical error - immediate abort" the moment hhfab vlab up
+        # shells out to it.  The container runs as root in a privileged
+        # sandbox, so we use pam_permit.so for every stage; absolute module
+        # paths sidestep libpam's compiled-in module search path.
+        (writeTextDir "etc/pam.d/sudo" ''
+          auth     sufficient   ${pam}/lib/security/pam_permit.so
+          account  sufficient   ${pam}/lib/security/pam_permit.so
+          password sufficient   ${pam}/lib/security/pam_permit.so
+          session  sufficient   ${pam}/lib/security/pam_permit.so
+        '')
+
+        # zot config and cert.ini are immutable across runs, so they live
+        # in the image rather than in any mount or bind-mount.
+        (writeTextDir "etc/zot/config.json" (builtins.readFile ./scripts/vlab/root/etc/zot/config.json))
+        (writeTextDir "etc/zot/cert.ini" (builtins.readFile ./scripts/vlab/root/etc/zot/cert.ini))
+
+        # Entrypoint script: generates TLS material into a tmpfs, validates
+        # or provisions ghcr.io credentials in a persistent docker volume,
+        # then execs zot.  See scripts/vlab/entrypoint.sh for modes.
+        (writeShellApplication {
+          name = "vlab-entrypoint";
+          runtimeInputs = [
+            cacert
+            coreutils
+            curl
+            jq
+            openssl
+            zot
+          ];
+          text = builtins.readFile ./scripts/vlab/entrypoint.sh;
+        })
+      ];
+    };
+
+    # /tmp, /run/vlab (for the merged CA bundle), and /vlab (the working/volume
+    # dir) don't exist in the pure nix closure; pre-create them so the
+    # entrypoint and docker exec commands can write to them.
+    # /tmp and the /vlab working dir don't exist in the pure nix closure;
+    # pre-create them so docker exec commands can write to them.  The tmpfs
+    # at /run/vlab and the vlab-secrets volume at /var/lib/vlab are created
+    # by docker at container start.
+    extraCommands = ''
+      mkdir -p tmp vlab
+      chmod 1777 tmp
+    '';
+
+    config = {
+      WorkingDir = "/vlab";
+      Volumes."/vlab" = { };
+      Env = [
+        # Go (and hhfab) read SSL_CERT_FILE; the entrypoint writes the merged
+        # bundle (nixpkgs system CAs + the freshly-minted zot CA) to this path
+        # before exec'ing zot.
+        "SSL_CERT_FILE=/run/vlab/ca-bundle.pem"
+      ];
+      Entrypoint = [ "/bin/vlab-entrypoint" ];
+      Cmd = [ "run" ];
+    };
+  };
+
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr-host";
     inherit tag;
