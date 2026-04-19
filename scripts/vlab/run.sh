@@ -116,7 +116,7 @@ docker exec vlab /vlab/hhfab vlab up \
     -v \
     --controls-restricted=false \
     -m=manual \
-    --recreate \
+    --recreate
 
 
 popd
