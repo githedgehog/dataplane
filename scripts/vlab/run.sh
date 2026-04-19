@@ -88,7 +88,13 @@ declare -r fabricator_rev
 
 docker exec vlab /bin/bash -c \
     "curl -fsSL 'https://i.hhdev.io/hhfab' | USE_SUDO=false INSTALL_DIR=. VERSION=v0-master-${fabricator_rev} bash"
-docker exec vlab /vlab/hhfab init --dev --registry-repo 192.168.19.1:30000 --gateway --import-host-upstream --force
+docker exec vlab /vlab/hhfab init \
+    --dev \
+    --registry-repo 192.168.19.1:30000 \
+    --gateway \
+    --import-host-upstream \
+    --force \
+    --gateways=2
 docker exec vlab mv fab.yaml fab.orig.yaml
 docker exec vlab bash -euxo pipefail -c "
   yq . fab.orig.yaml \
@@ -100,7 +106,17 @@ docker exec vlab bash -euxo pipefail -c "
     | yq -y '.[]' \
     | tee fab.yaml
 "
-docker exec vlab /vlab/hhfab vlab gen
-docker exec vlab /vlab/hhfab vlab up -v --controls-restricted=false -m=manual --recreate
+docker exec vlab /vlab/hhfab vlab gen \
+     --externals-static=1 \
+     --externals-bgp=1 \
+     --external-orphan-connections=1 \
+     --mclag-leafs-count=0 \
+     --orphan-leafs-count=2
+docker exec vlab /vlab/hhfab vlab up \
+    -v \
+    --controls-restricted=false \
+    -m=manual \
+    --recreate \
+
 
 popd

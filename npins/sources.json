@@ -97,9 +97,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "6e3abaf53ead71a48db2304b6459b5bcddbf5d09",
-      "url": "https://github.com/githedgehog/fabricator/archive/6e3abaf53ead71a48db2304b6459b5bcddbf5d09.tar.gz",
-      "hash": "sha256-xxjDIGXlSo0kv3Q058LnJtR+r4XlBd9FjgoLMhkYiD8="
+      "revision": "eb13696a3942be4eed7f57b997f897637ed9c73c",
+      "url": "https://github.com/githedgehog/fabricator/archive/eb13696a3942be4eed7f57b997f897637ed9c73c.tar.gz",
+      "hash": "sha256-NijpVAeuOq3lJyIAuGs+rDaIBIVso8kiUB4Eo235OCk="
     },
     "frr": {
       "type": "Git",
