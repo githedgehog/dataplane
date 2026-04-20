@@ -102,10 +102,7 @@ impl Display for FlowInfoOneLiner<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let flow_info = self.0;
         let genid = flow_info.genid();
-        let key = flow_info
-            .flowkey()
-            .map_or_else(|| "none".to_string(), ToString::to_string);
-
+        let key = flow_info.flowkey();
         let r = flow_info
             .related
             .as_ref()

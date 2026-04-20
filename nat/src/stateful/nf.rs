@@ -156,7 +156,7 @@ impl StatefulNat {
         state: MasqueradeState,
         dst_vpcd: VpcDiscriminant,
     ) {
-        let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!());
+        let flow_key = flow_info.flowkey();
         debug!("Setting up masquerade flow state: {flow_key} -> {state}");
         if let Ok(mut write_guard) = flow_info.locked.write() {
             write_guard.nat_state = Some(Box::new(state));
@@ -449,7 +449,7 @@ impl StatefulNat {
             }
             Some(allocator) => {
                 check_masquerading_flow(
-                    installed.flowkey().unwrap(),
+                    installed.flowkey(),
                     installed.as_ref(),
                     allocator.as_ref(),
                 );

@@ -81,7 +81,7 @@ impl FlowFilter {
         let locked_info = flow_info.locked.read().unwrap();
         let flow_port_fw = locked_info.port_fw_state.is_some();
         let flow_masquerade = locked_info.nat_state.is_some();
-        let flowkey = flow_info.flowkey().unwrap_or_else(|| unreachable!());
+        let flowkey = flow_info.flowkey();
         if locked_info.dst_vpcd != Some(dst_vpcd) {
             debug!("Flow-info is out-dated. New dst VPC is {dst_vpcd}");
             return true;
