@@ -393,9 +393,13 @@ impl FlowInfo {
     ///
     /// This method is thread-safe.
     pub fn invalidate(&self) {
-        debug!("Invalidating flow {}...", self.logfmt());
-        self.update_status(FlowStatus::Cancelled);
-        self.token.cancel();
+        if self.is_active() {
+            debug!("Invalidating flow {}...", self.logfmt());
+            self.update_status(FlowStatus::Cancelled);
+            self.token.cancel();
+        } else {
+            debug!("Flow {} was not active", self.logfmt());
+        }
     }
 
     /// Invalidate a flow and also its related flow if any.
