@@ -360,7 +360,7 @@ mod std_tests {
 #[concurrency_mode(shuttle)]
 mod tests_shuttle {
     use super::context::*;
-    use net::FlowKey;
+
     use net::ip::NextHeader;
     use shuttle::sync::{Arc, Mutex};
     use shuttle::thread;
@@ -413,17 +413,17 @@ mod tests_shuttle {
             let mut handles = vec![];
 
             handles.push(thread::spawn(move || {
-                let allocation1 = allocator1
+                let _allocation1 = allocator1
                     .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                     .unwrap();
             }));
             handles.push(thread::spawn(move || {
-                let allocation2 = allocator2
+                let _allocation2 = allocator2
                     .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                     .unwrap();
             }));
             handles.push(thread::spawn(move || {
-                let allocation3 = allocator3
+                let _allocation3 = allocator3
                     .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                     .unwrap();
             }));
