@@ -128,7 +128,7 @@ impl PortForwarder {
         }
 
         // insert the two related flows
-        match self.flow_table.insert_from_arc(fw_key, &fw_flow) {
+        match self.flow_table.insert_from_arc(&fw_flow) {
             Ok(Some(ref prior)) => debug!("Replaced forward flow entry: {prior}"),
             Ok(None) => {}
             Err(FlowTableError::CapacityExceeded) => {
@@ -142,7 +142,7 @@ impl PortForwarder {
         // recognises that rev_flow has a related flow (fw_flow) already in the table
         // and admits it unconditionally.  Remove the forward entry on the unlikely
         // event of failure to avoid leaving a one-sided flow.
-        if let Err(e) = self.flow_table.insert_from_arc(rev_key, &rev_flow) {
+        if let Err(e) = self.flow_table.insert_from_arc(&rev_flow) {
             debug_assert!(
                 false,
                 "reverse port-forwarding flow insert failed unexpectedly: {e:?}"

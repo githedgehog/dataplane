@@ -221,7 +221,7 @@ impl StatefulNat {
 
         // insert in flow-table
         self.flow_table
-            .insert_from_arc(*flow_key, &forward)
+            .insert_from_arc(&forward)
             .map_err(|e| match e {
                 FlowTableError::CapacityExceeded => StatefulNatError::CapacityExceeded,
                 FlowTableError::InvalidShardCount(_) => unreachable!(),
@@ -231,7 +231,7 @@ impl StatefulNat {
         // recognises that reverse has a related flow (forward) already in the table
         // and admits it unconditionally.  Remove the forward entry on the unlikely
         // event of failure to avoid leaving a one-sided flow.
-        if let Err(e) = self.flow_table.insert_from_arc(reverse_key, &reverse) {
+        if let Err(e) = self.flow_table.insert_from_arc(&reverse) {
             debug_assert!(false, "reverse flow insert failed unexpectedly: {e:?}");
             self.flow_table.remove(flow_key);
             return Err(match e {

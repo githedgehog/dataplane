@@ -103,7 +103,7 @@ mod test {
         // Insert matching flow entry
         let flow_key = FlowKey::try_from(net::flow_key::Uni(&packet)).unwrap();
         let flow_info = FlowInfo::new(flow_key, Instant::now() + Duration::from_secs(10));
-        flow_table.insert(flow_key, flow_info).unwrap();
+        flow_table.insert(flow_info).unwrap();
 
         // Ensure packet is tagged
         let mut output_iter = lookup_nf.process(std::iter::once(packet));
@@ -133,7 +133,7 @@ mod test {
                 let flow_key = FlowKey::try_from(net::flow_key::Uni(&packet)).unwrap();
                 let flow_info = FlowInfo::new(flow_key, Instant::now() + self.timeout);
                 self.flow_table
-                    .insert(flow_key, flow_info)
+                    .insert(flow_info)
                     .expect("insert in FlowInfoCreator should not fail");
                 packet.enforce()
             })
@@ -201,8 +201,8 @@ mod test {
             flow_2.extend_expiry_unchecked(Duration::from_mins(1));
 
             // ... and insert the two flows in the flow table
-            flow_table.insert_from_arc(key_1, &flow_1).unwrap();
-            flow_table.insert_from_arc(key_2, &flow_2).unwrap();
+            flow_table.insert_from_arc(&flow_1).unwrap();
+            flow_table.insert_from_arc(&flow_2).unwrap();
 
             // check that flows can be looked up
             let _ = flow_table.lookup(&key_1).unwrap();
