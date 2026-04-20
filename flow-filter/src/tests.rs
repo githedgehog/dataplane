@@ -10,7 +10,7 @@ use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
 use net::buffer::{PacketBufferMut, TestBuffer};
-use net::flows::FlowInfo;
+use net::flows::{FlowInfo, FlowStatus};
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ip::NextHeader;
 use net::ipv4::addr::UnicastIpv4Addr;
@@ -187,6 +187,10 @@ fn fake_flow_session<Buf: PacketBufferMut>(
 ) {
     // Create flow_info with dst_vpcd and NAT info and attach it to the packet
     let flow_info = FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
+
+    // pretend that flow is in table
+    flow_info.update_status(FlowStatus::Active);
+
     let mut binding = flow_info.locked.write().unwrap();
     binding.dst_vpcd = Some(dst_vpcd);
     if set_nat_state {
