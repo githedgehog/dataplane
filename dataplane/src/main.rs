@@ -18,7 +18,7 @@ use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
-use pyroscope::pyroscope::PyroscopeAgentBuilder;
+use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
 
 use routing::{BmpServerParams, RouterParamsBuilder};
 use tracectl::{custom_target, get_trace_ctl, trace_target};
@@ -37,6 +37,8 @@ custom_target!("Pyroscope", LevelFilter::INFO, &["third-party"]);
 custom_target!("kube", LevelFilter::WARN, &["third-party"]);
 custom_target!("hyper", LevelFilter::WARN, &["third-party"]);
 custom_target!("tower", LevelFilter::WARN, &["third-party"]);
+
+const PYROSCOPE_APP_NAME: &str = "hedgehog-dataplane";
 
 fn init_name(args: &CmdArgs) -> Result<String, String> {
     if let Some(name) = args.get_name() {
@@ -138,14 +140,17 @@ fn main() {
     let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
     let agent_running = args.pyroscope_url().and_then(|url| {
+        let pyroscope_config = PyroscopeConfig::default();
+        let sample_rate = pyroscope_config.sample_rate;
+
         match PyroscopeAgentBuilder::new(
             url.as_str(),
-            "hedgehog-dataplane",
-            100u32,
-            "pyroscope-rs",
-            "1.0.2", // To keep in sync with pyroscope dependency in toplevel Cargo.toml!
+            PYROSCOPE_APP_NAME,
+            sample_rate,
+            pyroscope_config.spy_name,
+            pyroscope_config.spy_version,
             pprof_backend(
-                PprofConfig { sample_rate: 100 },
+                PprofConfig { sample_rate },
                 BackendConfig {
                     report_thread_name: true,
                     ..BackendConfig::default()
