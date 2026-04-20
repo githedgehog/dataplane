@@ -61,7 +61,7 @@ fn re_reserve_ip_and_port(
     ip: IpAddr,
     port: NatPort,
 ) -> Result<(), ()> {
-    let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!());
+    let flow_key = flow_info.flowkey();
     let proto = flow_key.data().proto();
     let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
     let src_ip = *flow_key.data().src_ip();

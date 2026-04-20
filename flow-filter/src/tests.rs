@@ -9,7 +9,9 @@ use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
 use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
+use net::FlowKey;
 use net::buffer::{PacketBufferMut, TestBuffer};
+use net::flow_key::Uni;
 use net::flows::{FlowInfo, FlowStatus};
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ip::NextHeader;
@@ -27,6 +29,7 @@ use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing_test::traced_test;
 
 fn vni(id: u32) -> Vni {
@@ -185,8 +188,11 @@ fn fake_flow_session<Buf: PacketBufferMut>(
     set_nat_state: bool,
     set_port_fw_state: bool,
 ) {
+    // build flow key
+    let flow_key = FlowKey::try_from(Uni(&*packet)).unwrap();
+
     // Create flow_info with dst_vpcd and NAT info and attach it to the packet
-    let flow_info = FlowInfo::new(std::time::Instant::now() + std::time::Duration::from_secs(60));
+    let flow_info = FlowInfo::new(flow_key, Instant::now() + Duration::from_secs(60));
 
     // pretend that flow is in table
     flow_info.update_status(FlowStatus::Active);

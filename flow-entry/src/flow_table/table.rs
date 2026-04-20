@@ -133,21 +133,8 @@ impl FlowTable {
     pub fn insert(
         &self,
         flow_key: FlowKey,
-        mut flow_info: FlowInfo,
+        flow_info: FlowInfo,
     ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
-        // if the flow_info embeds its key already, it must match `flow_key`
-        flow_info.flowkey().inspect(|key| {
-            assert_eq!(
-                *key, &flow_key,
-                "Attempted to insert a flow with key: {key} with a distinct key: {flow_key}"
-            );
-        });
-
-        // embed the key in the flow if it did not provide one
-        if flow_info.flowkey().is_none() {
-            flow_info.set_flowkey(flow_key);
-        }
-
         debug!("insert: Inserting flow {flow_key}");
         let val = Arc::new(flow_info);
         self.insert_common(flow_key, &val)
@@ -172,12 +159,6 @@ impl FlowTable {
         flow_key: FlowKey,
         flow_info: &Arc<FlowInfo>,
     ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
-        flow_info.flowkey().inspect(|key| {
-            assert_eq!(
-                *key, &flow_key,
-                "Attempted to insert a flow with key: {key} with a distinct key: {flow_key}"
-            );
-        });
         debug!("insert: Inserting flow {flow_key}");
         self.insert_common(flow_key, flow_info)
     }
@@ -213,7 +194,7 @@ impl FlowTable {
     fn start_timer(table: Arc<RwLock<Table>>, flow_info: Arc<FlowInfo>) {
         tokio::task::spawn(async move {
             let table = table;
-            let flow_key = flow_info.flowkey().unwrap_or_else(|| unreachable!()); // flows have key when inserted
+            let flow_key = flow_info.flowkey();
             let mut deadline = flow_info.expires_at();
             loop {
                 tokio::select! {
@@ -525,7 +506,7 @@ mod tests {
                 }),
             ));
 
-            let flow_info = FlowInfo::new(five_seconds_from_now);
+            let flow_info = FlowInfo::new(flow_key, five_seconds_from_now);
 
             flow_table.insert(flow_key, flow_info).unwrap();
             let result = flow_table.remove(&flow_key).unwrap();
@@ -549,7 +530,7 @@ mod tests {
                 }),
             ));
 
-            let flow_info = FlowInfo::new(now + two_seconds);
+            let flow_info = FlowInfo::new(flow_key, now + two_seconds);
             flow_table.insert(flow_key, flow_info).unwrap();
 
             // Wait 1 second — flow not yet expired, lookup should return Some.
@@ -582,7 +563,7 @@ mod tests {
             ));
 
             // Insert first entry.
-            let first_arc = Arc::new(FlowInfo::new(first_expiry_time));
+            let first_arc = Arc::new(FlowInfo::new(flow_key, first_expiry_time));
             flow_table.insert_from_arc(flow_key, &first_arc).unwrap();
 
             // The entry stored in the table should be the first arc.
@@ -595,7 +576,7 @@ mod tests {
             }
 
             // Insert a second entry under the same key.
-            let second_arc = Arc::new(FlowInfo::new(second_expiry_time));
+            let second_arc = Arc::new(FlowInfo::new(flow_key, second_expiry_time));
             flow_table.insert_from_arc(flow_key, &second_arc).unwrap();
 
             // The table should now point to the second entry.
@@ -619,7 +600,7 @@ mod tests {
                     flow_table
                         .insert(
                             *flow_key,
-                            FlowInfo::new(Instant::now() + Duration::from_mins(1)),
+                            FlowInfo::new(*flow_key, Instant::now() + Duration::from_mins(1)),
                         )
                         .unwrap();
                     let flow_info = flow_table.lookup(flow_key).unwrap();
@@ -654,7 +635,7 @@ mod tests {
                         dst_port: TcpPort::new_checked(2048).unwrap(),
                     }),
                 ));
-                let flow_info = FlowInfo::new(deadline);
+                let flow_info = FlowInfo::new(flow_key, deadline);
                 flow_table.insert(flow_key, flow_info).unwrap();
                 flow_keys.push(flow_key);
             }
@@ -695,10 +676,10 @@ mod tests {
                     dst_port: TcpPort::new_checked(2048).unwrap(),
                 }),
             ));
-            let flow_info = FlowInfo::new(deadline);
+            let flow_info = FlowInfo::new(flow_key, deadline);
             flow_table.insert(flow_key, flow_info).unwrap();
 
-            let flow_info = FlowInfo::new(deadline + Duration::from_secs(2));
+            let flow_info = FlowInfo::new(flow_key, deadline + Duration::from_secs(2));
             let old = flow_table.insert(flow_key, flow_info).unwrap();
             assert!(old.is_some());
             assert_eq!(old.unwrap().expires_at(), deadline);
@@ -729,7 +710,7 @@ mod tests {
                     IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
                 ));
                 flow_table
-                    .insert(flow_key, FlowInfo::new(far_future))
+                    .insert(flow_key, FlowInfo::new(flow_key, far_future))
                     .expect("insert under capacity should succeed");
             }
 
@@ -744,7 +725,7 @@ mod tests {
                 }),
             ));
             assert!(matches!(
-                flow_table.insert(overflow_key, FlowInfo::new(far_future)),
+                flow_table.insert(overflow_key, FlowInfo::new(overflow_key, far_future)),
                 Err(FlowTableError::CapacityExceeded)
             ));
         }

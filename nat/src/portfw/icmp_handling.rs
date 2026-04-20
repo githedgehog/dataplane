@@ -83,7 +83,7 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     {
         debug!(
             "The flow for the offending packet is {} {related}",
-            related.flowkey().unwrap_or_else(|| unreachable!())
+            related.flowkey()
         );
         if !related.is_active() {
             packet.done(DoneReason::Filtered);

@@ -160,7 +160,7 @@ pub struct FlowInfoLocked {
 #[derive(Debug)]
 pub struct FlowInfo {
     expires_at: AtomicInstant,
-    flowkey: Option<FlowKey>,
+    flowkey: FlowKey,
     genid: AtomicI64,
     status: AtomicFlowStatus,
     pub locked: RwLock<FlowInfoLocked>,
@@ -173,10 +173,10 @@ pub struct FlowInfo {
 // meta data extension method.
 impl FlowInfo {
     #[must_use]
-    pub fn new(expires_at: Instant) -> Self {
+    pub fn new(flowkey: FlowKey, expires_at: Instant) -> Self {
         Self {
             expires_at: AtomicInstant::new(expires_at),
-            flowkey: None,
+            flowkey,
             genid: AtomicI64::new(0),
             status: AtomicFlowStatus::from(FlowStatus::Detached),
             locked: RwLock::new(FlowInfoLocked::default()),
@@ -185,13 +185,15 @@ impl FlowInfo {
         }
     }
 
-    pub fn set_flowkey(&mut self, key: FlowKey) {
-        self.flowkey = Some(key);
+    /// Set a related flow
+    fn set_related(mut self, related: Weak<FlowInfo>) -> Self {
+        self.related = Some(related);
+        self
     }
 
     #[must_use]
-    pub fn flowkey(&self) -> Option<&FlowKey> {
-        self.flowkey.as_ref()
+    pub fn flowkey(&self) -> &FlowKey {
+        &self.flowkey
     }
 
     #[must_use]
@@ -275,24 +277,8 @@ impl FlowInfo {
             let one_weak = Weak::from_raw(Weak::into_raw(one_weak) as *const Self);
             let two_weak = Weak::from_raw(Weak::into_raw(two_weak) as *const Self);
             // overwrite the memory locations with the FlowInfo's
-            one_p.write(Self {
-                expires_at: AtomicInstant::new(expires_at),
-                flowkey: Some(key1),
-                genid: AtomicI64::new(0),
-                status: AtomicFlowStatus::from(FlowStatus::Detached),
-                locked: RwLock::new(FlowInfoLocked::default()),
-                related: Some(two_weak),
-                token: CancellationToken::new(),
-            });
-            two_p.write(Self {
-                expires_at: AtomicInstant::new(expires_at),
-                flowkey: Some(key2),
-                genid: AtomicI64::new(0),
-                status: AtomicFlowStatus::from(FlowStatus::Detached),
-                locked: RwLock::new(FlowInfoLocked::default()),
-                related: Some(one_weak),
-                token: CancellationToken::new(),
-            });
+            one_p.write(FlowInfo::new(key1, expires_at).set_related(two_weak));
+            two_p.write(FlowInfo::new(key2, expires_at).set_related(one_weak));
             // turn back into Arc's
             (one.assume_init(), two.assume_init())
         }
