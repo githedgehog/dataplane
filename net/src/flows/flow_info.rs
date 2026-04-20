@@ -39,7 +39,8 @@ pub enum FlowStatus {
     Cancelled = 1,
     // the flow is invalid because it timed out and will be removed from the flow table
     Expired = 2,
-    // the flow is no longer in the flow table. It may still exist and be referenced, though
+    // the flow is not in the flow table. It may have not been yet inserted or have been
+    // expelled from the flow table. It may still exist and be referenced, though
     Detached = 3,
 }
 
@@ -174,7 +175,7 @@ impl FlowInfo {
             expires_at: AtomicInstant::new(expires_at),
             flowkey: None,
             genid: AtomicI64::new(0),
-            status: AtomicFlowStatus::from(FlowStatus::Active),
+            status: AtomicFlowStatus::from(FlowStatus::Detached),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
             token: CancellationToken::new(),
@@ -275,7 +276,7 @@ impl FlowInfo {
                 expires_at: AtomicInstant::new(expires_at),
                 flowkey: Some(key1),
                 genid: AtomicI64::new(0),
-                status: AtomicFlowStatus::from(FlowStatus::Active),
+                status: AtomicFlowStatus::from(FlowStatus::Detached),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(two_weak),
                 token: CancellationToken::new(),
@@ -284,7 +285,7 @@ impl FlowInfo {
                 expires_at: AtomicInstant::new(expires_at),
                 flowkey: Some(key2),
                 genid: AtomicI64::new(0),
-                status: AtomicFlowStatus::from(FlowStatus::Active),
+                status: AtomicFlowStatus::from(FlowStatus::Detached),
                 locked: RwLock::new(FlowInfoLocked::default()),
                 related: Some(one_weak),
                 token: CancellationToken::new(),
