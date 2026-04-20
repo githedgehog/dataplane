@@ -772,10 +772,9 @@ mod tests {
 
                     let now = Instant::now();
 
-                    let orig_flow_info = FlowInfo::new(now + two_seconds);
-
                     // Insert the first flow
-                    flow_table.insert(flow_keys[0], orig_flow_info).unwrap();
+                    let orig_flow_info = FlowInfo::new(flow_keys[0], now + two_seconds);
+                    flow_table.insert(orig_flow_info).unwrap();
                     let flow_info = flow_table.lookup(&flow_keys[0]).unwrap();
 
                     // This holder will retain the Arc until the inserter thread starts
@@ -807,13 +806,11 @@ mod tests {
                             .name("inserter".to_string())
                             .spawn({
                                 let flow_table = flow_table.clone();
-                                let flow_key = flow_keys[1];
-
                                 let flow_info = flow_info_holder.take();
                                 move || {
                                     for _ in 0..N {
                                         if let Some(flow_info) = flow_info.as_ref() {
-                                            flow_table.reinsert(flow_key, flow_info).unwrap();
+                                            flow_table.insert_from_arc(flow_info).unwrap();
                                         }
                                         thread::yield_now();
                                     }
@@ -905,15 +902,15 @@ mod tests {
                     let mut handles = vec![];
 
                     handles.push(thread::spawn(move || {
-                        let flow_info = FlowInfo::new(five_seconds_from_now);
-                        flow_table_clone1.insert(flow_key1, flow_info).unwrap();
+                        let flow_info = FlowInfo::new(flow_key1, five_seconds_from_now);
+                        flow_table_clone1.insert(flow_info).unwrap();
                         let result = flow_table_clone1.remove(&flow_key1).unwrap();
                         assert!(result.0 == flow_key1);
                     }));
 
                     handles.push(thread::spawn(move || {
-                        let flow_info = FlowInfo::new(five_seconds_from_now);
-                        flow_table_clone2.insert(flow_key2, flow_info).unwrap();
+                        let flow_info = FlowInfo::new(flow_key2, five_seconds_from_now);
+                        flow_table_clone2.insert(flow_info).unwrap();
                         let result = flow_table.remove(&flow_key2).unwrap();
                         assert!(result.0 == flow_key2);
                     }));
