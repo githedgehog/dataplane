@@ -373,14 +373,14 @@ impl FlowInfo {
         self.status.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Tell if a `FlowInfo` is valid for processing the packets that match it.
+    /// Tell if a `FlowInfo` is active, i.e. eligible for processing packets that match it.
     /// Only `FlowInfo`s with status `FlowStatus::Active` are. This method is mostly useful for NFs
     /// which don't care about the actual states that a flow may have.
     ///
     /// # Thread Safety
     ///
     /// This method is thread-safe.
-    pub fn is_valid(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         self.status() == FlowStatus::Active
     }
 
