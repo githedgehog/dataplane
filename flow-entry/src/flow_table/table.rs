@@ -163,32 +163,6 @@ impl FlowTable {
         self.insert_common(flow_key, flow_info)
     }
 
-    /// Add a flow to the table via an Arc
-    ///
-    /// This is intended to re-add a flow to the flow table via the Arc returned from
-    /// lookup, but it can be used with a fresh Arc as well.
-    ///
-    /// # Returns
-    ///
-    /// Returns the old `Arc<FlowInfo>` associated with the flow key, if any.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit.
-    ///
-    /// # Panics
-    ///
-    /// Panics if this thread already holds the read lock on the table or
-    /// if the table lock is poisoned.
-    pub fn reinsert(
-        &self,
-        flow_key: FlowKey,
-        flow_info: &Arc<FlowInfo>,
-    ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
-        debug!("reinsert: Re-inserting flow key {flow_key}");
-        self.insert_common(flow_key, flow_info)
-    }
-
     /// Start a timer task for a flow
     #[allow(unused)]
     fn start_timer(table: Arc<RwLock<Table>>, flow_info: Arc<FlowInfo>) {
