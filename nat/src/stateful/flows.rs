@@ -42,7 +42,7 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
             if let Ok(locked) = flow_info.locked.read()
                 && locked.nat_state.as_ref().is_some()
             {
-                flow_info.set_genid_pair(genid);
+                flow_info.set_genid(genid);
                 count += 1;
             }
         },
