@@ -125,19 +125,13 @@ impl FlowTable {
     ///
     /// Panics if:
     ///  - this thread already holds the read lock on the table or if the table lock is poisoned.
-    ///  - if the `flow_info` to insert has a key different from `flow_key`
     ///
     /// # Errors
     ///
     /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit.
-    pub fn insert(
-        &self,
-        flow_key: FlowKey,
-        flow_info: FlowInfo,
-    ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
-        debug!("insert: Inserting flow {flow_key}");
+    pub fn insert(&self, flow_info: FlowInfo) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
         let val = Arc::new(flow_info);
-        self.insert_common(flow_key, &val)
+        self.insert_common(&val)
     }
 
     /// Add a flow entry to the table from a `&Arc<FlowInfo>`
@@ -150,17 +144,15 @@ impl FlowTable {
     ///
     /// Panics if:
     ///   - this thread already holds the read lock on the table or if the table lock is poisoned.
-    ///   - if the `flow_info` to insert has a key different from `flow_key`
+    ///
     /// # Errors
     ///
     /// Returns [`FlowTableError::CapacityExceeded`] when the table has reached its hard limit.
     pub fn insert_from_arc(
         &self,
-        flow_key: FlowKey,
         flow_info: &Arc<FlowInfo>,
     ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
-        debug!("insert: Inserting flow {flow_key}");
-        self.insert_common(flow_key, flow_info)
+        self.insert_common(flow_info)
     }
 
     /// Start a timer task for a flow
@@ -227,13 +219,11 @@ impl FlowTable {
         });
     }
 
-    fn insert_common(
-        &self,
-        flow_key: FlowKey,
-        val: &Arc<FlowInfo>,
-    ) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
+    fn insert_common(&self, val: &Arc<FlowInfo>) -> Result<Option<Arc<FlowInfo>>, FlowTableError> {
         let table = self.table.read().unwrap();
         let capacity = self.capacity.load(Ordering::Relaxed);
+        let flow_key = val.flowkey();
+        debug!("insert: inserting flow {flow_key}");
 
         // Reject new flows when at capacity.  Exception: always admit the second half of a
         // related pair (e.g. the reverse NAT flow) to avoid leaving a one-sided entry.
@@ -249,7 +239,7 @@ impl FlowTable {
             }
         }
 
-        let result = table.insert(flow_key, val.clone());
+        let result = table.insert(*flow_key, val.clone());
         // Set Active only after the insert so that the invariant holds: Active iff in the
         // table.  The narrow window where the entry is in the DashMap but not yet Active is
         // harmless: drain_stale's stale condition is (status != Active || expires_at <= now),
@@ -482,7 +472,7 @@ mod tests {
 
             let flow_info = FlowInfo::new(flow_key, five_seconds_from_now);
 
-            flow_table.insert(flow_key, flow_info).unwrap();
+            flow_table.insert(flow_info).unwrap();
             let result = flow_table.remove(&flow_key).unwrap();
             assert!(result.0 == flow_key);
         }
@@ -505,7 +495,7 @@ mod tests {
             ));
 
             let flow_info = FlowInfo::new(flow_key, now + two_seconds);
-            flow_table.insert(flow_key, flow_info).unwrap();
+            flow_table.insert(flow_info).unwrap();
 
             // Wait 1 second — flow not yet expired, lookup should return Some.
             tokio::time::sleep(one_second).await;
@@ -538,7 +528,7 @@ mod tests {
 
             // Insert first entry.
             let first_arc = Arc::new(FlowInfo::new(flow_key, first_expiry_time));
-            flow_table.insert_from_arc(flow_key, &first_arc).unwrap();
+            flow_table.insert_from_arc(&first_arc).unwrap();
 
             // The entry stored in the table should be the first arc.
             {
@@ -551,7 +541,7 @@ mod tests {
 
             // Insert a second entry under the same key.
             let second_arc = Arc::new(FlowInfo::new(flow_key, second_expiry_time));
-            flow_table.insert_from_arc(flow_key, &second_arc).unwrap();
+            flow_table.insert_from_arc(&second_arc).unwrap();
 
             // The table should now point to the second entry.
             {
@@ -572,10 +562,10 @@ mod tests {
                 .for_each(|flow_key| {
                     // Use a future expiry so the flow stays active long enough for remove().
                     flow_table
-                        .insert(
+                        .insert(FlowInfo::new(
                             *flow_key,
-                            FlowInfo::new(*flow_key, Instant::now() + Duration::from_mins(1)),
-                        )
+                            Instant::now() + Duration::from_mins(1),
+                        ))
                         .unwrap();
                     let flow_info = flow_table.lookup(flow_key).unwrap();
                     assert!(flow_table.lookup(&flow_key.reverse(None)).is_none());
@@ -610,7 +600,7 @@ mod tests {
                     }),
                 ));
                 let flow_info = FlowInfo::new(flow_key, deadline);
-                flow_table.insert(flow_key, flow_info).unwrap();
+                flow_table.insert(flow_info).unwrap();
                 flow_keys.push(flow_key);
             }
             // all flows in table
@@ -651,10 +641,10 @@ mod tests {
                 }),
             ));
             let flow_info = FlowInfo::new(flow_key, deadline);
-            flow_table.insert(flow_key, flow_info).unwrap();
+            flow_table.insert(flow_info).unwrap();
 
             let flow_info = FlowInfo::new(flow_key, deadline + Duration::from_secs(2));
-            let old = flow_table.insert(flow_key, flow_info).unwrap();
+            let old = flow_table.insert(flow_info).unwrap();
             assert!(old.is_some());
             assert_eq!(old.unwrap().expires_at(), deadline);
             assert_eq!(flow_table.active_len().unwrap(), 1);
@@ -684,7 +674,7 @@ mod tests {
                     IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
                 ));
                 flow_table
-                    .insert(flow_key, FlowInfo::new(flow_key, far_future))
+                    .insert(FlowInfo::new(flow_key, far_future))
                     .expect("insert under capacity should succeed");
             }
 
@@ -699,7 +689,7 @@ mod tests {
                 }),
             ));
             assert!(matches!(
-                flow_table.insert(overflow_key, FlowInfo::new(overflow_key, far_future)),
+                flow_table.insert(FlowInfo::new(overflow_key, far_future)),
                 Err(FlowTableError::CapacityExceeded)
             ));
         }
@@ -731,8 +721,8 @@ mod tests {
                         }),
                     ));
 
-                    let flow_info = FlowInfo::new(now + two_seconds);
-                    flow_table.insert(flow_key, flow_info).unwrap();
+                    let flow_info = FlowInfo::new(flow_key, now + two_seconds);
+                    flow_table.insert(flow_info).unwrap();
 
                     // Flow is active; lookup should return Some.
                     assert!(
