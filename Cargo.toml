@@ -153,7 +153,7 @@ priority-queue = { version = "2.7.0", default-features = false, features = [] }
 proc-macro2 = { version = "1.0.106", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
 # !!! WARNING: Update the version number passed to PyroscopeAgentBuilder::new() in dataplane/src/main.rs when updating pyroscope!
-pyroscope = { version = "2.0.0", default-features = false, features = ["backend-pprof-rs"] } # WARNING - see line above
+pyroscope = { version = "2.0.1", default-features = false, features = ["backend-pprof-rs"] } # WARNING - see line above
 quote = { version = "1.0.45", default-features = false, features = [] }
 rand = { version = "0.10.1", default-features = false, features = ["thread_rng"] }
 rapidhash = { version = "4.4.1", default-features = false, features = [] }
