@@ -146,6 +146,7 @@ let
       pkg-config
       python3Packages.pyflakes
       rust-toolchain
+      semgrep
       shellcheck
       skopeo
       wget

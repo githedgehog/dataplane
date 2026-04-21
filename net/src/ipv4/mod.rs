@@ -34,7 +34,7 @@ pub use contract::*;
 
 /// An IPv4 header
 #[repr(transparent)]
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
 pub struct Ipv4(pub(crate) Ipv4Header);
 
 /// Error describing illegal length in an IPv4 header

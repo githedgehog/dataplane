@@ -27,7 +27,7 @@ use crate::ipv6::Ipv6;
 pub use contract::*;
 
 /// A TCP header.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tcp(TcpHeader);
 
 impl Tcp {

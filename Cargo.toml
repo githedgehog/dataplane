@@ -165,6 +165,7 @@ rapidhash = { version = "4.4.1", default-features = false, features = [] }
 reedline = { version = "0.47.0", default-features = false, features = [] }
 rkyv = { version = "0.8.15", default-features = false, features = [] }
 roaring = { version = "0.11.3", default-features = false, features = [] }
+rstar = { version = "0.12.2", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
 rustls = { version = "0.23.38", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }
@@ -174,6 +175,7 @@ serde_yaml_ng = { version = "0.10.0", default-features = false, features = [] }
 serial_test = { version = "3.4.0", default-features = false, features = [] }
 sha2 = { version = "0.11.0", default-features = false, features = [] }
 shuttle = { version = "0.9.1", default-features = false, features = [] }
+slab = { version = "0.4.12", default-features = false, features = [] }
 small-map = { version = "0.1.5", default-features = false, features = [] }
 static_assertions = { version = "1.1.0", default-features = false, features = [] }
 strum = { version = "0.28.0", default-features = false, features = [] }
