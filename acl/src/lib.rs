@@ -128,48 +128,32 @@ where
 }
 
 // this would be sealed for sure
-trait Decision {
-    const Type: OpType;
-}
+trait Decision {}
 
-enum OpType {
-    // read is passive: not eligible for use in branch conditions, may not be updated by function author
-    // Example: hit counters for a rule
-    Passive,
-    // read is actionable: eligible for use in branch conditions
-    // Example: ttl == 0, or rate limit exceeded.
-    Actionable,
-    // read permits mutations: eligible for use in branch conditions, eli
-    // Example: NAT of src ip
-    Mutating,
-}
-
+// read is passive: not eligible for use in branch conditions, may not be updated by function author
+// Example: hit counters for a rule
 #[repr(transparent)]
 #[non_exhaustive]
 #[allow(dead_code)] // marker
 struct Passive;
 
+// read is actionable: eligible for use in branch conditions
+// Example: ttl == 0, or rate limit exceeded.
 #[repr(transparent)]
 #[non_exhaustive]
 #[allow(dead_code)] // marker
 struct Actionable;
 
+// read permits mutations: eligible for use in branch conditions, eli
+// Example: NAT of src ip
 #[repr(transparent)]
 #[non_exhaustive]
 #[allow(dead_code)] // marker
 struct Mutating;
 
-impl Decision for Passive {
-    const Type: OpType = OpType::Passive;
-}
-
-impl Decision for Actionable {
-    const Type: OpType = OpType::Actionable;
-}
-
-impl Decision for Mutating {
-    const Type: OpType = OpType::Mutating;
-}
+impl Decision for Passive {}
+impl Decision for Actionable {}
+impl Decision for Mutating {}
 
 // ----- scratch 2 ------
 
@@ -187,10 +171,10 @@ impl Decision for Mutating {
 // let's just game out a basic framework aware nat and see if and when it feels right to make it feel more transparent.
 
 // todo: seal?
-trait Port: Copy + std::hash::Hash + PartialEq + Eq + Ord + PartialOrd {}
+trait Port: Copy + std::hash::Hash + PartialEq + Eq + Ord + PartialOrd + 'static {}
 
 // todo: seal?
-trait Address: Copy + std::hash::Hash + PartialEq + Eq + Ord + PartialOrd {
+trait Address: Copy + std::hash::Hash + PartialEq + Eq + Ord + PartialOrd + 'static {
     type Unicast: Address<Unicast = Self::Unicast> + Into<Self> + AsRef<Self> + TryFrom<Self>;
 }
 
@@ -252,40 +236,40 @@ trait Table {
     type Action<'a>
     where
         Self: 'a;
-    fn lookup(&self, match_: &Self::Match<'_>) -> Self::Action<'_>;
+    fn lookup(&self, match_: Self::Match<'_>) -> Self::Action<'_>;
 }
 
-enum NatOutcome<Addr, Transport> {
-    UseExistingMapping(NatMatch<Addr, Transport>),
-    CreateNewMapping(NatMatch<Addr, Transport>),
+enum NatOutcome<'a, Addr, Port> {
+    UseExistingMapping(&'a NatTableEntry<Addr, Port>),
+    CreateNewMapping(NatMatch<Addr, Port>),
 }
 
-struct NatTable<Addr, Transport> {
-    forward: HashMap<NatMatch<Addr, Transport>, usize>,
-    reverse: HashMap<NatMatch<Addr, Transport>, usize>,
-    mappings: slab::Slab<NatTableEntry<Addr, Transport>>,
+struct NatTable<Addr, Port> {
+    forward: HashMap<NatMatch<Addr, Port>, usize>,
+    reverse: HashMap<NatMatch<Addr, Port>, usize>,
+    mappings: slab::Slab<NatTableEntry<Addr, Port>>,
 }
 
-impl<Addr, Trans> Table for NatTable<Addr, Trans>
+impl<A, P> Table for NatTable<A, P>
 where
-    Addr: Clone + Copy + std::hash::Hash + Eq + PartialEq + 'static,
-    Trans: Clone + Copy + std::hash::Hash + Eq + PartialEq + 'static,
+    A: Address,
+    P: Port,
 {
     type Match<'a>
-        = NatMatch<Addr, Trans>
+        = NatMatch<A, P>
     where
         Self: 'a;
 
     type Action<'a>
-        = NatOutcome<Addr, Trans>
+        = NatOutcome<'a, A, P>
     where
         Self: 'a;
 
     #[allow(clippy::panic)] // scratch code
-    fn lookup(&self, match_: &Self::Match<'_>) -> Self::Action<'_> {
+    fn lookup(&self, match_: Self::Match<'_>) -> Self::Action<'_> {
         if let Some(&key) = self.forward.get(&match_) {
             match self.mappings.get(key) {
-                Some(rule) => NatOutcome::UseExistingMapping(rule.reverse.clone()),
+                Some(rule) => NatOutcome::UseExistingMapping(rule),
                 None => {
                     panic!("programmer error");
                 }
@@ -295,8 +279,7 @@ where
             // scratch
             {
                 // allocate a new mapping
-                let new_mapping: NatMatch<Addr, Trans> =
-                    unimplemented!("magic allocation function");
+                let new_mapping: NatMatch<A, P> = unimplemented!("magic allocation function");
                 NatOutcome::CreateNewMapping(new_mapping)
             }
         }
