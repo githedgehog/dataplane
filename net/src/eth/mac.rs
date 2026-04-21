@@ -21,6 +21,13 @@ use std::{
     Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct Mac(pub [u8; 6]);
+
+impl AsRef<SourceMac> for SourceMac {
+    fn as_ref(&self) -> &SourceMac {
+        &self
+    }
+}
+
 impl From<[u8; 6]> for Mac {
     fn from(value: [u8; 6]) -> Self {
         Mac(value)

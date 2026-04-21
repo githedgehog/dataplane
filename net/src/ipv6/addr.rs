@@ -19,6 +19,17 @@ use std::str::FromStr;
 #[serde(transparent)]
 pub struct UnicastIpv6Addr(Ipv6Addr);
 
+impl AsRef<Ipv6Addr> for UnicastIpv6Addr {
+    fn as_ref(&self) -> &Ipv6Addr {
+        &self.0
+    }
+}
+
+impl AsRef<UnicastIpv6Addr> for UnicastIpv6Addr {
+    fn as_ref(&self) -> &UnicastIpv6Addr {
+        self
+    }
+}
 impl Debug for UnicastIpv6Addr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

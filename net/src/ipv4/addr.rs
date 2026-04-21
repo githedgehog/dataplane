@@ -20,6 +20,18 @@ use std::str::FromStr;
 #[serde(transparent)]
 pub struct UnicastIpv4Addr(Ipv4Addr);
 
+impl AsRef<Ipv4Addr> for UnicastIpv4Addr {
+    fn as_ref(&self) -> &Ipv4Addr {
+        &self.0
+    }
+}
+
+impl AsRef<UnicastIpv4Addr> for UnicastIpv4Addr {
+    fn as_ref(&self) -> &UnicastIpv4Addr {
+        &self
+    }
+}
+
 impl Debug for UnicastIpv4Addr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
