@@ -33,11 +33,10 @@ pub struct FibTable {
 }
 
 impl FibTable {
-    /// Register a `Fib` by adding a `FibReaderFactory` for it
-    fn add_fib(&mut self, id: FibKey, factory: FibReaderFactory) {
+    /// Register a `Fib` by adding a `FibTableEntry` for it, which contains a `FibReaderFactory`
+    fn add_fib(&mut self, id: FibKey, entry: Arc<FibTableEntry>) {
         info!("Registering Fib with id {id} in the FibTable");
-        self.entries
-            .insert(id, Arc::new(FibTableEntry::new(id, factory)));
+        self.entries.insert(id, entry);
     }
     /// Delete a `Fib`, by unregistering a `FibReaderFactory` for it
     fn del_fib(&mut self, id: FibKey) {
@@ -85,7 +84,7 @@ impl FibTable {
 }
 
 enum FibTableChange {
-    Add((FibKey, FibReaderFactory)),
+    Add((FibKey, Arc<FibTableEntry>)),
     Del(FibKey),
     RegisterByVni((FibKey, Vni)),
     UnRegisterVni(Vni),
@@ -95,7 +94,7 @@ impl Absorb<FibTableChange> for FibTable {
     fn absorb_first(&mut self, change: &mut FibTableChange, _: &Self) {
         self.version = self.version.wrapping_add(1);
         match change {
-            FibTableChange::Add((id, factory)) => self.add_fib(*id, factory.clone()),
+            FibTableChange::Add((id, entry)) => self.add_fib(*id, entry.clone()),
             FibTableChange::Del(id) => self.del_fib(*id),
             FibTableChange::RegisterByVni((id, vni)) => self.register_by_vni(*id, *vni),
             FibTableChange::UnRegisterVni(vni) => self.unregister_vni(*vni),
@@ -126,7 +125,8 @@ impl FibTableWriter {
     pub fn add_fib(&mut self, vrfid: VrfId, vni: Option<Vni>) -> FibWriter {
         let fibid = FibKey::from_vrfid(vrfid);
         let (fibw, fibr) = FibWriter::new(fibid);
-        self.0.append(FibTableChange::Add((fibid, fibr.factory())));
+        let entry = Arc::new(FibTableEntry::new(fibid, fibr.factory()));
+        self.0.append(FibTableChange::Add((fibid, entry)));
         if let Some(vni) = vni {
             self.0.append(FibTableChange::RegisterByVni((fibid, vni)));
         }
