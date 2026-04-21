@@ -186,59 +186,62 @@ impl Decision for Mutating {
 
 // let's just game out a basic framework aware nat and see if and when it feels right to make it feel more transparent.
 
-trait PortType: Clone {
-    type Port: Copy + std::hash::Hash + PartialEq + Eq;
+// todo: seal?
+trait Port: Copy + std::hash::Hash + PartialEq + Eq + Ord + PartialOrd {}
+
+// todo: seal?
+trait Address: Copy + std::hash::Hash + PartialEq + Eq + Ord + PartialOrd {
+    type Unicast: Address<Unicast = Self::Unicast> + Into<Self> + AsRef<Self> + TryFrom<Self>;
 }
 
-trait AddressType: Clone {
-    type Addr: Copy + std::hash::Hash + PartialEq + Eq;
-    type Unicast: Copy + std::hash::Hash + PartialEq + Eq + Into<Self::Addr>;
-}
+impl Port for TcpPort {}
+impl Port for UdpPort {}
 
-impl PortType for Tcp {
-    type Port = TcpPort;
-}
-
-impl PortType for Udp {
-    type Port = UdpPort;
-}
-
-impl AddressType for Ipv4 {
-    type Addr = Ipv4Addr;
+impl Address for Ipv4Addr {
     type Unicast = UnicastIpv4Addr;
 }
 
-impl AddressType for Ipv6 {
-    type Addr = Ipv6Addr;
+impl Address for UnicastIpv4Addr {
+    type Unicast = Self;
+}
+
+impl Address for Ipv6Addr {
     type Unicast = UnicastIpv6Addr;
 }
 
-impl AddressType for Eth {
-    type Addr = Mac;
+impl Address for UnicastIpv6Addr {
+    type Unicast = Self;
+}
+
+impl Address for Mac {
     type Unicast = SourceMac;
 }
 
+impl Address for SourceMac {
+    type Unicast = Self;
+}
+
 #[derive(Clone, Hash, Eq, PartialEq)]
-struct NatTableEntry<Addr, Trans> {
-    forward: NatMatch<Addr, Trans>,
-    reverse: NatMatch<Addr, Trans>,
+struct NatTableEntry<Addr, Port> {
+    forward: NatMatch<Addr, Port>,
+    reverse: NatMatch<Addr, Port>,
     hits: u64,
     established: Instant,
     last_hit: Instant,
 }
 
 #[derive(Clone, Hash, Eq, PartialEq)]
-struct NatMatch<Addr, Transport> {
+struct NatMatch<Addr, Port> {
     addr: Addr,
-    port: Transport,
+    port: Port,
 }
 
 #[derive(Clone)]
-enum NatState<Addr, Transport> {
-    New(NatMatch<Addr, Transport>),
-    Established(NatMatch<Addr, Transport>),
-    Related(NatMatch<Addr, Transport>),
-    Expected(NatMatch<Addr, Transport>),
+enum NatState<Addr, Port> {
+    New(NatMatch<Addr, Port>),
+    Established(NatMatch<Addr, Port>),
+    Related(NatMatch<Addr, Port>),
+    Expected(NatMatch<Addr, Port>),
     Invalid,
 }
 
@@ -249,7 +252,7 @@ trait Table {
     type Action<'a>
     where
         Self: 'a;
-    fn lookup<'a, 'b: 'a>(&self, match_: Self::Match<'a>) -> Self::Action<'b>;
+    fn lookup(&self, match_: &Self::Match<'_>) -> Self::Action<'_>;
 }
 
 enum NatOutcome<Addr, Transport> {
@@ -279,7 +282,7 @@ where
         Self: 'a;
 
     #[allow(clippy::panic)] // scratch code
-    fn lookup<'a, 'b: 'a>(&self, match_: Self::Match<'a>) -> Self::Action<'b> {
+    fn lookup(&self, match_: &Self::Match<'_>) -> Self::Action<'_> {
         if let Some(&key) = self.forward.get(&match_) {
             match self.mappings.get(key) {
                 Some(rule) => NatOutcome::UseExistingMapping(rule.reverse.clone()),
@@ -288,7 +291,8 @@ where
                 }
             }
         } else {
-            #[allow(unreachable_code, clippy::diverging_sub_expression, unused_variables)] // scratch
+            #[allow(unreachable_code, clippy::diverging_sub_expression, unused_variables)]
+            // scratch
             {
                 // allocate a new mapping
                 let new_mapping: NatMatch<Addr, Trans> =
