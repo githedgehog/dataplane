@@ -704,6 +704,24 @@ let
 
   };
 
+  # runc 1.4.x (shipped in k3s >=1.35.3, containerd >=2.2) resolves rootfs
+  # paths with openat2(RESOLVE_BENEATH) as part of the CVE-2025-31133 /
+  # -52565 / -52881 container-escape mitigations. That resolver refuses to
+  # follow any absolute symlink during rootfs setup, so /etc being a single
+  # store-path symlink (the shape buildEnv produces when only one package
+  # contributes to /etc) is rejected with
+  #   "openat etc/passwd: path escapes from parent"
+  # when runc reads /etc/passwd for user resolution. Materialize /etc as a
+  # real directory so the resolver stays beneath the rootfs.
+  materializeEtc = ''
+    if [ -L etc ]; then
+      target=$(readlink etc)
+      rm etc
+      mkdir etc
+      cp -a "$target"/. etc/
+    fi
+  '';
+
   containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr";
     inherit tag;
@@ -728,6 +746,8 @@ let
         tini
       ];
     };
+
+    extraCommands = materializeEtc;
 
     fakeRootCommands = ''
       #!${pkgs.bash}/bin/bash
@@ -775,6 +795,9 @@ let
         tini
       ];
     };
+
+    extraCommands = materializeEtc;
+
     fakeRootCommands = ''
       #!${pkgs.bash}/bin/bash
       set -euxo pipefail
