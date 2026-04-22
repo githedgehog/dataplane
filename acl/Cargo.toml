@@ -14,6 +14,7 @@ bolero = { workspace = true, features = ["std"], optional = true }
 net = { workspace = true }
 slab = { workspace = true }
 thiserror = { workspace = true }
+pipeline = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }
