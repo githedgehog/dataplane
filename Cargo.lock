@@ -3148,8 +3148,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 [[package]]
 name = "left-right"
 version = "0.11.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f0c21e4c8ff95f487fb34e6f9182875f42c84cef966d29216bf115d9bba835a"
+source = "git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop#765813aa25c8328746e93a7a5ccc75deb57b1d80"
 dependencies = [
  "crossbeam-utils",
  "loom",
