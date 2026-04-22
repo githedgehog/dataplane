@@ -414,6 +414,21 @@ impl VpcExpose {
             self.as_range_or_empty(),
             self.not_as_or_empty(),
         ];
+
+        // Port 0 is not allowed in the exposed ranges. We do not check the excluded ranges here,
+        // as they are only used to remove prefixes/ports from the effective configuration.
+        for prefixes in [&self.ips, self.as_range_or_empty()] {
+            for prefix_with_ports in prefixes {
+                if let Some(ports) = prefix_with_ports.ports()
+                    && ports.start() == 0
+                {
+                    return Err(ConfigError::Forbidden(
+                        "Port 0 is not allowed in expose prefix port ranges",
+                    ));
+                }
+            }
+        }
+
         for prefixes in prefix_sets {
             if prefixes.iter().any(|p| {
                 if let Some(is_ipv4) = is_ipv4_opt {

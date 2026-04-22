@@ -167,7 +167,6 @@ mod test {
 
     // Port 0 in port range should be rejected
     #[test]
-    #[ignore = "TODO: validation for port 0 not yet implemented"]
     fn test_port_zero_rejected() {
         let expose = VpcExpose::empty().ip(prefix_with_ports("10.0.0.0/24", 0, 80));
         assert!(expose.validate().is_err());
