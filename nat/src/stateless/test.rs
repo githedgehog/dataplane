@@ -970,8 +970,12 @@ fn test_config_with_port_ranges_complex() {
         .make_stateless_nat()
         .unwrap()
         .ip(PrefixWithOptionalPorts::new(
+            "2.1.0.0/32".into(),
+            Some(PortRange::new(1, 32768).unwrap()), // 1 IP, 32768 ports
+        ))
+        .ip(PrefixWithOptionalPorts::new(
             "2.1.0.1/32".into(),
-            Some(PortRange::new(0, 65535).unwrap()), // 1 IP, 65536 ports
+            Some(PortRange::new(1, 32768).unwrap()), // 1 IP, 32768 ports
         ))
         .as_range(PrefixWithOptionalPorts::new(
             "10.2.0.0/30".into(),
@@ -987,10 +991,9 @@ fn test_config_with_port_ranges_complex() {
     tablesw.update_nat_tables(nat_tables);
 
     let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
-        (addr_v4("1.1.1.0"), 4001, addr_v4("10.2.0.0"), 2);
-    // (actually second port for destination NAT because 0 is problematic)
+        (addr_v4("1.1.1.0"), 4001, addr_v4("10.2.0.0"), 1);
     let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
-        (addr_v4("10.1.0.0"), 2001, addr_v4("2.1.0.1"), 1);
+        (addr_v4("10.1.0.0"), 2001, addr_v4("2.1.0.0"), 1);
     let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
         check_packet_with_ports(
             &mut nat,
@@ -1028,7 +1031,7 @@ fn test_config_with_port_ranges_complex() {
     let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
         (addr_v4("1.1.3.127"), 5500, addr_v4("10.2.0.3"), 16384);
     let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
-        (addr_v4("10.1.2.3"), 37200, addr_v4("2.1.0.1"), 65535);
+        (addr_v4("10.1.2.3"), 37200, addr_v4("2.1.0.1"), 32768);
     let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
         check_packet_with_ports(
             &mut nat,
@@ -1066,7 +1069,7 @@ fn test_config_with_port_ranges_complex() {
     let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
         (addr_v4("1.1.1.255"), 4500, addr_v4("10.2.0.1"), 16384);
     let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
-        (addr_v4("10.1.0.254"), 2800, addr_v4("2.1.0.1"), 32767);
+        (addr_v4("10.1.0.254"), 2800, addr_v4("2.1.0.0"), 32768);
     let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
         check_packet_with_ports(
             &mut nat,
@@ -1104,7 +1107,7 @@ fn test_config_with_port_ranges_complex() {
     let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
         (addr_v4("1.1.2.0"), 4001, addr_v4("10.2.0.2"), 1);
     let (target_src_addr, target_src_port, target_dst_addr, target_dst_port) =
-        (addr_v4("10.1.0.254"), 2801, addr_v4("2.1.0.1"), 32768);
+        (addr_v4("10.1.0.254"), 2801, addr_v4("2.1.0.1"), 1);
     let (output_src_addr, output_src_port, output_dst_addr, output_dst_port, done_reason) =
         check_packet_with_ports(
             &mut nat,
