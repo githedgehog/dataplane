@@ -75,12 +75,11 @@ impl StatefulNatConfig {
         self.peerings.iter()
     }
 
-    pub(crate) fn num_masquerading_peerings(&self) -> usize {
+    pub(crate) fn has_masquerading_peerings(&self) -> bool {
         self.peerings
             .iter()
             .map(|p| &p.peering)
-            .filter(|p| p.local.exposes.iter().any(VpcExpose::has_stateful_nat))
-            .count()
+            .any(|p| p.local.exposes.iter().any(VpcExpose::has_stateful_nat))
     }
 
     pub(crate) fn get_peering(
@@ -134,7 +133,7 @@ impl NatAllocatorWriter {
         }
 
         // if we transition to a config wo/ masquerading, flush allocator and remove flows
-        if nat_config.num_masquerading_peerings() == 0 {
+        if !nat_config.has_masquerading_peerings() {
             if curr_allocator.is_some() {
                 debug!("No stateful NAT is required anymore: will invalidate flows");
                 invalidate_all_masquerading_flows(flow_table);
