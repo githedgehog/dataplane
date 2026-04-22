@@ -429,6 +429,110 @@ mod tests {
         handle.join().unwrap();
     }
 
+    // Minimal reproducer for the TSAN race reported on `test_concurrency_fibtable`.
+    //
+    // Uses `left_right` directly with a trivial struct that has no interior
+    // allocations and no relationship to `Fib`, `FibTable`, or the
+    // `ReadHandleCache` (no thread-local storage). If this test races under
+    // ThreadSanitizer, the bug lives in `left_right::WriteHandle::drop` (in
+    // `take_inner`: NULL-swap followed by `wait()` on stale `last_epochs`),
+    // *not* in our code.
+    #[test]
+    fn test_leftright_destroy_race_simple() {
+        use left_right::{Absorb, ReadHandle, ReadHandleFactory};
+        use std::sync::RwLock;
+
+        #[derive(Default)]
+        struct Tiny {
+            valid: bool,
+            payload: u64,
+        }
+        enum TinyOp {
+            Invalidate,
+        }
+        impl Absorb<TinyOp> for Tiny {
+            fn absorb_first(&mut self, op: &mut TinyOp, _: &Self) {
+                match op {
+                    TinyOp::Invalidate => self.valid = false,
+                }
+            }
+            fn sync_with(&mut self, first: &Self) {
+                self.valid = first.valid;
+                self.payload = first.payload;
+            }
+        }
+
+        const NUM_WORKERS: u16 = 6;
+        const ITERATIONS: usize = 5_000;
+
+        // Shared, lock-protected factory (or None) that writer populates with a new factory
+        // anytime a new write handle is created and which workers use to get fresh handles.
+        // Workers have no cache of read handles here
+        let factory = Arc::new(RwLock::new(None::<ReadHandleFactory<Tiny>>));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let mut handles = vec![];
+        for n in 1..=NUM_WORKERS {
+            let slot = factory.clone();
+            let stop = stop.clone();
+            let h = Builder::new()
+                .name(format!("TINY-WORKER-{n}"))
+                .spawn(move || {
+                    let mut enters = 0u64;
+                    let mut misses = 0u64;
+                    loop {
+                        let rh: Option<ReadHandle<Tiny>> =
+                            slot.read().unwrap().as_ref().map(ReadHandleFactory::handle);
+                        if let Some(rh) = rh {
+                            match rh.enter() {
+                                Some(g) => {
+                                    // Read the `valid` byte. TSAN should complain
+                                    // if left-right grants access while dropping the write handle
+                                    // as in `test_concurrency_fibtable` when a worker calls enter(),
+                                    // which internally checks valid.
+                                    if g.valid {
+                                        enters += 1;
+                                    }
+                                }
+                                None => misses += 1,
+                            }
+                        }
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                    }
+                    println!("tiny worker {n}: enters={enters} misses={misses}");
+                })
+                .unwrap();
+            handles.push(h);
+        }
+
+        for _ in 0..ITERATIONS {
+            let (mut w, r) = left_right::new::<Tiny, TinyOp>();
+
+            // Publish the factory so workers can get handles
+            *factory.write().unwrap() = Some(r.factory());
+            drop(r);
+
+            // Let workers race with the upcoming drop. `yield_now` is enough;
+            thread::yield_now();
+
+            // Invalidate current Tony object and drop the write handle
+            w.append(TinyOp::Invalidate);
+            w.publish();
+            drop(w);
+
+            // Remove the factory so that no further handles can be created.
+            // Workers already holding a read handle should get a None when
+            // attempting to `enter()`.
+            *factory.write().unwrap() = None;
+        }
+        stop.store(true, Ordering::Relaxed);
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
     // Tests fib reader utilities returning guards
     #[test]
     fn test_fib_guards() {
