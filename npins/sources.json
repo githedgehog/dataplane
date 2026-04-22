@@ -97,9 +97,9 @@
       },
       "branch": "stable/10.5",
       "submodules": false,
-      "revision": "da06a71fe42442cc94bb7617a9d309cc0f24435a",
-      "url": "https://github.com/FRRouting/frr/archive/da06a71fe42442cc94bb7617a9d309cc0f24435a.tar.gz",
-      "hash": "sha256-fOXkXalFeAkVWpgRhRwvC56XyHEq36U+g3wEJAPVPww="
+      "revision": "4cb6d9e6bfe4ad503d1fab21e6f665804b0649ac",
+      "url": "https://github.com/FRRouting/frr/archive/4cb6d9e6bfe4ad503d1fab21e6f665804b0649ac.tar.gz",
+      "hash": "sha256-CQJC/B5A1HvuICsRNbh16THQkWbD37bTtjVznJS0pJQ="
     },
     "frr-agent": {
       "type": "Git",
@@ -176,10 +176,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v1.19.0",
-      "revision": "9a4c0a68220618441608cd2bad4ff2eddccf8113",
-      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.19.0",
-      "hash": "sha256-rKbgS3KGJt+lAFBQlnYVq2Y7YWH9NiRvgC806FgI7cs="
+      "version": "v1.20.0",
+      "revision": "19a2dd0a3c964370d58ebc67e8ad7ce42079b665",
+      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.20.0",
+      "hash": "sha256-RVZ1yAdyas9rb1Xx01cbpZ6U/Q/NWwBEqeW+W/1rYM0="
     },
     "perftest": {
       "type": "Git",
@@ -232,9 +232,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "25d75be8139815a53560745fa060909777495105",
-      "url": "https://github.com/oxalica/rust-overlay/archive/25d75be8139815a53560745fa060909777495105.tar.gz",
-      "hash": "sha256-Vqi4AiJVCcBGn/RmBtRCgyH5rCxqm/w0xV9diJWF1Ic="
+      "revision": "40e6ccc06e1245a4837cbbd6bdda64e21cc67379",
+      "url": "https://github.com/oxalica/rust-overlay/archive/40e6ccc06e1245a4837cbbd6bdda64e21cc67379.tar.gz",
+      "hash": "sha256-sYixYhp5V8jCajO8TRorE4fzs7IkL4MZdfLTKgkPQBk="
     }
   },
   "version": 7
