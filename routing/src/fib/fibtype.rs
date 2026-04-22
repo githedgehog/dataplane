@@ -373,9 +373,8 @@ impl FibWriter {
         self.0.append(FibChange::SetVtep(vtep));
         self.0.publish();
     }
-    pub fn get_vtep(&self) -> Vtep {
-        let fib = self.enter().unwrap_or_else(|| unreachable!());
-        fib.vtep.clone()
+    pub fn get_vtep(&self) -> Option<Vtep> {
+        self.enter().map(|fib| fib.vtep.clone())
     }
     pub fn publish(&mut self) {
         self.0.publish();
