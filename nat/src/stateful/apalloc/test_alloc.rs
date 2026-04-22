@@ -234,12 +234,12 @@ mod std_tests {
         assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
         assert_eq!(in_use.len(), 0); // None allocated yet
 
-        let allocation = allocator
+        let alloc_result = allocator
             .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
             .unwrap();
-        print_allocation(&allocation);
+        print_allocation(&alloc_result);
 
-        assert_eq!(allocation.src.ip(), addr_v4("10.1.0.0"));
+        assert_eq!(alloc_result.allocation.ip(), addr_v4("10.1.0.0"));
 
         let (bitmap, in_use) = get_ip_allocator_v4(
             &mut allocator.pools_src44,
@@ -251,7 +251,7 @@ mod std_tests {
         assert_eq!(bitmap.len(), 2); // 2 free IP addresses left to NAT 1.1.0.0
         assert_eq!(in_use.len(), 1); // 1 allocated, in use
 
-        drop(allocation);
+        drop(alloc_result);
         println!("Dropped allocation");
 
         let (bitmap, in_use) = get_ip_allocator_v4(
