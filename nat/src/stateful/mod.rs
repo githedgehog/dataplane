@@ -427,7 +427,7 @@ impl StatefulNat {
             .allocate(dst_vpcd, src_ip, flow_key.data().proto())
             .map_err(StatefulNatError::AllocationFailure)?;
 
-        debug!("{nfi}: Allocated translation data: {alloc}");
+        debug!("{nfi}: Allocated: {alloc}");
 
         let translation_data = Self::get_translation_data(&alloc.allocation);
 

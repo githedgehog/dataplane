@@ -19,6 +19,7 @@ use crate::stateful::allocation::AllocatorError;
 use concurrency::concurrency_mode;
 use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};
+use config::GenId;
 use lpm::prefix::PortRange;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
@@ -543,8 +544,9 @@ impl<I: NatIpWithBitmap> Drop for AllocatedPortBlock<I> {
 /// the [`AllocatedPort`] is dropped.
 #[derive(Debug, Clone)]
 pub struct AllocatedPort<I: NatIpWithBitmap> {
-    port: NatPort,
-    block_allocator: Arc<AllocatedPortBlock<I>>,
+    port: NatPort,                               // the actual allocated value
+    block_allocator: Arc<AllocatedPortBlock<I>>, // block/IP the allocated value belongs to
+    genid: GenId,                                // the generation id of the allocator (late set)
 }
 
 impl<I: NatIpWithBitmap> AllocatedPort<I> {
@@ -553,6 +555,7 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
         Self {
             port,
             block_allocator,
+            genid: 0, // initially zero
         }
     }
     #[must_use]
@@ -562,6 +565,13 @@ impl<I: NatIpWithBitmap> AllocatedPort<I> {
     #[must_use]
     pub fn ip(&self) -> I {
         self.block_allocator.ip()
+    }
+    #[must_use]
+    pub fn genid(&self) -> GenId {
+        self.genid
+    }
+    pub fn set_genid(&mut self, genid: GenId) {
+        self.genid = genid;
     }
 }
 
@@ -626,7 +636,7 @@ struct AllocatedPortBlockMap<I: NatIpWithBitmap>(
 
 impl<I: NatIpWithBitmap> Display for AllocatedPort<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.ip(), self.port())
+        write!(f, "{}:{} (genid: {})", self.ip(), self.port(), self.genid())
     }
 }
 

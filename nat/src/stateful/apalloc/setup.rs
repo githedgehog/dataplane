@@ -26,7 +26,7 @@ impl NatAllocator {
     /// Build a [`NatAllocator`] from a [`StatefulNatConfig`]
     pub(crate) fn from_config(config: &StatefulNatConfig) -> Self {
         debug!("Building stateful NAT allocator from config:\n{config:#?}");
-        let mut allocator = NatAllocator::new().set_randomize(config.randomize());
+        let mut allocator = NatAllocator::new(config.genid()).set_randomize(config.randomize());
         for nat_peering in config.iter() {
             allocator.add_peering_addresses(&nat_peering.peering, nat_peering.dst_vpcd);
         }
