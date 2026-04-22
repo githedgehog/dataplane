@@ -151,8 +151,6 @@ impl FibTableWriter {
             self.0.append(FibTableChange::UnRegisterVni(vni));
         }
         self.0.publish();
-        self.0.append(FibTableChange::Del(fibid));
-        self.0.publish();
     }
 }
 
