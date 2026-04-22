@@ -507,7 +507,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
                     )
                 })?,
             )
-            .map_err(|()| AllocatorError::NoFreePort(port.as_u16()))?;
+            .map_err(|()| AllocatorError::PortReservationFailed(port.as_u16()))?;
 
         Ok(AllocatedPort::new(port, self.clone()))
     }

@@ -510,6 +510,7 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
         | StatefulNatError::NotUnicast(_)
         | StatefulNatError::AllocationFailure(
             AllocatorError::PortAllocationFailed(_)
+            | AllocatorError::PortReservationFailed(_)
             | AllocatorError::UnsupportedIcmpCategory
             | AllocatorError::MissingDiscriminant
             | AllocatorError::UnsupportedDiscriminant,
