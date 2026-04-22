@@ -1181,6 +1181,7 @@ dependencies = [
  "bolero",
  "dataplane-acl",
  "dataplane-net",
+ "dataplane-pipeline",
  "slab",
  "thiserror 2.0.18",
 ]

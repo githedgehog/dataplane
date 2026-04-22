@@ -16,6 +16,22 @@
       "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.16.45",
       "hash": "sha256-jODZp0M6OvUU+vqIhVT5DE+FusCjBC7fww2JKdZOPzA="
     },
+    "cloudflare-speed-cli": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "kavehtehrani",
+        "repo": "cloudflare-speed-cli"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v0.6.6",
+      "revision": "1d5095b8237d7674c7f5c9d971497a7216ab40b6",
+      "url": "https://api.github.com/repos/kavehtehrani/cloudflare-speed-cli/tarball/refs/tags/v0.6.6",
+      "hash": "sha256-7c0IWC/ZIDIZsdEPwV9R3ly0Pm8EvoeIu3/zt0GXO6M="
+    },
     "crane": {
       "type": "GitRelease",
       "repository": {

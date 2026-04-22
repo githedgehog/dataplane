@@ -79,6 +79,7 @@ oci_image_dataplane_debugger := oci_repo + "/" + oci_name + "/debugger:" + versi
 oci_image_dataplane_validator := oci_repo + "/" + oci_name + "/validator:" + version
 oci_image_frr_dataplane := oci_repo + "/" + oci_frr_prefix + ":" + version
 oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
+oci_image_cloudflare_speed_cli := oci_repo + "/" + oci_name + "/cloudflare-speed-cli" + version
 
 [private]
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
@@ -198,6 +199,12 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
         "validator")
             echo "NOTE: validator image is wasm and not containerized"
             ;;
+        "cloudflare-speed-cli")
+            docker load < ./results/containers.cloudflare-speed-cli
+            docker tag "ghcr.io/githedgehog/dataplane/cloudflare-speed-cli:{{version}}" "{{oci_image_cloudflare_speed_cli}}"
+            echo "imported {{oci_image_cloudflare_speed_cli}}"
+            ;;
+
         *)
             >&2 echo "{{target}} is not a valid container"
             exit 99

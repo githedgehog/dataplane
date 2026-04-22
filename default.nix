@@ -204,7 +204,15 @@ let
       "wasm32-wasip1"
     else
       pkgs.stdenv'.targetPlatform.rust.rustcTarget;
-  is-cross-compile = pkgs.stdenv'.hostPlatform.rust.rustcTarget != ctarget;
+  # Cross-compile means the *build* machine differs from the *host* (where the
+  # output runs).  For a normal package, hostPlatform == targetPlatform, so
+  # comparing host vs target never fires — it only caught the case where
+  # target was wasm but we were building on gnu, which is the exact case we
+  # *don't* want treated as cross (wasm is handled natively by rustc).  For
+  # everything else — libc=musl, platform=bluefield2, etc. — the cc-wrapper
+  # exposes prefixed binaries only, so we need the prefix whenever build != host.
+  is-cross-compile =
+    pkgs.stdenv'.buildPlatform.rust.rustcTarget != pkgs.stdenv'.hostPlatform.rust.rustcTarget;
   cxx = if is-cross-compile then "${ctarget}-clang++" else "clang++";
   strip = if is-cross-compile then "${ctarget}-strip" else "strip";
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
@@ -248,13 +256,21 @@ let
       llvmPackages',
       pkg-config,
     }:
+    # Let args override src/version/cargoVendorDir for external sources
+    # (e.g. test-tools).  Must be resolved here too, because env.RUSTFLAGS
+    # embeds src into --remap-path-prefix — if we only let the outer-attr
+    # merge override, debug paths (and the resulting store closure) would
+    # still point at the workspace source.
+    let
+      drvSrc = args.src or src;
+      drvVersion = args.version or version;
+      drvVendorDir = args.cargoVendorDir or cargoVendorDir;
+    in
     (builder (
       {
-        inherit
-          src
-          version
-          cargoVendorDir
-          ;
+        src = drvSrc;
+        version = drvVersion;
+        cargoVendorDir = drvVendorDir;
 
         doCheck = false;
         strictDeps = true;
@@ -304,7 +320,7 @@ let
                   # we strip out of the final binaries we cook and include a gdbserver binary in some
                   # debug/release-with-debug-tools containers.  Then, connecting from the gdb/lldb container to the
                   # gdb/lldbserver container should allow us to actually debug binaries deployed to test machines.
-                  "--remap-path-prefix==${src}"
+                  "--remap-path-prefix==${drvSrc}"
                 ]
               )
             else
@@ -382,6 +398,57 @@ let
       inherit pname;
     }
   ) package-list;
+
+  # External test tools: built with crane like workspace crates, but from
+  # their own source tree and Cargo.lock.  Re-uses `invoke` wholesale so the
+  # same platform/libc/profile/sanitizer switches apply.  With libc=musl,
+  # rustc auto-enables +crt-static for *-linux-musl, so the binary comes out
+  # portable by default.
+  test-tools = {
+    cloudflare-speed-cli =
+      let
+        tool-src = sources.cloudflare-speed-cli;
+        # Must also vendor the rustlib sources because we reuse the main
+        # workspace's -Zbuild-std flags (see `cargo-cmd-prefix`).
+        tool-vendor = craneLib.vendorMultipleCargoDeps {
+          cargoLockList = [
+            "${tool-src.outPath}/Cargo.lock"
+            "${pkgs.rust-toolchain.passthru.availableComponents.rust-src}/lib/rustlib/src/rust/library/Cargo.lock"
+          ];
+        };
+        # Force --no-default-features to drop the `tui` feature, which pulls
+        # in `arboard` (clipboard, needs X11/Wayland at runtime).
+        tool-cargo-prefix = [
+          "-Zunstable-options"
+          "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
+          "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+          "--target=${rustc-target}"
+          "--no-default-features"
+        ];
+      in
+      pkgs.callPackage invoke {
+        builder = craneLib.buildPackage;
+        args = {
+          pname = "cloudflare-speed-cli";
+          cargoArtifacts = null;
+          src = tool-src.outPath;
+          version = tool-src.version;
+          cargoVendorDir = tool-vendor;
+          buildPhaseCargoCommand = builtins.concatStringsSep " " (
+            [
+              "cargoBuildLog=$(mktemp cargoBuildLogXXXX.json);"
+              "cargo"
+              "build"
+              "--profile=${cargo-profile}"
+            ]
+            ++ tool-cargo-prefix
+            ++ [
+              "--message-format json-render-diagnostics > $cargoBuildLog"
+            ]
+          );
+        };
+      };
+  };
 
   test-builder =
     {
@@ -718,7 +785,13 @@ let
     inherit tag;
     contents = pkgs.buildEnv {
       name = "dataplane-frr-env";
-      pathsToLink = [ "/" ];
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/lib"
+        "/libexec"
+        "/share"
+      ];
       paths = with pkgs; [
         bash
         coreutils
@@ -804,6 +877,21 @@ let
     config.Cmd = [ "/libexec/frr/docker-start" ];
   };
 
+  containers.cloudflare-speed-cli = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/githedgehog/dataplane/cloudflare-speed-cli";
+    inherit tag;
+    contents = pkgs.buildEnv {
+      name = "cloudflare-speed-cli";
+      pathsToLink = [
+        "/bin"
+      ];
+      paths = [
+        test-tools.cloudflare-speed-cli
+      ];
+    };
+    config.Entrypoint = [ "/bin/cloudflare-speed-cli" ];
+  };
+
 in
 {
   inherit
@@ -817,6 +905,7 @@ in
     pkgs
     sources
     sysroot
+    test-tools
     tests
     workspace
     ;
