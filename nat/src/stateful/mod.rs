@@ -214,7 +214,7 @@ impl StatefulNat {
 
         // build NAT state for both flows
         let (forward_state, reverse_state) =
-            MasqueradeState::new_pair(alloc.src, src_ip, src_port, idle_timeout);
+            MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout);
 
         // build a flow pair from the keys (without NAT state)
         let expires_at = Instant::now() + idle_timeout;
@@ -361,8 +361,8 @@ impl StatefulNat {
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
         let reverse_src_addr = *flow_key.data().dst_ip();
-        let reverse_dst_addr = alloc.src.ip();
-        let dst_port = alloc.src.port();
+        let reverse_dst_addr = alloc.allocation.ip();
+        let dst_port = alloc.allocation.port();
 
         // Reverse the forward protocol key and adjust ports to use the allocated values.
         let mut reverse_proto_key = flow_key.data().proto_key_info().reverse();
@@ -429,7 +429,7 @@ impl StatefulNat {
 
         debug!("{nfi}: Allocated translation data: {alloc}");
 
-        let translation_data = Self::get_translation_data(&alloc.src);
+        let translation_data = Self::get_translation_data(&alloc.allocation);
 
         self.create_flow_pair(packet, &flow_key, alloc)?;
 

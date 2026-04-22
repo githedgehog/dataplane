@@ -248,14 +248,14 @@ impl NatAllocator {
             IpAddr::V4(ip) => {
                 self.allocate_v4(dst_vpcd, ip, next_header)
                     .map(|r| AllocationResult {
-                        src: Allocation::V4(r.src),
+                        allocation: Allocation::V4(r.allocation),
                         idle_timeout: r.idle_timeout,
                     })
             }
             IpAddr::V6(ip) => {
                 self.allocate_v6(dst_vpcd, ip, next_header)
                     .map(|r| AllocationResult {
-                        src: Allocation::V6(r.src),
+                        allocation: Allocation::V6(r.allocation),
                         idle_timeout: r.idle_timeout,
                     })
             }
@@ -286,10 +286,13 @@ impl NatAllocator {
             })?;
 
         let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
-        let src = pool.allocate(allow_null)?;
+        let allocation = pool.allocate(allow_null)?;
         let idle_timeout = pool.idle_timeout().unwrap_or_else(|| unreachable!());
 
-        Ok(AllocationResult { src, idle_timeout })
+        Ok(AllocationResult {
+            allocation,
+            idle_timeout,
+        })
     }
 
     fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {

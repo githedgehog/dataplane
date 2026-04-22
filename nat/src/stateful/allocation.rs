@@ -37,7 +37,7 @@ pub enum AllocatorError {
 /// and the time for the allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllocationResult<T: Debug> {
-    pub src: T,
+    pub allocation: T,
     pub idle_timeout: Duration,
 }
 
@@ -45,8 +45,8 @@ impl<T: Debug + Display> Display for AllocationResult<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "src: {} idle_timeout: {}s",
-            self.src,
+            "allocation: {} idle_timeout: {}s",
+            self.allocation,
             self.idle_timeout.as_secs()
         )
     }
