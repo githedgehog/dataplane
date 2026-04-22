@@ -337,7 +337,7 @@ impl Vrf {
     /// Get the VTEP for a [`Vrf`]. N.B: this gets the value currently visible by readers
     //////////////////////////////////////////////////////////////////////////////////////
     pub fn get_vtep(&self) -> Option<Vtep> {
-        self.fibw.as_ref().map(|fibw| fibw.get_vtep().clone())
+        self.fibw.as_ref().and_then(FibWriter::get_vtep)
     }
 
     #[inline]
