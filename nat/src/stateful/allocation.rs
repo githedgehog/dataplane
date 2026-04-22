@@ -33,8 +33,8 @@ pub enum AllocatorError {
 }
 
 /// `AllocationResult` is a struct to represent the result of an allocation.
-/// It contains the allocated IP address and port for source NAT for the packet forwarded
-/// and the time for the allocation.
+/// It contains the allocated IP address and port to masquerade a packet,
+/// and the time for the allocation (flow timeout).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllocationResult<T: Debug> {
     pub allocation: T,
@@ -47,7 +47,7 @@ impl<T: Debug + Display> Display for AllocationResult<T> {
             f,
             "allocation: {} idle_timeout: {}s",
             self.allocation,
-            self.idle_timeout.as_secs()
+            self.idle_timeout.as_secs(),
         )
     }
 }

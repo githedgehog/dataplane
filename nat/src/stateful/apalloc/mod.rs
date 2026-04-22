@@ -67,6 +67,7 @@ use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use crate::stateful::natip::NatIp;
+use config::GenId;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::BTreeMap;
@@ -181,13 +182,28 @@ impl Allocation {
             Self::V6(a) => a.port(),
         }
     }
+
+    #[must_use]
+    pub fn genid(&self) -> GenId {
+        match self {
+            Self::V4(a) => a.genid(),
+            Self::V6(a) => a.genid(),
+        }
+    }
+
+    pub fn set_genid(&mut self, genid: GenId) {
+        match self {
+            Self::V4(a) => a.set_genid(genid),
+            Self::V6(a) => a.set_genid(genid),
+        }
+    }
 }
 
 impl Display for Allocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.port() {
-            NatPort::Port(port) => write!(f, "{}:{}", self.ip(), port.get()),
-            NatPort::Identifier(id) => write!(f, "{}<id:{id}>", self.ip()),
+        match self {
+            Allocation::V4(a) => write!(f, "{a}"),
+            Allocation::V6(a) => write!(f, "{a}"),
         }
     }
 }
@@ -202,15 +218,17 @@ pub struct NatAllocator {
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
     randomize: bool,
+    genid: GenId,
 }
 
 impl NatAllocator {
     #[must_use]
-    fn new() -> Self {
+    fn new(genid: GenId) -> Self {
         Self {
             pools_src44: PoolTable::new(),
             pools_src66: PoolTable::new(),
             randomize: true,
+            genid,
         }
     }
     #[must_use]
@@ -225,7 +243,7 @@ impl NatAllocator {
         src_ip: Ipv4Addr,
         next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedPort<Ipv4Addr>>, AllocatorError> {
-        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src44)
+        self.allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src44)
     }
 
     fn allocate_v6(
@@ -234,7 +252,7 @@ impl NatAllocator {
         src_ip: Ipv6Addr,
         next_header: NextHeader,
     ) -> Result<AllocationResult<AllocatedPort<Ipv6Addr>>, AllocatorError> {
-        Self::allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src66)
+        self.allocate_from_tables(src_ip.into(), dst_vpcd, next_header, &self.pools_src66)
     }
 
     /// Allocate an IP address and port for the given source IP, dispatching on IP version.
@@ -261,7 +279,14 @@ impl NatAllocator {
             }
         }
     }
+    fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
+        match next_header {
+            NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6 => Ok(()),
+            _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
+        }
+    }
     fn allocate_from_tables<I: NatIpWithBitmap>(
+        &self,
         src_ip: IpAddr,
         dst_vpcd: VpcDiscriminant,
         next_header: NextHeader,
@@ -286,20 +311,14 @@ impl NatAllocator {
             })?;
 
         let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
-        let allocation = pool.allocate(allow_null)?;
+        let mut allocation = pool.allocate(allow_null)?;
+        allocation.set_genid(self.genid);
         let idle_timeout = pool.idle_timeout().unwrap_or_else(|| unreachable!());
 
         Ok(AllocationResult {
             allocation,
             idle_timeout,
         })
-    }
-
-    fn check_proto(next_header: NextHeader) -> Result<(), AllocatorError> {
-        match next_header {
-            NextHeader::TCP | NextHeader::UDP | NextHeader::ICMP | NextHeader::ICMP6 => Ok(()),
-            _ => Err(AllocatorError::UnsupportedProtocol(next_header)),
-        }
     }
 
     fn reserve_ipv4_port(
@@ -310,8 +329,7 @@ impl NatAllocator {
         ip: Ipv4Addr,
         port: NatPort,
     ) -> Result<AllocatedPort<Ipv4Addr>, AllocatorError> {
-        let port_u16 = port.as_u16();
-        debug!("Re-reserving {ip} port/Id {port_u16} for ({protocol}), dst_vpcd: {dst_vpcd}");
+        debug!("Re-reserving {ip} port/Id {port} for {protocol}, dst_vpcd: {dst_vpcd}");
         let pool = self
             .pools_src44
             .get_entry(protocol, dst_vpcd, src_ip)
@@ -319,7 +337,7 @@ impl NatAllocator {
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
         pool.reserve(ip, port)
-            .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
+            .inspect_err(|e| error!("Failed to reserve ip {ip} port {port}: {e}"))
     }
     fn reserve_ipv6_port(
         &self,
@@ -329,8 +347,7 @@ impl NatAllocator {
         ip: Ipv6Addr,
         port: NatPort,
     ) -> Result<AllocatedPort<Ipv6Addr>, AllocatorError> {
-        let port_u16 = port.as_u16();
-        debug!("Re-reserving {ip} port/Id {port_u16} for ({protocol}), dst_vpcd: {dst_vpcd}");
+        debug!("Re-reserving {ip} port/Id {port} for {protocol}, dst_vpcd: {dst_vpcd}");
         let pool = self
             .pools_src66
             .get_entry(protocol, dst_vpcd, src_ip)
@@ -338,7 +355,7 @@ impl NatAllocator {
 
         debug!("Pool found for {protocol} {dst_vpcd} {src_ip}");
         pool.reserve(ip, port)
-            .inspect_err(|e| error!("Failed to reserve ip {ip} port {}: {e}", port.as_u16()))
+            .inspect_err(|e| error!("Failed to reserve ip {ip} port {port}: {e}"))
     }
     /// Re-reserve a specific IP and port in the new allocator during a config change
     /// depending on the ip version of the address
@@ -350,17 +367,21 @@ impl NatAllocator {
         ip: IpAddr,
         port: NatPort,
     ) -> Result<Allocation, AllocatorError> {
-        match (src_ip, ip) {
+        let mut allocation = match (src_ip, ip) {
             (IpAddr::V4(src), IpAddr::V4(allocated)) => self
                 .reserve_ipv4_port(protocol, dst_vpcd, src, allocated, port)
-                .map(Allocation::V4),
+                .map(Allocation::V4)?,
             (IpAddr::V6(src), IpAddr::V6(allocated)) => self
                 .reserve_ipv6_port(protocol, dst_vpcd, src, allocated, port)
-                .map(Allocation::V6),
-            _ => Err(AllocatorError::InternalIssue(format!(
-                "IP version mismatch: src={src_ip} allocated={ip}"
-            ))),
-        }
+                .map(Allocation::V6)?,
+            _ => {
+                return Err(AllocatorError::InternalIssue(format!(
+                    "IP version mismatch: src={src_ip} allocated={ip}"
+                )));
+            }
+        };
+        allocation.set_genid(self.genid);
+        Ok(allocation)
     }
 }
 
