@@ -717,7 +717,15 @@ let
     inherit tag;
     contents = pkgs.buildEnv {
       name = "dataplane-frr-env";
-      pathsToLink = [ "/" ];
+      pathsToLink = [
+        "/bin"
+        "/etc"
+        "/lib"
+        "/libexec"
+        "/share"
+        "/usr"
+        "/var"
+      ];
       paths = with pkgs; [
         bash
         coreutils
@@ -746,6 +754,9 @@ let
       mkdir -p /var
       ln -s /run /var/run
       chown -R frr:frr /var/run/frr
+      rm /etc/passwd /etc/group
+      cp ${pkgs.fancy.frr-config}/etc/passwd /etc/passwd
+      cp ${pkgs.fancy.frr-config}/etc/group /etc/group
     '';
 
     enableFakechroot = true;
@@ -763,7 +774,13 @@ let
     contents = pkgs.buildEnv {
       name = "dataplane-frr-host-env";
       pathsToLink = [
-        "/"
+        "/bin"
+        "/etc"
+        "/lib"
+        "/libexec"
+        "/share"
+        "/usr"
+        "/var"
       ];
       paths = with pkgs; [
         bash
@@ -792,6 +809,9 @@ let
       mkdir -p /var
       ln -s /run /var/run
       chown -R frr:frr /var/run/frr
+      rm /etc/passwd /etc/group
+      cp ${pkgs.fancy.frr-config}/etc/passwd /etc/passwd
+      cp ${pkgs.fancy.frr-config}/etc/group /etc/group
     '';
 
     enableFakechroot = true;
