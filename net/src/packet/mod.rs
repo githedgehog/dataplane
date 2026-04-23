@@ -24,9 +24,8 @@ use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
-    AbstractEmbeddedHeaders, AbstractEmbeddedHeadersMut, AbstractHeaders, AbstractHeadersMut,
-    Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryHeaders, TryHeadersMut,
-    TryIpMut, TryVxlan,
+    AbstractEmbeddedHeaders, AbstractEmbeddedHeadersMut, Headers, Net, Transport,
+    TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryHeaders, TryHeadersMut, TryIpMut, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
 use crate::parse::{DeParse, Parse, ParseError};
@@ -339,13 +338,13 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
 }
 
 impl<Buf: PacketBufferMut> TryHeaders for Packet<Buf> {
-    fn headers(&self) -> &impl AbstractHeaders {
+    fn headers(&self) -> &Headers {
         &self.headers
     }
 }
 
 impl<Buf: PacketBufferMut> TryHeadersMut for Packet<Buf> {
-    fn headers_mut(&mut self) -> &mut impl AbstractHeadersMut {
+    fn headers_mut(&mut self) -> &mut Headers {
         &mut self.headers
     }
 }

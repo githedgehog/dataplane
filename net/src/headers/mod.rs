@@ -1083,11 +1083,11 @@ impl<T> AbstractHeadersMut for T where
 }
 
 pub trait TryHeaders {
-    fn headers(&self) -> &impl AbstractHeaders;
+    fn headers(&self) -> &Headers;
 }
 
 pub trait TryHeadersMut {
-    fn headers_mut(&mut self) -> &mut impl AbstractHeadersMut;
+    fn headers_mut(&mut self) -> &mut Headers;
 }
 
 // ---------------------------------------------------------------------------
