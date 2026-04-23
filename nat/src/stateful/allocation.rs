@@ -16,10 +16,12 @@ pub enum AllocatorError {
     NoFreeIp,
     #[error("failed to allocate port block")]
     NoPortBlock,
-    #[error("no free port block available (base: {0})")]
+    #[error("no free port available in port block (block base index: {0})")]
     NoFreePort(u16),
     #[error("failed to allocate port: {0}")]
     PortAllocationFailed(NatPortError),
+    #[error("failed to reserve port: {0}")]
+    PortReservationFailed(u16),
     #[error("unsupported protocol: {0:?}")]
     UnsupportedProtocol(NextHeader),
     #[error("unsupported ICMP message category")]
