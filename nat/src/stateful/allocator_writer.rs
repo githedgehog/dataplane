@@ -16,13 +16,13 @@ use crate::stateful::flows::check_masquerading_flows;
 use crate::stateful::flows::invalidate_all_masquerading_flows;
 use crate::stateful::flows::upgrade_all_masquerading_flows;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) struct StatefulNatPeering {
     pub(crate) src_vpcd: VpcDiscriminant,
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) peering: Peering,
 }
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct StatefulNatConfig {
     genid: GenId,
     peerings: Vec<StatefulNatPeering>,
