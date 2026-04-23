@@ -60,7 +60,7 @@ fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, Nat
 }
 
 fn re_reserve_ip_and_port(
-    new_allocator: &mut NatAllocator,
+    new_allocator: &NatAllocator,
     flow_info: &FlowInfo,
     ip: IpAddr,
     port: NatPort,
@@ -95,7 +95,7 @@ fn re_reserve_ip_and_port(
 pub(crate) fn check_masquerading_flow(
     flow_key: &FlowKey,
     flow_info: &FlowInfo,
-    allocator: &mut NatAllocator,
+    allocator: &NatAllocator,
 ) {
     let config = allocator.config();
     let genid = config.genid();
