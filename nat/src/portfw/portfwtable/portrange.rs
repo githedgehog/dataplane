@@ -3,8 +3,6 @@
 
 //! Object to represent port ranges for port-forwarding and methods
 
-#![allow(unused)] // Temporary
-
 use super::PortFwTableError;
 use std::fmt::Display;
 use std::num::NonZero;
