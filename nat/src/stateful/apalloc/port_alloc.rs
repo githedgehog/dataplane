@@ -8,10 +8,6 @@
 //!
 //! See also the architecture diagram at the top of mod.rs.
 
-// We plan to re-use unused functions soon as part of the work to conserve valid flows across
-// configuration changes.
-#![allow(dead_code)]
-
 use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
 use crate::port::NatPort;
