@@ -458,9 +458,6 @@ impl StatefulNat {
         match self.allocator.get() {
             None => {
                 // allocator got removed. Get rid of the flows and drop the packet.
-                // FIXME: We have to account for the fact that an allocator may be
-                // None while we're building a new one. Otherwise, we'd drop a potentially legit flow.
-                // This is addressed later.
                 installed.invalidate_pair();
                 Err(StatefulNatError::IntendedDrop)
             }
