@@ -8,11 +8,9 @@ use concurrency::concurrency_mode;
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
 mod context {
-    use crate::stateful::allocation::AllocationResult;
     use crate::stateful::allocator_writer::StatefulNatConfig;
     use crate::stateful::apalloc::alloc::IpAllocator;
-    use crate::stateful::apalloc::port_alloc::AllocatedPort;
-    use crate::stateful::apalloc::{NatAllocator, NatIpWithBitmap, PoolTable, PoolTableKey};
+    use crate::stateful::apalloc::{NatAllocator, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
@@ -55,18 +53,6 @@ mod context {
             src_port: UdpPort::new_checked(src_port).unwrap(),
             dst_port: UdpPort::new_checked(dst_port).unwrap(),
         })
-    }
-
-    #[allow(unused)]
-    pub fn print_allocation<I: NatIpWithBitmap>(allocation: &AllocationResult<AllocatedPort<I>>) {
-        let format_ip_port = |ip_port: &Option<AllocatedPort<I>>| {
-            if let Some(ip_port) = ip_port {
-                format!("{:?}:{:?}", ip_port.ip(), ip_port.port().as_u16())
-            } else {
-                "<none>".to_string()
-            }
-        };
-        println!("allocation: {allocation}");
     }
 
     pub fn get_ip_allocator_v4(
@@ -237,7 +223,7 @@ mod std_tests {
         let alloc_result = allocator
             .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
             .unwrap();
-        print_allocation(&alloc_result);
+        println!("{alloc_result}");
 
         assert_eq!(alloc_result.allocation.ip(), addr_v4("10.1.0.0"));
 
@@ -294,7 +280,7 @@ mod std_tests {
         let tcp_allocation = allocator
             .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
             .unwrap();
-        print_allocation(&tcp_allocation);
+        println!("{tcp_allocation}");
 
         // Check number of allocated IPs for TCP after we have allocated for TCP
         let (bitmap, in_use) = get_ip_allocator_v4(
@@ -322,7 +308,7 @@ mod std_tests {
         let udp_allocation = allocator
             .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::UDP)
             .unwrap();
-        print_allocation(&udp_allocation);
+        println!("{udp_allocation}");
 
         // Check number of allocated IPs for TCP after we have allocated for UDP
         let (bitmap, in_use) = get_ip_allocator_v4(
