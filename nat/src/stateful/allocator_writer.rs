@@ -94,23 +94,17 @@ impl StatefulNatConfig {
 }
 
 #[derive(Debug)]
-pub struct NatAllocatorWriter {
-    config: StatefulNatConfig,
-    allocator: Arc<ArcSwapOption<NatAllocator>>,
-}
+pub struct NatAllocatorWriter(Arc<ArcSwapOption<NatAllocator>>);
 
 impl NatAllocatorWriter {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            config: StatefulNatConfig::default(),
-            allocator: Arc::new(ArcSwapOption::new(None)),
-        }
+        Self(Arc::new(ArcSwapOption::new(None)))
     }
 
     #[must_use]
     pub fn get_reader(&self) -> NatAllocatorReader {
-        NatAllocatorReader(self.allocator.clone())
+        NatAllocatorReader(self.0.clone())
     }
 
     #[must_use]
@@ -118,50 +112,51 @@ impl NatAllocatorWriter {
         self.get_reader().factory()
     }
 
-    /// Replace the nat allocator with a new one
+    /// Replace the nat allocator with a new one for the new config. If the config is such that
+    /// no masquerading is needed no allocator will be stored and the existing one, if any, be
+    /// removed. Flows using that allocator will be cancelled. If, instead, a new, distinct
+    /// masquerading config is provided, a new allocator will be installed and the flows using the
+    /// previous one be either invalidated or adapted to use the new allocator: their ports/ips
+    /// will be transferred (reserved) in the new allocator.
     pub fn update_nat_allocator(&mut self, nat_config: StatefulNatConfig, flow_table: &FlowTable) {
         let genid = nat_config.genid();
-        let curr_allocator = self.allocator.load();
+        let curr_allocator = self.0.load();
 
         // keep state as-is if config did not change, and just upgrade flows
-        if nat_config == self.config {
+        if let Some(current) = curr_allocator.as_ref()
+            && current.config() == &nat_config
+        {
             debug!("No need to update NAT allocator: NAT peerings did not change");
-            if curr_allocator.is_some() {
-                upgrade_all_masquerading_flows(flow_table, genid);
-            }
+            upgrade_all_masquerading_flows(flow_table, genid);
             return;
         }
 
-        // if we transition to a config wo/ masquerading, flush allocator and remove flows
+        // if we transition to a config without masquerading, flush allocator and remove all flows
         if !nat_config.has_masquerading_peerings() {
             if curr_allocator.is_some() {
                 debug!("No stateful NAT is required anymore: will invalidate flows");
+                self.0.store(None);
                 invalidate_all_masquerading_flows(flow_table);
-                self.allocator.store(None);
             }
-            // flush config
-            self.config = nat_config;
             return;
         }
 
-        // pull the current allocator out of the data path. While we build the new allocator,
-        // no reservation will be possible. However, this is better than adding any locking in data path.
-        // New flows requiring masquerading won't get any IP/port. That's fine, they will retry.
-        // We don't yet drop the old allocator: the flows that used it will in fact keep it alive until
-        // they release their ports.
-        let old_allocator = self.allocator.swap(None);
+        // The new config requires masquerading. If we had an allocator, pull it out of the data path
+        // so that no allocation is made with the allocator we're going to replace. While we build the
+        // new allocator, no reservation will be possible. This is better than adding any locking in data path.
+        // New flows requiring masquerading won't get any IP/port. That's fine, their sources may retry.
+        let old_allocator = self.0.swap(None);
         debug!("Disabled stateful NAT allocator");
 
         // build a new allocator. The allocator is not yet visible in data path
-        let mut allocator = NatAllocator::from_config(&nat_config);
+        let mut allocator = NatAllocator::new(nat_config);
         if old_allocator.is_some() {
-            check_masquerading_flows(flow_table, &nat_config, &mut allocator);
+            check_masquerading_flows(flow_table, &mut allocator);
         }
         // make new allocator visible
         debug!("Installing new stateful NAT allocator...");
-        self.allocator.store(Some(Arc::new(allocator)));
-        self.config = nat_config;
-        debug!("Updated stateful NAT allocator");
+        self.0.store(Some(Arc::new(allocator)));
+        debug!("NAT allocator is installed");
     }
 }
 
