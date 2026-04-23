@@ -65,6 +65,7 @@
 
 use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
+use crate::stateful::StatefulNatConfig;
 pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use crate::stateful::natip::NatIp;
 use config::GenId;
@@ -215,26 +216,31 @@ impl Display for Allocation {
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
 pub struct NatAllocator {
+    config: StatefulNatConfig,
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
     randomize: bool,
-    genid: GenId,
 }
 
 impl NatAllocator {
     #[must_use]
-    fn new(genid: GenId) -> Self {
-        Self {
+    pub(crate) fn new(config: StatefulNatConfig) -> Self {
+        debug!("Building NAT allocator for genid {}", config.genid());
+        let mut allocator = Self {
+            config: StatefulNatConfig::default(),
             pools_src44: PoolTable::new(),
             pools_src66: PoolTable::new(),
-            randomize: true,
-            genid,
+            randomize: config.randomize(),
+        };
+        for nat_peering in config.iter() {
+            allocator.add_peering_addresses(&nat_peering.peering, nat_peering.dst_vpcd);
         }
+        allocator.config = config;
+        allocator
     }
-    #[must_use]
-    fn set_randomize(mut self, randomize: bool) -> Self {
-        self.randomize = randomize;
-        self
+
+    pub(crate) fn config(&self) -> &StatefulNatConfig {
+        &self.config
     }
 
     fn allocate_v4(
@@ -312,7 +318,7 @@ impl NatAllocator {
 
         let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
         let mut allocation = pool.allocate(allow_null)?;
-        allocation.set_genid(self.genid);
+        allocation.set_genid(self.config.genid());
         let idle_timeout = pool.idle_timeout().unwrap_or_else(|| unreachable!());
 
         Ok(AllocationResult {
@@ -380,7 +386,7 @@ impl NatAllocator {
                 )));
             }
         };
-        allocation.set_genid(self.genid);
+        allocation.set_genid(self.config.genid());
         Ok(allocation)
     }
 }

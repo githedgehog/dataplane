@@ -5,7 +5,6 @@ use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatAllocator, PoolTable, PoolTableKey};
 use crate::ranges::IpRange;
-use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::natip::NatIp;
 use config::external::overlay::vpc::Peering;
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
@@ -18,22 +17,12 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use tracing::{debug, error};
+use tracing::error;
 
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
 impl NatAllocator {
-    /// Build a [`NatAllocator`] from a [`StatefulNatConfig`]
-    pub(crate) fn from_config(config: &StatefulNatConfig) -> Self {
-        debug!("Building stateful NAT allocator from config:\n{config:#?}");
-        let mut allocator = NatAllocator::new(config.genid()).set_randomize(config.randomize());
-        for nat_peering in config.iter() {
-            allocator.add_peering_addresses(&nat_peering.peering, nat_peering.dst_vpcd);
-        }
-        allocator
-    }
-
-    fn add_peering_addresses(&mut self, peering: &Peering, dst_vpc_id: VpcDiscriminant) {
+    pub(crate) fn add_peering_addresses(&mut self, peering: &Peering, dst_vpc_id: VpcDiscriminant) {
         let new_peering = collapse_prefixes_peering(peering);
 
         build_nat_pool_generic(

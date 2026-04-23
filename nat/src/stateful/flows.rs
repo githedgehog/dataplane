@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 use crate::NatPort;
-use crate::stateful::allocator_writer::StatefulNatConfig;
 use crate::stateful::apalloc::NatAllocator;
 use crate::stateful::state::{MasqueradeAction, MasqueradeState};
 
@@ -96,9 +95,9 @@ fn re_reserve_ip_and_port(
 pub(crate) fn check_masquerading_flow(
     flow_key: &FlowKey,
     flow_info: &FlowInfo,
-    config: &StatefulNatConfig,
     allocator: &mut NatAllocator,
 ) {
+    let config = allocator.config();
     let genid = config.genid();
     if flow_info.genid() == genid {
         return;
@@ -153,20 +152,14 @@ pub(crate) fn check_masquerading_flow(
 
 /// Main function called to deal with flows when masquerade configuration changes. This function:
 ///   - locks the flow table
-///   - examines all masquerade flows to determine if they should continue or be invalidated according to `new_config`
+///   - examines all masquerade flows to determine if they should continue or be invalidated according to the new allocator config
 ///   - flows that continue get a new allocation with the same ip and port in the `new_allocator`
-pub(crate) fn check_masquerading_flows(
-    flow_table: &FlowTable,
-    new_config: &StatefulNatConfig,
-    new_allocator: &mut NatAllocator,
-) {
-    let genid = new_config.genid();
+pub(crate) fn check_masquerading_flows(flow_table: &FlowTable, new_allocator: &mut NatAllocator) {
+    let genid = new_allocator.config().genid();
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
     flow_table.for_each_flow_filtered(
         |_, f| f.is_active(),
-        |flow_key, flow_info| {
-            check_masquerading_flow(flow_key, flow_info, new_config, new_allocator)
-        },
+        |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator),
     );
     debug!("CHECKING flows against new masquerade configuration COMPLETED");
 }
