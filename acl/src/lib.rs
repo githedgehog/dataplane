@@ -76,6 +76,7 @@ mod priority;
 mod range;
 mod rule;
 mod scratch;
+mod scratch_dag;
 mod scratch_next;
 mod signature;
 mod table;
