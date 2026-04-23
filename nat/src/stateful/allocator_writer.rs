@@ -141,16 +141,9 @@ impl NatAllocatorWriter {
             return;
         }
 
-        // The new config requires masquerading. If we had an allocator, pull it out of the data path
-        // so that no allocation is made with the allocator we're going to replace. While we build the
-        // new allocator, no reservation will be possible. This is better than adding any locking in data path.
-        // New flows requiring masquerading won't get any IP/port. That's fine, their sources may retry.
-        let old_allocator = self.0.swap(None);
-        debug!("Disabled stateful NAT allocator");
-
         // build a new allocator. The allocator is not yet visible in data path
         let mut allocator = NatAllocator::new(nat_config);
-        if old_allocator.is_some() {
+        if curr_allocator.is_some() {
             check_masquerading_flows(flow_table, &mut allocator);
         }
         // make new allocator visible
