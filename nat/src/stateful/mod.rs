@@ -201,6 +201,7 @@ impl StatefulNat {
         alloc: AllocationResult<Allocation>,
     ) -> Result<(), StatefulNatError> {
         let idle_timeout = alloc.idle_timeout;
+        let genid = alloc.allocation.genid();
 
         // src and dst vpc of this packet
         let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
@@ -225,7 +226,7 @@ impl StatefulNat {
         Self::setup_flow_nat_state(&reverse, reverse_state, src_vpc_id);
 
         // set the genid of the flows
-        forward.set_genid_pair(self.pipeline_data.genid());
+        forward.set_genid_pair(genid);
 
         // insert in flow-table
         self.flow_table
@@ -430,9 +431,7 @@ impl StatefulNat {
         debug!("{nfi}: Allocated: {alloc}");
 
         let translation_data = Self::get_translation_data(&alloc.allocation);
-
         self.create_flow_pair(packet, &flow_key, alloc)?;
-
         Self::translate(self.name(), packet, &translation_data).and(Ok(true))
     }
 
