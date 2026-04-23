@@ -75,6 +75,45 @@ mod sealed {
     }
 }
 
+/// Type-level "Self is a prefix of `Wide`."
+///
+/// If `ShapePrefix<Wide>` is implemented for `Narrow`, then any
+/// `Headers` that satisfies `Wide` also satisfies `Narrow`, and by
+/// extension `&Window<Wide>` can be viewed as `&Window<Narrow>` for
+/// free (see the [`AsRef`] blanket impl below).
+///
+/// The lattice is generated alongside the shape catalog: each
+/// [`define_window!`] invocation emits the reflexive impl, and
+/// strict-prefix impls between declared shapes are emitted via
+/// [`define_shape_prefix!`].
+///
+/// Sealed via [`Shape`]: callers can use `ShapePrefix` as a bound but
+/// cannot introduce new lattice elements.
+pub trait ShapePrefix<Wide>: Shape
+where
+    Wide: Shape,
+{
+}
+
+/// Free downgrade: if `Narrow` is a prefix of `Wide`, then
+/// `&Window<Wide>` can be viewed as `&Window<Narrow>` with no runtime
+/// cost (same `#[repr(transparent)]` layout, narrower type-level
+/// claim).
+impl<Narrow, Wide> AsRef<Window<Narrow>> for Window<Wide>
+where
+    Narrow: ShapePrefix<Wide>,
+    Wide: Shape,
+{
+    #[inline]
+    fn as_ref(&self) -> &Window<Narrow> {
+        // SAFETY: Window<_> is #[repr(transparent)] over Headers.
+        // `Narrow: ShapePrefix<Wide>` plus the existing `Wide` proof on
+        // `self` means `Headers` inside `self` also satisfies
+        // `Narrow`; reinterpreting the reference is sound.
+        unsafe { &*(self as *const Window<Wide> as *const Window<Narrow>) }
+    }
+}
+
 impl Headers {
     /// Borrow `self` as a [`Window<T>`] if its structure matches `T`.
     ///
@@ -262,6 +301,21 @@ macro_rules! define_window {
                 true $( && <$ty as ExtractUnchecked>::try_extract(h).is_some() )+
             }
         }
+
+        // Reflexive: every shape is a prefix of itself.
+        impl<'x> ShapePrefix<($(&'x $ty,)+)> for ($(&'x $ty,)+) {}
+    };
+}
+
+/// Declare `Narrow` as a strict prefix of `Wide`.  Both sides must be
+/// tuples of `&`-layer-types (the same form `define_window!` consumes).
+///
+/// Emits `impl ShapePrefix<Wide> for Narrow`.  Reflexive impls are
+/// emitted by `define_window!`; this helper is for the strict-prefix
+/// pairs.
+macro_rules! define_shape_prefix {
+    (($($narrow:ty),+ $(,)?) => ($($wide:ty),+ $(,)?)) => {
+        impl<'x> ShapePrefix<($(&'x $wide,)+)> for ($(&'x $narrow,)+) {}
     };
 }
 
@@ -272,3 +326,21 @@ define_window!(Eth, Ipv4, Tcp);
 define_window!(Eth, Ipv4, Udp);
 define_window!(Eth, Ipv6, Tcp);
 define_window!(Eth, Ipv6, Udp);
+
+// Strict-prefix impls.  Every declared super-shape names its proper
+// prefixes so a `&Window<Wide>` can be viewed as `&Window<Narrow>`.
+// Reflexive cases are in the macro above.
+
+// Single-layer narrow.
+define_shape_prefix!((Eth) => (Eth, Ipv4));
+define_shape_prefix!((Eth) => (Eth, Ipv6));
+define_shape_prefix!((Eth) => (Eth, Ipv4, Tcp));
+define_shape_prefix!((Eth) => (Eth, Ipv4, Udp));
+define_shape_prefix!((Eth) => (Eth, Ipv6, Tcp));
+define_shape_prefix!((Eth) => (Eth, Ipv6, Udp));
+
+// Two-layer narrow (Eth + net).
+define_shape_prefix!((Eth, Ipv4) => (Eth, Ipv4, Tcp));
+define_shape_prefix!((Eth, Ipv4) => (Eth, Ipv4, Udp));
+define_shape_prefix!((Eth, Ipv6) => (Eth, Ipv6, Tcp));
+define_shape_prefix!((Eth, Ipv6) => (Eth, Ipv6, Udp));

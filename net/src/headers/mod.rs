@@ -45,7 +45,7 @@ pub use within::{EmbeddedStart, Within};
 pub mod pat;
 
 pub mod window;
-pub use window::{Look, Shape, Window};
+pub use window::{Look, Shape, ShapePrefix, Window};
 
 #[cfg(any(test, feature = "builder"))]
 pub mod builder;

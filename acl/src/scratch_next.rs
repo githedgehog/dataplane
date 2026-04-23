@@ -509,4 +509,25 @@ mod tests {
         assert_eq!(out.rule, MatchId { table: TableId(2), local: 0 });
         assert_eq!(out.action, Action::Drop);
     }
+
+    // ShapePrefix / AsRef downgrade: a wide Window can be viewed as a
+    // narrow Window without runtime cost.  Verifies the type-level
+    // lattice is wired correctly and the AsRef blanket impl fires.
+    #[test]
+    fn wide_window_downgrades_via_as_ref() {
+        let h = make_v4_tcp(Ipv4Addr::new(10, 1, 2, 3), Ipv4Addr::new(8, 8, 8, 8), 1111, 80);
+
+        let wide: &Window<(&Eth, &Ipv4, &Tcp)> = h.as_window().expect("shape matches");
+
+        // Narrow via AsRef: (&Eth, &Ipv4, &Tcp) -> (&Eth, &Ipv4)
+        let narrow_v4: &Window<(&Eth, &Ipv4)> = wide.as_ref();
+        let (eth, ip) = narrow_v4.look();
+        let src: Ipv4Addr = ip.source().into();
+        assert_eq!(src, Ipv4Addr::new(10, 1, 2, 3));
+        let _ = eth; // quiet unused
+
+        // Narrow all the way: (&Eth, &Ipv4, &Tcp) -> (&Eth,)
+        let eth_only: &Window<(&Eth,)> = wide.as_ref();
+        let (_eth,) = eth_only.look();
+    }
 }
