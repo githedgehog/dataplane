@@ -404,7 +404,7 @@ impl StatefulNat {
     fn masquerade_packet<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-    ) -> Result<bool, StatefulNatError> {
+    ) -> Result<(), StatefulNatError> {
         let nfi = self.name();
 
         // Hot path: if we have a session, directly translate the address.
@@ -412,7 +412,7 @@ impl StatefulNat {
         // configuration is applied.
         if let Some(translate) = Self::lookup_session(packet) {
             debug!("{nfi}: Found session, translating packet");
-            return Self::translate(self.name(), packet, &translate).and(Ok(true));
+            return Self::translate(self.name(), packet, &translate);
         }
 
         // If no allocator has been configured, drop the packet
@@ -468,7 +468,7 @@ impl StatefulNat {
                     allocator.as_ref(),
                 );
                 if installed.is_active() {
-                    Ok(true)
+                    Ok(())
                 } else {
                     // we invalidated the flow. Signal that packet should be dropped
                     Err(StatefulNatError::IntendedDrop)
@@ -513,13 +513,10 @@ impl StatefulNat {
                 packet.done(translate_error(&error));
                 error!("{}: Error masquerading packet: {error}", self.name());
             }
-            Ok(true) => {
+            Ok(()) => {
                 packet.meta_mut().set_checksum_refresh(true);
                 packet.meta_mut().natted(true);
                 debug!("{}: Packet was NAT'ed", self.name());
-            }
-            Ok(false) => {
-                debug!("{}: No NAT translation needed", self.name());
             }
         }
     }
