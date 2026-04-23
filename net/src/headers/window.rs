@@ -59,6 +59,59 @@ impl<T> Window<T> {
     }
 }
 
+/// Declared, checkable shapes for [`Window<T>`].
+///
+/// Sealed: only shapes the crate declares via `define_window!` are
+/// [`Shape`]s.  External crates use [`Shape`] as a bound on generic
+/// code but cannot add new shapes; the shape catalog is owned here.
+pub trait Shape: sealed::Sealed {}
+
+mod sealed {
+    use super::Headers;
+
+    pub trait Sealed {
+        /// Check that `h`'s structure matches this shape.
+        fn matches(h: &Headers) -> bool;
+    }
+}
+
+impl Headers {
+    /// Borrow `self` as a [`Window<T>`] if its structure matches `T`.
+    ///
+    /// Non-consuming companion to [`Window::new`].  Returns `None` if
+    /// the shape doesn't match; does not move out of `self`.
+    #[inline]
+    pub fn as_window<T>(&self) -> Option<&Window<T>>
+    where
+        T: Shape,
+    {
+        if <T as sealed::Sealed>::matches(self) {
+            // SAFETY: `matches` returned true, so the Window<T> shape
+            // invariant holds for this Headers.  Window<T> is
+            // #[repr(transparent)] over Headers, so a &Headers and
+            // &Window<T> have identical representations.
+            Some(unsafe { &*(self as *const Headers as *const Window<T>) })
+        } else {
+            None
+        }
+    }
+
+    /// Mutable borrow of `self` as a `&mut Window<T>` if its structure
+    /// matches `T`.  Same invariant and cast as [`Self::as_window`].
+    #[inline]
+    pub fn as_window_mut<T>(&mut self) -> Option<&mut Window<T>>
+    where
+        T: Shape,
+    {
+        if <T as sealed::Sealed>::matches(self) {
+            // SAFETY: same as as_window, with exclusive borrow preserved.
+            Some(unsafe { &mut *(self as *mut Headers as *mut Window<T>) })
+        } else {
+            None
+        }
+    }
+}
+
 /// Extract typed references to the layers a [`Window<T>`] holds.
 ///
 /// Implemented for each valid shape tuple `T`.  `Refs<'a>` is the tuple
@@ -198,6 +251,15 @@ macro_rules! define_window {
                         $( <$ty as ExtractUnchecked>::extract_unchecked(&self.0), )+
                     )
                 }
+            }
+        }
+
+        impl<'x> Shape for ($(&'x $ty,)+) {}
+
+        impl<'x> sealed::Sealed for ($(&'x $ty,)+) {
+            #[inline(always)]
+            fn matches(h: &Headers) -> bool {
+                true $( && <$ty as ExtractUnchecked>::try_extract(h).is_some() )+
             }
         }
     };
