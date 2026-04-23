@@ -19,6 +19,7 @@ use crate::NatPort;
 use crate::stateful::allocation::{AllocationResult, AllocatorError};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::Allocation;
+use crate::stateful::flows::check_masquerading_flow;
 use crate::stateful::state::MasqueradeState;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
@@ -44,6 +45,8 @@ trace_target!("stateful-nat", LevelFilter::INFO, &["nat", "pipeline"]);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 enum StatefulNatError {
+    #[error("Unexpected failure")]
+    Bug,
     #[error("failure to get IP header")]
     BadIpHeader,
     #[error("failure to get transport header")]
@@ -68,6 +71,8 @@ enum StatefulNatError {
     IcmpUnsupportedCategory,
     #[error("attempted to masquerade ICMP error message")]
     IcmpError,
+    #[error("dropped the packet purposedly")]
+    IntendedDrop,
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -430,9 +435,49 @@ impl StatefulNat {
 
         debug!("{nfi}: Allocated: {alloc}");
 
+        // translate the packet. If this fails, no flow will be created
         let translation_data = Self::get_translation_data(&alloc.allocation);
+        Self::translate(self.name(), packet, &translation_data)?;
+
+        // create flow pair
         self.create_flow_pair(packet, &flow_key, alloc)?;
-        Self::translate(self.name(), packet, &translation_data).and(Ok(true))
+
+        // lookup the flow (forward) just created. We should always find it.
+        let installed = self
+            .flow_table
+            .lookup(&flow_key)
+            .ok_or(StatefulNatError::Bug)?;
+
+        // .. and check whether the allocation we made and stored in the flows is still fine
+        // with the current allocator. This counters for the potential race where we got a port
+        // allocated but before we could install the flows, a new config was applied. If that
+        // happened, our flow would not be checked against the new config. So we'd have a flow
+        // with an allocation drawn from an allocator that was replaced by a newer one, and the
+        // new allocator would not be aware of that allocation. So, here we repeat the logic that
+        // checks flows against a new config / allocation.
+        match self.allocator.get() {
+            None => {
+                // allocator got removed. Get rid of the flows and drop the packet.
+                // FIXME: We have to account for the fact that an allocator may be
+                // None while we're building a new one. Otherwise, we'd drop a potentially legit flow.
+                // This is addressed later.
+                installed.invalidate_pair();
+                Err(StatefulNatError::IntendedDrop)
+            }
+            Some(allocator) => {
+                check_masquerading_flow(
+                    installed.flowkey().unwrap(),
+                    installed.as_ref(),
+                    allocator.as_ref(),
+                );
+                if installed.is_active() {
+                    Ok(true)
+                } else {
+                    // we invalidated the flow. Signal that packet should be dropped
+                    Err(StatefulNatError::IntendedDrop)
+                }
+            }
+        }
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
@@ -515,7 +560,9 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
             DoneReason::InternalFailure
         }
 
-        StatefulNatError::AllocationFailure(AllocatorError::Denied) => DoneReason::Filtered,
+        StatefulNatError::AllocationFailure(AllocatorError::Denied)
+        | StatefulNatError::Bug
+        | StatefulNatError::IntendedDrop => DoneReason::Filtered,
     }
 }
 
