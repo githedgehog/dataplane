@@ -14,7 +14,7 @@ use std::num::NonZero;
 use tracing::error;
 
 use crate::portfw::PortFwState;
-use crate::portfw::flow_state::PortFwAction;
+use crate::portfw::flow_state::NatAction;
 
 #[inline]
 #[must_use]
@@ -100,8 +100,8 @@ pub(crate) fn nat_packet<Buf: PacketBufferMut>(
     state: &PortFwState,
 ) -> bool {
     match state.action() {
-        PortFwAction::DstNat => dnat_packet(packet, state.use_ip().inner(), state.use_port()),
-        PortFwAction::SrcNat => snat_packet(packet, state.use_ip(), state.use_port()),
+        NatAction::DstNat => dnat_packet(packet, state.use_ip().inner(), state.use_port()),
+        NatAction::SrcNat => snat_packet(packet, state.use_ip(), state.use_port()),
     }
 }
 
