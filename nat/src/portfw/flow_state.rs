@@ -18,17 +18,12 @@ use std::sync::{Arc, Weak};
 
 use flow_entry::flow_table::FlowInfo;
 
+use crate::common::NatAction;
 use crate::portfw::PortFwEntry;
 use crate::portfw::protocol::{AtomicPortFwFlowStatus, PortFwFlowStatus, next_flow_status};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NatAction {
-    DstNat,
-    SrcNat,
-}
 
 #[derive(Debug, Clone)]
 pub struct PortFwState {
@@ -84,15 +79,6 @@ impl PortFwState {
     #[must_use]
     pub fn rule(&self) -> &Weak<PortFwEntry> {
         &self.rule
-    }
-}
-
-impl Display for NatAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NatAction::DstNat => write!(f, "dnat"),
-            NatAction::SrcNat => write!(f, "snat"),
-        }
     }
 }
 
