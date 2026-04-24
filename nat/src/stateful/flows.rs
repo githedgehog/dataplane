@@ -2,8 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use crate::NatPort;
+use crate::common::NatAction;
 use crate::stateful::apalloc::NatAllocator;
-use crate::stateful::state::{MasqueradeAction, MasqueradeState};
+use crate::stateful::state::MasqueradeState;
 
 use config::GenId;
 use flow_entry::flow_table::{FlowTable, FlowTableReadGuard};
@@ -76,7 +77,7 @@ fn re_reserve_ip_and_port(
             let nat_state = nat_state
                 .extract_mut::<MasqueradeState>()
                 .unwrap_or_else(|| unreachable!());
-            debug_assert!(matches!(nat_state.action(), MasqueradeAction::SrcNat));
+            debug_assert!(matches!(nat_state.action(), NatAction::SrcNat));
             nat_state.set_allocation(alloc);
             debug!("Successfully associated ip {ip} port/Id {port_u16} to flow {flow_key}");
             Ok(())

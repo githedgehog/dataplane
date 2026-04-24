@@ -2,20 +2,15 @@
 // Copyright Open Network Fabric Authors
 
 use super::apalloc::Allocation;
+use crate::common::NatAction;
 use crate::{NatPort, NatTranslationData};
 use std::fmt::Display;
 use std::net::IpAddr;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MasqueradeAction {
-    DstNat,
-    SrcNat,
-}
-
 #[derive(Debug)]
 pub struct MasqueradeState {
-    action: MasqueradeAction,
+    action: NatAction,
     use_ip: IpAddr,
     use_port: NatPort,
     idle_timeout: Duration,
@@ -25,7 +20,7 @@ pub struct MasqueradeState {
 impl MasqueradeState {
     fn snat(allocation: Allocation, idle_timeout: Duration) -> Self {
         Self {
-            action: MasqueradeAction::SrcNat,
+            action: NatAction::SrcNat,
             use_ip: allocation.ip(),
             use_port: allocation.port(),
             allocation: Some(allocation),
@@ -35,7 +30,7 @@ impl MasqueradeState {
 
     fn dnat(use_ip: IpAddr, use_port: NatPort, idle_timeout: Duration) -> Self {
         Self {
-            action: MasqueradeAction::DstNat,
+            action: NatAction::DstNat,
             use_ip,
             use_port,
             allocation: None,
@@ -62,16 +57,16 @@ impl MasqueradeState {
         self.allocation.as_ref()
     }
 
-    pub(crate) fn action(&self) -> MasqueradeAction {
+    pub(crate) fn action(&self) -> NatAction {
         self.action
     }
 
     pub(crate) fn translation_data(&self) -> NatTranslationData {
         match self.action {
-            MasqueradeAction::SrcNat => {
+            NatAction::SrcNat => {
                 NatTranslationData::new(Some(self.use_ip), None, Some(self.use_port), None)
             }
-            MasqueradeAction::DstNat => {
+            NatAction::DstNat => {
                 NatTranslationData::new(None, Some(self.use_ip), None, Some(self.use_port))
             }
         }
@@ -79,10 +74,10 @@ impl MasqueradeState {
 
     pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
         match self.action {
-            MasqueradeAction::SrcNat => {
+            NatAction::SrcNat => {
                 NatTranslationData::new(None, Some(self.use_ip), None, Some(self.use_port))
             }
-            MasqueradeAction::DstNat => {
+            NatAction::DstNat => {
                 NatTranslationData::new(Some(self.use_ip), None, Some(self.use_port), None)
             }
         }
@@ -90,15 +85,6 @@ impl MasqueradeState {
 
     pub(crate) fn set_allocation(&mut self, allocation: Allocation) {
         self.allocation = Some(allocation);
-    }
-}
-
-impl Display for MasqueradeAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SrcNat => write!(f, "src-nat"),
-            Self::DstNat => write!(f, "dst-nat"),
-        }
     }
 }
 

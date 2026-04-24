@@ -44,7 +44,7 @@ use crate::portfw::packet::nat_packet;
 use crate::{NatPort, NatTranslationData};
 
 use super::flow_state::PortFwState;
-use crate::portfw::flow_state::NatAction;
+use crate::common::NatAction;
 
 use tracing::debug;
 

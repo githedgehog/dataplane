@@ -13,8 +13,8 @@ use std::net::IpAddr;
 use std::num::NonZero;
 use tracing::error;
 
+use crate::common::NatAction;
 use crate::portfw::PortFwState;
-use crate::portfw::flow_state::NatAction;
 
 #[inline]
 #[must_use]

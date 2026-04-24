@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
 use super::PortFwState;
-use super::flow_state::NatAction;
+use crate::common::NatAction;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
