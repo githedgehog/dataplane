@@ -59,14 +59,18 @@
 use core::marker::PhantomData;
 
 use crate::eth::Eth;
+use crate::icmp4::Icmp4;
+use crate::icmp6::Icmp6;
+use crate::ip_auth::{Ipv4Auth, Ipv6Auth};
 use crate::ipv4::Ipv4;
-use crate::ipv6::Ipv6;
+use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
 use crate::tcp::Tcp;
-use crate::udp::Udp;
+use crate::udp::{Udp, UdpEncap};
 use crate::vlan::Vlan;
+use crate::vxlan::Vxlan;
 
 use super::pat::ExtGapCheck;
-use super::{Headers, Net, Transport, Within};
+use super::{Headers, Net, NetExt, Transport, Within};
 
 // ===========================================================================
 // HeadersView<T>
@@ -251,6 +255,46 @@ macro_rules! impl_net_step {
 impl_net_step!(Ipv4, Net::Ipv4);
 impl_net_step!(Ipv6, Net::Ipv6);
 
+// Net enum -- returns the &Net itself; same VLAN gap check.
+impl<Pos> ViewStep<Pos> for Net
+where
+    Net: Within<Pos>,
+{
+    #[inline(always)]
+    fn step(h: &Headers, vc: u8, _ec: u8) -> Option<(&Net, u8, u8)> {
+        if h.vlan().len() != vc as usize {
+            return None;
+        }
+        h.net().map(|n| (n, vc, 0))
+    }
+}
+
+// ---- Extension headers: advance ec, still in-phase ------------------------
+
+macro_rules! impl_ext_step {
+    ($T:ty, $variant:path) => {
+        impl<Pos> ViewStep<Pos> for $T
+        where
+            $T: Within<Pos>,
+        {
+            #[inline(always)]
+            fn step(h: &Headers, vc: u8, ec: u8) -> Option<(&$T, u8, u8)> {
+                match h.net_ext().get(ec as usize) {
+                    Some($variant(v)) => Some((v, vc, ec + 1)),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+impl_ext_step!(HopByHop, NetExt::HopByHop);
+impl_ext_step!(DestOpts, NetExt::DestOpts);
+impl_ext_step!(Routing, NetExt::Routing);
+impl_ext_step!(Fragment, NetExt::Fragment);
+impl_ext_step!(Ipv4Auth, NetExt::Ipv4Auth);
+impl_ext_step!(Ipv6Auth, NetExt::Ipv6Auth);
+
 // ---- Transport: ExtGapCheck-dispatched strictness, variant match ----------
 
 macro_rules! impl_transport_step {
@@ -276,6 +320,38 @@ macro_rules! impl_transport_step {
 
 impl_transport_step!(Tcp, Transport::Tcp);
 impl_transport_step!(Udp, Transport::Udp);
+impl_transport_step!(Icmp4, Transport::Icmp4);
+impl_transport_step!(Icmp6, Transport::Icmp6);
+
+// Transport enum -- returns &Transport, same ext gap check.
+impl<Pos> ViewStep<Pos> for Transport
+where
+    Transport: Within<Pos>,
+    Pos: ExtGapCheck,
+{
+    #[inline(always)]
+    fn step(h: &Headers, vc: u8, ec: u8) -> Option<(&Transport, u8, u8)> {
+        if !<Pos as ExtGapCheck>::ext_gap_ok(h, ec) {
+            return None;
+        }
+        h.transport().map(|t| (t, vc, ec))
+    }
+}
+
+// ---- UDP encapsulation (Vxlan): no gap check ------------------------------
+
+impl<Pos> ViewStep<Pos> for Vxlan
+where
+    Vxlan: Within<Pos>,
+{
+    #[inline(always)]
+    fn step(h: &Headers, vc: u8, ec: u8) -> Option<(&Vxlan, u8, u8)> {
+        match h.udp_encap() {
+            Some(UdpEncap::Vxlan(v)) => Some((v, vc, ec)),
+            _ => None,
+        }
+    }
+}
 
 // ===========================================================================
 // Per-arity Shape / Sealed / Look impls
@@ -283,8 +359,9 @@ impl_transport_step!(Udp, Transport::Udp);
 //
 // One arm per arity for clarity of generated code; each arm emits the
 // three impls (`Shape`, `sealed::Sealed`, `Look`) plus the cursor-
-// threaded `matches` and `look` bodies.  Follow-up commits extend
-// the arity range as shapes requiring arities > 3 come online.
+// threaded `matches` and `look` bodies.  Max arity is 8 -- no
+// realistic header chain exceeds that; if one ever does, extend the
+// arity range by adding a new `impl_view_arity_N!` arm below.
 
 macro_rules! impl_view_arity_1 {
     ($A:ident) => {
@@ -506,10 +583,404 @@ macro_rules! impl_view_arity_4 {
     };
 }
 
+macro_rules! impl_view_arity_5 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident) => {
+        impl<'x, $A, $B, $C, $D, $E> Shape for (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E)
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+        {
+        }
+
+        impl<'x, $A, $B, $C, $D, $E> sealed::Sealed for (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E)
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+        {
+            #[inline(always)]
+            fn matches(h: &Headers) -> bool {
+                let Some((_, vc, ec)) = $A::step(h, 0, 0) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $B::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $C::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $D::step(h, vc, ec) else {
+                    return false;
+                };
+                $E::step(h, vc, ec).is_some()
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D, $E> Look<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E)>
+            for HeadersView<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E)>
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (&'a $A, &'a $B, &'a $C, &'a $D, &'a $E)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = &self.0;
+                // SAFETY: HeadersView invariant: matches(h) was true.
+                // (see notes at top of file)
+                unsafe {
+                    let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
+                    let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
+                    let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
+                    let (d, vc, ec) = $D::step(h, vc, ec).unwrap_unchecked();
+                    let (e, _, _) = $E::step(h, vc, ec).unwrap_unchecked();
+                    (a, b, c, d, e)
+                }
+            }
+        }
+    };
+}
+
+macro_rules! impl_view_arity_6 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident, $F:ident) => {
+        impl<'x, $A, $B, $C, $D, $E, $F> Shape for (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F)
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+        {
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F> sealed::Sealed
+            for (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F)
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+        {
+            #[inline(always)]
+            fn matches(h: &Headers) -> bool {
+                let Some((_, vc, ec)) = $A::step(h, 0, 0) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $B::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $C::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $D::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $E::step(h, vc, ec) else {
+                    return false;
+                };
+                $F::step(h, vc, ec).is_some()
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F> Look<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F)>
+            for HeadersView<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F)>
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (&'a $A, &'a $B, &'a $C, &'a $D, &'a $E, &'a $F)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = &self.0;
+                // SAFETY: HeadersView invariant: matches(h) was true.
+                // (see notes at top of file)
+                unsafe {
+                    let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
+                    let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
+                    let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
+                    let (d, vc, ec) = $D::step(h, vc, ec).unwrap_unchecked();
+                    let (e, vc, ec) = $E::step(h, vc, ec).unwrap_unchecked();
+                    let (f, _, _) = $F::step(h, vc, ec).unwrap_unchecked();
+                    (a, b, c, d, e, f)
+                }
+            }
+        }
+    };
+}
+
+macro_rules! impl_view_arity_7 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident, $F:ident, $G:ident) => {
+        impl<'x, $A, $B, $C, $D, $E, $F, $G> Shape
+            for (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G)
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+            $G: ViewStep<$F>,
+        {
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F, $G> sealed::Sealed
+            for (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G)
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+            $G: ViewStep<$F>,
+        {
+            #[inline(always)]
+            fn matches(h: &Headers) -> bool {
+                let Some((_, vc, ec)) = $A::step(h, 0, 0) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $B::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $C::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $D::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $E::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $F::step(h, vc, ec) else {
+                    return false;
+                };
+                $G::step(h, vc, ec).is_some()
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F, $G>
+            Look<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G)>
+            for HeadersView<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G)>
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+            $G: ViewStep<$F>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (&'a $A, &'a $B, &'a $C, &'a $D, &'a $E, &'a $F, &'a $G)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = &self.0;
+                // SAFETY: HeadersView invariant: matches(h) was true.
+                // (see notes at top of file)
+                unsafe {
+                    let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
+                    let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
+                    let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
+                    let (d, vc, ec) = $D::step(h, vc, ec).unwrap_unchecked();
+                    let (e, vc, ec) = $E::step(h, vc, ec).unwrap_unchecked();
+                    let (f, vc, ec) = $F::step(h, vc, ec).unwrap_unchecked();
+                    let (g, _, _) = $G::step(h, vc, ec).unwrap_unchecked();
+                    (a, b, c, d, e, f, g)
+                }
+            }
+        }
+    };
+}
+
+macro_rules! impl_view_arity_8 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident, $F:ident, $G:ident, $H:ident) => {
+        impl<'x, $A, $B, $C, $D, $E, $F, $G, $H> Shape
+            for (
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            )
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+            $G: ViewStep<$F>,
+            $H: ViewStep<$G>,
+        {
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F, $G, $H> sealed::Sealed
+            for (
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            )
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+            $G: ViewStep<$F>,
+            $H: ViewStep<$G>,
+        {
+            #[inline(always)]
+            fn matches(h: &Headers) -> bool {
+                let Some((_, vc, ec)) = $A::step(h, 0, 0) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $B::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $C::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $D::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $E::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $F::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $G::step(h, vc, ec) else {
+                    return false;
+                };
+                $H::step(h, vc, ec).is_some()
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F, $G, $H>
+            Look<(
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            )>
+            for HeadersView<(
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            )>
+        where
+            $A: ViewStep<()>,
+            $B: ViewStep<$A>,
+            $C: ViewStep<$B>,
+            $D: ViewStep<$C>,
+            $E: ViewStep<$D>,
+            $F: ViewStep<$E>,
+            $G: ViewStep<$F>,
+            $H: ViewStep<$G>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (
+                &'a $A,
+                &'a $B,
+                &'a $C,
+                &'a $D,
+                &'a $E,
+                &'a $F,
+                &'a $G,
+                &'a $H,
+            )
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = &self.0;
+                // SAFETY: HeadersView invariant: matches(h) was true.
+                // (see notes at top of file)
+                unsafe {
+                    let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
+                    let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
+                    let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
+                    let (d, vc, ec) = $D::step(h, vc, ec).unwrap_unchecked();
+                    let (e, vc, ec) = $E::step(h, vc, ec).unwrap_unchecked();
+                    let (f, vc, ec) = $F::step(h, vc, ec).unwrap_unchecked();
+                    let (g, vc, ec) = $G::step(h, vc, ec).unwrap_unchecked();
+                    let (h2, _, _) = $H::step(h, vc, ec).unwrap_unchecked();
+                    (a, b, c, d, e, f, g, h2)
+                }
+            }
+        }
+    };
+}
+
 impl_view_arity_1!(A);
 impl_view_arity_2!(A, B);
 impl_view_arity_3!(A, B, C);
 impl_view_arity_4!(A, B, C, D);
+impl_view_arity_5!(A, B, C, D, E);
+impl_view_arity_6!(A, B, C, D, E, F);
+impl_view_arity_7!(A, B, C, D, E, F, G);
+impl_view_arity_8!(A, B, C, D, E, F, G, H);
 
 // ===========================================================================
 // Tests
@@ -625,14 +1096,83 @@ mod tests {
             .tcp(|_| {})
             .build_headers()
             .unwrap();
-        // Arity 5 is not yet wired, so we assert matching with arity 4
-        // only here; the cursor-indexed look test for the full shape
-        // arrives with the arity-5 support in a later commit.
         let w = h
-            .as_view::<(&Eth, &Vlan, &Vlan, &Ipv4)>()
-            .expect("double-VLAN packet should match two-VLAN shape");
-        let (_eth, v0, v1, _ip) = w.look();
+            .as_view::<(&Eth, &Vlan, &Vlan, &Ipv4, &Tcp)>()
+            .expect("double-VLAN packet should match double-VLAN shape");
+        let (_eth, v0, v1, _ip, _tcp) = w.look();
         assert_eq!(v0.vid(), vid_outer);
         assert_eq!(v1.vid(), vid_inner);
+    }
+
+    // ---- IPv6 extension header semantics -----------------------------------
+
+    #[test]
+    fn ipv6_extensions_skipped_from_ip_position() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        // Shape enters transport directly from Ipv6 -> extension is skipped.
+        assert!(h.as_view::<(&Eth, &Ipv6, &Tcp)>().is_some());
+        // Explicitly matching the extension also works.
+        assert!(h.as_view::<(&Eth, &Ipv6, &HopByHop, &Tcp)>().is_some());
+    }
+
+    #[test]
+    fn ipv6_extensions_strict_when_entered() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .dest_opts(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        // Entered but incomplete: the DestOpts is unconsumed -> miss.
+        assert!(
+            h.as_view::<(&Eth, &Ipv6, &HopByHop, &Tcp)>().is_none(),
+            "entered extension region but DestOpts unconsumed: must miss"
+        );
+        // Entered and complete.
+        assert!(
+            h.as_view::<(&Eth, &Ipv6, &HopByHop, &DestOpts, &Tcp)>()
+                .is_some()
+        );
+        // Skipped from Ipv6 position: allowed.
+        assert!(h.as_view::<(&Eth, &Ipv6, &Tcp)>().is_some());
+    }
+
+    #[test]
+    fn look_returns_cursor_indexed_extensions() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .dest_opts(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        let w = h
+            .as_view::<(&Eth, &Ipv6, &HopByHop, &DestOpts, &Tcp)>()
+            .expect("two-extension packet should match two-extension shape");
+        // Smoke test: look compiles and destructures all five refs.
+        let (_eth, _ip, _hbh, _do, _tcp) = w.look();
+    }
+
+    // ---- Wrong net variant is a miss ---------------------------------------
+
+    #[test]
+    fn wrong_net_variant_misses() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        assert!(h.as_view::<(&Eth, &Ipv6, &Tcp)>().is_some());
+        assert!(h.as_view::<(&Eth, &Ipv4, &Tcp)>().is_none());
     }
 }
