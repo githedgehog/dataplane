@@ -113,6 +113,54 @@ mod sealed {
 }
 
 // ===========================================================================
+// ShapePrefix -- free downgrade via AsRef
+// ===========================================================================
+
+/// Type-level "Self is a prefix of `Wide`."
+///
+/// If `ShapePrefix<Wide>` is implemented for `Narrow`, then any
+/// `Headers` that satisfies `Wide` also satisfies `Narrow`, and by
+/// extension `&HeadersView<Wide>` can be viewed as `&HeadersView<Narrow>` for
+/// free (see the [`AsRef`] blanket impl below).
+///
+/// Two provenance rules:
+/// * Reflexive: every shape is a prefix of itself (blanket impl).
+/// * Structural: an N-arity tuple is a prefix of an M-arity tuple
+///   (N < M) iff both sides are valid shapes and the first N elements
+///   agree.  One impl per `(N, M)` arity pair is emitted below.
+///
+/// Sealed via [`Shape`]: callers can use `ShapePrefix` as a bound but
+/// cannot introduce new lattice elements.
+pub trait ShapePrefix<Wide>: Shape
+where
+    Wide: Shape,
+{
+}
+
+/// Reflexive: every shape is a prefix of itself.
+impl<T: Shape> ShapePrefix<T> for T {}
+
+/// Free downgrade: if `Narrow` is a prefix of `Wide`, then
+/// `&HeadersView<Wide>` can be viewed as `&HeadersView<Narrow>` with no runtime
+/// cost (same `#[repr(transparent)]` layout, narrower type-level
+/// claim).
+impl<Narrow, Wide> AsRef<HeadersView<Narrow>> for HeadersView<Wide>
+where
+    Narrow: ShapePrefix<Wide>,
+    Wide: Shape,
+{
+    #[inline]
+    fn as_ref(&self) -> &HeadersView<Narrow> {
+        // SAFETY: HeadersView<_> is #[repr(transparent)] over Headers.
+        // `Narrow: ShapePrefix<Wide>` plus the existing `Wide` proof
+        // on `self` means `Headers` inside `self` also satisfies
+        // `Narrow`; reinterpreting the reference is sound.
+        let x = std::ptr::from_ref(self).cast::<HeadersView<Narrow>>();
+        unsafe { x.as_ref_unchecked() }
+    }
+}
+
+// ===========================================================================
 // Headers::as_view / as_view_mut
 // ===========================================================================
 
@@ -983,6 +1031,244 @@ impl_view_arity_7!(A, B, C, D, E, F, G);
 impl_view_arity_8!(A, B, C, D, E, F, G, H);
 
 // ===========================================================================
+// Structural ShapePrefix impls
+// ===========================================================================
+//
+// Narrow tuple (&T1, ..., &Tn) is a prefix of wide tuple
+// (&T1, ..., &Tn, ..., &Tm) when both sides are themselves Shapes.
+// The bounds on each impl re-require both sides to be valid, so the
+// prefix relationship only exists between topologically valid shapes.
+// Reflexive pairs are covered by the blanket impl above.
+
+// Spelled out per (narrow-arity, wide-arity) pair.  28 entries total;
+// mechanical but exhaustive.
+
+// -- Narrow arity 1 --
+impl<'x, A, X2> ShapePrefix<(&'x A, &'x X2)> for (&'x A,)
+where
+    (&'x A,): Shape,
+    (&'x A, &'x X2): Shape,
+{
+}
+impl<'x, A, X2, X3> ShapePrefix<(&'x A, &'x X2, &'x X3)> for (&'x A,)
+where
+    (&'x A,): Shape,
+    (&'x A, &'x X2, &'x X3): Shape,
+{
+}
+impl<'x, A, X2, X3, X4> ShapePrefix<(&'x A, &'x X2, &'x X3, &'x X4)> for (&'x A,)
+where
+    (&'x A,): Shape,
+    (&'x A, &'x X2, &'x X3, &'x X4): Shape,
+{
+}
+impl<'x, A, X2, X3, X4, X5> ShapePrefix<(&'x A, &'x X2, &'x X3, &'x X4, &'x X5)> for (&'x A,)
+where
+    (&'x A,): Shape,
+    (&'x A, &'x X2, &'x X3, &'x X4, &'x X5): Shape,
+{
+}
+impl<'x, A, X2, X3, X4, X5, X6> ShapePrefix<(&'x A, &'x X2, &'x X3, &'x X4, &'x X5, &'x X6)>
+    for (&'x A,)
+where
+    (&'x A,): Shape,
+    (&'x A, &'x X2, &'x X3, &'x X4, &'x X5, &'x X6): Shape,
+{
+}
+impl<'x, A, X2, X3, X4, X5, X6, X7>
+    ShapePrefix<(&'x A, &'x X2, &'x X3, &'x X4, &'x X5, &'x X6, &'x X7)> for (&'x A,)
+where
+    (&'x A,): Shape,
+    (&'x A, &'x X2, &'x X3, &'x X4, &'x X5, &'x X6, &'x X7): Shape,
+{
+}
+impl<'x, A, X2, X3, X4, X5, X6, X7, X8>
+    ShapePrefix<(
+        &'x A,
+        &'x X2,
+        &'x X3,
+        &'x X4,
+        &'x X5,
+        &'x X6,
+        &'x X7,
+        &'x X8,
+    )> for (&'x A,)
+where
+    (&'x A,): Shape,
+    (
+        &'x A,
+        &'x X2,
+        &'x X3,
+        &'x X4,
+        &'x X5,
+        &'x X6,
+        &'x X7,
+        &'x X8,
+    ): Shape,
+{
+}
+
+// -- Narrow arity 2 --
+impl<'x, A, B, X3> ShapePrefix<(&'x A, &'x B, &'x X3)> for (&'x A, &'x B)
+where
+    (&'x A, &'x B): Shape,
+    (&'x A, &'x B, &'x X3): Shape,
+{
+}
+impl<'x, A, B, X3, X4> ShapePrefix<(&'x A, &'x B, &'x X3, &'x X4)> for (&'x A, &'x B)
+where
+    (&'x A, &'x B): Shape,
+    (&'x A, &'x B, &'x X3, &'x X4): Shape,
+{
+}
+impl<'x, A, B, X3, X4, X5> ShapePrefix<(&'x A, &'x B, &'x X3, &'x X4, &'x X5)> for (&'x A, &'x B)
+where
+    (&'x A, &'x B): Shape,
+    (&'x A, &'x B, &'x X3, &'x X4, &'x X5): Shape,
+{
+}
+impl<'x, A, B, X3, X4, X5, X6> ShapePrefix<(&'x A, &'x B, &'x X3, &'x X4, &'x X5, &'x X6)>
+    for (&'x A, &'x B)
+where
+    (&'x A, &'x B): Shape,
+    (&'x A, &'x B, &'x X3, &'x X4, &'x X5, &'x X6): Shape,
+{
+}
+impl<'x, A, B, X3, X4, X5, X6, X7>
+    ShapePrefix<(&'x A, &'x B, &'x X3, &'x X4, &'x X5, &'x X6, &'x X7)> for (&'x A, &'x B)
+where
+    (&'x A, &'x B): Shape,
+    (&'x A, &'x B, &'x X3, &'x X4, &'x X5, &'x X6, &'x X7): Shape,
+{
+}
+impl<'x, A, B, X3, X4, X5, X6, X7, X8>
+    ShapePrefix<(&'x A, &'x B, &'x X3, &'x X4, &'x X5, &'x X6, &'x X7, &'x X8)> for (&'x A, &'x B)
+where
+    (&'x A, &'x B): Shape,
+    (&'x A, &'x B, &'x X3, &'x X4, &'x X5, &'x X6, &'x X7, &'x X8): Shape,
+{
+}
+
+// -- Narrow arity 3 --
+impl<'x, A, B, C, X4> ShapePrefix<(&'x A, &'x B, &'x C, &'x X4)> for (&'x A, &'x B, &'x C)
+where
+    (&'x A, &'x B, &'x C): Shape,
+    (&'x A, &'x B, &'x C, &'x X4): Shape,
+{
+}
+impl<'x, A, B, C, X4, X5> ShapePrefix<(&'x A, &'x B, &'x C, &'x X4, &'x X5)>
+    for (&'x A, &'x B, &'x C)
+where
+    (&'x A, &'x B, &'x C): Shape,
+    (&'x A, &'x B, &'x C, &'x X4, &'x X5): Shape,
+{
+}
+impl<'x, A, B, C, X4, X5, X6> ShapePrefix<(&'x A, &'x B, &'x C, &'x X4, &'x X5, &'x X6)>
+    for (&'x A, &'x B, &'x C)
+where
+    (&'x A, &'x B, &'x C): Shape,
+    (&'x A, &'x B, &'x C, &'x X4, &'x X5, &'x X6): Shape,
+{
+}
+impl<'x, A, B, C, X4, X5, X6, X7> ShapePrefix<(&'x A, &'x B, &'x C, &'x X4, &'x X5, &'x X6, &'x X7)>
+    for (&'x A, &'x B, &'x C)
+where
+    (&'x A, &'x B, &'x C): Shape,
+    (&'x A, &'x B, &'x C, &'x X4, &'x X5, &'x X6, &'x X7): Shape,
+{
+}
+impl<'x, A, B, C, X4, X5, X6, X7, X8>
+    ShapePrefix<(&'x A, &'x B, &'x C, &'x X4, &'x X5, &'x X6, &'x X7, &'x X8)>
+    for (&'x A, &'x B, &'x C)
+where
+    (&'x A, &'x B, &'x C): Shape,
+    (&'x A, &'x B, &'x C, &'x X4, &'x X5, &'x X6, &'x X7, &'x X8): Shape,
+{
+}
+
+// -- Narrow arity 4 --
+impl<'x, A, B, C, D, X5> ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x X5)>
+    for (&'x A, &'x B, &'x C, &'x D)
+where
+    (&'x A, &'x B, &'x C, &'x D): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x X5): Shape,
+{
+}
+impl<'x, A, B, C, D, X5, X6> ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x X5, &'x X6)>
+    for (&'x A, &'x B, &'x C, &'x D)
+where
+    (&'x A, &'x B, &'x C, &'x D): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x X5, &'x X6): Shape,
+{
+}
+impl<'x, A, B, C, D, X5, X6, X7> ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x X5, &'x X6, &'x X7)>
+    for (&'x A, &'x B, &'x C, &'x D)
+where
+    (&'x A, &'x B, &'x C, &'x D): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x X5, &'x X6, &'x X7): Shape,
+{
+}
+impl<'x, A, B, C, D, X5, X6, X7, X8>
+    ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x X5, &'x X6, &'x X7, &'x X8)>
+    for (&'x A, &'x B, &'x C, &'x D)
+where
+    (&'x A, &'x B, &'x C, &'x D): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x X5, &'x X6, &'x X7, &'x X8): Shape,
+{
+}
+
+// -- Narrow arity 5 --
+impl<'x, A, B, C, D, E, X6> ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x E, &'x X6)>
+    for (&'x A, &'x B, &'x C, &'x D, &'x E)
+where
+    (&'x A, &'x B, &'x C, &'x D, &'x E): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x X6): Shape,
+{
+}
+impl<'x, A, B, C, D, E, X6, X7> ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x E, &'x X6, &'x X7)>
+    for (&'x A, &'x B, &'x C, &'x D, &'x E)
+where
+    (&'x A, &'x B, &'x C, &'x D, &'x E): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x X6, &'x X7): Shape,
+{
+}
+impl<'x, A, B, C, D, E, X6, X7, X8>
+    ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x E, &'x X6, &'x X7, &'x X8)>
+    for (&'x A, &'x B, &'x C, &'x D, &'x E)
+where
+    (&'x A, &'x B, &'x C, &'x D, &'x E): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x X6, &'x X7, &'x X8): Shape,
+{
+}
+
+// -- Narrow arity 6 --
+impl<'x, A, B, C, D, E, F, X7> ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x X7)>
+    for (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F)
+where
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x X7): Shape,
+{
+}
+impl<'x, A, B, C, D, E, F, X7, X8>
+    ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x X7, &'x X8)>
+    for (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F)
+where
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x X7, &'x X8): Shape,
+{
+}
+
+// -- Narrow arity 7 --
+impl<'x, A, B, C, D, E, F, G, X8>
+    ShapePrefix<(&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x G, &'x X8)>
+    for (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x G)
+where
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x G): Shape,
+    (&'x A, &'x B, &'x C, &'x D, &'x E, &'x F, &'x G, &'x X8): Shape,
+{
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -1174,5 +1460,40 @@ mod tests {
             .unwrap();
         assert!(h.as_view::<(&Eth, &Ipv6, &Tcp)>().is_some());
         assert!(h.as_view::<(&Eth, &Ipv4, &Tcp)>().is_none());
+    }
+
+    // ---- ShapePrefix / AsRef zero-cost downgrade --------------------------
+
+    // Exercises the `#[repr(transparent)]` reference cast in
+    // `AsRef<HeadersView<Narrow>> for HeadersView<Wide>`.  After the downgrade,
+    // `look()` on the narrow HeadersView must return references identical
+    // (by pointer) to the corresponding slots of the wide HeadersView --
+    // the whole point of the cast is that it carries no runtime work.
+    #[test]
+    fn wide_view_downgrades_via_as_ref() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+
+        let wide: &HeadersView<(&Eth, &Ipv4, &Tcp)> =
+            h.as_view().expect("plain L4 packet matches wide shape");
+        let (eth_w, ip_w, tcp_w) = wide.look();
+
+        // Strict prefix: drop the transport layer.
+        let narrow2: &HeadersView<(&Eth, &Ipv4)> = wide.as_ref();
+        let (eth_n, ip_n) = narrow2.look();
+        assert!(std::ptr::eq(eth_w, eth_n));
+        assert!(std::ptr::eq(ip_w, ip_n));
+
+        // Strict prefix all the way down to just Eth.
+        let narrow1: &HeadersView<(&Eth,)> = wide.as_ref();
+        let (eth_1,) = narrow1.look();
+        assert!(std::ptr::eq(eth_w, eth_1));
+
+        // Keep tcp_w alive so clippy doesn't flag it as unused above.
+        let _ = tcp_w;
     }
 }
