@@ -141,15 +141,18 @@ impl NatAllocatorWriter {
             return;
         }
 
-        // build a new allocator. The allocator is not yet visible in data path
         let mut allocator = NatAllocator::new(nat_config);
         if curr_allocator.is_some() {
-            check_masquerading_flows(flow_table, &mut allocator);
+            let guard = check_masquerading_flows(flow_table, &mut allocator);
+            debug!("Replacing stateful NAT allocator...");
+            self.0.store(Some(Arc::new(allocator)));
+            debug!("NAT allocator has been replaced");
+            drop(guard);
+        } else {
+            debug!("Installing new stateful NAT allocator...");
+            self.0.store(Some(Arc::new(allocator)));
+            debug!("NAT allocator is installed");
         }
-        // make new allocator visible
-        debug!("Installing new stateful NAT allocator...");
-        self.0.store(Some(Arc::new(allocator)));
-        debug!("NAT allocator is installed");
     }
 }
 
