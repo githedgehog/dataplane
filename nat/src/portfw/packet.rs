@@ -58,7 +58,7 @@ fn snat_packet<Buf: PacketBufferMut>(
 #[inline]
 #[must_use]
 /// Perform dst-nat/pat for a packet. Returns true if the packet could be source-natted and false otherwise
-pub(crate) fn dnat_packet<Buf: PacketBufferMut>(
+fn dnat_packet<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     new_dst_ip: IpAddr,
     new_dst_port: NonZero<u16>,

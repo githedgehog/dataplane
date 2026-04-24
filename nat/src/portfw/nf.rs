@@ -7,7 +7,7 @@ use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTabl
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 
 use net::buffer::PacketBufferMut;
-use net::flows::{ExtractMut, FlowInfo};
+use net::flows::{ExtractMut, ExtractRef, FlowInfo};
 use net::headers::{TryIp, TryTcp, TryTransport};
 use net::ip::{NextHeader, UnicastIpAddr};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -22,7 +22,7 @@ use crate::portfw::flow_state::get_packet_port_fw_state;
 use crate::portfw::flow_state::refresh_port_fw_entry;
 use crate::portfw::flow_state::setup_forward_flow;
 use crate::portfw::flow_state::setup_reverse_flow;
-use crate::portfw::packet::{dnat_packet, nat_packet};
+use crate::portfw::packet::nat_packet;
 
 #[allow(unused)]
 use tracing::{debug, error, trace, warn};
@@ -121,8 +121,15 @@ impl PortForwarder {
         let status = setup_forward_flow(&fw_key, &fw_flow, entry, new_dst_ip, new_dst_port);
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
 
-        // translate destination according to the rule matched. If this fails, no state will be created
-        if !dnat_packet(packet, new_dst_ip.inner(), new_dst_port) {
+        // get the state we just created for the FORWARD direction
+        let locked = fw_flow.locked.read().unwrap();
+        let pfw_state = locked
+            .port_fw_state
+            .extract_ref::<PortFwState>()
+            .unwrap_or_else(|| unreachable!());
+
+        // translate destination according to the rule. If this fails, no state will be created
+        if !nat_packet(packet, pfw_state) {
             packet.done(DoneReason::InternalFailure);
             return;
         }
