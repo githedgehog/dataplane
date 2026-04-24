@@ -39,12 +39,11 @@ use net::flows::ExtractRef;
 use net::flows::FlowInfo;
 use net::packet::{DoneReason, Packet};
 
-use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
-use crate::portfw::packet::nat_packet;
-use crate::{NatPort, NatTranslationData};
-
 use super::flow_state::PortFwState;
+use super::packet::nat_packet;
 use crate::common::NatAction;
+use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
+use crate::{NatPort, NatTranslationData};
 
 use tracing::debug;
 
@@ -101,8 +100,8 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     }
 
     // NAT the ICMP packet according to the port-fw state of the reverse flow of the offending packet
-    if !nat_packet(packet, pfw_state) {
-        debug!("Failed to NAT ICMP error packet: {packet}");
+    if let Err(e) = nat_packet(packet, pfw_state) {
+        debug!("Failed to NAT ICMP error packet:{e}, packet=\n{packet}");
         packet.done(DoneReason::InternalFailure);
         return;
     }
