@@ -3,11 +3,8 @@
 
 //! Packet mangling routines specific to masquerade
 
-#![allow(unused)] // TEMPORARY
-
 use crate::NatPort;
 use crate::common::NatAction;
-use crate::stateful::state::MasqueradeState;
 use net::buffer::PacketBufferMut;
 use net::headers::Net;
 use net::headers::{NetError, Transport, TransportError, TryHeadersMut};
@@ -16,6 +13,8 @@ use net::icmp6::Icmp6Error;
 use net::ip::UnicastIpAddr;
 use net::packet::Packet;
 use std::net::IpAddr;
+
+use tracing::debug;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum NatPacketError {
@@ -35,7 +34,7 @@ fn snat<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     new_src_ip: UnicastIpAddr,
     natport: NatPort,
-) -> Result<bool, NatPacketError> {
+) -> Result<(), NatPacketError> {
     let mut modified = false;
     match packet
         .headers_mut()
@@ -89,14 +88,14 @@ fn snat<Buf: PacketBufferMut>(
     if modified {
         packet.meta_mut().set_checksum_refresh(true);
     }
-    Ok(modified)
+    Ok(())
 }
 
 fn dnat<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     new_dst_ip: IpAddr,
     natport: NatPort,
-) -> Result<bool, NatPacketError> {
+) -> Result<(), NatPacketError> {
     let mut modified = false;
 
     match packet
@@ -157,20 +156,31 @@ fn dnat<Buf: PacketBufferMut>(
     if modified {
         packet.meta_mut().set_checksum_refresh(true);
     }
-    Ok(modified)
+    Ok(())
 }
 
 #[derive(Debug)]
-pub(super) struct NatTranslate {
+pub(crate) struct NatTranslate {
     pub action: NatAction,
     pub use_ip: IpAddr,
     pub nat_port: NatPort,
 }
 
+impl std::fmt::Display for NatTranslate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "action: {} with {}:{}",
+            self.action, self.use_ip, self.nat_port
+        )
+    }
+}
+
 pub(super) fn masquerade<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     xlate: &NatTranslate,
-) -> Result<bool, NatPacketError> {
+) -> Result<(), NatPacketError> {
+    debug!("Natting packet using {xlate}");
     match xlate.action {
         NatAction::SrcNat => snat(packet, xlate.use_ip.try_into().unwrap(), xlate.nat_port), // FIXME
         NatAction::DstNat => dnat(packet, xlate.use_ip, xlate.nat_port),
