@@ -444,6 +444,14 @@ macro_rules! impl_view_arity_1 {
                 // SAFETY: HeadersView<(&A,)> invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
+                    // Propagate the HeadersView invariant to LLVM explicitly.
+                    // Without this, when `look` is called in a context
+                    // where `matches` is not inline-visible (e.g. the
+                    // HeadersView came in as a function parameter), LLVM
+                    // doesn't backtrack `unwrap_unchecked` through the
+                    // Option-of-tuple niche and leaves redundant
+                    // discriminant checks / `cmove`s in the hot path.
+                    core::hint::assert_unchecked(<(&'x $A,) as sealed::Sealed>::matches(h));
                     let (a, _, _) = $A::step(h, 0, 0).unwrap_unchecked();
                     (a,)
                 }
@@ -495,6 +503,7 @@ macro_rules! impl_view_arity_2 {
                 // SAFETY: HeadersView invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
+                    core::hint::assert_unchecked(<(&'x $A, &'x $B) as sealed::Sealed>::matches(h));
                     let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
                     let (b, _, _) = $B::step(h, vc, ec).unwrap_unchecked();
                     (a, b)
@@ -554,6 +563,9 @@ macro_rules! impl_view_arity_3 {
                 // SAFETY: HeadersView invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B, &'x $C) as sealed::Sealed>::matches(h),
+                    );
                     let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
                     let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
                     let (c, _, _) = $C::step(h, vc, ec).unwrap_unchecked();
@@ -620,6 +632,9 @@ macro_rules! impl_view_arity_4 {
                 // SAFETY: HeadersView invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B, &'x $C, &'x $D) as sealed::Sealed>::matches(h),
+                    );
                     let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
                     let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
                     let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
@@ -693,6 +708,9 @@ macro_rules! impl_view_arity_5 {
                 // SAFETY: HeadersView invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E) as sealed::Sealed>::matches(h),
+                    );
                     let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
                     let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
                     let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
@@ -765,24 +783,40 @@ macro_rules! impl_view_arity_6 {
             where
                 Self: 'a;
 
-            #[inline(always)]
+            // `#[rustfmt::skip]` on the fn: the
+            // `<(...tuple...) as Sealed>::matches(h)` turbofish
+            // inside `assert_unchecked(...)` triggers a rustfmt
+            // non-idempotency bug at exactly this arity (indentation
+            // grows by 8 spaces per `cargo fmt` run).  Arities 7 and
+            // 8 use the same construct and format cleanly -- the
+            // bug interacts with arity 6's impl-header width.
+                            #[rustfmt::skip]
+                            #[inline(always)]
             fn look<'a>(&'a self) -> Self::Refs<'a>
-            where
-                Self: 'a,
-            {
-                let h = &self.0;
-                // SAFETY: HeadersView invariant: matches(h) was true.
+                            where
+                                Self: 'a,
+                            {
+                                let h = &self.0;
+                                // SAFETY: HeadersView invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
-                    let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
-                    let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
-                    let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
-                    let (d, vc, ec) = $D::step(h, vc, ec).unwrap_unchecked();
-                    let (e, vc, ec) = $E::step(h, vc, ec).unwrap_unchecked();
-                    let (f, _, _) = $F::step(h, vc, ec).unwrap_unchecked();
-                    (a, b, c, d, e, f)
-                }
-            }
+                                    core::hint::assert_unchecked(<(
+                                        &'x $A,
+                                        &'x $B,
+                                        &'x $C,
+                                        &'x $D,
+                                        &'x $E,
+                                        &'x $F,
+                                    ) as sealed::Sealed>::matches(h));
+                                    let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
+                                    let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
+                                    let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
+                                    let (d, vc, ec) = $D::step(h, vc, ec).unwrap_unchecked();
+                                    let (e, vc, ec) = $E::step(h, vc, ec).unwrap_unchecked();
+                                    let (f, _, _) = $F::step(h, vc, ec).unwrap_unchecked();
+                                    (a, b, c, d, e, f)
+                                }
+                            }
         }
     };
 }
@@ -864,6 +898,15 @@ macro_rules! impl_view_arity_7 {
                 // SAFETY: HeadersView invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
+                    core::hint::assert_unchecked(<(
+                        &'x $A,
+                        &'x $B,
+                        &'x $C,
+                        &'x $D,
+                        &'x $E,
+                        &'x $F,
+                        &'x $G,
+                    ) as sealed::Sealed>::matches(h));
                     let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
                     let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
                     let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
@@ -1006,6 +1049,16 @@ macro_rules! impl_view_arity_8 {
                 // SAFETY: HeadersView invariant: matches(h) was true.
                 // (see notes at top of file)
                 unsafe {
+                    core::hint::assert_unchecked(<(
+                        &'x $A,
+                        &'x $B,
+                        &'x $C,
+                        &'x $D,
+                        &'x $E,
+                        &'x $F,
+                        &'x $G,
+                        &'x $H,
+                    ) as sealed::Sealed>::matches(h));
                     let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
                     let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
                     let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
