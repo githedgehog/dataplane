@@ -97,8 +97,10 @@ impl AtomicFlowStatus {
         FlowStatus::try_from(value).expect("Invalid enum state")
     }
 
-    pub fn store(&self, state: FlowStatus, ordering: Ordering) {
-        self.0.store(u8::from(state), ordering);
+    /// Replace the status with a new `state`, returning the previous value.
+    pub fn store(&self, state: FlowStatus, ordering: Ordering) -> FlowStatus {
+        let old = self.0.swap(u8::from(state), ordering);
+        FlowStatus::try_from(old).unwrap_or_else(|_| unreachable!()) // would only fail on mem corruption ?
     }
 
     /// Atomic compare and exchange of the flow status.
@@ -393,7 +395,8 @@ impl FlowInfo {
     ///
     /// This method is thread-safe.
     pub fn invalidate(&self) {
-        if self.is_active() {
+        let status = self.update_status(FlowStatus::Cancelled);
+        if status == FlowStatus::Active {
             debug!("Invalidating flow {}...", self.logfmt());
             self.update_status(FlowStatus::Cancelled);
             self.token.cancel();
@@ -415,13 +418,13 @@ impl FlowInfo {
             .inspect(|related| related.invalidate());
     }
 
-    /// Update the flow status.
+    /// Update the flow status. Returns the previous `FlowStatus`
     ///
     /// # Thread Safety
     ///
     /// This method is thread-safe.
-    pub fn update_status(&self, status: FlowStatus) {
+    pub fn update_status(&self, status: FlowStatus) -> FlowStatus {
         self.status
-            .store(status, std::sync::atomic::Ordering::Relaxed);
+            .store(status, std::sync::atomic::Ordering::Relaxed)
     }
 }
