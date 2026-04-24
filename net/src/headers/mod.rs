@@ -47,6 +47,9 @@ pub mod pat;
 pub mod view;
 pub use view::{HeadersView, Look, LookMut, Shape, ShapePrefix};
 
+pub mod embedded_view;
+pub use embedded_view::EmbeddedShape;
+
 #[cfg(any(test, feature = "builder"))]
 pub mod builder;
 
