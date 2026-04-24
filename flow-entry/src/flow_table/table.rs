@@ -3,7 +3,7 @@
 
 use ahash::RandomState;
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
-use concurrency::sync::{Arc, RwLock, Weak};
+use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 use dashmap::DashMap;
 use net::FlowKey;
 use net::flows::{FlowInfo, FlowStatus};
@@ -40,6 +40,19 @@ fn hasher_state() -> &'static RandomState {
     use std::sync::OnceLock;
     static HASHER_STATE: OnceLock<RandomState> = OnceLock::new();
     HASHER_STATE.get_or_init(|| RandomState::with_seeds(0, 0, 0, 0))
+}
+
+/// A read guard to the `FlowTable`. While a guard like this one exists, other threads
+/// attempting insertions in the corresponding `FlowTable` will wait. This guard is
+/// returned by some methods that iterate over the `FlowTable` as a knob to allow callers
+/// to block the table from insertions, without exposing the internal types
+pub struct FlowTableReadGuard<'a>(
+    #[allow(unused)] RwLockReadGuard<'a, DashMap<FlowKey, Arc<FlowInfo>, RandomState>>,
+);
+impl Drop for FlowTableReadGuard<'_> {
+    fn drop(&mut self) {
+        debug!("Dropping flow-table read lock");
+    }
 }
 
 impl FlowTable {
@@ -399,14 +412,15 @@ impl FlowTable {
     /// # Panics
     ///
     /// This function panics if locking the table for reading fails
-    pub fn for_each_flow<F>(&self, mut func: F)
+    pub fn for_each_flow<F>(&self, mut func: F) -> FlowTableReadGuard<'_>
     where
         F: FnMut(&FlowKey, &FlowInfo),
     {
-        let table = self.table.read().unwrap();
-        for flow in table.iter() {
+        let guard = self.table.read().unwrap();
+        for flow in guard.iter() {
             func(flow.key(), &flow);
         }
+        FlowTableReadGuard(guard)
     }
 
     /// Same as `for_each_flow`, but allowing a filter to iterate only over the flows that match a predicate
@@ -414,15 +428,16 @@ impl FlowTable {
     /// # Panics
     ///
     /// This function panics if locking the table for reading fails
-    pub fn for_each_flow_filtered<F, P>(&self, filter: P, mut func: F)
+    pub fn for_each_flow_filtered<F, P>(&self, filter: P, mut func: F) -> FlowTableReadGuard<'_>
     where
         F: FnMut(&FlowKey, &FlowInfo),
         P: Fn(&FlowKey, &FlowInfo) -> bool,
     {
-        let table = self.table.read().unwrap();
-        for flow in table.iter().filter(|flow| filter(flow.key(), flow)) {
+        let guard = self.table.read().unwrap();
+        for flow in guard.iter().filter(|flow| filter(flow.key(), flow)) {
             func(flow.key(), &flow);
         }
+        FlowTableReadGuard(guard)
     }
 
     /// Build an iterator of all flows in the table. Depending on how costly the processing of `f` in `for_each_flow`

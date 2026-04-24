@@ -6,7 +6,7 @@ pub mod nf_lookup;
 pub mod table;
 
 pub use nf_lookup::FlowLookup;
-pub use table::FlowTable;
+pub use table::{FlowTable, FlowTableReadGuard};
 
 pub use net::flows::atomic_instant::AtomicInstant;
 pub use net::flows::flow_info::*;

@@ -6,7 +6,7 @@ use crate::stateful::apalloc::NatAllocator;
 use crate::stateful::state::{MasqueradeAction, MasqueradeState};
 
 use config::GenId;
-use flow_entry::flow_table::FlowTable;
+use flow_entry::flow_table::{FlowTable, FlowTableReadGuard};
 use lpm::prefix::IpRangeWithPorts;
 use lpm::prefix::PrefixWithOptionalPorts;
 use net::FlowKey;
@@ -154,12 +154,16 @@ pub(crate) fn check_masquerading_flow(
 ///   - locks the flow table
 ///   - examines all masquerade flows to determine if they should continue or be invalidated according to the new allocator config
 ///   - flows that continue get a new allocation with the same ip and port in the `new_allocator`
-pub(crate) fn check_masquerading_flows(flow_table: &FlowTable, new_allocator: &mut NatAllocator) {
+pub(crate) fn check_masquerading_flows<'a>(
+    flow_table: &'a FlowTable,
+    new_allocator: &mut NatAllocator,
+) -> FlowTableReadGuard<'a> {
     let genid = new_allocator.config().genid();
     debug!("CHECKING flows against new masquerade configuration with genid {genid}...");
-    flow_table.for_each_flow_filtered(
+    let guard = flow_table.for_each_flow_filtered(
         |_, f| f.is_active(),
         |flow_key, flow_info| check_masquerading_flow(flow_key, flow_info, new_allocator),
     );
     debug!("CHECKING flows against new masquerade configuration COMPLETED");
+    guard
 }
