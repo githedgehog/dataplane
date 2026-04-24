@@ -98,7 +98,108 @@ use super::{Headers, Net, NetExt, Transport, Within};
 /// docs on VLAN and IPv6 extension header semantics).
 ///
 /// Obtain via [`Headers::as_view`] or [`Headers::as_view_mut`].
-/// Extract typed references via [`Look::look`].
+/// Extract typed references via [`Look::look`] or
+/// [`LookMut::look_mut`].
+///
+/// # Soundness
+///
+/// The `compile_fail` examples below lock in the rules that keep
+/// `HeadersView<T>` sound.  Each reproduces a would-be foot-gun and
+/// documents, via the compiler, that the path is closed.
+///
+/// ## No owning constructor
+///
+/// Private fields prevent forging a `HeadersView<T>` from an arbitrary
+/// `Headers` (E0423).  The only entry points
+/// ([`Headers::as_view`] / [`Headers::as_view_mut`]) run
+/// [`sealed::Sealed::matches`](Shape) before handing out a
+/// reference.
+///
+/// ```compile_fail,E0423
+/// use dataplane_net::eth::Eth;
+/// use dataplane_net::headers::{Headers, HeadersView};
+/// let h = Headers::default();
+/// let _w: HeadersView<(&Eth,)> = HeadersView(h, std::marker::PhantomData);
+/// ```
+///
+/// ## `HeadersView<T>` is not [`Clone`]
+///
+/// Cloning through a `&HeadersView<T>` would manufacture an owned
+/// shape-proven value that outlives its borrow of `Headers`
+/// (E0277: `HeadersView<T>: Clone` unsatisfied).
+///
+/// ```compile_fail,E0277
+/// use dataplane_net::eth::Eth;
+/// use dataplane_net::headers::{Headers, HeadersView};
+/// fn clone_it<T: Clone>(x: &T) -> T { x.clone() }
+/// let h = Headers::default();
+/// let w: &HeadersView<(&Eth,)> = h.as_view().unwrap();
+/// let _owned: HeadersView<(&Eth,)> = clone_it(w);
+/// ```
+///
+/// ## No deref to [`Headers`]
+///
+/// `HeadersView<T>` does not implement [`Deref`](std::ops::Deref) or
+/// [`DerefMut`](std::ops::DerefMut) with
+/// `Target = Headers`.  If it did, a caller holding
+/// `&mut HeadersView<T>` could reshape the underlying data while the
+/// `PhantomData<T>` proof stayed intact (E0599: no method found --
+/// `HeadersView` does not autoderef to `Headers`).
+///
+/// ```compile_fail,E0599
+/// use dataplane_net::eth::Eth;
+/// use dataplane_net::headers::Headers;
+/// let mut h = Headers::default();
+/// let w = h.as_view_mut::<(&Eth,)>().unwrap();
+/// let _ = w.eth_mut();
+/// ```
+///
+/// ## [`LookMut::look_mut`] is exclusive per borrow
+///
+/// The `&mut` tuple returned by `look_mut` transitively borrows the
+/// `HeadersView`, so it cannot be called twice concurrently (E0499:
+/// cannot borrow `*w` as mutable more than once at a time).
+///
+/// ```compile_fail,E0499
+/// use dataplane_net::eth::Eth;
+/// use dataplane_net::headers::{Headers, LookMut};
+/// let mut h = Headers::default();
+/// let w = h.as_view_mut::<(&Eth,)>().unwrap();
+/// let (eth1,) = w.look_mut();
+/// let (_eth2,) = w.look_mut();
+/// let _keepalive = eth1;
+/// ```
+///
+/// ## `ViewStep` is crate-private
+///
+/// External crates cannot implement `ViewStep`, so they cannot
+/// add new per-layer extraction logic and thereby forge a
+/// `HeadersView<T>` that sidesteps `matches` (E0603: trait is private).
+///
+/// ```compile_fail,E0603
+/// use dataplane_net::headers::view::ViewStep;
+/// ```
+///
+/// ## `ViewStepMut` is crate-private
+///
+/// Same seal on the mutable side (E0603).
+///
+/// ```compile_fail,E0603
+/// use dataplane_net::headers::view::ViewStepMut;
+/// ```
+///
+/// ## `Shape` is sealed
+///
+/// Implementing `Shape` externally requires implementing the
+/// crate-private `sealed::Sealed` supertrait -- which is
+/// impossible -- so the set of valid shapes is fixed by this
+/// module (E0277: `Fake: sealed::Sealed` unsatisfied).
+///
+/// ```compile_fail,E0277
+/// use dataplane_net::headers::Shape;
+/// struct Fake;
+/// impl Shape for Fake {}
+/// ```
 #[repr(transparent)]
 pub struct HeadersView<T>(Headers, PhantomData<T>);
 
