@@ -3,19 +3,20 @@
 
 //! Masquerade NF
 
+use crate::NatPort;
 use crate::stateful::NatAllocatorWriter;
 use crate::stateful::allocation::{AllocationResult, AllocatorError};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::Allocation;
 use crate::stateful::flows::check_masquerading_flow;
+use crate::stateful::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::stateful::state::MasqueradeState;
-use crate::{NatPort, NatTranslationData};
 use concurrency::sync::Arc;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{IcmpProtoKey, Uni};
 use net::flows::{ExtractRef, FlowInfo};
-use net::headers::{Transport, TryIp, TryIpMut, TryTransportMut};
+use net::headers::TryIp;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
@@ -29,12 +30,10 @@ use tracing::{debug, error, warn};
 #[cfg(test)]
 use std::time::Duration;
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 enum StatefulNatError {
     #[error("Unexpected failure: {0}")]
     Bug(&'static str),
-    #[error("failure to get IP header")]
-    BadIpHeader,
     #[error("failure to get transport header")]
     BadTransportHeader,
     #[error("failure to build flow key")]
@@ -43,10 +42,6 @@ enum StatefulNatError {
     NoAllocator,
     #[error("allocation failed: {0}")]
     AllocationFailure(AllocatorError),
-    #[error("invalid IP version")]
-    InvalidIpVersion,
-    #[error("IP address {0} is not unicast")]
-    NotUnicast(IpAddr),
     #[error("invalid port {0}")]
     InvalidPort(u16),
     #[error("unexpected IP protocol key variant")]
@@ -59,6 +54,8 @@ enum StatefulNatError {
     IcmpError,
     #[error("dropped the packet, reason: {0}")]
     IntendedDrop(&'static str),
+    #[error("Failed to NAT packet: {0}")]
+    NatError(#[from] NatPacketError),
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -122,14 +119,14 @@ impl StatefulNat {
 
     // Look up for a session for a packet, based on attached flow key.
     // On success, update session timeout.
-    fn lookup_session<Buf: PacketBufferMut>(
+    fn get_masquerade_state<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
-    ) -> Option<NatTranslationData> {
+    ) -> Option<NatTranslate> {
         let flow_info = packet.meta_mut().flow_info.as_mut()?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>()?;
-        flow_info.reset_expiry(state.idle_timeout()).ok()?;
-        Some(state.translation_data())
+        flow_info.reset_expiry(state.idle_timeout()).ok()?; // FIXME
+        Some(state.as_translate())
     }
 
     // Look up for a session by passing the parameters that make up a flow key.
@@ -143,12 +140,12 @@ impl StatefulNat {
         src_ip: IpAddr,
         dst_ip: IpAddr,
         proto_key_info: IpProtoKey,
-    ) -> Option<(NatTranslationData, Duration)> {
+    ) -> Option<(NatTranslate, Duration)> {
         let flow_key = FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info);
         let flow_info = self.flow_table.lookup(&flow_key)?;
         let value = flow_info.locked.read().unwrap();
         let state = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>()?;
-        Some((state.translation_data(), state.idle_timeout()))
+        Some((state.as_translate(), state.idle_timeout()))
     }
 
     fn setup_flow_nat_state(
@@ -242,102 +239,6 @@ impl StatefulNat {
         Ok(())
     }
 
-    #[allow(clippy::unnecessary_wraps)]
-    fn translate<Buf: PacketBufferMut>(
-        nfi: &String,
-        packet: &mut Packet<Buf>,
-        translate: &NatTranslationData,
-    ) -> Result<(), StatefulNatError> {
-        debug_assert!(translate.src_port.is_none() || translate.src_addr.is_some());
-        debug_assert!(translate.dst_port.is_none() || translate.dst_addr.is_some());
-
-        // translate ip fields
-        let net = packet.try_ip_mut().ok_or(StatefulNatError::BadIpHeader)?;
-        let (src_ip, dst_ip) = (net.src_addr(), net.dst_addr());
-
-        if let Some(target_src_ip) = translate.src_addr {
-            net.try_set_source(
-                target_src_ip
-                    .try_into()
-                    .map_err(|_| StatefulNatError::NotUnicast(target_src_ip))?,
-            )
-            .map_err(|_| StatefulNatError::InvalidIpVersion)?;
-        }
-        if let Some(target_dst_ip) = translate.dst_addr {
-            net.try_set_destination(target_dst_ip)
-                .map_err(|_| StatefulNatError::InvalidIpVersion)?;
-        }
-        let (new_src_ip, new_dst_ip) = (net.src_addr(), net.dst_addr());
-
-        // translate transport fields
-        let transport = packet
-            .try_transport_mut()
-            .ok_or(StatefulNatError::BadTransportHeader)?;
-        let (src_port, dst_port) = (transport.src_port(), transport.dst_port());
-        let id = transport.identifier();
-
-        match transport {
-            Transport::Tcp(_) | Transport::Udp(_) => {
-                if let Some(target_src_port) = translate.src_port {
-                    transport
-                        .try_set_source(
-                            target_src_port.try_into().map_err(|_| {
-                                StatefulNatError::InvalidPort(target_src_port.as_u16())
-                            })?,
-                        )
-                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                }
-                if let Some(target_dst_port) = translate.dst_port {
-                    let new_dst_port = target_dst_port.as_u16();
-                    transport
-                        .try_set_destination(
-                            new_dst_port.try_into().map_err(|_| {
-                                StatefulNatError::InvalidPort(target_dst_port.as_u16())
-                            })?,
-                        )
-                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                }
-            }
-            Transport::Icmp4(_) | Transport::Icmp6(_) => {
-                if let Some(old_identifier) = transport.identifier() {
-                    //FIXME(Quentin): set identifier independently of ports
-                    let new_identifier = if let Some(target_src_port) = translate.src_port {
-                        target_src_port.as_u16()
-                    } else if let Some(target_dst_port) = translate.dst_port {
-                        target_dst_port.as_u16()
-                    } else {
-                        old_identifier
-                    };
-                    transport
-                        .try_set_identifier(new_identifier)
-                        .map_err(|_| StatefulNatError::BadTransportHeader)?;
-                }
-            }
-        }
-
-        if id.is_some() {
-            let new_id = transport.identifier();
-            debug!(
-                "{nfi}: translated src={src_ip} dst={dst_ip} id:{id:?} -> src={new_src_ip} dst={new_dst_ip} id:{new_id:?}"
-            );
-        } else {
-            let (new_src_port, new_dst_port) = (transport.src_port(), transport.dst_port());
-            debug!(
-                "{nfi}: translated src={src_ip}:{src_port:?} dst={dst_ip}:{dst_port:?} -> src={new_src_ip}:{new_src_port:?} dst={new_dst_ip}:{new_dst_port:?}"
-            );
-        }
-        Ok(())
-    }
-
-    fn get_translation_data(src_alloc: &Allocation) -> NatTranslationData {
-        NatTranslationData {
-            src_addr: Some(src_alloc.ip()),
-            dst_addr: None,
-            src_port: Some(src_alloc.port()),
-            dst_port: None,
-        }
-    }
-
     fn new_reverse_session(
         flow_key: &FlowKey,
         alloc: &AllocationResult<Allocation>,
@@ -393,12 +294,10 @@ impl StatefulNat {
     ) -> Result<(), StatefulNatError> {
         let nfi = self.name();
 
-        // Hot path: if we have a session, directly translate the address.
-        // We don't check here if the flow is valid or not. That's done when the
-        // configuration is applied.
-        if let Some(translate) = Self::lookup_session(packet) {
+        // Hot path: if we have a session with masquerade state, translate the packet
+        if let Some(translate) = Self::get_masquerade_state(packet) {
             debug!("{nfi}: Found session, translating packet");
-            return Self::translate(self.name(), packet, &translate);
+            return Ok(masquerade(packet, &translate)?);
         }
 
         // If no allocator has been configured, drop the packet
@@ -421,10 +320,6 @@ impl StatefulNat {
 
         debug!("{nfi}: Allocated: {alloc}");
 
-        // translate the packet. If this fails, no flow will be created
-        let translation_data = Self::get_translation_data(&alloc.allocation);
-        Self::translate(self.name(), packet, &translation_data)?;
-
         // create flow pair
         self.create_flow_pair(packet, &flow_key, alloc)?;
 
@@ -433,6 +328,21 @@ impl StatefulNat {
             .flow_table
             .lookup(&flow_key)
             .ok_or(StatefulNatError::Bug("Unexpected flow lookup failure"))?;
+
+        // check that the masquerade state is readable
+        let translate = installed
+            .locked
+            .read()
+            .unwrap()
+            .nat_state
+            .extract_ref::<MasqueradeState>()
+            .ok_or(StatefulNatError::Bug("Unexpected masquerade state miss"))?
+            .as_translate();
+
+        if let Err(e) = masquerade(packet, &translate) {
+            installed.invalidate_pair();
+            return Err(e.into());
+        }
 
         // .. and check whether the allocation we made and stored in the flows is still fine
         // with the current allocator. This counters for the potential race where we got a port
@@ -454,6 +364,7 @@ impl StatefulNat {
                     allocator.as_ref(),
                 );
                 if installed.is_active() {
+                    // translate the packet
                     Ok(())
                 } else {
                     // we invalidated the flow. Signal that packet should be dropped
@@ -507,8 +418,6 @@ impl StatefulNat {
 
 fn translate_error(error: &StatefulNatError) -> DoneReason {
     match error {
-        StatefulNatError::BadIpHeader => DoneReason::NotIp,
-
         StatefulNatError::BadTransportHeader
         | StatefulNatError::AllocationFailure(AllocatorError::UnsupportedProtocol(_)) => {
             DoneReason::NatUnsupportedProto
@@ -523,17 +432,16 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
 
         StatefulNatError::NoAllocator
         | StatefulNatError::UnexpectedKeyVariant
-        | StatefulNatError::NotUnicast(_)
         | StatefulNatError::IcmpUnsupportedCategory
         | StatefulNatError::IcmpError
         | StatefulNatError::AllocationFailure(
             AllocatorError::PortAllocationFailed(_)
             | AllocatorError::MissingDiscriminant
             | AllocatorError::UnsupportedDiscriminant,
-        ) => DoneReason::NatFailure,
+        )
+        | StatefulNatError::NatError(_) => DoneReason::NatFailure,
 
-        StatefulNatError::InvalidIpVersion
-        | StatefulNatError::AllocationFailure(AllocatorError::InternalIssue(_)) => {
+        StatefulNatError::AllocationFailure(AllocatorError::InternalIssue(_)) => {
             DoneReason::InternalFailure
         }
 
