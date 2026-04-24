@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use super::apalloc::Allocation;
+use super::packet::NatTranslate;
 use crate::common::NatAction;
 use crate::{NatPort, NatTranslationData};
 use std::fmt::Display;
@@ -18,6 +19,7 @@ pub struct MasqueradeState {
 }
 
 impl MasqueradeState {
+    #[must_use]
     fn snat(allocation: Allocation, idle_timeout: Duration) -> Self {
         Self {
             action: NatAction::SrcNat,
@@ -28,6 +30,7 @@ impl MasqueradeState {
         }
     }
 
+    #[must_use]
     fn dnat(use_ip: IpAddr, use_port: NatPort, idle_timeout: Duration) -> Self {
         Self {
             action: NatAction::DstNat,
@@ -38,6 +41,16 @@ impl MasqueradeState {
         }
     }
 
+    #[must_use]
+    pub(crate) fn as_translate(&self) -> NatTranslate {
+        NatTranslate {
+            action: self.action,
+            use_ip: self.use_ip,
+            nat_port: self.use_port,
+        }
+    }
+
+    #[must_use]
     pub(crate) fn new_pair(
         alloc: Allocation,
         src_ip: IpAddr,
@@ -49,27 +62,19 @@ impl MasqueradeState {
         (snat, dnat)
     }
 
+    #[must_use]
     pub(crate) fn idle_timeout(&self) -> Duration {
         self.idle_timeout
     }
 
+    #[must_use]
     pub(crate) fn allocation(&self) -> Option<&Allocation> {
         self.allocation.as_ref()
     }
 
+    #[must_use]
     pub(crate) fn action(&self) -> NatAction {
         self.action
-    }
-
-    pub(crate) fn translation_data(&self) -> NatTranslationData {
-        match self.action {
-            NatAction::SrcNat => {
-                NatTranslationData::new(Some(self.use_ip), None, Some(self.use_port), None)
-            }
-            NatAction::DstNat => {
-                NatTranslationData::new(None, Some(self.use_ip), None, Some(self.use_port))
-            }
-        }
     }
 
     pub(crate) fn reverse_translation_data(&self) -> NatTranslationData {
