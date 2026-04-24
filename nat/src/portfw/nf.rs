@@ -129,7 +129,8 @@ impl PortForwarder {
             .unwrap_or_else(|| unreachable!());
 
         // translate destination according to the rule. If this fails, no state will be created
-        if !nat_packet(packet, pfw_state) {
+        if let Err(e) = nat_packet(packet, pfw_state) {
+            debug!("Failed to port-forward packet (initial):{e}");
             packet.done(DoneReason::InternalFailure);
             return;
         }
@@ -356,8 +357,8 @@ impl PortForwarder {
             };
 
             // nat the packet
-            if !nat_packet(packet, &state) {
-                error!("Failed to nat port-forwarded packet");
+            if let Err(e) = nat_packet(packet, &state) {
+                error!("Failed to port-forward packet:{e}");
                 packet.done(DoneReason::InternalFailure);
                 return;
             }
