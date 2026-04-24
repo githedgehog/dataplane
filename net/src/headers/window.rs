@@ -21,7 +21,12 @@
 //!
 //! Downstream code that receives a `&Window<T>` can extract typed
 //! references to the matched layers via the [`Look`] trait without
-//! re-validating at each access site.
+//! re-validating at each access site.  For mutable access, a
+//! `&mut Window<T>` yields `&mut` references via [`LookMut::look_mut`],
+//! which delegates to [`MatcherMut`](super::pat::MatcherMut) so the
+//! multi-`&mut` tuple is built from the same pre-split
+//! [`Fields`](super::pat::Fields) helper used by the rest of the
+//! matcher.
 //!
 //! # Safety boundary
 //!
@@ -39,9 +44,16 @@
 //!   `Option`-returning function; [`Look::look`] simply invokes it
 //!   and unwraps unchecked, relying on the `Window<T>` newtype
 //!   invariant.
-//! * External callers see only [`Window`] and [`Look`].  They cannot
-//!   implement [`WindowStep`] or call it directly, so they cannot
-//!   forge a `Window<T>` that sidesteps `matches`.
+//! * [`WindowStepMut`] is crate-private and mirrors `WindowStep` for
+//!   the mutable path, dispatching to
+//!   [`MatcherMut`](super::pat::MatcherMut) so aliasing of the
+//!   returned `&mut` tuple is handled by the existing `Fields`
+//!   pre-split.  [`LookMut::look_mut`] unwraps the chain's
+//!   `Option<tuple>` unchecked under the same `Window<T>` invariant.
+//! * External callers see only [`Window`], [`Look`], and [`LookMut`].
+//!   They cannot implement [`WindowStep`] or [`WindowStepMut`] or call
+//!   them directly, so they cannot forge a `Window<T>` that sidesteps
+//!   `matches`.
 //! * `Window<T>` has private fields and no owning constructor;
 //!   callers can only ever hold it behind a reference borrowed from a
 //!   [`Headers`].  Do not add `Clone`, `Copy`, or any API that
@@ -69,7 +81,7 @@ use crate::udp::{Udp, UdpEncap};
 use crate::vlan::Vlan;
 use crate::vxlan::Vxlan;
 
-use super::pat::ExtGapCheck;
+use super::pat::{ExtGapCheck, MatcherMut, TupleAppend};
 use super::{Headers, Net, NetExt, Transport, Within};
 
 // ===========================================================================
@@ -227,6 +239,32 @@ pub trait Look<T> {
     /// step; the `Window` type invariant guarantees success so the
     /// `None` branches are pruned by the optimizer.
     fn look<'a>(&'a self) -> Self::Refs<'a>
+    where
+        Self: 'a;
+}
+
+/// Mutable counterpart of [`Look`].
+///
+/// Yields a tuple of `&mut` references to the matched layers.  Aliasing
+/// between the returned references is handled by
+/// [`MatcherMut`](super::pat::MatcherMut)'s pre-split
+/// [`Fields`](super::pat::Fields) -- `look_mut` delegates to a
+/// `MatcherMut` chain and unwraps the result unchecked, relying on the
+/// `Window<T>` shape invariant.
+pub trait LookMut<T> {
+    /// The tuple of typed `&mut` references produced by [`Self::look_mut`].
+    type RefsMut<'a>
+    where
+        Self: 'a;
+
+    /// Extract typed `&mut` references to the matched layers.
+    ///
+    /// Compiles to the same [`MatcherMut`](super::pat::MatcherMut) chain
+    /// as the corresponding `Matcher` chain used by [`Look::look`], but
+    /// mutable.  The `Window<T>` type invariant guarantees the chain
+    /// matches, so the final `.done()` is unwrapped unchecked and the
+    /// optimizer prunes the miss path.
+    fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
     where
         Self: 'a;
 }
@@ -401,6 +439,164 @@ where
 }
 
 // ===========================================================================
+// WindowStepMut: mutable per-layer dispatch onto MatcherMut
+// ===========================================================================
+//
+// The mutable side of `Look` would need multiple `&mut` references into
+// the same `Headers` -- direct projection of disjoint fields is sound
+// but fiddly under Stacked/Tree Borrows.  Rather than reinvent that
+// bookkeeping, `WindowStepMut::chain` extends a `MatcherMut` chain by
+// one layer; `MatcherMut` already solves the aliasing via its pre-split
+// `Fields` helper (see `pat.rs`).  Each impl is a one-liner delegating
+// to the corresponding `MatcherMut` method, so the per-layer VLAN /
+// extension gap-check logic lives in one place.
+
+/// Crate-private: extend a [`MatcherMut`] chain by one layer.
+///
+/// Mirrors [`WindowStep`] but dispatches through
+/// [`MatcherMut`](super::pat::MatcherMut).  Reusing `MatcherMut`'s
+/// pre-split [`Fields`](super::pat::Fields) keeps the borrow checker
+/// happy for the multi-`&mut` tuple returned by [`LookMut::look_mut`].
+pub(crate) trait WindowStepMut<Pos>: Sized {
+    /// Chain this layer onto `m`.  Equivalent to calling the matching
+    /// `MatcherMut` method (`.eth()`, `.vlan()`, `.ipv4()`, ...).
+    fn chain<'a, Acc>(
+        m: MatcherMut<'a, Pos, Acc>,
+    ) -> MatcherMut<'a, Self, <Acc as TupleAppend<&'a mut Self>>::Output>
+    where
+        Acc: TupleAppend<&'a mut Self>;
+}
+
+// ---- Entry: Eth -----------------------------------------------------------
+
+impl WindowStepMut<()> for Eth {
+    #[inline(always)]
+    fn chain<'a, Acc>(
+        m: MatcherMut<'a, (), Acc>,
+    ) -> MatcherMut<'a, Eth, <Acc as TupleAppend<&'a mut Eth>>::Output>
+    where
+        Acc: TupleAppend<&'a mut Eth>,
+    {
+        m.eth()
+    }
+}
+
+// ---- VLAN -----------------------------------------------------------------
+
+impl<Pos> WindowStepMut<Pos> for Vlan
+where
+    Vlan: Within<Pos>,
+{
+    #[inline(always)]
+    fn chain<'a, Acc>(
+        m: MatcherMut<'a, Pos, Acc>,
+    ) -> MatcherMut<'a, Vlan, <Acc as TupleAppend<&'a mut Vlan>>::Output>
+    where
+        Acc: TupleAppend<&'a mut Vlan>,
+    {
+        m.vlan()
+    }
+}
+
+// ---- Net layer (Ipv4 / Ipv6) and Net enum ---------------------------------
+
+macro_rules! impl_net_step_mut {
+    ($T:ty, $method:ident) => {
+        impl<Pos> WindowStepMut<Pos> for $T
+        where
+            $T: Within<Pos>,
+        {
+            #[inline(always)]
+            fn chain<'a, Acc>(
+                m: MatcherMut<'a, Pos, Acc>,
+            ) -> MatcherMut<'a, $T, <Acc as TupleAppend<&'a mut $T>>::Output>
+            where
+                Acc: TupleAppend<&'a mut $T>,
+            {
+                m.$method()
+            }
+        }
+    };
+}
+
+impl_net_step_mut!(Ipv4, ipv4);
+impl_net_step_mut!(Ipv6, ipv6);
+impl_net_step_mut!(Net, net);
+
+// ---- Extension headers ----------------------------------------------------
+
+macro_rules! impl_ext_step_mut {
+    ($T:ty, $method:ident) => {
+        impl<Pos> WindowStepMut<Pos> for $T
+        where
+            $T: Within<Pos>,
+        {
+            #[inline(always)]
+            fn chain<'a, Acc>(
+                m: MatcherMut<'a, Pos, Acc>,
+            ) -> MatcherMut<'a, $T, <Acc as TupleAppend<&'a mut $T>>::Output>
+            where
+                Acc: TupleAppend<&'a mut $T>,
+            {
+                m.$method()
+            }
+        }
+    };
+}
+
+impl_ext_step_mut!(HopByHop, hop_by_hop);
+impl_ext_step_mut!(DestOpts, dest_opts);
+impl_ext_step_mut!(Routing, routing);
+impl_ext_step_mut!(Fragment, fragment);
+impl_ext_step_mut!(Ipv4Auth, ipv4_auth);
+impl_ext_step_mut!(Ipv6Auth, ipv6_auth);
+
+// ---- Transport layer (Tcp / Udp / Icmp4 / Icmp6) and Transport enum -------
+
+macro_rules! impl_transport_step_mut {
+    ($T:ty, $method:ident) => {
+        impl<Pos> WindowStepMut<Pos> for $T
+        where
+            $T: Within<Pos>,
+            Pos: ExtGapCheck,
+        {
+            #[inline(always)]
+            fn chain<'a, Acc>(
+                m: MatcherMut<'a, Pos, Acc>,
+            ) -> MatcherMut<'a, $T, <Acc as TupleAppend<&'a mut $T>>::Output>
+            where
+                Acc: TupleAppend<&'a mut $T>,
+            {
+                m.$method()
+            }
+        }
+    };
+}
+
+impl_transport_step_mut!(Tcp, tcp);
+impl_transport_step_mut!(Udp, udp);
+impl_transport_step_mut!(Icmp4, icmp4);
+impl_transport_step_mut!(Icmp6, icmp6);
+impl_transport_step_mut!(Transport, transport);
+
+// ---- UDP encapsulation (Vxlan) --------------------------------------------
+
+impl<Pos> WindowStepMut<Pos> for Vxlan
+where
+    Vxlan: Within<Pos>,
+{
+    #[inline(always)]
+    fn chain<'a, Acc>(
+        m: MatcherMut<'a, Pos, Acc>,
+    ) -> MatcherMut<'a, Vxlan, <Acc as TupleAppend<&'a mut Vxlan>>::Output>
+    where
+        Acc: TupleAppend<&'a mut Vxlan>,
+    {
+        m.vxlan()
+    }
+}
+
+// ===========================================================================
 // Per-arity Shape / Sealed / Look impls
 // ===========================================================================
 //
@@ -455,6 +651,35 @@ macro_rules! impl_window_arity_1 {
                 }
             }
         }
+
+        impl<'x, $A> LookMut<(&'x $A,)> for Window<(&'x $A,)>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A,)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                unsafe {
+                    // SAFETY: Window invariant: matches(&self.0) was true.
+                    core::hint::assert_unchecked(<(&'x $A,) as sealed::Sealed>::matches(&self.0));
+                }
+                let m = self.0.pat_mut();
+                let m = <$A as WindowStepMut<()>>::chain(m);
+                match m.done() {
+                    Some(t) => t,
+                    // SAFETY: Window invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
+                }
+            }
+        }
     };
 }
 
@@ -504,6 +729,39 @@ macro_rules! impl_window_arity_2 {
                     let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
                     let (b, _, _) = $B::step(h, vc, ec).unwrap_unchecked();
                     (a, b)
+                }
+            }
+        }
+
+        impl<'x, $A, $B> LookMut<(&'x $A, &'x $B)> for Window<(&'x $A, &'x $B)>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            $B: WindowStep<$A> + WindowStepMut<$A>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A, &'a mut $B)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                unsafe {
+                    // SAFETY: Window invariant: matches(&self.0) was true.
+                    core::hint::assert_unchecked(<(&'x $A, &'x $B) as sealed::Sealed>::matches(
+                        &self.0,
+                    ));
+                }
+                let m = self.0.pat_mut();
+                let m = <$A as WindowStepMut<()>>::chain(m);
+                let m = <$B as WindowStepMut<$A>>::chain(m);
+                match m.done() {
+                    Some(t) => t,
+                    // SAFETY: Window invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -565,6 +823,41 @@ macro_rules! impl_window_arity_3 {
                     let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
                     let (c, _, _) = $C::step(h, vc, ec).unwrap_unchecked();
                     (a, b, c)
+                }
+            }
+        }
+
+        impl<'x, $A, $B, $C> LookMut<(&'x $A, &'x $B, &'x $C)> for Window<(&'x $A, &'x $B, &'x $C)>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            $B: WindowStep<$A> + WindowStepMut<$A>,
+            $C: WindowStep<$B> + WindowStepMut<$B>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A, &'a mut $B, &'a mut $C)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                unsafe {
+                    // SAFETY: Window invariant: matches(&self.0) was true.
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B, &'x $C) as sealed::Sealed>::matches(&self.0),
+                    );
+                }
+                let m = self.0.pat_mut();
+                let m = <$A as WindowStepMut<()>>::chain(m);
+                let m = <$B as WindowStepMut<$A>>::chain(m);
+                let m = <$C as WindowStepMut<$B>>::chain(m);
+                match m.done() {
+                    Some(t) => t,
+                    // SAFETY: Window invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -634,6 +927,44 @@ macro_rules! impl_window_arity_4 {
                     let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
                     let (d, _, _) = $D::step(h, vc, ec).unwrap_unchecked();
                     (a, b, c, d)
+                }
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D> LookMut<(&'x $A, &'x $B, &'x $C, &'x $D)>
+            for Window<(&'x $A, &'x $B, &'x $C, &'x $D)>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            $B: WindowStep<$A> + WindowStepMut<$A>,
+            $C: WindowStep<$B> + WindowStepMut<$B>,
+            $D: WindowStep<$C> + WindowStepMut<$C>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A, &'a mut $B, &'a mut $C, &'a mut $D)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                unsafe {
+                    // SAFETY: Window invariant: matches(&self.0) was true.
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B, &'x $C, &'x $D) as sealed::Sealed>::matches(&self.0),
+                    );
+                }
+                let m = self.0.pat_mut();
+                let m = <$A as WindowStepMut<()>>::chain(m);
+                let m = <$B as WindowStepMut<$A>>::chain(m);
+                let m = <$C as WindowStepMut<$B>>::chain(m);
+                let m = <$D as WindowStepMut<$C>>::chain(m);
+                match m.done() {
+                    Some(t) => t,
+                    // SAFETY: Window invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -710,6 +1041,48 @@ macro_rules! impl_window_arity_5 {
                     let (d, vc, ec) = $D::step(h, vc, ec).unwrap_unchecked();
                     let (e, _, _) = $E::step(h, vc, ec).unwrap_unchecked();
                     (a, b, c, d, e)
+                }
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D, $E> LookMut<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E)>
+            for Window<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E)>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            $B: WindowStep<$A> + WindowStepMut<$A>,
+            $C: WindowStep<$B> + WindowStepMut<$B>,
+            $D: WindowStep<$C> + WindowStepMut<$C>,
+            $E: WindowStep<$D> + WindowStepMut<$D>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A, &'a mut $B, &'a mut $C, &'a mut $D, &'a mut $E)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                unsafe {
+                    // SAFETY: Window invariant: matches(&self.0) was true.
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E) as sealed::Sealed>::matches(
+                            &self.0,
+                        ),
+                    );
+                }
+                let m = self.0.pat_mut();
+                let m = <$A as WindowStepMut<()>>::chain(m);
+                let m = <$B as WindowStepMut<$A>>::chain(m);
+                let m = <$C as WindowStepMut<$B>>::chain(m);
+                let m = <$D as WindowStepMut<$C>>::chain(m);
+                let m = <$E as WindowStepMut<$D>>::chain(m);
+                match m.done() {
+                    Some(t) => t,
+                    // SAFETY: Window invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -810,6 +1183,58 @@ macro_rules! impl_window_arity_6 {
                                 }
                             }
         }
+
+        impl<'x, $A, $B, $C, $D, $E, $F>
+            LookMut<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F)>
+            for Window<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F)>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            $B: WindowStep<$A> + WindowStepMut<$A>,
+            $C: WindowStep<$B> + WindowStepMut<$B>,
+            $D: WindowStep<$C> + WindowStepMut<$C>,
+            $E: WindowStep<$D> + WindowStepMut<$D>,
+            $F: WindowStep<$E> + WindowStepMut<$E>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A, &'a mut $B, &'a mut $C, &'a mut $D, &'a mut $E, &'a mut $F)
+            where
+                Self: 'a;
+
+            // `#[rustfmt::skip]`: same rustfmt non-idempotency bug as
+            // the `look` method above; the nested turbofish in
+            // `assert_unchecked` triggers runaway indentation at arity 6.
+                            #[rustfmt::skip]
+                            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+                            where
+                                Self: 'a,
+                            {
+                                unsafe {
+                                    // SAFETY: Window invariant: matches(&self.0) was true.
+                                    core::hint::assert_unchecked(<(
+                                        &'x $A,
+                                        &'x $B,
+                                        &'x $C,
+                                        &'x $D,
+                                        &'x $E,
+                                        &'x $F,
+                                    ) as sealed::Sealed>::matches(&self.0));
+                                }
+                                let m = self.0.pat_mut();
+                                let m = <$A as WindowStepMut<()>>::chain(m);
+                                let m = <$B as WindowStepMut<$A>>::chain(m);
+                                let m = <$C as WindowStepMut<$B>>::chain(m);
+                                let m = <$D as WindowStepMut<$C>>::chain(m);
+                                let m = <$E as WindowStepMut<$D>>::chain(m);
+                                let m = <$F as WindowStepMut<$E>>::chain(m);
+                                match m.done() {
+                                    Some(t) => t,
+                                    // SAFETY: Window invariant guarantees the chain hits.
+                                    None => unsafe { core::hint::unreachable_unchecked() },
+                                }
+                            }
+        }
     };
 }
 
@@ -906,6 +1331,65 @@ macro_rules! impl_window_arity_7 {
                     let (f, vc, ec) = $F::step(h, vc, ec).unwrap_unchecked();
                     let (g, _, _) = $G::step(h, vc, ec).unwrap_unchecked();
                     (a, b, c, d, e, f, g)
+                }
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F, $G>
+            LookMut<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G)>
+            for Window<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G)>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            $B: WindowStep<$A> + WindowStepMut<$A>,
+            $C: WindowStep<$B> + WindowStepMut<$B>,
+            $D: WindowStep<$C> + WindowStepMut<$C>,
+            $E: WindowStep<$D> + WindowStepMut<$D>,
+            $F: WindowStep<$E> + WindowStepMut<$E>,
+            $G: WindowStep<$F> + WindowStepMut<$F>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (
+                &'a mut $A,
+                &'a mut $B,
+                &'a mut $C,
+                &'a mut $D,
+                &'a mut $E,
+                &'a mut $F,
+                &'a mut $G,
+            )
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                unsafe {
+                    // SAFETY: Window invariant: matches(&self.0) was true.
+                    core::hint::assert_unchecked(<(
+                        &'x $A,
+                        &'x $B,
+                        &'x $C,
+                        &'x $D,
+                        &'x $E,
+                        &'x $F,
+                        &'x $G,
+                    ) as sealed::Sealed>::matches(&self.0));
+                }
+                let m = self.0.pat_mut();
+                let m = <$A as WindowStepMut<()>>::chain(m);
+                let m = <$B as WindowStepMut<$A>>::chain(m);
+                let m = <$C as WindowStepMut<$B>>::chain(m);
+                let m = <$D as WindowStepMut<$C>>::chain(m);
+                let m = <$E as WindowStepMut<$D>>::chain(m);
+                let m = <$F as WindowStepMut<$E>>::chain(m);
+                let m = <$G as WindowStepMut<$F>>::chain(m);
+                match m.done() {
+                    Some(t) => t,
+                    // SAFETY: Window invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -1058,6 +1542,87 @@ macro_rules! impl_window_arity_8 {
                     let (g, vc, ec) = $G::step(h, vc, ec).unwrap_unchecked();
                     let (h2, _, _) = $H::step(h, vc, ec).unwrap_unchecked();
                     (a, b, c, d, e, f, g, h2)
+                }
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D, $E, $F, $G, $H>
+            LookMut<(
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            )>
+            for Window<(
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            )>
+        where
+            $A: WindowStep<()> + WindowStepMut<()>,
+            $B: WindowStep<$A> + WindowStepMut<$A>,
+            $C: WindowStep<$B> + WindowStepMut<$B>,
+            $D: WindowStep<$C> + WindowStepMut<$C>,
+            $E: WindowStep<$D> + WindowStepMut<$D>,
+            $F: WindowStep<$E> + WindowStepMut<$E>,
+            $G: WindowStep<$F> + WindowStepMut<$F>,
+            $H: WindowStep<$G> + WindowStepMut<$G>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (
+                &'a mut $A,
+                &'a mut $B,
+                &'a mut $C,
+                &'a mut $D,
+                &'a mut $E,
+                &'a mut $F,
+                &'a mut $G,
+                &'a mut $H,
+            )
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                unsafe {
+                    // SAFETY: Window invariant: matches(&self.0) was true.
+                    core::hint::assert_unchecked(<(
+                        &'x $A,
+                        &'x $B,
+                        &'x $C,
+                        &'x $D,
+                        &'x $E,
+                        &'x $F,
+                        &'x $G,
+                        &'x $H,
+                    ) as sealed::Sealed>::matches(&self.0));
+                }
+                let m = self.0.pat_mut();
+                let m = <$A as WindowStepMut<()>>::chain(m);
+                let m = <$B as WindowStepMut<$A>>::chain(m);
+                let m = <$C as WindowStepMut<$B>>::chain(m);
+                let m = <$D as WindowStepMut<$C>>::chain(m);
+                let m = <$E as WindowStepMut<$D>>::chain(m);
+                let m = <$F as WindowStepMut<$E>>::chain(m);
+                let m = <$G as WindowStepMut<$F>>::chain(m);
+                let m = <$H as WindowStepMut<$G>>::chain(m);
+                match m.done() {
+                    Some(t) => t,
+                    // SAFETY: Window invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -1686,5 +2251,181 @@ mod tests {
                     }
                 }
             });
+    }
+
+    // -----------------------------------------------------------------------
+    // LookMut cross-consistency with Look.
+    //
+    // `look_mut` dispatches through `MatcherMut`, not `WindowStep::step`.
+    // These tests assert that, on the same Headers, `look_mut` and `look`
+    // hit the same layers and return references at identical addresses.
+    // Because holding `&h` and `&mut h` simultaneously is impossible, the
+    // closure clones `h` and does each path on the clone: since the clone
+    // is fixed in memory for the duration of both paths, the pointers
+    // must be equal if and only if both APIs pick the same layer slots.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn look_mut_v4_tcp_agrees_with_look() {
+        use std::ptr::from_ref;
+        let plain = header_chain().eth(|_| {}).ipv4(|_| {}).tcp(|_| {});
+        let vlan_tagged = header_chain()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {});
+        let udp_instead = header_chain().eth(|_| {}).ipv4(|_| {}).udp(|_| {});
+        let v6_instead = header_chain().eth(|_| {}).ipv6(|_| {}).tcp(|_| {});
+        bolero::check!()
+            .with_generator((plain, vlan_tagged, udp_instead, v6_instead))
+            .for_each(|(a, b, c, d)| {
+                for src in [a, b, c, d] {
+                    let mut h = src.clone();
+                    let imm: Option<(*const Eth, *const Ipv4, *const Tcp)> =
+                        h.as_window::<(&Eth, &Ipv4, &Tcp)>().map(|w| {
+                            let (e, i, t) = w.look();
+                            (from_ref(e), from_ref(i), from_ref(t))
+                        });
+                    let mutp: Option<(*const Eth, *const Ipv4, *const Tcp)> =
+                        h.as_window_mut::<(&Eth, &Ipv4, &Tcp)>().map(|w| {
+                            let (e, i, t) = w.look_mut();
+                            (from_ref(&*e), from_ref(&*i), from_ref(&*t))
+                        });
+                    assert_eq!(imm.is_some(), mutp.is_some(), "LookMut disagrees on hit");
+                    if let (Some(i), Some(m)) = (imm, mutp) {
+                        assert_eq!(i, m, "LookMut picked different (Eth, Ipv4, Tcp) slots");
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn look_mut_vlan_v4_tcp_agrees_with_look() {
+        use std::ptr::from_ref;
+        let zero = header_chain().eth(|_| {}).ipv4(|_| {}).tcp(|_| {});
+        let one = header_chain()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {});
+        let two = header_chain()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {});
+        bolero::check!()
+            .with_generator((zero, one, two))
+            .for_each(|(a, b, c)| {
+                for src in [a, b, c] {
+                    let mut headers = src.clone();
+                    let imm: Option<(*const Eth, *const Vlan, *const Ipv4, *const Tcp)> =
+                        headers.as_window::<(&Eth, &Vlan, &Ipv4, &Tcp)>().map(|w| {
+                            let (eth, vlan, ip, tcp) = w.look();
+                            (from_ref(eth), from_ref(vlan), from_ref(ip), from_ref(tcp))
+                        });
+                    let mutp: Option<(*const Eth, *const Vlan, *const Ipv4, *const Tcp)> = headers
+                        .as_window_mut::<(&Eth, &Vlan, &Ipv4, &Tcp)>()
+                        .map(|w| {
+                            let (eth, vlan, ip, tcp) = w.look_mut();
+                            (
+                                from_ref(&*eth),
+                                from_ref(&*vlan),
+                                from_ref(&*ip),
+                                from_ref(&*tcp),
+                            )
+                        });
+                    assert_eq!(imm.is_some(), mutp.is_some());
+                    if let (Some(i), Some(m)) = (imm, mutp) {
+                        assert_eq!(
+                            i, m,
+                            "LookMut picked different (Eth, Vlan, Ipv4, Tcp) slots"
+                        );
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn look_mut_v6_hbh_tcp_agrees_with_look() {
+        use std::ptr::from_ref;
+        // Exercises the ext-gap-strict path on the mutable side as well.
+        let exactly_hbh = header_chain()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .tcp(|_| {});
+        let hbh_plus_do = header_chain()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .dest_opts(|_| {})
+            .tcp(|_| {});
+        let no_ext = header_chain().eth(|_| {}).ipv6(|_| {}).tcp(|_| {});
+        bolero::check!()
+            .with_generator((exactly_hbh, hbh_plus_do, no_ext))
+            .for_each(|(a, b, c)| {
+                for src in [a, b, c] {
+                    let mut headers = src.clone();
+                    let imm: Option<(*const Eth, *const Ipv6, *const HopByHop, *const Tcp)> =
+                        headers
+                            .as_window::<(&Eth, &Ipv6, &HopByHop, &Tcp)>()
+                            .map(|w| {
+                                let (eth, ip, hbh, tcp) = w.look();
+                                (from_ref(eth), from_ref(ip), from_ref(hbh), from_ref(tcp))
+                            });
+                    let mutp: Option<(*const Eth, *const Ipv6, *const HopByHop, *const Tcp)> =
+                        headers
+                            .as_window_mut::<(&Eth, &Ipv6, &HopByHop, &Tcp)>()
+                            .map(|w| {
+                                let (eth, ip, hbh, tcp) = w.look_mut();
+                                (
+                                    from_ref(&*eth),
+                                    from_ref(&*ip),
+                                    from_ref(&*hbh),
+                                    from_ref(&*tcp),
+                                )
+                            });
+                    assert_eq!(imm.is_some(), mutp.is_some());
+                    if let (Some(i), Some(m)) = (imm, mutp) {
+                        assert_eq!(
+                            i, m,
+                            "LookMut picked different (Eth, Ipv6, HopByHop, Tcp) slots"
+                        );
+                    }
+                }
+            });
+    }
+
+    // Mutation through look_mut must actually take effect on the backing
+    // Headers.  Uses look afterwards to observe the change.
+    #[test]
+    fn look_mut_mutation_propagates_to_headers() {
+        use crate::vlan::Vid;
+        let vid_initial = Vid::try_from(100u16).unwrap();
+        let vid_updated = Vid::try_from(4000u16).unwrap();
+        let mut h = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_vid(vid_initial);
+            })
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+
+        {
+            let w = h
+                .as_window_mut::<(&Eth, &Vlan, &Ipv4, &Tcp)>()
+                .expect("shape matches");
+            let (_eth, v, _ip, _tcp) = w.look_mut();
+            v.set_vid(vid_updated);
+        }
+
+        let w = h
+            .as_window::<(&Eth, &Vlan, &Ipv4, &Tcp)>()
+            .expect("shape matches");
+        let (_eth, v, _ip, _tcp) = w.look();
+        assert_eq!(v.vid(), vid_updated);
     }
 }
