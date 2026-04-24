@@ -63,6 +63,7 @@ use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
 use crate::tcp::Tcp;
 use crate::udp::Udp;
+use crate::vlan::Vlan;
 
 use super::pat::ExtGapCheck;
 use super::{Headers, Net, Transport, Within};
@@ -209,6 +210,18 @@ impl WindowStep<()> for Eth {
     #[inline(always)]
     fn step(h: &Headers, vc: u8, ec: u8) -> Option<(&Eth, u8, u8)> {
         h.eth().map(|e| (e, vc, ec))
+    }
+}
+
+// ---- VLAN: advance vc, still in-phase -------------------------------------
+
+impl<Pos> WindowStep<Pos> for Vlan
+where
+    Vlan: Within<Pos>,
+{
+    #[inline(always)]
+    fn step(h: &Headers, vc: u8, ec: u8) -> Option<(&Vlan, u8, u8)> {
+        h.vlan().get(vc as usize).map(|v| (v, vc + 1, ec))
     }
 }
 
@@ -421,9 +434,76 @@ macro_rules! impl_window_arity_3 {
     };
 }
 
+macro_rules! impl_window_arity_4 {
+    ($A:ident, $B:ident, $C:ident, $D:ident) => {
+        impl<'x, $A, $B, $C, $D> Shape for (&'x $A, &'x $B, &'x $C, &'x $D)
+        where
+            $A: WindowStep<()>,
+            $B: WindowStep<$A>,
+            $C: WindowStep<$B>,
+            $D: WindowStep<$C>,
+        {
+        }
+
+        impl<'x, $A, $B, $C, $D> sealed::Sealed for (&'x $A, &'x $B, &'x $C, &'x $D)
+        where
+            $A: WindowStep<()>,
+            $B: WindowStep<$A>,
+            $C: WindowStep<$B>,
+            $D: WindowStep<$C>,
+        {
+            #[inline(always)]
+            fn matches(h: &Headers) -> bool {
+                let Some((_, vc, ec)) = $A::step(h, 0, 0) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $B::step(h, vc, ec) else {
+                    return false;
+                };
+                let Some((_, vc, ec)) = $C::step(h, vc, ec) else {
+                    return false;
+                };
+                $D::step(h, vc, ec).is_some()
+            }
+        }
+
+        impl<'x, $A, $B, $C, $D> Look<(&'x $A, &'x $B, &'x $C, &'x $D)>
+            for Window<(&'x $A, &'x $B, &'x $C, &'x $D)>
+        where
+            $A: WindowStep<()>,
+            $B: WindowStep<$A>,
+            $C: WindowStep<$B>,
+            $D: WindowStep<$C>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (&'a $A, &'a $B, &'a $C, &'a $D)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = &self.0;
+                // SAFETY: Window invariant: matches(h) was true.
+                unsafe {
+                    let (a, vc, ec) = $A::step(h, 0, 0).unwrap_unchecked();
+                    let (b, vc, ec) = $B::step(h, vc, ec).unwrap_unchecked();
+                    let (c, vc, ec) = $C::step(h, vc, ec).unwrap_unchecked();
+                    let (d, _, _) = $D::step(h, vc, ec).unwrap_unchecked();
+                    (a, b, c, d)
+                }
+            }
+        }
+    };
+}
+
 impl_window_arity_1!(A);
 impl_window_arity_2!(A, B);
 impl_window_arity_3!(A, B, C);
+impl_window_arity_4!(A, B, C, D);
 
 // ===========================================================================
 // Tests
@@ -472,5 +552,81 @@ mod tests {
             .build_headers()
             .unwrap();
         assert!(h.as_window::<(&Eth,)>().is_some());
+    }
+
+    // ---- VLAN gap-check semantics (mirror pat.rs) --------------------------
+
+    // Invariant: Window<(&Eth, &Ipv4, &Tcp)> must REJECT a packet with
+    // a VLAN tag between Eth and Ipv4.  If this returns Some, the
+    // Window has drifted from pat.rs semantics.
+    #[test]
+    fn plain_shape_rejects_vlan_tagged_packet() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        assert!(
+            h.as_window::<(&Eth, &Ipv4, &Tcp)>().is_none(),
+            "shape (&Eth, &Ipv4, &Tcp) must not match a VLAN-tagged packet"
+        );
+    }
+
+    #[test]
+    fn vlan_in_shape_matches_single_tag() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        assert!(h.as_window::<(&Eth, &Vlan, &Ipv4, &Tcp)>().is_some());
+    }
+
+    #[test]
+    fn single_vlan_shape_rejects_double_tagged_packet() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        assert!(
+            h.as_window::<(&Eth, &Vlan, &Ipv4, &Tcp)>().is_none(),
+            "one &Vlan in shape must not match a double-tagged packet"
+        );
+    }
+
+    #[test]
+    fn look_returns_cursor_indexed_vlans() {
+        use crate::vlan::Vid;
+        let vid_outer = Vid::try_from(100u16).unwrap();
+        let vid_inner = Vid::try_from(200u16).unwrap();
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .vlan(|v| {
+                v.set_vid(vid_outer);
+            })
+            .vlan(|v| {
+                v.set_vid(vid_inner);
+            })
+            .ipv4(|_| {})
+            .tcp(|_| {})
+            .build_headers()
+            .unwrap();
+        // Arity 5 is not yet wired, so we assert matching with arity 4
+        // only here; the cursor-indexed look test for the full shape
+        // arrives with the arity-5 support in a later commit.
+        let w = h
+            .as_window::<(&Eth, &Vlan, &Vlan, &Ipv4)>()
+            .expect("double-VLAN packet should match two-VLAN shape");
+        let (_eth, v0, v1, _ip) = w.look();
+        assert_eq!(v0.vid(), vid_outer);
+        assert_eq!(v1.vid(), vid_inner);
     }
 }
