@@ -1549,4 +1549,152 @@ mod tests {
         // Keep tcp_w alive so clippy doesn't flag it as unused above.
         let _ = tcp_w;
     }
+    // -----------------------------------------------------------------------
+    // Cross-consistency with pat.rs Matcher.
+    //
+    // Matcher is the reference implementation of the layer-ordering and
+    // gap-check semantics.  `HeadersView` is supposed to express the same
+    // semantics at the type level.  These property tests assert that the
+    // two APIs cannot disagree on match/miss -- and when both hit, they
+    // return references to the same layer instances.  If either
+    // property fails for any generated Headers, one of the APIs has
+    // drifted and the test will flag the divergence.
+    // -----------------------------------------------------------------------
+
+    use crate::headers::builder::header_chain;
+
+    #[test]
+    fn view_v4_tcp_agrees_with_matcher() {
+        let plain = header_chain().eth(|_| {}).ipv4(|_| {}).tcp(|_| {});
+        let vlan_tagged = header_chain()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {});
+        let udp_instead = header_chain().eth(|_| {}).ipv4(|_| {}).udp(|_| {});
+        let v6_instead = header_chain().eth(|_| {}).ipv6(|_| {}).tcp(|_| {});
+        bolero::check!()
+            .with_generator((plain, vlan_tagged, udp_instead, v6_instead))
+            .for_each(|(a, b, c, d)| {
+                for h in [a, b, c, d] {
+                    let w = h.as_view::<(&Eth, &Ipv4, &Tcp)>();
+                    let m = h.pat().eth().ipv4().tcp().done();
+                    assert_eq!(w.is_some(), m.is_some(), "disagree on (Eth, Ipv4, Tcp)");
+                    if let (Some(w), Some((eth_m, ip_m, tcp_m))) = (w, m) {
+                        let (eth_w, ip_w, tcp_w) = w.look();
+                        assert!(std::ptr::eq(eth_w, eth_m));
+                        assert!(std::ptr::eq(ip_w, ip_m));
+                        assert!(std::ptr::eq(tcp_w, tcp_m));
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn view_vlan_v4_tcp_agrees_with_matcher() {
+        let zero = header_chain().eth(|_| {}).ipv4(|_| {}).tcp(|_| {});
+        let one = header_chain()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {});
+        let two = header_chain()
+            .eth(|_| {})
+            .vlan(|_| {})
+            .vlan(|_| {})
+            .ipv4(|_| {})
+            .tcp(|_| {});
+        bolero::check!()
+            .with_generator((zero, one, two))
+            .for_each(|(a, b, c)| {
+                for h in [a, b, c] {
+                    let w = h.as_view::<(&Eth, &Vlan, &Ipv4, &Tcp)>();
+                    let m = h.pat().eth().vlan().ipv4().tcp().done();
+                    assert_eq!(
+                        w.is_some(),
+                        m.is_some(),
+                        "disagree on (Eth, Vlan, Ipv4, Tcp)"
+                    );
+                    if let (Some(w), Some((eth_m, v_m, ip_m, tcp_m))) = (w, m) {
+                        let (eth_w, v_w, ip_w, tcp_w) = w.look();
+                        assert!(std::ptr::eq(eth_w, eth_m));
+                        assert!(std::ptr::eq(v_w, v_m));
+                        assert!(std::ptr::eq(ip_w, ip_m));
+                        assert!(std::ptr::eq(tcp_w, tcp_m));
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn view_v6_tcp_ext_skip_agrees_with_matcher() {
+        // From an IP position, extension headers are skipped silently.
+        // HeadersView and Matcher must agree on this.
+        let no_ext = header_chain().eth(|_| {}).ipv6(|_| {}).tcp(|_| {});
+        let one_ext = header_chain()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .tcp(|_| {});
+        let two_ext = header_chain()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .dest_opts(|_| {})
+            .tcp(|_| {});
+        bolero::check!()
+            .with_generator((no_ext, one_ext, two_ext))
+            .for_each(|(a, b, c)| {
+                for h in [a, b, c] {
+                    let w = h.as_view::<(&Eth, &Ipv6, &Tcp)>();
+                    let m = h.pat().eth().ipv6().tcp().done();
+                    assert_eq!(w.is_some(), m.is_some(), "disagree on (Eth, Ipv6, Tcp)");
+                    if let (Some(w), Some((eth_m, ip_m, tcp_m))) = (w, m) {
+                        let (eth_w, ip_w, tcp_w) = w.look();
+                        assert!(std::ptr::eq(eth_w, eth_m));
+                        assert!(std::ptr::eq(ip_w, ip_m));
+                        assert!(std::ptr::eq(tcp_w, tcp_m));
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn view_v6_hbh_tcp_ext_strict_agrees_with_matcher() {
+        // With HopByHop in the shape, extension-header strictness kicks
+        // in: trailing extensions must be consumed.  Verify HeadersView and
+        // Matcher both treat this correctly.
+        let exactly_hbh = header_chain()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .tcp(|_| {});
+        let hbh_plus_do = header_chain()
+            .eth(|_| {})
+            .ipv6(|_| {})
+            .hop_by_hop(|_| {})
+            .dest_opts(|_| {})
+            .tcp(|_| {});
+        let no_ext = header_chain().eth(|_| {}).ipv6(|_| {}).tcp(|_| {});
+        bolero::check!()
+            .with_generator((exactly_hbh, hbh_plus_do, no_ext))
+            .for_each(|(a, b, c)| {
+                for h in [a, b, c] {
+                    let w = h.as_view::<(&Eth, &Ipv6, &HopByHop, &Tcp)>();
+                    let m = h.pat().eth().ipv6().hop_by_hop().tcp().done();
+                    assert_eq!(
+                        w.is_some(),
+                        m.is_some(),
+                        "disagree on (Eth, Ipv6, HopByHop, Tcp)"
+                    );
+                    if let (Some(w), Some((eth_m, ip_m, hbh_m, tcp_m))) = (w, m) {
+                        let (eth_w, ip_w, hbh_w, tcp_w) = w.look();
+                        assert!(std::ptr::eq(eth_w, eth_m));
+                        assert!(std::ptr::eq(ip_w, ip_m));
+                        assert!(std::ptr::eq(hbh_w, hbh_m));
+                        assert!(std::ptr::eq(tcp_w, tcp_m));
+                    }
+                }
+            });
+    }
 }
