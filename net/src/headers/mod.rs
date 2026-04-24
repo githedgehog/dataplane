@@ -45,7 +45,7 @@ pub use within::{EmbeddedStart, Within};
 pub mod pat;
 
 pub mod view;
-pub use view::{HeadersView, Look, Shape, ShapePrefix};
+pub use view::{HeadersView, Look, LookMut, Shape, ShapePrefix};
 
 #[cfg(any(test, feature = "builder"))]
 pub mod builder;
