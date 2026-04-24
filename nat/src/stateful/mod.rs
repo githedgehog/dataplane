@@ -8,6 +8,7 @@ pub(crate) mod flows;
 pub(crate) mod icmp_handling;
 mod natip;
 mod nf;
+mod packet;
 mod state;
 mod test;
 
