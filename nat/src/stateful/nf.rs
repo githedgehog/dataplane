@@ -57,8 +57,8 @@ enum StatefulNatError {
     IcmpUnsupportedCategory,
     #[error("attempted to masquerade ICMP error message")]
     IcmpError,
-    #[error("dropped the packet purposely")]
-    IntendedDrop,
+    #[error("dropped the packet, reason: {0}")]
+    IntendedDrop(&'static str),
 }
 
 /// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
@@ -445,7 +445,7 @@ impl StatefulNat {
             None => {
                 // allocator got removed. Get rid of the flows and drop the packet.
                 installed.invalidate_pair();
-                Err(StatefulNatError::IntendedDrop)
+                Err(StatefulNatError::IntendedDrop("allocator was removed"))
             }
             Some(allocator) => {
                 check_masquerading_flow(
@@ -457,7 +457,7 @@ impl StatefulNat {
                     Ok(())
                 } else {
                     // we invalidated the flow. Signal that packet should be dropped
-                    Err(StatefulNatError::IntendedDrop)
+                    Err(StatefulNatError::IntendedDrop("Config changed"))
                 }
             }
         }
@@ -539,7 +539,7 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
 
         StatefulNatError::AllocationFailure(AllocatorError::Denied)
         | StatefulNatError::Bug(_)
-        | StatefulNatError::IntendedDrop => DoneReason::Filtered,
+        | StatefulNatError::IntendedDrop(_) => DoneReason::Filtered,
     }
 }
 
