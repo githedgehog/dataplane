@@ -16,7 +16,7 @@ use std::num::NonZero;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::portfw::flow_state::PortFwAction;
+use crate::portfw::flow_state::NatAction;
 use crate::portfw::flow_state::build_portfw_flow_keys;
 use crate::portfw::flow_state::get_packet_port_fw_state;
 use crate::portfw::flow_state::refresh_port_fw_entry;
@@ -301,10 +301,8 @@ impl PortForwarder {
 
         // find compatible rule depending on the path this packet lives, forward or reverse
         let entry = match state.action() {
-            PortFwAction::DstNat => {
-                Self::get_rule_from_pkt_fw_path(packet, dst_vpcd, state, pfwtable)
-            }
-            PortFwAction::SrcNat => {
+            NatAction::DstNat => Self::get_rule_from_pkt_fw_path(packet, dst_vpcd, state, pfwtable),
+            NatAction::SrcNat => {
                 Self::get_rule_from_pkt_rev_path(packet, dst_vpcd, state, pfwtable)
             }
         };

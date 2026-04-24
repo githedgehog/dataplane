@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
 use super::PortFwState;
-use super::flow_state::PortFwAction;
+use super::flow_state::NatAction;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,7 +75,7 @@ impl Display for PortFwFlowStatus {
 fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus {
     let status = pfw_state.status.load();
     match pfw_state.action {
-        PortFwAction::DstNat => match status {
+        NatAction::DstNat => match status {
             PortFwFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => PortFwFlowStatus::Established,
             PortFwFlowStatus::Established if tcp.fin() => PortFwFlowStatus::CClosing,
             PortFwFlowStatus::SClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::SHalfClose,
@@ -85,7 +85,7 @@ fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus 
             _other if tcp.rst() => PortFwFlowStatus::Reset,
             other => other,
         },
-        PortFwAction::SrcNat => match status {
+        NatAction::SrcNat => match status {
             PortFwFlowStatus::OneWay if tcp.syn() && tcp.ack() => PortFwFlowStatus::TwoWay,
             PortFwFlowStatus::Established if tcp.fin() => PortFwFlowStatus::SClosing,
             PortFwFlowStatus::CClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::CHalfClose,
@@ -101,11 +101,11 @@ fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus 
 fn next_flow_status_non_tcp(pfw_state: &PortFwState) -> PortFwFlowStatus {
     let status = pfw_state.status.load();
     match pfw_state.action {
-        PortFwAction::DstNat => match status {
+        NatAction::DstNat => match status {
             PortFwFlowStatus::TwoWay => PortFwFlowStatus::Established,
             other => other,
         },
-        PortFwAction::SrcNat => match status {
+        NatAction::SrcNat => match status {
             PortFwFlowStatus::OneWay => PortFwFlowStatus::TwoWay,
             other => other,
         },

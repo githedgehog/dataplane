@@ -44,17 +44,17 @@ use crate::portfw::packet::nat_packet;
 use crate::{NatPort, NatTranslationData};
 
 use super::flow_state::PortFwState;
-use crate::portfw::flow_state::PortFwAction;
+use crate::portfw::flow_state::NatAction;
 
 use tracing::debug;
 
 // Build `NatTranslationData` from `PortFwState` to translate the packet embedded in the ICMP error
 fn as_nat_translation(pfw_state: &PortFwState) -> NatTranslationData {
     match pfw_state.action {
-        PortFwAction::SrcNat => NatTranslationData::default()
+        NatAction::SrcNat => NatTranslationData::default()
             .dst_addr(pfw_state.use_ip().inner())
             .dst_port(NatPort::Port(pfw_state.use_port())),
-        PortFwAction::DstNat => NatTranslationData::default()
+        NatAction::DstNat => NatTranslationData::default()
             .src_addr(pfw_state.use_ip().inner())
             .src_port(NatPort::Port(pfw_state.use_port())),
     }

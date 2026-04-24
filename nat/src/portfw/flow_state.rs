@@ -25,14 +25,14 @@ use crate::portfw::protocol::{AtomicPortFwFlowStatus, PortFwFlowStatus, next_flo
 use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PortFwAction {
+pub enum NatAction {
     DstNat,
     SrcNat,
 }
 
 #[derive(Debug, Clone)]
 pub struct PortFwState {
-    pub(crate) action: PortFwAction,
+    pub(crate) action: NatAction,
     pub(crate) status: AtomicPortFwFlowStatus,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
@@ -47,7 +47,7 @@ impl PortFwState {
         status: AtomicPortFwFlowStatus,
     ) -> Self {
         Self {
-            action: PortFwAction::SrcNat,
+            action: NatAction::SrcNat,
             status,
             use_ip,
             use_port,
@@ -62,7 +62,7 @@ impl PortFwState {
         status: AtomicPortFwFlowStatus,
     ) -> Self {
         Self {
-            action: PortFwAction::DstNat,
+            action: NatAction::DstNat,
             status,
             use_ip,
             use_port,
@@ -70,7 +70,7 @@ impl PortFwState {
         }
     }
     #[must_use]
-    pub fn action(&self) -> PortFwAction {
+    pub fn action(&self) -> NatAction {
         self.action
     }
     #[must_use]
@@ -87,11 +87,11 @@ impl PortFwState {
     }
 }
 
-impl Display for PortFwAction {
+impl Display for NatAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PortFwAction::DstNat => write!(f, "dnat"),
-            PortFwAction::SrcNat => write!(f, "snat"),
+            NatAction::DstNat => write!(f, "dnat"),
+            NatAction::SrcNat => write!(f, "snat"),
         }
     }
 }
@@ -99,8 +99,8 @@ impl Display for PortFwAction {
 impl Display for PortFwState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let dir = match self.action {
-            PortFwAction::DstNat => "to",
-            PortFwAction::SrcNat => "from",
+            NatAction::DstNat => "to",
+            NatAction::SrcNat => "from",
         };
         write!(f, "\n        {}", self.action)?;
         writeln!(f, " {dir} ip:{} port:{}", self.use_ip, self.use_port)?;
