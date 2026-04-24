@@ -19,17 +19,13 @@ use tracing::{debug, error};
 /// Invalidate all of the flows that have masquerading state
 pub(crate) fn invalidate_all_masquerading_flows(flow_table: &FlowTable) {
     debug!("INVALIDATING all masquerading flows...");
-    let mut count = 0;
-
     flow_table.for_each_flow(|_key, flow_info| {
         if let Ok(locked) = flow_info.locked.read()
             && locked.nat_state.as_ref().is_some()
         {
             flow_info.invalidate_pair();
-            count += 1;
         }
     });
-    debug!("Invalidated {count} flows");
 }
 
 /// Upgrade to genid `GenId` all of the flows in the flow table
