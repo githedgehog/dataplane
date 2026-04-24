@@ -21,6 +21,7 @@
 //! - The total number of available (not excluded) private addresses used in an "Expose" object must
 //!   be equal to the total number of publicly exposed addresses in this object.
 
+mod common;
 mod icmp_handler;
 mod port;
 pub mod portfw;
