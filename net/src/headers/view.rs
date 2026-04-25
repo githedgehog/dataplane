@@ -329,6 +329,13 @@ impl<T> HeadersView<T> {
     pub(crate) fn as_headers(&self) -> &Headers {
         &self.0
     }
+
+    /// Crate-private mutable counterpart of [`Self::as_headers`].
+    /// Used by `EmbeddedHeadersView::look_mut` to drive the embedded matcher.
+    #[inline]
+    pub(crate) fn as_headers_mut(&mut self) -> &mut Headers {
+        &mut self.0
+    }
 }
 
 // ===========================================================================

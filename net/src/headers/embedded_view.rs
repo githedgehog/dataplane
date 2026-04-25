@@ -52,7 +52,7 @@ use crate::ipv6::{DestOpts, Fragment, HopByHop, Ipv6, Routing};
 use crate::tcp::TruncatedTcp;
 use crate::udp::TruncatedUdp;
 
-use super::pat::ExtGapCheck;
+use super::pat::{EmbeddedMatcherMut, ExtGapCheck, TupleAppend};
 use super::view::{HeadersView, Shape};
 use super::{EmbeddedHeaders, EmbeddedStart, EmbeddedTransport, Headers, Net, NetExt, Within};
 
@@ -206,6 +206,112 @@ where
 }
 
 // ===========================================================================
+// EmbeddedStepMut: mutable per-layer dispatch onto pat::EmbeddedMatcherMut
+// ===========================================================================
+//
+// Mirrors [`EmbeddedStep`] but for the mutable side, dispatching through
+// [`pat::EmbeddedMatcherMut`].  Each impl is a one-liner delegating to
+// the matching `EmbeddedMatcherMut` method (`.ipv4()`, `.tcp()`, ...);
+// reusing `EmbeddedMatcherMut` lets us share its pre-split
+// [`pat::EmbeddedFields`] aliasing solution rather than reimplementing
+// disjoint mut access into [`EmbeddedHeaders`] here.
+//
+// The `EmbeddedTransport` enum is intentionally *not* supported here:
+// `EmbeddedMatcherMut` does not expose a corresponding `.transport()`
+// method (concrete variants only).  Symmetric to the immutable side
+// would require extending `pat.rs`; deferred until a caller needs it.
+
+/// Crate-private: extend an [`EmbeddedMatcherMut`] chain by one layer.
+pub(crate) trait EmbeddedStepMut<Pos>: Sized {
+    /// Chain this layer onto `m`.
+    fn chain<'a, OAcc, IAcc>(
+        m: EmbeddedMatcherMut<'a, Pos, OAcc, IAcc>,
+    ) -> EmbeddedMatcherMut<'a, Self, OAcc, <IAcc as TupleAppend<&'a mut Self>>::Output>
+    where
+        IAcc: TupleAppend<&'a mut Self>;
+}
+
+// ---- Net layer (Ipv4 / Ipv6) and Net enum ---------------------------------
+
+macro_rules! impl_embedded_net_step_mut {
+    ($T:ty, $method:ident) => {
+        impl<Pos> EmbeddedStepMut<Pos> for $T
+        where
+            $T: Within<Pos>,
+        {
+            #[inline(always)]
+            fn chain<'a, OAcc, IAcc>(
+                m: EmbeddedMatcherMut<'a, Pos, OAcc, IAcc>,
+            ) -> EmbeddedMatcherMut<'a, $T, OAcc, <IAcc as TupleAppend<&'a mut $T>>::Output>
+            where
+                IAcc: TupleAppend<&'a mut $T>,
+            {
+                m.$method()
+            }
+        }
+    };
+}
+
+impl_embedded_net_step_mut!(Ipv4, ipv4);
+impl_embedded_net_step_mut!(Ipv6, ipv6);
+impl_embedded_net_step_mut!(Net, net);
+
+// ---- Extension headers ----------------------------------------------------
+
+macro_rules! impl_embedded_ext_step_mut {
+    ($T:ty, $method:ident) => {
+        impl<Pos> EmbeddedStepMut<Pos> for $T
+        where
+            $T: Within<Pos>,
+        {
+            #[inline(always)]
+            fn chain<'a, OAcc, IAcc>(
+                m: EmbeddedMatcherMut<'a, Pos, OAcc, IAcc>,
+            ) -> EmbeddedMatcherMut<'a, $T, OAcc, <IAcc as TupleAppend<&'a mut $T>>::Output>
+            where
+                IAcc: TupleAppend<&'a mut $T>,
+            {
+                m.$method()
+            }
+        }
+    };
+}
+
+impl_embedded_ext_step_mut!(HopByHop, hop_by_hop);
+impl_embedded_ext_step_mut!(DestOpts, dest_opts);
+impl_embedded_ext_step_mut!(Routing, routing);
+impl_embedded_ext_step_mut!(Fragment, fragment);
+impl_embedded_ext_step_mut!(Ipv4Auth, ipv4_auth);
+impl_embedded_ext_step_mut!(Ipv6Auth, ipv6_auth);
+
+// ---- Truncated transport layers -------------------------------------------
+
+macro_rules! impl_embedded_transport_step_mut {
+    ($T:ty, $method:ident) => {
+        impl<Pos> EmbeddedStepMut<Pos> for $T
+        where
+            $T: Within<Pos>,
+            Pos: ExtGapCheck,
+        {
+            #[inline(always)]
+            fn chain<'a, OAcc, IAcc>(
+                m: EmbeddedMatcherMut<'a, Pos, OAcc, IAcc>,
+            ) -> EmbeddedMatcherMut<'a, $T, OAcc, <IAcc as TupleAppend<&'a mut $T>>::Output>
+            where
+                IAcc: TupleAppend<&'a mut $T>,
+            {
+                m.$method()
+            }
+        }
+    };
+}
+
+impl_embedded_transport_step_mut!(TruncatedTcp, tcp);
+impl_embedded_transport_step_mut!(TruncatedUdp, udp);
+impl_embedded_transport_step_mut!(TruncatedIcmp4, icmp4);
+impl_embedded_transport_step_mut!(TruncatedIcmp6, icmp6);
+
+// ===========================================================================
 // EmbeddedHeaders accessors used by the step impls
 // ===========================================================================
 //
@@ -253,6 +359,22 @@ impl<T> HasHeaders for HeadersView<T> {
         // expose the same via &self.0.  Use the existing pub(crate)
         // accessor to avoid re-implementing the cast here.
         HeadersView::as_headers(self)
+    }
+}
+
+/// Mutable counterpart of [`HasHeaders`].
+///
+/// Implementors expose `&mut Headers` for embedded mutable extraction.
+/// Today only [`HeadersView<T>`] implements this trait; same future-proofing
+/// rationale as [`HasHeaders`].
+pub(crate) trait HasHeadersMut: HasHeaders {
+    fn as_headers_mut(&mut self) -> &mut Headers;
+}
+
+impl<T> HasHeadersMut for HeadersView<T> {
+    #[inline(always)]
+    fn as_headers_mut(&mut self) -> &mut Headers {
+        HeadersView::as_headers_mut(self)
     }
 }
 
@@ -354,6 +476,17 @@ impl<W, U> EmbeddedHeadersView<W, U> {
         let p = std::ptr::from_ref(self).cast::<W>();
         unsafe { p.as_ref_unchecked() }
     }
+
+    /// Mutable counterpart of [`Self::outer`].
+    ///
+    /// Same `repr(transparent)` reborrow, exclusive variant.
+    #[inline(always)]
+    #[must_use]
+    pub fn outer_mut(&mut self) -> &mut W {
+        // SAFETY: same as outer(), exclusive borrow preserved.
+        let p = std::ptr::from_mut(self).cast::<W>();
+        unsafe { p.as_mut_unchecked() }
+    }
 }
 
 // ===========================================================================
@@ -380,6 +513,27 @@ pub trait EmbeddedLook<U> {
     /// guarantees success so the `None` branches are pruned by the
     /// optimizer.
     fn look<'a>(&'a self) -> Self::Refs<'a>
+    where
+        Self: 'a;
+}
+
+/// Mutable counterpart of [`EmbeddedLook`].
+///
+/// Yields a tuple of `&mut` references to the matched inner layers.
+/// Aliasing between the returned references is handled by
+/// [`pat::EmbeddedMatcherMut`](super::pat::EmbeddedMatcherMut)'s pre-split
+/// fields helper -- `look_mut` delegates to an `EmbeddedMatcherMut`
+/// chain (built directly from the embedded section, bypassing the
+/// outer chain) and unwraps the chain's `Option<((), inner)>`
+/// unchecked under the `EmbeddedHeadersView<W, U>` shape invariant.
+pub trait EmbeddedLookMut<U> {
+    /// The tuple of typed `&mut` references produced by [`Self::look_mut`].
+    type RefsMut<'a>
+    where
+        Self: 'a;
+
+    /// Extract typed `&mut` references to the matched inner layers.
+    fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
     where
         Self: 'a;
 }
@@ -432,6 +586,37 @@ macro_rules! impl_embedded_arity_1 {
                     ));
                     let (a, _) = $A::step(e, 0).unwrap_unchecked();
                     (a,)
+                }
+            }
+        }
+
+        impl<'x, W, $A> EmbeddedLookMut<(&'x $A,)> for EmbeddedHeadersView<W, (&'x $A,)>
+        where
+            W: HasHeadersMut,
+            $A: EmbeddedStep<EmbeddedStart> + EmbeddedStepMut<EmbeddedStart>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A,)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                let h = self.outer_mut().as_headers_mut();
+                // SAFETY: EmbeddedHeadersView invariant.
+                let e = unsafe { h.embedded_ip_mut().unwrap_unchecked() };
+                let m = EmbeddedMatcherMut::from_embedded_only(e);
+                let m = <$A as EmbeddedStepMut<EmbeddedStart>>::chain(m);
+                // .done() on EmbeddedMatcherMut returns OuterAcc.append(InnerAcc);
+                // OuterAcc = (), so we get ((InnerAcc,)).
+                match m.done() {
+                    Some(((a,),)) => (a,),
+                    // SAFETY: EmbeddedHeadersView invariant guarantees the chain hits.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -489,6 +674,38 @@ macro_rules! impl_embedded_arity_2 {
                     let (a, ec) = $A::step(e, 0).unwrap_unchecked();
                     let (b, _) = $B::step(e, ec).unwrap_unchecked();
                     (a, b)
+                }
+            }
+        }
+
+        impl<'x, W, $A, $B> EmbeddedLookMut<(&'x $A, &'x $B)>
+            for EmbeddedHeadersView<W, (&'x $A, &'x $B)>
+        where
+            W: HasHeadersMut,
+            $A: EmbeddedStep<EmbeddedStart> + EmbeddedStepMut<EmbeddedStart>,
+            $B: EmbeddedStep<$A> + EmbeddedStepMut<$A>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A, &'a mut $B)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                let h = self.outer_mut().as_headers_mut();
+                // SAFETY: EmbeddedHeadersView invariant.
+                let e = unsafe { h.embedded_ip_mut().unwrap_unchecked() };
+                let m = EmbeddedMatcherMut::from_embedded_only(e);
+                let m = <$A as EmbeddedStepMut<EmbeddedStart>>::chain(m);
+                let m = <$B as EmbeddedStepMut<$A>>::chain(m);
+                match m.done() {
+                    Some(((a, b),)) => (a, b),
+                    // SAFETY: EmbeddedHeadersView invariant.
+                    None => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
         }
@@ -556,6 +773,40 @@ macro_rules! impl_embedded_arity_3 {
                 }
             }
         }
+
+        impl<'x, W, $A, $B, $C> EmbeddedLookMut<(&'x $A, &'x $B, &'x $C)>
+            for EmbeddedHeadersView<W, (&'x $A, &'x $B, &'x $C)>
+        where
+            W: HasHeadersMut,
+            $A: EmbeddedStep<EmbeddedStart> + EmbeddedStepMut<EmbeddedStart>,
+            $B: EmbeddedStep<$A> + EmbeddedStepMut<$A>,
+            $C: EmbeddedStep<$B> + EmbeddedStepMut<$B>,
+            Self: 'x,
+        {
+            type RefsMut<'a>
+                = (&'a mut $A, &'a mut $B, &'a mut $C)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look_mut<'a>(&'a mut self) -> Self::RefsMut<'a>
+            where
+                Self: 'a,
+            {
+                let h = self.outer_mut().as_headers_mut();
+                // SAFETY: EmbeddedHeadersView invariant.
+                let e = unsafe { h.embedded_ip_mut().unwrap_unchecked() };
+                let m = EmbeddedMatcherMut::from_embedded_only(e);
+                let m = <$A as EmbeddedStepMut<EmbeddedStart>>::chain(m);
+                let m = <$B as EmbeddedStepMut<$A>>::chain(m);
+                let m = <$C as EmbeddedStepMut<$B>>::chain(m);
+                match m.done() {
+                    Some(((a, b, c),)) => (a, b, c),
+                    // SAFETY: EmbeddedHeadersView invariant.
+                    None => unsafe { core::hint::unreachable_unchecked() },
+                }
+            }
+        }
     };
 }
 
@@ -601,6 +852,25 @@ macro_rules! impl_as_embedded_arity_1 {
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
             }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                // SAFETY: same as as_embedded, exclusive borrow preserved.
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
+            }
         }
     };
 }
@@ -624,6 +894,24 @@ macro_rules! impl_as_embedded_arity_2 {
                 }
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
+            }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
             }
         }
     };
@@ -649,6 +937,24 @@ macro_rules! impl_as_embedded_arity_3 {
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
             }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
+            }
         }
     };
 }
@@ -673,6 +979,24 @@ macro_rules! impl_as_embedded_arity_4 {
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
             }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
+            }
         }
     };
 }
@@ -696,6 +1020,24 @@ macro_rules! impl_as_embedded_arity_5 {
                 }
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
+            }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
             }
         }
     };
@@ -722,6 +1064,24 @@ macro_rules! impl_as_embedded_arity_6 {
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
             }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
+            }
         }
     };
 }
@@ -746,6 +1106,24 @@ macro_rules! impl_as_embedded_arity_7 {
                 }
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
+            }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
             }
         }
     };
@@ -789,6 +1167,24 @@ macro_rules! impl_as_embedded_arity_8 {
                 }
                 let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
                 Some(unsafe { p.as_ref_unchecked() })
+            }
+
+            /// Mutable counterpart of [`Self::as_embedded`].
+            #[inline]
+            #[must_use]
+            pub fn as_embedded_mut<U>(&mut self) -> Option<&mut EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let matched = self
+                    .as_headers()
+                    .embedded_ip()
+                    .is_some_and(<U as embedded_sealed::Sealed>::matches);
+                if !matched {
+                    return None;
+                }
+                let p = std::ptr::from_mut(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_mut_unchecked() })
             }
         }
     };
@@ -1216,5 +1612,125 @@ mod tests {
                     "as_embedded disagrees with pat.rs full chain"
                 );
             });
+    }
+
+    // -----------------------------------------------------------------------
+    // EmbeddedLookMut + as_embedded_mut tests
+    // -----------------------------------------------------------------------
+
+    // look_mut yields refs at the same addresses as look on the same
+    // EmbeddedHeaders, so the two paths agree on which inner slots
+    // they pick.  Holding `&h` and `&mut h` simultaneously is
+    // impossible, so we fix `h` in memory across both invocations and
+    // compare raw pointers afterwards.
+    #[test]
+    fn look_mut_agrees_with_look_for_v4_tcp() {
+        use crate::tcp::TcpPort;
+        use std::ptr::from_ref;
+        let mut h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {}).tcp(
+                TcpPort::new_checked(80).unwrap(),
+                TcpPort::new_checked(443).unwrap(),
+                |_| {},
+            )
+        });
+
+        let imm: (*const Ipv4, *const TruncatedTcp) = {
+            let outer: &HeadersView<OuterIcmp4> = h.as_view().unwrap();
+            let ew = outer.as_embedded::<InnerV4Tcp>().unwrap();
+            let (ip, tcp) = ew.look();
+            (from_ref(ip), from_ref(tcp))
+        };
+        let mutp: (*const Ipv4, *const TruncatedTcp) = {
+            let outer: &mut HeadersView<OuterIcmp4> = h.as_view_mut().unwrap();
+            let ew = outer.as_embedded_mut::<InnerV4Tcp>().unwrap();
+            let (ip, tcp) = ew.look_mut();
+            (from_ref(&*ip), from_ref(&*tcp))
+        };
+        assert_eq!(
+            imm, mutp,
+            "look_mut picked different (Ipv4, TruncatedTcp) slots"
+        );
+    }
+
+    // Mutation through look_mut must take effect on the backing
+    // EmbeddedHeaders.  Round-trip via Look afterwards to observe.
+    #[test]
+    fn look_mut_mutation_propagates() {
+        use crate::tcp::TcpPort;
+        let initial_dst = TcpPort::new_checked(443).unwrap();
+        let updated_dst = TcpPort::new_checked(8443).unwrap();
+
+        let mut h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {})
+                .tcp(TcpPort::new_checked(80).unwrap(), initial_dst, |_| {})
+        });
+
+        {
+            let outer = h.as_view_mut::<OuterIcmp4>().unwrap();
+            let ew = outer.as_embedded_mut::<InnerV4Tcp>().unwrap();
+            let (_, tcp_mut) = ew.look_mut();
+            // TruncatedTcp::FullHeader holds a Tcp; mutate via that.
+            if let crate::tcp::TruncatedTcp::FullHeader(t) = tcp_mut {
+                t.set_destination(updated_dst);
+            } else {
+                panic!("expected full TCP header in test packet");
+            }
+        }
+
+        let outer = h.as_view::<OuterIcmp4>().unwrap();
+        let ew = outer.as_embedded::<InnerV4Tcp>().unwrap();
+        let (_, tcp) = ew.look();
+        match tcp {
+            crate::tcp::TruncatedTcp::FullHeader(t) => assert_eq!(t.destination(), updated_dst),
+            crate::tcp::TruncatedTcp::PartialHeader(_) => {
+                panic!("expected full TCP header in test packet")
+            }
+        }
+    }
+
+    // outer_mut roundtrip preserves pointer identity, same as outer.
+    #[test]
+    fn outer_mut_round_trip_preserves_pointer_identity() {
+        use crate::tcp::TcpPort;
+        let mut h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {}).tcp(
+                TcpPort::new_checked(80).unwrap(),
+                TcpPort::new_checked(443).unwrap(),
+                |_| {},
+            )
+        });
+        let outer_addr;
+        {
+            let outer = h.as_view_mut::<OuterIcmp4>().unwrap();
+            outer_addr = std::ptr::from_mut(outer).cast_const();
+        }
+        let outer = h.as_view_mut::<OuterIcmp4>().unwrap();
+        // Re-take the borrow at the same address to confirm.
+        assert!(std::ptr::eq(
+            std::ptr::from_mut(outer).cast_const(),
+            outer_addr
+        ));
+        let ew = outer.as_embedded_mut::<InnerV4Tcp>().unwrap();
+        let outer_back: &mut HeadersView<OuterIcmp4> = ew.outer_mut();
+        assert!(std::ptr::eq(
+            std::ptr::from_mut(outer_back).cast_const(),
+            outer_addr,
+        ));
+    }
+
+    // Wrong inner shape via the mut path -> None.
+    #[test]
+    fn as_embedded_mut_wrong_inner_shape_returns_none() {
+        use crate::tcp::TcpPort;
+        let mut h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {}).tcp(
+                TcpPort::new_checked(80).unwrap(),
+                TcpPort::new_checked(443).unwrap(),
+                |_| {},
+            )
+        });
+        let outer = h.as_view_mut::<OuterIcmp4>().unwrap();
+        assert!(outer.as_embedded_mut::<(&Ipv4, &TruncatedUdp)>().is_none());
     }
 }
