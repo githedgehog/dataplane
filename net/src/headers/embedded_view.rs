@@ -22,15 +22,27 @@
 //!   the embedded variants on [`ExtGapCheck`](super::pat::ExtGapCheck)
 //!   (`ext_gap_ok_embedded`).
 //!
-//! No public surface exposes the matching logic yet; the `EmbeddedHeadersView`
-//! wrapper that closes over a proven outer [`HeadersView`](super::view::HeadersView)
-//! and a proven inner shape lands in a follow-up commit.  Until then,
-//! these primitives can be exercised directly via the crate-private
-//! sealed trait in tests.
+//! [`EmbeddedHeadersView<W, U>`] is the type-level qualifier that closes
+//! over a proven outer encapsulator `W` (today: [`HeadersView<T>`]) and a
+//! proven inner embedded shape `U`.  It is `repr(transparent)` over
+//! `W`, so a `&HeadersView<T>` can be re-borrowed as a
+//! `&EmbeddedHeadersView<HeadersView<T>, U>` after a single shape check, and
+//! [`EmbeddedHeadersView::outer`] re-borrows back to `&W` for free.
+//!
+//! Construction goes through [`HeadersView::as_embedded`], which is gated
+//! per outer arity by `EmbeddedHeaders: Within<LastLayer>` -- in
+//! practice that bound restricts the call site to outer shapes
+//! ending in [`Icmp4`](crate::icmp4::Icmp4) or
+//! [`Icmp6`](crate::icmp6::Icmp6).
+//!
+//! [`EmbeddedLook::look`] returns the inner refs only.  Walk back
+//! through `outer()` if you also need the encapsulating layers.
 
 #![allow(private_bounds)]
 // `EmbeddedShape: embedded_sealed::Sealed` is the seal; external impls are the point we seal against.
-#![allow(clippy::inline_always)] // step / accessor scaffolding mirrors `view.rs`; see its module docs.
+#![allow(unsafe_code, clippy::inline_always)] // scaffolding mirrors `view.rs`; see its module docs.
+
+use core::marker::PhantomData;
 
 use crate::icmp4::TruncatedIcmp4;
 use crate::icmp6::TruncatedIcmp6;
@@ -41,7 +53,8 @@ use crate::tcp::TruncatedTcp;
 use crate::udp::TruncatedUdp;
 
 use super::pat::ExtGapCheck;
-use super::{EmbeddedHeaders, EmbeddedStart, EmbeddedTransport, Net, NetExt, Within};
+use super::view::{HeadersView, Shape};
+use super::{EmbeddedHeaders, EmbeddedStart, EmbeddedTransport, Headers, Net, NetExt, Within};
 
 // ===========================================================================
 // EmbeddedShape
@@ -218,7 +231,161 @@ impl EmbeddedHeaders {
 }
 
 // ===========================================================================
-// Per-arity EmbeddedShape / Sealed impls
+// EmbeddedHeadersView<W, U> + the cd-up trait
+// ===========================================================================
+
+/// Crate-private contract: implementor refers to a packet's [`Headers`].
+///
+/// Used by [`EmbeddedHeadersView`] to navigate from a generic outer
+/// encapsulator `W` down to the underlying [`Headers`] (and from there
+/// to the embedded sub-section).  Today only [`HeadersView<T>`] implements
+/// this trait, but future encapsulator wrappers (Geneve, Vxlan, ...)
+/// will impl it the same way, letting `EmbeddedHeadersView` work uniformly
+/// over any "proven outer" type without per-W look impls.
+pub(crate) trait HasHeaders {
+    fn as_headers(&self) -> &Headers;
+}
+
+impl<T> HasHeaders for HeadersView<T> {
+    #[inline(always)]
+    fn as_headers(&self) -> &Headers {
+        // HeadersView<T> is repr(transparent) over Headers; pat_mut/pat
+        // expose the same via &self.0.  Use the existing pub(crate)
+        // accessor to avoid re-implementing the cast here.
+        HeadersView::as_headers(self)
+    }
+}
+
+/// A type-level qualifier that closes over a proven outer encapsulator
+/// `W` and a proven inner [`EmbeddedShape`] `U`.
+///
+/// `EmbeddedHeadersView<W, U>` is `#[repr(transparent)]` over `W`, so a
+/// `&EmbeddedHeadersView<W, U>` is layout-equivalent to a `&W` and the
+/// [`outer`](Self::outer) re-borrow is a free reinterpret.
+///
+/// Today the only outer in use is [`HeadersView<T>`]; future encapsulator
+/// types (Geneve, Vxlan, nested embedded) will compose the same way:
+/// `EmbeddedHeadersView<GeneveWindow<HeadersView<T>, V>, U>` etc.  The recursive
+/// narrowing pattern means each level of encapsulation adds one
+/// type-level qualifier without mutating the layers below.
+///
+/// Construction goes through [`HeadersView::as_embedded`].  There is no
+/// owning constructor; private fields and the per-arity construction
+/// path together prevent forging an instance with a `U` proof that
+/// doesn't actually hold.
+///
+/// # Soundness
+///
+/// The `compile_fail` examples below lock in the rules that keep
+/// `EmbeddedHeadersView<W, U>` sound, mirroring the soundness doctests on
+/// [`HeadersView`].
+///
+/// ## No owning constructor
+///
+/// Private fields prevent forging an `EmbeddedHeadersView<W, U>` from an
+/// arbitrary `W` (E0423).  The only entry point
+/// ([`HeadersView::as_embedded`]) runs
+/// [`embedded_sealed::Sealed::matches`](EmbeddedShape) before handing
+/// out a reference.
+///
+/// ```compile_fail,E0423
+/// use dataplane_net::eth::Eth;
+/// use dataplane_net::ipv4::Ipv4;
+/// use dataplane_net::tcp::TruncatedTcp;
+/// use dataplane_net::headers::{EmbeddedHeadersView, Headers, HeadersView};
+/// let h = Headers::default();
+/// let w: &HeadersView<(&Eth,)> = h.as_view().unwrap();
+/// let _ew: EmbeddedHeadersView<&HeadersView<(&Eth,)>, (&Ipv4, &TruncatedTcp)> =
+///     EmbeddedHeadersView(w, std::marker::PhantomData);
+/// ```
+///
+/// ## `EmbeddedHeadersView<W, U>` is not [`Clone`]
+///
+/// Same rationale as [`HeadersView<T>`]: cloning through a reference would
+/// produce an owned proven value that bypasses the borrow lifecycle
+/// (E0277: `EmbeddedHeadersView<W, U>: Clone` unsatisfied).
+///
+/// ```compile_fail,E0277
+/// use dataplane_net::eth::Eth;
+/// use dataplane_net::icmp4::Icmp4;
+/// use dataplane_net::ipv4::Ipv4;
+/// use dataplane_net::tcp::TruncatedTcp;
+/// use dataplane_net::headers::{EmbeddedHeadersView, Headers, HeadersView};
+/// fn clone_it<T: Clone>(x: &T) -> T { x.clone() }
+/// let h = Headers::default();
+/// let outer: &HeadersView<(&Eth, &Ipv4, &Icmp4)> = h.as_view().unwrap();
+/// let ew = outer.as_embedded::<(&Ipv4, &TruncatedTcp)>().unwrap();
+/// let _owned: EmbeddedHeadersView<HeadersView<(&Eth, &Ipv4, &Icmp4)>, (&Ipv4, &TruncatedTcp)> =
+///     clone_it(ew);
+/// ```
+///
+/// ## No `as_embedded` on outer shapes that don't end in ICMP
+///
+/// `as_embedded` is only available on outer windows whose final layer
+/// is one for which `EmbeddedHeaders: Within<LastLayer>` holds (i.e.
+/// `Icmp4` or `Icmp6`).  A plain `(Eth, Ipv4, Tcp)` outer cannot reach
+/// `as_embedded` (E0599: method not found).
+///
+/// ```compile_fail,E0599
+/// use dataplane_net::eth::Eth;
+/// use dataplane_net::ipv4::Ipv4;
+/// use dataplane_net::tcp::{Tcp, TruncatedTcp};
+/// use dataplane_net::headers::{Headers, HeadersView};
+/// let h = Headers::default();
+/// let w: &HeadersView<(&Eth, &Ipv4, &Tcp)> = h.as_view().unwrap();
+/// let _ew = w.as_embedded::<(&Ipv4, &TruncatedTcp)>();
+/// ```
+#[repr(transparent)]
+pub struct EmbeddedHeadersView<W, U>(W, PhantomData<U>);
+
+impl<W, U> EmbeddedHeadersView<W, U> {
+    /// Re-borrow this qualifier as the encapsulating outer.
+    ///
+    /// This is the `cd ..` of the encapsulation lattice -- a free
+    /// reinterpret of the same allocation, since
+    /// `EmbeddedHeadersView<W, U>` is `#[repr(transparent)]` over `W`.
+    /// The `U` proof is dropped; the `W` proof is preserved.
+    #[inline(always)]
+    #[must_use]
+    pub fn outer(&self) -> &W {
+        // SAFETY: EmbeddedHeadersView<W, U> is repr(transparent) over W,
+        // so a &EmbeddedHeadersView<W, U> and a &W have identical layout.
+        // Dropping the U-side phantom does not change the W proof.
+        let p = std::ptr::from_ref(self).cast::<W>();
+        unsafe { p.as_ref_unchecked() }
+    }
+}
+
+// ===========================================================================
+// EmbeddedLook
+// ===========================================================================
+
+/// Extract typed references to the layers an [`EmbeddedHeadersView`] holds.
+///
+/// Implemented for each valid inner shape tuple `U`.  Returns refs to
+/// the *inner* layers only -- to also see the encapsulating layers,
+/// re-borrow via [`EmbeddedHeadersView::outer`] and call
+/// [`Look::look`](super::view::Look::look) on it.
+pub trait EmbeddedLook<U> {
+    /// The tuple of typed references produced by [`Self::look`].
+    type Refs<'a>
+    where
+        Self: 'a;
+
+    /// Extract typed references to the matched inner layers.
+    ///
+    /// Compiles to the same sequence of variant reads as
+    /// [`embedded_sealed::Sealed::matches`], plus `unwrap_unchecked`
+    /// at each step; the `EmbeddedHeadersView<W, U>` type invariant
+    /// guarantees success so the `None` branches are pruned by the
+    /// optimizer.
+    fn look<'a>(&'a self) -> Self::Refs<'a>
+    where
+        Self: 'a;
+}
+
+// ===========================================================================
+// Per-arity EmbeddedShape / Sealed / EmbeddedLook impls
 // ===========================================================================
 //
 // Embedded shapes max out at arity 3 in realistic ICMP error payloads
@@ -236,6 +403,36 @@ macro_rules! impl_embedded_arity_1 {
             #[inline(always)]
             fn matches(e: &EmbeddedHeaders) -> bool {
                 $A::step(e, 0).is_some()
+            }
+        }
+
+        impl<'x, W, $A> EmbeddedLook<(&'x $A,)> for EmbeddedHeadersView<W, (&'x $A,)>
+        where
+            W: HasHeaders,
+            $A: EmbeddedStep<EmbeddedStart>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (&'a $A,)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = self.outer().as_headers();
+                // SAFETY: EmbeddedHeadersView invariant: outer's embedded_ip is Some
+                // and matches() was true on it at construction.
+                let e = unsafe { h.embedded_ip().unwrap_unchecked() };
+                unsafe {
+                    core::hint::assert_unchecked(<(&'x $A,) as embedded_sealed::Sealed>::matches(
+                        e,
+                    ));
+                    let (a, _) = $A::step(e, 0).unwrap_unchecked();
+                    (a,)
+                }
             }
         }
     };
@@ -261,6 +458,38 @@ macro_rules! impl_embedded_arity_2 {
                     return false;
                 };
                 $B::step(e, ec).is_some()
+            }
+        }
+
+        impl<'x, W, $A, $B> EmbeddedLook<(&'x $A, &'x $B)>
+            for EmbeddedHeadersView<W, (&'x $A, &'x $B)>
+        where
+            W: HasHeaders,
+            $A: EmbeddedStep<EmbeddedStart>,
+            $B: EmbeddedStep<$A>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (&'a $A, &'a $B)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = self.outer().as_headers();
+                // SAFETY: EmbeddedHeadersView invariant.
+                let e = unsafe { h.embedded_ip().unwrap_unchecked() };
+                unsafe {
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B) as embedded_sealed::Sealed>::matches(e),
+                    );
+                    let (a, ec) = $A::step(e, 0).unwrap_unchecked();
+                    let (b, _) = $B::step(e, ec).unwrap_unchecked();
+                    (a, b)
+                }
             }
         }
     };
@@ -293,12 +522,286 @@ macro_rules! impl_embedded_arity_3 {
                 $C::step(e, ec).is_some()
             }
         }
+
+        impl<'x, W, $A, $B, $C> EmbeddedLook<(&'x $A, &'x $B, &'x $C)>
+            for EmbeddedHeadersView<W, (&'x $A, &'x $B, &'x $C)>
+        where
+            W: HasHeaders,
+            $A: EmbeddedStep<EmbeddedStart>,
+            $B: EmbeddedStep<$A>,
+            $C: EmbeddedStep<$B>,
+            Self: 'x,
+        {
+            type Refs<'a>
+                = (&'a $A, &'a $B, &'a $C)
+            where
+                Self: 'a;
+
+            #[inline(always)]
+            fn look<'a>(&'a self) -> Self::Refs<'a>
+            where
+                Self: 'a,
+            {
+                let h = self.outer().as_headers();
+                // SAFETY: EmbeddedHeadersView invariant.
+                let e = unsafe { h.embedded_ip().unwrap_unchecked() };
+                unsafe {
+                    core::hint::assert_unchecked(
+                        <(&'x $A, &'x $B, &'x $C) as embedded_sealed::Sealed>::matches(e),
+                    );
+                    let (a, ec) = $A::step(e, 0).unwrap_unchecked();
+                    let (b, ec) = $B::step(e, ec).unwrap_unchecked();
+                    let (c, _) = $C::step(e, ec).unwrap_unchecked();
+                    (a, b, c)
+                }
+            }
+        }
     };
 }
 
 impl_embedded_arity_1!(A);
 impl_embedded_arity_2!(A, B);
 impl_embedded_arity_3!(A, B, C);
+
+// ===========================================================================
+// HeadersView<T>::as_embedded -- per-outer-arity construction
+// ===========================================================================
+//
+// One impl per outer arity, gated by `EmbeddedHeaders: Within<LastLayer>`.
+// In practice the bound restricts callers to outer shapes whose final
+// layer is Icmp4 or Icmp6 (those are the only `Within<Icmp_>` impls for
+// `EmbeddedHeaders`).  Each impl runs the inner shape's `matches` and
+// the outer's `embedded_ip().is_some()` check, then casts &HeadersView<...>
+// to &EmbeddedHeadersView<HeadersView<...>, U> via the repr(transparent) layout.
+
+macro_rules! impl_as_embedded_arity_1 {
+    ($A:ident) => {
+        impl<'x, $A> HeadersView<(&'x $A,)>
+        where
+            (&'x $A,): Shape,
+            EmbeddedHeaders: Within<$A>,
+        {
+            /// Re-borrow this outer view as an [`EmbeddedHeadersView`] if
+            /// the embedded section is present and matches `U`.
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                // SAFETY: EmbeddedHeadersView<Self, U> is repr(transparent)
+                // over Self.  matches(e) was just verified and
+                // embedded_ip() returned Some, so the U + outer
+                // invariants hold.  The reference cast preserves the
+                // shared borrow lifetime.
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_embedded_arity_2 {
+    ($A:ident, $B:ident) => {
+        impl<'x, $A, $B> HeadersView<(&'x $A, &'x $B)>
+        where
+            (&'x $A, &'x $B): Shape,
+            EmbeddedHeaders: Within<$B>,
+        {
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_embedded_arity_3 {
+    ($A:ident, $B:ident, $C:ident) => {
+        impl<'x, $A, $B, $C> HeadersView<(&'x $A, &'x $B, &'x $C)>
+        where
+            (&'x $A, &'x $B, &'x $C): Shape,
+            EmbeddedHeaders: Within<$C>,
+        {
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_embedded_arity_4 {
+    ($A:ident, $B:ident, $C:ident, $D:ident) => {
+        impl<'x, $A, $B, $C, $D> HeadersView<(&'x $A, &'x $B, &'x $C, &'x $D)>
+        where
+            (&'x $A, &'x $B, &'x $C, &'x $D): Shape,
+            EmbeddedHeaders: Within<$D>,
+        {
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_embedded_arity_5 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident) => {
+        impl<'x, $A, $B, $C, $D, $E> HeadersView<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E)>
+        where
+            (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E): Shape,
+            EmbeddedHeaders: Within<$E>,
+        {
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_embedded_arity_6 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident, $F:ident) => {
+        impl<'x, $A, $B, $C, $D, $E, $F>
+            HeadersView<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F)>
+        where
+            (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F): Shape,
+            EmbeddedHeaders: Within<$F>,
+        {
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_embedded_arity_7 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident, $F:ident, $G:ident) => {
+        impl<'x, $A, $B, $C, $D, $E, $F, $G>
+            HeadersView<(&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G)>
+        where
+            (&'x $A, &'x $B, &'x $C, &'x $D, &'x $E, &'x $F, &'x $G): Shape,
+            EmbeddedHeaders: Within<$G>,
+        {
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_embedded_arity_8 {
+    ($A:ident, $B:ident, $C:ident, $D:ident, $E:ident, $F:ident, $G:ident, $H:ident) => {
+        impl<'x, $A, $B, $C, $D, $E, $F, $G, $H>
+            HeadersView<(
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            )>
+        where
+            (
+                &'x $A,
+                &'x $B,
+                &'x $C,
+                &'x $D,
+                &'x $E,
+                &'x $F,
+                &'x $G,
+                &'x $H,
+            ): Shape,
+            EmbeddedHeaders: Within<$H>,
+        {
+            #[inline]
+            #[must_use]
+            pub fn as_embedded<U>(&self) -> Option<&EmbeddedHeadersView<Self, U>>
+            where
+                U: EmbeddedShape,
+            {
+                let e = self.as_headers().embedded_ip()?;
+                if !<U as embedded_sealed::Sealed>::matches(e) {
+                    return None;
+                }
+                let p = std::ptr::from_ref(self).cast::<EmbeddedHeadersView<Self, U>>();
+                Some(unsafe { p.as_ref_unchecked() })
+            }
+        }
+    };
+}
+
+impl_as_embedded_arity_1!(A);
+impl_as_embedded_arity_2!(A, B);
+impl_as_embedded_arity_3!(A, B, C);
+impl_as_embedded_arity_4!(A, B, C, D);
+impl_as_embedded_arity_5!(A, B, C, D, E);
+impl_as_embedded_arity_6!(A, B, C, D, E, F);
+impl_as_embedded_arity_7!(A, B, C, D, E, F, G);
+impl_as_embedded_arity_8!(A, B, C, D, E, F, G, H);
 
 // ===========================================================================
 // Tests
@@ -522,6 +1025,196 @@ mod tests {
                 assert!(!pat_tcp, "pat.rs must miss TCP when inner is UDP");
                 assert!(!win_tcp, "EmbeddedShape must miss TCP when inner is UDP");
                 assert_eq!(pat_tcp, win_tcp);
+            });
+    }
+
+    // -----------------------------------------------------------------------
+    // EmbeddedHeadersView<W, U> use-site tests
+    // -----------------------------------------------------------------------
+
+    use crate::eth::Eth;
+    use crate::headers::HeadersView;
+    use crate::icmp4::Icmp4;
+    use crate::icmp6::Icmp6;
+
+    type OuterIcmp4 = (&'static Eth, &'static Ipv4, &'static Icmp4);
+    type OuterIcmp6 = (&'static Eth, &'static Ipv6, &'static Icmp6);
+    type InnerV4Tcp = (&'static Ipv4, &'static TruncatedTcp);
+    type InnerV6Udp = (&'static Ipv6, &'static TruncatedUdp);
+
+    #[test]
+    fn as_embedded_v4_tcp_yields_proven_window() {
+        use crate::tcp::TcpPort;
+        let h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {}).tcp(
+                TcpPort::new_checked(80).unwrap(),
+                TcpPort::new_checked(443).unwrap(),
+                |_| {},
+            )
+        });
+        let outer: &HeadersView<OuterIcmp4> = h.as_view().expect("outer shape matches");
+        let ew: &EmbeddedHeadersView<HeadersView<OuterIcmp4>, InnerV4Tcp> = outer
+            .as_embedded::<InnerV4Tcp>()
+            .expect("inner shape matches");
+        let (inner_ip, inner_tcp) = ew.look();
+        // Inner refs must point to the same EmbeddedHeaders the
+        // pat.rs `.embedded()` chain selects.
+        let (_, _, _, (pat_ip, pat_tcp)) = h
+            .pat()
+            .eth()
+            .ipv4()
+            .icmp4()
+            .embedded()
+            .ipv4()
+            .tcp()
+            .done()
+            .expect("pat.rs must agree");
+        assert!(std::ptr::eq(inner_ip, pat_ip));
+        assert!(std::ptr::eq(inner_tcp, pat_tcp));
+    }
+
+    // outer() is a free reborrow back to the encapsulating HeadersView<T>:
+    // the returned reference must point at the same allocation as the
+    // original outer, so a roundtrip preserves identity at the byte
+    // level.  Because HeadersView<T> is repr(transparent) over Headers and
+    // EmbeddedHeadersView<HeadersView<T>, U> is repr(transparent) over HeadersView<T>,
+    // the cast is purely a type-level move.
+    #[test]
+    fn outer_round_trip_preserves_pointer_identity() {
+        use crate::tcp::TcpPort;
+        let h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {}).tcp(
+                TcpPort::new_checked(80).unwrap(),
+                TcpPort::new_checked(443).unwrap(),
+                |_| {},
+            )
+        });
+        let outer: &HeadersView<OuterIcmp4> = h.as_view().unwrap();
+        let outer_addr = std::ptr::from_ref(outer);
+        let ew = outer.as_embedded::<InnerV4Tcp>().unwrap();
+        let outer_back = ew.outer();
+        assert!(std::ptr::eq(outer_back, outer_addr));
+    }
+
+    // Wrong inner shape returns None; the outer HeadersView stays valid.
+    #[test]
+    fn wrong_inner_shape_returns_none() {
+        use crate::tcp::TcpPort;
+        let h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {}).tcp(
+                TcpPort::new_checked(80).unwrap(),
+                TcpPort::new_checked(443).unwrap(),
+                |_| {},
+            )
+        });
+        let outer: &HeadersView<OuterIcmp4> = h.as_view().unwrap();
+        // Inner is TCP; ask for UDP -> must miss.
+        assert!(outer.as_embedded::<(&Ipv4, &TruncatedUdp)>().is_none());
+        // But TCP is fine.
+        assert!(outer.as_embedded::<InnerV4Tcp>().is_some());
+    }
+
+    // No embedded section -> as_embedded returns None even with a
+    // valid outer ICMP shape.  Echo replies are not error messages, so
+    // the builder doesn't attach an embedded payload.
+    #[test]
+    fn icmp_without_embedded_payload_misses() {
+        let h = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .icmp4(|_| {})
+            .echo_request(|_| {})
+            .build_headers()
+            .unwrap();
+        let outer: &HeadersView<OuterIcmp4> = h.as_view().unwrap();
+        assert!(outer.as_embedded::<InnerV4Tcp>().is_none());
+        assert!(outer.as_embedded::<(&Ipv4,)>().is_none());
+    }
+
+    // IPv6/UDP path mirrors the v4/TCP integration test.
+    #[test]
+    fn as_embedded_v6_udp_yields_proven_window() {
+        use crate::udp::UdpPort;
+        let h = icmp6_with_embedded(|a| {
+            a.ipv6(|_| {}).udp(
+                UdpPort::new_checked(53).unwrap(),
+                UdpPort::new_checked(53).unwrap(),
+                |_| {},
+            )
+        });
+        let outer: &HeadersView<OuterIcmp6> = h.as_view().unwrap();
+        let ew = outer
+            .as_embedded::<InnerV6Udp>()
+            .expect("inner shape matches");
+        let (inner_ip, inner_udp) = ew.look();
+        let (_, _, _, (pat_ip, pat_udp)) = h
+            .pat()
+            .eth()
+            .ipv6()
+            .icmp6()
+            .embedded()
+            .ipv6()
+            .udp()
+            .done()
+            .unwrap();
+        assert!(std::ptr::eq(inner_ip, pat_ip));
+        assert!(std::ptr::eq(inner_udp, pat_udp));
+    }
+
+    // Net-enum on the inner side -- the inner shape uses &Net rather
+    // than the concrete &Ipv4 / &Ipv6 variant.  Useful for shapes that
+    // accept either inner IP version.
+    #[test]
+    fn as_embedded_inner_net_enum_works() {
+        use crate::tcp::TcpPort;
+        let h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {}).tcp(
+                TcpPort::new_checked(80).unwrap(),
+                TcpPort::new_checked(443).unwrap(),
+                |_| {},
+            )
+        });
+        let outer: &HeadersView<OuterIcmp4> = h.as_view().unwrap();
+        let ew = outer
+            .as_embedded::<(&Net, &TruncatedTcp)>()
+            .expect("Net+Tcp inner shape matches");
+        let (net, _tcp) = ew.look();
+        assert!(matches!(net, Net::Ipv4(_)));
+    }
+
+    // Cross-consistency under fuzz: as_embedded()'s hit/miss must
+    // agree with pat.rs's full chain (eth().ipv4().icmp4().embedded()
+    // .ipv4().tcp().done()) for every generated header chain.
+    #[test]
+    fn as_embedded_v4_tcp_agrees_with_pat_matcher() {
+        let chain = header_chain()
+            .eth(|_| {})
+            .ipv4(|_| {})
+            .icmp4(|_| {})
+            .dest_unreachable(|_| {})
+            .embed_ipv4(|_| {})
+            .embed_tcp(|_| {});
+        bolero::check!()
+            .with_generator(chain)
+            .for_each(|h: &Headers| {
+                let pat_hit = h
+                    .pat()
+                    .eth()
+                    .ipv4()
+                    .icmp4()
+                    .embedded()
+                    .ipv4()
+                    .tcp()
+                    .done()
+                    .is_some();
+                let win_hit = h
+                    .as_view::<OuterIcmp4>()
+                    .and_then(|w| w.as_embedded::<InnerV4Tcp>())
+                    .is_some();
+                assert_eq!(
+                    pat_hit, win_hit,
+                    "as_embedded disagrees with pat.rs full chain"
+                );
             });
     }
 }
