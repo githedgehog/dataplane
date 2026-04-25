@@ -19,7 +19,7 @@ use crate::common::NatAction;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PortFwFlowStatus {
+pub enum NatFlowStatus {
     OneWay = 0,
     TwoWay = 1,
     Established = 2,
@@ -32,81 +32,81 @@ pub enum PortFwFlowStatus {
     Closed = 9,
 }
 
-impl From<u8> for PortFwFlowStatus {
+impl From<u8> for NatFlowStatus {
     fn from(value: u8) -> Self {
         match value {
-            0 => PortFwFlowStatus::OneWay,
-            1 => PortFwFlowStatus::TwoWay,
-            2 => PortFwFlowStatus::Established,
-            3 => PortFwFlowStatus::Reset,
-            4 => PortFwFlowStatus::CClosing,
-            5 => PortFwFlowStatus::SClosing,
-            6 => PortFwFlowStatus::CHalfClose,
-            7 => PortFwFlowStatus::SHalfClose,
-            8 => PortFwFlowStatus::LastAck,
-            9 => PortFwFlowStatus::Closed,
+            0 => NatFlowStatus::OneWay,
+            1 => NatFlowStatus::TwoWay,
+            2 => NatFlowStatus::Established,
+            3 => NatFlowStatus::Reset,
+            4 => NatFlowStatus::CClosing,
+            5 => NatFlowStatus::SClosing,
+            6 => NatFlowStatus::CHalfClose,
+            7 => NatFlowStatus::SHalfClose,
+            8 => NatFlowStatus::LastAck,
+            9 => NatFlowStatus::Closed,
             _ => unreachable!(),
         }
     }
 }
-impl From<PortFwFlowStatus> for u8 {
-    fn from(value: PortFwFlowStatus) -> Self {
+impl From<NatFlowStatus> for u8 {
+    fn from(value: NatFlowStatus) -> Self {
         value as u8
     }
 }
 
-impl Display for PortFwFlowStatus {
+impl Display for NatFlowStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PortFwFlowStatus::OneWay => write!(f, "oneway"),
-            PortFwFlowStatus::TwoWay => write!(f, "twoway"),
-            PortFwFlowStatus::Established => write!(f, "established"),
-            PortFwFlowStatus::Reset => write!(f, "reset"),
-            PortFwFlowStatus::CClosing => write!(f, "client-closing"),
-            PortFwFlowStatus::SClosing => write!(f, "server-closing"),
-            PortFwFlowStatus::CHalfClose => write!(f, "client-half-close"),
-            PortFwFlowStatus::SHalfClose => write!(f, "server-half-close"),
-            PortFwFlowStatus::LastAck => write!(f, "last-ack"),
-            PortFwFlowStatus::Closed => write!(f, "closed"),
+            NatFlowStatus::OneWay => write!(f, "oneway"),
+            NatFlowStatus::TwoWay => write!(f, "twoway"),
+            NatFlowStatus::Established => write!(f, "established"),
+            NatFlowStatus::Reset => write!(f, "reset"),
+            NatFlowStatus::CClosing => write!(f, "client-closing"),
+            NatFlowStatus::SClosing => write!(f, "server-closing"),
+            NatFlowStatus::CHalfClose => write!(f, "client-half-close"),
+            NatFlowStatus::SHalfClose => write!(f, "server-half-close"),
+            NatFlowStatus::LastAck => write!(f, "last-ack"),
+            NatFlowStatus::Closed => write!(f, "closed"),
         }
     }
 }
 
-fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> PortFwFlowStatus {
+fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> NatFlowStatus {
     let status = pfw_state.status.load();
     match pfw_state.action {
         NatAction::DstNat => match status {
-            PortFwFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => PortFwFlowStatus::Established,
-            PortFwFlowStatus::Established if tcp.fin() => PortFwFlowStatus::CClosing,
-            PortFwFlowStatus::SClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::SHalfClose,
-            PortFwFlowStatus::SClosing if tcp.fin() && tcp.ack() => PortFwFlowStatus::LastAck,
-            PortFwFlowStatus::SHalfClose if tcp.fin() => PortFwFlowStatus::LastAck,
-            PortFwFlowStatus::LastAck if tcp.ack() => PortFwFlowStatus::Closed,
-            _other if tcp.rst() => PortFwFlowStatus::Reset,
+            NatFlowStatus::TwoWay if !tcp.syn() && tcp.ack() => NatFlowStatus::Established,
+            NatFlowStatus::Established if tcp.fin() => NatFlowStatus::CClosing,
+            NatFlowStatus::SClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::SHalfClose,
+            NatFlowStatus::SClosing if tcp.fin() && tcp.ack() => NatFlowStatus::LastAck,
+            NatFlowStatus::SHalfClose if tcp.fin() => NatFlowStatus::LastAck,
+            NatFlowStatus::LastAck if tcp.ack() => NatFlowStatus::Closed,
+            _other if tcp.rst() => NatFlowStatus::Reset,
             other => other,
         },
         NatAction::SrcNat => match status {
-            PortFwFlowStatus::OneWay if tcp.syn() && tcp.ack() => PortFwFlowStatus::TwoWay,
-            PortFwFlowStatus::Established if tcp.fin() => PortFwFlowStatus::SClosing,
-            PortFwFlowStatus::CClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::CHalfClose,
-            PortFwFlowStatus::CClosing if tcp.fin() && tcp.ack() => PortFwFlowStatus::LastAck,
-            PortFwFlowStatus::CClosing if !tcp.fin() && tcp.ack() => PortFwFlowStatus::CHalfClose,
-            PortFwFlowStatus::CHalfClose if tcp.fin() => PortFwFlowStatus::LastAck,
-            PortFwFlowStatus::LastAck if tcp.ack() => PortFwFlowStatus::Closed,
-            _other if tcp.rst() => PortFwFlowStatus::Reset,
+            NatFlowStatus::OneWay if tcp.syn() && tcp.ack() => NatFlowStatus::TwoWay,
+            NatFlowStatus::Established if tcp.fin() => NatFlowStatus::SClosing,
+            NatFlowStatus::CClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::CHalfClose,
+            NatFlowStatus::CClosing if tcp.fin() && tcp.ack() => NatFlowStatus::LastAck,
+            NatFlowStatus::CClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::CHalfClose,
+            NatFlowStatus::CHalfClose if tcp.fin() => NatFlowStatus::LastAck,
+            NatFlowStatus::LastAck if tcp.ack() => NatFlowStatus::Closed,
+            _other if tcp.rst() => NatFlowStatus::Reset,
             other => other,
         },
     }
 }
-fn next_flow_status_non_tcp(pfw_state: &PortFwState) -> PortFwFlowStatus {
+fn next_flow_status_non_tcp(pfw_state: &PortFwState) -> NatFlowStatus {
     let status = pfw_state.status.load();
     match pfw_state.action {
         NatAction::DstNat => match status {
-            PortFwFlowStatus::TwoWay => PortFwFlowStatus::Established,
+            NatFlowStatus::TwoWay => NatFlowStatus::Established,
             other => other,
         },
         NatAction::SrcNat => match status {
-            PortFwFlowStatus::OneWay => PortFwFlowStatus::TwoWay,
+            NatFlowStatus::OneWay => NatFlowStatus::TwoWay,
             other => other,
         },
     }
@@ -119,7 +119,7 @@ fn next_flow_status_non_tcp(pfw_state: &PortFwState) -> PortFwFlowStatus {
 pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     pfw_state: &PortFwState,
-) -> PortFwFlowStatus {
+) -> NatFlowStatus {
     if let Some(tcp) = packet.try_tcp() {
         next_flow_status_tcp(pfw_state, tcp)
     } else {
@@ -128,19 +128,19 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
 }
 
 #[derive(Debug, Clone)]
-pub struct AtomicPortFwFlowStatus(Arc<AtomicU8>);
-impl AtomicPortFwFlowStatus {
+pub struct AtomicNatFlowStatus(Arc<AtomicU8>);
+impl AtomicNatFlowStatus {
     #[must_use]
     pub fn new() -> Self {
-        AtomicPortFwFlowStatus(Arc::new(AtomicU8::new(PortFwFlowStatus::OneWay.into())))
+        AtomicNatFlowStatus(Arc::new(AtomicU8::new(NatFlowStatus::OneWay.into())))
     }
 
     #[must_use]
-    pub fn load(&self) -> PortFwFlowStatus {
+    pub fn load(&self) -> NatFlowStatus {
         self.0.load(std::sync::atomic::Ordering::Relaxed).into()
     }
 
-    pub fn store(&self, status: PortFwFlowStatus) {
+    pub fn store(&self, status: NatFlowStatus) {
         self.0
             .store(status.into(), std::sync::atomic::Ordering::Relaxed);
     }
