@@ -3,6 +3,7 @@
 
 #include <rte_config.h>
 
+#include <rte_acl.h>
 #include <rte_alarm.h>
 #include <rte_atomic.h>
 #include <rte_bitmap.h>
@@ -116,7 +117,6 @@
 #include <rte_ring_peek.h>
 #include <rte_ring_peek_zc.h>
 #include <rte_ring_rts.h>
-// #include <rte_rtm.h>
 #include <rte_rwlock.h>
 #include <rte_security.h>
 #include <rte_seqcount.h>
@@ -149,6 +149,7 @@
 #include <rte_vhost_async.h>
 #include <rte_vhost_crypto.h>
 #include <rte_vxlan.h>
+// #include <rte_rtm.h>
 
 // Things which are either duplicated, totally inapplicable or not needed
 // #include <cmdline.h>
