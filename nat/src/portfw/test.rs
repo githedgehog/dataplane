@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod nf_test {
-    use crate::portfw::protocol::PortFwFlowStatus;
+    use crate::portfw::protocol::NatFlowStatus;
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
 
     use flow_entry::flow_table::{FlowLookup, FlowTable};
@@ -30,7 +30,7 @@ mod nf_test {
             .map(|flow_info| flow_info.status())
     }
 
-    fn get_pfw_flow_status(packet: &Packet<TestBuffer>) -> Option<PortFwFlowStatus> {
+    fn get_pfw_flow_status(packet: &Packet<TestBuffer>) -> Option<NatFlowStatus> {
         packet
             .meta()
             .flow_info
@@ -224,7 +224,7 @@ mod nf_test {
         assert_eq!(output.udp_source_port().unwrap().as_u16(), 3053);
         assert_eq!(output.udp_destination_port().unwrap().as_u16(), 9876);
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
-        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::TwoWay));
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::TwoWay));
 
         let flow_info = output.meta().flow_info.as_ref().unwrap();
         assert_eq!(flow_info.status(), FlowStatus::Active);
@@ -286,7 +286,7 @@ mod nf_test {
         let output = process_packet(pipeline, reply);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
-        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::TwoWay));
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::TwoWay));
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
@@ -296,7 +296,7 @@ mod nf_test {
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
         assert_eq!(
             get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::Established)
+            Some(NatFlowStatus::Established)
         );
     }
 
@@ -329,10 +329,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
-        assert_eq!(
-            get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::SClosing)
-        );
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::SClosing));
 
         // process TCP FIN ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
@@ -340,10 +337,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
-        assert_eq!(
-            get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::LastAck)
-        );
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::LastAck));
 
         // process TCP ACK in reverse direction: flow entry should be found. State should become Closed
         let mut packet = tcp_packet_reverse_reply();
@@ -351,7 +345,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // it may be None if the nf expiration removes it
-        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Closed));
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
     }
@@ -372,20 +366,14 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::CClosing)
-        );
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::CClosing));
 
         // process TCP FIN ACK packet in reverse direction
         let mut packet = tcp_packet_reverse_reply();
         packet.try_tcp_mut().unwrap().set_ack(true).set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
-        assert_eq!(
-            get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::LastAck)
-        );
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::LastAck));
 
         // process TCP ACK in forward direction: flow entry should be found. State should become Closed
         let mut packet = tcp_packet_reverse_reply();
@@ -393,7 +381,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // may be cancelled or none
-        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Closed));
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
     }
@@ -414,10 +402,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::CClosing)
-        );
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::CClosing));
 
         // process TCP ACK packet in reverse direction. We assume this ACKs the FIN
         let mut packet = tcp_packet_reverse_reply();
@@ -426,7 +411,7 @@ mod nf_test {
         assert!(!output.is_done());
         assert_eq!(
             get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::CHalfClose)
+            Some(NatFlowStatus::CHalfClose)
         );
 
         // process TCP FIN in reverse direction: flow entry should be found. State should become LastAck
@@ -434,10 +419,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_fin(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(
-            get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::LastAck)
-        );
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::LastAck));
 
         // process TCP ACK in forward direction: flow entry should be found. State should become Closed
         let mut packet = tcp_packet_to_port_forward();
@@ -445,7 +427,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
         assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // may be cancelled or none
-        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Closed));
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
     }
@@ -471,7 +453,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert_eq!(
             get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::Established)
+            Some(NatFlowStatus::Established)
         );
 
         // process TCP RST packet in forward direction.
@@ -480,7 +462,7 @@ mod nf_test {
         let output = process_packet(&mut pipeline, packet);
         assert!(!output.is_done());
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Cancelled));
-        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::Reset));
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::Reset));
 
         // the flow table still contains the two flows, although they are unusable
         assert_eq!(flow_table.len(), Some(2));
@@ -506,7 +488,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_syn(true).set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert_eq!(get_pfw_flow_status(&output), Some(PortFwFlowStatus::TwoWay));
+        assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::TwoWay));
 
         // process TCP ACK packet in forward direction
         let mut packet = tcp_packet_to_port_forward();
@@ -515,7 +497,7 @@ mod nf_test {
         assert!(!output.is_done());
         assert_eq!(
             get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::Established)
+            Some(NatFlowStatus::Established)
         );
 
         // build the same table without the TCP port-forwarding rule
@@ -749,7 +731,7 @@ mod nf_test {
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Active));
         assert_eq!(
             get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::Established)
+            Some(NatFlowStatus::Established)
         );
         let rule_referenced = get_pfw_flow_state_rule(&output);
         assert_eq!(rule_referenced.as_ref().unwrap().as_ref(), &entry);
@@ -809,7 +791,7 @@ mod nf_test {
         assert_eq!(get_flow_status(&output), Some(FlowStatus::Cancelled)); // flow should be cancelled
         assert_eq!(
             get_pfw_flow_status(&output),
-            Some(PortFwFlowStatus::Established) // this remains established. That's fine.
+            Some(NatFlowStatus::Established) // this remains established. That's fine.
         );
         let rule_referenced = get_pfw_flow_state_rule(&output);
         assert!(rule_referenced.is_none()); // flow did not get a new reference to a rule

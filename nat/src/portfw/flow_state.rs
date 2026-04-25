@@ -20,7 +20,7 @@ use flow_entry::flow_table::FlowInfo;
 
 use crate::common::NatAction;
 use crate::portfw::PortFwEntry;
-use crate::portfw::protocol::{AtomicPortFwFlowStatus, PortFwFlowStatus, next_flow_status};
+use crate::portfw::protocol::{AtomicNatFlowStatus, NatFlowStatus, next_flow_status};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
@@ -28,7 +28,7 @@ use tracing::{debug, error, warn};
 #[derive(Debug, Clone)]
 pub struct PortFwState {
     pub(crate) action: NatAction,
-    pub(crate) status: AtomicPortFwFlowStatus,
+    pub(crate) status: AtomicNatFlowStatus,
     use_ip: UnicastIpAddr,
     use_port: NonZero<u16>,
     pub(crate) rule: Weak<PortFwEntry>,
@@ -39,7 +39,7 @@ impl PortFwState {
         use_ip: UnicastIpAddr,
         use_port: NonZero<u16>,
         rule: Weak<PortFwEntry>,
-        status: AtomicPortFwFlowStatus,
+        status: AtomicNatFlowStatus,
     ) -> Self {
         Self {
             action: NatAction::SrcNat,
@@ -54,7 +54,7 @@ impl PortFwState {
         use_ip: UnicastIpAddr,
         use_port: NonZero<u16>,
         rule: Weak<PortFwEntry>,
-        status: AtomicPortFwFlowStatus,
+        status: AtomicNatFlowStatus,
     ) -> Self {
         Self {
             action: NatAction::DstNat,
@@ -129,9 +129,9 @@ pub(crate) fn setup_forward_flow(
     entry: &Arc<PortFwEntry>,
     new_dst_ip: UnicastIpAddr,
     new_dst_port: NonZero<u16>,
-) -> AtomicPortFwFlowStatus {
+) -> AtomicNatFlowStatus {
     // build port forwarding state for the forward flow
-    let status = AtomicPortFwFlowStatus::new();
+    let status = AtomicNatFlowStatus::new();
     let port_fw_state = PortFwState::new_dnat(
         new_dst_ip,
         new_dst_port,
@@ -156,7 +156,7 @@ pub(crate) fn setup_reverse_flow(
     entry: &Arc<PortFwEntry>,
     dst_ip: UnicastIpAddr,
     dst_port: NonZero<u16>,
-    status: AtomicPortFwFlowStatus,
+    status: AtomicNatFlowStatus,
 ) {
     // build port forwarding state for the REVERSE flow
     let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);
@@ -231,8 +231,8 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
     // compute new timeout for the flow. In case of TCP, if the connection was reset or closed,
     // invalidate the flows in both directions. In either case, the packet is let through.
     let extend_by = match new_status {
-        PortFwFlowStatus::Established => entry.estab_timeout(),
-        PortFwFlowStatus::Closed | PortFwFlowStatus::Reset => return packet.invalidate_flows(),
+        NatFlowStatus::Established => entry.estab_timeout(),
+        NatFlowStatus::Closed | NatFlowStatus::Reset => return packet.invalidate_flows(),
         _ => entry.init_timeout(),
     };
 
@@ -245,7 +245,7 @@ pub(crate) fn refresh_port_fw_entry<Buf: PacketBufferMut>(
         }
 
         // .. except if we transition to established, as that is a sound indication of legit traffic
-        if new_status == PortFwFlowStatus::Established && new_status != current_status {
+        if new_status == NatFlowStatus::Established && new_status != current_status {
             flow.related
                 .as_ref()
                 .and_then(Weak::upgrade)
