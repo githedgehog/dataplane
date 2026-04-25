@@ -1990,6 +1990,44 @@ embedded_mut_transport!(udp   / opt_udp   -> TruncatedUdp,   EmbeddedTransport::
 embedded_mut_transport!(icmp4 / opt_icmp4 -> TruncatedIcmp4, EmbeddedTransport::Icmp4);
 embedded_mut_transport!(icmp6 / opt_icmp6 -> TruncatedIcmp6, EmbeddedTransport::Icmp6);
 
+// -- EmbeddedTransport enum on EmbeddedMatcherMut --
+//
+// Returns a `&mut EmbeddedTransport` (no variant filter), parallel to
+// `MatcherMut::transport` for the outer side.  Used by
+// `EmbeddedWindow::look_mut` for shapes whose final inner layer is
+// the bare `EmbeddedTransport` enum.
+
+impl<'a, Pos, OA, IA> EmbeddedMatcherMut<'a, Pos, OA, IA>
+where
+    EmbeddedTransport: Within<Pos>,
+    Pos: ExtGapCheck,
+    IA: TupleAppend<&'a mut EmbeddedTransport>,
+{
+    /// Require an inner transport (mutable [`EmbeddedTransport`] enum).
+    pub fn transport(
+        mut self,
+    ) -> EmbeddedMatcherMut<
+        'a,
+        EmbeddedTransport,
+        OA,
+        <IA as TupleAppend<&'a mut EmbeddedTransport>>::Output,
+    > {
+        let gap_ok = Pos::ext_gap_ok_mut_embedded(&self.fields);
+        let found = self.fields.transport.take().and_then(|opt| {
+            if !gap_ok {
+                return None;
+            }
+            opt.as_mut()
+        });
+        EmbeddedMatcherMut {
+            inner_acc: self.inner_acc.and_then(|a| found.map(|v| a.append(v))),
+            outer_acc: self.outer_acc,
+            fields: self.fields,
+            _pos: core::marker::PhantomData,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eth::Eth;
