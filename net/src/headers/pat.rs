@@ -1684,6 +1684,29 @@ where
     }
 }
 
+impl<'a> EmbeddedMatcherMut<'a, EmbeddedStart, (), ()> {
+    /// Build an [`EmbeddedMatcherMut`] directly from an
+    /// [`EmbeddedHeaders`], bypassing the outer [`MatcherMut`] chain.
+    ///
+    /// Used by [`EmbeddedWindow::look_mut`](super::embedded_window::EmbeddedWindow)
+    /// to enter the embedded matcher without first walking through the
+    /// outer shape's chain (the outer mut refs would just be discarded).
+    /// Outer accumulator is `()`, so a final `.done()` returns
+    /// `Option<((), InnerAcc).Output> = Option<(InnerAcc,)>`.
+    pub(crate) fn from_embedded_only(e: &'a mut EmbeddedHeaders) -> Self {
+        EmbeddedMatcherMut {
+            fields: EmbeddedFields {
+                net: Some(&mut e.net),
+                net_ext: Some(e.net_ext.as_mut_slice()),
+                transport: Some(&mut e.transport),
+            },
+            outer_acc: Some(()),
+            inner_acc: Some(()),
+            _pos: core::marker::PhantomData,
+        }
+    }
+}
+
 impl<Pos, OuterAcc, InnerAcc> EmbeddedMatcherMut<'_, Pos, OuterAcc, InnerAcc> {
     /// Apply a predicate to the inner accumulator.
     pub fn when(self, pred: impl FnOnce(&InnerAcc) -> bool) -> Self {
