@@ -319,6 +319,17 @@ impl Headers {
     }
 }
 
+impl<T> Window<T> {
+    /// Crate-private accessor used by [`EmbeddedWindow`](super::embedded_window::EmbeddedWindow)
+    /// to reach the underlying [`Headers`] for embedded-section navigation.
+    /// Not exposed publicly: callers outside the crate must go through
+    /// [`Look::look`] / [`LookMut::look_mut`] / [`Headers::as_window`].
+    #[inline]
+    pub(crate) fn as_headers(&self) -> &Headers {
+        &self.0
+    }
+}
+
 // ===========================================================================
 // Look
 // ===========================================================================

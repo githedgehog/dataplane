@@ -48,7 +48,7 @@ pub mod window;
 pub use window::{Look, LookMut, Shape, ShapePrefix, Window};
 
 pub mod embedded_window;
-pub use embedded_window::EmbeddedShape;
+pub use embedded_window::{EmbeddedLook, EmbeddedShape, EmbeddedWindow};
 
 #[cfg(any(test, feature = "builder"))]
 pub mod builder;
