@@ -215,11 +215,6 @@ where
 // reusing `EmbeddedMatcherMut` lets us share its pre-split
 // [`pat::EmbeddedFields`] aliasing solution rather than reimplementing
 // disjoint mut access into [`EmbeddedHeaders`] here.
-//
-// The `EmbeddedTransport` enum is intentionally *not* supported here:
-// `EmbeddedMatcherMut` does not expose a corresponding `.transport()`
-// method (concrete variants only).  Symmetric to the immutable side
-// would require extending `pat.rs`; deferred until a caller needs it.
 
 /// Crate-private: extend an [`EmbeddedMatcherMut`] chain by one layer.
 pub(crate) trait EmbeddedStepMut<Pos>: Sized {
@@ -310,6 +305,28 @@ impl_embedded_transport_step_mut!(TruncatedTcp, tcp);
 impl_embedded_transport_step_mut!(TruncatedUdp, udp);
 impl_embedded_transport_step_mut!(TruncatedIcmp4, icmp4);
 impl_embedded_transport_step_mut!(TruncatedIcmp6, icmp6);
+
+// EmbeddedTransport enum -- delegates to EmbeddedMatcherMut::transport.
+impl<Pos> EmbeddedStepMut<Pos> for EmbeddedTransport
+where
+    EmbeddedTransport: Within<Pos>,
+    Pos: ExtGapCheck,
+{
+    #[inline(always)]
+    fn chain<'a, OAcc, IAcc>(
+        m: EmbeddedMatcherMut<'a, Pos, OAcc, IAcc>,
+    ) -> EmbeddedMatcherMut<
+        'a,
+        EmbeddedTransport,
+        OAcc,
+        <IAcc as TupleAppend<&'a mut EmbeddedTransport>>::Output,
+    >
+    where
+        IAcc: TupleAppend<&'a mut EmbeddedTransport>,
+    {
+        m.transport()
+    }
+}
 
 // ===========================================================================
 // EmbeddedHeaders accessors used by the step impls
@@ -1732,5 +1749,44 @@ mod tests {
         });
         let outer = h.as_view_mut::<OuterIcmp4>().unwrap();
         assert!(outer.as_embedded_mut::<(&Ipv4, &TruncatedUdp)>().is_none());
+    }
+
+    // EmbeddedTransport enum on the mut path: the inner shape uses
+    // `&EmbeddedTransport` rather than the concrete variant, so the
+    // returned ref is the enum itself.  Mutate through the enum and
+    // observe the change via a follow-up immutable look.
+    #[test]
+    fn as_embedded_mut_inner_transport_enum_works() {
+        use crate::tcp::{TcpPort, TruncatedTcp};
+        let initial_dst = TcpPort::new_checked(443).unwrap();
+        let updated_dst = TcpPort::new_checked(8443).unwrap();
+        let mut h = icmp4_with_embedded(|a| {
+            a.ipv4(|_| {})
+                .tcp(TcpPort::new_checked(80).unwrap(), initial_dst, |_| {})
+        });
+
+        {
+            let outer = h.as_view_mut::<OuterIcmp4>().unwrap();
+            let ew = outer
+                .as_embedded_mut::<(&Net, &EmbeddedTransport)>()
+                .expect("Net+EmbeddedTransport inner shape matches");
+            let (_net, transport) = ew.look_mut();
+            match transport {
+                EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(t)) => {
+                    t.set_destination(updated_dst);
+                }
+                _ => panic!("expected EmbeddedTransport::Tcp(FullHeader) in test packet"),
+            }
+        }
+
+        let outer = h.as_view::<OuterIcmp4>().unwrap();
+        let ew = outer.as_embedded::<(&Net, &EmbeddedTransport)>().unwrap();
+        let (_net, transport) = ew.look();
+        match transport {
+            EmbeddedTransport::Tcp(TruncatedTcp::FullHeader(t)) => {
+                assert_eq!(t.destination(), updated_dst);
+            }
+            _ => panic!("post-mutation: expected EmbeddedTransport::Tcp(FullHeader)"),
+        }
     }
 }
