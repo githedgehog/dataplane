@@ -18,9 +18,9 @@ use std::sync::{Arc, Weak};
 
 use flow_entry::flow_table::FlowInfo;
 
-use crate::common::NatAction;
+use crate::common::{AtomicNatFlowStatus, NatAction, NatFlowStatus};
 use crate::portfw::PortFwEntry;
-use crate::portfw::protocol::{AtomicNatFlowStatus, NatFlowStatus, next_flow_status};
+use crate::portfw::protocol::next_flow_status;
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
