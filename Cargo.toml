@@ -158,7 +158,7 @@ quote = { version = "1.0.45", default-features = false, features = [] }
 rand = { version = "0.10.1", default-features = false, features = ["thread_rng"] }
 rapidhash = { version = "4.4.1", default-features = false, features = [] }
 reedline = { version = "0.47.0", default-features = false, features = [] }
-rkyv = { version = "0.8.15", default-features = false, features = [] }
+rkyv = { version = "0.8.16", default-features = false, features = [] }
 roaring = { version = "0.11.3", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
 rustls = { version = "0.23.38", default-features = false, features = [] }
