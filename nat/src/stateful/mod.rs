@@ -9,6 +9,7 @@ pub(crate) mod icmp_handling;
 mod natip;
 mod nf;
 mod packet;
+mod protocol;
 mod state;
 mod test;
 
