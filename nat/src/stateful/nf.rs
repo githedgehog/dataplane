@@ -4,12 +4,14 @@
 //! Masquerade NF
 
 use crate::NatPort;
+use crate::common::NatFlowStatus;
 use crate::stateful::NatAllocatorWriter;
 use crate::stateful::allocation::{AllocationResult, AllocatorError};
 use crate::stateful::allocator_writer::NatAllocatorReader;
 use crate::stateful::apalloc::Allocation;
 use crate::stateful::flows::check_masquerading_flow;
 use crate::stateful::packet::{NatPacketError, NatTranslate, masquerade};
+use crate::stateful::protocol::next_flow_status;
 use crate::stateful::state::MasqueradeState;
 use concurrency::sync::Arc;
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
@@ -22,13 +24,10 @@ use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
 use std::fmt::Debug;
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[allow(unused)]
 use tracing::{debug, error, warn};
-
-#[cfg(test)]
-use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 enum StatefulNatError {
@@ -69,6 +68,11 @@ pub struct StatefulNat {
 }
 
 impl StatefulNat {
+    // Internal flow timeouts for masquerading
+    pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5);
+    pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3);
+    pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2);
+
     /// Creates a new [`StatefulNat`] processor from provided parameters.
     #[must_use]
     pub fn new(name: &str, flow_table: Arc<FlowTable>, allocator: NatAllocatorReader) -> Self {
@@ -117,16 +121,59 @@ impl StatefulNat {
         packet.meta().dst_vpcd
     }
 
-    // Look up for a session for a packet, based on attached flow key.
-    // On success, update session timeout.
-    fn get_masquerade_state<Buf: PacketBufferMut>(
-        packet: &mut Packet<Buf>,
-    ) -> Option<NatTranslate> {
-        let flow_info = packet.meta_mut().flow_info.as_mut()?;
+    /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
+    /// communication and the protocol, and returns how much the timeout of a flow should be extended.
+    fn refresh_masquerade_state<Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+        flow_info: &FlowInfo,
+        state: &MasqueradeState,
+    ) -> Option<Duration> {
+        let key = flow_info.flowkey();
+        let current = state.status.load();
+        let new_status = next_flow_status(packet, state.action(), current);
+        if new_status != current {
+            debug!("Status of flow {key} changed: {current} -> {new_status}");
+            state.status.store(new_status);
+        }
+        match new_status {
+            NatFlowStatus::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
+            NatFlowStatus::Established => Some(state.idle_timeout()),
+            NatFlowStatus::Closed | NatFlowStatus::Reset => {
+                flow_info.invalidate_pair();
+                None
+            }
+            NatFlowStatus::CClosing
+            | NatFlowStatus::SClosing
+            | NatFlowStatus::CHalfClose
+            | NatFlowStatus::SHalfClose
+            | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
+            NatFlowStatus::OneWay => {
+                warn!("Unexpected oneway state");
+                None
+            }
+        }
+    }
+
+    // Get the flow info referred to by the packet and, if found, check its masquerade state.
+    // Refresh the flow status and update the flow or invalidate it
+    fn get_masquerade_state<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<NatTranslate> {
+        let flow_info = packet.meta().flow_info.as_ref()?;
+        if !flow_info.is_active() {
+            debug!("Hit INACTIVE flow: {}", flow_info.logfmt());
+            return None;
+        }
+        debug!("Hit ACTIVE flow: {}", flow_info.logfmt());
         let value = flow_info.locked.read().unwrap();
-        let state = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>()?;
-        flow_info.reset_expiry(state.idle_timeout()).ok()?; // FIXME
-        Some(state.as_translate())
+        let Some(state) = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>() else {
+            debug!("Unable to access masquerade state");
+            return None;
+        };
+        let xlate = state.as_translate();
+        if let Some(extend_by) = Self::refresh_masquerade_state(packet, flow_info, state) {
+            let _ = flow_info.reset_expiry_unchecked(extend_by); // error purposely ignored
+        }
+        debug!("Will translate packet with {xlate}");
+        Some(xlate)
     }
 
     // Look up for a session by passing the parameters that make up a flow key.
@@ -206,7 +253,7 @@ impl StatefulNat {
             MasqueradeState::new_pair(alloc.allocation, src_ip, src_port, idle_timeout);
 
         // build a flow pair from the keys (without NAT state)
-        let expires_at = Instant::now() + idle_timeout;
+        let expires_at = Instant::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
         let (forward, reverse) = FlowInfo::related_pair(expires_at, *flow_key, reverse_key);
 
         // set up their NAT state
@@ -339,6 +386,7 @@ impl StatefulNat {
             .ok_or(StatefulNatError::Bug("Unexpected masquerade state miss"))?
             .as_translate();
 
+        // translate the packet
         if let Err(e) = masquerade(packet, &translate) {
             installed.invalidate_pair();
             return Err(e.into());
@@ -364,7 +412,6 @@ impl StatefulNat {
                     allocator.as_ref(),
                 );
                 if installed.is_active() {
-                    // translate the packet
                     Ok(())
                 } else {
                     // we invalidated the flow. Signal that packet should be dropped
