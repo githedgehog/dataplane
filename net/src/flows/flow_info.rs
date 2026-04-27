@@ -386,8 +386,6 @@ impl FlowInfo {
             debug!("Invalidating flow {}...", self.logfmt());
             self.update_status(FlowStatus::Cancelled);
             self.token.cancel();
-        } else {
-            debug!("Flow {} was not active", self.logfmt());
         }
     }
 

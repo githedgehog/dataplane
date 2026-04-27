@@ -27,8 +27,8 @@ pub enum NatPort {
 impl std::fmt::Display for NatPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NatPort::Port(port) => write!(f, "{} (port)", port.get()),
-            NatPort::Identifier(id) => write!(f, "{id} (id)"),
+            NatPort::Port(port) => write!(f, "port:{}", port.get()),
+            NatPort::Identifier(id) => write!(f, "id:{id}"),
         }
     }
 }

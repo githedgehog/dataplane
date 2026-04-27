@@ -106,12 +106,12 @@ impl Display for MasqueradeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            " {} ip: {} port|Id: {} timeout: {} {} flow-status: {}",
+            " {} ip:{} {} {} timeout: {} flow-status: {}",
             self.action,
             self.use_ip,
             self.use_port,
-            self.idle_timeout.as_secs(),
             self.allocation.as_ref().map_or("", |_| "(allocated)"),
+            self.idle_timeout.as_secs(),
             self.status.load()
         )
     }
