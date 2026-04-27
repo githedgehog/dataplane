@@ -153,7 +153,7 @@ pretty_assertions = { version = "1.4.1", default-features = false, features = []
 priority-queue = { version = "2.7.0", default-features = false, features = [] }
 proc-macro2 = { version = "1.0.106", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
-pyroscope = { version = "2.0.1", default-features = false, features = ["backend-pprof-rs"] }
+pyroscope = { version = "2.0.3", default-features = false, features = ["backend-pprof-rs"] }
 quote = { version = "1.0.45", default-features = false, features = [] }
 rand = { version = "0.10.1", default-features = false, features = ["thread_rng"] }
 rapidhash = { version = "4.4.1", default-features = false, features = [] }
