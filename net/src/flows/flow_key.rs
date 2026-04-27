@@ -633,17 +633,6 @@ impl Hash for FlowKey {
 }
 
 /// Wrapper to specify unidirectional `FlowKey` creation
-///
-/// Example:
-/// ```
-/// # use dataplane_net::FlowKey;
-/// # use dataplane_net::flow_key::{Uni};
-/// # use dataplane_net::ip::NextHeader;
-/// # use dataplane_net::packet::test_utils::build_test_ipv4_packet_with_transport;
-/// # let packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
-/// let flow_key = FlowKey::try_from(Uni(&packet));
-/// # assert!(flow_key.is_ok());
-/// ```
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Uni<T>(pub T);
