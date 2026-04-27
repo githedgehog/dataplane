@@ -81,6 +81,20 @@ macro_rules! custom_target {
 }
 
 #[macro_export]
+macro_rules! custom_target_named {
+    ($target:expr, $name:expr, $level:expr, $tags:expr) => {
+        const _: () = {
+            #[allow(unused)]
+            use $crate::trace_target_deps;
+            trace_target_deps!();
+
+            #[distributed_slice(TRACING_TARGETS)]
+            static TRACE_TGT: STarget = STarget::new($target, $name, $level, $tags, true);
+        };
+    };
+}
+
+#[macro_export]
 macro_rules! terror {
     ($target:expr, $($args:tt)*) => {
         tracing::error!(target: $target, $($args)*)
