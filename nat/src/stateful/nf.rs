@@ -19,6 +19,7 @@ use net::buffer::PacketBufferMut;
 use net::flow_key::{IcmpProtoKey, Uni};
 use net::flows::{ExtractRef, FlowInfo};
 use net::headers::TryIp;
+use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
 use pipeline::{NetworkFunction, PipelineData};
@@ -361,6 +362,12 @@ impl StatefulNat {
         let alloc = allocator
             .allocate(dst_vpcd, src_ip, flow_key.data().proto())
             .map_err(StatefulNatError::AllocationFailure)?;
+
+        // Forbid addresses we won't know how to translate. This is a work around of a larger change
+        if let Err(addr) = UnicastIpAddr::try_from(alloc.allocation.ip()) {
+            error!("Allocated address {addr} won't be usable: not unicast");
+            return Err(StatefulNatError::Bug("allocated unusable ip"));
+        }
 
         debug!("{nfi}: Allocated: {alloc}");
 
