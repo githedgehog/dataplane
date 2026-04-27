@@ -32,7 +32,6 @@ fn next_flow_status_tcp(pfw_state: &PortFwState, tcp: &Tcp) -> NatFlowStatus {
             NatFlowStatus::Established if tcp.fin() => NatFlowStatus::SClosing,
             NatFlowStatus::CClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::CHalfClose,
             NatFlowStatus::CClosing if tcp.fin() && tcp.ack() => NatFlowStatus::LastAck,
-            NatFlowStatus::CClosing if !tcp.fin() && tcp.ack() => NatFlowStatus::CHalfClose,
             NatFlowStatus::CHalfClose if tcp.fin() => NatFlowStatus::LastAck,
             NatFlowStatus::LastAck if tcp.ack() => NatFlowStatus::Closed,
             _other if tcp.rst() => NatFlowStatus::Reset,
