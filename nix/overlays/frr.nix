@@ -42,7 +42,7 @@ let
             + " -Wl,--push-state,--as-needed,--no-whole-archive,-Bstatic "
             + " -L${final.fancy.libxcrypt}/lib -lcrypt "
             + " -L${final.fancy.pcre2}/lib -lpcre2-8 "
-            + " -L${final.fancy.xxHash}/lib -lxxhash "
+            + " -L${final.fancy.xxhash}/lib -lxxhash "
             + " -L${final.fancy.libgccjit}/lib -latomic "
             + " -Wl,--pop-state";
           configureFlags = orig.configureFlags ++ [
@@ -72,7 +72,7 @@ in
 {
   fancy = prev.fancy // {
     inherit sources;
-    xxHash = (dep prev.xxHash).overrideAttrs (orig: {
+    xxhash = (dep prev.xxhash).overrideAttrs (orig: {
       cmakeFlags = (orig.cmakeFlags or [ ]) ++ [
         "-DBUILD_SHARED_LIBS=OFF"
         "-DXXH_STATIC_LINKING_ONLY=ON"
@@ -82,13 +82,13 @@ in
       (prev.libyang.override {
         stdenv = final.stdenv';
         pcre2 = final.fancy.pcre2;
-        xxHash = final.fancy.xxHash;
+        xxhash = final.fancy.xxhash;
       }).overrideAttrs
         (orig: {
           cmakeFlags = (orig.cmakeFlags or [ ]) ++ [ "-DBUILD_SHARED_LIBS=OFF" ];
           propagatedBuildInputs = [
             final.fancy.pcre2
-            final.fancy.xxHash
+            final.fancy.xxhash
           ];
         })
     );
