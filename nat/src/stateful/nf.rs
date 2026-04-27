@@ -172,7 +172,6 @@ impl StatefulNat {
         if let Some(extend_by) = Self::refresh_masquerade_state(packet, flow_info, state) {
             let _ = flow_info.reset_expiry_unchecked(extend_by); // error purposely ignored
         }
-        debug!("Will translate packet with {xlate}");
         Some(xlate)
     }
 
@@ -343,13 +342,11 @@ impl StatefulNat {
 
         // Hot path: if we have a session with masquerade state, translate the packet
         if let Some(translate) = Self::get_masquerade_state(packet) {
-            debug!("{nfi}: Found session, translating packet");
             return Ok(masquerade(packet, &translate)?);
         }
 
         // If no allocator has been configured, drop the packet
         let Some(allocator) = self.allocator.get() else {
-            debug!("{nfi}: Can't masquerade packet: no NAT allocator present");
             return Err(StatefulNatError::NoAllocator);
         };
 
@@ -458,7 +455,6 @@ impl StatefulNat {
         } else {
             packet.meta_mut().set_checksum_refresh(true);
             packet.meta_mut().natted(true);
-            debug!("Packet was MASQUERADED");
         }
     }
 }

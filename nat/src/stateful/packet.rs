@@ -180,7 +180,7 @@ pub(super) fn masquerade<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     xlate: &NatTranslate,
 ) -> Result<(), NatPacketError> {
-    debug!("Natting packet using {xlate}");
+    debug!("Natting packet using {xlate} (masquerading flow)");
     match xlate.action {
         NatAction::SrcNat => snat(packet, xlate.use_ip.try_into().unwrap(), xlate.nat_port), // FIXME
         NatAction::DstNat => dnat(packet, xlate.use_ip, xlate.nat_port),

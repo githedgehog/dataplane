@@ -12,7 +12,7 @@ use std::time::Instant;
 impl Display for FlowKeyData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(vpcd) = self.src_vpcd() {
-            write!(f, "from: {vpcd},")?;
+            write!(f, "from {vpcd},")?;
         }
         let ports = self.ports();
         let proto = self.proto();
@@ -112,7 +112,7 @@ impl Display for FlowInfoOneLiner<'_> {
         if let Ok(info) = flow_info.locked.read() {
             write!(
                 f,
-                "{key} info:{} related:{r} genid:{genid}",
+                "{key} {} related:{r} genid:{genid}",
                 FlowInfoLockedOneLiner(&info)
             )
         } else {
