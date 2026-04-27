@@ -15,5 +15,5 @@ COPY --link --chown=0:0 ./target/${PROFILE}/cli /bin/cli
 
 WORKDIR /
 # this is a privileged container, we really do want to run as root
-USER root # nosem
+USER 0
 ENTRYPOINT ["/bin/dataplane"]
