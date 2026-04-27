@@ -7,16 +7,37 @@
 
 use crate::common::{NatAction, NatFlowStatus};
 use net::buffer::PacketBufferMut;
-use net::headers::{TryIp, TryTcp};
+use net::headers::{TryHeaders, TryIp, TryTcp};
+
 use net::ip::NextHeader;
 use net::packet::Packet;
 use net::tcp::Tcp;
 
-fn next_flow_status_udp<Buf: PacketBufferMut>(
-    _packet: &Packet<Buf>,
-    action: NatAction,
-    status: NatFlowStatus,
-) -> NatFlowStatus {
+impl NatFlowStatus {
+    fn udp_status_patch_dnat<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> NatFlowStatus {
+        match packet.headers().pat().eth().net().udp().done() {
+            Some((_, _, udp)) => match udp.source().as_u16() {
+                53 | 853 | 8853 => NatFlowStatus::Closed, // DNS|DNS-over-quic|nextdns
+                _ => self,
+            },
+            _ => self,
+        }
+    }
+
+    // Refine the status of a UDP flow based on the application
+    fn udp_status_patch<Buf: PacketBufferMut>(
+        self,
+        packet: &Packet<Buf>,
+        action: NatAction,
+    ) -> NatFlowStatus {
+        match action {
+            NatAction::SrcNat => self,
+            NatAction::DstNat => self.udp_status_patch_dnat(packet),
+        }
+    }
+}
+
+fn next_flow_status_udp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
     match action {
         NatAction::SrcNat => match status {
             NatFlowStatus::TwoWay => NatFlowStatus::Established,
@@ -28,6 +49,8 @@ fn next_flow_status_udp<Buf: PacketBufferMut>(
         },
     }
 }
+
+#[allow(clippy::match_single_binding)]
 fn next_flow_status_icmp(action: NatAction, status: NatFlowStatus) -> NatFlowStatus {
     match action {
         NatAction::SrcNat => match status {
@@ -80,7 +103,7 @@ pub(crate) fn next_flow_status<Buf: PacketBufferMut>(
 
     // match on next-header, instead of relying on headers, as those may not be present w/ fragmentation
     match proto {
-        NextHeader::UDP => next_flow_status_udp(packet, action, status),
+        NextHeader::UDP => next_flow_status_udp(action, status).udp_status_patch(packet, action),
         NextHeader::ICMP | NextHeader::ICMP6 => next_flow_status_icmp(action, status),
         NextHeader::TCP => {
             if let Some(tcp) = packet.try_tcp() {
