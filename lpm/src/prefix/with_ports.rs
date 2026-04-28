@@ -23,7 +23,7 @@ where
 }
 
 #[must_use]
-pub fn ppsize_zero() -> PrefixWithPortsSize {
+pub const fn ppsize_zero() -> PrefixWithPortsSize {
     n!(0)
 }
 
@@ -178,6 +178,18 @@ impl PrefixPortsSet {
             }
         }
         result
+    }
+
+    /// Return the total "size" of all prefixes in the set.
+    ///
+    /// The "size" is the number of IP addresses in the IP prefix, multiplied by the number of ports
+    /// in the associated port range, if any.
+    #[must_use]
+    pub fn total_prefixes_size(&self) -> PrefixWithPortsSize {
+        self.0
+            .iter()
+            .map(PrefixWithOptionalPorts::size)
+            .sum::<PrefixWithPortsSize>()
     }
 }
 
