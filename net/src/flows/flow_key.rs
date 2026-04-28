@@ -28,9 +28,16 @@ use crate::udp::{UdpPort, UdpPortError};
 #[derive(Debug, thiserror::Error)]
 /// Errors that may occur when building a `FlowKey`
 pub enum FlowKeyError {
-    #[error("Flow key data not found in packet")]
-    /// No key data found
+    #[error("Failed to build flow key")]
     NoFlowKeyData,
+    #[error("Failed to access embedded headers")]
+    NoEmbeddedHeaders,
+    #[error("Failed to build key for embedded: packet is not icmp error message")]
+    NotIcmpError,
+    #[error("Failed to build key for embedded: embedded packet has no {0} header")]
+    EmbeddedMissingHeader(&'static str),
+    #[error("Failed to build key for embedded: inner icmp has no identifier")]
+    EmbeddedMissingIcmpId,
 }
 
 trait HashSrc {
@@ -675,6 +682,64 @@ impl<Buf: PacketBufferMut> TryFrom<Uni<&Packet<Buf>>> for FlowKey {
 
         Ok(FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info))
     }
+}
+
+/// Build a `FlowKey` for the inner packet embedded in `packet` if it is an ICMP error packet.
+/// This function does not set any `VpcDiscriminant` and will fail if:
+///    * the packet is not an ICMP error packet
+///    * the headers for the embedded packet are not accessible as a whole
+///    * the ip or transport header is not readable
+///    * if the embedded packet is ICMP but has no identifier (is not an Echo Request / Echo Reply)
+///
+/// # Errors
+///
+/// This function returns a `FlowKey` on success and `FlowKeyError` otherwise.
+///
+pub fn flowkey_embedded_in_icmp_error<Buf: PacketBufferMut>(
+    packet: &mut Packet<Buf>,
+) -> Result<FlowKey, FlowKeyError> {
+    // we currently restrict this to ICMP error packets
+    if !packet.is_icmp_error() {
+        return Err(FlowKeyError::NotIcmpError);
+    }
+
+    // access embedded packet fragment
+    let inner = packet
+        .embedded_headers()
+        .ok_or(FlowKeyError::NoEmbeddedHeaders)?;
+
+    // get data from embedded
+    let net = inner
+        .try_inner_ip()
+        .ok_or(FlowKeyError::EmbeddedMissingHeader("ip"))?;
+
+    let src_ip = net.src_addr();
+    let dst_ip = net.dst_addr();
+    let embedded_transport = inner
+        .try_embedded_transport()
+        .ok_or(FlowKeyError::EmbeddedMissingHeader("transport"))?;
+
+    // build the protocol key
+    let proto_key = match embedded_transport {
+        EmbeddedTransport::Tcp(tcp) => {
+            IpProtoKey::Tcp(TcpProtoKey::from((tcp.source(), tcp.destination())))
+        }
+        EmbeddedTransport::Udp(udp) => {
+            IpProtoKey::Udp(UdpProtoKey::from((udp.source(), udp.destination())))
+        }
+        EmbeddedTransport::Icmp4(icmp) if let Some(icmp_id) = icmp.identifier() => {
+            IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(icmp_id))
+        }
+        EmbeddedTransport::Icmp6(icmp6) if let Some(icmp_id) = icmp6.identifier() => {
+            IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(icmp_id))
+        }
+        EmbeddedTransport::Icmp4(_) | EmbeddedTransport::Icmp6(_) => {
+            // we can only get an id if the packet is echo request / echo reply.
+            // that's fine because ICMP errors should not be sent for ICMP errors.
+            return Err(FlowKeyError::EmbeddedMissingIcmpId);
+        }
+    };
+    Ok(FlowKey::uni(None, src_ip, dst_ip, proto_key))
 }
 
 #[cfg(any(test, feature = "bolero"))]
