@@ -4,13 +4,13 @@
 //! Handling of ICMP errors in stateful NAT (masquerading)
 
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
+use crate::stateful::packet::masquerade;
 use crate::stateful::state::MasqueradeState;
 use net::buffer::PacketBufferMut;
 use net::flows::ExtractRef;
 use net::flows::FlowInfo;
-use net::headers::{TryInnerIp, TryIpMut};
 use net::packet::{DoneReason, Packet};
-use tracing::debug;
+use tracing::{debug, error};
 
 pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
@@ -21,30 +21,23 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
 
     let flow_info_locked = flow_info.locked.read().unwrap();
-    let nat_translation = flow_info_locked
+    let state = flow_info_locked
         .nat_state
         .extract_ref::<MasqueradeState>()
-        .unwrap_or_else(|| unreachable!())
-        .reverse_translation_data();
+        .unwrap_or_else(|| unreachable!());
 
-    // translate inner packet fragment
+    // translate inner packet fragment with the common API object `NatTranslationData`
+    let nat_translation = state.reverse_translation_data();
     if let Err(e) = nat_translate_icmp_inner(packet, &nat_translation) {
-        debug!("Translation of inner packet failed: {e}");
+        debug!("(masquerade): Translation of ICMP error inner packet failed: {e}");
         packet.done(DoneReason::InternalFailure);
         return;
     }
 
-    // translate ICMP (outer) packet
-    let inner_src_addr = packet.try_inner_ip().unwrap().src_addr();
-    if packet
-        .try_ip_mut()
-        .unwrap_or_else(|| unreachable!())
-        .try_set_destination(inner_src_addr)
-        .is_err()
-    {
+    // translate the ICMP error packet (outer)
+    let xlate = state.as_translate();
+    if let Err(e) = masquerade(packet, &xlate) {
+        debug!("(masquerade): Failed to translate ICMP error packet with {xlate}: {e}");
         packet.done(DoneReason::InternalFailure);
-        return;
     }
-
-    packet.meta_mut().set_checksum_refresh(true);
 }
