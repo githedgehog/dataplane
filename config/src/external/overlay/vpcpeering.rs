@@ -3,11 +3,10 @@
 
 //! Dataplane configuration model: vpc peering
 
-use crate::utils::{check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap};
-use lpm::prefix::{
-    IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
-    PrefixWithPortsSize, ppsize_zero,
+use crate::utils::{
+    check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, collapse_prefixes,
 };
+use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
@@ -383,7 +382,7 @@ impl VpcExpose {
     ///
     /// Returns an error if the expose configuration is invalid.
     #[allow(clippy::too_many_lines)]
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(&self) -> Result<ValidatedExpose, ConfigError> {
         // Check default exposes and prefixes
         self.validate_default_expose()?;
 
@@ -473,57 +472,54 @@ impl VpcExpose {
             }
         }
 
-        #[allow(clippy::items_after_statements)]
-        fn prefixes_size(prefixes: &PrefixPortsSet) -> PrefixWithPortsSize {
-            prefixes
-                .iter()
-                .map(PrefixWithOptionalPorts::size)
-                .sum::<PrefixWithPortsSize>()
-        }
-        let zero_size = ppsize_zero();
+        // Apply exclusion prefixes
+        let mut clone = self.clone();
+        collapse_prefixes(&mut clone);
+        let collapsed_expose = ValidatedExpose {
+            default: clone.default,
+            ips: clone.ips,
+            nat: clone.nat,
+        };
 
         // Ensure we don't exclude all of the allowed prefixes
-        let ips_sizes = prefixes_size(&self.ips);
-        let nots_sizes = prefixes_size(&self.nots);
-        if ips_sizes > zero_size && ips_sizes <= nots_sizes {
+        if collapsed_expose.ips().is_empty() && !collapsed_expose.is_default() {
             return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
         }
-        let as_range_sizes = prefixes_size(self.as_range_or_empty());
-        let not_as_sizes = prefixes_size(self.not_as_or_empty());
+        if collapsed_expose.nat().is_some() && collapsed_expose.as_range_or_empty().is_empty() {
+            return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
+        }
 
-        if as_range_sizes > zero_size && as_range_sizes <= not_as_sizes {
-            return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
-        }
+        let ips_sizes = collapsed_expose.ips().total_prefixes_size();
+        let as_range_sizes = collapsed_expose.as_range_or_empty().total_prefixes_size();
 
         // For static NAT, ensure that, if the list of publicly-exposed addresses is not empty, then
         // we have the same number of addresses on each side.
         //
         // Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
         // size was smaller than allowed prefixes size already.
-        if self.has_stateless_nat()
-            && as_range_sizes > zero_size
-            && ips_sizes - nots_sizes != as_range_sizes - not_as_sizes
-        {
+        if collapsed_expose.has_stateless_nat() && ips_sizes != as_range_sizes {
             return Err(ConfigError::MismatchedPrefixSizes(
-                ips_sizes - nots_sizes,
-                as_range_sizes - not_as_sizes,
+                ips_sizes,
+                as_range_sizes,
             ));
         }
 
         // For port forwarding, ensure that:
+        // - we have no exclusion prefixes (note: we could relax this constraint now that we
+        //   collapse exclusion prefixes early)
         // - we have a single prefix on each side (private and public addresses)
-        // - we do not use any exclusion prefixes
-        // - if the list of publicly-exposed addresses is not empty, then we have the same number of
-        //   addresses on each side
-        // - the list of associated port ranges also is on the same size on each side
-        if self.has_port_forwarding() {
-            if self.ips.len() != 1
-                || self.as_range_or_empty().len() != 1
-                || !self.nots.is_empty()
-                || !self.not_as_or_empty().is_empty()
+        // - we have the same number of addresses on each side
+        // - the list of associated port ranges also has the same size on each side
+        if collapsed_expose.has_port_forwarding() {
+            if !self.nots.is_empty() || !self.not_as_or_empty().is_empty() {
+                return Err(ConfigError::Forbidden(
+                    "Port forwarding does not support exclusion prefixes",
+                ));
+            }
+            if collapsed_expose.ips().len() != 1 || collapsed_expose.as_range_or_empty().len() != 1
             {
                 return Err(ConfigError::Forbidden(
-                    "Port forwarding requires a single prefix on each side, no exclusion prefix allowed",
+                    "Port forwarding requires a single prefix on each side",
                 ));
             }
             if ips_sizes != as_range_sizes {
@@ -535,16 +531,139 @@ impl VpcExpose {
         }
 
         // For stateful NAT, we don't support port ranges
-        if self.has_stateful_nat()
-            && (self.ips.iter().any(|p| p.ports().is_some())
-                || self.as_range_or_empty().iter().any(|p| p.ports().is_some()))
+        if collapsed_expose.has_stateful_nat()
+            && (collapsed_expose.ips().iter().any(|p| p.ports().is_some())
+                || collapsed_expose
+                    .as_range_or_empty()
+                    .iter()
+                    .any(|p| p.ports().is_some()))
         {
             return Err(ConfigError::Forbidden(
                 "Port ranges are not supported with stateful NAT",
             ));
         }
 
-        Ok(())
+        Ok(collapsed_expose)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ValidatedExpose {
+    default: bool,
+    ips: PrefixPortsSet,
+    nat: Option<VpcExposeNat>,
+}
+
+impl ValidatedExpose {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.default
+    }
+
+    #[must_use]
+    pub fn ips(&self) -> &PrefixPortsSet {
+        &self.ips
+    }
+
+    #[must_use]
+    pub fn as_range_or_empty(&self) -> &PrefixPortsSet {
+        self.nat.as_ref().map_or(empty_set(), |nat| &nat.as_range)
+    }
+
+    // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
+    // public IPs are those from the "ips" list. This method returns the current list of public IPs
+    // for the VpcExpose.
+    #[must_use]
+    pub fn public_ips(&self) -> &PrefixPortsSet {
+        let Some(nat) = self.nat.as_ref() else {
+            return &self.ips;
+        };
+        if nat.as_range.is_empty() {
+            &self.ips
+        } else {
+            &nat.as_range
+        }
+    }
+
+    // This method returns true if the list of allowed prefixes is IPv4.
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        self.ips.first().is_some_and(|p| p.prefix().is_ipv4())
+    }
+
+    // This method returns true if the list of allowed prefixes is IPv6.
+    #[must_use]
+    pub fn is_v6(&self) -> bool {
+        self.ips.first().is_some_and(|p| p.prefix().is_ipv6())
+    }
+
+    // This method returns true if both allowed and translated prefixes are IPv4.
+    #[must_use]
+    pub fn is_44(&self) -> bool {
+        matches!(
+            (
+                self.ips.first().map(PrefixWithOptionalPorts::prefix),
+                self.as_range_or_empty()
+                    .first()
+                    .map(PrefixWithOptionalPorts::prefix)
+            ),
+            (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
+        )
+    }
+
+    // This method returns true if both allowed and translated prefixes are IPv6.
+    #[must_use]
+    pub fn is_66(&self) -> bool {
+        matches!(
+            (
+                self.ips.first().map(PrefixWithOptionalPorts::prefix),
+                self.as_range_or_empty()
+                    .first()
+                    .map(PrefixWithOptionalPorts::prefix)
+            ),
+            (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
+        )
+    }
+
+    #[must_use]
+    pub fn has_stateful_nat(&self) -> bool {
+        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateful)
+    }
+
+    #[must_use]
+    pub fn has_stateless_nat(&self) -> bool {
+        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
+    }
+
+    #[must_use]
+    pub fn has_port_forwarding(&self) -> bool {
+        self.nat
+            .as_ref()
+            .is_some_and(VpcExposeNat::is_port_forwarding)
+    }
+
+    #[must_use]
+    pub fn nat(&self) -> Option<&VpcExposeNat> {
+        self.nat.as_ref()
+    }
+
+    #[must_use]
+    pub fn nat_config(&self) -> Option<&VpcExposeNatConfig> {
+        self.nat.as_ref().map(|nat| &nat.config)
+    }
+
+    #[must_use]
+    pub fn nat_proto(&self) -> Option<&L4Protocol> {
+        self.nat.as_ref().map(|nat| &nat.proto)
+    }
+
+    #[must_use]
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        match self.nat_config()? {
+            VpcExposeNatConfig::Stateful(config) => config.idle_timeout,
+            VpcExposeNatConfig::PortForwarding(config) => config.idle_timeout,
+            VpcExposeNatConfig::Stateless(_) => None,
+        }
     }
 }
 

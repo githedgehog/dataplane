@@ -181,14 +181,14 @@ mod test {
     #[test]
     fn test_root_v4_in_ips_passes() {
         let expose = VpcExpose::empty().ip("0.0.0.0/0".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Root prefix ::/0 in ips is legal (IPv6 variant)
     #[test]
     fn test_root_v6_in_ips_passes() {
         let expose = VpcExpose::empty().ip("::/0".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Root prefix 0.0.0.0/0 in as_range is legal
@@ -200,7 +200,7 @@ mod test {
             .ip("10.0.0.0/8".into())
             .as_range("0.0.0.0/0".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Root prefix 0.0.0.0/0 in nots is rejected - not illegal per-se, but excludes all available
@@ -276,7 +276,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .ip("10.0.0.0/17".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Overlapping prefixes within as_range are allowed, should be merged internally
@@ -291,7 +291,7 @@ mod test {
             .unwrap()
             .as_range("10.0.0.0/17".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
         // TODO: Can we merge the two overlapping prefixes?
     }
 
@@ -303,7 +303,7 @@ mod test {
             .ip("10.0.0.0/8".into())
             .not("10.0.0.0/16".into())
             .not("10.0.0.0/17".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Overlapping prefixes within not_as are allowed, should be merged internally
@@ -320,7 +320,7 @@ mod test {
             .unwrap()
             .not_as("10.0.0.0/17".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Overlapping prefixes in ips with distinct port ranges passes
@@ -329,7 +329,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80))
             .ip(prefix_with_ports("10.0.0.0/24", 443, 443));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Overlapping prefixes in ips with overlapping port ranges passes
@@ -338,7 +338,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80))
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // --- Exclusion prefixes ---
@@ -349,7 +349,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .not("8.0.0.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Out-of-range exclusion prefix for as_range is legal (but we should warn about it)
@@ -363,7 +363,7 @@ mod test {
             .unwrap()
             .not_as("8.0.0.0/24".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Exclusion prefix for ips with partial overlap (not fully contained) is valid (but we should
@@ -382,7 +382,7 @@ mod test {
             .ip("20.0.0.0/16".into())
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/8".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Exclusion prefix for ips with partial overlap (not fully contained), when using port ranges,
@@ -399,7 +399,7 @@ mod test {
                 "10.0.0.0/16".into(),
                 Some(PortRange::new(1500, 2500).unwrap()),
             ));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Exclusion prefix for as_range with partial overlap (not fully contained) is valid (but we
@@ -424,7 +424,7 @@ mod test {
             .unwrap()
             .not_as("10.0.0.0/8".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Exclusion prefix for as_range with partial overlap (not fully contained) is valid (but we
@@ -446,7 +446,7 @@ mod test {
                 Some(PortRange::new(1500, 2500).unwrap()),
             ))
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Excluding all prefixes in ips is rejected
@@ -611,7 +611,7 @@ mod test {
         let expose = VpcExpose::empty()
             .ip("10.0.0.0/16".into())
             .ip("10.1.0.0/16".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // Valid expose with ips + as_range + nots + not_as passes
@@ -626,7 +626,7 @@ mod test {
             .unwrap()
             .not_as("2.0.1.0/24".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
     }
 
     // ==================================================================================
@@ -1565,7 +1565,7 @@ mod test {
         // A default expose cannot have nat field set at all
         let expose = VpcExpose::empty().set_default();
         // Verify default alone is valid
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Default with NAT should fail
         let expose = VpcExpose::empty()
