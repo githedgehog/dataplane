@@ -39,7 +39,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(move |mut packet| {
             let nfi = &self.name;
-            if !packet.is_done() && packet.meta().is_overlay() {
+            if !packet.is_done() && packet.meta().is_overlay() && packet.meta().dst_vpcd.is_none() {
                 if let Ok(flow_key) = FlowKey::try_from(flow_key::Uni(&packet)) {
                     if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
                         debug!("{nfi}: Tagging packet with flow info for flow key {flow_key}",);
