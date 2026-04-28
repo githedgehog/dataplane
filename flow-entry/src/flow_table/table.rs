@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use net::FlowKey;
 use net::flows::{FlowInfo, FlowStatus};
 use std::borrow::Borrow;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::time::Duration;
 use tracing::debug;
@@ -301,9 +301,9 @@ impl FlowTable {
     pub fn lookup<Q>(&self, flow_key: &Q) -> Option<Arc<FlowInfo>>
     where
         FlowKey: Borrow<Q>,
-        Q: Hash + Eq + ?Sized + Debug,
+        Q: Hash + Eq + ?Sized + Debug + Display,
     {
-        debug!("lookup: Looking up flow key {:?}", flow_key);
+        debug!("lookup: Looking up flow key {flow_key}");
         let table = self.table.read().unwrap();
         Some(table.get(flow_key)?.value().clone())
     }
@@ -317,9 +317,9 @@ impl FlowTable {
     pub fn remove<Q>(&self, flow_key: &Q) -> Option<(FlowKey, Arc<FlowInfo>)>
     where
         FlowKey: Borrow<Q>,
-        Q: Hash + Eq + ?Sized + Debug,
+        Q: Hash + Eq + ?Sized + Debug + Display,
     {
-        debug!("remove: Removing flow key {:?}", flow_key);
+        debug!("remove: Removing flow key {flow_key}");
         let table = self.table.read().unwrap();
         let result = table.remove(flow_key);
         if let Some((_key, flow_info)) = result.as_ref() {
