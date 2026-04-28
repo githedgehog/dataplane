@@ -740,11 +740,11 @@ impl<T> AbstractEmbeddedHeadersMut for T where
 }
 
 pub trait TryEmbeddedHeaders {
-    fn embedded_headers(&self) -> Option<&impl AbstractEmbeddedHeaders>;
+    fn embedded_headers(&self) -> Option<&EmbeddedHeaders>;
 }
 
 pub trait TryEmbeddedHeadersMut {
-    fn embedded_headers_mut(&mut self) -> Option<&mut impl AbstractEmbeddedHeadersMut>;
+    fn embedded_headers_mut(&mut self) -> Option<&mut EmbeddedHeaders>;
 }
 
 // ---------------------------------------------------------------------------
