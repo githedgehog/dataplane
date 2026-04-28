@@ -256,87 +256,27 @@ impl Vpc {
         Ok(())
     }
 
-    /// Check that prefixes exposed to a given VPC do not overlap. Exceptions:
-    ///
-    /// - overlap is allowed between a prefix and a default expose (it overlaps by design)
-    /// - overlap is allowed between prefixes from different exposes if both their exposes use
-    ///   stateful NAT (we can fall back to the flow table to disambiguate the destination VPC)
-    ///
-    /// Also check that at most one default expose is exposed to the VPC.
-    fn check_overlap_and_default(&self) -> ConfigResult {
-        let mut found_default = false;
-
-        // FIXME: Find a less expensive approach to find overlapping prefixes
-        for (i, current_peering) in self.peerings.iter().enumerate() {
-            // Check we don't have multiple default expose blocks in the peering
-            for expose in &current_peering.remote.valexp {
-                if expose.is_default() {
-                    if found_default {
-                        error!(
-                            "Multiple 'default' expose blocks for a same peering in VPC {}",
-                            self.name
-                        );
-                        return Err(ConfigError::Forbidden(
-                            "Multiple 'default' expose blocks for a same peering",
-                        ));
-                    }
-                    found_default = true;
-                }
-            }
-
-            // Check we don't have non-default, overlapping prefixes exposed to the VPC
-            for other_peering in &self.peerings[i + 1..] {
-                for current_expose in &current_peering.remote.valexp {
-                    for other_expose in &other_peering.remote.valexp {
-                        if current_expose.has_stateful_nat() && other_expose.has_stateful_nat() {
-                            // Overlap is allowed if both expose blocks use stateful NAT
-                            continue;
-                        }
-                        match (current_expose.is_default(), other_expose.is_default()) {
-                            (true, true) => {
-                                // We support at most one default destination exposed to any VPC
-                                error!(
-                                    "Multiple 'default' destinations exposed to VPC {}",
-                                    self.name
-                                );
-                                return Err(ConfigError::Forbidden(
-                                    "Multiple 'default' destinations exposed to VPC",
-                                ));
-                            }
-                            (true, false) | (false, true) => {
-                                // Overlap is allowed between a prefix and a default expose
-                                continue;
-                            }
-                            (false, false) => { /* keep processing */ }
-                        }
-                        for current_prefix in current_expose.public_ips() {
-                            for other_prefix in other_expose.public_ips() {
-                                if current_prefix.overlaps(other_prefix) {
-                                    error!(
-                                        "Prefixes exposed to VPC {} overlap: {} and {}",
-                                        self.name, current_prefix, other_prefix
-                                    );
-                                    return Err(ConfigError::OverlappingPrefixes(
-                                        *current_prefix,
-                                        *other_prefix,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Validate a [`Vpc`]
-    pub fn validate(&mut self) -> ConfigResult {
+    pub(crate) fn validate(&mut self) -> ConfigResult {
         debug!("Validating config for VPC {}...", self.name);
         self.check_peering_count()?;
         self.check_peerings()?;
-        self.check_overlap_and_default()?;
-        Ok(())
+
+        // SAFETY: `ValidatedVpc` is `#[repr(transparent)]` over `Vpc`, so the cast is
+        // layout-compatible. The only invariant `check_overlap_and_default` relies on is that
+        // every peering's `local`/`remote` manifest has its `valexp` populated -- which is
+        // exactly what `check_peerings` (via `Peering::validate` -> `VpcManifest::validate`)
+        // guarantees on the line above. We are not yet returning an `&ValidatedVpc` to the
+        // outside world; this view is purely internal so we can call the post-collapse overlap
+        // check that lives on the validated wrapper.
+        #[allow(unsafe_code)]
+        let validated_vpc = unsafe {
+            (&raw const *self)
+                .cast::<ValidatedVpc>()
+                .as_ref()
+                .unwrap_or_else(|| unreachable!())
+        };
+        validated_vpc.check_overlap_and_default()
     }
 
     /// Tell how many peerings this VPC has
@@ -363,6 +303,118 @@ impl Vpc {
                 .iter()
                 .any(|e| e.has_port_forwarding() || e.has_stateful_nat())
         })
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedVpc(Vpc);
+
+impl ValidatedVpc {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &VpcId {
+        &self.0.id
+    }
+
+    #[must_use]
+    pub fn vni(&self) -> Vni {
+        self.0.vni
+    }
+
+    #[must_use]
+    pub fn interfaces(&self) -> &InterfaceConfigTable {
+        &self.0.interfaces
+    }
+
+    #[must_use]
+    pub fn peerings(&self) -> &[ValidatedPeering] {
+        // SAFETY: ValidatedPeering is #[repr(transparent)] over Peering, so [Peering] and
+        // [ValidatedPeering] have identical layout. Every Peering in a ValidatedVpc has been
+        // validated (established by Vpc::validate, which calls Peering::validate on each element).
+        #[allow(unsafe_code)]
+        unsafe {
+            std::slice::from_raw_parts(
+                self.0.peerings.as_ptr().cast::<ValidatedPeering>(),
+                self.0.peerings.len(),
+            )
+        }
+    }
+
+    /// Provide an iterator over all peerings that have either masquerade or port-forwarding
+    /// exposes locally.
+    pub fn local_stateful_nat_peerings(&self) -> impl Iterator<Item = &ValidatedPeering> {
+        self.peerings().iter().filter(|p| {
+            p.local()
+                .valexp()
+                .iter()
+                .any(|e| e.has_port_forwarding() || e.has_stateful_nat())
+        })
+    }
+
+    /// Check that prefixes exposed to a given VPC do not overlap. Exceptions:
+    ///
+    /// - overlap is allowed between a prefix and a default expose (it overlaps by design)
+    /// - overlap is allowed between prefixes from different exposes if both their exposes use
+    ///   stateful NAT (we can fall back to the flow table to disambiguate the destination VPC)
+    fn check_overlap_and_default(&self) -> ConfigResult {
+        // FIXME: Find a less expensive approach to find overlapping prefixes
+        for (i, current_peering) in self.peerings().iter().enumerate() {
+            // Check we don't have non-default, overlapping prefixes exposed to the VPC
+            for other_peering in &self.peerings()[i + 1..] {
+                for current_expose in current_peering.remote().valexp() {
+                    for other_expose in other_peering.remote().valexp() {
+                        if current_expose.has_stateful_nat() && other_expose.has_stateful_nat() {
+                            // Overlap is allowed if both expose blocks use stateful NAT
+                            continue;
+                        }
+                        match (current_expose.is_default(), other_expose.is_default()) {
+                            (true, true) => {
+                                // We support at most one default destination exposed to any VPC
+                                error!(
+                                    "Multiple 'default' destinations exposed to VPC {}",
+                                    self.name()
+                                );
+                                return Err(ConfigError::Forbidden(
+                                    "Multiple 'default' destinations exposed to VPC",
+                                ));
+                            }
+                            (true, false) | (false, true) => {
+                                // Overlap is allowed between a prefix and a default expose
+                                continue;
+                            }
+                            (false, false) => { /* keep processing */ }
+                        }
+                        for current_prefix in current_expose.public_ips() {
+                            for other_prefix in other_expose.public_ips() {
+                                if current_prefix.overlaps(other_prefix) {
+                                    error!(
+                                        "Prefixes exposed to VPC {} overlap: {} and {}",
+                                        self.name(),
+                                        current_prefix,
+                                        other_prefix
+                                    );
+                                    return Err(ConfigError::OverlappingPrefixes(
+                                        *current_prefix,
+                                        *other_prefix,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn inner(&self) -> &Vpc {
+        &self.0
     }
 }
 
