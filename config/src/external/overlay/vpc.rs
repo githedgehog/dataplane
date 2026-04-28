@@ -14,6 +14,7 @@ use tracing::{debug, error, warn};
 
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
+use crate::external::overlay::vpcpeering::ValidatedManifest;
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
 use crate::{ConfigError, ConfigResult};
@@ -40,10 +41,7 @@ impl Peering {
             self.local.name, self.name
         );
         self.local.validate()?;
-        if false {
-            // not needed will be validated when validating the remote vpc
-            self.remote.validate()?;
-        }
+        self.remote.validate()?;
 
         if self.local.default_expose().is_some() && self.remote.default_expose().is_some() {
             return Err(ConfigError::Forbidden(
@@ -108,6 +106,49 @@ impl Peering {
             return Err(ConfigError::IncompatibleNatModes(self.name.clone()));
         }
         Ok(())
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedPeering(Peering);
+
+impl ValidatedPeering {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[must_use]
+    pub fn local(&self) -> &ValidatedManifest {
+        // SAFETY: ValidatedManifest is #[repr(transparent)] over VpcManifest.
+        // A ValidatedPeering is only ever obtained from `Peering::validated`,
+        // which validated the local manifest.
+        #[allow(unsafe_code)]
+        unsafe {
+            &*(&raw const self.0.local).cast::<ValidatedManifest>()
+        }
+    }
+
+    #[must_use]
+    pub fn remote(&self) -> &ValidatedManifest {
+        // SAFETY: ValidatedManifest is #[repr(transparent)] over VpcManifest.
+        // A ValidatedPeering is only ever obtained from `Peering::validated`,
+        // which validated the remote manifest.
+        #[allow(unsafe_code)]
+        unsafe {
+            &*(&raw const self.0.remote).cast::<ValidatedManifest>()
+        }
+    }
+
+    #[must_use]
+    pub fn remote_id(&self) -> &VpcId {
+        &self.0.remote_id
+    }
+
+    #[must_use]
+    pub fn gwgroup(&self) -> Option<&String> {
+        self.0.gwgroup.as_ref()
     }
 }
 
