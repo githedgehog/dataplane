@@ -431,19 +431,7 @@ impl FlowFilter {
             }
         };
 
-        // At this point, we may have determined the destination VPC for a packet or not. If we haven't, we
-        // should drop the packet. However, if it is an ICMP error packet, let the icmp-error handler deal with it.
-        // Now, the icmp-error handler works for masquerading and port-forwarding, but not stateless NAT,
-        // nor the absence of NAT, and here we don't know if the icmp error corresponds to traffic that
-        // was masqueraded, port-forwarded, statically nated or neither of the previous. If the dst-vpcd
-        // for an icmp error packet is known, the icmp handler will transparently let the static NAT NF deal with it.
-        if packet.is_icmp_error() {
-            debug!("Letting ICMP error handler process this packet. dst-vpcd is {dst_vpcd:?}");
-            packet.meta_mut().dst_vpcd = dst_vpcd; // whether we discovered the vpcd or not
-            return;
-        }
-
-        // Drop the packet since we don't know destination and it is not an icmp error
+        // Drop the packet since we don't know destination
         let Some(dst_vpcd) = dst_vpcd else {
             debug!("Could not determine dst vpcd for packet. Dropping it...");
             packet.invalidate_flows();
@@ -470,7 +458,10 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
             if let Some(tablesr) = &self.tablesr.enter() {
-                if !packet.is_done() && packet.meta().is_overlay() {
+                if !packet.is_done()
+                    && packet.meta().is_overlay()
+                    && packet.meta().dst_vpcd.is_none()
+                {
                     self.process_packet(tablesr, &mut packet);
                 }
             } else {
