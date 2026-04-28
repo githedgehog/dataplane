@@ -63,47 +63,28 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
 ) {
+    let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
+    let f = flow_info.logfmt();
+    debug!("(port-forwarding): Processing ICMP error packet from {src_vpcd} using flow {f}");
+
     let flow_info_locked = flow_info.locked.read().unwrap();
-    let pfw_state = flow_info_locked
+    let state = flow_info_locked
         .port_fw_state
         .extract_ref::<PortFwState>()
         .unwrap_or_else(|| unreachable!());
 
-    let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-    let f = flow_info.logfmt();
-    debug!("Processing ICMP error packet from {src_vpcd} using flow {f}");
-
-    // this is informational and to drop ICMP errors that need not be processed: if the flow for the offending
-    // packet is no longer valid, no need to process the ICMP error.
-    if let Some(related) = flow_info
-        .related
-        .as_ref()
-        .and_then(std::sync::Weak::upgrade)
-    {
-        debug!(
-            "The flow for the offending packet is {} {related}",
-            related.flowkey()
-        );
-        if !related.is_active() {
-            packet.done(DoneReason::Filtered);
-            return;
-        }
-    }
-
     // translate the inner packet depending on the port-forwarding state associated to the
     // reverse flow of the offending packet.
-    let translation_data = as_nat_translation(pfw_state);
+    let translation_data = as_nat_translation(state);
     if let Err(e) = nat_translate_icmp_inner(packet, &translation_data) {
-        debug!("Translation of inner packet failed: {e}\n{packet}");
+        debug!("(port-forwarding): Translation of ICMP error inner packet failed: {e}");
         packet.done(DoneReason::InternalFailure);
         return;
     }
 
     // NAT the ICMP packet according to the port-fw state of the reverse flow of the offending packet
-    if let Err(e) = nat_packet(packet, pfw_state) {
-        debug!("Failed to NAT ICMP error packet:{e}, packet=\n{packet}");
+    if let Err(e) = nat_packet(packet, state) {
+        debug!("(port-forwarding): Failed to NAT ICMP error packet: {e}");
         packet.done(DoneReason::InternalFailure);
-        return;
     }
-    debug!("Successfully NATed ICMP error packet");
 }

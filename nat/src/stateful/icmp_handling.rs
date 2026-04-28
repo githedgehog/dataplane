@@ -17,13 +17,10 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     flow_info: &FlowInfo,
 ) {
     let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
-    debug!(
-        "Processing ICMP error message from {src_vpcd} with flow {}",
-        flow_info.logfmt()
-    );
+    let f = flow_info.logfmt();
+    debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
 
     let flow_info_locked = flow_info.locked.read().unwrap();
-
     let nat_translation = flow_info_locked
         .nat_state
         .extract_ref::<MasqueradeState>()
@@ -32,7 +29,7 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
 
     // translate inner packet fragment
     if let Err(e) = nat_translate_icmp_inner(packet, &nat_translation) {
-        debug!("Translation of inner packet failed: {e}\n{packet}");
+        debug!("Translation of inner packet failed: {e}");
         packet.done(DoneReason::InternalFailure);
         return;
     }
