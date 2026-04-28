@@ -468,7 +468,7 @@ pub mod test {
         vpc_table.add(vpc2).expect("Should succeed");
 
         /* build peerings */
-        let peering1 = build_vpc_peering();
+        let mut peering1 = build_vpc_peering();
         let mut peering2 = build_vpc_peering();
         peering2.name = "Peering-2".to_owned();
 
@@ -1255,7 +1255,7 @@ pub mod test {
 
     #[test]
     fn test_manifest_must_have_exposes() {
-        let manifest = VpcManifest::new("some-vpc");
+        let mut manifest = VpcManifest::new("some-vpc");
         assert!(
             manifest
                 .validate()

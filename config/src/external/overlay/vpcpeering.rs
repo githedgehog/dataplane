@@ -671,6 +671,9 @@ impl ValidatedExpose {
 pub struct VpcManifest {
     pub name: String, /* key: name of vpc */
     pub exposes: Vec<VpcExpose>,
+    // Validated, exclusion-prefixes-free view of exposes. Populated by VpcManifest::validate.
+    // Never to be used in VpcManifest; only with wrapper ValidatedManifest
+    pub valexp: Vec<ValidatedExpose>,
 }
 impl VpcManifest {
     #[must_use]
@@ -698,11 +701,17 @@ impl VpcManifest {
     pub fn has_host_prefixes(&self) -> bool {
         self.exposes.iter().any(VpcExpose::has_host_prefixes)
     }
+
+    #[must_use]
+    pub fn raw_exposes(&self) -> &[VpcExpose] {
+        &self.exposes
+    }
+
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes
-        for (index, expose_left) in self.exposes.iter().enumerate() {
+        for (index, expose_left) in self.valexp.iter().enumerate() {
             // Loop over the remaining exposes in the list
-            for expose_right in self.exposes.iter().skip(index + 1) {
+            for expose_right in self.valexp.iter().skip(index + 1) {
                 #[allow(clippy::unnested_or_patterns)]
                 match (&expose_left.nat_config(), &expose_right.nat_config()) {
                     // Overlap allowed
@@ -775,13 +784,18 @@ impl VpcManifest {
     /// # Errors
     ///
     /// Returns an error if the manifest configuration is invalid.
-    pub fn validate(&self) -> ConfigResult {
+    pub(crate) fn validate(&mut self) -> ConfigResult {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Manifest name"));
         }
         if self.exposes.is_empty() {
             return Err(ConfigError::NoExposes(self.name.clone()));
         }
+
+        // Reset any previously-populated `valexp` so a retry after partial validation does not
+        // accumulate duplicates.
+        self.valexp.clear();
+        self.valexp.reserve(self.exposes.len());
 
         let mut found_default = false;
         for expose in &self.exposes {
@@ -793,7 +807,7 @@ impl VpcManifest {
                 }
                 found_default = true;
             }
-            expose.validate()?;
+            self.valexp.push(expose.validate()?);
         }
         self.validate_expose_collisions()?;
         Ok(())
@@ -850,6 +864,66 @@ impl VpcManifest {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+#[repr(transparent)]
+pub struct ValidatedManifest(VpcManifest);
+
+impl ValidatedManifest {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[must_use]
+    pub fn valexp(&self) -> &[ValidatedExpose] {
+        &self.0.valexp
+    }
+
+    #[must_use]
+    pub fn default_expose(&self) -> Option<&ValidatedExpose> {
+        self.valexp().iter().find(|expose| expose.is_default())
+    }
+
+    fn filter_exposes<F>(&self, predicate: F) -> impl Iterator<Item = &ValidatedExpose>
+    where
+        F: FnMut(&&ValidatedExpose) -> bool,
+    {
+        self.valexp().iter().filter(predicate)
+    }
+
+    pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_stateless_nat())
+    }
+
+    pub fn stateful_nat_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_44())
+    }
+
+    pub fn stateful_nat_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_66())
+    }
+
+    pub fn no_stateful_nat_exposes_v4(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v4())
+    }
+
+    pub fn no_stateful_nat_exposes_v6(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v6())
+    }
+
+    pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_port_forwarding())
+    }
+
+    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_44())
+    }
+
+    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct VpcPeering {
     pub name: String,            /* name of peering (key in table) */
@@ -886,7 +960,7 @@ impl VpcPeering {
     /// # Errors
     ///
     /// Returns an error if the peering configuration is invalid.
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(&mut self) -> ConfigResult {
         self.left.validate()?;
         self.right.validate()?;
         Ok(())

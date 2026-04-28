@@ -34,7 +34,7 @@ pub struct Peering {
 }
 
 impl Peering {
-    fn validate(&self) -> ConfigResult {
+    fn validate(&mut self) -> ConfigResult {
         debug!(
             "Validating manifest of VPC {} in peering {}",
             self.local.name, self.name
@@ -207,9 +207,9 @@ impl Vpc {
     }
 
     /// Check the peerings that a VPC participates in
-    fn check_peerings(&self) -> ConfigResult {
+    fn check_peerings(&mut self) -> ConfigResult {
         debug!("Checking peerings of VPC {}...", self.name);
-        for peering in &self.peerings {
+        for peering in &mut self.peerings {
             peering.validate()?;
         }
         Ok(())
@@ -228,8 +228,8 @@ impl Vpc {
         // FIXME: Find a less expensive approach to find overlapping prefixes
         for (i, current_peering) in self.peerings.iter().enumerate() {
             // Check we don't have multiple default expose blocks in the peering
-            for expose in &current_peering.remote.exposes {
-                if expose.default {
+            for expose in &current_peering.remote.valexp {
+                if expose.is_default() {
                     if found_default {
                         error!(
                             "Multiple 'default' expose blocks for a same peering in VPC {}",
@@ -245,13 +245,13 @@ impl Vpc {
 
             // Check we don't have non-default, overlapping prefixes exposed to the VPC
             for other_peering in &self.peerings[i + 1..] {
-                for current_expose in &current_peering.remote.exposes {
-                    for other_expose in &other_peering.remote.exposes {
+                for current_expose in &current_peering.remote.valexp {
+                    for other_expose in &other_peering.remote.valexp {
                         if current_expose.has_stateful_nat() && other_expose.has_stateful_nat() {
                             // Overlap is allowed if both expose blocks use stateful NAT
                             continue;
                         }
-                        match (current_expose.default, other_expose.default) {
+                        match (current_expose.is_default(), other_expose.is_default()) {
                             (true, true) => {
                                 // We support at most one default destination exposed to any VPC
                                 error!(
@@ -290,7 +290,7 @@ impl Vpc {
     }
 
     /// Validate a [`Vpc`]
-    pub fn validate(&self) -> ConfigResult {
+    pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating config for VPC {}...", self.name);
         self.check_peering_count()?;
         self.check_peerings()?;
@@ -409,8 +409,8 @@ impl VpcTable {
     }
 
     /// Validate the [`VpcTable`]
-    pub fn validate(&self) -> ConfigResult {
-        for vpc in self.values() {
+    pub fn validate(&mut self) -> ConfigResult {
+        for vpc in self.values_mut() {
             vpc.validate()?;
         }
         Ok(())
