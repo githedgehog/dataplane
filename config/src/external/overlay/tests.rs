@@ -110,18 +110,18 @@ pub mod test {
         );
 
         let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Empty ips but non-empty nots - Currently not supported
         /*
         let expose = VpcExpose::empty().not("10.0.1.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
         */
 
         // Empty as_range but non-empty not_as - Currently not supported
         /*
         let expose = VpcExpose::empty().not_as("2.0.1.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
         */
 
         let expose = VpcExpose::empty()
@@ -130,7 +130,7 @@ pub mod test {
             .ip("10.0.0.0/16".into())
             .as_range("2.0.0.0/16".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_stateless_nat()
@@ -141,7 +141,7 @@ pub mod test {
             .unwrap()
             .not_as("2.0.0.0/24".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_stateless_nat()
@@ -149,7 +149,7 @@ pub mod test {
             .ip("1::/64".into())
             .as_range("2::/64".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Out-of-range exclusion prefix
         let expose = VpcExpose::empty()
@@ -161,7 +161,7 @@ pub mod test {
             .unwrap()
             .not_as("2.0.1.0/24".into())
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
@@ -719,7 +719,7 @@ pub mod test {
             "10.0.0.0/16".into(),
             Some(PortRange::new(1, 65535).unwrap()),
         ));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_stateless_nat()
@@ -733,7 +733,7 @@ pub mod test {
                 Some(PortRange::new(8001, 9000).unwrap()),
             ))
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_stateless_nat()
@@ -756,7 +756,7 @@ pub mod test {
                 Some(PortRange::new(8001, 8200).unwrap()),
             ))
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_stateless_nat()
@@ -770,7 +770,7 @@ pub mod test {
                 Some(PortRange::new(8001, 9000).unwrap()),
             ))
             .unwrap();
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Overlapping prefix, but distinct port ranges
         let expose = VpcExpose::empty()
@@ -782,7 +782,7 @@ pub mod test {
                 "10.0.0.0/17".into(),
                 Some(PortRange::new(8001, 9500).unwrap()),
             ));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Out-of-range exclusion prefix (IPs)
         let expose = VpcExpose::empty()
@@ -798,7 +798,7 @@ pub mod test {
                 "10.0.0.0/15".into(),
                 Some(PortRange::new(5001, 5500).unwrap()),
             ));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Out-of-range exclusion prefix (port range)
         let expose = VpcExpose::empty()
@@ -810,7 +810,7 @@ pub mod test {
                 "10.0.0.0/24".into(),
                 Some(PortRange::new(7001, 8000).unwrap()),
             ));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Out-of-range exclusion prefix (port range, albeit with overlap)
         let expose = VpcExpose::empty()
@@ -822,7 +822,7 @@ pub mod test {
                 "10.0.0.0/24".into(),
                 Some(PortRange::new(5001, 8000).unwrap()),
             ));
-        assert_eq!(expose.validate(), Ok(()));
+        assert!(expose.validate().is_ok());
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()

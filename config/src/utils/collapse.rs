@@ -31,7 +31,7 @@ pub fn collapse_prefixes_peering(peering: &Peering) -> Peering {
     new_peering
 }
 
-fn collapse_prefixes(expose: &mut VpcExpose) {
+pub(crate) fn collapse_prefixes(expose: &mut VpcExpose) {
     let ips = collapse_prefix_lists(&expose.ips, &expose.nots);
     expose.ips = ips;
     expose.nots = PrefixPortsSet::new();
