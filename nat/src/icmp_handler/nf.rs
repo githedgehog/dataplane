@@ -84,12 +84,12 @@ fn icmp_checksums_ok<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> bool {
 impl IcmpErrorHandler {
     fn handle_icmp_error_msg<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         // check origin of icmp error packet
-        let Some(icmp_src_vpcd) = packet.meta().src_vpcd else {
-            debug!("Dropping ICMP error packet without src vpc discriminant");
+        let Some(src_vpcd) = packet.meta().src_vpcd else {
+            debug!("Dropping ICMP error packet: no src vpc discriminant");
             packet.done(DoneReason::Unroutable);
             return;
         };
-        debug!("Got ICMP error packet from {icmp_src_vpcd}");
+        debug!("Processing ICMP error packet from {src_vpcd}");
 
         // drop packet if icmp checksums are not correct
         if !icmp_checksums_ok(packet) {
@@ -115,15 +115,16 @@ impl IcmpErrorHandler {
                 return;
             }
         };
+        // reverse the flow key and set src vpc
+        let rev_flow_key = flow_key.reverse(Some(src_vpcd));
 
-        // reverse the flow key, set src vpc and look up for a flow in the flow table.
-        let rev_flow_key = flow_key.reverse(Some(icmp_src_vpcd));
+        // look up a flow in the flow table for such a key
         let Some(flow) = self.flow_table.lookup(&rev_flow_key) else {
-            // There is no flow for the provided flow key. This is not necessarily an error.
-            // the ICMP error packet may correspond to a communication that uses static NAT or no NAT, or
-            // to a masqueraded / port-forwarded flow that was expired (very unlikely).
-            // In either case, leave the packet through so that the flow filter deals with it.
             debug!("Found no flow for key={rev_flow_key}. Letting packet through...");
+            // There is no flow for the provided flow key. This is not necessarily an error since the
+            // ICMP error packet could correspond to a flow that uses static NAT or no NAT at all. It
+            // could correspond to a masqueraded / port-forwarded flow that was just expired (unlikely).
+            // In either case, leave the packet through so that the flow filter deals with it.
             return;
         };
 
@@ -136,13 +137,14 @@ impl IcmpErrorHandler {
         };
 
         // set the dst vpcd in the packet for the flow filter to ignore the packet
-        debug!("Icmp error is intended to vpc {dst_vpcd}");
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
 
         // process the packet depending on the flow info
         if flow_info_locked.nat_state.is_some() {
+            debug!("Icmp error is for vpc {dst_vpcd}. Will process with masquerade state");
             handle_icmp_error_masquerading(packet, flow.as_ref());
         } else if flow_info_locked.port_fw_state.is_some() {
+            debug!("Icmp error is for vpc {dst_vpcd}. Will process with port-forwarding state");
             handle_icmp_error_port_forwarding(packet, flow.as_ref());
         } else {
             warn!("Found no NAT state to process ICMP error message. Dropping...");
