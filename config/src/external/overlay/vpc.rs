@@ -502,10 +502,56 @@ impl VpcTable {
     }
 
     /// Validate the [`VpcTable`]
-    pub fn validate(&mut self) -> ConfigResult {
+    pub(crate) fn validate(&mut self) -> ConfigResult {
         for vpc in self.values_mut() {
             vpc.validate()?;
         }
         Ok(())
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Debug)]
+pub struct ValidatedVpcTable(VpcTable);
+
+impl ValidatedVpcTable {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.vpcs.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.vpcs.is_empty()
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &ValidatedVpc> {
+        // SAFETY: ValidatedVpc is #[repr(transparent)] over Vpc, and a ValidatedVpcTable can only
+        // be obtained from a successful `VpcTable::validated`, which validates every Vpc.
+        #[allow(unsafe_code)]
+        self.0
+            .vpcs
+            .values()
+            .map(|vpc| unsafe { &*(&raw const *vpc).cast::<ValidatedVpc>() })
+    }
+
+    #[must_use]
+    pub fn get_vpc(&self, vpc_name: &str) -> Option<&ValidatedVpc> {
+        self.0.get_vpc(vpc_name).map(|vpc| {
+            // SAFETY: ValidatedVpc is `#[repr(transparent)]` over Vpc, and a `ValidatedVpcTable`
+            // can only be obtained from `VpcTable::validated`, which validates every Vpc.
+            #[allow(unsafe_code)]
+            unsafe {
+                &*(&raw const *vpc).cast::<ValidatedVpc>()
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn get_remote_vni(&self, peering: &ValidatedPeering) -> Vni {
+        self.0
+            .get_vpc_by_vpcid(peering.remote_id())
+            .unwrap_or_else(|| unreachable!())
+            .vni
     }
 }
