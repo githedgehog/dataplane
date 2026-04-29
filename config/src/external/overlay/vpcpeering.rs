@@ -170,22 +170,11 @@ impl VpcExpose {
         Ok(self)
     }
 
-    #[must_use]
-    pub fn idle_timeout(&self) -> Option<Duration> {
-        self.nat.as_ref().and_then(|nat| match &nat.config {
-            VpcExposeNatConfig::Stateful(config) => config.idle_timeout,
-            VpcExposeNatConfig::PortForwarding(config) => config.idle_timeout,
-            VpcExposeNatConfig::Stateless(_) => None,
-        })
-    }
-
-    #[must_use]
-    pub fn as_range_or_empty(&self) -> &PrefixPortsSet {
+    fn as_range_or_empty(&self) -> &PrefixPortsSet {
         self.nat.as_ref().map_or(empty_set(), |nat| &nat.as_range)
     }
 
-    #[must_use]
-    pub fn not_as_or_empty(&self) -> &PrefixPortsSet {
+    fn not_as_or_empty(&self) -> &PrefixPortsSet {
         self.nat.as_ref().map_or(empty_set(), |nat| &nat.not_as)
     }
 
@@ -201,20 +190,6 @@ impl VpcExpose {
     #[must_use]
     pub fn ip(mut self, prefix: PrefixWithOptionalPorts) -> Self {
         self.ips.insert(prefix);
-        self
-    }
-    // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
-    // public IPs are those from the "ips" list. This method extends the list of public prefixes,
-    // whether it's "ips" or "as_range".
-    #[must_use]
-    pub fn insert_public_ip(mut self, prefix: PrefixWithOptionalPorts) -> Self {
-        if let Some(nat) = self.nat.as_mut()
-            && !nat.as_range.is_empty()
-        {
-            nat.as_range.insert(prefix);
-        } else {
-            self.ips.insert(prefix);
-        }
         self
     }
     #[must_use]
@@ -297,69 +272,15 @@ impl VpcExpose {
             &nat.not_as
         }
     }
-    // This method returns true if the list of allowed prefixes is IPv4.
-    // This method assumes that all prefixes the list are of the same IP version. It does not
-    // validate the list for consistency.
     #[must_use]
-    pub fn is_v4(&self) -> bool {
-        self.ips.first().is_some_and(|p| p.prefix().is_ipv4())
-    }
-    // This method returns true if the list of allowed prefixes is IPv6.
-    // This method assumes that all prefixes the list are of the same IP version. It does not
-    // validate the list for consistency.
-    #[must_use]
-    pub fn is_v6(&self) -> bool {
-        self.ips.first().is_some_and(|p| p.prefix().is_ipv6())
-    }
-    // This method returns true if both allowed and translated prefixes are IPv4.
-    // This method assumes that all prefixes in each list are of the same IP version. It does not
-    // validate the list for consistency.
-    #[must_use]
-    pub fn is_44(&self) -> bool {
-        matches!(
-            (
-                self.ips.first().map(PrefixWithOptionalPorts::prefix),
-                self.as_range_or_empty()
-                    .first()
-                    .map(PrefixWithOptionalPorts::prefix)
-            ),
-            (Some(Prefix::IPV4(_)), Some(Prefix::IPV4(_)))
-        )
-    }
-    // This method returns true if both allowed and translated prefixes are IPv6.
-    // This method assumes that all prefixes in each list are of the same IP version. It does not
-    // validate the list for consistency.
-    #[must_use]
-    pub fn is_66(&self) -> bool {
-        matches!(
-            (
-                self.ips.first().map(PrefixWithOptionalPorts::prefix),
-                self.as_range_or_empty()
-                    .first()
-                    .map(PrefixWithOptionalPorts::prefix)
-            ),
-            (Some(Prefix::IPV6(_)), Some(Prefix::IPV6(_)))
-        )
-    }
-    #[must_use]
-    pub fn has_nat(&self) -> bool {
+    pub(crate) fn has_nat(&self) -> bool {
         self.nat
             .as_ref()
             .is_some_and(|nat| !nat.as_range.is_empty())
     }
 
-    pub fn has_stateful_nat(&self) -> bool {
-        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateful)
-    }
-
-    pub fn has_stateless_nat(&self) -> bool {
+    pub(crate) fn has_stateless_nat(&self) -> bool {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
-    }
-
-    pub fn has_port_forwarding(&self) -> bool {
-        self.nat
-            .as_ref()
-            .is_some_and(VpcExposeNat::is_port_forwarding)
     }
 
     #[must_use]
@@ -685,7 +606,7 @@ pub struct VpcManifest {
     pub(crate) exposes: Vec<VpcExpose>,
     // Validated, exclusion-prefixes-free view of exposes. Populated by VpcManifest::validate.
     // Never to be used in VpcManifest; only with wrapper ValidatedManifest
-    pub valexp: Vec<ValidatedExpose>,
+    valexp: Vec<ValidatedExpose>,
 }
 impl VpcManifest {
     #[must_use]
@@ -709,9 +630,12 @@ impl VpcManifest {
         self
     }
 
-    #[must_use]
-    pub fn has_host_prefixes(&self) -> bool {
-        self.exposes.iter().any(VpcExpose::has_host_prefixes)
+    pub fn add_expose(&mut self, expose: VpcExpose) {
+        self.exposes.push(expose);
+    }
+
+    pub fn add_exposes(&mut self, exposes: impl IntoIterator<Item = VpcExpose>) {
+        self.exposes.extend(exposes);
     }
 
     #[must_use]
@@ -785,12 +709,7 @@ impl VpcManifest {
         }
         Ok(())
     }
-    pub fn add_expose(&mut self, expose: VpcExpose) {
-        self.exposes.push(expose);
-    }
-    pub fn add_exposes(&mut self, exposes: impl IntoIterator<Item = VpcExpose>) {
-        self.exposes.extend(exposes);
-    }
+
     /// Validate the [`VpcManifest`].
     ///
     /// # Errors
@@ -825,7 +744,7 @@ impl VpcManifest {
         Ok(())
     }
 
-    /// Consume `self` and produce a [`ValidatedManifest`] if it passes validation.
+    /// Validate the manifest and return a validated version
     ///
     /// # Errors
     ///
@@ -834,52 +753,7 @@ impl VpcManifest {
         self.validate()?;
         Ok(ValidatedManifest(self))
     }
-    pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_stateless_nat())
-    }
-    pub fn stateful_nat_exposes_44(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_stateful_nat())
-            .filter(|expose| expose.is_44())
-    }
-    pub fn stateful_nat_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_stateful_nat())
-            .filter(|expose| expose.is_66())
-    }
-    pub fn no_stateful_nat_exposes_v4(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| !expose.has_stateful_nat())
-            .filter(|expose| expose.is_v4())
-    }
-    pub fn no_stateful_nat_exposes_v6(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| !expose.has_stateful_nat())
-            .filter(|expose| expose.is_v6())
-    }
-    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_port_forwarding())
-            .filter(|expose| expose.is_44())
-    }
-    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_port_forwarding())
-            .filter(|expose| expose.is_66())
-    }
-    pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
-        self.exposes
-            .iter()
-            .filter(|expose| expose.has_port_forwarding())
-    }
+
     #[must_use]
     pub fn default_expose(&self) -> Option<&VpcExpose> {
         self.exposes.iter().find(|expose| expose.default)

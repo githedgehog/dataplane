@@ -639,7 +639,7 @@ mod test {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/16".into()));
         manifest.add_expose(VpcExpose::empty().ip("10.1.0.0/16".into()));
-        assert_eq!(manifest.validate(), Ok(()));
+        assert!(manifest.validate().is_ok());
     }
 
     // Two no-NAT exposes with overlapping ips rejected
@@ -795,7 +795,7 @@ mod test {
                 .as_range("2.1.0.0/16".into())
                 .unwrap(),
         );
-        assert_eq!(manifest.validate(), Ok(()));
+        assert!(manifest.validate().is_ok());
     }
 
     // Two stateless NAT exposes with overlapping ips rejected
@@ -1088,7 +1088,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 9090, 9090))
                 .unwrap(),
         );
-        assert_eq!(manifest.validate(), Ok(()));
+        assert!(manifest.validate().is_ok());
     }
 
     // Stateful + port forwarding overlap where stateful NAT contains port forwarding passes
@@ -1113,7 +1113,7 @@ mod test {
                 .as_range(prefix_with_ports("2.0.0.1/32", 8080, 8080))
                 .unwrap(),
         );
-        assert_eq!(manifest.validate(), Ok(()));
+        assert!(manifest.validate().is_ok());
     }
 
     // Stateful + port forwarding partial overlap passes
@@ -1138,7 +1138,7 @@ mod test {
                 .as_range(prefix_with_ports("3.0.0.0/24", 8080, 8080))
                 .unwrap(),
         );
-        assert_eq!(manifest.validate(), Ok(()));
+        assert!(manifest.validate().is_ok());
     }
 
     // ==================================================================================

@@ -3,20 +3,20 @@
 
 //! Dataplane configuration model: vpc
 
-#![allow(unused)]
 #![allow(clippy::missing_errors_doc)]
 
 use lpm::prefix::IpRangeWithPorts;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+#[allow(unused)]
 use tracing::{debug, error, warn};
 
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
 use crate::external::overlay::vpcpeering::ValidatedManifest;
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
-use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceConfigTable};
+use crate::internal::interfaces::interface::InterfaceConfigTable;
 use crate::{ConfigError, ConfigResult};
 
 #[cfg(doc)]
@@ -184,7 +184,7 @@ impl TryFrom<&str> for VpcId {
         let mut chars = value.chars().take(ID_LEN);
         // unwrap cannot fail here because we checked the length earlier
         Ok(VpcId::new(
-            [(); 5].map(|i| chars.next().unwrap_or_else(|| unreachable!())),
+            [(); 5].map(|()| chars.next().unwrap_or_else(|| unreachable!())),
         ))
     }
 }
@@ -212,13 +212,8 @@ impl Vpc {
         })
     }
 
-    /// Add an [`InterfaceConfig`] to this [`Vpc`]
-    pub fn add_interface_config(&mut self, if_cfg: InterfaceConfig) {
-        self.interfaces.add_interface_config(if_cfg);
-    }
-
     /// Collect all peerings from the [`VpcPeeringTable`] table this vpc participates in
-    pub fn set_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    fn set_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for vpc '{}'...", self.name);
         self.peerings = peering_table
             .peerings_vpc(&self.name)
@@ -246,7 +241,7 @@ impl Vpc {
         // We use the VPC Ids to identify peer VPCs.
         let mut peers = BTreeSet::new();
         for peering in &self.peerings {
-            if (!peers.insert(peering.remote_id.clone())) {
+            if !peers.insert(peering.remote_id.clone()) {
                 error!(
                     "VPC {} peers more than once with peer {}",
                     self.name, peering.remote.name
@@ -267,7 +262,7 @@ impl Vpc {
     }
 
     /// Validate a [`Vpc`]
-    pub(crate) fn validate(&mut self) -> ConfigResult {
+    fn validate(&mut self) -> ConfigResult {
         debug!("Validating config for VPC {}...", self.name);
         self.check_peering_count()?;
         self.check_peerings()?;
@@ -303,26 +298,6 @@ impl Vpc {
     #[must_use]
     pub fn num_peerings(&self) -> usize {
         self.peerings.len()
-    }
-
-    /// Tell if the peerings of this VPC have host routes
-    #[must_use]
-    pub fn has_peers_with_host_prefixes(&self) -> bool {
-        self.peerings
-            .iter()
-            .filter(|peering| peering.remote.has_host_prefixes())
-            .count()
-            > 0
-    }
-
-    /// Provide an iterator over all peerings that have either masquerade or port-forwarding exposes locally
-    pub fn local_stateful_nat_peerings(&self) -> impl Iterator<Item = &Peering> {
-        self.peerings.iter().filter(|p| {
-            p.local
-                .exposes
-                .iter()
-                .any(|e| e.has_port_forwarding() || e.has_stateful_nat())
-        })
     }
 
     /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
@@ -399,6 +374,8 @@ impl ValidatedVpc {
     /// - overlap is allowed between a prefix and a default expose (it overlaps by design)
     /// - overlap is allowed between prefixes from different exposes if both their exposes use
     ///   stateful NAT (we can fall back to the flow table to disambiguate the destination VPC)
+    ///
+    /// Also check that at most one default expose is exposed to the VPC.
     fn check_overlap_and_default(&self) -> ConfigResult {
         // FIXME: Find a less expensive approach to find overlapping prefixes
         for (i, current_peering) in self.peerings().iter().enumerate() {
@@ -509,13 +486,6 @@ impl VpcTable {
             None => None,
         }
     }
-    /// Get the [`Vni`] of the remote [`Vpc`] for a given [`Peering`]
-    #[must_use]
-    pub fn get_remote_vni(&self, peering: &Peering) -> Vni {
-        self.get_vpc_by_vpcid(&peering.remote_id)
-            .unwrap_or_else(|| unreachable!())
-            .vni
-    }
 
     /// Iterate over [`Vpc`]s in a [`VpcTable`]
     pub fn values(&self) -> impl Iterator<Item = &Vpc> {
@@ -540,7 +510,7 @@ impl VpcTable {
     }
 
     /// Validate the [`VpcTable`]
-    pub(crate) fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&mut self) -> ConfigResult {
         for vpc in self.values_mut() {
             vpc.validate()?;
         }

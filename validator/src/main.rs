@@ -129,7 +129,7 @@ fn validate(gwagent_json: &str) -> Result<(), ValidateError> {
     })?;
 
     let gwconfig = GwConfig::new(external);
-    let _ = gwconfig.validated().map_err(|e| {
+    let _ = gwconfig.validate().map_err(|e| {
         let mut config = ConfigErrors::default();
         config.errors.push(e.to_string());
         ValidateError::Configuration(config)

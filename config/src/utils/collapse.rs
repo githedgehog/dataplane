@@ -1,35 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::external::overlay::{vpc::Peering, vpcpeering::VpcExpose};
+use crate::external::overlay::vpcpeering::VpcExpose;
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet};
-
-// Collapse prefixes and exclusion prefixes in a Peering object: for each expose object, "apply"
-// exclusion prefixes to split allowed prefixes into smaller chunks, and remove exclusion prefixes
-// from the expose object.
-//
-// For example, for a given expose with "ips" as 1.0.0.0/16 and "nots" as 1.0.0.0/18, the resulting
-// expose will contain 1.0.128.0/17 and 1.0.64.0/18 as "ips" prefixes, and an empty "nots" list.
-//
-// Another example would be "ips" as 1.0.0.0/16, with associated port range 4000-5000, and "nots" as
-// 1.0.0.0/17, with associated port range 4000-4500. The resulting expose will contain (1.0.0.0/16,
-// 0-3999), (1.0.0.0/16, 4501-5000), and (1.0.128.0/17, 4000-4500) as "ips" prefixes, and again, an
-// empty "nots" list.
-#[must_use]
-pub fn collapse_prefixes_peering(peering: &Peering) -> Peering {
-    let mut new_peering = peering.clone();
-
-    for expose in new_peering
-        .local
-        .exposes
-        .iter_mut()
-        .chain(new_peering.remote.exposes.iter_mut())
-    {
-        collapse_prefixes(expose);
-    }
-
-    new_peering
-}
 
 pub(crate) fn collapse_prefixes(expose: &mut VpcExpose) {
     let ips = collapse_prefix_lists(&expose.ips, &expose.nots);
@@ -47,6 +20,14 @@ pub(crate) fn collapse_prefixes(expose: &mut VpcExpose) {
 // Collapse prefixes (first set) and exclusion prefixes (second set), by "applying" exclusion
 // prefixes to the allowed prefixes and split them into smaller allowed segments, to express the
 // same IP ranges without any exclusion prefixes.
+//
+// For example, for a given expose with "ips" as 1.0.0.0/16 and "nots" as 1.0.0.0/18, the resulting
+// expose will contain 1.0.128.0/17 and 1.0.64.0/18 as "ips" prefixes, and an empty "nots" list.
+//
+// Another example would be "ips" as 1.0.0.0/16, with associated port range 4000-5000, and "nots" as
+// 1.0.0.0/17, with associated port range 4000-4500. The resulting expose will contain (1.0.0.0/16,
+// 0-3999), (1.0.0.0/16, 4501-5000), and (1.0.128.0/17, 4000-4500) as "ips" prefixes, and again, an
+// empty "nots" list.
 fn collapse_prefix_lists(prefixes: &PrefixPortsSet, excludes: &PrefixPortsSet) -> PrefixPortsSet {
     let mut result = prefixes.clone();
     // Iterate over all exclusion prefixes
@@ -71,6 +52,7 @@ fn collapse_prefix_lists(prefixes: &PrefixPortsSet, excludes: &PrefixPortsSet) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external::overlay::vpc::Peering;
     use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use ipnet::IpNet;
     use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
@@ -249,7 +231,7 @@ mod tests {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(expose);
         let manifest_empty = VpcManifest::new("VPC-2");
-        let peering = Peering {
+        let mut peering = Peering {
             name: "test_peering".into(),
             local: manifest,
             remote: manifest_empty.clone(),
@@ -263,9 +245,16 @@ mod tests {
             .ip("2.0.2.0/25".into())
             .ip("3.0.0.0/17".into());
 
-        let collapsed_peering = collapse_prefixes_peering(&peering);
+        for expose in peering
+            .local
+            .exposes
+            .iter_mut()
+            .chain(peering.remote.exposes.iter_mut())
+        {
+            collapse_prefixes(expose);
+        }
 
-        assert_eq!(collapsed_peering.local.exposes[0], expected_expose);
+        assert_eq!(peering.local.exposes[0], expected_expose);
     }
 
     #[test]

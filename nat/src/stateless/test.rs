@@ -546,7 +546,7 @@ fn build_sample_config() -> ValidatedGwConfig {
 
     let overlay = Overlay::new(vpc_table, peering_table);
 
-    build_gwconfig_from_overlay(overlay).validated().unwrap()
+    build_gwconfig_from_overlay(overlay).validate().unwrap()
 }
 
 // Use the provided overlay with some default configuration to build a valid GwConfig. This
@@ -802,7 +802,7 @@ fn build_gwconfig_from_exposes(
     let overlay = Overlay::new(vpc_table, peering_table);
 
     build_gwconfig_from_overlay(overlay.clone())
-        .validated()
+        .validate()
         .unwrap()
 }
 

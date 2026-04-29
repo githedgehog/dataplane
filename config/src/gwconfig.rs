@@ -114,17 +114,7 @@ impl GwConfig {
     /// # Errors
     ///
     /// Returns a [`ConfigError`] if the external configuration fails validation.
-    pub fn validate(&mut self) -> ConfigResult {
-        debug!("Validating external config with genid {} ..", self.genid());
-        self.external.validate()
-    }
-
-    /// Consume `self` and produce a [`ValidatedGwConfig`] if validation succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ConfigError`] if the external configuration fails validation.
-    pub fn validated(mut self) -> Result<ValidatedGwConfig, ConfigError> {
+    pub fn validate(mut self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()?;
         Ok(ValidatedGwConfig(self))
@@ -151,7 +141,6 @@ impl GwConfig {
 pub struct ValidatedGwConfig(GwConfig);
 
 impl ValidatedGwConfig {
-    /// Create a blank [`ValidatedGwConfig`] with an empty [`ExternalConfig`].
     #[must_use]
     pub fn blank() -> Self {
         // The blank config has no overlay, peerings, or VPCs, so it trivially passes validation.
@@ -180,7 +169,6 @@ impl ValidatedGwConfig {
         self.0.internal.as_ref()
     }
 
-    /// Set an internal config object, once built.
     pub fn set_internal_config(&mut self, internal: InternalConfig) {
         self.0.internal = Some(internal);
     }
@@ -188,5 +176,17 @@ impl ValidatedGwConfig {
     #[must_use]
     pub fn genid(&self) -> GenId {
         self.0.external.genid
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::GwConfig;
+
+    #[test]
+    fn test_blank_config_is_valid() {
+        let _ = GwConfig::blank()
+            .validate()
+            .expect("Failed to validate blank config");
     }
 }

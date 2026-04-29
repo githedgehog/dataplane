@@ -140,7 +140,7 @@ impl ConfigProcessor {
 
     /// Main entry point for new configurations
     pub(crate) async fn process_incoming_config(&mut self, config: GwConfig) -> ConfigResult {
-        let mut validated_config = config.validated()?;
+        let mut validated_config = config.validate()?;
         let internal =
             build_internal_config(&validated_config, self.proc_params.bmp_options.clone())?;
         validated_config.set_internal_config(internal);

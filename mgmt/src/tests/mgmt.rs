@@ -394,7 +394,7 @@ pub mod test {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
         let config = GwConfig::new(external);
-        let validated_config = config.validated().expect("Config validation failed");
+        let validated_config = config.validate().expect("Config validation failed");
         if false {
             let vpc_table = validated_config.external().overlay().vpc_table();
             let peering_table = validated_config.external().overlay().peering_table();
