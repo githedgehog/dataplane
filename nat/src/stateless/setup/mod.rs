@@ -12,9 +12,8 @@ pub mod tables;
 
 use crate::stateless::{NatTableValue, NatTables, PerVniTable};
 use config::ConfigError;
-use config::external::overlay::vpc::{Peering, VpcTable};
-use config::external::overlay::vpcpeering::VpcExpose;
-use config::utils::collapse_prefixes_peering;
+use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpcTable};
+use config::external::overlay::vpcpeering::ValidatedExpose;
 use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::vxlan::Vni;
 use std::collections::BTreeSet;
@@ -35,15 +34,15 @@ pub(crate) fn generate_nat_values<'a>(
 }
 
 fn generate_public_values(
-    expose: &VpcExpose,
+    expose: &ValidatedExpose,
 ) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
-    generate_nat_values(&expose.ips, expose.as_range_or_empty())
+    generate_nat_values(expose.ips(), expose.as_range_or_empty())
 }
 
 fn generate_private_values(
-    expose: &VpcExpose,
+    expose: &ValidatedExpose,
 ) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
-    generate_nat_values(expose.as_range_or_empty(), &expose.ips)
+    generate_nat_values(expose.as_range_or_empty(), expose.ips())
 }
 
 impl PerVniTable {
@@ -54,13 +53,11 @@ impl PerVniTable {
     /// Returns an error if some lists of prefixes contain duplicates
     pub(crate) fn add_peering(
         &mut self,
-        peering: &Peering,
+        peering: &ValidatedPeering,
         dst_vni: Vni,
     ) -> Result<(), NatPeeringError> {
-        let new_peering = collapse_prefixes_peering(peering);
-
-        new_peering
-            .local
+        peering
+            .local()
             .stateless_nat_exposes()
             .try_for_each(|expose| {
                 if expose.as_range_or_empty().is_empty() {
@@ -82,8 +79,8 @@ impl PerVniTable {
             })?;
 
         // Update table for destination NAT
-        new_peering
-            .remote
+        peering
+            .remote()
             .stateless_nat_exposes()
             .try_for_each(|expose| {
                 // For each public prefix, add an entry containing the set of private prefixes
@@ -105,17 +102,17 @@ impl PerVniTable {
 /// # Errors
 ///
 /// Returns [`ConfigError::FailureApply`] if the configuration for some NAT peering cannot be built.
-pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, ConfigError> {
+pub fn build_nat_configuration(vpc_table: &ValidatedVpcTable) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
     for vpc in vpc_table.values() {
         let mut table = PerVniTable::new();
-        for peering in &vpc.peerings {
+        for peering in vpc.peerings() {
             let dst_vni = vpc_table.get_remote_vni(peering);
             table
                 .add_peering(peering, dst_vni)
                 .map_err(|e| ConfigError::FailureApply(e.to_string()))?;
         }
-        nat_tables.add_table(table, vpc.vni);
+        nat_tables.add_table(table, vpc.vni());
     }
     Ok(nat_tables)
 }
@@ -123,8 +120,8 @@ pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, Config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::external::overlay::vpc::{Vpc, VpcTable};
-    use config::external::overlay::vpcpeering::VpcManifest;
+    use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
+    use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::vxlan::Vni;
 
     #[test]
@@ -201,7 +198,7 @@ mod tests {
 
         let mut vni_table = PerVniTable::new();
         vni_table
-            .add_peering(&peering, dst_vni)
+            .add_peering(&peering.validated().unwrap(), dst_vni)
             .expect("Failed to build NAT tables");
     }
 }

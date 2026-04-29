@@ -4,11 +4,11 @@
 use crate::FlowFilterTable;
 use crate::tables::{FlowFilterSubtable, NatRequirement, RemoteData, VpcdLookupResult};
 use config::ConfigError;
+#[cfg(test)]
 use config::external::overlay::Overlay;
-use config::external::overlay::vpc::{Peering, Vpc};
-use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
-use config::internal::interfaces::interface::InterfaceConfigTable;
-use config::utils::collapse_prefixes_peering;
+use config::external::overlay::ValidatedOverlay;
+use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
+use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
 use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts};
 use net::packet::VpcDiscriminant;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -19,12 +19,11 @@ trace_target!("flow-filter-setup", LevelFilter::INFO, &[]);
 
 impl FlowFilterTable {
     /// Build a [`FlowFilterTable`] from an overlay
-    pub fn build_from_overlay(overlay: &Overlay) -> Result<Self, ConfigError> {
-        let clean_vpc_table = cleanup_vpc_table(overlay.vpc_table.values().collect())?;
+    pub fn build_from_overlay(overlay: &ValidatedOverlay) -> Result<Self, ConfigError> {
         let mut table = FlowFilterTable::new();
 
-        for vpc in &clean_vpc_table {
-            for peering in &vpc.peerings {
+        for vpc in overlay.vpc_table().values() {
+            for peering in vpc.peerings() {
                 table.add_peering(overlay, vpc, peering)?;
             }
         }
@@ -34,12 +33,12 @@ impl FlowFilterTable {
 
     fn add_peering(
         &mut self,
-        overlay: &Overlay,
-        vpc: &Vpc,
-        peering: &Peering,
+        overlay: &ValidatedOverlay,
+        vpc: &ValidatedVpc,
+        peering: &ValidatedPeering,
     ) -> Result<(), ConfigError> {
-        let local_vpcd = VpcDiscriminant::VNI(vpc.vni);
-        let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(peering));
+        let local_vpcd = VpcDiscriminant::VNI(vpc.vni());
+        let dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(peering));
 
         let (local_prefixes, remote_prefixes) =
             get_prefixes_for_processing(overlay, vpc, peering, dst_vpcd, false);
@@ -49,8 +48,8 @@ impl FlowFilterTable {
             dst_vpcd,
             local_prefixes,
             remote_prefixes,
-            peering.local.default_expose(),
-            peering.remote.default_expose(),
+            peering.local().default_expose(),
+            peering.remote().default_expose(),
         )?;
 
         let (local_prefixes, remote_prefixes) =
@@ -61,8 +60,8 @@ impl FlowFilterTable {
             dst_vpcd,
             local_prefixes,
             remote_prefixes,
-            peering.local.default_expose(),
-            peering.remote.default_expose(),
+            peering.local().default_expose(),
+            peering.remote().default_expose(),
         )
     }
 }
@@ -74,9 +73,9 @@ type PrefixWithData = (
 );
 
 fn get_prefixes_for_processing(
-    overlay: &Overlay,
-    vpc: &Vpc,
-    peering: &Peering,
+    overlay: &ValidatedOverlay,
+    vpc: &ValidatedVpc,
+    peering: &ValidatedPeering,
     dst_vpcd: VpcDiscriminant,
     skip_ports: bool,
 ) -> (Vec<PrefixWithData>, Vec<PrefixWithData>) {
@@ -86,9 +85,9 @@ fn get_prefixes_for_processing(
     // Get list of local prefixes, splitting to account for overlapping, if necessary
     let overlap_trie = consolidate_overlap_list(local_manifests_overlap);
     let local_prefixes = get_split_prefixes_for_manifest(
-        &peering.local,
+        peering.local(),
         &dst_vpcd,
-        |expose| &expose.ips,
+        |expose| expose.ips(),
         overlap_trie,
         skip_ports,
     );
@@ -96,7 +95,7 @@ fn get_prefixes_for_processing(
     // Get list of remote prefixes, splitting to account for overlapping, if necessary
     let overlap_trie = consolidate_overlap_list(remote_manifests_overlap);
     let remote_prefixes = get_split_prefixes_for_manifest(
-        &peering.remote,
+        peering.remote(),
         &dst_vpcd,
         |expose| expose.public_ips(),
         overlap_trie,
@@ -113,8 +112,8 @@ impl FlowFilterSubtable {
         dst_vpcd: VpcDiscriminant,
         local_prefixes: Vec<PrefixWithData>,
         remote_prefixes: Vec<PrefixWithData>,
-        local_default_expose: Option<&VpcExpose>,
-        remote_default_expose: Option<&VpcExpose>,
+        local_default_expose: Option<&ValidatedExpose>,
+        remote_default_expose: Option<&ValidatedExpose>,
     ) -> Result<(), ConfigError> {
         // Handle local default expose (for all remote prefixes)
         if let Some(local_default_expose) = local_default_expose {
@@ -261,38 +260,13 @@ impl FlowFilterSubtable {
     }
 }
 
-fn cleanup_vpc_table(vpcs: Vec<&Vpc>) -> Result<Vec<Vpc>, ConfigError> {
-    let mut new_set = Vec::new();
-    for vpc in vpcs {
-        let mut new_vpc = clone_skipping_peerings(vpc);
-
-        for peering in &vpc.peerings {
-            // "Collapse" prefixes to get rid of exclusion prefixes
-            let collapsed_peering = collapse_prefixes_peering(peering);
-            new_vpc.peerings.push(collapsed_peering);
-        }
-        new_set.push(new_vpc);
-    }
-    Ok(new_set)
-}
-
-fn clone_skipping_peerings(vpc: &Vpc) -> Vpc {
-    Vpc {
-        name: vpc.name.clone(),
-        id: vpc.id.clone(),
-        vni: vpc.vni,
-        interfaces: InterfaceConfigTable::default(),
-        peerings: vec![],
-    }
-}
-
 // Compute lists of overlapping prefixes:
 // - between prefixes from remote manifest and prefixes from remote manifests for other peerings
 // - between prefixes from local manifest and prefixes from local manifests for other peerings
 fn get_manifests_overlap(
-    overlay: &Overlay,
-    vpc: &Vpc,
-    peering: &Peering,
+    overlay: &ValidatedOverlay,
+    vpc: &ValidatedVpc,
+    peering: &ValidatedPeering,
     dst_vpcd: VpcDiscriminant,
     skip_ports: bool,
 ) -> (
@@ -301,24 +275,25 @@ fn get_manifests_overlap(
 ) {
     let mut local_manifests_overlap = BTreeMap::new();
     let mut remote_manifests_overlap = BTreeMap::new();
-    for other_peering in &vpc.peerings {
-        let compare_to_self = other_peering.name == peering.name;
-        let other_dst_vpcd = VpcDiscriminant::VNI(overlay.vpc_table.get_remote_vni(other_peering));
+    for other_peering in vpc.peerings() {
+        let compare_to_self = other_peering.name() == peering.name();
+        let other_dst_vpcd =
+            VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(other_peering));
 
         // Get overlap for prefixes related to source address
         let local_overlap = get_manifest_ips_overlap(
-            &peering.local,
-            &other_peering.local,
+            peering.local(),
+            other_peering.local(),
             dst_vpcd,
             other_dst_vpcd,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             compare_to_self,
             skip_ports,
         );
         // Get overlap for prefixes related to destination address
         let remote_overlap = get_manifest_ips_overlap(
-            &peering.remote,
-            &other_peering.remote,
+            peering.remote(),
+            other_peering.remote(),
             dst_vpcd,
             other_dst_vpcd,
             |expose| expose.public_ips(),
@@ -356,24 +331,24 @@ where
 //
 // Exclude the "default"-destination expose blocks from overlap calculation.
 fn get_manifest_ips_overlap(
-    manifest_left: &VpcManifest,
-    manifest_right: &VpcManifest,
+    manifest_left: &ValidatedManifest,
+    manifest_right: &ValidatedManifest,
     dst_vpcd_left: VpcDiscriminant,
     dst_vpcd_right: VpcDiscriminant,
-    get_ips: fn(&VpcExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
+    get_ips: fn(&ValidatedExpose) -> &BTreeSet<PrefixWithOptionalPorts>,
     compare_to_self: bool,
     skip_ports: bool,
 ) -> BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>> {
     let mut overlap: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>> = BTreeMap::new();
     for expose_left in manifest_left
-        .exposes
+        .valexp()
         .iter()
-        .filter(|expose| !expose.default)
+        .filter(|expose| !expose.is_default())
     {
         for expose_right in manifest_right
-            .exposes
+            .valexp()
             .iter()
-            .filter(|expose| !expose.default)
+            .filter(|expose| !expose.is_default())
         {
             if compare_to_self && expose_left == expose_right {
                 // We're comparing the expose to itself: skip
@@ -460,14 +435,14 @@ fn consolidate_overlap_list(
 //   with VPC C's 10.0.0.0/25)
 // - For VPC C: [10.0.0.0/25]
 fn get_split_prefixes_for_manifest(
-    manifest: &VpcManifest,
+    manifest: &ValidatedManifest,
     vpcd: &VpcDiscriminant,
-    get_ips: fn(&VpcExpose) -> &PrefixPortsSet,
+    get_ips: fn(&ValidatedExpose) -> &PrefixPortsSet,
     overlaps: BTreeMap<PrefixWithOptionalPorts, HashSet<RemoteData>>,
     skip_ports: bool,
 ) -> Vec<PrefixWithData> {
     let mut prefixes_with_vpcd = Vec::new();
-    for expose in &manifest.exposes {
+    for expose in manifest.valexp() {
         let nat_req = get_nat_requirement(expose);
         for prefix in get_ips(expose) {
             if skip_ports && prefix.ports().is_some() {
@@ -530,8 +505,8 @@ fn split_overlapping(
     split_prefixes
 }
 
-fn get_nat_requirement(expose: &VpcExpose) -> Option<NatRequirement> {
-    expose.nat.as_ref().map(NatRequirement::from_nat)
+fn get_nat_requirement(expose: &ValidatedExpose) -> Option<NatRequirement> {
+    expose.nat().map(NatRequirement::from_nat)
 }
 
 #[cfg(test)]
@@ -539,8 +514,10 @@ mod tests {
     use crate::tables::VpcdLookupResult;
 
     use super::*;
-    use config::external::overlay::vpc::{Vpc, VpcTable};
-    use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeeringTable};
+    use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
+    use config::external::overlay::vpcpeering::{
+        VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
+    };
     use lpm::prefix::{L4Protocol, PortRange, Prefix, ppsize_zero};
     use net::packet::VpcDiscriminant;
     use net::vxlan::Vni;
@@ -701,19 +678,23 @@ mod tests {
         let manifest1 = VpcManifest::with_exposes(
             "manifest1",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
             "manifest2",
             vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
             &manifest2,
             vpcd1,
             vpcd2,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             false,
             false,
         );
@@ -730,19 +711,23 @@ mod tests {
         let manifest1 = VpcManifest::with_exposes(
             "manifest1",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
             "manifest2",
             vec![VpcExpose::empty().ip("10.0.0.0/25".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
             &manifest2,
             vpcd1,
             vpcd2,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             false,
             false,
         );
@@ -765,7 +750,9 @@ mod tests {
         let manifest1 = VpcManifest::with_exposes(
             "manifest1",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
             "manifest2",
@@ -773,14 +760,16 @@ mod tests {
                 "10.0.0.0/25".into(),
                 Some(PortRange::new(100, 200).unwrap()),
             ))],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
             &manifest2,
             vpcd1,
             vpcd2,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             false,
             false,
         );
@@ -811,7 +800,9 @@ mod tests {
                     .ip("10.0.0.0/24".into())
                     .ip("20.0.0.128/25".into()),
             ],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
             "manifest2",
@@ -819,17 +810,21 @@ mod tests {
                 VpcExpose::empty()
                     .make_stateful_nat(None)
                     .unwrap()
-                    .ip("10.0.0.0/25".into()),
+                    .ip("10.0.0.0/25".into())
+                    .as_range("100.0.0.0/25".into())
+                    .unwrap(),
                 VpcExpose::empty().ip("20.0.0.0/24".into()),
             ],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let overlap = get_manifest_ips_overlap(
             &manifest1,
             &manifest2,
             vpcd1,
             vpcd2,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             false,
             false,
         );
@@ -911,6 +906,11 @@ mod tests {
                     .unwrap(),
             ],
         );
+        assert!(matches!(
+            manifest.clone().validated(),
+            Err(ConfigError::OverlappingPrefixes(_, _))
+        ));
+        let manifest = unsafe { manifest.fake_valid_manifest_for_tests() };
 
         let overlap = get_manifest_ips_overlap(
             &manifest,
@@ -1069,14 +1069,16 @@ mod tests {
         let manifest = VpcManifest::with_exposes(
             "manifest",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let overlaps = BTreeMap::new();
 
         let result = get_split_prefixes_for_manifest(
             &manifest,
             &vpcd,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             overlaps,
             false,
         );
@@ -1100,7 +1102,9 @@ mod tests {
         let manifest = VpcManifest::with_exposes(
             "manifest",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let mut overlaps = BTreeMap::new();
         // The overlap covers part of the manifest's prefix
@@ -1112,7 +1116,7 @@ mod tests {
         let mut result = get_split_prefixes_for_manifest(
             &manifest,
             &vpcd,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             overlaps,
             false,
         );
@@ -1157,7 +1161,9 @@ mod tests {
         let manifest = VpcManifest::with_exposes(
             "manifest_a",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-        );
+        )
+        .validated()
+        .unwrap();
 
         let mut overlaps = BTreeMap::new();
         // Overlap 1: 10.0.0.0/25 is shared between A and B
@@ -1174,7 +1180,7 @@ mod tests {
         let mut result = get_split_prefixes_for_manifest(
             &manifest,
             &vpcd_a,
-            |expose| &expose.ips,
+            |expose| expose.ips(),
             overlaps,
             false,
         );
@@ -1235,11 +1241,14 @@ mod tests {
         let overlay = Overlay {
             vpc_table,
             peering_table: VpcPeeringTable::new(),
-        };
+        }
+        .validated()
+        .unwrap();
 
+        let vpc1 = vpc1.validated().unwrap();
         let mut table = FlowFilterTable::new();
         table
-            .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
+            .add_peering(&overlay, &vpc1, &vpc1.peerings()[0])
             .unwrap();
 
         let src_vpcd = vni1.into();
@@ -1305,11 +1314,20 @@ mod tests {
         let overlay = Overlay {
             vpc_table,
             peering_table: VpcPeeringTable::new(),
-        };
+        }
+        .validated()
+        .unwrap();
+
+        // vpc1 is not valid, we have to fake its transformation into a ValidatedVpc for this test
+        assert!(matches!(
+            vpc1.clone().validated(),
+            Err(ConfigError::OverlappingPrefixes(_, _))
+        ));
+        let vpc1 = unsafe { vpc1.fake_validated_vpc_for_tests() };
 
         let mut table = FlowFilterTable::new();
         table
-            .add_peering(&overlay, &vpc1, &vpc1.peerings[0])
+            .add_peering(&overlay, &vpc1, &vpc1.peerings()[0])
             .unwrap();
 
         let src_vpcd = vni1.into();
@@ -1342,90 +1360,41 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_skipping_peerings() {
-        let mut vpc = Vpc::new("test-vpc", "VPC01", 100).unwrap();
-
-        vpc.peerings.push(Peering {
-            name: "peering1".to_string(),
-            local: VpcManifest::with_exposes("local1", vec![]),
-            remote: VpcManifest::with_exposes("remote1", vec![]),
-            remote_id: "VPC02".try_into().unwrap(),
-            gwgroup: None,
-        });
-
-        let cloned = clone_skipping_peerings(&vpc);
-
-        assert_eq!(cloned.name, vpc.name);
-        assert_eq!(cloned.id, vpc.id);
-        assert_eq!(cloned.vni, vpc.vni);
-        assert_eq!(cloned.peerings.len(), 0);
-    }
-
-    #[test]
-    fn test_cleanup_vpc_table() {
-        let mut vpc = Vpc::new("test-vpc", "VPC01", 100).unwrap();
-
-        vpc.peerings.push(Peering {
-            name: "peering1".to_string(),
-            local: VpcManifest::with_exposes(
-                "local1",
-                vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-            ),
-            remote: VpcManifest::with_exposes(
-                "remote1",
-                vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-            ),
-            remote_id: "VPC02".try_into().unwrap(),
-            gwgroup: None,
-        });
-
-        let vpcs = vec![&vpc];
-        let result = cleanup_vpc_table(vpcs);
-
-        assert!(result.is_ok());
-        let cleaned_vpcs = result.unwrap();
-        assert_eq!(cleaned_vpcs.len(), 1);
-        assert_eq!(cleaned_vpcs[0].name, vpc.name);
-    }
-
-    #[test]
     fn test_build_from_overlay() {
         // Create a simple overlay with two VPCs and a peering
-        let mut vpc_table = VpcTable::new();
-
         let vni1 = Vni::new_checked(100).unwrap();
         let vni2 = Vni::new_checked(200).unwrap();
-
-        let mut vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
+        let vpc1 = Vpc::new("vpc1", "VPC01", vni1.as_u32()).unwrap();
         let vpc2 = Vpc::new("vpc2", "VPC02", vni2.as_u32()).unwrap();
-
-        // Add peering from vpc1 to vpc2
-        vpc1.peerings.push(Peering {
-            name: "vpc1-to-vpc2".to_string(),
-            local: VpcManifest::with_exposes(
-                "vpc1-local",
-                vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
-            ),
-            remote: VpcManifest::with_exposes(
-                "vpc2-remote",
-                vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
-            ),
-            remote_id: "VPC02".try_into().unwrap(),
-            gwgroup: None,
-        });
-
+        let mut vpc_table = VpcTable::new();
         vpc_table.add(vpc1).unwrap();
         vpc_table.add(vpc2).unwrap();
 
+        let mut peering_table = VpcPeeringTable::new();
+        // Add peering between vpc1 to vpc2
+        peering_table
+            .add(VpcPeering::with_default_group(
+                "vpc1-to-vpc2",
+                VpcManifest::with_exposes(
+                    "vpc1",
+                    vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
+                ),
+                VpcManifest::with_exposes(
+                    "vpc2",
+                    vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
+                ),
+            ))
+            .unwrap();
+
         let overlay = Overlay {
             vpc_table,
-            peering_table: VpcPeeringTable::new(),
-        };
+            peering_table,
+        }
+        .validated()
+        .unwrap();
 
-        let result = FlowFilterTable::build_from_overlay(&overlay);
-        assert!(result.is_ok());
+        let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
 
-        let table = result.unwrap();
         // Should be able to look up flows
         let src_vpcd = VpcDiscriminant::VNI(vni1);
         let src_addr = "10.0.0.5".parse().unwrap();

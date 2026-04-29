@@ -120,9 +120,9 @@ pub(crate) fn check_masquerading_flow(
     // Check if such a peering has ANY expose with masquerading that includes the address currently
     // used to masquerade the flow.
     debug!("Peering exists between {src_vpcd} and {dst_vpcd}");
-    if nat_peering.peering.local.exposes.iter().any(|e| {
+    if nat_peering.peering.local().valexp().iter().any(|e| {
         e.has_stateful_nat()
-            && e.nat.as_ref().is_some_and(|enat| {
+            && e.nat().is_some_and(|enat| {
                 enat.as_range
                     .iter()
                     .any(|pfx| pfx.covers(&PrefixWithOptionalPorts::Prefix(ip.into())))

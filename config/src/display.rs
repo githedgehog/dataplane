@@ -8,14 +8,15 @@
 use std::fmt::Display;
 
 use crate::GwConfigMeta;
-use crate::external::overlay::Overlay;
-use crate::external::overlay::vpc::Vpc;
-use crate::external::overlay::vpc::{Peering, VpcId, VpcTable};
+use crate::external::overlay::vpc::{
+    Peering, ValidatedPeering, ValidatedVpc, ValidatedVpcTable, Vpc, VpcId, VpcTable,
+};
 use crate::external::overlay::vpcpeering::{
-    VpcExpose, VpcExposeNatConfig, VpcExposePortForwarding, VpcExposeStatefulNat,
-    VpcExposeStatelessNat,
+    ValidatedExpose, ValidatedManifest, VpcExpose, VpcExposeNatConfig, VpcExposePortForwarding,
+    VpcExposeStatefulNat, VpcExposeStatelessNat,
 };
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
+use crate::external::overlay::{Overlay, ValidatedOverlay};
 use chrono::{DateTime, Utc};
 
 use common::cliprovider::Heading;
@@ -95,6 +96,32 @@ impl Display for VpcExpose {
     }
 }
 
+impl Display for ValidatedExpose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut carriage = false;
+        if self.is_default() {
+            write!(f, "{SEP} prefixes: default")?;
+        }
+        if !self.ips().is_empty() {
+            write!(f, "{SEP} prefixes:")?;
+            self.ips().iter().for_each(|x| {
+                let _ = write!(f, " {x}");
+            });
+        }
+
+        writeln!(f)?;
+
+        if let Some(nat) = self.nat() {
+            write!(f, "{SEP}       as:")?;
+            self.as_range_or_empty().iter().for_each(|pfx| {
+                let _ = write!(f, " {pfx} proto: {:?} NAT:{}", nat.proto, nat.config);
+            });
+            carriage = true;
+        }
+        if carriage { writeln!(f) } else { Ok(()) }
+    }
+}
+
 // Vpc manifest is common to VpcPeering and Peering
 fn fmt_local_manifest(f: &mut std::fmt::Formatter<'_>, manifest: &VpcManifest) -> std::fmt::Result {
     writeln!(f, "     local:")?;
@@ -130,6 +157,45 @@ impl Display for Peering {
         fmt_local_manifest(f, &self.local)?;
         writeln!(f)?;
         fmt_remote_manifest(f, &self.remote, &self.remote_id)?;
+        writeln!(f)
+    }
+}
+
+// Vpc manifest is common to VpcPeering and Peering
+fn fmt_local_validated_manifest(
+    f: &mut std::fmt::Formatter<'_>,
+    manifest: &ValidatedManifest,
+) -> std::fmt::Result {
+    writeln!(f, "     local:")?;
+    for e in manifest.valexp() {
+        e.fmt(f)?;
+    }
+    Ok(())
+}
+fn fmt_remote_validated_manifest(
+    f: &mut std::fmt::Formatter<'_>,
+    manifest: &ValidatedManifest,
+    remote_id: &VpcId,
+) -> std::fmt::Result {
+    writeln!(
+        f,
+        "     remote VPC is {} (id:{}):",
+        manifest.name(),
+        remote_id
+    )?;
+    for e in manifest.valexp() {
+        e.fmt(f)?;
+    }
+    Ok(())
+}
+
+impl Display for ValidatedPeering {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "  ■ {}:", self.name())?;
+        writeln!(f, "   gwgroup: {}", self.gwgroup().map_or("none", |v| v))?;
+        fmt_local_validated_manifest(f, self.local())?;
+        writeln!(f)?;
+        fmt_remote_validated_manifest(f, self.remote(), self.remote_id())?;
         writeln!(f)
     }
 }
@@ -220,8 +286,83 @@ impl Display for VpcSummary<'_> {
     }
 }
 
+pub struct ValidatedVpcDetailed<'a>(pub &'a ValidatedVpc);
+impl Display for ValidatedVpcDetailed<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vpc = self.0;
+        Heading(format!(
+            "Peerings of VPC:{} Id:{} vni :{} ({})",
+            vpc.name(),
+            vpc.id(),
+            vpc.vni(),
+            vpc.peerings().len()
+        ))
+        .fmt(f)?;
+        for peering in vpc.peerings() {
+            peering.fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
+pub struct ValidatedVpcSummary<'a>(&'a ValidatedVpc);
+impl Display for ValidatedVpcSummary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vpc = self.0;
+
+        // VPC that has no peerings
+        if vpc.peerings().is_empty() {
+            writeln!(
+                f,
+                "{}",
+                format_args!(VPC_TBL_FMT!(), &vpc.name(), vpc.id(), vpc.vni(), "", "", "")
+            )?;
+        } else {
+            // VPC that has peerings
+            for (num, peering) in vpc.peerings().iter().enumerate() {
+                let (name, id, vni, num_peers) = if num == 0 {
+                    (
+                        vpc.name(),
+                        vpc.id().to_string(),
+                        vpc.vni().to_string(),
+                        vpc.peerings().len().to_string(),
+                    )
+                } else {
+                    ("", "".to_string(), "".to_string(), "".to_string())
+                };
+                writeln!(
+                    f,
+                    "{}",
+                    format_args!(
+                        VPC_TBL_FMT!(),
+                        name,
+                        id,
+                        vni,
+                        num_peers,
+                        peering.remote().name(),
+                        peering.name()
+                    )
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct VpcTableSummary<'a>(&'a VpcTable);
 impl Display for VpcTableSummary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Heading(format!("VPCs ({})", self.0.len())).fmt(f)?;
+        fmt_vpc_table_heading(f)?;
+        for vpc in self.0.values() {
+            vpc.as_summary().fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
+pub struct ValidatedVpcTableSummary<'a>(&'a ValidatedVpcTable);
+impl Display for ValidatedVpcTableSummary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Heading(format!("VPCs ({})", self.0.len())).fmt(f)?;
         fmt_vpc_table_heading(f)?;
@@ -242,6 +383,16 @@ impl Display for VpcTablePeerings<'_> {
     }
 }
 
+pub struct ValidatedVpcTablePeerings<'a>(&'a ValidatedVpcTable);
+impl Display for ValidatedVpcTablePeerings<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for vpc in self.0.values() {
+            vpc.as_detailed().fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
 impl VpcTable {
     #[must_use]
     pub fn as_summary(&self) -> VpcTableSummary<'_> {
@@ -253,6 +404,17 @@ impl VpcTable {
     }
 }
 
+impl ValidatedVpcTable {
+    #[must_use]
+    pub fn as_summary(&self) -> ValidatedVpcTableSummary<'_> {
+        ValidatedVpcTableSummary(self)
+    }
+    #[must_use]
+    pub fn as_peerings(&self) -> ValidatedVpcTablePeerings<'_> {
+        ValidatedVpcTablePeerings(self)
+    }
+}
+
 impl Vpc {
     #[must_use]
     pub fn as_summary(&self) -> VpcSummary<'_> {
@@ -261,6 +423,17 @@ impl Vpc {
     #[must_use]
     pub fn as_detailed(&self) -> VpcDetailed<'_> {
         VpcDetailed(self)
+    }
+}
+
+impl ValidatedVpc {
+    #[must_use]
+    pub fn as_summary(&self) -> ValidatedVpcSummary<'_> {
+        ValidatedVpcSummary(self)
+    }
+    #[must_use]
+    pub fn as_detailed(&self) -> ValidatedVpcDetailed<'_> {
+        ValidatedVpcDetailed(self)
     }
 }
 
@@ -300,6 +473,13 @@ impl Display for Overlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.vpc_table.as_summary().fmt(f)?;
         self.peering_table.fmt(f)
+    }
+}
+
+impl Display for ValidatedOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.vpc_table().as_summary().fmt(f)?;
+        self.peering_table().fmt(f)
     }
 }
 

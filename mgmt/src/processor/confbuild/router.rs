@@ -16,7 +16,7 @@ use tracing::{debug, error};
 
 use config::internal::interfaces::interface::InterfaceConfig;
 use config::internal::routing::vrf::VrfConfig;
-use config::{ConfigError, GwConfig, InternalConfig};
+use config::{ConfigError, InternalConfig, ValidatedGwConfig};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::{Interface, InterfaceIndex, InterfaceName, Mtu};
 
@@ -183,13 +183,13 @@ fn generate_router_interfaces_config(
 }
 pub(crate) fn generate_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
-    config: Arc<GwConfig>,
+    config: Arc<ValidatedGwConfig>,
 ) -> Result<RouterConfig, ConfigError> {
     let genid = config.genid();
     debug!("Generating router config for genid {genid}...");
 
     /* get internal config -- should not fail by construction */
-    let internal = config.internal.as_ref().unwrap_or_else(|| unreachable!());
+    let internal = config.internal().unwrap_or_else(|| unreachable!());
 
     /* create a new, empty RouterConfig and populate it with vrf, vtep and interface configs */
     let mut router_config = RouterConfig::new(genid);
