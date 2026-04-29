@@ -6,7 +6,9 @@ mod nf_test {
     use crate::common::NatFlowStatus;
     use crate::portfw::{PortForwarder, PortFwEntry, PortFwKey, PortFwState, PortFwTableWriter};
 
+    use concurrency::sync::Arc;
     use flow_entry::flow_table::{FlowLookup, FlowTable};
+    use lpm::prefix::Prefix;
     use net::buffer::TestBuffer;
     use net::flows::FlowStatus;
     use net::flows::flow_info_item::ExtractRef;
@@ -14,13 +16,21 @@ mod nf_test {
     use net::ip::NextHeader;
     use net::packet::test_utils::{build_test_tcp_ipv4_packet, build_test_udp_ipv4_packet};
     use net::packet::{DoneReason, Packet, VpcDiscriminant};
-    use std::time::Duration;
-
-    use concurrency::sync::Arc;
-    use lpm::prefix::Prefix;
     use pipeline::{DynPipeline, NetworkFunction};
     use std::str::FromStr;
+    use std::time::Duration;
     use tracing_test::traced_test;
+
+    /*
+        All of the tests in this module refer to vpc1 (vni=2000) and vpc2 (vni=3000)
+        Traffic is port forwarded vpc1 => vpc2
+    */
+    fn vpcd1() -> VpcDiscriminant {
+        VpcDiscriminant::VNI(2000.try_into().unwrap())
+    }
+    fn vpcd2() -> VpcDiscriminant {
+        VpcDiscriminant::VNI(3000.try_into().unwrap())
+    }
 
     fn get_flow_status(packet: &Packet<TestBuffer>) -> Option<FlowStatus> {
         packet
@@ -60,7 +70,6 @@ mod nf_test {
 
     // build a reply for a given packet
     fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
-        let src_vpcd = packet.meta().src_vpcd;
         let dst_vpcd = packet.meta().dst_vpcd;
         let src_mac = packet.eth_source().unwrap();
         let dst_mac = packet.eth_destination().unwrap();
@@ -71,7 +80,7 @@ mod nf_test {
 
         let mut reply = packet.clone();
         reply.meta_mut().src_vpcd = dst_vpcd;
-        reply.meta_mut().dst_vpcd = src_vpcd;
+        reply.meta_mut().dst_vpcd.take(); // strip dst vpcd
         reply.set_eth_source(dst_mac).unwrap();
         reply.set_eth_destination(src_mac).unwrap();
         reply.set_ip_source(dst_ip.try_into().unwrap()).unwrap();
@@ -92,13 +101,10 @@ mod nf_test {
     // build a sample port forwarding table
     fn build_test_port_forwarding_ruleset() -> Vec<PortFwEntry> {
         let mut ruleset = vec![];
-        let key = PortFwKey::new(
-            VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            NextHeader::TCP,
-        );
+        let key = PortFwKey::new(vpcd1(), NextHeader::TCP);
         let entry = PortFwEntry::new(
             key,
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            vpcd2(),
             Prefix::from_str("70.71.72.73/32").unwrap(),
             Prefix::from_str("192.168.1.1/32").unwrap(),
             (3022, 3022),
@@ -109,13 +115,10 @@ mod nf_test {
         .unwrap();
         ruleset.push(entry);
 
-        let key = PortFwKey::new(
-            VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            NextHeader::UDP,
-        );
+        let key = PortFwKey::new(vpcd1(), NextHeader::UDP);
         let entry = PortFwEntry::new(
             key,
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            vpcd2(),
             Prefix::from_str("70.71.72.73/32").unwrap(),
             Prefix::from_str("192.168.1.2/32").unwrap(),
             (3053, 3053),
@@ -133,8 +136,7 @@ mod nf_test {
         let mut packet: Packet<TestBuffer> =
             build_test_udp_ipv4_packet("10.0.0.1", "70.71.72.73", 9876, 3053);
         packet.meta_mut().set_overlay(true);
-        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
-        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
+        packet.meta_mut().src_vpcd = Some(vpcd1());
         packet.meta_mut().set_port_forwarding(true);
         packet
     }
@@ -148,8 +150,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_rst(false);
 
         packet.meta_mut().set_overlay(true);
-        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
-        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
+        packet.meta_mut().src_vpcd = Some(vpcd1());
         packet.meta_mut().set_port_forwarding(true);
         packet
     }
@@ -162,8 +163,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_rst(false);
 
         packet.meta_mut().set_overlay(true);
-        packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(3000.try_into().unwrap()));
-        packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(2000.try_into().unwrap()));
+        packet.meta_mut().src_vpcd = Some(vpcd2());
         packet.meta_mut().set_port_forwarding(true);
         packet
     }
@@ -179,6 +179,24 @@ mod nf_test {
         println!("OUTPUT:{output}");
         output.clone()
     }
+    // Fake flow filter that routes between vpc1 and vpc2
+    struct TestFlowFilter;
+    impl NetworkFunction<TestBuffer> for TestFlowFilter {
+        fn process<'a, Input: Iterator<Item = Packet<TestBuffer>> + 'a>(
+            &'a mut self,
+            input: Input,
+        ) -> impl Iterator<Item = Packet<TestBuffer>> + 'a {
+            input.map(|mut packet| {
+                let dst_vpcd = if packet.meta().src_vpcd == Some(vpcd1()) {
+                    vpcd2()
+                } else {
+                    vpcd1()
+                };
+                packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+                packet
+            })
+        }
+    }
 
     /// sets up a port-forwarding pipeline
     fn setup_pipeline(
@@ -189,8 +207,10 @@ mod nf_test {
         let flow_table = Arc::new(FlowTable::default());
         let flow_lookup_nf = FlowLookup::new("flow-lookup", flow_table.clone());
         let nf = PortForwarder::new("port-forwarder", writer.reader(), flow_table.clone());
-        let pipeline: DynPipeline<TestBuffer> =
-            DynPipeline::new().add_stage(flow_lookup_nf).add_stage(nf);
+        let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+            .add_stage(flow_lookup_nf)
+            .add_stage(TestFlowFilter)
+            .add_stage(nf);
 
         // set port-forwarding rules
         writer.update_table(ruleset).unwrap();
@@ -524,13 +544,10 @@ mod nf_test {
 
     fn build_test_port_forwarding_table_with_ranges() -> Vec<PortFwEntry> {
         let mut ruleset = vec![];
-        let key = PortFwKey::new(
-            VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            NextHeader::UDP,
-        );
+        let key = PortFwKey::new(vpcd1(), NextHeader::UDP);
         let entry = PortFwEntry::new(
             key,
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            vpcd2(),
             Prefix::from_str("70.71.72.73/32").unwrap(),
             Prefix::from_str("192.168.1.2/32").unwrap(),
             (3000, 3100),
@@ -545,13 +562,10 @@ mod nf_test {
 
     fn build_test_port_forwarding_table_with_prefixes_and_port_ranges() -> Vec<PortFwEntry> {
         let mut ruleset = vec![];
-        let key = PortFwKey::new(
-            VpcDiscriminant::VNI(2000.try_into().unwrap()),
-            NextHeader::UDP,
-        );
+        let key = PortFwKey::new(vpcd1(), NextHeader::UDP);
         let entry = PortFwEntry::new(
             key,
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            vpcd2(),
             Prefix::from_str("70.71.72.70/24").unwrap(),
             Prefix::from_str("192.168.6.0/24").unwrap(),
             (3000, 3100),
@@ -686,11 +700,8 @@ mod nf_test {
 
         // build rule
         let entry = PortFwEntry::new(
-            PortFwKey::new(
-                VpcDiscriminant::VNI(2000.try_into().unwrap()),
-                NextHeader::TCP,
-            ),
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            PortFwKey::new(vpcd1(), NextHeader::TCP),
+            vpcd2(),
             Prefix::from_str("70.71.72.0/24").unwrap(),
             Prefix::from_str("192.168.1.0/24").unwrap(),
             (3010, 3050),
@@ -709,11 +720,8 @@ mod nf_test {
 
         // update the rule to include the previous one
         let entry = PortFwEntry::new(
-            PortFwKey::new(
-                VpcDiscriminant::VNI(2000.try_into().unwrap()),
-                NextHeader::TCP,
-            ),
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            PortFwKey::new(vpcd1(), NextHeader::TCP),
+            vpcd2(),
             Prefix::from_str("70.71.72.73/32").unwrap(),
             Prefix::from_str("192.168.1.73/32").unwrap(),
             (3022, 3023),
@@ -746,11 +754,8 @@ mod nf_test {
 
         // build rule
         let entry = PortFwEntry::new(
-            PortFwKey::new(
-                VpcDiscriminant::VNI(2000.try_into().unwrap()),
-                NextHeader::TCP,
-            ),
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            PortFwKey::new(vpcd1(), NextHeader::TCP),
+            vpcd2(),
             Prefix::from_str("70.71.72.0/24").unwrap(),
             Prefix::from_str("192.168.1.0/24").unwrap(),
             (3010, 3050),
@@ -769,11 +774,8 @@ mod nf_test {
 
         // update the rule so that the traffic would be sent somewhere else
         let entry = PortFwEntry::new(
-            PortFwKey::new(
-                VpcDiscriminant::VNI(2000.try_into().unwrap()),
-                NextHeader::TCP,
-            ),
-            VpcDiscriminant::VNI(3000.try_into().unwrap()),
+            PortFwKey::new(vpcd1(), NextHeader::TCP),
+            vpcd2(),
             Prefix::from_str("70.71.72.0/24").unwrap(),
             Prefix::from_str("192.168.2.0/24").unwrap(),
             (3010, 3050),
