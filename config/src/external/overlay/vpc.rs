@@ -324,6 +324,24 @@ impl Vpc {
                 .any(|e| e.has_port_forwarding() || e.has_stateful_nat())
         })
     }
+
+    /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    #[must_use]
+    pub unsafe fn fake_validated_vpc_for_tests(mut self) -> ValidatedVpc {
+        for peering in &mut self.peerings {
+            unsafe {
+                peering.local.fake_expose_validation_for_tests();
+                peering.remote.fake_expose_validation_for_tests();
+            }
+        }
+        ValidatedVpc(self)
+    }
 }
 
 #[repr(transparent)]

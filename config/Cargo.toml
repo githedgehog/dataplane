@@ -5,6 +5,11 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# Expose the unsafe `fake_*_for_tests` constructors that mint validated wrappers without running
+# real validation. Intended for use from other crates' test code only.
+testing = []
+
 [dependencies]
 # internal
 common = { workspace = true }
