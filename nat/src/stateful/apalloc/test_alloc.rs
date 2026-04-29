@@ -11,7 +11,7 @@ mod context {
     use crate::stateful::allocator_writer::StatefulNatConfig;
     use crate::stateful::apalloc::alloc::IpAllocator;
     use crate::stateful::apalloc::{NatAllocator, PoolTable, PoolTableKey};
-    use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
+    use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
@@ -70,7 +70,7 @@ mod context {
         .unwrap()
     }
 
-    fn build_context() -> VpcTable {
+    fn build_context() -> ValidatedVpcTable {
         // Exposes and manifests
         let expose1 = VpcExpose::empty()
             .make_stateful_nat(None)
@@ -87,12 +87,8 @@ mod context {
         let manifest1 = VpcManifest::with_exposes("VPC-1", vec![expose1, expose2]);
 
         let expose3 = VpcExpose::empty()
-            .make_stateful_nat(None)
-            .unwrap()
             .ip("3.0.0.0/24".into())
-            .ip("3.0.1.0/24".into())
-            .as_range("10.3.0.0/30".into())
-            .unwrap();
+            .ip("3.0.2.0/24".into());
         let expose4 = VpcExpose::empty().ip("4.0.0.0/16".into());
 
         let manifest2 = VpcManifest::with_exposes("VPC-2", vec![expose3, expose4]);
@@ -126,7 +122,7 @@ mod context {
         vpctable.add(vpc1).unwrap();
         vpctable.add(vpc2).unwrap();
 
-        vpctable
+        vpctable.validated().unwrap()
     }
 
     pub fn build_allocator() -> NatAllocator {
@@ -174,7 +170,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::TCP)
                 .count(),
-            5
+            3
         );
         assert_eq!(
             allocator
@@ -183,7 +179,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::UDP)
                 .count(),
-            5
+            3
         );
 
         assert_eq!(allocator.pools_src66.0.len(), 0);

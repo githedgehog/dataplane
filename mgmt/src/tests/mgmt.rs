@@ -393,16 +393,17 @@ pub mod test {
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
-        let mut config = GwConfig::new(external);
-        config.validate().expect("Config validation failed");
+        let config = GwConfig::new(external);
+        let validated_config = config.validated().expect("Config validation failed");
         if false {
-            let vpc_table = &config.external.overlay.vpc_table;
-            let peering_table = &config.external.overlay.peering_table;
+            let vpc_table = validated_config.external().overlay().vpc_table();
+            let peering_table = validated_config.external().overlay().peering_table();
             println!("\n{}\n{peering_table}", vpc_table.as_summary());
         }
         let bmp_config = None;
-        let internal = build_internal_config(&config, bmp_config).expect("Should succeed");
-        let rendered = internal.render(&config.genid());
+        let internal =
+            build_internal_config(&validated_config, bmp_config).expect("Should succeed");
+        let rendered = internal.render(&validated_config.genid());
         println!("{rendered}");
     }
 

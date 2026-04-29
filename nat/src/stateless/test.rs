@@ -5,7 +5,6 @@
 
 #![cfg(test)]
 
-use config::GwConfig;
 use config::external::ExternalConfigBuilder;
 use config::external::communities::PriorityCommunityTable;
 use config::external::gwgroup::{GwGroup, GwGroupTable};
@@ -18,6 +17,7 @@ use config::internal::interfaces::interface::InterfaceConfig;
 use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
 use config::internal::routing::bgp::BgpConfig;
 use config::internal::routing::vrf::VrfConfig;
+use config::{GwConfig, ValidatedGwConfig};
 
 use crate::StatelessNat;
 use crate::stateless::setup::build_nat_configuration;
@@ -252,12 +252,12 @@ fn build_context() -> NatTables {
 
     let mut vni_table1 = PerVniTable::new();
     vni_table1
-        .add_peering(&peering1, vni2)
+        .add_peering(&peering1.validated().unwrap(), vni2)
         .expect("Failed to build NAT tables");
 
     let mut vni_table2 = PerVniTable::new();
     vni_table2
-        .add_peering(&peering2, vni1)
+        .add_peering(&peering2.validated().unwrap(), vni1)
         .expect("Failed to build NAT tables");
 
     nat_table.add_table(vni_table1, vni1);
@@ -363,7 +363,7 @@ fn test_nat_icmp_error_msg_stateless_44() {
 }
 
 #[allow(clippy::too_many_lines)]
-fn build_sample_config() -> GwConfig {
+fn build_sample_config() -> ValidatedGwConfig {
     fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
         manifest.add_expose(expose);
     }
@@ -546,7 +546,7 @@ fn build_sample_config() -> GwConfig {
 
     let overlay = Overlay::new(vpc_table, peering_table);
 
-    build_gwconfig_from_overlay(overlay)
+    build_gwconfig_from_overlay(overlay).validated().unwrap()
 }
 
 // Use the provided overlay with some default configuration to build a valid GwConfig. This
@@ -619,10 +619,9 @@ fn check_packet(
 #[traced_test]
 #[allow(clippy::too_many_lines)]
 fn test_full_config() {
-    let mut config = build_sample_config();
-    config.validate().expect("Failed to validate config");
+    let config = build_sample_config();
 
-    let nat_tables = build_nat_configuration(&config.external.overlay.vpc_table).unwrap();
+    let nat_tables = build_nat_configuration(config.external().overlay().vpc_table()).unwrap();
     println!("Nat tables: {:#?}", &nat_tables);
 
     let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
@@ -777,7 +776,7 @@ fn test_full_config() {
 fn build_gwconfig_from_exposes(
     exposes_left: Vec<VpcExpose>,
     exposes_right: Vec<VpcExpose>,
-) -> GwConfig {
+) -> ValidatedGwConfig {
     fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
         manifest.add_expose(expose);
     }
@@ -802,14 +801,9 @@ fn build_gwconfig_from_exposes(
 
     let overlay = Overlay::new(vpc_table, peering_table);
 
-    let mut gw_config = build_gwconfig_from_overlay(overlay);
-    let validation = gw_config.validate();
-    assert!(
-        validation.is_ok(),
-        "GwConfig validation failed: {validation:?}"
-    );
-
-    gw_config
+    build_gwconfig_from_overlay(overlay.clone())
+        .validated()
+        .unwrap()
 }
 
 fn check_packet_with_ports(
@@ -862,7 +856,7 @@ fn test_config_with_port_ranges_basic() {
     ));
 
     let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
-    let nat_tables = build_nat_configuration(&gw_config.external.overlay.vpc_table).unwrap();
+    let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
     let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
     tablesw.update_nat_tables(nat_tables);
 
@@ -986,7 +980,7 @@ fn test_config_with_port_ranges_complex() {
     // First address/port (assuming ordered ranges)
 
     let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
-    let nat_tables = build_nat_configuration(&gw_config.external.overlay.vpc_table).unwrap();
+    let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
     let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
     tablesw.update_nat_tables(nat_tables);
 
@@ -1171,7 +1165,7 @@ fn test_config_with_port_ranges_with_default() {
     let expose3 = VpcExpose::empty().set_default();
 
     let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2, expose3]);
-    let nat_tables = build_nat_configuration(&gw_config.external.overlay.vpc_table).unwrap();
+    let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
     let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
     tablesw.update_nat_tables(nat_tables);
 

@@ -6,9 +6,8 @@ use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatAllocator, PoolTable, PoolTableKey};
 use crate::ranges::IpRange;
 use crate::stateful::natip::NatIp;
-use config::external::overlay::vpc::Peering;
-use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
-use config::utils::collapse_prefixes_peering;
+use config::external::overlay::vpc::ValidatedPeering;
+use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use lpm::prefix::{
     IpPrefix, L4Protocol, PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts,
@@ -22,24 +21,26 @@ use tracing::error;
 const DEFAULT_MASQUERADE_IDLE_TIMEOUT: Duration = Duration::from_mins(2);
 
 impl NatAllocator {
-    pub(crate) fn add_peering_addresses(&mut self, peering: &Peering, dst_vpc_id: VpcDiscriminant) {
-        let new_peering = collapse_prefixes_peering(peering);
-
+    pub(crate) fn add_peering_addresses(
+        &mut self,
+        peering: &ValidatedPeering,
+        dst_vpc_id: VpcDiscriminant,
+    ) {
         build_nat_pool_generic(
-            &new_peering.local,
+            peering.local(),
             dst_vpc_id,
-            VpcManifest::stateful_nat_exposes_44,
-            VpcManifest::port_forwarding_exposes_44,
+            ValidatedManifest::stateful_nat_exposes_44,
+            ValidatedManifest::port_forwarding_exposes_44,
             &mut self.pools_src44,
             NextHeader::ICMP,
             self.randomize,
         );
 
         build_nat_pool_generic(
-            &new_peering.local,
+            peering.local(),
             dst_vpc_id,
-            VpcManifest::stateful_nat_exposes_66,
-            VpcManifest::port_forwarding_exposes_66,
+            ValidatedManifest::stateful_nat_exposes_66,
+            ValidatedManifest::port_forwarding_exposes_66,
             &mut self.pools_src66,
             NextHeader::ICMP6,
             self.randomize,
@@ -49,7 +50,7 @@ impl NatAllocator {
 
 #[allow(clippy::too_many_arguments)]
 fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, P, PIter>(
-    manifest: &'a VpcManifest,
+    manifest: &'a ValidatedManifest,
     dst_vpc_id: VpcDiscriminant,
     // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
     exposes_filter: F,
@@ -59,12 +60,12 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
     icmp_proto: NextHeader,
     randomize: bool,
 ) where
-    F: FnOnce(&'a VpcManifest) -> FIter,
-    FIter: Iterator<Item = &'a VpcExpose>,
-    P: FnOnce(&'a VpcManifest) -> PIter,
-    PIter: Iterator<Item = &'a VpcExpose>,
+    F: FnOnce(&'a ValidatedManifest) -> FIter,
+    FIter: Iterator<Item = &'a ValidatedExpose>,
+    P: FnOnce(&'a ValidatedManifest) -> PIter,
+    PIter: Iterator<Item = &'a ValidatedExpose>,
 {
-    let port_forwarding_exposes: Vec<&'a VpcExpose> =
+    let port_forwarding_exposes: Vec<&'a ValidatedExpose> =
         port_forwarding_exposes_filter(manifest).collect();
 
     exposes_filter(manifest).for_each(|expose| {
@@ -102,7 +103,7 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
 
         add_pool_entries(
             table,
-            &expose.ips,
+            expose.ips(),
             dst_vpc_id,
             &tcp_ip_allocator,
             &udp_ip_allocator,
@@ -119,19 +120,21 @@ struct ReserveSets {
 }
 
 fn find_masquerade_portfw_overlap<'a>(
-    port_forwarding_exposes: &Vec<&'a VpcExpose>,
-    expose: &'a VpcExpose,
+    port_forwarding_exposes: &Vec<&'a ValidatedExpose>,
+    expose: &'a ValidatedExpose,
 ) -> ReserveSets {
-    let expose_nat = expose.nat.as_ref().unwrap_or_else(|| unreachable!());
+    let expose_nat = expose.nat().unwrap_or_else(|| unreachable!());
     let mut reserve_sets = ReserveSets::default();
 
     for pf_expose in port_forwarding_exposes {
-        let pf_nat = pf_expose.nat.as_ref().unwrap_or_else(|| unreachable!());
+        let pf_nat = pf_expose.nat().unwrap_or_else(|| unreachable!());
         let Some(relevant_proto) = expose_nat.proto.intersection(&pf_nat.proto) else {
             // No overlap on L4 protocols, so no overlap for prefixes and ports.
             continue;
         };
-        let ranges_intersection = pf_expose.ips.intersection_prefixes_and_ports(&expose.ips);
+        let ranges_intersection = pf_expose
+            .ips()
+            .intersection_prefixes_and_ports(expose.ips());
         match relevant_proto {
             L4Protocol::Tcp => reserve_sets.tcp.extend(ranges_intersection),
             L4Protocol::Udp => reserve_sets.udp.extend(ranges_intersection),
@@ -309,15 +312,27 @@ mod tests {
             .make_stateful_nat(None)
             .unwrap()
             .ip("10.0.0.0/16".into())
-            .ip("172.16.0.0/16".into());
+            .ip("172.16.0.0/16".into())
+            .as_range("192.168.0.0/16".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_expose1 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("10.0.1.0/24".into());
+            .ip("10.0.1.0/24".into())
+            .as_range("192.168.1.0/24".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_expose2 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("172.16.5.0/24".into());
+            .ip("172.16.5.0/24".into())
+            .as_range("192.168.2.0/24".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
         let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
         assert_eq!(
@@ -334,11 +349,19 @@ mod tests {
         let expose = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
-            .ip("10.0.0.0/24".into());
+            .ip("10.0.0.0/24".into())
+            .as_range("192.168.0.0/24".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_expose = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
+            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090))
+            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_exposes_vec = vec![&pf_expose];
         let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
         assert_eq!(
@@ -355,11 +378,19 @@ mod tests {
         let expose = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
-            .ip("10.0.0.0/24".into());
+            .ip("10.0.0.0/24".into())
+            .as_range("192.168.0.0/24".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_expose = VpcExpose::empty()
             .make_port_forwarding(None, Some(L4Protocol::Tcp)) // TCP only
             .unwrap()
-            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090));
+            .ip(prefix_with_ports("10.0.0.0/24", 8080, 8090))
+            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_exposes_vec = vec![&pf_expose];
         let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
         assert_eq!(
@@ -377,15 +408,27 @@ mod tests {
         let expose = VpcExpose::empty()
             .make_stateful_nat(None)
             .unwrap()
-            .ip("10.0.0.0/16".into());
+            .ip("10.0.0.0/16".into())
+            .as_range("192.168.0.0/24".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_expose1 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("10.0.1.0/24".into());
+            .ip("10.0.1.0/24".into())
+            .as_range("192.168.1.0/24".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_expose2 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("10.0.1.0/24".into());
+            .ip("10.0.1.0/24".into())
+            .as_range("192.168.1.0/24".into())
+            .unwrap()
+            .validate()
+            .unwrap();
         let pf_exposes_vec = vec![&pf_expose1, &pf_expose2];
         let result = find_masquerade_portfw_overlap(&pf_exposes_vec, &expose);
         assert_eq!(

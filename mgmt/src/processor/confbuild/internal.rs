@@ -10,7 +10,7 @@ const IMPORT_VRFS: bool = false;
 
 use config::external::communities::PriorityCommunityTable;
 use config::external::gwgroup::GwGroupTable;
-use config::external::overlay::Overlay;
+use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpc::{Peering, Vpc};
 use config::external::overlay::vpcpeering::VpcManifest;
 use config::{ConfigError, ConfigResult};
@@ -33,7 +33,7 @@ use config::internal::routing::routemap::{
 };
 use config::internal::routing::statics::StaticRoute;
 use config::internal::routing::vrf::VrfConfig;
-use config::{GwConfig, InternalConfig};
+use config::{InternalConfig, ValidatedGwConfig};
 
 /// Build a drop route
 #[must_use]
@@ -51,7 +51,7 @@ fn vpc_import_prefix_list_for_peer(
         IpVer::V4,
         Some(vpc.import_plist_peer_desc(&rmanifest.name)),
     );
-    for expose in &rmanifest.exposes {
+    for expose in rmanifest.raw_exposes() {
         // allow native prefixes, natted or not
         let native_prefixes =
             expose
@@ -87,7 +87,7 @@ fn vpc_import_prefix_list_for_peer(
 #[must_use]
 fn build_vpc_drop_routes(rmanifest: &VpcManifest) -> Vec<StaticRoute> {
     let mut sroute_vec: Vec<StaticRoute> = vec![];
-    for expose in &rmanifest.exposes {
+    for expose in rmanifest.raw_exposes() {
         let mut statics: Vec<StaticRoute> = expose
             .nots
             .iter()
@@ -181,7 +181,10 @@ impl VpcRoutingConfigIpv4 {
         }
 
         /* advertise */
-        let nets = rmanifest.exposes.iter().flat_map(|e| e.adv_prefixes());
+        let nets = rmanifest
+            .raw_exposes()
+            .iter()
+            .flat_map(|e| e.adv_prefixes());
 
         self.adv_nets.extend(nets);
 
@@ -191,7 +194,7 @@ impl VpcRoutingConfigIpv4 {
             IpVer::V4,
             Some(vpc.adv_plist_desc(&rmanifest.name)),
         );
-        for expose in rmanifest.exposes.iter() {
+        for expose in rmanifest.raw_exposes() {
             let prefixes = expose.adv_prefixes().into_iter();
             let plists = prefixes.map(|p| {
                 PrefixListEntry::new(PrefixListAction::Permit, PrefixListPrefix::Prefix(p), None)
@@ -324,16 +327,19 @@ fn build_vpc_internal_config(
 }
 
 fn build_internal_overlay_config(
-    overlay: &Overlay,
+    overlay: &ValidatedOverlay,
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
 ) -> ConfigResult {
-    debug!("Building overlay config ({} VPCs)", overlay.vpc_table.len());
+    debug!(
+        "Building overlay config ({} VPCs)",
+        overlay.vpc_table().len()
+    );
 
     /* Vpcs and peerings */
-    for vpc in overlay.vpc_table.values() {
-        build_vpc_internal_config(vpc, asn, router_id, internal)?;
+    for vpc in overlay.vpc_table().values() {
+        build_vpc_internal_config(vpc.inner(), asn, router_id, internal)?;
     }
     Ok(())
 }
@@ -371,47 +377,47 @@ fn configure_bgp_peers(vrf: &mut VrfConfig, internal: &mut InternalConfig) {
 
 /// Public entry — build with BMP (global options injected into default VRF and import views)
 pub fn build_internal_config(
-    config: &GwConfig,
+    config: &ValidatedGwConfig,
     bmp: Option<BmpOptions>,
 ) -> Result<InternalConfig, ConfigError> {
     let genid = config.genid();
     debug!("Building internal config for gen {genid}");
-    let external = &config.external;
+    let external = config.external();
 
     // Prepare default VRF (possibly inject global BMP with VRF import views)
-    let mut default_vrf = external.underlay.vrf.clone();
+    let mut default_vrf = external.underlay().vrf.clone();
 
     // If BMP is provided and default VRF has BGP, attach BMP there and add import views
     if let (Some(mut bmp_opts), Some(bgp_default)) = (bmp, default_vrf.bgp.as_mut()) {
         // Collect all overlay VRF names to import
-        for vpc in external.overlay.vpc_table.values() {
-            bmp_opts.push_import_vrf_view(vpc.vrf_name());
+        for vpc in external.overlay().vpc_table().values() {
+            bmp_opts.push_import_vrf_view(vpc.inner().vrf_name());
         }
         // Inject BMP into default VRF BGP
         bgp_default.set_bmp_options(bmp_opts);
     }
 
     // Build internal config: device and underlay configs are copied as received (with adjusted default_vrf)
-    let mut internal = InternalConfig::new(&external.gwname, external.device.clone());
+    let mut internal = InternalConfig::new(external.gwname(), external.device().clone());
 
     configure_bgp_peers(&mut default_vrf, &mut internal);
 
     internal.add_vrf_config(default_vrf)?;
-    internal.set_vtep(external.underlay.vtep.clone());
-    internal.gwgrouptable = external.gwgroups.sorted();
-    internal.commtable = external.communities.clone();
+    internal.set_vtep(external.underlay().vtep.clone());
+    internal.gwgrouptable = external.gwgroups().sorted();
+    internal.commtable = external.communities().clone();
 
     // Build BFD peers from underlay BGP neighbors
-    if let Some(bgp) = &external.underlay.vrf.bgp {
+    if let Some(bgp) = &external.underlay().vrf.bgp {
         internal.set_bfd_peers(peers_from_bgp_neighbors(&bgp.neighbors));
     }
 
     // Build overlay config
-    if let Some(bgp) = &external.underlay.vrf.bgp {
+    if let Some(bgp) = &external.underlay().vrf.bgp {
         let asn = bgp.asn;
         let router_id = bgp.router_id;
-        if !external.overlay.vpc_table.is_empty() {
-            build_internal_overlay_config(&external.overlay, asn, router_id, &mut internal)?;
+        if !external.overlay().vpc_table().is_empty() {
+            build_internal_overlay_config(external.overlay(), asn, router_id, &mut internal)?;
         } else {
             debug!("The configuration does not specify any VPCs...");
         }

@@ -106,12 +106,12 @@ fn setup_pipeline_stateful_nat(
 
 fn test_setup(
     genid: GenId,
-    mut overlay: Overlay,
+    overlay: Overlay,
 ) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
-    overlay.validate().unwrap();
+    let overlay = overlay.validated().unwrap();
 
     // build the configuration for the nat allocator
-    let nat_config = StatefulNatConfig::new(&overlay.vpc_table, genid);
+    let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid);
 
     // build the config for the test flow filter and the flow filter
     let peerings: Vec<_> = nat_config
@@ -376,14 +376,15 @@ fn flow_lookup<Buf: PacketBufferMut>(flow_table: &FlowTable, packet: &mut Packet
 #[traced_test]
 #[allow(clippy::too_many_lines)]
 async fn test_full_config() {
-    let mut config = build_gwconfig_from_overlay(build_overlay_4vpcs());
-    config.validate().unwrap();
+    let config = build_gwconfig_from_overlay(build_overlay_4vpcs())
+        .validated()
+        .unwrap();
 
     let flow_table = FlowTable::new(16);
 
     // Check that we can validate the allocator
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &flow_table);
 
     // No NAT
@@ -455,9 +456,10 @@ async fn test_full_config() {
     assert_eq!(idle_timeout, ONE_MINUTE);
 
     // Update config and allocator
-    let mut new_config = build_gwconfig_from_overlay(build_overlay_2vpcs());
-    new_config.validate().unwrap();
-    let nat_config = StatefulNatConfig::new(&new_config.external.overlay.vpc_table, 2);
+    let new_config = build_gwconfig_from_overlay(build_overlay_2vpcs())
+        .validated()
+        .unwrap();
+    let nat_config = StatefulNatConfig::new(new_config.external().overlay().vpc_table(), 2);
     allocator.update_nat_allocator(nat_config, &flow_table);
 
     // Check existing connection
@@ -544,12 +546,13 @@ fn build_overlay_2vpcs_no_nat() -> Overlay {
 #[test]
 #[traced_test]
 fn test_full_config_no_nat() {
-    let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs_no_nat());
-    config.validate().unwrap();
+    let config = build_gwconfig_from_overlay(build_overlay_2vpcs_no_nat())
+        .validated()
+        .unwrap();
 
     // Check that we can validate the allocator
     let (_, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 }
 
@@ -614,12 +617,13 @@ fn check_packet_icmp_echo_new(
 #[tokio::test]
 #[traced_test]
 async fn test_icmp_echo_nat() {
-    let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs());
-    config.validate().unwrap();
+    let config = build_gwconfig_from_overlay(build_overlay_2vpcs())
+        .validated()
+        .unwrap();
 
     // Check that we can validate the allocator
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // No NAT
@@ -928,12 +932,13 @@ fn build_overlay_2vpcs_with_default() -> Overlay {
 
 #[tokio::test]
 async fn test_default_expose() {
-    let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs_with_default());
-    config.validate().unwrap();
+    let config = build_gwconfig_from_overlay(build_overlay_2vpcs_with_default())
+        .validated()
+        .unwrap();
 
     // Check that we can validate the allocator
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // Using the expose with a prefix
@@ -1127,12 +1132,13 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
     let tctl = get_trace_ctl();
     let _ = tctl.setup_from_string("vpc-routing=debug,flow-lookup=debug,stateful-nat=debug");
 
-    let mut config =
-        build_gwconfig_from_overlay(build_overlay_3vpcs_unidirectional_nat_overlapping_addr());
-    config.validate().unwrap();
+    let config =
+        build_gwconfig_from_overlay(build_overlay_3vpcs_unidirectional_nat_overlapping_addr())
+            .validated()
+            .unwrap();
 
     // Build VPC discriminant lookup stage
-    let vpcd_tables = FlowFilterTable::build_from_overlay(&config.external.overlay).unwrap();
+    let vpcd_tables = FlowFilterTable::build_from_overlay(config.external().overlay()).unwrap();
     let mut vpcdtablesw = FlowFilterTableWriter::new();
     vpcdtablesw.update_flow_filter_table(vpcd_tables);
     let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcdtablesw.get_reader());
@@ -1144,7 +1150,7 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
 
     // Build NAT stage
     let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
 
     // Check that we can validate the allocator
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
@@ -1212,7 +1218,7 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
     let mut allocator = NatAllocatorWriter::new();
     let mut nat = StatefulNat::new("stateful-nat", flow_table.clone(), allocator.get_reader());
     let nat_config =
-        StatefulNatConfig::new(&config.external.overlay.vpc_table, 2).set_randomize(false);
+        StatefulNatConfig::new(config.external().overlay().vpc_table(), 2).set_randomize(false);
 
     // Check that we can validate the allocator
     //
@@ -1410,20 +1416,23 @@ fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
 #[traced_test]
 #[allow(clippy::too_many_lines)]
 async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peering() {
-    let mut config =
+    let config =
         build_gwconfig_from_overlay(build_overlay_2vpcs_unidirectional_nat_overlapping_exposes());
     // Validation fails - We currently forbid multiple peerings between any pair of VPCs. We
     // could probably allow them for stateful NAT, but we still need the restriction for
     // stateless NAT. We can carry on with the test anyway.
-    assert_eq!(
-        config.validate(),
-        Err(ConfigError::DuplicateVpcPeerings(
-            "VPC-1--VPC-2--2".to_owned()
-        ))
+    assert!(
+        config
+            .validated()
+            .is_err_and(|e| e == ConfigError::DuplicateVpcPeerings("VPC-1--VPC-2--2".to_owned()))
     );
+    let config = unsafe {
+        build_gwconfig_from_overlay(build_overlay_2vpcs_unidirectional_nat_overlapping_exposes())
+            .fake_validated_config_for_tests()
+    };
 
     // Build VPC discriminant lookup stage
-    let vpcd_tables = FlowFilterTable::build_from_overlay(&config.external.overlay).unwrap();
+    let vpcd_tables = FlowFilterTable::build_from_overlay(config.external().overlay()).unwrap();
     let mut vpcdtablesw = FlowFilterTableWriter::new();
     vpcdtablesw.update_flow_filter_table(vpcd_tables);
     let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcdtablesw.get_reader());
@@ -1439,7 +1448,7 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
     // Build a new NAT stage
     let mut allocator = NatAllocatorWriter::new();
     let mut nat = StatefulNat::new("stateful-nat", flow_table.clone(), allocator.get_reader());
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
 
     // Check that we can validate the allocator
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
@@ -1820,9 +1829,8 @@ async fn test_masquerade_reconfig_keep_flow() {
     assert_eq!(flow_genid(&out).unwrap(), genid);
 
     // update the NAT allocator with an identical config
-    let mut overlay = build_overlay_2vpcs();
-    overlay.validate().unwrap();
-    let nat_config = StatefulNatConfig::new(&overlay.vpc_table, genid + 1);
+    let overlay = build_overlay_2vpcs().validated().unwrap();
+    let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid + 1);
     allocw.update_nat_allocator(nat_config, &flow_table);
 
     // process a packet: it should hit identical flows, except for genid
@@ -1857,9 +1865,8 @@ async fn test_masquerade_reconfig_drop_flow() {
     assert_eq!(flow_genid(&out).unwrap(), genid);
 
     // update the NAT allocator with an identical config
-    let mut overlay = build_overlay_2vpcs_modified();
-    overlay.validate().unwrap();
-    let nat_config = StatefulNatConfig::new(&overlay.vpc_table, genid + 1);
+    let overlay = build_overlay_2vpcs_modified().validated().unwrap();
+    let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid + 1);
     allocw.update_nat_allocator(nat_config, &flow_table);
 
     // process a packet: it should hit identical flows

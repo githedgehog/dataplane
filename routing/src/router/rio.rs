@@ -20,7 +20,7 @@ use crate::routingdb::RoutingDb;
 use bytes::BytesMut;
 use cli::IoCache;
 use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest};
-use config::{GwConfig, GwConfigMeta};
+use config::{GwConfigMeta, ValidatedGwConfig};
 use dplane_rpc::socks::RpcCachedSock;
 
 use mio::unix::SourceFd;
@@ -125,7 +125,7 @@ pub(crate) struct Rio {
     pub(crate) ctl_rx: Receiver<RouterCtlMsg>,
     pub(crate) cpistats: CpiStats,
     stale_timeout: Option<Instant>,
-    pub(crate) gwconfig: Option<Arc<GwConfig>>,
+    pub(crate) gwconfig: Option<Arc<ValidatedGwConfig>>,
     pub(crate) cfg_history: Arc<Vec<GwConfigMeta>>,
     pub(crate) cli_cache: IoCache,
 }

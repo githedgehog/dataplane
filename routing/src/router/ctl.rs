@@ -3,7 +3,7 @@
 
 //! Control channel for the router
 
-use config::{GwConfig, GwConfigMeta};
+use config::{GwConfigMeta, ValidatedGwConfig};
 use mio::Interest;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -51,7 +51,7 @@ pub(crate) enum RouterCtlMsg {
     GuardedUnlock,
     Configure(RouterConfig, RouterCtlReplyTx),
     GetFrrAppliedConfig(RouterCtlReplyTx),
-    Config(Arc<GwConfig>),
+    Config(Arc<ValidatedGwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
 }
 
@@ -136,12 +136,12 @@ impl RouterCtlSender {
         };
         Ok(frr_cfg)
     }
-    pub async fn send_config(&mut self, config: Arc<GwConfig>) -> Result<(), RouterError> {
+    pub async fn send_config(&mut self, config: Arc<ValidatedGwConfig>) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::Config(config);
         self.0
             .send(msg)
             .await
-            .map_err(|_| RouterError::Internal("Failed to send GwConfig"))?;
+            .map_err(|_| RouterError::Internal("Failed to send ValidatedGwConfig"))?;
         Ok(())
     }
     pub async fn send_config_history(
@@ -231,7 +231,7 @@ fn handle_get_frr_applied_config(rio: &Rio, reply_to: RouterCtlReplyTx) {
         });
 }
 
-fn handle_config(rio: &mut Rio, config: Arc<GwConfig>) {
+fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
     rio.gwconfig = Some(config);
 }
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {

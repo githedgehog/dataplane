@@ -682,7 +682,7 @@ impl ValidatedExpose {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcManifest {
     pub name: String, /* key: name of vpc */
-    pub exposes: Vec<VpcExpose>,
+    pub(crate) exposes: Vec<VpcExpose>,
     // Validated, exclusion-prefixes-free view of exposes. Populated by VpcManifest::validate.
     // Never to be used in VpcManifest; only with wrapper ValidatedManifest
     pub valexp: Vec<ValidatedExpose>,

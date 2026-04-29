@@ -5,6 +5,7 @@ use crate::tables::NatRequirement;
 use crate::{
     FlowFilter, FlowFilterTable, FlowFilterTableWriter, FlowTuple, RemoteData, VpcdLookupResult,
 };
+use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
@@ -440,17 +441,19 @@ fn test_flow_filter_table_overlap_cases() {
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
     // Build overlay.vpc_table's peerings from peering_table, with no validation.
     // We don't validate because overlapping prefixes actually make the config invalid; but it
     // doesn't matter for the test.
-    overlay.collect_peerings();
+    let mut overlay = Overlay::new(vpc_table, peering_table);
+    assert!(matches!(
+        overlay.validate(),
+        Err(ConfigError::OverlappingPrefixes(_, _))
+    ));
+    let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
 
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with packets
@@ -669,15 +672,10 @@ fn test_flow_filter_table_from_overlay() {
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Validation is necessary to build overlay.vpc_table's peerings from peering_table
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with packets
@@ -758,15 +756,10 @@ fn test_flow_filter_table_check_send_from_default() {
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Validation is necessary to build overlay.vpc_table's peerings from peering_table
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with a packet
@@ -804,15 +797,16 @@ fn test_flow_filter_table_check_default_to_default() {
         ))
         .unwrap();
 
+    // Build overlay.vpc_table's peerings from peering_table, with no validation.
+    // We don't validate because overlapping prefixes actually make the config invalid; but it
+    // doesn't matter for the test.
     let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Build overlay.vpc_table's peerings from peering_table, with no validation
-    overlay.collect_peerings();
+    assert!(matches!(overlay.validate(), Err(ConfigError::Forbidden(_))));
+    let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
 
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with packets
@@ -886,15 +880,16 @@ fn test_flow_filter_table_check_nat_requirements() {
         ))
         .unwrap();
 
+    // Build overlay.vpc_table's peerings from peering_table, with no validation.
+    // We don't validate because overlapping prefixes actually make the config invalid; but it
+    // doesn't matter for the test.
     let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Build overlay.vpc_table's peerings from peering_table, with no validation
-    overlay.collect_peerings();
+    assert!(matches!(overlay.validate(), Err(ConfigError::Forbidden(_))));
+    let overlay = unsafe { overlay.fake_validated_overlay_for_tests() };
 
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with packets
@@ -1003,11 +998,8 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
 
@@ -1208,14 +1200,10 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Source side: VPC 1 -> VPC 2
@@ -1339,14 +1327,10 @@ fn test_flow_filter_protocol_any_port_forwarding() {
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Destination side: TCP packet -> port forwarding
@@ -1499,15 +1483,10 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Validation is necessary to build overlay.vpc_table's peerings from peering_table
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with packets
@@ -1731,15 +1710,10 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Validation is necessary to build overlay.vpc_table's peerings from peering_table
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with packets
@@ -1853,15 +1827,10 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
         ))
         .unwrap();
 
-    let mut overlay = Overlay::new(vpc_table, peering_table);
-    // Validation is necessary to build overlay.vpc_table's peerings from peering_table
-    overlay.validate().unwrap();
-
+    let overlay = Overlay::new(vpc_table, peering_table).validated().unwrap();
     let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
-
     let mut writer = FlowFilterTableWriter::new();
     writer.update_flow_filter_table(table);
-
     let mut flow_filter = FlowFilter::new("test-filter", writer.get_reader());
 
     // Test with packets

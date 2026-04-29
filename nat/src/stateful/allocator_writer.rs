@@ -4,9 +4,8 @@
 use crate::stateful::apalloc::NatAllocator;
 use arc_swap::ArcSwapOption;
 use config::GenId;
-use config::external::overlay::vpc::Peering;
-use config::external::overlay::vpc::VpcTable;
-use config::external::overlay::vpcpeering::VpcExpose;
+use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpcTable};
+use config::external::overlay::vpcpeering::ValidatedExpose;
 use flow_entry::flow_table::FlowTable;
 use net::packet::VpcDiscriminant;
 use std::sync::Arc;
@@ -20,7 +19,7 @@ use crate::stateful::flows::upgrade_all_masquerading_flows;
 pub(crate) struct StatefulNatPeering {
     pub(crate) src_vpcd: VpcDiscriminant,
     pub(crate) dst_vpcd: VpcDiscriminant,
-    pub(crate) peering: Peering,
+    pub(crate) peering: ValidatedPeering,
 }
 #[derive(Debug, Default, Clone)]
 pub struct StatefulNatConfig {
@@ -37,12 +36,12 @@ impl PartialEq for StatefulNatConfig {
 
 impl StatefulNatConfig {
     #[must_use]
-    pub fn new(vpc_table: &VpcTable, genid: GenId) -> Self {
+    pub fn new(vpc_table: &ValidatedVpcTable, genid: GenId) -> Self {
         let mut peerings = Vec::new();
         for vpc in vpc_table.values() {
             for peering in vpc.local_stateful_nat_peerings() {
                 peerings.push(StatefulNatPeering {
-                    src_vpcd: VpcDiscriminant::from_vni(vpc.vni),
+                    src_vpcd: VpcDiscriminant::from_vni(vpc.vni()),
                     dst_vpcd: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
                     peering: peering.clone(),
                 });
@@ -76,10 +75,12 @@ impl StatefulNatConfig {
     }
 
     pub(crate) fn has_masquerading_peerings(&self) -> bool {
-        self.peerings
-            .iter()
-            .map(|p| &p.peering)
-            .any(|p| p.local.exposes.iter().any(VpcExpose::has_stateful_nat))
+        self.peerings.iter().map(|p| &p.peering).any(|p| {
+            p.local()
+                .valexp()
+                .iter()
+                .any(ValidatedExpose::has_stateful_nat)
+        })
     }
 
     pub(crate) fn get_peering(
