@@ -42,17 +42,22 @@ pub struct Icmp4(pub(crate) Icmpv4Header);
 // compile time (e.g. `.embedded()` is only available on error subtypes).
 
 /// `ICMPv4` Destination Unreachable (type 3).
-#[derive(Clone, Debug, PartialEq, Eq, strum_macros::EnumCount)]
+#[derive(Clone, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::EnumMessage)]
 pub enum Icmp4DestUnreachable {
     /// Code 0.
+    #[strum(message = "Network unreachable")]
     Network,
     /// Code 1.
+    #[strum(message = "Host unreachable")]
     Host,
     /// Code 2.
+    #[strum(message = "Protocol unreachable")]
     Protocol,
     /// Code 3.
+    #[strum(message = "Port unreachable")]
     Port,
     /// Code 4.
+    #[strum(message = "Fragmentation needed")]
     FragmentationNeeded {
         /// The MTU of the next-hop link, or `None` if the sender does
         /// not support Path MTU Discovery (RFC 1191 -- indicated by a
@@ -60,26 +65,37 @@ pub enum Icmp4DestUnreachable {
         next_hop_mtu: Option<NonZero<u16>>,
     },
     /// Code 5.
+    #[strum(message = "Source route failed")]
     SourceRouteFailed,
     /// Code 6.
+    #[strum(message = "Network unknown")]
     NetworkUnknown,
     /// Code 7.
+    #[strum(message = "Host unknown")]
     HostUnknown,
     /// Code 8.
+    #[strum(message = "Source host isolated (deprecated)")]
     Isolated,
     /// Code 9.
+    #[strum(message = "Network prohibited")]
     NetworkProhibited,
     /// Code 10.
+    #[strum(message = "Host prohibited")]
     HostProhibited,
     /// Code 11.
+    #[strum(message = "Network unreachable for TOS (Obsolete)")]
     TosNetwork,
     /// Code 12.
+    #[strum(message = "Host unreachable for TOS (Obsolete)")]
     TosHost,
     /// Code 13.
+    #[strum(message = "Administratively prohibited")]
     FilterProhibited,
     /// Code 14.
+    #[strum(message = "Host precedence violation (Obsolete)")]
     HostPrecedenceViolation,
     /// Code 15.
+    #[strum(message = "Precedence cutoff (Obsolete)")]
     PrecedenceCutoff,
 }
 
