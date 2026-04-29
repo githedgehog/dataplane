@@ -164,10 +164,15 @@ impl<I: NatIpWithBitmap> AllocatedIp<I> {
         ip_allocator: IpAllocator<I>,
         reserved_port_range: Option<PortRange>,
         randomize: bool,
+        exclude_wellknown_ports: bool,
     ) -> Self {
         Self {
             ip,
-            port_allocator: port_alloc::PortAllocator::new(reserved_port_range, randomize),
+            port_allocator: port_alloc::PortAllocator::new(
+                reserved_port_range,
+                randomize,
+                exclude_wellknown_ports,
+            ),
             ip_allocator,
         }
     }
@@ -234,6 +239,7 @@ pub(crate) struct NatPool<I: NatIpWithBitmap> {
     in_use: VecDeque<Weak<AllocatedIp<I>>>,
     reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
     idle_timeout: Duration,
+    exclude_wellknown_ports: bool,
 }
 
 impl<I: NatIpWithBitmap> NatPool<I> {
@@ -243,6 +249,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         reverse_bitmap_mapping: BTreeMap<u128, u32>,
         reserved_prefixes_ports: Option<DisjointRangesBTreeMap<IpRange, PortRange>>,
         idle_timeout: Duration,
+        exclude_wellknown_ports: bool,
     ) -> Self {
         Self {
             bitmap,
@@ -251,6 +258,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             in_use: VecDeque::new(),
             reserved_prefixes_ports,
             idle_timeout,
+            exclude_wellknown_ports,
         }
     }
 
@@ -303,6 +311,7 @@ impl<I: NatIpWithBitmap> NatPool<I> {
             ip_allocator,
             reserved_port_range,
             randomize,
+            self.exclude_wellknown_ports,
         ))
     }
 
@@ -338,7 +347,15 @@ impl<I: NatIpWithBitmap> NatPool<I> {
         // drops an AllocatedIp and its reference count goes to 0, but it hasn't called the drop()
         // function to remove the IP from the bitmap in that other thread yet).
         let _ = self.bitmap.set_ip_allocated(offset);
-        let arc_ip = Arc::new(AllocatedIp::new(ip, ip_allocator, None, randomize));
+        let arc_ip = Arc::new(AllocatedIp::new(
+            ip,
+            ip_allocator,
+            None,
+            randomize,
+            // Keep the low-port exclusion policy for explicitly reserved IPs as well, so
+            // reserve() follows the same TCP/UDP allocation rules as allocate().
+            self.exclude_wellknown_ports,
+        ));
         self.add_in_use(&arc_ip);
         Ok(arc_ip)
     }

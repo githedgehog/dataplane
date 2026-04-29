@@ -75,23 +75,29 @@ fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, 
             .idle_timeout()
             .unwrap_or(DEFAULT_MASQUERADE_IDLE_TIMEOUT);
 
+        // TCP/UDP masquerade allocators should avoid the IANA system/well-known range
+        // (0-1023). ICMP identifiers are allocated independently and are not subject to that
+        // TCP/UDP source-port policy.
         let tcp_ip_allocator = ip_allocator_for_prefixes(
             expose.as_range_or_empty(),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.tcp,
             randomize,
+            true,
         );
         let udp_ip_allocator = ip_allocator_for_prefixes(
             expose.as_range_or_empty(),
             idle_timeout,
             &prefixes_and_ports_to_exclude_from_pools.udp,
             randomize,
+            true,
         );
         let icmp_ip_allocator = ip_allocator_for_prefixes(
             expose.as_range_or_empty(),
             idle_timeout,
             &PrefixPortsSet::default(),
             randomize,
+            false,
         );
 
         add_pool_entries(
@@ -178,11 +184,13 @@ fn ip_allocator_for_prefixes<J: NatIpWithBitmap>(
     idle_timeout: Duration,
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
     randomize: bool,
+    exclude_wellknown_ports: bool,
 ) -> IpAllocator<J> {
     let pool = create_natpool(
         prefixes,
         prefixes_and_ports_to_exclude_from_pools,
         idle_timeout,
+        exclude_wellknown_ports,
     );
     IpAllocator::new(pool, randomize)
 }
@@ -191,6 +199,7 @@ fn create_natpool<J: NatIpWithBitmap>(
     prefixes: &PrefixPortsSet,
     prefixes_and_ports_to_exclude_from_pools: &PrefixPortsSet,
     idle_timeout: Duration,
+    exclude_wellknown_ports: bool,
 ) -> NatPool<J> {
     // Build mappings for IPv6 <-> u32 bitmap translation
     let (bitmap_mapping, reverse_bitmap_mapping) = create_ipv6_bitmap_mappings(
@@ -217,6 +226,7 @@ fn create_natpool<J: NatIpWithBitmap>(
         reverse_bitmap_mapping,
         reserved_prefixes_ports,
         idle_timeout,
+        exclude_wellknown_ports,
     )
 }
 
