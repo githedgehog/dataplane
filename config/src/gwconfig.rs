@@ -4,7 +4,7 @@
 //! Top-level configuration object for the dataplane
 
 use crate::errors::{ConfigError, ConfigResult};
-use crate::external::{ExternalConfig, GenId};
+use crate::external::{ExternalConfig, GenId, ValidatedExternalConfig};
 use crate::internal::InternalConfig;
 use arc_swap::ArcSwap;
 use std::sync::Arc;
@@ -117,5 +117,50 @@ impl GwConfig {
     pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct ValidatedGwConfig(GwConfig);
+
+impl ValidatedGwConfig {
+    /// Create a blank [`ValidatedGwConfig`] with an empty [`ExternalConfig`].
+    #[must_use]
+    pub fn blank() -> Self {
+        // The blank config has no overlay, peerings, or VPCs, so it trivially passes validation.
+        // A unit test verifies this invariant.
+        ValidatedGwConfig(GwConfig::blank())
+    }
+
+    #[must_use]
+    pub fn meta(&self) -> &ArcSwap<GwConfigMeta> {
+        &self.0.meta
+    }
+
+    #[must_use]
+    pub fn external(&self) -> &ValidatedExternalConfig {
+        // SAFETY: ValidatedExternalConfig is #[repr(transparent)] over ExternalConfig. A
+        // ValidatedGwConfig is only obtained from `GwConfig::validated`, which validates the
+        // external config.
+        #[allow(unsafe_code)]
+        unsafe {
+            &*(&raw const self.0.external).cast::<ValidatedExternalConfig>()
+        }
+    }
+
+    #[must_use]
+    pub fn internal(&self) -> Option<&InternalConfig> {
+        self.0.internal.as_ref()
+    }
+
+    /// Set an internal config object, once built.
+    pub fn set_internal_config(&mut self, internal: InternalConfig) {
+        self.0.internal = Some(internal);
+    }
+
+    #[must_use]
+    pub fn genid(&self) -> GenId {
+        self.0.external.genid
     }
 }
