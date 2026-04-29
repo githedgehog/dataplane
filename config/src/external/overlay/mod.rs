@@ -10,10 +10,8 @@ pub mod vpcpeering;
 
 use crate::{ConfigError, ConfigResult};
 use tracing::{debug, error};
-use vpc::VpcIdMap;
-use vpc::VpcTable;
-use vpcpeering::VpcManifest;
-use vpcpeering::VpcPeeringTable;
+use vpc::{ValidatedVpcTable, VpcIdMap, VpcTable};
+use vpcpeering::{VpcManifest, VpcPeeringTable};
 
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
@@ -89,5 +87,34 @@ impl Overlay {
         let id_map = self.vpcid_map();
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Debug)]
+pub struct ValidatedOverlay(Overlay);
+
+impl ValidatedOverlay {
+    #[must_use]
+    pub fn vpc_table(&self) -> &ValidatedVpcTable {
+        // SAFETY: ValidatedVpcTable is #[repr(transparent)] over VpcTable. A ValidatedOverlay is
+        // only ever obtained from `Overlay::validated`, which validates the underlying table.
+        #[allow(unsafe_code)]
+        unsafe {
+            &*(&raw const self.0.vpc_table).cast::<ValidatedVpcTable>()
+        }
+    }
+
+    /// Return the peering table.
+    ///
+    /// Note: unlike the other fields exposed on [`ValidatedOverlay`], the peering table is not
+    /// wrapped in a `Validated*` newtype. A [`crate::external::overlay::vpcpeering::VpcPeering`]
+    /// is symmetric (no local/remote distinction), and per-side validation is performed only on
+    /// the asymmetric [`crate::external::overlay::vpc::Peering`] copies that
+    /// [`Overlay::collect_peerings`] places on each VPC. Validating the peering table itself
+    /// would not provide useful guarantees on top of that, so consumers see the raw type.
+    #[must_use]
+    pub fn peering_table(&self) -> &VpcPeeringTable {
+        &self.0.peering_table
     }
 }
