@@ -80,6 +80,16 @@ impl Overlay {
         Ok(())
     }
 
+    /// Consume `self` and produce a [`ValidatedOverlay`] if it passes validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the overlay configuration is invalid.
+    pub fn validated(mut self) -> Result<ValidatedOverlay, ConfigError> {
+        self.validate()?;
+        Ok(ValidatedOverlay(self))
+    }
+
     /// Collect peerings from the peering table for every VPC.
     ///
     /// Should only be called in `validate`, or in tests.

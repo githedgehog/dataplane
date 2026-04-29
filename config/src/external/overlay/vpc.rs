@@ -52,6 +52,16 @@ impl Peering {
         self.validate_nat_combinations()
     }
 
+    /// Consume `self` and produce a [`ValidatedPeering`] if it passes validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peering configuration is invalid.
+    pub fn validated(mut self) -> Result<ValidatedPeering, ConfigError> {
+        self.validate()?;
+        Ok(ValidatedPeering(self))
+    }
+
     fn validate_nat_combinations(&self) -> ConfigResult {
         // If stateful NAT is set up on one side of the peering, we don't support NAT (stateless or
         // stateful) on the other side.
@@ -277,6 +287,16 @@ impl Vpc {
                 .unwrap_or_else(|| unreachable!())
         };
         validated_vpc.check_overlap_and_default()
+    }
+
+    /// Consume `self` and produce a [`ValidatedVpc`] if it passes validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the VPC configuration is invalid.
+    pub fn validated(mut self) -> Result<ValidatedVpc, ConfigError> {
+        self.validate()?;
+        Ok(ValidatedVpc(self))
     }
 
     /// Tell how many peerings this VPC has
@@ -507,6 +527,16 @@ impl VpcTable {
             vpc.validate()?;
         }
         Ok(())
+    }
+
+    /// Consume `self` and produce a [`ValidatedVpcTable`] if it passes validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table is invalid.
+    pub fn validated(mut self) -> Result<ValidatedVpcTable, ConfigError> {
+        self.validate()?;
+        Ok(ValidatedVpcTable(self))
     }
 }
 
