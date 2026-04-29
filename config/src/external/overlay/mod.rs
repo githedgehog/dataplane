@@ -52,7 +52,7 @@ impl Overlay {
 
     /// Build a `VpcIdMap`. We have already checked that all VPC Ids are distinct
     #[must_use]
-    pub fn vpcid_map(&self) -> VpcIdMap {
+    pub(crate) fn vpcid_map(&self) -> VpcIdMap {
         let id_map: VpcIdMap = self
             .vpc_table
             .values()
@@ -93,7 +93,7 @@ impl Overlay {
     /// Collect peerings from the peering table for every VPC.
     ///
     /// Should only be called in `validate`, or in tests.
-    pub fn collect_peerings(&mut self) {
+    pub(crate) fn collect_peerings(&mut self) {
         let id_map = self.vpcid_map();
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
