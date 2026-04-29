@@ -9,14 +9,16 @@ use net::buffer::PacketBufferMut;
 use net::checksum::Checksum;
 use net::flow_key::flowkey_embedded_in_icmp_error;
 use net::headers::{TryEmbeddedHeaders, TryIcmpAny, TryInnerIpv4, TryIp};
-use net::icmp_any::IcmpAnyChecksumPayload;
+use net::icmp_any::{IcmpAny, IcmpAnyChecksumPayload};
+use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
+use net::icmp6::Icmp6Type;
 use net::packet::{DoneReason, Packet};
 
 use pipeline::NetworkFunction;
 use std::sync::Arc;
-use tracing::{debug, warn};
-
+use strum::EnumMessage;
 use tracectl::trace_target;
+use tracing::{debug, warn};
 
 use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
 use crate::stateful::icmp_handling::handle_icmp_error_masquerading;
@@ -79,6 +81,28 @@ fn icmp_checksums_ok<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> bool {
         }
     }
     true
+}
+
+/// Tell if the given ICMP error packet is "unrecoverable" in the sense that any flow related to it *may*
+/// be removed because the source may no longer send packets after receiving the error message.
+fn is_icmp_unrecoverable<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> (bool, Option<&str>) {
+    let Some(icmp) = packet.try_icmp_any() else {
+        return (false, None);
+    };
+    debug_assert!(icmp.is_error_message());
+    match icmp {
+        IcmpAny::V4(icmp4) if let Icmp4Type::DestUnreachable(unreach) = icmp4.icmp_type() => {
+            let unrec = !matches!(unreach, Icmp4DestUnreachable::FragmentationNeeded { .. });
+            (unrec, unreach.get_message())
+        }
+        IcmpAny::V6(icmp6) if let Icmp6Type::DestUnreachable(unreach) = icmp6.icmp_type() => {
+            (true, unreach.get_message())
+        }
+        IcmpAny::V6(icmp6) if let Icmp6Type::PacketTooBig(_) = icmp6.icmp_type() => {
+            (false, Some("Packet too big"))
+        }
+        _ => (false, None),
+    }
 }
 
 impl IcmpErrorHandler {
@@ -154,6 +178,19 @@ impl IcmpErrorHandler {
         // drop packet if could not translate it
         if let Err(reason) = result {
             packet.done(reason);
+            return;
+        }
+
+        // If processing the ICMP error succeeded, drop the flows associated to the offending packet
+        // if the problem is hardly recoverable. This expedites removing those flows, which would probably
+        // be never hit again. In case of masquerading, this releases the allocated ports sooner.
+        let (unrecoverable, reason) = is_icmp_unrecoverable(packet);
+        let reason = reason.unwrap_or("unspecified");
+        if unrecoverable && flow.is_active() {
+            debug!("Invalidating flows due to ICMP error: {reason}");
+            flow.invalidate_pair();
+        } else {
+            debug!("Will not invalidate flows ({reason})");
         }
     }
 }

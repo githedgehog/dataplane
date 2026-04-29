@@ -25,6 +25,7 @@ pipeline = { workspace = true }
 rand = { workspace = true, features = ["thread_rng"] }
 roaring = { workspace = true }
 shuttle = { workspace = true, optional = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
