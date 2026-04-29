@@ -15,8 +15,8 @@ use crate::{ConfigError, ConfigResult};
 use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
-use overlay::Overlay;
 use overlay::vpc::Peering;
+use overlay::{Overlay, ValidatedOverlay};
 use tracing::debug;
 use underlay::Underlay;
 
@@ -118,5 +118,57 @@ impl ExternalConfig {
         debug!("Community table mappings:\n{}", self.communities);
         debug!("Gateway-groups are:\n{}", self.gwgroups);
         Ok(())
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct ValidatedExternalConfig(ExternalConfig);
+
+impl ValidatedExternalConfig {
+    #[must_use]
+    pub fn gwname(&self) -> &str {
+        &self.0.gwname
+    }
+
+    #[must_use]
+    pub fn genid(&self) -> GenId {
+        self.0.genid
+    }
+
+    #[must_use]
+    pub fn device(&self) -> &DeviceConfig {
+        &self.0.device
+    }
+
+    #[must_use]
+    pub fn underlay(&self) -> &Underlay {
+        &self.0.underlay
+    }
+
+    #[must_use]
+    pub fn overlay(&self) -> &ValidatedOverlay {
+        // SAFETY: ValidatedOverlay is #[repr(transparent)] over Overlay. A
+        // ValidatedExternalConfig is only obtained through `GwConfig::validate`, which validates
+        // the overlay.
+        #[allow(unsafe_code)]
+        unsafe {
+            &*(&raw const self.0.overlay).cast::<ValidatedOverlay>()
+        }
+    }
+
+    #[must_use]
+    pub fn gwgroups(&self) -> &GwGroupTable {
+        &self.0.gwgroups
+    }
+
+    #[must_use]
+    pub fn communities(&self) -> &PriorityCommunityTable {
+        &self.0.communities
+    }
+
+    #[must_use]
+    pub fn flow_table_capacity(&self) -> Option<&NonZero<usize>> {
+        self.0.flow_table_capacity.as_ref()
     }
 }
