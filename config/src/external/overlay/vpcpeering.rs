@@ -812,6 +812,16 @@ impl VpcManifest {
         self.validate_expose_collisions()?;
         Ok(())
     }
+
+    /// Consume `self` and produce a [`ValidatedManifest`] if it passes validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest configuration is invalid.
+    pub fn validated(mut self) -> Result<ValidatedManifest, ConfigError> {
+        self.validate()?;
+        Ok(ValidatedManifest(self))
+    }
     pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
         self.exposes
             .iter()
