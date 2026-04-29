@@ -503,7 +503,7 @@ impl VpcTable {
     }
 
     /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
-    pub fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    pub(crate) fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
         debug!("Collecting peerings for all VPCs..");
         self.values_mut()
             .for_each(|vpc| vpc.set_peerings(peering_table, idmap));
