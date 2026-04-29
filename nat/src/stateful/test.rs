@@ -377,7 +377,7 @@ fn flow_lookup<Buf: PacketBufferMut>(flow_table: &FlowTable, packet: &mut Packet
 #[allow(clippy::too_many_lines)]
 async fn test_full_config() {
     let config = build_gwconfig_from_overlay(build_overlay_4vpcs())
-        .validated()
+        .validate()
         .unwrap();
 
     let flow_table = FlowTable::new(16);
@@ -457,7 +457,7 @@ async fn test_full_config() {
 
     // Update config and allocator
     let new_config = build_gwconfig_from_overlay(build_overlay_2vpcs())
-        .validated()
+        .validate()
         .unwrap();
     let nat_config = StatefulNatConfig::new(new_config.external().overlay().vpc_table(), 2);
     allocator.update_nat_allocator(nat_config, &flow_table);
@@ -547,7 +547,7 @@ fn build_overlay_2vpcs_no_nat() -> Overlay {
 #[traced_test]
 fn test_full_config_no_nat() {
     let config = build_gwconfig_from_overlay(build_overlay_2vpcs_no_nat())
-        .validated()
+        .validate()
         .unwrap();
 
     // Check that we can validate the allocator
@@ -618,7 +618,7 @@ fn check_packet_icmp_echo_new(
 #[traced_test]
 async fn test_icmp_echo_nat() {
     let config = build_gwconfig_from_overlay(build_overlay_2vpcs())
-        .validated()
+        .validate()
         .unwrap();
 
     // Check that we can validate the allocator
@@ -933,7 +933,7 @@ fn build_overlay_2vpcs_with_default() -> Overlay {
 #[tokio::test]
 async fn test_default_expose() {
     let config = build_gwconfig_from_overlay(build_overlay_2vpcs_with_default())
-        .validated()
+        .validate()
         .unwrap();
 
     // Check that we can validate the allocator
@@ -1134,7 +1134,7 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
 
     let config =
         build_gwconfig_from_overlay(build_overlay_3vpcs_unidirectional_nat_overlapping_addr())
-            .validated()
+            .validate()
             .unwrap();
 
     // Build VPC discriminant lookup stage
@@ -1423,7 +1423,7 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
     // stateless NAT. We can carry on with the test anyway.
     assert!(
         config
-            .validated()
+            .validate()
             .is_err_and(|e| e == ConfigError::DuplicateVpcPeerings("VPC-1--VPC-2--2".to_owned()))
     );
     let config = unsafe {

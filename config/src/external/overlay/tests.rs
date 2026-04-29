@@ -115,13 +115,13 @@ pub mod test {
         // Empty ips but non-empty nots - Currently not supported
         /*
         let expose = VpcExpose::empty().not("10.0.1.0/24".into());
-        assert!(expose.validate().is_ok());
+        assert_eq!(expose.validate(), Ok(()));
         */
 
         // Empty as_range but non-empty not_as - Currently not supported
         /*
         let expose = VpcExpose::empty().not_as("2.0.1.0/24".into());
-        assert!(expose.validate().is_ok());
+        assert_eq!(expose.validate(), Ok(()));
         */
 
         let expose = VpcExpose::empty()
@@ -297,7 +297,7 @@ pub mod test {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(expose1);
         manifest.add_expose(expose2);
-        assert_eq!(manifest.validate(), Ok(()));
+        assert!(manifest.clone().validate().is_ok());
 
         // Overlap between a manifest's exposes prefixes is not allowed
         let mut invalid_manifest = manifest.clone();
@@ -468,14 +468,14 @@ pub mod test {
         vpc_table.add(vpc2).expect("Should succeed");
 
         /* build peerings */
-        let mut peering1 = build_vpc_peering();
+        let peering1 = build_vpc_peering();
         let mut peering2 = build_vpc_peering();
         peering2.name = "Peering-2".to_owned();
 
         let name1 = peering1.name.clone();
 
-        assert_eq!(peering1.validate(), Ok(()));
-        assert_eq!(peering2.validate(), Ok(()));
+        assert!(peering1.clone().validate().is_ok());
+        assert!(peering2.clone().validate().is_ok());
 
         /* build peering table */
         let mut peering_table = VpcPeeringTable::new();
@@ -1248,7 +1248,7 @@ pub mod test {
         assert_eq!(
             overlay.validate(),
             Err(ConfigError::Forbidden(
-                "Multiple 'default' expose blocks for a same peering",
+                "Manifest cannot have multiple default exposes",
             )),
         );
     }
