@@ -140,18 +140,20 @@ impl IcmpErrorHandler {
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
 
         // process the packet depending on the flow info
-        if flow_info_locked.nat_state.is_some() {
+        let result = if flow_info_locked.nat_state.is_some() {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with masquerade state");
-            handle_icmp_error_masquerading(packet, flow.as_ref());
+            handle_icmp_error_masquerading(packet, flow.as_ref())
         } else if flow_info_locked.port_fw_state.is_some() {
             debug!("Icmp error is for vpc {dst_vpcd}. Will process with port-forwarding state");
-            handle_icmp_error_port_forwarding(packet, flow.as_ref());
+            handle_icmp_error_port_forwarding(packet, flow.as_ref())
         } else {
             warn!("Found no NAT state to process ICMP error message. Dropping...");
-            // This can't happen atm since the only NFs that create flows are stateful NAT
-            // and port-forwarding. If we hit a flow that does not have either of those set
-            // that's, atm, a bug.
-            packet.done(DoneReason::Filtered);
+            Err(DoneReason::Filtered)
+        };
+
+        // drop packet if could not translate it
+        if let Err(reason) = result {
+            packet.done(reason);
         }
     }
 }

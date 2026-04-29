@@ -10,12 +10,12 @@ use net::buffer::PacketBufferMut;
 use net::flows::ExtractRef;
 use net::flows::FlowInfo;
 use net::packet::{DoneReason, Packet};
-use tracing::{debug, error};
+use tracing::debug;
 
 pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
-) {
+) -> Result<(), DoneReason> {
     let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
     let f = flow_info.logfmt();
     debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
@@ -30,14 +30,14 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     let nat_translation = state.reverse_translation_data();
     if let Err(e) = nat_translate_icmp_inner(packet, &nat_translation) {
         debug!("(masquerade): Translation of ICMP error inner packet failed: {e}");
-        packet.done(DoneReason::InternalFailure);
-        return;
+        return Err(DoneReason::InternalFailure);
     }
 
     // translate the ICMP error packet (outer)
     let xlate = state.as_translate();
     if let Err(e) = masquerade(packet, &xlate) {
         debug!("(masquerade): Failed to translate ICMP error packet with {xlate}: {e}");
-        packet.done(DoneReason::InternalFailure);
+        return Err(DoneReason::InternalFailure);
     }
+    Ok(())
 }
