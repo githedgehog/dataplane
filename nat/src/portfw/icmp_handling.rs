@@ -62,7 +62,7 @@ fn as_nat_translation(pfw_state: &PortFwState) -> NatTranslationData {
 pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
-) {
+) -> Result<(), DoneReason> {
     let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
     let f = flow_info.logfmt();
     debug!("(port-forwarding): Processing ICMP error packet from {src_vpcd} using flow {f}");
@@ -78,13 +78,13 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     let translation_data = as_nat_translation(state);
     if let Err(e) = nat_translate_icmp_inner(packet, &translation_data) {
         debug!("(port-forwarding): Translation of ICMP error inner packet failed: {e}");
-        packet.done(DoneReason::InternalFailure);
-        return;
+        return Err(DoneReason::InternalFailure);
     }
 
     // NAT the ICMP packet according to the port-fw state of the reverse flow of the offending packet
     if let Err(e) = nat_packet(packet, state) {
         debug!("(port-forwarding): Failed to NAT ICMP error packet: {e}");
-        packet.done(DoneReason::InternalFailure);
+        return Err(DoneReason::InternalFailure);
     }
+    Ok(())
 }
