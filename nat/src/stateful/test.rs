@@ -5,6 +5,8 @@
 
 use crate::stateful::{NatAllocatorWriter, StatefulNatConfig};
 use crate::{IcmpErrorHandler, StatefulNat};
+use ahash::HashMap;
+use common::cliprovider::Frame;
 use concurrency::sync::Arc;
 use config::ConfigError;
 use config::external::overlay::Overlay;
@@ -30,15 +32,94 @@ use net::tcp::TruncatedTcp;
 use net::udp::{TruncatedUdp, UdpPort};
 use net::vxlan::Vni;
 use net::{FlowKey, IpProtoKey, UdpProtoKey};
+use pipeline::DynPipeline;
 use pipeline::NetworkFunction;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::time::Duration;
 use tracectl::get_trace_ctl;
+use tracing::debug;
 use tracing_test::traced_test;
 
 const ONE_MINUTE: Duration = Duration::from_mins(1);
 use crate::stateless::test::build_gwconfig_from_overlay;
+
+fn case(msg: &str) {
+    debug!("{}", Frame(msg));
+}
+
+#[derive(Default)]
+struct TestFlowFilter(HashMap<VpcDiscriminant, VpcDiscriminant>);
+impl TestFlowFilter {
+    fn with_peerings(peerings: Vec<(VpcDiscriminant, VpcDiscriminant)>) -> Self {
+        let mut new = TestFlowFilter::default();
+        for (src_vpcd, dst_vpcd) in peerings {
+            new.0.insert(src_vpcd, dst_vpcd);
+            new.0.insert(dst_vpcd, src_vpcd);
+        }
+        new
+    }
+}
+impl NetworkFunction<TestBuffer> for TestFlowFilter {
+    fn process<'a, Input: Iterator<Item = Packet<TestBuffer>> + 'a>(
+        &'a mut self,
+        input: Input,
+    ) -> impl Iterator<Item = Packet<TestBuffer>> + 'a {
+        input.map(|mut packet| {
+            let src_vpcd = packet.meta().src_vpcd.unwrap(); // packets must have src vpcd
+            debug!("packet comes from {src_vpcd}");
+            let Some(dst_vpcd) = self.0.get(&src_vpcd) else {
+                panic!("Did not find dst vpcd for source  vpcd: {src_vpcd}");
+            };
+            debug!(" ... and goes to {dst_vpcd}");
+            packet.meta_mut().dst_vpcd = Some(*dst_vpcd);
+            packet
+        })
+    }
+}
+
+// build pipeline: icmp-error-handler|flow-lookup|stateful-NAT
+fn setup_pipeline_stateful_nat(
+    flow_filter: TestFlowFilter,
+) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
+    let alloc_writer = NatAllocatorWriter::new();
+    let alloc_reader = alloc_writer.get_reader_factory().handle();
+
+    let flow_table = Arc::new(FlowTable::default());
+    let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
+    let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
+    let nat = StatefulNat::new("masq", flow_table.clone(), alloc_reader);
+    let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
+        .add_stage(icmp_error_handler)
+        .add_stage(flow_lookup)
+        .add_stage(flow_filter)
+        .add_stage(nat);
+
+    (flow_table, pipeline, alloc_writer)
+}
+
+fn test_setup(overlay: Overlay) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
+    let mut config = build_gwconfig_from_overlay(overlay);
+    config.validate().unwrap();
+
+    // build the configuration for the nat allocator
+    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+
+    // build the config for the test flow filter and the flow filter
+    let peerings: Vec<_> = nat_config
+        .iter()
+        .map(|p| (p.src_vpcd, p.dst_vpcd))
+        .collect();
+    let flow_filter = TestFlowFilter::with_peerings(peerings);
+
+    // build pipeline: icmp-error-handler|flow-lookup|TestFlowFilter|stateful-NAT
+    let (flow_table, pipeline, mut alloc_writer) = setup_pipeline_stateful_nat(flow_filter);
+
+    // setup the NAT allocator
+    alloc_writer.update_nat_allocator(nat_config, &flow_table);
+
+    (flow_table, pipeline, alloc_writer)
+}
 
 fn addr_v4(addr: &str) -> Ipv4Addr {
     Ipv4Addr::from_str(addr).expect("Failed to create IPv4 address")
@@ -495,6 +576,33 @@ fn check_packet_icmp_echo(
     )
 }
 
+fn check_packet_icmp_echo_new(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    src_vni: Vni,
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    direction: IcmpEchoDirection,
+    identifier: u16,
+) -> (Ipv4Addr, Ipv4Addr, u16, Option<DoneReason>) {
+    let mut packet: Packet<TestBuffer> =
+        build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().set_stateful_nat(true);
+    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+
+    let packets_out: Vec<_> = pipeline.process(vec![packet].into_iter()).collect();
+    let hdr_out = packets_out[0].try_ipv4().unwrap();
+    let icmp_out = packets_out[0].try_icmp4().unwrap();
+    let done_reason = packets_out[0].get_done();
+
+    (
+        hdr_out.source().inner(),
+        hdr_out.destination(),
+        icmp_out.identifier().unwrap(),
+        done_reason,
+    )
+}
+
 #[tokio::test]
 #[traced_test]
 async fn test_icmp_echo_nat() {
@@ -593,7 +701,7 @@ async fn test_icmp_echo_nat() {
 
 #[allow(clippy::too_many_arguments)]
 fn check_packet_icmp_error(
-    nat: &mut StatefulNat,
+    pipeline: &mut DynPipeline<TestBuffer>,
     src_vni: Vni,
     dst_vni: Vni,
     outer_src_ip: Ipv4Addr,
@@ -628,11 +736,7 @@ fn check_packet_icmp_error(
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     packet.meta_mut().dst_vpcd.take(); // remove to force processing by stateful
 
-    flow_lookup(nat.sessions(), &mut packet);
-
-    let mut icmp_handler = IcmpErrorHandler::new(nat.sessions().clone());
-    let packets_out = icmp_handler.process(vec![packet].into_iter());
-    let packets_out: Vec<_> = nat.process(packets_out).collect();
+    let packets_out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
 
     let hdr_out = packets_out[0].try_ipv4().unwrap();
     let inner_ip_out = packets_out[0].try_inner_ipv4().unwrap();
@@ -668,15 +772,11 @@ fn check_packet_icmp_error(
 #[tokio::test]
 #[traced_test]
 async fn test_icmp_error_nat() {
-    let mut config = build_gwconfig_from_overlay(build_overlay_2vpcs());
-    config.validate().unwrap();
-
-    // Check that we can validate the allocator
-    let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
-    allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
+    // build setup: 2 vpcs with masquerading, vni 100 -> vni 200
+    let (flow_table, mut pipeline, _allocw) = test_setup(build_overlay_2vpcs());
 
     // ICMP Error msg: expose211 -> expose121, no previous session for inner packet
+    case("Processing icmp error with no prior state");
     let (
         router_src,
         orig_outer_dst,
@@ -705,7 +805,7 @@ async fn test_icmp_error_nat() {
         output_inner_seq_number,
         done_reason,
     ) = check_packet_icmp_error(
-        &mut nat,
+        &mut pipeline,
         vni(200),
         vni(100),
         router_src,
@@ -722,9 +822,10 @@ async fn test_icmp_error_nat() {
     assert_eq!(output_inner_dst, orig_inner_dst);
     assert_eq!(output_inner_identifier, orig_echo_identifier);
     assert_eq!(output_inner_seq_number, orig_echo_seq_number);
-    assert_eq!(done_reason, Some(DoneReason::Filtered));
+    assert_eq!(done_reason, None);
 
     // ICMP Echo Request expose121 -> expose211
+    case("Processing ICMP echo request");
     let (orig_echo_src, orig_echo_dst, target_echo_src, target_echo_dst) = (
         addr_v4("1.1.2.3"),
         addr_v4("3.3.3.3"),
@@ -732,10 +833,9 @@ async fn test_icmp_error_nat() {
         addr_v4("3.3.3.3"),
     );
     let (output_echo_src, output_echo_dst, output_echo_identifier, done_reason) =
-        check_packet_icmp_echo(
-            &mut nat,
+        check_packet_icmp_echo_new(
+            &mut pipeline,
             vni(100),
-            vni(200),
             orig_echo_src,
             orig_echo_dst,
             IcmpEchoDirection::Request,
@@ -745,6 +845,8 @@ async fn test_icmp_error_nat() {
     assert_eq!(output_echo_dst, target_echo_dst);
     assert!(output_echo_identifier.is_multiple_of(256)); // First port of a 256-port "port block" from allocator
     assert_eq!(done_reason, None);
+
+    debug!("Flow table contents:\n{flow_table}");
 
     // ICMP Error message: expose211 -> expose121, after establishing session for inner packet
     //
@@ -758,6 +860,7 @@ async fn test_icmp_error_nat() {
     // - Inner destination IP: 3.3.3.3 (original destination for Echo Request)
     // - Inner identifier: original identifier from Echo Request
     // - Inner sequence number: always unchanged
+    case("Processing icmp error after establishing state");
     let (
         output_outer_src,
         output_outer_dst,
@@ -767,7 +870,7 @@ async fn test_icmp_error_nat() {
         output_inner_seq_number,
         done_reason,
     ) = check_packet_icmp_error(
-        &mut nat,
+        &mut pipeline,
         vni(200),
         vni(100),
         router_src,
@@ -778,6 +881,7 @@ async fn test_icmp_error_nat() {
         output_echo_identifier,
         orig_echo_seq_number,
     );
+
     // Outer source remains unchanged, see comments in deal_with_icmp_error_msg()
     assert_eq!(output_outer_src, router_src);
     assert_eq!(output_outer_dst, orig_echo_src);
