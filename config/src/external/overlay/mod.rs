@@ -98,6 +98,39 @@ impl Overlay {
         self.vpc_table
             .collect_peerings(&self.peering_table, &id_map);
     }
+
+    /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    pub(crate) unsafe fn fake_manifest_validation_for_tests(&mut self) {
+        for peering in self.peering_table.values_mut() {
+            for manifest in [&mut peering.left, &mut peering.right] {
+                unsafe {
+                    manifest.fake_expose_validation_for_tests();
+                }
+            }
+        }
+        self.collect_peerings();
+    }
+
+    /// FOR TESTS ONLY. Fake validation for the overlay.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    #[must_use]
+    pub unsafe fn fake_validated_overlay_for_tests(mut self) -> ValidatedOverlay {
+        unsafe {
+            self.fake_manifest_validation_for_tests();
+        }
+        ValidatedOverlay(self)
+    }
 }
 
 #[repr(transparent)]

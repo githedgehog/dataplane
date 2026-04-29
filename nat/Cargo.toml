@@ -32,6 +32,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # internal
+config = { workspace = true, features = ["testing"] }
 fixin = { workspace = true }
 flow-filter = { workspace = true }
 test-utils = { workspace = true }

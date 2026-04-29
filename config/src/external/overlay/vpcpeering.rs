@@ -545,6 +545,18 @@ impl VpcExpose {
 
         Ok(collapsed_expose)
     }
+
+    /// FOR TESTS ONLY
+    #[cfg(feature = "testing")]
+    #[must_use]
+    #[allow(unsafe_code)]
+    unsafe fn fake_validated_expose(&self) -> ValidatedExpose {
+        ValidatedExpose {
+            default: self.default,
+            ips: self.ips.clone(),
+            nat: self.nat.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -872,6 +884,36 @@ impl VpcManifest {
     pub fn default_expose(&self) -> Option<&VpcExpose> {
         self.exposes.iter().find(|expose| expose.default)
     }
+
+    /// FOR TESTS ONLY. Fake validation for the manifest's expose blocks.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    pub unsafe fn fake_expose_validation_for_tests(&mut self) {
+        self.valexp.clear();
+        for expose in &self.exposes {
+            let fake_valid_expose = unsafe { expose.fake_validated_expose() };
+            self.valexp.push(fake_valid_expose);
+        }
+    }
+
+    /// FOR TESTS ONLY. Fake validation for the manifest.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    #[must_use]
+    pub unsafe fn fake_valid_manifest_for_tests(mut self) -> ValidatedManifest {
+        unsafe {
+            self.fake_expose_validation_for_tests();
+        }
+        ValidatedManifest(self)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1035,6 +1077,12 @@ impl VpcPeeringTable {
     pub fn values(&self) -> impl Iterator<Item = &VpcPeering> {
         self.0.values()
     }
+
+    /// Iterate over all [`VpcPeering`]s in a [`VpcPeeringTable`], with mutable access
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut VpcPeering> {
+        self.0.values_mut()
+    }
+
     /// Produce iterator of [`VpcPeering`]s that involve the vpc with the provided name
     pub fn peerings_vpc(&self, vpc: &str) -> impl Iterator<Item = &VpcPeering> {
         self.0

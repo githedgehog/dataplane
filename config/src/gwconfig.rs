@@ -129,6 +129,21 @@ impl GwConfig {
         self.external.validate()?;
         Ok(ValidatedGwConfig(self))
     }
+
+    /// FOR TESTS ONLY. Fake validation for the config.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    #[must_use]
+    pub unsafe fn fake_validated_config_for_tests(mut self) -> ValidatedGwConfig {
+        unsafe {
+            self.external.overlay.fake_manifest_validation_for_tests();
+        }
+        ValidatedGwConfig(self)
+    }
 }
 
 #[repr(transparent)]
