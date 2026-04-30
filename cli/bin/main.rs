@@ -6,6 +6,7 @@
 #![deny(clippy::all, clippy::pedantic)]
 #![allow(clippy::collapsible_if)]
 
+use crate::filters::filter_output;
 use argsparse::{ArgsError, CliArgs};
 use clap::Parser;
 use cmdline::Cmdline;
@@ -24,6 +25,7 @@ mod cmdline;
 mod cmdtree;
 mod cmdtree_dp;
 mod completions;
+mod filters;
 mod terminal;
 
 #[rustfmt::skip]
@@ -66,6 +68,7 @@ fn execute_remote_action(
     action: CliAction,       // action to perform
     args: &CliArgs,          // action arguments
     terminal: &mut Terminal, // this terminal
+    input: &TermInput,       // user input
 ) {
     if !terminal.is_connected() {
         print_err!("Not connnected to dataplane.");
@@ -85,7 +88,10 @@ fn execute_remote_action(
 
     // receive and deserialize response, synchronously
     match process_cli_response(&terminal.sock) {
-        Ok(data) => println!("{data}"),
+        Ok(data) => {
+            let out = filter_output(&data, input.get_filters());
+            println!("{out}");
+        }
         Err(e) => print_err!("{e}"),
     }
 }
@@ -95,6 +101,7 @@ fn execute_action(
     args: &CliArgs,    // action arguments
     cmdline: &Cmdline,
     terminal: &mut Terminal, // this terminal
+    input: &TermInput,       // user input
 ) {
     match action {
         CliAction::Clear => terminal.clear(),
@@ -114,7 +121,7 @@ fn execute_action(
             terminal.connect(&bind_addr, &path);
         }
         // all others are remote
-        _ => execute_remote_action(action, args, terminal),
+        _ => execute_remote_action(action, args, terminal, input),
     }
 }
 
@@ -152,7 +159,7 @@ fn process_command(
     if let Some(node) = cmds.find_best(input.get_tokens()) {
         if let Some(action) = &node.action {
             if let Ok(args) = process_args(input) {
-                execute_action(*action, &args, cmdline, terminal);
+                execute_action(*action, &args, cmdline, terminal, input);
             }
         } else if node.depth > 0 {
             print_err!("No action associated to command");
@@ -180,7 +187,7 @@ fn proc_cmdline_commands(
         return;
     }
     for cmd in input_cmds {
-        if let Some(mut input) = terminal.proc_line(cmd) {
+        if let Some(mut input) = Terminal::proc_line(cmd) {
             println!("{}{}", terminal.read_prompt(), input.get_line());
             process_command(terminal, cmds, cmdline, &mut input);
         }

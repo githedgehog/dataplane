@@ -17,6 +17,7 @@ colored = { workspace = true, features = [] }
 nix = { workspace = true, features = ["socket"] }
 rkyv = { workspace = true, features = ["alloc", "bytecheck", "std"] }
 reedline = { workspace = true }
+regex = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
