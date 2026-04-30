@@ -20,6 +20,7 @@ use strum::EnumMessage;
 use tracectl::trace_target;
 use tracing::{debug, warn};
 
+use crate::common::NatFlowStatus;
 use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
 use crate::stateful::icmp_handling::handle_icmp_error_masquerading;
 
@@ -151,8 +152,16 @@ impl IcmpErrorHandler {
             // In either case, leave the packet through so that the flow filter deals with it.
             return;
         };
-
         debug!("Found flow, {}", flow.logfmt());
+
+        // if the inner packet matched a flow, but it is not active, drop the ICMP error packet.
+        // This should very seldom happen as flows stay very little in the flow table once no longer valid.
+        if !flow.is_active() {
+            debug!("Matched flow is not active. Dropping ICMP error packet");
+            packet.done(DoneReason::Filtered);
+            return;
+        }
+
         let flow_info_locked = flow.locked.read().unwrap();
         let Some(dst_vpcd) = flow_info_locked.dst_vpcd else {
             warn!("Flow for {rev_flow_key} has no dst VPC discriminant set. This is a bug");
@@ -176,21 +185,25 @@ impl IcmpErrorHandler {
         };
 
         // drop packet if could not translate it
-        if let Err(reason) = result {
-            packet.done(reason);
-            return;
-        }
+        let status = match result {
+            Ok(status) => status,
+            Err(reason) => {
+                packet.done(reason);
+                return;
+            }
+        };
 
         // If processing the ICMP error succeeded, drop the flows associated to the offending packet
         // if the problem is hardly recoverable. This expedites removing those flows, which would probably
-        // be never hit again. In case of masquerading, this releases the allocated ports sooner.
+        // be never hit again and, in case of masquerading, releases the allocated ports sooner.
+        // This optimization is only applied if the `NatFlowStatus` is one-way.
         let (unrecoverable, reason) = is_icmp_unrecoverable(packet);
         let reason = reason.unwrap_or("unspecified");
-        if unrecoverable && flow.is_active() {
-            debug!("Invalidating flows due to ICMP error: {reason}");
+        if unrecoverable && status == NatFlowStatus::OneWay {
+            debug!("Invalidating flows due to ICMP error (reason={reason} flow-status={status})");
             flow.invalidate_pair();
         } else {
-            debug!("Will not invalidate flows ({reason})");
+            debug!("Will not invalidate flows (reason={reason} flow-status={status})");
         }
     }
 }
