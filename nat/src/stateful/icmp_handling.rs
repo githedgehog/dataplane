@@ -3,6 +3,7 @@
 
 //! Handling of ICMP errors in stateful NAT (masquerading)
 
+use crate::common::NatFlowStatus;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use crate::stateful::packet::masquerade;
 use crate::stateful::state::MasqueradeState;
@@ -15,7 +16,7 @@ use tracing::debug;
 pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
-) -> Result<(), DoneReason> {
+) -> Result<NatFlowStatus, DoneReason> {
     let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
     let f = flow_info.logfmt();
     debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
@@ -39,5 +40,5 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
         debug!("(masquerade): Failed to translate ICMP error packet with {xlate}: {e}");
         return Err(DoneReason::InternalFailure);
     }
-    Ok(())
+    Ok(state.status.load())
 }

@@ -41,7 +41,7 @@ use net::packet::{DoneReason, Packet};
 
 use super::flow_state::PortFwState;
 use super::packet::nat_packet;
-use crate::common::NatAction;
+use crate::common::{NatAction, NatFlowStatus};
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
 use crate::{NatPort, NatTranslationData};
 
@@ -62,7 +62,7 @@ fn as_nat_translation(pfw_state: &PortFwState) -> NatTranslationData {
 pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
-) -> Result<(), DoneReason> {
+) -> Result<NatFlowStatus, DoneReason> {
     let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
     let f = flow_info.logfmt();
     debug!("(port-forwarding): Processing ICMP error packet from {src_vpcd} using flow {f}");
@@ -86,5 +86,5 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
         debug!("(port-forwarding): Failed to NAT ICMP error packet: {e}");
         return Err(DoneReason::InternalFailure);
     }
-    Ok(())
+    Ok(state.status.load())
 }
