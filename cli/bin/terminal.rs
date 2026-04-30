@@ -27,6 +27,9 @@ use std::path::Path;
 // our completer
 use crate::completions::CmdCompleter;
 
+// filters
+use crate::filters::{Filter, PIPE, parse_filters};
+
 #[macro_export]
 // macro to print errors in cli binary
 macro_rules! print_err {
@@ -79,6 +82,7 @@ pub struct TermInput {
     line: String,
     tokens: VecDeque<String>,
     args: HashMap<String, String>,
+    filters: Vec<Filter>,
 }
 #[allow(unused)]
 impl TermInput {
@@ -90,6 +94,9 @@ impl TermInput {
     }
     pub fn get_args(&self) -> &HashMap<String, String> {
         &self.args
+    }
+    pub fn get_filters(&self) -> &Vec<Filter> {
+        &self.filters
     }
     fn empty() -> Self {
         Self::default()
@@ -146,16 +153,23 @@ impl Terminal {
         print!("\x1b[H\x1b[2J");
         let _ = stdout().flush();
     }
-    #[allow(clippy::unused_self)]
-    pub fn proc_line(&self, line: &str) -> Option<TermInput> {
+
+    pub fn proc_line(line: &str) -> Option<TermInput> {
         let mut split = line.split_whitespace();
         let mut tokens: VecDeque<String> = VecDeque::new();
         let mut args = HashMap::new();
-        for word in split {
+        let mut filters = Vec::new();
+        while let Some(word) = split.next() {
             if word.contains('=') {
                 if let Some((arg, arg_value)) = word.split_once('=') {
                     args.insert(arg.to_owned(), arg_value.to_owned());
                 }
+            } else if word == PIPE {
+                if let Err(e) = parse_filters(split, &mut filters) {
+                    print_err!("{e}");
+                    return None;
+                }
+                break;
             } else {
                 tokens.push_back(word.to_owned());
             }
@@ -167,6 +181,7 @@ impl Terminal {
                 line: line.to_owned(),
                 tokens,
                 args,
+                filters,
             })
         }
     }
@@ -188,7 +203,7 @@ impl Terminal {
                     if line.is_empty() {
                         continue;
                     }
-                    if let Some(c) = self.proc_line(line) {
+                    if let Some(c) = Self::proc_line(line) {
                         return c;
                     }
                 }
