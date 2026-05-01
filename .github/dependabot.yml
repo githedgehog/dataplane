@@ -22,6 +22,8 @@ updates:
       - "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 10
     labels:
       - "automated"
       - "dependencies"
