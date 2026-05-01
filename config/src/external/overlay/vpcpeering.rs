@@ -292,19 +292,32 @@ impl VpcExpose {
             ));
         }
 
-        // Static NAT: Check that all prefixes in a list are of the same IP version, as we don't
-        // support NAT46 or NAT64 at the moment.
-        //
-        // TODO: We can loosen this restriction in the future. When we do, some additional
-        //       considerations might be required to validate independently the IPv4 and the IPv6
-        //       prefixes and exclusion prefixes in the rest of this function.
-        let mut is_ipv4_opt = None;
         let prefix_sets = [
             &self.ips,
             &self.nots,
             self.as_range_or_empty(),
             self.not_as_or_empty(),
         ];
+
+        // Check that all prefixes in a list are of the same IP version, as we don't support NAT46
+        // or NAT64 at the moment.
+        //
+        // TODO: We can loosen this restriction in the future. When we do, some additional
+        //       considerations might be required to validate independently the IPv4 and the IPv6
+        //       prefixes and exclusion prefixes in the rest of this function.
+        let mut is_ipv4_opt = None;
+        for prefixes in prefix_sets {
+            if prefixes.iter().any(|p| {
+                if let Some(is_ipv4) = is_ipv4_opt {
+                    p.prefix().is_ipv4() != is_ipv4
+                } else {
+                    is_ipv4_opt = Some(p.prefix().is_ipv4());
+                    false
+                }
+            }) {
+                return Err(ConfigError::InconsistentIpVersion(Box::new(self.clone())));
+            }
+        }
 
         // Port 0 is not allowed in the exposed ranges. We do not check the excluded ranges here,
         // as they are only used to remove prefixes/ports from the effective configuration.
@@ -317,19 +330,6 @@ impl VpcExpose {
                         "Port 0 is not allowed in expose prefix port ranges",
                     ));
                 }
-            }
-        }
-
-        for prefixes in prefix_sets {
-            if prefixes.iter().any(|p| {
-                if let Some(is_ipv4) = is_ipv4_opt {
-                    p.prefix().is_ipv4() != is_ipv4
-                } else {
-                    is_ipv4_opt = Some(p.prefix().is_ipv4());
-                    false
-                }
-            }) {
-                return Err(ConfigError::InconsistentIpVersion(Box::new(self.clone())));
             }
         }
 
