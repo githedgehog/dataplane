@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::eal::{Eal, EalErrno};
+use crate::eal::EalErrno;
 use crate::mem::RteAllocator;
 use core::ffi::{c_int, c_uint, c_void};
 use core::fmt::Debug;
+use errno::Errno;
+use std::panic::UnwindSafe;
 use tracing::{info, warn};
 
 #[repr(transparent)]
@@ -85,12 +87,24 @@ struct LCoreIndexIterator {
 #[allow(unused)]
 pub struct ServiceThread<'scope> {
     thread_id: RteThreadId,
-    priority: LCorePriority,
     handle: std::thread::ScopedJoinHandle<'scope, ()>,
 }
 
 // TODO: take stack size as an EAL argument instead of hard coding it
 const STACK_SIZE: usize = 8 << 20;
+
+/// RAII guard that unregisters the calling thread from the EAL on
+/// drop.  Used inside [`ServiceThread`] so the unregister side runs
+/// whether `run()` returns normally or panics; without this the
+/// `panic!` after `catch_unwind` would skip past
+/// [`unregister_thread`] and leak an EAL TLS slot.
+struct EalRegistration;
+
+impl Drop for EalRegistration {
+    fn drop(&mut self) {
+        unregister_thread();
+    }
+}
 
 impl ServiceThread<'_> {
     #[cold]
@@ -99,38 +113,94 @@ impl ServiceThread<'_> {
     pub fn new<'scope>(
         scope: &'scope std::thread::Scope<'scope, '_>,
         name: impl AsRef<str> + Debug,
-        run: impl FnOnce() + 'scope + Send,
+        run: impl FnOnce() + 'scope + Send + UnwindSafe,
     ) -> ServiceThread<'scope> {
         let (send, recv) = std::sync::mpsc::sync_channel(1);
         let handle = std::thread::Builder::new()
             .name(name.as_ref().to_string())
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, move || {
-                info!("Initializing RTE Lcore");
-                let ret = unsafe { dpdk_sys::rte_thread_register() };
-                if ret != 0 {
-                    let errno = unsafe { dpdk_sys::rte_errno_get() };
-                    let msg = format!("rte thread exited with code {ret}, errno: {errno}");
-                    Eal::fatal_error(msg)
-                }
-                let thread_id = unsafe { dpdk_sys::rte_thread_self() };
+                let thread_id = register_thread().expect("service thread failed to register");
+                // Hold the registration until this closure returns OR a
+                // panic unwinds past it.  Either way, `unregister_thread()`
+                // runs exactly once via the guard's Drop.
+                let _registration = EalRegistration;
                 send.send(thread_id).expect("could not send thread id");
-                run();
-                unsafe { dpdk_sys::rte_thread_unregister() };
+                // better to crash than silently continue with a dead control / management plane
+                #[allow(clippy::panic)]
+                if std::panic::catch_unwind(run).is_err() {
+                    panic!("service worker panicked");
+                }
             })
             .expect("could not create EalThread");
-        let thread_id = RteThreadId(recv.recv().expect("could not receive thread id"));
-        ServiceThread {
-            thread_id,
-            priority: LCorePriority::RealTime,
-            handle,
-        }
+        let thread_id = recv.recv().expect("could not receive thread id");
+        ServiceThread { thread_id, handle }
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn join(self) -> std::thread::Result<()> {
         self.handle.join()
     }
+}
+
+/// Reasons [`register_thread`] can fail.
+///
+/// `rte_thread_register` fails when DPDK cannot allocate space in
+/// its per-thread TLS table.  In practice that is always `ENOMEM`,
+/// but we keep an `Unknown` variant so an unexpected `rte_errno`
+/// value is surfaced rather than silently mapped.
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterThreadError {
+    /// DPDK returned `ENOMEM` -- no space in the TLS table for
+    /// another registered thread.
+    #[error("not enough memory to register thread (rte_thread_register: ENOMEM)")]
+    OutOfMemory,
+    /// `rte_thread_register` returned an unexpected `rte_errno`
+    /// value.
+    #[error("unknown error registering thread: {0:?}")]
+    Unknown(Errno),
+}
+
+/// Register the calling OS thread with the EAL.
+///
+/// Required before the calling thread can perform DPDK operations
+/// that touch rte_malloc'd memory (notably the `rte_acl_*` family,
+/// `rte_flow_*` family, and most other DPDK control APIs).  Lcore
+/// worker threads are registered automatically by EAL; threads
+/// spawned by Rust code (mgmt runtime workers, custom build worker
+/// threads) must call this once at startup.
+///
+/// Pair with [`unregister_thread`] before the thread exits.
+///
+/// # Errors
+///
+/// See [`RegisterThreadError`].
+#[cold]
+pub(crate) fn register_thread() -> Result<RteThreadId, RegisterThreadError> {
+    info!("registering thread with EAL");
+    // SAFETY: rte_thread_register has no Rust-side preconditions; it
+    // operates on the calling thread's TLS.
+    let ret = unsafe { dpdk_sys::rte_thread_register() };
+    if ret == 0 {
+        let thread_id = unsafe { dpdk_sys::rte_thread_self() };
+        return Ok(RteThreadId(thread_id));
+    }
+    // SAFETY: rte_errno_get reads thread-local errno; always valid.
+    let raw = unsafe { dpdk_sys::rte_errno_get() };
+    Err(match raw {
+        errno::ENOMEM => RegisterThreadError::OutOfMemory,
+        other => RegisterThreadError::Unknown(Errno(other)),
+    })
+}
+
+/// Unregister the calling thread from the EAL.
+///
+/// Pair with [`register_thread`].  Idempotent in the sense that
+/// calling it on an unregistered thread is a no-op at the DPDK
+/// level (rte_thread_unregister tolerates this).
+#[cold]
+pub(crate) fn unregister_thread() {
+    unsafe { dpdk_sys::rte_thread_unregister() };
 }
 
 #[allow(unused)]
@@ -202,7 +272,13 @@ impl LCoreParameters for LCore {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct LCoreId(pub u32); // TODO: remove pub from inner value
+pub struct LCoreId(u32);
+
+impl core::fmt::Display for LCoreId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl LCoreId {
     /// [`LCoreId`] in an invalid condition is used as a signal to DPDK to

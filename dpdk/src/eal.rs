@@ -3,7 +3,7 @@
 
 //! DPDK Environment Abstraction Layer (EAL)
 use crate::mem::RteAllocator;
-use crate::{dev, lcore, mem, socket};
+use crate::{dev, flow, lcore, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::ToString;
@@ -16,10 +16,10 @@ use tracing::{error, info, warn};
 
 /// Safe wrapper around the DPDK Environment Abstraction Layer (EAL).
 ///
-/// This is a zero-sized type that is used for lifetime management and to ensure that the Eal is
-/// properly initialized and cleaned up.
+/// This type is used for lifetime management and to ensure that the EAL is
+/// properly initialized and cleaned up.  It owns the various DPDK sub-system
+/// managers whose lifetimes are tied to the EAL.
 #[derive(Debug)]
-#[repr(transparent)]
 #[non_exhaustive]
 pub struct Eal {
     /// The memory manager.
@@ -39,11 +39,27 @@ pub struct Eal {
     ///
     /// You can manage logical cores and task dispatch here.
     pub lcore: lcore::Manager,
+
+    /// Flow rule manager.
+    ///
+    /// You can create, validate, and destroy hardware flow rules here.
+    pub flow: flow::Manager,
     // TODO: queue
-    // TODO: flow
 }
 
-unsafe impl Sync for Eal {}
+// Eal is Send + Sync automatically because all of its fields (the Manager
+// unit structs) are Send + Sync.  No explicit `unsafe impl` is needed.
+//
+// If a future field introduces a non-Sync type (e.g. a raw pointer or
+// Cell), the compiler will reject the auto-derivation and force an
+// explicit, audited decision — which is the behavior we want.
+//
+// Methods reachable through &Eal (i.e. &self methods on the public
+// Manager fields) must only call DPDK functions that are documented as
+// thread-safe.  At present these are limited to read-only queries
+// (rte_eth_dev_info_get, rte_eth_dev_count_avail, rte_socket_id,
+// rte_socket_count, rte_lcore_count, etc.) which DPDK guarantees are
+// safe to call concurrently after EAL initialization.
 
 /// Error type for EAL initialization failures.
 #[derive(Debug, thiserror::Error)]
@@ -123,25 +139,21 @@ pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
     // before swapping allocators.
     // The easiest way I know how to do that is by bundling the pre-shift logic into its own scope.
     // The system memory will be free by the time this scope closes.
-    let eal = {
-        let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
-            Eal::fatal_error(e.to_string());
-        });
-        let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
-        let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
-        if ret < 0 {
-            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
-        }
-        Eal {
-            mem: mem::Manager::init(),
-            dev: dev::Manager::init(),
-            socket: socket::Manager::init(),
-            lcore: lcore::Manager::init(),
-        }
-    };
-    // Shift to the DPDK allocator
-    RteAllocator::mark_initialized();
-    eal
+    let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
+        Eal::fatal_error(e.to_string());
+    });
+    let mut c_args: Vec<_> = args.0.iter_mut().map(|s| s.as_ptr().cast_mut()).collect();
+    let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
+    if ret < 0 {
+        EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+    }
+    Eal {
+        mem: mem::Manager::init(),
+        dev: dev::Manager::init(),
+        socket: socket::Manager::init(),
+        lcore: lcore::Manager::init(),
+        flow: flow::Manager::init(),
+    }
 }
 
 impl Eal {
@@ -153,6 +165,11 @@ impl Eal {
     #[tracing::instrument(level = "trace", skip(self), ret)]
     pub fn has_pci(&self) -> bool {
         unsafe { dpdk_sys::rte_eal_has_pci() != 0 }
+    }
+
+    #[cold]
+    pub fn has_hugepages(&self) -> bool {
+        unsafe { dpdk_sys::rte_eal_has_hugepages() != 0 }
     }
 
     /// Exits the DPDK application with an error message, cleaning up the [`Eal`] as gracefully as

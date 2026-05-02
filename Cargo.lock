@@ -1175,6 +1175,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-acl"
+version = "0.20.0"
+dependencies = [
+ "arc-swap",
+ "arrayvec",
+ "bolero",
+ "dataplane-acl",
+ "dataplane-dpdk",
+ "dataplane-net",
+ "dataplane-rekon",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "dataplane-acl-dpdk"
+version = "0.20.0"
+dependencies = [
+ "bolero",
+ "dataplane-acl",
+ "dataplane-dpdk",
+ "dataplane-net",
+ "etherparse",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "dataplane-acl-rte-flow"
+version = "0.20.0"
+dependencies = [
+ "dataplane-acl",
+ "dataplane-dpdk",
+ "dataplane-net",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dataplane-args"
 version = "0.20.0"
 dependencies = [
@@ -1271,7 +1309,8 @@ dependencies = [
  "dataplane-dpdk-sysroot-helper",
  "dataplane-errno",
  "dataplane-net",
- "serde",
+ "rstar",
+ "strum 0.28.0",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -2392,6 +2431,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2430,6 +2478,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 dependencies = [
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -3194,6 +3252,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "linkme"
 version = "0.3.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3795,6 +3859,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+ "libm",
 ]
 
 [[package]]
@@ -4696,6 +4761,17 @@ name = "roaring"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1dedc5658c6ecb3bdb5ef5f3295bb9253f42dcf3fd1402c03f6b1f7659c3c4a9"
+
+[[package]]
+name = "rstar"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "421400d13ccfd26dfa5858199c30a5d76f9c54e0dba7575273025b43c5175dbb"
+dependencies = [
+ "heapless",
+ "num-traits",
+ "smallvec",
+]
 
 [[package]]
 name = "rtnetlink"

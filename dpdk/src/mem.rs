@@ -13,7 +13,7 @@ use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
 use core::marker::PhantomData;
-use core::mem::transmute;
+
 use core::ptr::NonNull;
 use core::ptr::null;
 use core::ptr::null_mut;
@@ -48,16 +48,18 @@ impl Drop for Manager {
     }
 }
 
-/// Safe wrapper around a DPDK memory pool
+/// Safe wrapper around a DPDK memory pool.
 ///
-/// <div class="warning">
+/// # Thread Safety
 ///
-/// # Note:
+/// `Pool` is [`Send`] and [`Sync`].  This is sound because the underlying
+/// [`rte_mempool`][dpdk_sys::rte_mempool] uses per-lcore lock-free caches
+/// for allocation and deallocation, making concurrent `alloc`/`free`
+/// operations safe across threads.
 ///
-/// I am not completely sure this implementation is thread safe.
-/// It may need a refactor.
-///
-/// </div>
+/// Destruction ([`Drop`]) requires unique ownership, which Rust's borrow
+/// checker enforces — a `Pool` cannot be dropped while shared references
+/// to it (or to [`Mbuf`]s it backs) still exist.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Pool(PoolInner);
@@ -145,19 +147,17 @@ impl Pool {
 
     #[must_use]
     pub fn alloc_bulk(&self, num: usize) -> Vec<Mbuf> {
-        // SAFETY: we should never have any null ptrs come back if ret passes check
-        let mut mbufs: Vec<Mbuf> = (0..num)
-            .map(|_| unsafe { transmute(null_mut::<dpdk_sys::rte_mbuf>()) })
-            .collect();
+        let mut ptrs: Vec<*mut dpdk_sys::rte_mbuf> = vec![null_mut(); num];
         let ret = unsafe {
-            dpdk_sys::rte_pktmbuf_alloc_bulk(
-                self.0.as_mut_ptr(),
-                transmute::<*mut Mbuf, *mut *mut dpdk_sys::rte_mbuf>(mbufs.as_mut_ptr()),
-                num as c_uint,
-            )
+            dpdk_sys::rte_pktmbuf_alloc_bulk(self.0.as_mut_ptr(), ptrs.as_mut_ptr(), num as c_uint)
         };
         EalErrno::assert(ret);
-        mbufs
+        // SAFETY: On success (ret == 0, enforced by EalErrno::assert above),
+        // rte_pktmbuf_alloc_bulk guarantees every pointer in the output array
+        // is a valid, non-null pointer to an initialized rte_mbuf.
+        ptrs.into_iter()
+            .map(|ptr| unsafe { Mbuf::new_from_raw_unchecked(ptr) })
+            .collect()
     }
 }
 
@@ -208,7 +208,24 @@ impl PoolInner {
     }
 }
 
+// SAFETY (Send): A PoolInner can be moved to another thread.  The
+// rte_mempool handle is a process-wide resource backed by hugepages;
+// once created, it is valid from any EAL-registered thread.
 unsafe impl Send for PoolInner {}
+
+// SAFETY (Sync): &PoolInner can be shared between threads.  The only
+// operations reachable through a shared reference are:
+//
+//   - as_ref()     → read-only access to the rte_mempool struct.
+//   - as_mut_ptr() → returns a raw pointer; callers need `unsafe` to
+//                     dereference, and the DPDK functions that accept
+//                     *mut rte_mempool (rte_pktmbuf_alloc_bulk,
+//                     rte_pktmbuf_free, etc.) are documented as
+//                     thread-safe via per-lcore caches.
+//
+// Destruction (rte_mempool_free) is called from Drop, which requires
+// unique ownership — the borrow checker prevents concurrent access
+// during teardown.
 unsafe impl Sync for PoolInner {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

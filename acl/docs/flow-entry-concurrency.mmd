@@ -1,0 +1,46 @@
+%% Flow-entry concurrency model
+%% Shows the lock hierarchy and access patterns
+
+flowchart TB
+    subgraph HotPath["Hot Path (per-packet)"]
+        LP[FlowLookup::process]
+        INS[StatefulNat::insert]
+    end
+
+    subgraph TimerPath["Timer Tasks (per-flow)"]
+        TIM[tokio::spawn expiry task]
+    end
+
+    subgraph AdminPath["Admin / Maintenance"]
+        DRAIN[drain_stale]
+        RESHARD[reshard]
+    end
+
+    subgraph LockHierarchy["Lock Hierarchy"]
+        RW[RwLock]
+        DM[DashMap 1024 shards]
+        SH[Shard N lock]
+    end
+
+    LP -->|read lock| RW
+    INS -->|read lock| RW
+    TIM -->|try_read| RW
+    DRAIN -->|read lock| RW
+    RESHARD -->|WRITE lock| RW
+
+    RW -->|then| DM
+    DM -->|shard lock| SH
+
+    subgraph Problem["⚠️ Problem"]
+        P1["drain_stale holds RwLock read for O(n)"]
+        P2["reshard holds RwLock WRITE for O(n)"]
+        P3["Both block ALL hot-path operations"]
+    end
+
+    DRAIN -.-> P1
+    RESHARD -.-> P2
+
+    style HotPath fill:#dfd,stroke:#393
+    style TimerPath fill:#ffd,stroke:#993
+    style AdminPath fill:#fdd,stroke:#933
+    style Problem fill:#fdd,stroke:#933

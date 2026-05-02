@@ -1,6 +1,9 @@
 [workspace]
 
 members = [
+    "acl",
+    "acl-dpdk",
+    "acl-rte-flow",
     "args",
     "cli",
     "common",
@@ -48,6 +51,8 @@ repository = "https://github.com/githedgehog/dataplane/"
 [workspace.dependencies]
 
 # Internal
+acl = { path = "./acl", package = "dataplane-acl", features = [] }
+acl-dpdk = { path = "./acl-dpdk", package = "dataplane-acl-dpdk", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
@@ -160,6 +165,7 @@ rapidhash = { version = "4.4.1", default-features = false, features = [] }
 reedline = { version = "0.47.0", default-features = false, features = [] }
 rkyv = { version = "0.8.16", default-features = false, features = [] }
 roaring = { version = "0.11.4", default-features = false, features = [] }
+rstar = { version = "0.12.2", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
 rustls = { version = "0.23.39", default-features = false, features = [] }
 schemars = { version = "1", default-features = false, features = [] }

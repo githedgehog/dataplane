@@ -1,0 +1,25 @@
+stateDiagram
+    [*] --> ethernet
+    ethernet --> ethertype
+    ethertype --> arp
+    ethertype --> ipv4
+    ethertype --> ipv6
+    ethertype --> vlan
+    ethertype --> vlan_0
+    ethertype --> qinq
+    ethertype --> qinq_0
+    vlan --> ethertype
+    qinq --> ethertype
+    vlan_0 --> ethertype
+    qinq_0 --> ethertype
+    ipv4 --> tcp
+    ipv4 --> udp
+    ipv4 --> icmp4
+    icmp4
+    ipv6 --> tcp
+    ipv6 --> udp
+    ipv6 --> icmp6
+    udp --> vxlan
+    udp --> geneve
+    vxlan --> ethernet
+    geneve --> ethernet

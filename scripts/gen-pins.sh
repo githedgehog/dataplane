@@ -34,12 +34,12 @@ npins add github ipetkov crane
 # You can work around it using `-ffat-lto-objects` but I consider that an obnoxious hack and avoid it wherever possible.
 # The much easier option is to simply apply a patch to the current version of rdma-core.
 # Thus, we keep rdma-core pinned to a version branch in our fork.
-npins add github githedgehog rdma-core --branch fix-lto-61.0 # Floats with branch on pin bump
+npins add github githedgehog rdma-core --branch fix-lto-62.0 # Floats with branch on pin bump
 
 # dpdk has a trivially side-stepped problem with cross compilation (it fails to identify the correct version of ar when
 # cross compiling due to a bug in their meson.build).  I hope to submit the fix to DPDK soon, at which point we can
 # pin to the official dpdk github instead of our fork / branch.
-npins add github githedgehog dpdk --branch pr/daniel-noland/cross-compile-fix
+npins add github githedgehog dpdk --branch v26.03-rc3-hh
 
 # Project does not cut releases or tags. Float with master on pin bump.
 # Normally I would say that is not reasonable, but we only use this in testing and it is still technically pinned so

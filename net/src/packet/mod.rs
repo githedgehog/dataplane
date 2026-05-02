@@ -13,7 +13,7 @@ mod stats_display;
 
 pub use stats::PacketStats;
 
-#[cfg(any(test, feature = "bolero"))]
+#[cfg(all(any(test, feature = "bolero"), feature = "test_buffer"))]
 pub use contract::*;
 
 #[cfg(any(doc, test, feature = "test_buffer"))]
@@ -39,6 +39,7 @@ pub use hash::*;
 #[allow(unused_imports)] // re-export
 pub use meta::*;
 use std::num::NonZero;
+use std::pin::Pin;
 
 pub mod utils;
 
@@ -755,6 +756,11 @@ pub mod contract {
 
 #[cfg(test)]
 mod qos_roundtrip_tests {
+    use std::marker::PhantomPinned;
+    use std::ops::Deref;
+    use std::pin::{Pin, pin};
+    use std::ptr::NonNull;
+
     use crate::headers::{Headers, Net};
     use crate::ip::dscp::Dscp;
     use crate::ip::ecn::Ecn;

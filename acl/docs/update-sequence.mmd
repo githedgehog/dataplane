@@ -1,0 +1,65 @@
+%% Two-phase update: sequence diagram
+%% Shows the temporal flow of a rule set update from the control
+%% plane's perspective.
+
+sequenceDiagram
+    participant CP as Control Plane
+    participant Compiler as Compiler Pipeline
+    participant Delta as Delta Classifier
+    participant Base as Base Classifier
+    participant Root as Root Classifier Pointer
+    participant Packets as Packet Path
+
+    Note over CP,Packets: Phase 0: Steady State (single-tier)
+    Packets->>Root: classify(pkt)
+    Root->>Base: classify(pkt)
+    Base-->>Packets: Fate
+
+    Note over CP,Packets: Phase 1: Update Arrives
+    CP->>Compiler: new_table = old_table.to_builder().push_rule(r).build()
+
+    Note over Compiler: Diff old vs new table
+    Compiler->>Compiler: changed_rules = diff(old_table, new_table)
+    Compiler->>Compiler: k = changed_rules.len()
+
+    alt k is small (delta strategy)
+        Note over Compiler: Build delta from changed rules only
+        Compiler->>Delta: compile(changed_rules) [O(k²)]
+        Note over Compiler: Assemble two-tier Cascade
+        Compiler->>Compiler: new_classifier = Cascade([Delta, Base])
+
+        Note over CP,Packets: Phase 2: Atomic swap to two-tier
+        Compiler->>Root: swap(new_classifier)
+        Note over Root: ArcSwap::store / RCU publish
+
+        Note over CP,Packets: Packets now see: Delta first, Base fallback
+        Packets->>Root: classify(pkt)
+        Root->>Delta: classify(pkt)
+        alt Delta matches
+            Delta-->>Packets: Fate (new rule)
+        else Delta miss
+            Delta->>Base: fall through
+            Base-->>Packets: Fate (old rule)
+        end
+
+        Note over Compiler: Phase 3: Background merge
+        Compiler->>Compiler: merged_table = merge(old_table, new_table)
+        Compiler->>Compiler: new_base = compile_full(merged_table) [O(n²)]
+
+        Note over CP,Packets: Phase 4: Swap to merged single-tier
+        Compiler->>Root: swap(new_base)
+        Note over Delta: Old two-tier classifier freed after readers drain
+
+    else k is large (full rebuild strategy)
+        Note over Compiler: Rebuild entire table
+        Compiler->>Compiler: new_base = compile_full(new_table) [O(n²)]
+
+        Note over CP,Packets: Phase 2: Atomic swap
+        Compiler->>Root: swap(new_base)
+        Note over Base: Old classifier freed after readers drain
+    end
+
+    Note over CP,Packets: Phase 5: Steady State (single-tier, updated)
+    Packets->>Root: classify(pkt)
+    Root->>Base: classify(pkt)
+    Base-->>Packets: Fate

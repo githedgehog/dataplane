@@ -115,7 +115,7 @@ pub trait Update {
         Self: 'a;
 }
 
-/// `Remove` is a trait that can be implemented on an object able to remove an externaly observed
+/// `Remove` is a trait that can be implemented on an object able to remove an externally observed
 /// resource.
 ///
 /// For example, you could implement `Remove` to delete a virtual network interface.

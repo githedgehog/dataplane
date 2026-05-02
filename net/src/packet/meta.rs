@@ -12,8 +12,9 @@ use crate::vxlan::Vni;
 use bitflags::bitflags;
 use concurrency::sync::Arc;
 use serde::Serialize;
-use std::fmt::Display;
 use std::net::IpAddr;
+use std::ops::Deref;
+use std::{fmt::Display, marker::PhantomData};
 use strum_macros::{EnumCount, FromRepr};
 use tracing::error;
 
@@ -144,6 +145,161 @@ pub struct PacketMeta {
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
     pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
 }
+
+#[repr(transparent)]
+struct HasIif<T>(T);
+
+#[repr(transparent)]
+struct HasOif<T>(T);
+
+#[repr(transparent)]
+struct HasNh<T>(T);
+
+impl<T> HasIif<T> {
+    fn check(meta: T) -> Result<Self, T>
+    where
+        T: Deref<Target = PacketMeta>,
+    {
+        if meta.iif.is_some() {
+            Ok(Self(meta))
+        } else {
+            Err(meta)
+        }
+    }
+}
+
+impl<T> HasOif<T>
+where
+    T: Deref<Target = PacketMeta>,
+{
+    fn check(meta: &T) -> Result<&Self, &T> {
+        if meta.oif.is_some() {
+            Ok(
+                #[allow(unsafe_code)] // scratch
+                unsafe {
+                    &*core::ptr::from_ref(meta).cast()
+                },
+            )
+        } else {
+            Err(meta)
+        }
+    }
+}
+
+impl<T> Iif for HasIif<T>
+where
+    T: Deref<Target = PacketMeta>,
+{
+    fn iif(&self) -> InterfaceIndex {
+        let x = self.0.iif;
+        #[allow(unsafe_code)]
+        unsafe {
+            x.unwrap_unchecked()
+        }
+    }
+}
+
+impl<T> Oif for HasOif<T>
+where
+    T: Deref<Target = PacketMeta>,
+{
+    fn oif(&self) -> InterfaceIndex {
+        let x = self.0.oif;
+        #[allow(unsafe_code)]
+        unsafe {
+            x.unwrap_unchecked()
+        }
+    }
+}
+
+impl<T> Nh for HasNh<T>
+where
+    T: Deref<Target = PacketMeta>,
+{
+    fn nh_addr(&self) -> IpAddr {
+        let x = self.0.nh_addr;
+        #[allow(unsafe_code)]
+        unsafe {
+            x.unwrap_unchecked()
+        }
+    }
+}
+
+pub trait Iif {
+    fn iif(&self) -> InterfaceIndex;
+}
+
+pub trait Oif {
+    fn oif(&self) -> InterfaceIndex;
+}
+
+pub trait Nh {
+    fn nh_addr(&self) -> IpAddr; // really should be UnicastIpAddr
+}
+
+#[repr(transparent)]
+pub struct Meta<T, U>(T, PhantomData<U>);
+
+impl<T, U> Deref for Meta<T, U> {
+    type Target = T;
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> Deref for HasIif<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> Deref for HasOif<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> Deref for HasNh<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+fn example<T>(x: &T)
+where
+    T: Deref<Target = PacketMeta> + Iif + Oif,
+{
+    let iif = x.iif(); // not Option!
+    let oif = x.oif(); // not Option!
+    let vni = x.vrf; // still gives Option<VrfId> because we didn't prove T: Vrf
+}
+
+fn example2<T>(x: &T) -> Result<&HasOif<T>, &T>
+where
+    T: Deref<Target = PacketMeta> + Iif,
+{
+    let iif = x.iif(); // just InterfaceIndex, not Option<InterfaceIndex> because T: Iif.
+    let maybe_oif = x.oif; // obnoxious Option!
+    let x = HasOif::check(x)?;
+    let for_sure_oif = x.oif(); // no more Option!
+    Ok(x)
+}
+
+fn examle3(x: &(impl Iif + Oif + Nh)) {
+    let iif = x.iif();
+    let oif = x.oif();
+    let nh = x.nh_addr();
+}
+
 impl PacketMeta {
     #[must_use]
     pub(crate) fn new(keep: bool) -> Self {
