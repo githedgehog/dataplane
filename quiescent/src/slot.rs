@@ -1,7 +1,7 @@
 //! Single-slot atomic publication.
 //!
 //! In production this is `arc_swap::ArcSwap` — lock-free read fast path,
-//! which is what makes [`Reader::snapshot`] cheap on the data-plane.
+//! which is what makes [`Subscriber::snapshot`] cheap on the data-plane.
 //!
 //! When the `loom` or `shuttle` feature is enabled (via the
 //! `concurrency` crate) it falls back to `Mutex<Arc<T>>` because neither
@@ -10,7 +10,7 @@
 //! for the QSBR protocol — atomic publish, atomic load — which is all
 //! the model checker needs to see.
 //!
-//! [`Reader::snapshot`]: crate::Reader::snapshot
+//! [`Subscriber::snapshot`]: crate::Subscriber::snapshot
 
 use concurrency::sync::Arc;
 

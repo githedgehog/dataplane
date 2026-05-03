@@ -21,24 +21,25 @@ use crate::slot::Slot;
 type NotSync = PhantomData<Cell<()>>; // can still be Send
 
 struct Versioned<T> {
-    /// Monotonic version stamp assigned by the writer.
+    /// Monotonic version stamp assigned by the Publisher.
     version: Version,
     inner: T,
 }
 
 struct Domain {
-    /// Registry of per-reader observation cells.  Mutex-guarded because
-    /// `register` (any thread holding a `Publisher`) and the writer's
-    /// reclaim scan (`min_observed`) both mutate the Vec.  Cold path —
-    /// the snapshot fast path never touches this.
+    /// Registry of per-subscriber observation cells.  Mutex-guarded
+    /// because `register` (any thread holding a `SubscriberFactory`)
+    /// and the Publisher's reclaim scan (`min_observed`) both mutate
+    /// the Vec.  Cold path — the snapshot fast path never touches this.
     ///
-    /// Each entry is the same `Arc<CachePaddedCounter>` the corresponding
-    /// `Reader` holds via its `Epoch`.  When a `Reader` drops, the
-    /// strong-count of its cell falls from 2 (Reader + Domain) to 1
-    /// (Domain only); the next `min_observed` scan removes such entries.
-    /// We use `Arc::strong_count` rather than `Weak` because loom's
-    /// `loom::sync` doesn't expose a `Weak`, and `strong_count` carries
-    /// the same information with one fewer indirection.
+    /// Each entry is the same `Arc<CachePaddedCounter>` the
+    /// corresponding `Subscriber` holds via its `Epoch`.  When a
+    /// `Subscriber` drops, the strong-count of its cell falls from 2
+    /// (Subscriber + Domain) to 1 (Domain only); the next
+    /// `min_observed` scan removes such entries.  We use
+    /// `Arc::strong_count` rather than `Weak` because loom's
+    /// `loom::sync` doesn't expose a `Weak`, and `strong_count`
+    /// carries the same information with one fewer indirection.
     active: Mutex<Vec<Arc<CachePaddedCounter>>>,
 }
 
@@ -68,13 +69,13 @@ impl Domain {
         active.retain(|cell| {
             if Arc::strong_count(cell) == 1 {
                 // Only the Domain still holds this cell — the corresponding
-                // Reader is gone.  Drop the entry.
+                // Subscriber is gone.  Drop the entry.
                 return false;
             }
             let observed = cell.load();
             if observed == 0 {
-                // Registered reader, no snapshot yet -> doesn't pin any
-                // version.  Keep the slot, but skip it for the min.
+                // Registered Subscriber, no snapshot yet -> doesn't pin
+                // any version.  Keep the slot, but skip it for the min.
                 return true;
             }
             if observed < min {
@@ -237,8 +238,8 @@ where
 
 impl<T: Send + Sync + 'static> SubscriberFactory<T> {
     #[must_use]
-    pub fn reader(&self) -> Reader<T> {
-        Reader {
+    pub fn subscriber(&self) -> Subscriber<T> {
+        Subscriber {
             publication: Arc::clone(&self.publication),
             epoch: self.qsbr.register(),
             cached: None,
@@ -247,14 +248,14 @@ impl<T: Send + Sync + 'static> SubscriberFactory<T> {
     }
 }
 
-pub struct Reader<T: Send + Sync + 'static> {
+pub struct Subscriber<T: Send + Sync + 'static> {
     publication: Arc<Slot<Versioned<T>>>,
     epoch: Epoch,
     cached: Option<Arc<Versioned<T>>>,
     _not_sync: NotSync,
 }
 
-impl<T: Send + Sync + 'static> Reader<T> {
+impl<T: Send + Sync + 'static> Subscriber<T> {
     pub fn snapshot(&mut self) -> &T {
         let latest = self.publication.load_full();
         let needs_refresh = self
@@ -275,16 +276,16 @@ impl<T: Send + Sync + 'static> Reader<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Drop for Reader<T> {
+impl<T: Send + Sync + 'static> Drop for Subscriber<T> {
     fn drop(&mut self) {
         // Load-bearing: cached must drop BEFORE epoch.  If epoch dies
-        // first, the cell's strong-count falls to 1, the writer's next
-        // `min_observed` scan prunes our entry and returns None, and
-        // `reclaim` then clears retired — but our still-live cached
-        // Arc would be the last clone of `Versioned<V>`, so its
-        // destructor would run on this (reader) thread, violating QSBR
-        // drop affinity.  Drop cached first so the writer always holds
-        // the last clone.
+        // first, the cell's strong-count falls to 1, the Publisher's
+        // next `min_observed` scan prunes our entry and returns None,
+        // and `reclaim` then clears retired — but our still-live
+        // cached Arc would be the last clone of `Versioned<V>`, so its
+        // destructor would run on this (subscriber) thread, violating
+        // QSBR drop affinity.  Drop cached first so the Publisher
+        // always holds the last clone.
         self.cached = None;
     }
 }

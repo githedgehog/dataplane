@@ -1,7 +1,7 @@
 //! Bolero × shuttle property tests.
 //!
-//! Generates a [`Plan`] (writer ops + reader ops, dispatched to two
-//! separate threads) via bolero, then runs each plan once under
+//! Generates a [`Plan`] (Publisher ops + Subscriber ops, dispatched to
+//! two separate threads) via bolero, then runs each plan once under
 //! shuttle's random schedule controller.  Each bolero iteration
 //! explores one shape × one interleaving; thousands of bolero
 //! iterations widen both axes cheaply.
@@ -34,27 +34,27 @@ use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use concurrency::thread;
 
-use dataplane_quiescent::{Reader, channel};
+use dataplane_quiescent::{Subscriber, channel};
 
 // ---------- ops & plan ----------
 
 #[derive(Clone, Debug, TypeGenerator)]
-enum WriterOp {
+enum PublisherOp {
     Publish,
     Reclaim,
 }
 
 #[derive(Clone, Debug, TypeGenerator)]
-enum ReaderOp {
-    AddReader,
+enum SubscriberOp {
+    AddSubscriber,
     Snapshot { idx: u8 },
-    DropReader { idx: u8 },
+    DropSubscriber { idx: u8 },
 }
 
 #[derive(Clone, Debug, TypeGenerator)]
 struct Plan {
-    writer_ops: Vec<WriterOp>,
-    reader_ops: Vec<ReaderOp>,
+    publisher_ops: Vec<PublisherOp>,
+    subscriber_ops: Vec<SubscriberOp>,
 }
 
 struct Marker {
@@ -76,59 +76,59 @@ fn run_plan(plan: &Plan) {
         payload: 0,
         drops: Arc::clone(&drops),
     };
-    let (writer, publisher) = channel(initial);
+    let (publisher, factory) = channel(initial);
 
-    let writer_handle = {
+    let publisher_handle = {
         let drops = Arc::clone(&drops);
         let total = Arc::clone(&total);
-        let writer_ops = plan.writer_ops.clone();
+        let publisher_ops = plan.publisher_ops.clone();
         thread::spawn(move || {
-            let mut writer = writer;
+            let mut publisher = publisher;
             let mut next_payload: u32 = 1;
-            for op in &writer_ops {
+            for op in &publisher_ops {
                 match op {
-                    WriterOp::Publish => {
+                    PublisherOp::Publish => {
                         let p = next_payload;
                         next_payload += 1;
-                        // Bump `total` BEFORE the publish so any reader
-                        // observing payload `p` is guaranteed to see
-                        // `total >= p + 1` on the snapshot legality
-                        // check.  SeqCst keeps the ordering story
-                        // simple under shuttle's model.
+                        // Bump `total` BEFORE the publish so any
+                        // Subscriber observing payload `p` is
+                        // guaranteed to see `total >= p + 1` on the
+                        // snapshot legality check.  SeqCst keeps the
+                        // ordering story simple under shuttle's model.
                         total.fetch_add(1, Ordering::SeqCst);
-                        writer.publish(Marker {
+                        publisher.publish(Marker {
                             payload: p,
                             drops: Arc::clone(&drops),
                         });
                     }
-                    WriterOp::Reclaim => writer.reclaim(),
+                    PublisherOp::Reclaim => publisher.reclaim(),
                 }
             }
-            // writer drops here on the writer thread
+            // publisher drops here on the publisher thread
         })
     };
 
-    let reader_handle = {
-        let publisher = publisher.clone();
+    let subscriber_handle = {
+        let factory = factory.clone();
         let total = Arc::clone(&total);
-        let reader_ops = plan.reader_ops.clone();
+        let subscriber_ops = plan.subscriber_ops.clone();
         thread::spawn(move || {
-            let mut readers: Vec<Reader<Marker>> = Vec::new();
+            let mut subscribers: Vec<Subscriber<Marker>> = Vec::new();
             let mut last_seen: Vec<u32> = Vec::new();
-            for op in &reader_ops {
+            for op in &subscriber_ops {
                 match op {
-                    ReaderOp::AddReader => {
-                        readers.push(publisher.reader());
+                    SubscriberOp::AddSubscriber => {
+                        subscribers.push(factory.subscriber());
                         last_seen.push(0);
                     }
-                    ReaderOp::Snapshot { idx } => {
-                        if !readers.is_empty() {
-                            let i = (*idx as usize) % readers.len();
-                            let observed = readers[i].snapshot().payload;
+                    SubscriberOp::Snapshot { idx } => {
+                        if !subscribers.is_empty() {
+                            let i = (*idx as usize) % subscribers.len();
+                            let observed = subscribers[i].snapshot().payload;
                             let total_at = total.load(Ordering::SeqCst);
                             assert!(
                                 observed >= last_seen[i],
-                                "reader {i} regressed: saw {observed} after {prev}",
+                                "Subscriber {i} regressed: saw {observed} after {prev}",
                                 prev = last_seen[i],
                             );
                             assert!(
@@ -138,22 +138,22 @@ fn run_plan(plan: &Plan) {
                             last_seen[i] = observed;
                         }
                     }
-                    ReaderOp::DropReader { idx } => {
-                        if !readers.is_empty() {
-                            let i = (*idx as usize) % readers.len();
-                            readers.swap_remove(i);
+                    SubscriberOp::DropSubscriber { idx } => {
+                        if !subscribers.is_empty() {
+                            let i = (*idx as usize) % subscribers.len();
+                            subscribers.swap_remove(i);
                             last_seen.swap_remove(i);
                         }
                     }
                 }
             }
-            // readers drop here on the reader thread
+            // subscribers drop here on the subscriber thread
         })
     };
 
-    writer_handle.join().unwrap();
-    reader_handle.join().unwrap();
-    drop(publisher);
+    publisher_handle.join().unwrap();
+    subscriber_handle.join().unwrap();
+    drop(factory);
 
     // After full tear-down, every Marker should have run its destructor
     // exactly once.

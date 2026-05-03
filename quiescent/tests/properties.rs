@@ -3,16 +3,17 @@
 //! Generates random sequences of [`Op`]s and checks the
 //! single-threaded protocol invariants after every step:
 //!
-//! 1. **Snapshot legality** — every value a reader observes was
-//!    actually published by the writer.
-//! 2. **Per-reader monotonicity** — successive snapshots from the same
-//!    reader return non-decreasing payloads (the writer publishes a
-//!    strictly increasing counter, so this is a tight bound).
+//! 1. **Snapshot legality** — every value a Subscriber observes was
+//!    actually published by the Publisher.
+//! 2. **Per-Subscriber monotonicity** — successive snapshots from the
+//!    same Subscriber return non-decreasing payloads (the Publisher
+//!    publishes a strictly increasing counter, so this is a tight
+//!    bound).
 //! 3. **Conservation of `Versioned` allocations** — at every quiescent
 //!    point, every `Versioned<Marker>` ever created is either:
 //!    - the current publication (exactly 1),
-//!    - retained in the writer's `retired` list
-//!      (`writer.pending_reclamation()` of them),
+//!    - retained in the Publisher's `retired` list
+//!      (`publisher.pending_reclamation()` of them),
 //!    - or already dropped (counted by the marker's `Drop` impl).
 //!
 //! The conservation invariant is the strongest single thing we can
@@ -32,22 +33,22 @@ use dataplane_quiescent::channel;
 
 // ---------- ops & state ----------
 
-/// One step of an operation sequence.  Indices into `readers` are
-/// taken modulo `readers.len()`, so the bolero driver doesn't need to
-/// know how many readers exist at any given step.
+/// One step of an operation sequence.  Indices into `subscribers` are
+/// taken modulo `subscribers.len()`, so the bolero driver doesn't need
+/// to know how many Subscribers exist at any given step.
 #[derive(Debug, TypeGenerator)]
 enum Op {
     /// Publish the next sequential payload.
     Publish,
-    /// Register a new reader.
-    AddReader,
-    /// Snapshot the reader at index `idx % readers.len()`.  No-op if
-    /// no readers are registered.
+    /// Register a new Subscriber.
+    AddSubscriber,
+    /// Snapshot the Subscriber at index `idx % subscribers.len()`.
+    /// No-op if no Subscribers are registered.
     Snapshot { idx: u8 },
-    /// Drop the reader at index `idx % readers.len()`.  No-op if no
-    /// readers are registered.
-    DropReader { idx: u8 },
-    /// Force a reclaim pass on the writer.
+    /// Drop the Subscriber at index `idx % subscribers.len()`.  No-op
+    /// if no Subscribers are registered.
+    DropSubscriber { idx: u8 },
+    /// Force a reclaim pass on the Publisher.
     Reclaim,
 }
 
@@ -79,8 +80,8 @@ fn protocol_invariants() {
         .for_each(|ops: &Vec<Op>| {
             let ops = ops.as_slice();
             let drops = Arc::new(AtomicUsize::new(0));
-            let (mut writer, publisher) = channel(marker(0, &drops));
-            let mut readers = Vec::new();
+            let (mut publisher, factory) = channel(marker(0, &drops));
+            let mut subscribers = Vec::new();
             let mut last_seen: Vec<u32> = Vec::new();
             // Initial publication counts as published, so we start at 1.
             let mut total_published: u32 = 1;
@@ -93,22 +94,22 @@ fn protocol_invariants() {
                         if total_published >= 1 << 16 {
                             continue;
                         }
-                        writer.publish(marker(next_payload, &drops));
+                        publisher.publish(marker(next_payload, &drops));
                         next_payload += 1;
                         total_published += 1;
                     }
-                    Op::AddReader => {
-                        readers.push(publisher.reader());
+                    Op::AddSubscriber => {
+                        subscribers.push(factory.subscriber());
                         last_seen.push(0);
                     }
                     Op::Snapshot { idx } => {
-                        if !readers.is_empty() {
-                            let i = (*idx as usize) % readers.len();
-                            let observed = readers[i].snapshot().payload;
+                        if !subscribers.is_empty() {
+                            let i = (*idx as usize) % subscribers.len();
+                            let observed = subscribers[i].snapshot().payload;
 
                             assert!(
                                 observed >= last_seen[i],
-                                "reader {i} regressed: saw {observed} after {last}",
+                                "Subscriber {i} regressed: saw {observed} after {last}",
                                 last = last_seen[i],
                             );
                             assert!(
@@ -118,24 +119,24 @@ fn protocol_invariants() {
                             last_seen[i] = observed;
                         }
                     }
-                    Op::DropReader { idx } => {
-                        if !readers.is_empty() {
-                            let i = (*idx as usize) % readers.len();
-                            readers.swap_remove(i);
+                    Op::DropSubscriber { idx } => {
+                        if !subscribers.is_empty() {
+                            let i = (*idx as usize) % subscribers.len();
+                            subscribers.swap_remove(i);
                             last_seen.swap_remove(i);
                         }
                     }
                     Op::Reclaim => {
-                        writer.reclaim();
+                        publisher.reclaim();
                     }
                 }
 
-                // Conservation: every `Versioned` that was ever published is
-                // either the current slot (1), in `retired`
-                // (`pending_reclamation()` of them), or dropped.  A reader's
-                // `cached` Arc shares an allocation with one of those; it does
-                // not introduce a fourth bucket.
-                let alive = 1 + writer.pending_reclamation();
+                // Conservation: every `Versioned` that was ever published
+                // is either the current slot (1), in `retired`
+                // (`pending_reclamation()` of them), or dropped.  A
+                // Subscriber's `cached` Arc shares an allocation with one
+                // of those; it does not introduce a fourth bucket.
+                let alive = 1 + publisher.pending_reclamation();
                 let dropped = drops.load(Ordering::Relaxed);
                 assert_eq!(
                     dropped + alive,
@@ -146,15 +147,14 @@ fn protocol_invariants() {
 
             // Tear-down: drop everything explicitly so the final-drops
             // assertion below has a well-defined point to fire at.
-            drop(readers);
-            drop(writer);
+            drop(subscribers);
             drop(publisher);
+            drop(factory);
 
             let final_drops = drops.load(Ordering::Relaxed);
             assert_eq!(
                 final_drops, total_published as usize,
                 "after tear-down, every Versioned should have been dropped exactly once",
             );
-
         });
 }

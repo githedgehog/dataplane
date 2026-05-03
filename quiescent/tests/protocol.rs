@@ -5,10 +5,11 @@
 //! covered by the bolero property tests in `tests/properties.rs`.
 //! This file holds only the tests that genuinely need real OS threads:
 //!
-//! - **Drop affinity**: destructors must run on the writer thread,
-//!   even when the last reader drops concurrently with reclaim.
-//! - **Concurrent stress**: reader/writer interaction across realistic
-//!   scheduling.
+//! - **Drop affinity**: destructors must run on the Publisher's
+//!   thread, even when the last Subscriber drops concurrently with
+//!   reclaim.
+//! - **Concurrent stress**: Subscriber/Publisher interaction across
+//!   realistic scheduling.
 //!
 //! Loom-modeled tests live in `tests/loom.rs`.
 
@@ -63,105 +64,105 @@ fn marker_threaded(
 // ---------- drop affinity ----------
 
 #[test]
-fn destructor_of_initial_runs_on_writer_thread() {
+fn destructor_of_initial_runs_on_publisher_thread() {
     let drops = Arc::new(AtomicUsize::new(0));
     let initial_thread = Arc::new(Mutex::new(None));
-    let writer_thread_id = thread::current().id();
+    let publisher_thread_id = thread::current().id();
 
-    let (mut writer, publisher) = channel(marker_threaded(0, &drops, &initial_thread));
+    let (mut publisher, factory) = channel(marker_threaded(0, &drops, &initial_thread));
 
-    // Reader thread observes initial, then exits.
-    let publisher_for_reader = publisher.clone();
+    // Subscriber thread observes initial, then exits.
+    let factory_for_sub = factory.clone();
     thread::spawn(move || {
-        let mut reader = publisher_for_reader.reader();
-        let _ = reader.snapshot();
+        let mut sub = factory_for_sub.subscriber();
+        let _ = sub.snapshot();
     })
     .join()
     .unwrap();
 
-    // Writer publishes a new value and reclaims; the initial's destructor
-    // should fire here on this (writer) thread, NOT on the reader thread.
-    writer.publish(marker(1, &drops));
-    writer.reclaim();
+    // Publisher publishes a new value and reclaims; the initial's destructor
+    // should fire here on this (publisher) thread, NOT on the subscriber thread.
+    publisher.publish(marker(1, &drops));
+    publisher.reclaim();
 
     let observed = *initial_thread.lock().unwrap();
     assert_eq!(
         observed,
-        Some(writer_thread_id),
-        "initial value's destructor must run on the writer's thread",
+        Some(publisher_thread_id),
+        "initial value's destructor must run on the Publisher's thread",
     );
 }
 
 #[test]
-fn destructor_runs_on_writer_when_last_reader_drops_concurrently() {
-    // Stronger version: the reader is dropped while the writer is busy
-    // publishing.  With the `Drop` impl on `Reader` ensuring `cached`
-    // dies before `epoch`, the destructor must still resolve on the
-    // writer's thread.
+fn destructor_runs_on_publisher_when_last_subscriber_drops_concurrently() {
+    // Stronger version: the Subscriber is dropped while the Publisher
+    // is busy publishing.  With the `Drop` impl on `Subscriber`
+    // ensuring `cached` dies before `epoch`, the destructor must still
+    // resolve on the Publisher's thread.
     let drops = Arc::new(AtomicUsize::new(0));
     let initial_thread = Arc::new(Mutex::new(None));
-    let writer_thread_id = thread::current().id();
+    let publisher_thread_id = thread::current().id();
 
-    let (mut writer, publisher) = channel(marker_threaded(0, &drops, &initial_thread));
+    let (mut publisher, factory) = channel(marker_threaded(0, &drops, &initial_thread));
 
     // Repeat to expose the race window across timings.
     for _ in 0..8 {
-        let publisher_for_reader = publisher.clone();
-        let reader_handle = thread::spawn(move || {
-            let mut reader = publisher_for_reader.reader();
-            let _ = reader.snapshot();
-            // reader drops at end of thread
+        let factory_for_sub = factory.clone();
+        let sub_handle = thread::spawn(move || {
+            let mut sub = factory_for_sub.subscriber();
+            let _ = sub.snapshot();
+            // sub drops at end of thread
         });
 
-        // Writer churns concurrently.
+        // Publisher churns concurrently.
         for i in 1..=4u32 {
-            writer.publish(marker(i, &drops));
+            publisher.publish(marker(i, &drops));
         }
-        reader_handle.join().unwrap();
-        writer.reclaim();
+        sub_handle.join().unwrap();
+        publisher.reclaim();
     }
 
     let observed = *initial_thread.lock().unwrap();
     assert_eq!(
         observed,
-        Some(writer_thread_id),
-        "initial destructor must always resolve on the writer thread",
+        Some(publisher_thread_id),
+        "initial destructor must always resolve on the Publisher's thread",
     );
 }
 
 // ---------- concurrent stress ----------
 
 #[test]
-fn concurrent_reader_observes_monotone_sequence() {
+fn concurrent_subscriber_observes_monotone_sequence() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
+    let (mut publisher, factory) = channel(marker(0, &drops));
     let stop = Arc::new(AtomicBool::new(false));
 
-    let stop_for_reader = Arc::clone(&stop);
-    let publisher_for_reader = publisher.clone();
-    let reader_handle = thread::spawn(move || {
-        let mut reader = publisher_for_reader.reader();
+    let stop_for_sub = Arc::clone(&stop);
+    let factory_for_sub = factory.clone();
+    let sub_handle = thread::spawn(move || {
+        let mut sub = factory_for_sub.subscriber();
         let mut last = 0u32;
-        while !stop_for_reader.load(Ordering::Acquire) {
-            let v = reader.snapshot().payload;
+        while !stop_for_sub.load(Ordering::Acquire) {
+            let v = sub.snapshot().payload;
             assert!(v >= last, "snapshot regressed: saw {v} after {last}");
             last = v;
         }
     });
 
     for i in 1..=200u32 {
-        writer.publish(marker(i, &drops));
+        publisher.publish(marker(i, &drops));
         thread::sleep(Duration::from_micros(5));
     }
 
     stop.store(true, Ordering::Release);
-    reader_handle.join().unwrap();
+    sub_handle.join().unwrap();
 
-    writer.reclaim();
+    publisher.reclaim();
     let final_drops = drops.load(Ordering::Relaxed);
-    // 201 markers were created (initial + 200 publishes).  The writer's
-    // current and possibly one in-flight retired entry may still be alive;
-    // everything else should be reclaimed.
+    // 201 markers were created (initial + 200 publishes).  The
+    // Publisher's current and possibly one in-flight retired entry may
+    // still be alive; everything else should be reclaimed.
     assert!(
         final_drops >= 199,
         "expected nearly all markers reclaimed, got {final_drops}",
@@ -169,39 +170,41 @@ fn concurrent_reader_observes_monotone_sequence() {
 }
 
 #[test]
-fn many_readers_reader_drop_does_not_strand_retired() {
-    // Spin up many short-lived readers concurrent with steady publishes;
-    // by the end, the retired list should not have grown unboundedly.
+fn many_subscribers_dropping_does_not_strand_retired() {
+    // Spin up many short-lived Subscribers concurrent with steady
+    // publishes; by the end, the retired list should not have grown
+    // unboundedly.
     let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
+    let (mut publisher, factory) = channel(marker(0, &drops));
 
     let mut handles = Vec::new();
     for _ in 0..16 {
-        let publisher_for_reader = publisher.clone();
+        let factory_for_sub = factory.clone();
         handles.push(thread::spawn(move || {
-            let mut reader = publisher_for_reader.reader();
+            let mut sub = factory_for_sub.subscriber();
             for _ in 0..50 {
-                let _ = reader.snapshot();
+                let _ = sub.snapshot();
                 thread::sleep(Duration::from_micros(1));
             }
         }));
     }
 
     for i in 1..=100u32 {
-        writer.publish(marker(i, &drops));
+        publisher.publish(marker(i, &drops));
         thread::sleep(Duration::from_micros(2));
     }
 
     for h in handles {
         h.join().unwrap();
     }
-    writer.reclaim();
+    publisher.reclaim();
 
-    // Steady state should leave at most a small number of retired entries
-    // (the current publication is held by the slot, not retired).
-    let pending = writer.pending_reclamation();
+    // Steady state should leave at most a small number of retired
+    // entries (the current publication is held by the slot, not
+    // retired).
+    let pending = publisher.pending_reclamation();
     assert!(
         pending <= 1,
-        "pending reclamation should drain after readers exit: {pending}",
+        "pending reclamation should drain after Subscribers exit: {pending}",
     );
 }
