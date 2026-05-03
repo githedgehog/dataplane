@@ -6,10 +6,18 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-arc-swap = { workspace = true }
 id = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[target.'cfg(not(loom))'.dependencies]
+arc-swap = { workspace = true }
+
+[target.'cfg(loom)'.dependencies]
+loom = { workspace = true }
+
 [dev-dependencies]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

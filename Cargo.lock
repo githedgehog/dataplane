@@ -1636,6 +1636,7 @@ version = "0.20.0"
 dependencies = [
  "arc-swap",
  "dataplane-id",
+ "loom",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tracing",

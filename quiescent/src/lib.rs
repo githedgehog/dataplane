@@ -7,19 +7,18 @@
     clippy::panic
 )]
 
-use std::{
-    cell::Cell,
-    marker::PhantomData,
-    num::NonZero,
-    sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicU64, Ordering},
-    },
+mod slot;
+mod sync;
+
+use core::{cell::Cell, marker::PhantomData, num::NonZero};
+
+use crate::slot::Slot;
+use crate::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 
-use arc_swap::ArcSwap;
-
-type NotSync = core::marker::PhantomData<Cell<()>>; // can still be Send
+type NotSync = PhantomData<Cell<()>>; // can still be Send
 
 struct Versioned<T> {
     /// Monotonic version stamp assigned by the writer.
@@ -28,7 +27,19 @@ struct Versioned<T> {
 }
 
 struct Domain {
-    active: std::sync::Mutex<Vec<EpochTracker>>,
+    /// Registry of per-reader observation cells.  Mutex-guarded because
+    /// `register` (any thread holding a `Publisher`) and the writer's
+    /// reclaim scan (`min_observed`) both mutate the Vec.  Cold path —
+    /// the snapshot fast path never touches this.
+    ///
+    /// Each entry is the same `Arc<CachePaddedCounter>` the corresponding
+    /// `Reader` holds via its `Epoch`.  When a `Reader` drops, the
+    /// strong-count of its cell falls from 2 (Reader + Domain) to 1
+    /// (Domain only); the next `min_observed` scan removes such entries.
+    /// We use `Arc::strong_count` rather than `Weak` because loom's
+    /// `loom::sync` doesn't expose a `Weak`, and `strong_count` carries
+    /// the same information with one fewer indirection.
+    active: Mutex<Vec<Arc<CachePaddedCounter>>>,
 }
 
 impl Domain {
@@ -46,7 +57,7 @@ impl Domain {
         self.active
             .lock()
             .expect("qsbr mutex poisoned")
-            .push(epoch.track());
+            .push(Arc::clone(&epoch.cell));
         epoch
     }
 
@@ -54,24 +65,22 @@ impl Domain {
         #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
         let mut active = self.active.lock().expect("qsbr mutex poisoned");
         let mut min = u64::MAX;
-        if active.is_empty() {
-            return None;
-        }
-        active.retain(|weak| {
-            if let Some(arc) = weak.cell.upgrade() {
-                let observed = arc.load();
-                if observed == 0 {
-                    // Registered reader, no snapshot yet -> doesn't pin any version.
-                    // Keep the slot, but skip it for the min computation.
-                    return true;
-                }
-                if observed < min {
-                    min = observed;
-                }
-                true
-            } else {
-                false
+        active.retain(|cell| {
+            if Arc::strong_count(cell) == 1 {
+                // Only the Domain still holds this cell — the corresponding
+                // Reader is gone.  Drop the entry.
+                return false;
             }
+            let observed = cell.load();
+            if observed == 0 {
+                // Registered reader, no snapshot yet -> doesn't pin any
+                // version.  Keep the slot, but skip it for the min.
+                return true;
+            }
+            if observed < min {
+                min = observed;
+            }
+            true
         });
         if min == u64::MAX {
             return None;
@@ -89,7 +98,7 @@ struct Epoch {
 struct CachePaddedCounter(AtomicU64);
 
 impl CachePaddedCounter {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self(AtomicU64::new(0))
     }
 
@@ -111,24 +120,8 @@ impl Epoch {
         }
     }
 
-    fn track(&self) -> EpochTracker {
-        EpochTracker::new(Arc::downgrade(&self.cell))
-    }
-
     fn observe(&self, version: Version) {
         self.cell.store(version.get());
-    }
-}
-
-#[repr(transparent)]
-#[derive(Debug)]
-struct EpochTracker {
-    cell: Weak<CachePaddedCounter>,
-}
-
-impl EpochTracker {
-    fn new(cell: Weak<CachePaddedCounter>) -> Self {
-        Self { cell }
     }
 }
 
@@ -169,7 +162,7 @@ impl Version {
 }
 
 pub struct Writer<T: Send + Sync + 'static> {
-    publication: Arc<ArcSwap<Versioned<T>>>,
+    publication: Arc<Slot<Versioned<T>>>,
     domain: Arc<Domain>,
     retired: Vec<Arc<Versioned<T>>>,
     next_version: Version,
@@ -179,7 +172,7 @@ pub struct Writer<T: Send + Sync + 'static> {
 pub fn channel<T: Send + Sync + 'static>(initial: T) -> (Writer<T>, Publisher<T>) {
     let qsbr = Arc::new(Domain::new());
     let version = Version::INITIAL;
-    let publication = Arc::new(ArcSwap::from_pointee(Versioned {
+    let publication = Arc::new(Slot::from_pointee(Versioned {
         version,
         inner: initial,
     }));
@@ -227,7 +220,7 @@ impl<T: Send + Sync + 'static> Writer<T> {
 
 #[derive(Clone)]
 pub struct Publisher<T: Send + Sync + 'static> {
-    publication: Arc<ArcSwap<Versioned<T>>>,
+    publication: Arc<Slot<Versioned<T>>>,
     qsbr: Arc<Domain>,
 }
 
@@ -244,7 +237,7 @@ impl<T: Send + Sync + 'static> Publisher<T> {
 }
 
 pub struct Reader<T: Send + Sync + 'static> {
-    publication: Arc<ArcSwap<Versioned<T>>>,
+    publication: Arc<Slot<Versioned<T>>>,
     epoch: Epoch,
     cached: Option<Arc<Versioned<T>>>,
     _not_sync: NotSync,
@@ -274,12 +267,13 @@ impl<T: Send + Sync + 'static> Reader<T> {
 impl<T: Send + Sync + 'static> Drop for Reader<T> {
     fn drop(&mut self) {
         // Load-bearing: cached must drop BEFORE epoch.  If epoch dies
-        // first, the writer's next reclaim sees `min_observed() == None`
-        // and clears retired; our still-live cached Arc would then
-        // become the last clone of `Versioned<V>` and its destructor
-        // would run on this (reader) thread, violating QSBR drop
-        // affinity.  Drop cached first so the writer always holds the
-        // last clone.
+        // first, the cell's strong-count falls to 1, the writer's next
+        // `min_observed` scan prunes our entry and returns None, and
+        // `reclaim` then clears retired — but our still-live cached
+        // Arc would be the last clone of `Versioned<V>`, so its
+        // destructor would run on this (reader) thread, violating QSBR
+        // drop affinity.  Drop cached first so the writer always holds
+        // the last clone.
         self.cached = None;
     }
 }
