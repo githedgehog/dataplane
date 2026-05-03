@@ -107,3 +107,82 @@ fn registered_then_publish_then_snapshot() {
         reader_handle.join().unwrap();
     });
 }
+
+// =====================================================================
+// Stateful tests: multi-op shapes that exercise interleaving angles the
+// minimal tests above don't reach.  Keep each shape small — every extra
+// op multiplies loom's search space.
+// =====================================================================
+
+/// Two readers running concurrently must each observe a legal value.
+/// Exercises the multi-reader path in `Domain::min_observed`, which the
+/// single-reader tests above never reach.
+#[test]
+fn two_concurrent_readers_observe_legal_values() {
+    loom::model(|| {
+        let (mut writer, publisher) = channel(0u32);
+        let pub_a = publisher.clone();
+        let pub_b = publisher.clone();
+
+        let a = thread::spawn(move || {
+            let mut r = pub_a.reader();
+            let v = *r.snapshot();
+            assert!(v == 0 || v == 1, "reader A observed illegal {v}");
+        });
+        let b = thread::spawn(move || {
+            let mut r = pub_b.reader();
+            let v = *r.snapshot();
+            assert!(v == 0 || v == 1, "reader B observed illegal {v}");
+        });
+
+        writer.publish(1u32);
+        a.join().unwrap();
+        b.join().unwrap();
+    });
+}
+
+/// A single reader taking two snapshots must observe non-decreasing
+/// values, even when a publish interleaves between them.  This is the
+/// per-reader monotonicity invariant from the bolero property test,
+/// re-checked under all loom interleavings.
+#[test]
+fn reader_two_snapshots_are_monotone() {
+    loom::model(|| {
+        let (mut writer, publisher) = channel(0u32);
+        let pub_for_reader = publisher.clone();
+
+        let reader_handle = thread::spawn(move || {
+            let mut r = pub_for_reader.reader();
+            let v1 = *r.snapshot();
+            let v2 = *r.snapshot();
+            assert!(v2 >= v1, "reader regressed: saw {v2} after {v1}");
+        });
+
+        writer.publish(1u32);
+        reader_handle.join().unwrap();
+    });
+}
+
+/// Two publishes with a reader observing somewhere in the middle.  The
+/// reader's snapshot must land on one of the published values; it must
+/// not see a torn or freed `Versioned`.
+#[test]
+fn snapshot_during_two_publishes_observes_legal() {
+    loom::model(|| {
+        let (mut writer, publisher) = channel(0u32);
+        let pub_for_reader = publisher.clone();
+
+        let reader_handle = thread::spawn(move || {
+            let mut r = pub_for_reader.reader();
+            let v = *r.snapshot();
+            assert!(
+                v == 0 || v == 1 || v == 2,
+                "reader observed illegal value {v}",
+            );
+        });
+
+        writer.publish(1u32);
+        writer.publish(2u32);
+        reader_handle.join().unwrap();
+    });
+}

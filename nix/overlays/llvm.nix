@@ -29,16 +29,18 @@ let
   }) final.llvmPackages'.stdenv;
   # note: rust-bin comes from oxa's overlay, not nixpkgs.  This overlay only works if you have a rust overlay as well.
   rust-toolchain = final.pkgsBuildHost.rust-bin.fromRustupToolchain {
-    channel = sources.rust.version;
+    # channel = sources.rust.version;
+    channel = "nightly";
     components = [
-      "rustc"
       "cargo"
-      "rust-std"
-      "rust-docs"
-      "rustfmt"
       "clippy"
+      "miri"
       "rust-analyzer"
+      "rust-docs"
       "rust-src"
+      "rust-std"
+      "rustc"
+      "rustfmt"
     ];
     targets = [
       platform.info.target

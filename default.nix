@@ -129,7 +129,7 @@ let
       cargo-deny
       cargo-depgraph
       cargo-edit
-      cargo-llvm-cov
+      # cargo-llvm-cov
       cargo-nextest
       direnv
       gateway-crd
