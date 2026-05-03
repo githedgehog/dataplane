@@ -110,10 +110,10 @@ pub trait Lookup {
     /// and never touches the trailing entries.
     ///
     /// [`lookup`]: Self::lookup
-    fn batch_lookup<'a>(
-        &'a self,
+    fn batch_lookup<'this>(
+        &'this self,
         keys: &ArrayVec<&Self::Key, BATCH_SIZE>,
-        out: &mut [Option<&'a Self::Rule>; BATCH_SIZE],
+        out: &mut [Option<&'this Self::Rule>; BATCH_SIZE],
     ) {
         for (key, slot) in keys.iter().zip(out.iter_mut()) {
             *slot = self.lookup(key);
@@ -135,17 +135,17 @@ impl<L: Lookup + ?Sized> Lookup for &L {
     }
 
     #[inline]
-    fn batch_lookup<'a>(
-        &'a self,
+    fn batch_lookup<'this>(
+        &'this self,
         keys: &ArrayVec<&Self::Key, BATCH_SIZE>,
-        out: &mut [Option<&'a Self::Rule>; BATCH_SIZE],
+        out: &mut [Option<&'this Self::Rule>; BATCH_SIZE],
     ) {
         L::batch_lookup(self, keys, out);
     }
 }
 
 // ============================================================================
-// Snapshot -- private wrapper, repr(transparent) over T, !Send + !Sync
+// QuiescenceGuard -- private wrapper, repr(transparent) over T, !Send + !Sync
 // ============================================================================
 //
 // The "commute trick" mirrors the existing `HeadersView<T>` pattern: `Snapshot`
@@ -153,8 +153,25 @@ impl<L: Lookup + ?Sized> Lookup for &L {
 // by `Snapshot::from_ref`.  This keeps generic bounds free of HRTB --
 // `Snapshot<P>: Lookup` is a plain trait bound.
 
+/// A snapshot of a value which is thread affine.
+///
+/// Note that this `&Local<T>` is _not_ the same thing as a `&T`; `Local` is
+/// deliberately `!Send + !Sync` even if `T` is `Send + Sync`.
+///
+/// This is a necessary mechanic to make quiescent state based reclamation
+/// work.
+///
+/// Not that values of this type are inherently hostile to use in any async context
+/// _except_ where you are sure that the async executor is the one and only reader.
+///
+/// The expected mechanic here is that instances of `T` which implement `Lookup` will
+/// be wrapped in `QuiescenceGuard` and passed around as `&QuiescenceGuard<T>`
+/// _on the dpdk workers_.  That these references will not be allowed to survive beyond
+/// a batch boundary (this will be enforced by the lifetime mechanics of the compiler).
+/// And that this process makes quiescent state based reclaim safe for the async
+/// executor thread which is responsible for the lifecycle of ACL tables.
 #[repr(transparent)]
-struct Snapshot<T: ?Sized> {
+pub struct QuiescenceGuard<T: ?Sized> {
     /// `PhantomData<*const ()>` makes `Snapshot<T>: !Send + !Sync` for
     /// any `T`.  These properties propagate to `&Snapshot<T>` (and to
     /// any `impl Trait` whose hidden type is `&Snapshot<T>`).
@@ -162,20 +179,29 @@ struct Snapshot<T: ?Sized> {
     inner: T,
 }
 
-impl<T: ?Sized> Snapshot<T> {
+impl<T: ?Sized> QuiescenceGuard<T> {
     /// Reinterpret a `&T` as a `&Snapshot<T>`.
     ///
     /// `Snapshot<T>` is `#[repr(transparent)]` over `T` (the only
     /// non-ZST field), so the layouts are identical.  This is the
     /// equivalent of `HeadersView<T>::from_ref` in the headers crate.
-    #[inline]
+    ///
+    /// # Safety
+    ///
+    /// The lifetime of the `this` reference must end before the next await
+    /// point.
+    ///
+    /// The practical rule here is that the lifetime must be exactly one packet batch and
+    /// undefined behavior can always be avoided.
     #[allow(unsafe_code)]
-    fn from_ref(t: &T) -> &Self {
+    unsafe fn from_ref(this: &T) -> &Self {
         // SAFETY: `Snapshot<T>` is `#[repr(transparent)]` with `T` as
-        // its sole non-ZST field; `_not_send` is `PhantomData`, a ZST.
-        // Therefore `&T` and `&Snapshot<T>` have the same layout and
-        // the cast is sound.
-        unsafe { &*(t as *const T as *const Self) }
+        // its sole non-ZST field Therefore `&T` and `&Snapshot<T>` have
+        // the same layout and the cast is sound.
+        #[allow(unsafe_code)]
+        unsafe {
+            &*(core::ptr::from_ref(this) as *const _)
+        }
     }
 }
 
@@ -183,7 +209,7 @@ impl<T: ?Sized> Snapshot<T> {
 /// Backends never write `impl Lookup for Snapshot<...>`; they implement
 /// `Lookup` on their concrete pipeline type and this blanket wires up
 /// the wrapper.
-impl<T: Lookup + ?Sized> Lookup for Snapshot<T> {
+impl<T: Lookup + ?Sized> Lookup for QuiescenceGuard<T> {
     type Key = T::Key;
     type Rule = T::Rule;
 
@@ -193,10 +219,10 @@ impl<T: Lookup + ?Sized> Lookup for Snapshot<T> {
     }
 
     #[inline]
-    fn batch_lookup<'a>(
-        &'a self,
+    fn batch_lookup<'this>(
+        &'this self,
         keys: &ArrayVec<&Self::Key, BATCH_SIZE>,
-        out: &mut [Option<&'a Self::Rule>; BATCH_SIZE],
+        out: &mut [Option<&'this Self::Rule>; BATCH_SIZE],
     ) {
         self.inner.batch_lookup(keys, out);
     }
@@ -241,6 +267,7 @@ impl QsbrDomain {
         // unconstraining) -- but only after the reader has actually
         // had a chance to call `snapshot` once.  See [`min_observed`].
         let cell = Arc::new(AtomicU64::new(u64::MAX));
+        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
         self.readers
             .lock()
             .expect("qsbr mutex poisoned")
@@ -256,6 +283,7 @@ impl QsbrDomain {
     /// Stale `Weak`s (corresponding to readers that have been dropped)
     /// are pruned during the scan.
     fn min_observed(&self) -> u64 {
+        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
         let mut readers = self.readers.lock().expect("qsbr mutex poisoned");
         let mut min = u64::MAX;
         readers.retain(|weak| {
@@ -320,7 +348,9 @@ pub struct PipelineWriter<P: Send + Sync + 'static> {
 /// first time.  Passing an "empty" or "trap-everything" pipeline is a
 /// reasonable choice; readers always observe *some* value, never a
 /// gap.
-pub fn pipeline<P: Send + Sync + 'static>(initial: P) -> (PipelineWriter<P>, ReaderFactory<P>) {
+pub fn pipeline<P: Unpin + Send + Sync + 'static>(
+    initial: P,
+) -> (PipelineWriter<P>, ReaderFactory<P>) {
     let qsbr = Arc::new(QsbrDomain::new());
     let publication = Arc::new(ArcSwap::from_pointee(Generation {
         generation: 0,
@@ -487,7 +517,10 @@ impl<P: Lookup + Send + Sync + 'static> PipelineReader<P> {
             // the writer's thread).
             self.cached = Some(latest);
         }
-        let cached = self.cached.as_ref().expect("cache populated above");
+        let cached = self
+            .cached
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("cache populated!"));
 
         // 2. Publish the observed generation.  This is what unblocks
         //    the writer's reclamation pass for any older generations.
@@ -495,9 +528,12 @@ impl<P: Lookup + Send + Sync + 'static> PipelineReader<P> {
 
         // 3. Return a thread-affine borrow.  `Snapshot::from_ref` is a
         //    no-op layout cast.  The opaque return type's hidden type
-        //    is `&Snapshot<P>`, which inherits `!Send + !Sync` from
-        //    `Snapshot`.
-        Snapshot::from_ref(&cached.pipeline)
+        //    is `&Snapshot<P>`, which inherits `!Send + !Sync + !Unpin`
+        //    from `Snapshot`.
+        #[allow(unsafe_code)]
+        unsafe {
+            QuiescenceGuard::from_ref(&cached.pipeline)
+        }
     }
 }
 
@@ -800,8 +836,8 @@ mod tests {
     // are the load-bearing properties of this module; a regression
     // would silently allow snapshots to escape their reader thread.
 
-    static_assertions::assert_not_impl_any!(Snapshot<()>: Send, Sync);
-    static_assertions::assert_not_impl_any!(&'static Snapshot<()>: Send);
+    static_assertions::assert_not_impl_any!(QuiescenceGuard<()>: Send, Sync);
+    static_assertions::assert_not_impl_any!(&'static QuiescenceGuard<()>: Send);
 
     // Reader is `Send` (movable to its destination thread once at
     // setup) but `!Sync` (the embedded epoch represents one specific

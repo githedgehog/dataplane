@@ -74,7 +74,7 @@ use std::sync::{Arc, Condvar, Mutex};
 ///
 /// [`pipeline`]: crate::pipeline
 pub trait Backend: Send + 'static {
-    type Materialized: Lookup + Send + Sync + 'static;
+    type Materialized: Lookup + Send + Sync + Unpin + 'static;
     type Error: Send + Sync + 'static + std::error::Error;
 
     /// Allocator-free "no rules installed yet" sentinel.  Constructed

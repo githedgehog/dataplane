@@ -1631,6 +1631,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-quiescent"
+version = "0.20.0"
+dependencies = [
+ "arc-swap",
+ "dataplane-id",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-rekon"
 version = "0.20.0"
 
