@@ -1,10 +1,14 @@
 //! Loom model-checking tests for `dataplane_quiescent`.
 //!
-//! These tests run only under `RUSTFLAGS="--cfg loom"`; the standard
-//! protocol tests live in `tests/protocol.rs`.
+//! These tests run only under `--features loom`.  Standard protocol
+//! tests live in `tests/protocol.rs`; bolero properties live in
+//! `tests/properties.rs`.
 //!
 //! Run with:
-//!   `RUSTFLAGS="--cfg loom" cargo test --release -p dataplane-quiescent --test loom`
+//!
+//! ```sh
+//! cargo test --release -p dataplane-quiescent --features loom --test loom
+//! ```
 //!
 //! Loom explores all legal interleavings of the operations inside each
 //! `loom::model(|| { ... })` block.  Keep test bodies minimal — each
@@ -12,7 +16,7 @@
 //! atomic op each is roughly the right shape; "2 publishes + 2 readers
 //! + a drop" already explodes.
 
-#![cfg(loom)]
+#![cfg(feature = "loom")]
 
 use loom::thread;
 

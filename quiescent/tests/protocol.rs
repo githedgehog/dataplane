@@ -1,15 +1,18 @@
-//! Standard protocol tests for `dataplane_quiescent`.
+//! Multi-threaded protocol tests for `dataplane_quiescent`.
 //!
-//! Covers:
-//! - Snapshot semantics (observes latest, monotone non-decreasing).
-//! - QSBR reclamation under various reader populations.
-//! - Drop affinity: destructors run on the writer thread.
-//! - Sentinel behavior for not-yet-observed readers.
+//! The single-threaded protocol invariants (snapshot legality,
+//! reclamation gating, conservation of `Versioned` allocations) are
+//! covered by the bolero property tests in `tests/properties.rs`.
+//! This file holds only the tests that genuinely need real OS threads:
 //!
-//! These tests use real OS threads.  Loom-modeled tests live in
-//! `tests/loom.rs`.
+//! - **Drop affinity**: destructors must run on the writer thread,
+//!   even when the last reader drops concurrently with reclaim.
+//! - **Concurrent stress**: reader/writer interaction across realistic
+//!   scheduling.
+//!
+//! Loom-modeled tests live in `tests/loom.rs`.
 
-#![cfg(not(loom))]
+#![cfg(not(any(feature = "loom", feature = "shuttle")))]
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -57,164 +60,6 @@ fn marker_threaded(
     }
 }
 
-// ---------- snapshot semantics ----------
-
-#[test]
-fn snapshot_reflects_initial_value() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (_writer, publisher) = channel(marker(42, &drops));
-    let mut reader = publisher.reader();
-    assert_eq!(reader.snapshot().payload, 42);
-}
-
-#[test]
-fn snapshot_observes_published_updates() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
-    let mut reader = publisher.reader();
-
-    assert_eq!(reader.snapshot().payload, 0);
-
-    writer.publish(marker(1, &drops));
-    assert_eq!(reader.snapshot().payload, 1);
-
-    writer.publish(marker(2, &drops));
-    assert_eq!(reader.snapshot().payload, 2);
-}
-
-#[test]
-fn multiple_readers_see_consistent_snapshots() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
-    let mut reader_a = publisher.reader();
-    let mut reader_b = publisher.reader();
-
-    assert_eq!(reader_a.snapshot().payload, 0);
-    assert_eq!(reader_b.snapshot().payload, 0);
-
-    writer.publish(marker(7, &drops));
-    assert_eq!(reader_a.snapshot().payload, 7);
-    assert_eq!(reader_b.snapshot().payload, 7);
-}
-
-#[test]
-fn publish_versions_increase_monotonically() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, _publisher) = channel(marker(0, &drops));
-
-    let v1 = writer.publish(marker(1, &drops));
-    let v2 = writer.publish(marker(2, &drops));
-    let v3 = writer.publish(marker(3, &drops));
-
-    assert!(v1 < v2);
-    assert!(v2 < v3);
-}
-
-// ---------- QSBR reclamation ----------
-
-#[test]
-fn retired_drops_after_reader_advances_past() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
-    let mut reader = publisher.reader();
-
-    reader.snapshot(); // pin initial
-
-    writer.publish(marker(1, &drops));
-    // Reader still pinning the initial; nothing should drop yet.
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    assert_eq!(writer.pending_reclamation(), 1);
-
-    reader.snapshot(); // advance past initial
-    writer.publish(marker(2, &drops));
-    // Initial is now reclaimable; its destructor should have run.
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-}
-
-#[test]
-fn reclaim_blocked_until_all_readers_advance() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
-    let mut reader_a = publisher.reader();
-    let mut reader_b = publisher.reader();
-
-    reader_a.snapshot();
-    reader_b.snapshot();
-
-    writer.publish(marker(1, &drops));
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-    assert_eq!(writer.pending_reclamation(), 1);
-
-    // Only A advances; B still pinning the initial.
-    reader_a.snapshot();
-    writer.reclaim();
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-
-    // Now B advances; reclamation can proceed.
-    reader_b.snapshot();
-    writer.reclaim();
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-}
-
-#[test]
-fn dropping_reader_unblocks_reclaim() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
-    let mut reader = publisher.reader();
-    reader.snapshot();
-
-    writer.publish(marker(1, &drops));
-    assert_eq!(drops.load(Ordering::Relaxed), 0);
-
-    drop(reader);
-    writer.reclaim();
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-    assert_eq!(writer.pending_reclamation(), 0);
-}
-
-#[test]
-fn not_yet_observed_reader_does_not_block_reclaim() {
-    // Regression for the 0-sentinel branch in `min_observed`: a registered
-    // reader that has never called `snapshot` holds no pin and must not
-    // constrain reclaim.
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
-
-    let _reader = publisher.reader(); // registered, never snapshotted
-
-    writer.publish(marker(1, &drops));
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-    assert_eq!(writer.pending_reclamation(), 0);
-}
-
-#[test]
-fn registered_then_publish_then_snapshot_observes_latest() {
-    // Companion to the above: a reader that registers BEFORE a publish but
-    // snapshots AFTER it should observe the latest value, not a
-    // freed-then-resurrected initial.
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, publisher) = channel(marker(0, &drops));
-
-    let mut reader = publisher.reader();
-    writer.publish(marker(1, &drops));
-    // Initial should have been reclaimed (reader hadn't observed it).
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-
-    assert_eq!(reader.snapshot().payload, 1);
-}
-
-#[test]
-fn reclaim_with_no_readers_drains_retired() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let (mut writer, _publisher) = channel(marker(0, &drops));
-
-    writer.publish(marker(1, &drops));
-    writer.publish(marker(2, &drops));
-    writer.reclaim();
-    assert_eq!(drops.load(Ordering::Relaxed), 2);
-    assert_eq!(writer.pending_reclamation(), 0);
-}
-
 // ---------- drop affinity ----------
 
 #[test]
@@ -223,8 +68,7 @@ fn destructor_of_initial_runs_on_writer_thread() {
     let initial_thread = Arc::new(Mutex::new(None));
     let writer_thread_id = thread::current().id();
 
-    let (mut writer, publisher) =
-        channel(marker_threaded(0, &drops, &initial_thread));
+    let (mut writer, publisher) = channel(marker_threaded(0, &drops, &initial_thread));
 
     // Reader thread observes initial, then exits.
     let publisher_for_reader = publisher.clone();
@@ -258,8 +102,7 @@ fn destructor_runs_on_writer_when_last_reader_drops_concurrently() {
     let initial_thread = Arc::new(Mutex::new(None));
     let writer_thread_id = thread::current().id();
 
-    let (mut writer, publisher) =
-        channel(marker_threaded(0, &drops, &initial_thread));
+    let (mut writer, publisher) = channel(marker_threaded(0, &drops, &initial_thread));
 
     // Repeat to expose the race window across timings.
     for _ in 0..8 {
@@ -286,7 +129,7 @@ fn destructor_runs_on_writer_when_last_reader_drops_concurrently() {
     );
 }
 
-// ---------- concurrent smoke ----------
+// ---------- concurrent stress ----------
 
 #[test]
 fn concurrent_reader_observes_monotone_sequence() {
@@ -301,10 +144,7 @@ fn concurrent_reader_observes_monotone_sequence() {
         let mut last = 0u32;
         while !stop_for_reader.load(Ordering::Acquire) {
             let v = reader.snapshot().payload;
-            assert!(
-                v >= last,
-                "snapshot regressed: saw {v} after {last}",
-            );
+            assert!(v >= last, "snapshot regressed: saw {v} after {last}");
             last = v;
         }
     });
@@ -358,7 +198,7 @@ fn many_readers_reader_drop_does_not_strand_retired() {
     writer.reclaim();
 
     // Steady state should leave at most a small number of retired entries
-    // (the current publication is held by ArcSwap, not retired).
+    // (the current publication is held by the slot, not retired).
     let pending = writer.pending_reclamation();
     assert!(
         pending <= 1,

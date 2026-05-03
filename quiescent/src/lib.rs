@@ -8,15 +8,15 @@
 )]
 
 mod slot;
-mod sync;
 
 use core::{cell::Cell, marker::PhantomData, num::NonZero};
 
-use crate::slot::Slot;
-use crate::sync::{
+use concurrency::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+
+use crate::slot::Slot;
 
 type NotSync = PhantomData<Cell<()>>; // can still be Send
 
@@ -161,7 +161,7 @@ impl Version {
     }
 }
 
-pub struct Writer<T: Send + Sync + 'static> {
+pub struct Publisher<T: Send + Sync + 'static> {
     publication: Arc<Slot<Versioned<T>>>,
     domain: Arc<Domain>,
     retired: Vec<Arc<Versioned<T>>>,
@@ -169,25 +169,25 @@ pub struct Writer<T: Send + Sync + 'static> {
     _not_sync: NotSync,
 }
 
-pub fn channel<T: Send + Sync + 'static>(initial: T) -> (Writer<T>, Publisher<T>) {
+pub fn channel<T: Send + Sync + 'static>(initial: T) -> (Publisher<T>, SubscriberFactory<T>) {
     let qsbr = Arc::new(Domain::new());
     let version = Version::INITIAL;
     let publication = Arc::new(Slot::from_pointee(Versioned {
         version,
         inner: initial,
     }));
-    let writer = Writer {
+    let publisher = Publisher {
         publication: Arc::clone(&publication),
         domain: Arc::clone(&qsbr),
         retired: Vec::with_capacity(8),
         next_version: Version::INITIAL.next(),
         _not_sync: PhantomData,
     };
-    let reader = Publisher { publication, qsbr };
-    (writer, reader)
+    let subscriber = SubscriberFactory { publication, qsbr };
+    (publisher, subscriber)
 }
 
-impl<T: Send + Sync + 'static> Writer<T> {
+impl<T: Send + Sync + 'static> Publisher<T> {
     pub fn publish(&mut self, message: T) -> Version {
         let generation = self.next_version;
         self.next_version = self.next_version.next();
@@ -218,13 +218,24 @@ impl<T: Send + Sync + 'static> Writer<T> {
     }
 }
 
-#[derive(Clone)]
-pub struct Publisher<T: Send + Sync + 'static> {
+pub struct SubscriberFactory<T: Send + Sync + 'static> {
     publication: Arc<Slot<Versioned<T>>>,
     qsbr: Arc<Domain>,
 }
 
-impl<T: Send + Sync + 'static> Publisher<T> {
+impl<T> Clone for SubscriberFactory<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            publication: Arc::clone(&self.publication),
+            qsbr: Arc::clone(&self.qsbr),
+        }
+    }
+}
+
+impl<T: Send + Sync + 'static> SubscriberFactory<T> {
     #[must_use]
     pub fn reader(&self) -> Reader<T> {
         Reader {

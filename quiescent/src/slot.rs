@@ -3,17 +3,18 @@
 //! In production this is `arc_swap::ArcSwap` — lock-free read fast path,
 //! which is what makes [`Reader::snapshot`] cheap on the data-plane.
 //!
-//! Under `#[cfg(loom)]` it falls back to `Mutex<Arc<T>>` because loom
-//! doesn't model `arc_swap`'s internals (hazard pointers + lower-level
-//! atomics).  The two implementations are observably equivalent for the
-//! QSBR protocol — atomic publish, atomic load — which is all the model
-//! checker needs to see.
+//! When the `loom` or `shuttle` feature is enabled (via the
+//! `concurrency` crate) it falls back to `Mutex<Arc<T>>` because neither
+//! model checker sees `arc_swap`'s internals (hazard pointers + lower-
+//! level atomics).  The two implementations are observably equivalent
+//! for the QSBR protocol — atomic publish, atomic load — which is all
+//! the model checker needs to see.
 //!
 //! [`Reader::snapshot`]: crate::Reader::snapshot
 
-use crate::sync::Arc;
+use concurrency::sync::Arc;
 
-#[cfg(not(loom))]
+#[cfg(not(any(feature = "loom", feature = "shuttle")))]
 mod imp {
     use super::Arc;
     use arc_swap::ArcSwap;
@@ -38,10 +39,10 @@ mod imp {
     }
 }
 
-#[cfg(loom)]
+#[cfg(any(feature = "loom", feature = "shuttle"))]
 mod imp {
     use super::Arc;
-    use crate::sync::Mutex;
+    use concurrency::sync::Mutex;
 
     pub(crate) struct Slot<T>(Mutex<Arc<T>>);
 

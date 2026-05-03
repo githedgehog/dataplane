@@ -5,19 +5,20 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# Mutually exclusive with `shuttle`.
+loom = ["concurrency/loom", "dep:loom"]
+# Shuttle equivalent.  Mutually exclusive with `loom`.
+shuttle = ["concurrency/shuttle", "dep:shuttle"]
+
 [dependencies]
-id = { workspace = true }
-strum = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
+# internal
+concurrency = { workspace = true }
 
-[target.'cfg(not(loom))'.dependencies]
+# external
 arc-swap = { workspace = true }
-
-[target.'cfg(loom)'.dependencies]
-loom = { workspace = true }
+loom = { workspace = true, optional = true }
+shuttle = { workspace = true, optional = true }
 
 [dev-dependencies]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+bolero = { workspace = true, features = ["std"] }
