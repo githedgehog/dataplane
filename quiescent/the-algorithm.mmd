@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant Sub as Subscriber
+    participant E as Epoch cell
+    participant P as Publisher
+
+    Note over Sub,P: cached = Arc[V_old], cell = V_old,\nPublisher's retired = [Arc[V_old]] refcount of V_old 2 (Subscriber & Publisher)
+
+    Sub->>Sub: cached = Some(Arc[V_new])
+    Note over Sub: drops the old Arc[V_old], refcount 2 to 1\n(Publisher still holds it, no Drop body fires)
+
+    Sub->>E: observe(V_new) [Release]
+    Note over P: Publisher's next reclaim is now allowed to drop V_old
+
+    P->>P: reclaim observes V_new, drops Arc[V_old], 1 to 0
+    Note over P: V_old drop() runs on Publisher thread

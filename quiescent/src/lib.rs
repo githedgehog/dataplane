@@ -1,6 +1,7 @@
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 #![deny(
-    // missing_docs,
+    missing_docs,
     clippy::pedantic,
     clippy::unwrap_used,
     clippy::expect_used,
@@ -30,7 +31,8 @@ struct Domain {
     /// Registry of per-Subscriber observation cells.  Mutex-guarded
     /// because `register` (any thread holding a `SubscriberFactory`)
     /// and the Publisher's reclaim scan (`min_observed`) both mutate
-    /// the Vec.  Cold path — the snapshot fast path never touches this.
+    /// the Vec.  This is a very cold path, the snapshot fast path never
+    /// touches this.
     ///
     /// Each entry is the same `Arc<CachePaddedCounter>` the
     /// corresponding `Subscriber` holds via its `Epoch`.  When a
@@ -130,6 +132,14 @@ impl Epoch {
     }
 }
 
+/// Monotonic version stamp assigned to each publication.  Returned by
+/// [`Publisher::publish`] and useful for tracking "has the world
+/// advanced past this point?" without holding a snapshot ref.
+///
+/// Strictly increasing across the lifetime of a [`Publisher`].  The
+/// initial publication carries the lowest non-zero version (`1`); each
+/// subsequent `publish` returns a version one greater than the
+/// previous one.
 #[repr(transparent)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Hash)]
 pub struct Version(NonZero<u64>);
@@ -207,6 +217,11 @@ pub fn channel<T: Send + Sync + 'static>(initial: T) -> Publisher<T> {
 impl<T: Send + Sync + 'static> Publisher<T> {
     /// Atomically publish `message` as a new version of the channel
     /// and run an opportunistic [`reclaim`](Self::reclaim) pass.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the retired list is currently borrowed (this should be
+    /// impossible unless unsafe code is involved).
     pub fn publish(&self, message: T) -> Version {
         let generation = self.next_version.get();
         self.next_version.set(generation.next());
@@ -228,6 +243,11 @@ impl<T: Send + Sync + 'static> Publisher<T> {
     /// live Subscriber's observed version.  Called automatically by
     /// [`publish`](Self::publish); exposed for callers who want to
     /// drive reclamation explicitly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the retired list is currently borrowed (this should be
+    /// impossible unless unsafe code is involved).
     pub fn reclaim(&self) {
         #[allow(clippy::expect_used)] // !Sync invariant means no concurrent borrow
         let mut retired = self
@@ -300,7 +320,7 @@ pub struct Subscriber<'p, T: Send + Sync + 'static> {
     /// `&'p ()` carries the covariant Publisher-lifetime brand;
     /// `Cell<()>` makes the Subscriber `!Sync` (the embedded epoch is
     /// meaningful only for one thread's observations, and `cached` is
-    /// a per-thread cache).  PhantomData of a tuple gives us both at
+    /// a per-thread cache).  `PhantomData` of a tuple gives us both at
     /// zero cost.
     _marker: PhantomData<(&'p (), Cell<()>)>,
 }
