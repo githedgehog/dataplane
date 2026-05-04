@@ -26,6 +26,7 @@ members = [
     "nat",
     "net",
     "pipeline",
+    "quiescent",
     "rekon",
     "routing",
     "stats",
@@ -73,6 +74,7 @@ mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
+quiescent = { path = "./quiescent", package = "dataplane-quiescent", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
