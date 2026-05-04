@@ -1592,6 +1592,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-quiescent"
+version = "0.21.0"
+dependencies = [
+ "arc-swap",
+ "bolero",
+ "dataplane-concurrency",
+ "loom",
+ "shuttle",
+ "static_assertions",
+]
+
+[[package]]
 name = "dataplane-rekon"
 version = "0.21.0"
 
