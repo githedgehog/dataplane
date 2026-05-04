@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 #![deny(
+    missing_docs,
     clippy::pedantic,
     clippy::unwrap_used,
     clippy::expect_used,
