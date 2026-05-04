@@ -18,7 +18,7 @@ use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{IcmpProtoKey, Uni};
 use net::flows::{ExtractRef, FlowInfo};
-use net::headers::TryIp;
+use net::headers::{TryIp, TryTcp};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::{FlowKey, IpProtoKey};
@@ -361,6 +361,14 @@ impl StatefulNat {
             return Err(StatefulNatError::NoAllocator);
         };
 
+        // if packet contains TCP, do not create flows nor translate state unless it is a SYN
+        // TODO: add utils to check if a TCP segment is a legal SYN
+        if let Some(tcp) = packet.try_tcp()
+            && (!tcp.syn() || tcp.ack())
+        {
+            return Err(StatefulNatError::IntendedDrop("TCP without SYN"));
+        }
+
         let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
         // build flow key for the current packet
@@ -464,11 +472,9 @@ impl StatefulNat {
         }
 
         // TODO: Check whether the packet is fragmented
-        // TODO: Check whether we need protocol-aware processing
-
         if let Err(error) = self.masquerade_packet(packet) {
             packet.done(translate_error(&error));
-            error!("Error masquerading packet: {error}");
+            debug!("Did not masquerade packet: {error}");
         } else {
             packet.meta_mut().set_checksum_refresh(true);
             packet.meta_mut().natted(true);
