@@ -9,7 +9,7 @@ use std::fmt::Display;
 use std::net::IpAddr;
 use std::time::Duration;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MasqueradeState {
     pub(crate) status: AtomicNatFlowStatus,
     action: NatAction,
