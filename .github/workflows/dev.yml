@@ -528,12 +528,14 @@ jobs:
           cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: "push containers"
+        env:
+          ref_name: ${{ github.ref_name }}
         run: |
           set -euo pipefail;
           just \
             docker_sock=/run/docker/docker.sock \
             oci_repo=ghcr.io \
-            version="${{ github.ref_name }}" \
+            version="${ref_name}" \
             push
 
       # Bump dataplane in the fabricator repository
@@ -547,9 +549,12 @@ jobs:
 
       - name: Bump dataplane+frr in fabricator
         working-directory: fab-repo
+        env:
+          ref_name: ${{ github.ref_name }}
         run: |
-          sed -i "s/^\tDataplaneVersion.*/\tDataplaneVersion=meta.Version(\"${{ github.ref_name }}\")/" pkg/fab/versions.go
-          sed -i "s/^\tFRRVersion.*/\tFRRVersion=meta.Version(\"${{ github.ref_name }}\")/" pkg/fab/versions.go
+          set -euo pipefail;
+          sed -i "s/^\tDataplaneVersion.*/\tDataplaneVersion=meta.Version(\"${ref_name}\")/" pkg/fab/versions.go
+          sed -i "s/^\tFRRVersion.*/\tFRRVersion=meta.Version(\"${ref_name}\")/" pkg/fab/versions.go
           go fmt pkg/fab/versions.go
 
       - name: Generate token for the fabricator repository
