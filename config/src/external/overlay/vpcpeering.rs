@@ -570,6 +570,12 @@ impl VpcManifest {
     }
 
     #[must_use]
+    pub fn exposing(mut self, expose: VpcExpose) -> Self {
+        self.exposes.push(expose);
+        self
+    }
+
+    #[must_use]
     pub fn has_host_prefixes(&self) -> bool {
         self.exposes.iter().any(VpcExpose::has_host_prefixes)
     }

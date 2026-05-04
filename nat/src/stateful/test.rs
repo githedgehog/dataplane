@@ -44,7 +44,7 @@ use tracing_test::traced_test;
 const ONE_MINUTE: Duration = Duration::from_mins(1);
 use crate::stateless::test::build_gwconfig_from_overlay;
 
-fn case(msg: &str) {
+fn test_case(msg: &str) {
     debug!("{}", Frame(msg));
 }
 
@@ -135,10 +135,6 @@ fn vpcd(vni_id: u32) -> VpcDiscriminant {
 
 #[allow(clippy::too_many_lines)]
 fn build_overlay_4vpcs() -> Overlay {
-    fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-        manifest.add_expose(expose);
-    }
-
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
@@ -231,40 +227,34 @@ fn build_overlay_4vpcs() -> Overlay {
     let expose431 = VpcExpose::empty().ip("4.4.0.0/24".into());
 
     // VPC1 <-> VPC2
-    let mut manifest12 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest12, expose121);
-    add_expose(&mut manifest12, expose122);
-    add_expose(&mut manifest12, expose123);
-    let mut manifest21 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest21, expose211);
-    add_expose(&mut manifest21, expose212);
-    add_expose(&mut manifest21, expose213);
-    add_expose(&mut manifest21, expose214);
+    let manifest12 = VpcManifest::new("VPC-1")
+        .exposing(expose121)
+        .exposing(expose122)
+        .exposing(expose123);
+
+    let manifest21 = VpcManifest::new("VPC-2")
+        .exposing(expose211)
+        .exposing(expose212)
+        .exposing(expose213)
+        .exposing(expose214);
 
     // VPC1 <-> VPC3
-    let mut manifest13 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest13, expose131);
-    add_expose(&mut manifest13, expose132);
-    let mut manifest31 = VpcManifest::new("VPC-3");
-    add_expose(&mut manifest31, expose311);
+    let manifest13 = VpcManifest::new("VPC-1")
+        .exposing(expose131)
+        .exposing(expose132);
+    let manifest31 = VpcManifest::new("VPC-3").exposing(expose311);
 
     // VPC1 <-> VPC4
-    let mut manifest14 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest14, expose141);
-    let mut manifest41 = VpcManifest::new("VPC-4");
-    add_expose(&mut manifest41, expose411);
+    let manifest14 = VpcManifest::new("VPC-1").exposing(expose141);
+    let manifest41 = VpcManifest::new("VPC-4").exposing(expose411);
 
     // VPC2 <-> VPC4
-    let mut manifest24 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest24, expose241);
-    let mut manifest42 = VpcManifest::new("VPC-4");
-    add_expose(&mut manifest42, expose421);
+    let manifest24 = VpcManifest::new("VPC-2").exposing(expose241);
+    let manifest42 = VpcManifest::new("VPC-4").exposing(expose421);
 
     // VPC3 <-> VPC4
-    let mut manifest34 = VpcManifest::new("VPC-3");
-    add_expose(&mut manifest34, expose341);
-    let mut manifest43 = VpcManifest::new("VPC-4");
-    add_expose(&mut manifest43, expose431);
+    let manifest34 = VpcManifest::new("VPC-3").exposing(expose341);
+    let manifest43 = VpcManifest::new("VPC-4").exposing(expose431);
 
     let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
     let peering31 = VpcPeering::with_default_group("VPC-3--VPC-1", manifest31, manifest13);
@@ -283,10 +273,6 @@ fn build_overlay_4vpcs() -> Overlay {
 }
 
 fn build_overlay_2vpcs() -> Overlay {
-    fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-        manifest.add_expose(expose);
-    }
-
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
@@ -299,11 +285,8 @@ fn build_overlay_2vpcs() -> Overlay {
         .unwrap();
     let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
 
-    let mut manifest12 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest12, expose121);
-    let mut manifest21 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest21, expose211);
-
+    let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
+    let manifest21 = VpcManifest::new("VPC-2").exposing(expose211);
     let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
     let mut peering_table = VpcPeeringTable::new();
@@ -509,10 +492,6 @@ async fn test_full_config() {
 }
 
 fn build_overlay_2vpcs_no_nat() -> Overlay {
-    fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-        manifest.add_expose(expose);
-    }
-
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
@@ -520,11 +499,8 @@ fn build_overlay_2vpcs_no_nat() -> Overlay {
     let expose121 = VpcExpose::empty().ip("1.1.0.0/16".into());
     let expose211 = VpcExpose::empty().ip("2.2.0.0/16".into());
 
-    let mut manifest12 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest12, expose121);
-    let mut manifest21 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest21, expose211);
-
+    let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
+    let manifest21 = VpcManifest::new("VPC-2").exposing(expose211);
     let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
     let mut peering_table = VpcPeeringTable::new();
@@ -776,7 +752,7 @@ async fn test_icmp_error_nat() {
     let (flow_table, mut pipeline, _allocw) = test_setup(build_overlay_2vpcs());
 
     // ICMP Error msg: expose211 -> expose121, no previous session for inner packet
-    case("Processing icmp error with no prior state");
+    test_case("Processing icmp error with no prior state");
     let (
         router_src,
         orig_outer_dst,
@@ -825,7 +801,7 @@ async fn test_icmp_error_nat() {
     assert_eq!(done_reason, None);
 
     // ICMP Echo Request expose121 -> expose211
-    case("Processing ICMP echo request");
+    test_case("Processing ICMP echo request");
     let (orig_echo_src, orig_echo_dst, target_echo_src, target_echo_dst) = (
         addr_v4("1.1.2.3"),
         addr_v4("3.3.3.3"),
@@ -860,7 +836,7 @@ async fn test_icmp_error_nat() {
     // - Inner destination IP: 3.3.3.3 (original destination for Echo Request)
     // - Inner identifier: original identifier from Echo Request
     // - Inner sequence number: always unchanged
-    case("Processing icmp error after establishing state");
+    test_case("Processing icmp error after establishing state");
     let (
         output_outer_src,
         output_outer_dst,
@@ -893,10 +869,6 @@ async fn test_icmp_error_nat() {
 }
 
 fn build_overlay_2vpcs_with_default() -> Overlay {
-    fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-        manifest.add_expose(expose);
-    }
-
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
@@ -910,12 +882,10 @@ fn build_overlay_2vpcs_with_default() -> Overlay {
     let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
     let expose212 = VpcExpose::empty().set_default();
 
-    let mut manifest12 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest12, expose121);
-    let mut manifest21 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest21, expose211);
-    add_expose(&mut manifest21, expose212);
-
+    let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
+    let manifest21 = VpcManifest::new("VPC-2")
+        .exposing(expose211)
+        .exposing(expose212);
     let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
     let mut peering_table = VpcPeeringTable::new();
@@ -1012,10 +982,6 @@ async fn test_default_expose() {
 }
 
 fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
-    fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-        manifest.add_expose(expose);
-    }
-
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).unwrap());
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).unwrap());
@@ -1032,11 +998,8 @@ fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
         .unwrap();
     let expose21 = VpcExpose::empty().ip("5.0.0.0/24".into());
 
-    let mut manifest12 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest12, expose12);
-    let mut manifest21 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest21, expose21);
-
+    let manifest12 = VpcManifest::new("VPC-1").exposing(expose12);
+    let manifest21 = VpcManifest::new("VPC-2").exposing(expose21);
     let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
 
     // VPC-2 (no NAT) <-> VPC-3 (NAT)
@@ -1048,11 +1011,8 @@ fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
         .unwrap();
     let expose23 = VpcExpose::empty().ip("5.0.0.0/24".into());
 
-    let mut manifest23 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest23, expose23);
-    let mut manifest32 = VpcManifest::new("VPC-3");
-    add_expose(&mut manifest32, expose32);
-
+    let manifest23 = VpcManifest::new("VPC-2").exposing(expose23);
+    let manifest32 = VpcManifest::new("VPC-3").exposing(expose32);
     let peering23 = VpcPeering::with_default_group("VPC-2--VPC-3", manifest23, manifest32);
 
     let mut peering_table = VpcPeeringTable::new();
@@ -1374,16 +1334,11 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
 }
 
 fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
-    fn add_expose(manifest: &mut VpcManifest, expose: VpcExpose) {
-        manifest.add_expose(expose);
-    }
-
     let mut vpc_table = VpcTable::new();
     let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).unwrap());
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).unwrap());
 
     // Peering 1
-
     let expose1_1 = VpcExpose::empty()
         .make_stateful_nat(None)
         .unwrap()
@@ -1392,11 +1347,8 @@ fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
         .unwrap();
     let expose1_2 = VpcExpose::empty().ip("5.0.0.0/24".into());
 
-    let mut manifest1_1 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest1_1, expose1_1);
-    let mut manifest1_2 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest1_2, expose1_2);
-
+    let manifest1_1 = VpcManifest::new("VPC-1").exposing(expose1_1);
+    let manifest1_2 = VpcManifest::new("VPC-2").exposing(expose1_2);
     let peering1 = VpcPeering::with_default_group("VPC-1--VPC-2--1", manifest1_1, manifest1_2);
 
     // Peering 2 - Overlap with Peering 1
@@ -1409,11 +1361,8 @@ fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
         .unwrap();
     let expose2_2 = VpcExpose::empty().ip("6.0.0.0/24".into());
 
-    let mut manifest2_1 = VpcManifest::new("VPC-1");
-    add_expose(&mut manifest2_1, expose2_1);
-    let mut manifest2_2 = VpcManifest::new("VPC-2");
-    add_expose(&mut manifest2_2, expose2_2);
-
+    let manifest2_1 = VpcManifest::new("VPC-1").exposing(expose2_1);
+    let manifest2_2 = VpcManifest::new("VPC-2").exposing(expose2_2);
     let peering2 = VpcPeering::with_default_group("VPC-1--VPC-2--2", manifest2_1, manifest2_2);
 
     // Peering table
