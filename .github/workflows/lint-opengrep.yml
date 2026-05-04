@@ -40,4 +40,4 @@ jobs:
               shell: "bash"
               run: |
                   set -euo pipefail
-                  opengrep scan --experimental
+                  opengrep scan --experimental --verbose --error
