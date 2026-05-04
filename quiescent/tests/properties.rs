@@ -164,3 +164,15 @@ fn protocol_invariants() {
             );
         });
 }
+
+/// `SubscriberFactory: Copy`, so every other test in this crate exercises
+/// the factory by implicit copy and never goes through the explicit
+/// `Clone::clone` impl.  This pins it down so coverage doesn't show a
+/// gap on a function that only differs from the auto-derive in name.
+#[test]
+fn factory_clone_uses_explicit_impl() {
+    let publisher = dataplane_quiescent::channel(0u32);
+    let factory = publisher.factory();
+    #[allow(clippy::clone_on_copy)]
+    let _factory_clone = factory.clone();
+}
