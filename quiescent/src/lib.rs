@@ -208,6 +208,8 @@ impl Version {
         if let Some(nz) = self.0.checked_add(1) {
             Self(nz)
         } else {
+            // LCOV_EXCL_START - reaching this path is itself the failure;
+            // chasing coverage of it is absurd.  See the comment below.
             core::hint::cold_path();
             #[allow(clippy::panic)]
             {
@@ -221,6 +223,7 @@ impl Version {
                 // not via normal operation.
                 panic!("Version wrapped!  This is a bug");
             }
+            // LCOV_EXCL_STOP
         }
     }
 }
