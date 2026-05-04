@@ -24,8 +24,11 @@
 //! cargo test --profile=fuzz -p dataplane-quiescent --test shuttle
 //! ```
 //!
-//! You can't really productively run this suite under loom because the cost absolutely
-//! explodes with large plans.
+//! You can't really productively run this suite under loom because the
+//! cost absolutely explodes with large plans (and loom 0.7.2 doesn't
+//! expose `thread::scope`, which the new lifetime-bounded API needs).
+
+#![cfg(not(feature = "loom"))]
 
 use std::panic::RefUnwindSafe;
 
@@ -76,44 +79,17 @@ fn run_plan(plan: &Plan) {
         payload: 0,
         drops: Arc::clone(&drops),
     };
-    let (publisher, factory) = channel(initial);
+    let publisher = channel(initial);
 
-    let publisher_handle = {
-        let drops = Arc::clone(&drops);
-        let total = Arc::clone(&total);
-        let publisher_ops = plan.publisher_ops.clone();
-        thread::spawn(move || {
-            let mut publisher = publisher;
-            let mut next_payload: u32 = 1;
-            for op in &publisher_ops {
-                match op {
-                    PublisherOp::Publish => {
-                        let p = next_payload;
-                        next_payload += 1;
-                        // Bump `total` BEFORE the publish so any
-                        // Subscriber observing payload `p` is
-                        // guaranteed to see `total >= p + 1` on the
-                        // snapshot legality check.  SeqCst keeps the
-                        // ordering story simple under shuttle's model.
-                        total.fetch_add(1, Ordering::SeqCst);
-                        publisher.publish(Marker {
-                            payload: p,
-                            drops: Arc::clone(&drops),
-                        });
-                    }
-                    PublisherOp::Reclaim => publisher.reclaim(),
-                }
-            }
-            // publisher drops here on the publisher thread
-        })
-    };
-
-    let subscriber_handle = {
-        let factory = factory.clone();
-        let total = Arc::clone(&total);
+    // Subscriber ops run in a spawned scope thread; Publisher ops run
+    // on this (calling) thread.  That gives shuttle two threads to
+    // interleave (this one + the spawned one).
+    thread::scope(|s| {
+        let factory = publisher.factory();
+        let total_for_sub = Arc::clone(&total);
         let subscriber_ops = plan.subscriber_ops.clone();
-        thread::spawn(move || {
-            let mut subscribers: Vec<Subscriber<Marker>> = Vec::new();
+        s.spawn(move || {
+            let mut subscribers: Vec<Subscriber<'_, Marker>> = Vec::new();
             let mut last_seen: Vec<u32> = Vec::new();
             for op in &subscriber_ops {
                 match op {
@@ -125,7 +101,7 @@ fn run_plan(plan: &Plan) {
                         if !subscribers.is_empty() {
                             let i = (*idx as usize) % subscribers.len();
                             let observed = subscribers[i].snapshot().payload;
-                            let total_at = total.load(Ordering::SeqCst);
+                            let total_at = total_for_sub.load(Ordering::SeqCst);
                             assert!(
                                 observed >= last_seen[i],
                                 "Subscriber {i} regressed: saw {observed} after {prev}",
@@ -148,12 +124,32 @@ fn run_plan(plan: &Plan) {
                 }
             }
             // subscribers drop here on the subscriber thread
-        })
-    };
+        });
 
-    publisher_handle.join().unwrap();
-    subscriber_handle.join().unwrap();
-    drop(factory);
+        let mut next_payload: u32 = 1;
+        for op in &plan.publisher_ops {
+            match op {
+                PublisherOp::Publish => {
+                    let p = next_payload;
+                    next_payload += 1;
+                    // Bump `total` BEFORE the publish so any Subscriber
+                    // observing payload `p` is guaranteed to see
+                    // `total >= p + 1` on the snapshot legality check.
+                    // SeqCst keeps the ordering story simple under
+                    // shuttle's model.
+                    total.fetch_add(1, Ordering::SeqCst);
+                    publisher.publish(Marker {
+                        payload: p,
+                        drops: Arc::clone(&drops),
+                    });
+                }
+                PublisherOp::Reclaim => publisher.reclaim(),
+            }
+        }
+    });
+    // After scope: subscriber thread joined, factory dropped.
+
+    drop(publisher);
 
     // After full tear-down, every Marker should have run its destructor
     // exactly once.
@@ -186,7 +182,15 @@ fn protocol_under_shuttle() {
 #[test]
 #[cfg(feature = "shuttle")]
 fn protocol_under_shuttle_pct() {
-    fuzz_test(|plan: Plan| shuttle::check_pct(move || run_plan(&plan), 16, 3));
+    fuzz_test(|plan: Plan| {
+        // PCT requires both threads to actually do atomic ops; if
+        // either op list is empty, shuttle's PCT scheduler panics with
+        // "test closure did not exercise any concurrency".  Skip those.
+        if plan.publisher_ops.is_empty() || plan.subscriber_ops.is_empty() {
+            return;
+        }
+        shuttle::check_pct(move || run_plan(&plan), 16, 3);
+    });
 }
 
 #[test]

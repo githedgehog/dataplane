@@ -1639,6 +1639,7 @@ dependencies = [
  "dataplane-concurrency",
  "loom",
  "shuttle",
+ "static_assertions",
 ]
 
 [[package]]

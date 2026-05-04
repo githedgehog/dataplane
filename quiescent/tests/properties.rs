@@ -78,9 +78,9 @@ fn protocol_invariants() {
     bolero::check!()
         .with_type::<Vec<Op>>()
         .for_each(|ops: &Vec<Op>| {
-            let ops = ops.as_slice();
             let drops = Arc::new(AtomicUsize::new(0));
-            let (mut publisher, factory) = channel(marker(0, &drops));
+            let publisher = channel(marker(0, &drops));
+            let factory = publisher.factory();
             let mut subscribers = Vec::new();
             let mut last_seen: Vec<u32> = Vec::new();
             // Initial publication counts as published, so we start at 1.
@@ -145,11 +145,14 @@ fn protocol_invariants() {
                 );
             }
 
-            // Tear-down: drop everything explicitly so the final-drops
-            // assertion below has a well-defined point to fire at.
+            // Tear-down: subscribers hold borrows tied to the
+            // publisher's lifetime, so they must drop first.  `factory`
+            // is `Copy`, so its borrow is released by NLL at last use —
+            // no explicit drop needed.  Drop the publisher last so the
+            // final-drops assertion below has a well-defined point to
+            // fire at.
             drop(subscribers);
             drop(publisher);
-            drop(factory);
 
             let final_drops = drops.load(Ordering::Relaxed);
             assert_eq!(

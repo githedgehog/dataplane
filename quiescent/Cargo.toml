@@ -19,6 +19,7 @@ concurrency = { workspace = true }
 arc-swap = { workspace = true }
 loom = { workspace = true, optional = true }
 shuttle = { workspace = true, optional = true }
+static_assertions = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }

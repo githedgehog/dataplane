@@ -9,7 +9,9 @@
 
 mod slot;
 
-use core::{cell::Cell, marker::PhantomData, num::NonZero};
+use core::cell::{Cell, RefCell};
+use core::marker::PhantomData;
+use core::num::NonZero;
 
 use concurrency::sync::{
     Arc, Mutex,
@@ -18,8 +20,6 @@ use concurrency::sync::{
 
 use crate::slot::Slot;
 
-type NotSync = PhantomData<Cell<()>>; // can still be Send
-
 struct Versioned<T> {
     /// Monotonic version stamp assigned by the Publisher.
     version: Version,
@@ -27,7 +27,7 @@ struct Versioned<T> {
 }
 
 struct Domain {
-    /// Registry of per-subscriber observation cells.  Mutex-guarded
+    /// Registry of per-Subscriber observation cells.  Mutex-guarded
     /// because `register` (any thread holding a `SubscriberFactory`)
     /// and the Publisher's reclaim scan (`min_observed`) both mutate
     /// the Vec.  Cold path — the snapshot fast path never touches this.
@@ -44,11 +44,15 @@ struct Domain {
 }
 
 impl Domain {
-    const READER_GUESS: usize = 256;
+    /// Initial capacity for the active-Subscriber registry.  Sized to
+    /// roughly the typical maximum lcore count for our deployments;
+    /// over-sizing the Vec is cheap (one allocation of `Weak`-sized
+    /// slots) and we avoid early reallocations during burst spawns.
+    const SUBSCRIBER_GUESS: usize = 256;
 
     fn new() -> Self {
         Self {
-            active: Mutex::new(Vec::with_capacity(Self::READER_GUESS)),
+            active: Mutex::new(Vec::with_capacity(Self::SUBSCRIBER_GUESS)),
         }
     }
 
@@ -131,12 +135,13 @@ impl Epoch {
 pub struct Version(NonZero<u64>);
 
 impl Version {
-    // SAFETY: const fn trivially sound
-    #[allow(clippy::unwrap_used)]
-    const INITIAL: Self = Self(NonZero::new(1).unwrap());
+    const INITIAL: Self = Self(NonZero::<u64>::MIN);
 
+    /// Extract the raw monotonic counter.  Useful for tracing, metrics,
+    /// or comparing against externally-stored versions.
     #[inline]
-    const fn get(self) -> u64 {
+    #[must_use]
+    pub const fn get(self) -> u64 {
         self.0.get()
     }
 
@@ -162,100 +167,149 @@ impl Version {
     }
 }
 
+/// Owns the publication slot and the QSBR domain.  Hands out
+/// [`SubscriberFactory`] handles via [`Publisher::factory`]; both the
+/// factory and any [`Subscriber`]s it spawns borrow from this Publisher
+/// and therefore cannot outlive it.  This makes "the last `Versioned`
+/// destructor runs on the Publisher's thread" a compile-time guarantee.
+///
+/// Methods that mutate Publisher state ([`publish`](Self::publish),
+/// [`reclaim`](Self::reclaim)) take `&self` because handing out
+/// `SubscriberFactory<'_, T>` borrows the Publisher shared.  Single-
+/// thread use is enforced by the `RefCell`/`Cell` interior — Publisher
+/// is `!Sync`.  Send is preserved so the Publisher can be moved to its
+/// owning thread once at startup.
 pub struct Publisher<T: Send + Sync + 'static> {
     publication: Arc<Slot<Versioned<T>>>,
     domain: Arc<Domain>,
-    retired: Vec<Arc<Versioned<T>>>,
-    next_version: Version,
-    _not_sync: NotSync,
+    retired: RefCell<Vec<Arc<Versioned<T>>>>,
+    next_version: Cell<Version>,
 }
 
-pub fn channel<T: Send + Sync + 'static>(initial: T) -> (Publisher<T>, SubscriberFactory<T>) {
-    let qsbr = Arc::new(Domain::new());
-    let version = Version::INITIAL;
+/// Construct a fresh QSBR channel with `initial` as the version-1
+/// publication.  Returns the [`Publisher`] alone; subscribers are
+/// obtained via [`Publisher::factory`].
+#[must_use]
+pub fn channel<T: Send + Sync + 'static>(initial: T) -> Publisher<T> {
+    let domain = Arc::new(Domain::new());
     let publication = Arc::new(Slot::from_pointee(Versioned {
-        version,
+        version: Version::INITIAL,
         inner: initial,
     }));
-    let publisher = Publisher {
-        publication: Arc::clone(&publication),
-        domain: Arc::clone(&qsbr),
-        retired: Vec::with_capacity(8),
-        next_version: Version::INITIAL.next(),
-        _not_sync: PhantomData,
-    };
-    let subscriber = SubscriberFactory { publication, qsbr };
-    (publisher, subscriber)
+    Publisher {
+        publication,
+        domain,
+        retired: RefCell::new(Vec::with_capacity(8)),
+        next_version: Cell::new(Version::INITIAL.next()),
+    }
 }
 
 impl<T: Send + Sync + 'static> Publisher<T> {
-    pub fn publish(&mut self, message: T) -> Version {
-        let generation = self.next_version;
-        self.next_version = self.next_version.next();
+    /// Atomically publish `message` as a new version of the channel
+    /// and run an opportunistic [`reclaim`](Self::reclaim) pass.
+    pub fn publish(&self, message: T) -> Version {
+        let generation = self.next_version.get();
+        self.next_version.set(generation.next());
         let new_arc = Arc::new(Versioned {
             version: generation,
             inner: message,
         });
         let prev_arc = self.publication.swap(new_arc);
-        self.retired.push(prev_arc);
+        #[allow(clippy::expect_used)] // !Sync invariant means no concurrent borrow
+        self.retired
+            .try_borrow_mut()
+            .expect("retired RefCell concurrently borrowed")
+            .push(prev_arc);
         self.reclaim();
         generation
     }
 
-    pub fn reclaim(&mut self) {
+    /// Reclaim any retired `Versioned`s whose version is below every
+    /// live Subscriber's observed version.  Called automatically by
+    /// [`publish`](Self::publish); exposed for callers who want to
+    /// drive reclamation explicitly.
+    pub fn reclaim(&self) {
+        #[allow(clippy::expect_used)] // !Sync invariant means no concurrent borrow
+        let mut retired = self
+            .retired
+            .try_borrow_mut()
+            .expect("retired RefCell concurrently borrowed");
         match self.domain.min_observed() {
-            Some(version) => {
-                self.retired.retain(|x| x.version >= version);
-            }
-            None => {
-                self.retired.clear();
-            }
+            Some(version) => retired.retain(|x| x.version >= version),
+            None => retired.clear(),
         }
     }
 
+    /// Number of retired `Versioned`s still pending reclamation.
+    /// Useful for diagnostics.
     #[must_use]
     pub fn pending_reclamation(&self) -> usize {
-        self.retired.len()
+        self.retired.borrow().len()
     }
-}
 
-pub struct SubscriberFactory<T: Send + Sync + 'static> {
-    publication: Arc<Slot<Versioned<T>>>,
-    qsbr: Arc<Domain>,
-}
-
-impl<T> Clone for SubscriberFactory<T>
-where
-    T: Send + Sync + 'static,
-{
-    fn clone(&self) -> Self {
-        Self {
-            publication: Arc::clone(&self.publication),
-            qsbr: Arc::clone(&self.qsbr),
-        }
-    }
-}
-
-impl<T: Send + Sync + 'static> SubscriberFactory<T> {
+    /// Hand out a [`SubscriberFactory`] tied to this Publisher's
+    /// lifetime.  The factory and any Subscribers it spawns cannot
+    /// outlive the Publisher — the borrow checker enforces this.
     #[must_use]
-    pub fn subscriber(&self) -> Subscriber<T> {
-        Subscriber {
-            publication: Arc::clone(&self.publication),
-            epoch: self.qsbr.register(),
-            cached: None,
-            _not_sync: PhantomData,
+    pub fn factory(&self) -> SubscriberFactory<'_, T> {
+        SubscriberFactory {
+            publication: &self.publication,
+            domain: &self.domain,
         }
     }
 }
 
-pub struct Subscriber<T: Send + Sync + 'static> {
-    publication: Arc<Slot<Versioned<T>>>,
+/// Spawns [`Subscriber`]s tied to a [`Publisher`].  Cheap to clone (a
+/// pair of references); send clones into Subscriber threads inside a
+/// `thread::scope`.
+pub struct SubscriberFactory<'p, T: Send + Sync + 'static> {
+    publication: &'p Arc<Slot<Versioned<T>>>,
+    domain: &'p Arc<Domain>,
+}
+
+impl<T: Send + Sync + 'static> Clone for SubscriberFactory<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Send + Sync + 'static> Copy for SubscriberFactory<'_, T> {}
+
+impl<'p, T: Send + Sync + 'static> SubscriberFactory<'p, T> {
+    /// Construct a new [`Subscriber`] registered with the Publisher's
+    /// QSBR domain.  Each Subscriber should live on a single thread.
+    #[must_use]
+    pub fn subscriber(&self) -> Subscriber<'p, T> {
+        Subscriber {
+            publication: self.publication,
+            epoch: self.domain.register(),
+            cached: None,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Per-thread snapshot handle.  Borrows from the [`Publisher`] via
+/// `'p`; cannot outlive the Publisher.  `Send + !Sync`: ownership can
+/// move to its destination thread once at setup, but the embedded
+/// epoch is meaningful only for one thread's observations.
+pub struct Subscriber<'p, T: Send + Sync + 'static> {
+    publication: &'p Arc<Slot<Versioned<T>>>,
     epoch: Epoch,
     cached: Option<Arc<Versioned<T>>>,
-    _not_sync: NotSync,
+    /// `&'p ()` carries the covariant Publisher-lifetime brand;
+    /// `Cell<()>` makes the Subscriber `!Sync` (the embedded epoch is
+    /// meaningful only for one thread's observations, and `cached` is
+    /// a per-thread cache).  PhantomData of a tuple gives us both at
+    /// zero cost.
+    _marker: PhantomData<(&'p (), Cell<()>)>,
 }
 
-impl<T: Send + Sync + 'static> Subscriber<T> {
+impl<T: Send + Sync + 'static> Subscriber<'_, T> {
+    /// Refresh the per-thread cache from the latest publication and
+    /// return a borrow of the underlying value.  The borrow is bounded
+    /// by `&mut self`, so two snapshots from the same Subscriber
+    /// cannot coexist — one snapshot per Subscriber per batch.
     pub fn snapshot(&mut self) -> &T {
         let latest = self.publication.load_full();
         let needs_refresh = self
@@ -264,7 +318,11 @@ impl<T: Send + Sync + 'static> Subscriber<T> {
             .is_none_or(|cached| cached.version < latest.version);
         if needs_refresh {
             let version = latest.version;
-            // Cache update MUST happen before `observe` call!
+            // Cache update MUST happen before `observe` call!  Reordering
+            // would let the Publisher's reclaim drop its retained clone
+            // while we still hold the old `cached` Arc, so the
+            // `Versioned` destructor would run on this (Subscriber)
+            // thread instead of the Publisher's.
             self.cached = Some(latest);
             self.epoch.observe(version);
         }
@@ -276,16 +334,38 @@ impl<T: Send + Sync + 'static> Subscriber<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Drop for Subscriber<T> {
+impl<T: Send + Sync + 'static> Drop for Subscriber<'_, T> {
     fn drop(&mut self) {
         // Load-bearing: cached must drop BEFORE epoch.  If epoch dies
         // first, the cell's strong-count falls to 1, the Publisher's
         // next `min_observed` scan prunes our entry and returns None,
         // and `reclaim` then clears retired — but our still-live
         // cached Arc would be the last clone of `Versioned<V>`, so its
-        // destructor would run on this (subscriber) thread, violating
+        // destructor would run on this (Subscriber) thread, violating
         // QSBR drop affinity.  Drop cached first so the Publisher
         // always holds the last clone.
         self.cached = None;
     }
 }
+
+// =====================================================================
+// Auto-trait assertions: load-bearing properties of the public API.  A
+// regression silently changing any of these would break QSBR safety;
+// the build error here forces us to acknowledge the change.
+// =====================================================================
+
+// Publisher: Send (movable to its owning thread once at startup) but
+// !Sync (single-thread invariant — interior mutability via `RefCell`/
+// `Cell` is unsafe to share).
+static_assertions::assert_impl_all!(Publisher<()>: Send);
+static_assertions::assert_not_impl_any!(Publisher<()>: Sync);
+
+// SubscriberFactory: Send + Sync + Copy.  Cloned freely and shared
+// across threads to spawn Subscribers per-lcore.
+static_assertions::assert_impl_all!(SubscriberFactory<'static, ()>: Send, Sync, Copy);
+
+// Subscriber: Send (movable to its destination thread once at setup)
+// but !Sync (the embedded epoch represents one specific thread's
+// observed version; sharing would scramble QSBR).
+static_assertions::assert_impl_all!(Subscriber<'static, ()>: Send);
+static_assertions::assert_not_impl_any!(Subscriber<'static, ()>: Sync);
