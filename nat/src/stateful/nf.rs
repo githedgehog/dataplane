@@ -13,7 +13,7 @@ use crate::stateful::flows::check_masquerading_flow;
 use crate::stateful::packet::{NatPacketError, NatTranslate, masquerade};
 use crate::stateful::protocol::next_flow_status;
 use crate::stateful::state::MasqueradeState;
-use concurrency::sync::Arc;
+use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
 use net::flow_key::{IcmpProtoKey, Uni};
@@ -123,12 +123,12 @@ impl StatefulNat {
     }
 
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
-    /// communication and the protocol, and returns how much the timeout of a flow should be extended.
+    /// communication and the protocol, and return how much the timeout of a flow should be extended.
     fn refresh_masquerade_state<Buf: PacketBufferMut>(
         packet: &Packet<Buf>,
         flow_info: &FlowInfo,
         state: &MasqueradeState,
-    ) -> Option<Duration> {
+    ) {
         let key = flow_info.flowkey();
         let current = state.status.load();
         let new_status = next_flow_status(packet, state.action(), current);
@@ -136,7 +136,7 @@ impl StatefulNat {
             debug!("Status of flow {key} changed: {current} -> {new_status}");
             state.status.store(new_status);
         }
-        match new_status {
+        let extend_by = match new_status {
             NatFlowStatus::TwoWay => Some(Self::MASQUERADE_TWOWAY_TIMEOUT),
             NatFlowStatus::Established => Some(state.idle_timeout()),
             NatFlowStatus::Closed | NatFlowStatus::Reset => {
@@ -151,6 +151,18 @@ impl StatefulNat {
             NatFlowStatus::OneWay => {
                 warn!("Unexpected oneway state");
                 None
+            }
+        };
+
+        // extend the duration of the flow according to the new status
+        if let Some(extend_by) = extend_by {
+            let _ = flow_info.reset_expiry_unchecked(extend_by);
+            // if we transition to established, let the related flow get the configured timeout too
+            if current != new_status
+                && new_status == NatFlowStatus::Established
+                && let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade)
+            {
+                let _ = related.reset_expiry_unchecked(extend_by);
             }
         }
     }
@@ -170,9 +182,7 @@ impl StatefulNat {
             return None;
         };
         let xlate = state.as_translate();
-        if let Some(extend_by) = Self::refresh_masquerade_state(packet, flow_info, state) {
-            let _ = flow_info.reset_expiry_unchecked(extend_by); // error purposely ignored
-        }
+        Self::refresh_masquerade_state(packet, flow_info, state);
         Some(xlate)
     }
 
