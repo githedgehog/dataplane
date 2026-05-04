@@ -3,26 +3,32 @@
 
 #![cfg(test)]
 
+use crate::common::{NatAction, NatFlowStatus};
+use crate::stateful::state::MasqueradeState;
 use crate::stateful::{NatAllocatorWriter, StatefulNatConfig};
 use crate::{IcmpErrorHandler, StatefulNat};
 use ahash::HashMap;
 use common::cliprovider::Frame;
 use concurrency::sync::Arc;
-use config::ConfigError;
 use config::external::overlay::Overlay;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};
+use config::{ConfigError, GenId};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
 use net::flow_key::Uni;
+use net::flows::FlowStatus;
+use net::flows::flow_info_item::ExtractRef;
+use net::headers::TryTcpMut;
 use net::headers::{
     EmbeddedTransport, TryEmbeddedTransport as _, TryIcmp4, TryInnerIpv4, TryIpv4, TryUdp,
 };
 use net::icmp4::Icmp4Type;
 use net::icmp4::TruncatedIcmp4;
 use net::ip::NextHeader;
+use net::packet::test_utils::build_test_tcp_ipv4_packet;
 use net::packet::test_utils::{
     IcmpEchoDirection, build_test_icmp4_destination_unreachable_packet, build_test_icmp4_echo,
     build_test_udp_ipv4_frame,
@@ -36,7 +42,7 @@ use pipeline::DynPipeline;
 use pipeline::NetworkFunction;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracectl::get_trace_ctl;
 use tracing::debug;
 use tracing_test::traced_test;
@@ -98,12 +104,14 @@ fn setup_pipeline_stateful_nat(
     (flow_table, pipeline, alloc_writer)
 }
 
-fn test_setup(overlay: Overlay) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
-    let mut config = build_gwconfig_from_overlay(overlay);
-    config.validate().unwrap();
+fn test_setup(
+    genid: GenId,
+    mut overlay: Overlay,
+) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
+    overlay.validate().unwrap();
 
     // build the configuration for the nat allocator
-    let nat_config = StatefulNatConfig::new(&config.external.overlay.vpc_table, 1);
+    let nat_config = StatefulNatConfig::new(&overlay.vpc_table, genid);
 
     // build the config for the test flow filter and the flow filter
     let peerings: Vec<_> = nat_config
@@ -282,6 +290,30 @@ fn build_overlay_2vpcs() -> Overlay {
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("2.2.0.0/16".into())
+        .unwrap();
+    let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
+
+    let manifest12 = VpcManifest::new("VPC-1").exposing(expose121);
+    let manifest21 = VpcManifest::new("VPC-2").exposing(expose211);
+    let peering12 = VpcPeering::with_default_group("VPC-1--VPC-2", manifest12, manifest21);
+
+    let mut peering_table = VpcPeeringTable::new();
+    peering_table.add(peering12).expect("Failed to add peering");
+
+    Overlay::new(vpc_table, peering_table)
+}
+
+// identical to build_overlay_2vpcs() but masquerading with 4.4.0.0/16
+fn build_overlay_2vpcs_modified() -> Overlay {
+    let mut vpc_table = VpcTable::new();
+    let _ = vpc_table.add(Vpc::new("VPC-1", "AAAAA", 100).expect("Failed to add VPC"));
+    let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
+
+    let expose121 = VpcExpose::empty()
+        .make_stateful_nat(None)
+        .unwrap()
+        .ip("1.1.0.0/16".into())
+        .as_range("4.4.0.0/16".into())
         .unwrap();
     let expose211 = VpcExpose::empty().ip("3.3.3.0/24".into());
 
@@ -749,7 +781,7 @@ fn check_packet_icmp_error(
 #[traced_test]
 async fn test_icmp_error_nat() {
     // build setup: 2 vpcs with masquerading, vni 100 -> vni 200
-    let (flow_table, mut pipeline, _allocw) = test_setup(build_overlay_2vpcs());
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
 
     // ICMP Error msg: expose211 -> expose121, no previous session for inner packet
     test_case("Processing icmp error with no prior state");
@@ -1546,4 +1578,299 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
     assert_eq!(return_output_src_port, orig_dst_port);
     assert_eq!(return_output_dst_port, orig_src_port);
     assert_eq!(return_done_reason, None);
+}
+
+fn tcp_packet_to_masquerade() -> Packet<TestBuffer> {
+    let mut packet = build_test_tcp_ipv4_packet("1.1.0.1", "3.3.3.1", 4321, 80);
+    packet.try_tcp_mut().unwrap().set_syn(false);
+    packet.try_tcp_mut().unwrap().set_ack(false);
+    packet.try_tcp_mut().unwrap().set_fin(false);
+    packet.try_tcp_mut().unwrap().set_rst(false);
+
+    packet.meta_mut().set_overlay(true);
+    packet.meta_mut().src_vpcd = Some(vpcd(100));
+    packet.meta_mut().set_stateful_nat(true);
+    packet
+}
+fn flow_status(packet: &Packet<TestBuffer>) -> Option<FlowStatus> {
+    packet
+        .meta()
+        .flow_info
+        .as_ref()
+        .map(|flow_info| flow_info.status())
+}
+fn flow_genid(packet: &Packet<TestBuffer>) -> Option<i64> {
+    packet
+        .meta()
+        .flow_info
+        .as_ref()
+        .map(|flow_info| flow_info.genid())
+}
+fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<NatFlowStatus> {
+    packet
+        .meta()
+        .flow_info
+        .as_ref()?
+        .locked
+        .read()
+        .unwrap()
+        .nat_state
+        .as_ref()
+        .and_then(|s| s.extract_ref::<MasqueradeState>())
+        .map(|state| state.status.load())
+}
+
+fn masquerade_state(packet: &Packet<TestBuffer>) -> Option<MasqueradeState> {
+    packet
+        .meta()
+        .flow_info
+        .as_ref()?
+        .locked
+        .read()
+        .unwrap()
+        .nat_state
+        .as_ref()
+        .and_then(|s| s.extract_ref::<MasqueradeState>())
+        .cloned()
+}
+
+fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
+    let dst_vpcd = packet.meta().dst_vpcd;
+    let src_mac = packet.eth_source().unwrap();
+    let dst_mac = packet.eth_destination().unwrap();
+    let src_ip = packet.ip_source().unwrap();
+    let dst_ip = packet.ip_destination().unwrap();
+    let src_port = packet.transport_src_port().unwrap();
+    let dst_port = packet.transport_dst_port().unwrap();
+
+    let mut reply = packet.clone();
+    reply.meta_reset();
+    reply.meta_mut().src_vpcd = dst_vpcd;
+    reply.meta_mut().set_stateful_nat(true);
+    reply.meta_mut().set_overlay(true);
+
+    reply.set_eth_source(dst_mac).unwrap();
+    reply.set_eth_destination(src_mac).unwrap();
+    reply.set_ip_source(dst_ip.try_into().unwrap()).unwrap();
+    reply.set_ip_destination(src_ip).unwrap();
+    reply.set_source_port(dst_port).unwrap();
+    reply.set_destination_port(src_port).unwrap();
+
+    if reply.is_tcp() {
+        let tcp = reply.try_tcp_mut().unwrap();
+        if tcp.syn() && tcp.ack() {
+            tcp.set_syn(false);
+        }
+        tcp.set_ack(true);
+    }
+    reply
+}
+
+fn process_packet(
+    pipeline: &mut DynPipeline<TestBuffer>,
+    packet: Packet<TestBuffer>,
+) -> Packet<TestBuffer> {
+    println!("INPUT:{packet}");
+    let output: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
+    let output = output.first().unwrap();
+    println!("OUTPUT:{output}");
+    output.clone()
+}
+
+fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
+    // process TCP SYN packet: flow state should be created in both directions
+    let mut packet = tcp_packet_to_masquerade();
+    packet.try_tcp_mut().unwrap().set_syn(true);
+
+    let output = process_packet(pipeline, packet);
+    assert!(!output.is_done());
+
+    // process TCP SYN|ACK packet in reverse direction: flow entry should be found. State should become twoway
+    let reply = build_reply(&output);
+    let output: Packet<TestBuffer> = process_packet(pipeline, reply);
+    assert!(output.meta().flow_info.is_some());
+    assert_eq!(flow_status(&output), Some(FlowStatus::Active));
+    assert_eq!(nat_flow_status(&output), Some(NatFlowStatus::TwoWay));
+
+    // process TCP ACK packet in forward direction
+    let mut packet = tcp_packet_to_masquerade();
+    packet.try_tcp_mut().unwrap().set_ack(true);
+
+    // state should transition to established
+    let output = process_packet(pipeline, packet);
+    assert!(!output.is_done());
+    assert_eq!(flow_status(&output), Some(FlowStatus::Active));
+    assert_eq!(nat_flow_status(&output), Some(NatFlowStatus::Established));
+
+    // configured timeout for the flow
+    let timeout = masquerade_state(&output).unwrap().idle_timeout();
+
+    // check that flow timeouts "match" the ones configured, allowing for 5 second error (for the test)
+    let flow_info_ack = output.meta().flow_info.as_ref().unwrap();
+    let related = flow_info_ack.related.as_ref().unwrap().upgrade().unwrap();
+    let valid_until = (Instant::now() + timeout)
+        .checked_sub(Duration::from_secs(5))
+        .unwrap();
+    assert!(flow_info_ack.expires_at() >= valid_until);
+    assert!(related.expires_at() >= valid_until);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_masquerade_tcp_establish() {
+    // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
+    establish_tcp_connection(&mut pipeline);
+    assert_eq!(flow_table.active_len(), Some(2));
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_masquerade_check() {
+    // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
+
+    test_case("Establish TCP over masquerade peering");
+    establish_tcp_connection(&mut pipeline);
+    assert_eq!(flow_table.active_len(), Some(2));
+
+    test_case("Process packet masquerade source nat");
+    // process one packet in src nat direction
+    let packet = tcp_packet_to_masquerade();
+    let out = process_packet(&mut pipeline, packet);
+
+    // packet hit flow with SRC nat rule
+    let state = masquerade_state(&out).expect("Must have flow info w/ masquerade state");
+    assert_eq!(state.action(), NatAction::SrcNat);
+
+    test_case("Process packet masquerade dest nat");
+    // process packet in dst nat direction
+    let reply = build_reply(&out);
+    let out = process_packet(&mut pipeline, reply);
+
+    // packet hit flow with dst nat rule
+    let state = masquerade_state(&out).expect("Must have flow info w/ masquerade state");
+    assert_eq!(state.action(), NatAction::DstNat);
+    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
+
+    // packet should make it to tcp source
+    assert_eq!(out.ip_source().unwrap(), addr_v4("3.3.3.1"));
+    assert_eq!(out.ip_destination().unwrap(), addr_v4("1.1.0.1"));
+    assert_eq!(out.transport_src_port().unwrap().get(), 80);
+    assert_eq!(out.transport_dst_port().unwrap().get(), 4321);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(flow_table.active_len(), Some(2));
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_masquerade_tcp_reset() {
+    // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
+    establish_tcp_connection(&mut pipeline);
+    assert_eq!(flow_table.active_len(), Some(2));
+
+    // process one packet in src nat direction
+    let packet = tcp_packet_to_masquerade();
+    let out = process_packet(&mut pipeline, packet);
+
+    // process packet in dst nat direction with RST flag set
+    let mut reply = build_reply(&out);
+    reply.try_tcp_mut().unwrap().set_rst(true);
+    reply.try_tcp_mut().unwrap().set_ack(false);
+    let reply_out = process_packet(&mut pipeline, reply);
+
+    // packet hits flow with dst nat rule. Nat flow status becomes reset and flow is cancelled
+    let state = masquerade_state(&reply_out).expect("Must have flow info w/ masquerade state");
+    assert_eq!(state.action(), NatAction::DstNat);
+    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Reset);
+    assert_eq!(flow_status(&reply_out).unwrap(), FlowStatus::Cancelled);
+
+    // packet (RST) should make it to tcp source
+    assert_eq!(reply_out.ip_source().unwrap(), addr_v4("3.3.3.1"));
+    assert_eq!(reply_out.ip_destination().unwrap(), addr_v4("1.1.0.1"));
+    assert_eq!(reply_out.transport_src_port().unwrap().get(), 80);
+    assert_eq!(reply_out.transport_dst_port().unwrap().get(), 4321);
+
+    // flows get expired
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(flow_table.active_len(), Some(0));
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_masquerade_reconfig_keep_flow() {
+    let genid = 1;
+    // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
+    let (flow_table, mut pipeline, mut allocw) = test_setup(genid, build_overlay_2vpcs());
+    establish_tcp_connection(&mut pipeline);
+    assert_eq!(flow_table.active_len(), Some(2));
+
+    // process one packet in src nat direction
+    let packet = tcp_packet_to_masquerade();
+    let out = process_packet(&mut pipeline, packet);
+
+    // process packet in dst nat direction
+    let reply = build_reply(&out);
+    let out = process_packet(&mut pipeline, reply);
+    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
+    assert_eq!(flow_genid(&out).unwrap(), genid);
+
+    // update the NAT allocator with an identical config
+    let mut overlay = build_overlay_2vpcs();
+    overlay.validate().unwrap();
+    let nat_config = StatefulNatConfig::new(&overlay.vpc_table, genid + 1);
+    allocw.update_nat_allocator(nat_config, &flow_table);
+
+    // process a packet: it should hit identical flows, except for genid
+    let packet = tcp_packet_to_masquerade();
+    let out = process_packet(&mut pipeline, packet);
+    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
+    assert_eq!(flow_genid(&out).unwrap(), genid + 1);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(flow_table.active_len(), Some(2));
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_masquerade_reconfig_drop_flow() {
+    let genid = 1;
+    // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
+    let (flow_table, mut pipeline, mut allocw) = test_setup(genid, build_overlay_2vpcs());
+    establish_tcp_connection(&mut pipeline);
+    assert_eq!(flow_table.active_len(), Some(2));
+
+    // process one packet in src nat direction
+    let packet = tcp_packet_to_masquerade();
+    let out = process_packet(&mut pipeline, packet);
+
+    // process packet in dst nat direction
+    let reply = build_reply(&out);
+    let out = process_packet(&mut pipeline, reply);
+    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_eq!(flow_status(&out).unwrap(), FlowStatus::Active);
+    assert_eq!(flow_genid(&out).unwrap(), genid);
+
+    // update the NAT allocator with an identical config
+    let mut overlay = build_overlay_2vpcs_modified();
+    overlay.validate().unwrap();
+    let nat_config = StatefulNatConfig::new(&overlay.vpc_table, genid + 1);
+    allocw.update_nat_allocator(nat_config, &flow_table);
+
+    // process a packet: it should hit identical flows
+    let packet = tcp_packet_to_masquerade();
+    let out = process_packet(&mut pipeline, packet);
+    assert_eq!(nat_flow_status(&out).unwrap(), NatFlowStatus::Established);
+    assert_ne!(flow_status(&out).unwrap(), FlowStatus::Active);
+    assert_eq!(flow_genid(&out).unwrap(), genid); // genid not upgraded
+    assert_eq!(out.get_done(), Some(DoneReason::Filtered)); // packet is not let through
+
+    // flows should have been removed
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(flow_table.active_len(), Some(0));
 }
