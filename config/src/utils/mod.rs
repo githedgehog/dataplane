@@ -7,7 +7,10 @@ mod collapse;
 mod overlap;
 
 pub(crate) use collapse::collapse_prefixes;
-pub(crate) use overlap::{check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap};
+pub(crate) use overlap::{
+    check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap,
+    merge_overlapping_prefixes,
+};
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ConfigUtilError {
