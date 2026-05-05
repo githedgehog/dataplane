@@ -5,6 +5,7 @@
 
 use crate::utils::{
     check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, collapse_prefixes,
+    merge_overlapping_prefixes,
 };
 use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use std::collections::BTreeMap;
@@ -367,6 +368,10 @@ impl VpcExpose {
         // Apply exclusion prefixes
         let mut clone = self.clone();
         collapse_prefixes(&mut clone);
+        merge_overlapping_prefixes(&mut clone.ips);
+        if let Some(nat) = &mut clone.nat {
+            merge_overlapping_prefixes(&mut nat.as_range);
+        }
         let collapsed_expose = ValidatedExpose {
             default: clone.default,
             ips: clone.ips,

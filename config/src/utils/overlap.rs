@@ -3,7 +3,7 @@
 
 use crate::ConfigError;
 use crate::external::overlay::vpcpeering::ValidatedExpose;
-use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet};
+use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts};
 
 pub fn check_private_prefixes_dont_overlap(
     expose_left: &ValidatedExpose,
@@ -62,4 +62,25 @@ fn check_prefixes_dont_overlap(
         }
     }
     Ok(())
+}
+
+pub fn merge_overlapping_prefixes(prefixes: &mut PrefixPortsSet) {
+    let mut prefixes_to_merge = prefixes
+        .iter()
+        .copied()
+        .collect::<Vec<PrefixWithOptionalPorts>>();
+    let mut merged_prefixes = PrefixPortsSet::default();
+
+    'next_prefix: while let Some(prefix_left) = prefixes_to_merge.pop() {
+        for prefix_right in &prefixes_to_merge {
+            if prefix_left.overlaps(prefix_right) {
+                let fragments_left = prefix_left.subtract(prefix_right);
+                prefixes_to_merge.extend(fragments_left);
+                continue 'next_prefix;
+            }
+        }
+        merged_prefixes.insert(prefix_left);
+    }
+
+    *prefixes = merged_prefixes;
 }
