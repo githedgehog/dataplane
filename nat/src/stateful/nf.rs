@@ -493,9 +493,9 @@ fn translate_error(error: &StatefulNatError) -> DoneReason {
 
         StatefulNatError::AllocationFailure(
             AllocatorError::NoFreeIp | AllocatorError::NoPortBlock | AllocatorError::NoFreePort(_),
-        )
-        | StatefulNatError::CapacityExceeded => DoneReason::NatOutOfResources,
+        ) => DoneReason::NatOutOfResources,
 
+        StatefulNatError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
         StatefulNatError::NoAllocator
         | StatefulNatError::UnexpectedKeyVariant
         | StatefulNatError::IcmpUnsupportedCategory

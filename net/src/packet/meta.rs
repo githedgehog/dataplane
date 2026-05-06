@@ -101,6 +101,7 @@ pub enum DoneReason {
     VxlanEncapFailure,    /* Failed to encap a packet in vxlan */
     Filtered,             /* The packet was administratively filtered */
     NatOutOfResources,    /* can't do NAT due to lack of resources */
+    FlowCapacityExceeded, /* could not create flow state: flow table capacity exceeded */
     NatUnsupportedProto,  /* unsupported transport protocol for NATing */
     NatFailure,           /* It was not possible to NAT the packet */
     NatNotPortForwarded,  /* Packet was sent to port forwarder and it rejected it */

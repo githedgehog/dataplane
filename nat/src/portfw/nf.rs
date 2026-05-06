@@ -141,7 +141,7 @@ impl PortForwarder {
             Ok(None) => {}
             Err(FlowTableError::CapacityExceeded) => {
                 warn!("Flow table capacity exceeded; dropping port-forwarded packet");
-                packet.done(DoneReason::NatOutOfResources);
+                packet.done(DoneReason::FlowCapacityExceeded);
                 return;
             }
             Err(FlowTableError::InvalidShardCount(_)) => unreachable!(),
@@ -159,7 +159,7 @@ impl PortForwarder {
             match e {
                 FlowTableError::CapacityExceeded => {
                     warn!("Flow table capacity exceeded; dropping port-forwarded packet");
-                    packet.done(DoneReason::NatOutOfResources);
+                    packet.done(DoneReason::FlowCapacityExceeded);
                 }
                 FlowTableError::InvalidShardCount(_) => unreachable!(),
             }
