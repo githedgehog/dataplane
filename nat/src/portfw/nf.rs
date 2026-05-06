@@ -151,11 +151,8 @@ impl PortForwarder {
         // and admits it unconditionally.  Remove the forward entry on the unlikely
         // event of failure to avoid leaving a one-sided flow.
         if let Err(e) = self.flow_table.insert_from_arc(&rev_flow) {
-            debug_assert!(
-                false,
-                "reverse port-forwarding flow insert failed unexpectedly: {e:?}"
-            );
-            self.flow_table.remove(&fw_key);
+            debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
+            fw_flow.invalidate();
             match e {
                 FlowTableError::CapacityExceeded => {
                     warn!("Flow table capacity exceeded; dropping port-forwarded packet");
