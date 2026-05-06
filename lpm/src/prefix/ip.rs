@@ -371,7 +371,7 @@ impl TryFrom<Prefix> for Ipv6Prefix {
     }
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "bolero"))]
 mod contract {
     use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
     use bolero::{Driver, TypeGenerator};
