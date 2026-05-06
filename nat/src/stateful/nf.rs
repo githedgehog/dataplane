@@ -357,10 +357,9 @@ impl StatefulNat {
             return Err(StatefulNatError::NoAllocator);
         };
 
-        // if packet contains TCP, do not create flows nor translate state unless it is a SYN
-        // TODO: add utils to check if a TCP segment is a legal SYN
+        // if packet contains TCP, do not create flows nor translate state unless it is a first segment
         if let Some(tcp) = packet.try_tcp()
-            && (!tcp.syn() || tcp.ack())
+            && !tcp.is_first_segment()
         {
             return Err(StatefulNatError::IntendedDrop("TCP without SYN"));
         }
