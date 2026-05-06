@@ -303,6 +303,13 @@ impl Tcp {
         self.0.acknowledgment_number = ack_number;
         self
     }
+
+    /// Tell if this `Tcp` header corresponds to the first segment in a connection.
+    /// ECE or CWR are valid with ECN-setup SYN packets (see RFC 3168)
+    #[must_use]
+    pub fn is_first_segment(&self) -> bool {
+        self.syn() && !self.ack() && !self.rst() && !self.fin() && !self.psh() && !self.urg()
+    }
 }
 
 /// Errors which can occur when attempting to parse arbitrary bytes into a [`Tcp`] header.

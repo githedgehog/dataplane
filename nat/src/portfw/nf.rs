@@ -64,7 +64,7 @@ impl PortForwarder {
 
         if let Some((dst_ip, dst_port, proto)) =
             match packet.headers().pat().eth().net().transport().done() {
-                Some((_, _net, Transport::Tcp(tcp))) if (!tcp.syn() || tcp.ack()) => {
+                Some((_, _net, Transport::Tcp(tcp))) if !tcp.is_first_segment() => {
                     debug!("Ignoring TCP packet: it has no SYN and we have no state for it");
                     None
                 }
