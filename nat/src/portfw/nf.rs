@@ -8,8 +8,8 @@ use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 
 use net::buffer::PacketBufferMut;
 use net::flows::{ExtractMut, ExtractRef, FlowInfo};
-use net::headers::{TryIp, TryTcp, TryTransport};
-use net::ip::{NextHeader, UnicastIpAddr};
+use net::headers::{Transport, TryHeaders, TryIp};
+use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
@@ -48,8 +48,9 @@ impl PortForwarder {
     }
 
     /// Tell if a packet can be port-forwarded. For that to happen, a packet must be
-    /// unicast Ipv4 or IPv6 and carry UDP/TCP payload. If a packet can be port-forwarded,
-    /// a `PortFwKey` is returned, along with the destination address and port to translate.
+    /// unicast Ipv4 or IPv6 and carry UDP/TCP payload. In case of TCP, it must be the first segment.
+    /// If a packet can be port-forwarded, a `PortFwKey` is returned, along with the
+    /// destination address and port.
     fn can_be_port_forwarded<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
     ) -> Option<(PortFwKey, UnicastIpAddr, NonZero<u16>)> {
@@ -60,39 +61,36 @@ impl PortForwarder {
             packet.done(DoneReason::InternalFailure);
             return None;
         };
-        let Some(net) = packet.try_ip() else {
-            debug!("packet is not ipv4/ipv6: will ignore");
-            return None;
-        };
-        let proto = net.next_header();
-        if proto != NextHeader::TCP && proto != NextHeader::UDP {
-            debug!("packet is not tcp/udp: will ignore");
-            return None;
-        }
-        let dst_ip = net.dst_addr();
-        let Ok(dst_ip) = UnicastIpAddr::try_from(dst_ip) else {
-            debug!("Packet destination is not unicast: will ignore");
-            return None;
-        };
-        let Some(transport) = packet.try_transport() else {
-            error!("can't get packet transport headers: will drop");
-            packet.done(DoneReason::InternalFailure);
-            return None;
-        };
-        if let Some(tcp) = packet.try_tcp()
-            && (!tcp.syn() || tcp.ack())
+
+        if let Some((dst_ip, dst_port, proto)) =
+            match packet.headers().pat().eth().net().transport().done() {
+                Some((_, _net, Transport::Tcp(tcp))) if (!tcp.syn() || tcp.ack()) => {
+                    debug!("Ignoring TCP packet: it has no SYN and we have no state for it");
+                    None
+                }
+                Some((_, net, tp))
+                    if let Some(dst_port) = tp.dst_port()
+                        && let dst_ip = net.dst_addr() =>
+                {
+                    if let Ok(dst_ip) = UnicastIpAddr::try_from(dst_ip) {
+                        debug!("Packet qualifies for port-forwarding");
+                        Some((dst_ip, dst_port, net.next_header()))
+                    } else {
+                        debug!("Ignoring packet: destination IP is not unicast");
+                        None
+                    }
+                }
+                _ => {
+                    debug!("Ignoring packet: packet type does not qualify");
+                    None
+                }
+            }
         {
-            debug!("Dropping TCP segment: it has no SYN (or ack) and we have no state for it");
-            packet.done(DoneReason::NatNotPortForwarded);
-            return None;
+            let key = PortFwKey::new(src_vpcd, proto);
+            Some((key, dst_ip, dst_port))
+        } else {
+            None
         }
-        let Some(dst_port) = transport.dst_port() else {
-            error!("can't get dst port from {proto} header: will drop");
-            packet.done(DoneReason::InternalFailure);
-            return None;
-        };
-        let key = PortFwKey::new(src_vpcd, proto);
-        Some((key, dst_ip, dst_port))
     }
 
     fn do_port_forwarding<Buf: PacketBufferMut>(
@@ -175,14 +173,13 @@ impl PortForwarder {
         // check if the packet can be port forwarded at all
         let Some((key, dst_ip, dst_port)) = Self::can_be_port_forwarded(packet) else {
             packet.done(DoneReason::NatNotPortForwarded);
-            let reason = packet.get_done().unwrap_or_else(|| unreachable!());
-            debug!("{nfi}: packet cannot be port-forwarded. Dropping it (reason:{reason})");
+            debug!("{nfi}: packet cannot be port-forwarded. Dropping...");
             return;
         };
 
         // lookup the port-forwarding rule, using the given key, that contains the destination port
         let Some(entry) = pfwtable.lookup_matching_rule(key, dst_ip.inner(), dst_port) else {
-            debug!("{nfi}: no rule found for port-forwarding key {key}. Dropping packet.");
+            debug!("{nfi}: no rule found for port-forwarding key {key}. Dropping packet...");
             packet.done(DoneReason::NatNotPortForwarded);
             return;
         };
@@ -190,7 +187,7 @@ impl PortForwarder {
         // map the destination address and port
         let Some((new_dst_ip, new_dst_port)) = entry.map_address_port(dst_ip.inner(), dst_port)
         else {
-            debug!("{nfi}: Unable to build usable address and port"); // FIXME:
+            debug!("{nfi}: Unable to build usable address or port");
             packet.done(DoneReason::InternalFailure);
             return;
         };
