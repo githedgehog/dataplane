@@ -50,6 +50,8 @@ enum StatelessNatError {
     FailedToSetSourcePort,
     #[error("Failed to set destination port")]
     FailedToSetDestPort,
+    #[error("Port translation not supported for ICMP")]
+    IcmpPortTranslation,
     #[error("Can't find NAT tables for VNI {0}")]
     MissingTable(Vni),
     #[error("Failed to translate ICMP inner packet: {0}")]
@@ -133,7 +135,7 @@ impl StatelessNat {
                     .map_err(|_| StatelessNatError::FailedToSetSourcePort)?;
             }
             Transport::Icmp4(_) | Transport::Icmp6(_) => {
-                todo!()
+                return Err(StatelessNatError::IcmpPortTranslation);
             }
         }
         Ok(())
@@ -161,7 +163,7 @@ impl StatelessNat {
                     .map_err(|_| StatelessNatError::FailedToSetDestPort)?;
             }
             Transport::Icmp4(_) | Transport::Icmp6(_) => {
-                todo!()
+                return Err(StatelessNatError::IcmpPortTranslation);
             }
         }
         Ok(())
@@ -382,7 +384,8 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
         StatelessNatError::FailedToSetSourcePort
         | StatelessNatError::FailedToSetDestPort
         | StatelessNatError::ZeroPort
-        | StatelessNatError::NoTransportHeader => DoneReason::NatUnsupportedProto,
+        | StatelessNatError::NoTransportHeader
+        | StatelessNatError::IcmpPortTranslation => DoneReason::NatUnsupportedProto,
 
         StatelessNatError::MissingTable(_) => DoneReason::Unroutable,
 
