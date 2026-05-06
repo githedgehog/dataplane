@@ -4,7 +4,7 @@
 //! Port forwarding stage
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
-use flow_entry::flow_table::table::{FlowTable, FlowTableError};
+use flow_entry::flow_table::table::FlowTable;
 
 use net::buffer::PacketBufferMut;
 use net::flows::{ExtractMut, ExtractRef, FlowInfo};
@@ -134,30 +134,21 @@ impl PortForwarder {
         }
 
         // insert the two related flows
-        match self.flow_table.insert_from_arc(&fw_flow) {
-            Ok(Some(ref prior)) => debug!("Replaced forward flow entry: {prior}"),
-            Ok(None) => {}
-            Err(FlowTableError::CapacityExceeded) => {
-                warn!("Flow table capacity exceeded; dropping port-forwarded packet");
-                packet.done(DoneReason::FlowCapacityExceeded);
-                return;
-            }
-            Err(FlowTableError::InvalidShardCount(_)) => unreachable!(),
+        if let Err(e) = self.flow_table.insert_from_arc(&fw_flow) {
+            warn!("Failed to insert flow (forward) in the flow table: {e}");
+            packet.done(DoneReason::FlowCapacityExceeded);
+            return;
         }
+
         // The reverse insert is expected to always succeed: capacity enforcement
         // recognises that rev_flow has a related flow (fw_flow) already in the table
         // and admits it unconditionally.  Remove the forward entry on the unlikely
         // event of failure to avoid leaving a one-sided flow.
         if let Err(e) = self.flow_table.insert_from_arc(&rev_flow) {
-            debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
             fw_flow.invalidate();
-            match e {
-                FlowTableError::CapacityExceeded => {
-                    warn!("Flow table capacity exceeded; dropping port-forwarded packet");
-                    packet.done(DoneReason::FlowCapacityExceeded);
-                }
-                FlowTableError::InvalidShardCount(_) => unreachable!(),
-            }
+            warn!("Failed to insert flow (reverse) in the flow table: {e}");
+            packet.done(DoneReason::FlowCapacityExceeded);
+            debug_assert!(false, "reverse port-forwarding flow insert failed: {e:?}");
             return;
         }
         debug!("Inserted forward and reverse port-forwarding flow entries");

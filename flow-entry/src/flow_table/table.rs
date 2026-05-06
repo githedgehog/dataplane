@@ -15,8 +15,6 @@ use tracing::debug;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowTableError {
-    #[error("Invalid number of shards: {0}. Must be a power of two.")]
-    InvalidShardCount(usize),
     #[error("Flow table capacity exceeded")]
     CapacityExceeded,
 }
@@ -89,11 +87,13 @@ impl FlowTable {
     /// # Panics
     ///
     /// Panics if this thread already holds the read lock on the table or
-    /// if the table lock is poisoned.
-    pub fn reshard(&self, num_shards: usize) -> Result<(), FlowTableError> {
-        if !num_shards.is_power_of_two() {
-            return Err(FlowTableError::InvalidShardCount(num_shards));
-        }
+    /// if the table lock is poisoned, or if the new number of shards is
+    /// not a power of 2.
+    pub fn reshard(&self, num_shards: usize) {
+        assert!(
+            num_shards.is_power_of_two(),
+            "Shard number must be a power of 2!"
+        );
         debug!(
             "reshard: Resharding flow table from {} shards into {} shards",
             self.table.read().unwrap().shards().len(),
@@ -112,7 +112,6 @@ impl FlowTable {
                 locked_table.insert(k, v.into_inner());
             }
         }
-        Ok(())
     }
 
     /// Add a flow to the table.
@@ -915,9 +914,7 @@ mod tests {
                         assert!(result.0 == flow_key2);
                     }));
 
-                    handles.push(thread::spawn(move || {
-                        flow_table_clone3.reshard(128).unwrap();
-                    }));
+                    handles.push(thread::spawn(move || flow_table_clone3.reshard(128)));
 
                     let _results: Vec<()> = handles
                         .into_iter()
