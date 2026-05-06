@@ -35,6 +35,7 @@ impl Display for DoneReason {
             Self::VxlanDecapFailure => f.pad("VxLAN: decap failure"),
 
             Self::Filtered => f.pad("Filtered"),
+            Self::FlowCapacityExceeded => f.pad("Flow capacity exceeded"),
 
             Self::NatOutOfResources => f.pad("NAT: out of resources"),
             Self::NatFailure => f.pad("NAT: failure"),
