@@ -6,7 +6,8 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-testing = ["dep:bolero"]
+bolero = ["dep:bolero"]
+testing = []
 
 [dependencies]
 bnum = { workspace = true }
