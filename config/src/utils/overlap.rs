@@ -84,3 +84,24 @@ pub fn merge_overlapping_prefixes(prefixes: &mut PrefixPortsSet) {
 
     *prefixes = merged_prefixes;
 }
+
+#[cfg(test)]
+mod bolero_tests {
+    use super::*;
+    use std::ops::Bound::{Excluded, Unbounded};
+
+    #[test]
+    fn test_merge_overlapping_prefixes() {
+        bolero::check!()
+            .with_type()
+            .for_each(|set: &PrefixPortsSet| {
+                let mut set_clone = set.clone();
+                merge_overlapping_prefixes(&mut set_clone);
+                for prefix_left in &set_clone {
+                    for prefix_right in set_clone.range((Excluded(prefix_left), Unbounded)) {
+                        assert!(!prefix_left.overlaps(prefix_right));
+                    }
+                }
+            });
+    }
+}
