@@ -38,6 +38,7 @@ pub enum PrefixError {
 /// Since we will not store prefixes, putting Ipv6 on the same basket as IPv4 will not penalize the
 /// memory requirements of Ipv4
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(any(test, feature = "testing"), derive(bolero::TypeGenerator))]
 pub enum Prefix {
     IPV4(Ipv4Prefix),
     IPV6(Ipv6Prefix),

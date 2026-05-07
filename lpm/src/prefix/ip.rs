@@ -389,7 +389,7 @@ impl TryFrom<Prefix> for Ipv6Prefix {
 
 #[cfg(any(test, feature = "testing"))]
 mod contract {
-    use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
+    use crate::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
     use bolero::{Driver, TypeGenerator};
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::ops::Bound;
@@ -415,16 +415,6 @@ mod contract {
                 .unwrap_or(0);
             let addr = Ipv6Addr::from_bits(bits);
             Some(Ipv6Prefix::new(addr, len).unwrap_or_else(|_| unreachable!()))
-        }
-    }
-
-    impl TypeGenerator for Prefix {
-        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            Some(if driver.gen_bool(None)? {
-                Prefix::IPV4(driver.produce()?)
-            } else {
-                Prefix::IPV6(driver.produce()?)
-            })
         }
     }
 }
