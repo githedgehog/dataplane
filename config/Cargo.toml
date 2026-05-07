@@ -34,7 +34,7 @@ tracectl = { workspace = true }
 [dev-dependencies]
 # internal
 pipeline = { workspace = true } # should be removed w/ NAT
-lpm = { workspace = true, features = ["testing"] }
+lpm = { workspace = true, features = ["bolero", "testing"] }
 k8s-intf = { workspace = true, features = ["bolero"] }
 
 # external
