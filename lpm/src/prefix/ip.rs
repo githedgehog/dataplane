@@ -396,30 +396,24 @@ mod contract {
 
     impl TypeGenerator for Ipv4Prefix {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let addr = Ipv4Addr::from_bits(driver.produce()?);
-            let len = Ipv4Prefix::MAX_LEN
-                - driver.gen_u8(
-                    Bound::Included(&0),
-                    Bound::Included(
-                        &u8::try_from(addr.to_bits().trailing_zeros())
-                            .unwrap_or_else(|_| unreachable!()),
-                    ),
-                )?;
+            let mut bits = driver.produce()?;
+            let len = driver.gen_u8(Bound::Included(&0), Bound::Included(&Self::MAX_LEN))?;
+            bits &= u32::MAX
+                .checked_shl(u32::from(Self::MAX_LEN - len))
+                .unwrap_or(0);
+            let addr = Ipv4Addr::from_bits(bits);
             Some(Ipv4Prefix::new(addr, len).unwrap_or_else(|_| unreachable!()))
         }
     }
 
     impl TypeGenerator for Ipv6Prefix {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
-            let addr = Ipv6Addr::from_bits(driver.produce()?);
-            let len = Ipv6Prefix::MAX_LEN
-                - driver.gen_u8(
-                    Bound::Included(&0),
-                    Bound::Included(
-                        &u8::try_from(addr.to_bits().trailing_zeros())
-                            .unwrap_or_else(|_| unreachable!()),
-                    ),
-                )?;
+            let mut bits = driver.produce()?;
+            let len = driver.gen_u8(Bound::Included(&0), Bound::Included(&Self::MAX_LEN))?;
+            bits &= u128::MAX
+                .checked_shl(u32::from(Self::MAX_LEN - len))
+                .unwrap_or(0);
+            let addr = Ipv6Addr::from_bits(bits);
             Some(Ipv6Prefix::new(addr, len).unwrap_or_else(|_| unreachable!()))
         }
     }
