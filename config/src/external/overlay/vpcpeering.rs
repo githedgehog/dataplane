@@ -253,16 +253,6 @@ impl VpcExpose {
             &nat.not_as
         }
     }
-    #[must_use]
-    pub(crate) fn has_nat(&self) -> bool {
-        self.nat
-            .as_ref()
-            .is_some_and(|nat| !nat.as_range.is_empty())
-    }
-
-    pub(crate) fn has_stateless_nat(&self) -> bool {
-        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
-    }
 
     #[must_use]
     pub fn nat_config(&self) -> Option<&VpcExposeNatConfig> {
@@ -559,6 +549,13 @@ impl ValidatedExpose {
     }
 
     #[must_use]
+    pub(crate) fn has_nat(&self) -> bool {
+        self.nat
+            .as_ref()
+            .is_some_and(|nat| !nat.as_range.is_empty())
+    }
+
+    #[must_use]
     pub fn has_stateful_nat(&self) -> bool {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateful)
     }
@@ -640,7 +637,7 @@ impl VpcManifest {
     /// # Errors
     ///
     /// Returns an error if the manifest configuration is invalid.
-    pub fn validate(&mut self) -> Result<ValidatedManifest, ConfigError> {
+    pub fn validate(&self) -> Result<ValidatedManifest, ConfigError> {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Manifest name"));
         }

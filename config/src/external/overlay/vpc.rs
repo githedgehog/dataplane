@@ -35,13 +35,11 @@ pub struct Peering {
 }
 
 impl Peering {
-    fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&self) -> Result<ValidatedPeering, ConfigError> {
         debug!(
             "Validating manifest of VPC {} in peering {}",
             self.local.name, self.name
         );
-        self.local.validate()?;
-        self.remote.validate()?;
 
         if self.local.default_expose().is_some() && self.remote.default_expose().is_some() {
             return Err(ConfigError::Forbidden(
@@ -49,17 +47,52 @@ impl Peering {
             ));
         }
 
-        self.validate_nat_combinations()
+        let valid_peering_candidate = ValidatedPeering {
+            name: self.name.clone(),
+            local: self.local.validate()?,
+            remote: self.remote.validate()?,
+            remote_id: self.remote_id.clone(),
+            gwgroup: self.gwgroup.clone(),
+        };
+        valid_peering_candidate.validate_nat_combinations()?;
+
+        Ok(valid_peering_candidate)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedPeering {
+    name: String,              /* name of peering */
+    local: ValidatedManifest,  /* local manifest */
+    remote: ValidatedManifest, /* remote manifest */
+    remote_id: VpcId,          /* Id of peer */
+    gwgroup: Option<String>,   /* gateway group serving this peering */
+}
+
+impl ValidatedPeering {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
-    /// Consume `self` and produce a [`ValidatedPeering`] if it passes validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the peering configuration is invalid.
-    pub fn validated(mut self) -> Result<ValidatedPeering, ConfigError> {
-        self.validate()?;
-        Ok(ValidatedPeering(self))
+    #[must_use]
+    pub fn local(&self) -> &ValidatedManifest {
+        &self.local
+    }
+
+    #[must_use]
+    pub fn remote(&self) -> &ValidatedManifest {
+        &self.remote
+    }
+
+    #[must_use]
+    pub fn remote_id(&self) -> &VpcId {
+        &self.remote_id
+    }
+
+    #[must_use]
+    pub fn gwgroup(&self) -> Option<&String> {
+        self.gwgroup.as_ref()
     }
 
     fn validate_nat_combinations(&self) -> ConfigResult {
@@ -68,7 +101,7 @@ impl Peering {
         let mut local_has_stateless_nat = false;
         let mut local_has_stateful_nat = false;
         let mut local_has_port_forwarding = false;
-        for expose in &self.local.exposes {
+        for expose in self.local.valexp() {
             match expose.nat_config() {
                 Some(VpcExposeNatConfig::Stateful { .. }) => {
                     local_has_stateful_nat = true;
@@ -105,7 +138,7 @@ impl Peering {
         // - port forwarding --- port forwarding
         // - port forwarding --- stateless NAT
 
-        for remote_expose in &self.remote.exposes {
+        for remote_expose in self.remote.valexp() {
             if !remote_expose.has_nat() {
                 continue;
             }
@@ -116,49 +149,6 @@ impl Peering {
             return Err(ConfigError::IncompatibleNatModes(self.name.clone()));
         }
         Ok(())
-    }
-}
-
-#[repr(transparent)]
-#[derive(Clone, Debug, PartialEq)]
-pub struct ValidatedPeering(Peering);
-
-impl ValidatedPeering {
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.0.name
-    }
-
-    #[must_use]
-    pub fn local(&self) -> &ValidatedManifest {
-        // SAFETY: ValidatedManifest is #[repr(transparent)] over VpcManifest.
-        // A ValidatedPeering is only ever obtained from `Peering::validated`,
-        // which validated the local manifest.
-        #[allow(unsafe_code)]
-        unsafe {
-            &*(&raw const self.0.local).cast::<ValidatedManifest>()
-        }
-    }
-
-    #[must_use]
-    pub fn remote(&self) -> &ValidatedManifest {
-        // SAFETY: ValidatedManifest is #[repr(transparent)] over VpcManifest.
-        // A ValidatedPeering is only ever obtained from `Peering::validated`,
-        // which validated the remote manifest.
-        #[allow(unsafe_code)]
-        unsafe {
-            &*(&raw const self.0.remote).cast::<ValidatedManifest>()
-        }
-    }
-
-    #[must_use]
-    pub fn remote_id(&self) -> &VpcId {
-        &self.0.remote_id
-    }
-
-    #[must_use]
-    pub fn gwgroup(&self) -> Option<&String> {
-        self.0.gwgroup.as_ref()
     }
 }
 

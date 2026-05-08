@@ -252,12 +252,12 @@ fn build_context() -> NatTables {
 
     let mut vni_table1 = PerVniTable::new();
     vni_table1
-        .add_peering(&peering1.validated().unwrap(), vni2)
+        .add_peering(&peering1.validate().unwrap(), vni2)
         .expect("Failed to build NAT tables");
 
     let mut vni_table2 = PerVniTable::new();
     vni_table2
-        .add_peering(&peering2.validated().unwrap(), vni1)
+        .add_peering(&peering2.validate().unwrap(), vni1)
         .expect("Failed to build NAT tables");
 
     nat_table.add_table(vni_table1, vni1);
