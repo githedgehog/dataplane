@@ -3,10 +3,10 @@
 
 //! Underlay configuration
 
+use crate::ConfigError;
 use crate::internal::interfaces::interface::{InterfaceConfig, InterfaceType};
 use crate::internal::routing::evpn::VtepConfig;
 use crate::internal::routing::vrf::VrfConfig;
-use crate::{ConfigError, ConfigResult};
 
 use net::eth::mac::SourceMac;
 use net::ipv4::UnicastIpv4Addr;
@@ -77,7 +77,7 @@ impl Underlay {
     /// # Errors
     ///
     /// Returns an error if any interface is invalid or VTEP configuration is wrong.
-    pub fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&self) -> Result<Self, ConfigError> {
         debug!("Validating underlay configuration...");
 
         // validate interfaces
@@ -86,9 +86,10 @@ impl Underlay {
             .values()
             .try_for_each(InterfaceConfig::validate)?;
 
-        // set vtep information if a vtep interface has been specified in the config
-        self.vtep = self.get_vtep_info()?;
-
-        Ok(())
+        Ok(Self {
+            vrf: self.vrf.clone(),
+            // set vtep information if a vtep interface has been specified in the config
+            vtep: self.get_vtep_info()?,
+        })
     }
 }

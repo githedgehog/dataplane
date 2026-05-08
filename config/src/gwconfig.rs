@@ -114,7 +114,7 @@ impl GwConfig {
     /// # Errors
     ///
     /// Returns a [`ConfigError`] if the external configuration fails validation.
-    pub fn validate(mut self) -> Result<ValidatedGwConfig, ConfigError> {
+    pub fn validate(self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid());
         self.external.validate()?;
         Ok(ValidatedGwConfig(self))
