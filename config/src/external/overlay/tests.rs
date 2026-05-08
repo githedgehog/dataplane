@@ -1255,7 +1255,7 @@ pub mod test {
 
     #[test]
     fn test_manifest_must_have_exposes() {
-        let mut manifest = VpcManifest::new("some-vpc");
+        let manifest = VpcManifest::new("some-vpc");
         assert!(
             manifest
                 .validate()

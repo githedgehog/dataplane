@@ -198,7 +198,7 @@ mod tests {
 
         let mut vni_table = PerVniTable::new();
         vni_table
-            .add_peering(&peering.validated().unwrap(), dst_vni)
+            .add_peering(&peering.validate().unwrap(), dst_vni)
             .expect("Failed to build NAT tables");
     }
 }
