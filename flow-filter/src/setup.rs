@@ -1245,7 +1245,7 @@ mod tests {
         .validated()
         .unwrap();
 
-        let vpc1 = vpc1.validated().unwrap();
+        let vpc1 = vpc1.validate().unwrap();
         let mut table = FlowFilterTable::new();
         table
             .add_peering(&overlay, &vpc1, &vpc1.peerings()[0])
@@ -1320,7 +1320,7 @@ mod tests {
 
         // vpc1 is not valid, we have to fake its transformation into a ValidatedVpc for this test
         assert!(matches!(
-            vpc1.clone().validated(),
+            vpc1.clone().validate(),
             Err(ConfigError::OverlappingPrefixes(_, _))
         ));
         let vpc1 = unsafe { vpc1.fake_validated_vpc_for_tests() };

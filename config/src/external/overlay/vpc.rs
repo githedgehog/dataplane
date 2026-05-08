@@ -58,6 +58,30 @@ impl Peering {
 
         Ok(valid_peering_candidate)
     }
+
+    /// FOR TESTS ONLY. Fake validation for a VPC peering.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    #[must_use]
+    pub unsafe fn fake_validated_peering_for_tests(&self) -> ValidatedPeering {
+        let (fake_local, fake_remote) = unsafe {
+            (
+                self.local.fake_valid_manifest_for_tests(),
+                self.remote.fake_valid_manifest_for_tests(),
+            )
+        };
+        ValidatedPeering {
+            name: self.name.clone(),
+            local: fake_local,
+            remote: fake_remote,
+            remote_id: self.remote_id.clone(),
+            gwgroup: self.gwgroup.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -242,46 +266,32 @@ impl Vpc {
         Ok(())
     }
 
-    /// Check the peerings that a VPC participates in
-    fn check_peerings(&mut self) -> ConfigResult {
-        debug!("Checking peerings of VPC {}...", self.name);
-        for peering in &mut self.peerings {
-            peering.validate()?;
-        }
-        Ok(())
-    }
-
-    /// Validate a [`Vpc`]
-    fn validate(&mut self) -> ConfigResult {
-        debug!("Validating config for VPC {}...", self.name);
-        self.check_peering_count()?;
-        self.check_peerings()?;
-
-        // SAFETY: `ValidatedVpc` is `#[repr(transparent)]` over `Vpc`, so the cast is
-        // layout-compatible. The only invariant `check_overlap_and_default` relies on is that
-        // every peering's `local`/`remote` manifest has its `valexp` populated -- which is
-        // exactly what `check_peerings` (via `Peering::validate` -> `VpcManifest::validate`)
-        // guarantees on the line above. We are not yet returning an `&ValidatedVpc` to the
-        // outside world; this view is purely internal so we can call the post-collapse overlap
-        // check that lives on the validated wrapper.
-        #[allow(unsafe_code)]
-        let validated_vpc = unsafe {
-            (&raw const *self)
-                .cast::<ValidatedVpc>()
-                .as_ref()
-                .unwrap_or_else(|| unreachable!())
-        };
-        validated_vpc.check_overlap_and_default()
-    }
-
-    /// Consume `self` and produce a [`ValidatedVpc`] if it passes validation.
+    /// Validate a [`Vpc`] and produce a [`ValidatedVpc`] if it passes validation.
     ///
     /// # Errors
     ///
     /// Returns an error if the VPC configuration is invalid.
-    pub fn validated(mut self) -> Result<ValidatedVpc, ConfigError> {
-        self.validate()?;
-        Ok(ValidatedVpc(self))
+    pub fn validate(&self) -> Result<ValidatedVpc, ConfigError> {
+        debug!("Validating config for VPC {}...", self.name);
+        self.check_peering_count()?;
+
+        debug!("Checking peerings of VPC {}...", self.name);
+        let validated_peerings: Vec<ValidatedPeering> = self
+            .peerings
+            .iter()
+            .map(Peering::validate)
+            .collect::<Result<_, _>>()?;
+
+        let valid_vpc_candidate = ValidatedVpc {
+            name: self.name.clone(),
+            id: self.id.clone(),
+            vni: self.vni,
+            interfaces: self.interfaces.clone(),
+            peerings: validated_peerings,
+        };
+
+        valid_vpc_candidate.check_overlap_and_default()?;
+        Ok(valid_vpc_candidate)
     }
 
     /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
@@ -292,61 +302,76 @@ impl Vpc {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub unsafe fn fake_validated_vpc_for_tests(mut self) -> ValidatedVpc {
-        for peering in &mut self.peerings {
-            unsafe {
-                // FIXME
-                //peering.local.fake_expose_validation_for_tests();
-                //peering.remote.fake_expose_validation_for_tests();
-            }
+    pub unsafe fn fake_validated_vpc_for_tests(&self) -> ValidatedVpc {
+        let fake_validated_peerings = self
+            .peerings
+            .iter()
+            .map(|peering| {
+                let (fake_local, fake_remote) = unsafe {
+                    (
+                        peering.local.fake_valid_manifest_for_tests(),
+                        peering.remote.fake_valid_manifest_for_tests(),
+                    )
+                };
+                ValidatedPeering {
+                    name: peering.name.clone(),
+                    local: fake_local,
+                    remote: fake_remote,
+                    remote_id: peering.remote_id.clone(),
+                    gwgroup: peering.gwgroup.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        ValidatedVpc {
+            name: self.name.clone(),
+            id: self.id.clone(),
+            vni: self.vni,
+            interfaces: self.interfaces.clone(),
+            peerings: fake_validated_peerings,
         }
-        ValidatedVpc(self)
     }
 }
 
-#[repr(transparent)]
 #[derive(Clone, Debug, PartialEq)]
-pub struct ValidatedVpc(Vpc);
+pub struct ValidatedVpc {
+    name: String,                     /* name of vpc, used as key */
+    id: VpcId,                        /* internal Id, unique*/
+    vni: Vni,                         /* mandatory */
+    interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
+    peerings: Vec<ValidatedPeering>,  /* peerings of this VPC - NOT set via gRPC */
+}
 
 impl ValidatedVpc {
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.0.name
+        &self.name
     }
 
     #[must_use]
     pub fn id(&self) -> &VpcId {
-        &self.0.id
+        &self.id
     }
 
     #[must_use]
     pub fn vni(&self) -> Vni {
-        self.0.vni
+        self.vni
     }
 
     #[must_use]
     pub fn interfaces(&self) -> &InterfaceConfigTable {
-        &self.0.interfaces
+        &self.interfaces
     }
 
     #[must_use]
     pub fn peerings(&self) -> &[ValidatedPeering] {
-        // SAFETY: ValidatedPeering is #[repr(transparent)] over Peering, so [Peering] and
-        // [ValidatedPeering] have identical layout. Every Peering in a ValidatedVpc has been
-        // validated (established by Vpc::validate, which calls Peering::validate on each element).
-        #[allow(unsafe_code)]
-        unsafe {
-            std::slice::from_raw_parts(
-                self.0.peerings.as_ptr().cast::<ValidatedPeering>(),
-                self.0.peerings.len(),
-            )
-        }
+        &self.peerings
     }
 
     /// Tell how many peerings this VPC has
     #[must_use]
     pub fn num_peerings(&self) -> usize {
-        self.0.peerings.len()
+        self.peerings.len()
     }
 
     /// Provide an iterator over all peerings that have either masquerade or port-forwarding
