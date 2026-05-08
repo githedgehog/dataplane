@@ -226,25 +226,6 @@ impl VpcExpose {
         self.ips.iter().any(|p| p.prefix().is_host())
     }
 
-    /// The prefixes of an expose to be advertised to a remote peer
-    #[must_use]
-    pub fn adv_prefixes(&self) -> Vec<Prefix> {
-        if self.default {
-            // only V4 atm
-            vec![Prefix::root_v4()]
-        } else if let Some(nat) = self.nat.as_ref() {
-            nat.as_range
-                .iter()
-                .map(PrefixWithOptionalPorts::prefix)
-                .collect::<Vec<_>>()
-        } else {
-            self.ips
-                .iter()
-                .map(PrefixWithOptionalPorts::prefix)
-                .collect::<Vec<_>>()
-        }
-    }
-
     // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
     // public IPs are those from the "ips" list. This method returns the current list of public IPs
     // for the VpcExpose.
@@ -518,6 +499,25 @@ impl ValidatedExpose {
         }
     }
 
+    /// The prefixes of an expose to be advertised to a remote peer
+    #[must_use]
+    pub fn adv_prefixes(&self) -> Vec<Prefix> {
+        if self.default {
+            // only V4 atm
+            vec![Prefix::root_v4()]
+        } else if let Some(nat) = self.nat.as_ref() {
+            nat.as_range
+                .iter()
+                .map(PrefixWithOptionalPorts::prefix)
+                .collect::<Vec<_>>()
+        } else {
+            self.ips
+                .iter()
+                .map(PrefixWithOptionalPorts::prefix)
+                .collect::<Vec<_>>()
+        }
+    }
+
     // This method returns true if the list of allowed prefixes is IPv4.
     #[must_use]
     pub fn is_v4(&self) -> bool {
@@ -636,11 +636,6 @@ impl VpcManifest {
 
     pub fn add_exposes(&mut self, exposes: impl IntoIterator<Item = VpcExpose>) {
         self.exposes.extend(exposes);
-    }
-
-    #[must_use]
-    pub fn raw_exposes(&self) -> &[VpcExpose] {
-        &self.exposes
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {

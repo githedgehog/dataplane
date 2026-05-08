@@ -11,7 +11,7 @@
 
 #![allow(unused)]
 
-use config::external::overlay::vpc::{Vpc, VpcId};
+use config::external::overlay::vpc::{ValidatedVpc, VpcId};
 use net::interface::InterfaceName;
 
 ////////////////////////////////////////////////////////////////////////
@@ -53,42 +53,42 @@ pub(crate) trait VpcConfigNames {
     fn adv_rmap(&self) -> String;
 }
 
-impl VpcConfigNames for Vpc {
+impl VpcConfigNames for ValidatedVpc {
     fn vrf_name(&self) -> String {
-        self.id.vrf_name().to_string()
+        self.id().vrf_name().to_string()
     }
     fn import_rmap_ipv4(&self) -> String {
-        format!("{}-IPV4-IMPORTS", self.name.to_uppercase())
+        format!("{}-IPV4-IMPORTS", self.name().to_uppercase())
     }
     fn import_rmap_ipv6(&self) -> String {
-        format!("{}-IPV6-IMPORTS", self.name.to_uppercase())
+        format!("{}-IPV6-IMPORTS", self.name().to_uppercase())
     }
     fn import_plist_peer(&self, remote_name: &str) -> String {
         format!(
             "{}-FROM-{}",
-            &self.name.to_uppercase(),
+            &self.name().to_uppercase(),
             remote_name.to_uppercase()
         )
     }
     fn import_plist_peer_desc(&self, remote_name: &str) -> String {
-        format!("Prefixes of {} reachable by {}", remote_name, self.name)
+        format!("Prefixes of {} reachable by {}", remote_name, self.name())
     }
 
     fn adv_plist(&self, remote_name: &str) -> String {
         format!(
             "ADV-TO-{}-FOR-{}",
-            &self.name.to_uppercase(),
+            &self.name().to_uppercase(),
             remote_name.to_uppercase()
         )
     }
     fn adv_plist_desc(&self, remote_name: &str) -> String {
         format!(
             "Prefixes advertised to {} for {}",
-            &self.name.to_uppercase(),
+            &self.name().to_uppercase(),
             remote_name.to_uppercase()
         )
     }
     fn adv_rmap(&self) -> String {
-        format!("ADV-TO-{}", &self.name.to_uppercase())
+        format!("ADV-TO-{}", &self.name().to_uppercase())
     }
 }
