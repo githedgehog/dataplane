@@ -604,9 +604,6 @@ impl ValidatedExpose {
 pub struct VpcManifest {
     pub name: String, /* key: name of vpc */
     pub(crate) exposes: Vec<VpcExpose>,
-    // Validated, exclusion-prefixes-free view of exposes. Populated by VpcManifest::validate.
-    // Never to be used in VpcManifest; only with wrapper ValidatedManifest
-    valexp: Vec<ValidatedExpose>,
 }
 impl VpcManifest {
     #[must_use]
@@ -636,6 +633,124 @@ impl VpcManifest {
 
     pub fn add_exposes(&mut self, exposes: impl IntoIterator<Item = VpcExpose>) {
         self.exposes.extend(exposes);
+    }
+
+    /// Validate the [`VpcManifest`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest configuration is invalid.
+    pub fn validate(&mut self) -> Result<ValidatedManifest, ConfigError> {
+        if self.name.is_empty() {
+            return Err(ConfigError::MissingIdentifier("Manifest name"));
+        }
+        if self.exposes.is_empty() {
+            return Err(ConfigError::NoExposes(self.name.clone()));
+        }
+        if self.exposes.iter().filter(|expose| expose.default).count() > 1 {
+            return Err(ConfigError::Forbidden(
+                "Manifest cannot have multiple default exposes",
+            ));
+        }
+
+        let mut valid_manifest_candidate = ValidatedManifest {
+            name: self.name.clone(),
+            valexp: Vec::new(),
+        };
+        for expose in &self.exposes {
+            valid_manifest_candidate.valexp.push(expose.validate()?);
+        }
+
+        valid_manifest_candidate.validate_expose_collisions()?;
+        Ok(valid_manifest_candidate)
+    }
+
+    #[must_use]
+    pub fn default_expose(&self) -> Option<&VpcExpose> {
+        self.exposes.iter().find(|expose| expose.default)
+    }
+
+    /// FOR TESTS ONLY. Fake validation for the manifest.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    #[must_use]
+    pub unsafe fn fake_valid_manifest_for_tests(&self) -> ValidatedManifest {
+        let mut fake_valid_manifest = ValidatedManifest {
+            name: self.name.clone(),
+            valexp: Vec::new(),
+        };
+        for expose in &self.exposes {
+            let fake_valid_expose = unsafe { expose.fake_validated_expose() };
+            fake_valid_manifest.valexp.push(fake_valid_expose);
+        }
+        fake_valid_manifest
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedManifest {
+    name: String, /* key: name of vpc */
+    // Validated, exclusion-prefixes-free view of exposes.
+    valexp: Vec<ValidatedExpose>,
+}
+
+impl ValidatedManifest {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn valexp(&self) -> &[ValidatedExpose] {
+        &self.valexp
+    }
+
+    #[must_use]
+    pub fn default_expose(&self) -> Option<&ValidatedExpose> {
+        self.valexp().iter().find(|expose| expose.is_default())
+    }
+
+    fn filter_exposes<F>(&self, predicate: F) -> impl Iterator<Item = &ValidatedExpose>
+    where
+        F: FnMut(&&ValidatedExpose) -> bool,
+    {
+        self.valexp().iter().filter(predicate)
+    }
+
+    pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_stateless_nat())
+    }
+
+    pub fn stateful_nat_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_44())
+    }
+
+    pub fn stateful_nat_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_66())
+    }
+
+    pub fn no_stateful_nat_exposes_v4(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v4())
+    }
+
+    pub fn no_stateful_nat_exposes_v6(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v6())
+    }
+
+    pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_port_forwarding())
+    }
+
+    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_44())
+    }
+
+    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {
@@ -703,145 +818,6 @@ impl VpcManifest {
             }
         }
         Ok(())
-    }
-
-    /// Validate the [`VpcManifest`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest configuration is invalid.
-    pub(crate) fn validate(&mut self) -> ConfigResult {
-        if self.name.is_empty() {
-            return Err(ConfigError::MissingIdentifier("Manifest name"));
-        }
-        if self.exposes.is_empty() {
-            return Err(ConfigError::NoExposes(self.name.clone()));
-        }
-
-        // Reset any previously-populated `valexp` so a retry after partial validation does not
-        // accumulate duplicates.
-        self.valexp.clear();
-        self.valexp.reserve(self.exposes.len());
-
-        let mut found_default = false;
-        for expose in &self.exposes {
-            if expose.default {
-                if found_default {
-                    return Err(ConfigError::Forbidden(
-                        "Manifest cannot have multiple default exposes",
-                    ));
-                }
-                found_default = true;
-            }
-            self.valexp.push(expose.validate()?);
-        }
-        self.validate_expose_collisions()?;
-        Ok(())
-    }
-
-    /// Validate the manifest and return a validated version
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest configuration is invalid.
-    pub fn validated(mut self) -> Result<ValidatedManifest, ConfigError> {
-        self.validate()?;
-        Ok(ValidatedManifest(self))
-    }
-
-    #[must_use]
-    pub fn default_expose(&self) -> Option<&VpcExpose> {
-        self.exposes.iter().find(|expose| expose.default)
-    }
-
-    /// FOR TESTS ONLY. Fake validation for the manifest's expose blocks.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    pub unsafe fn fake_expose_validation_for_tests(&mut self) {
-        self.valexp.clear();
-        for expose in &self.exposes {
-            let fake_valid_expose = unsafe { expose.fake_validated_expose() };
-            self.valexp.push(fake_valid_expose);
-        }
-    }
-
-    /// FOR TESTS ONLY. Fake validation for the manifest.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_valid_manifest_for_tests(mut self) -> ValidatedManifest {
-        unsafe {
-            self.fake_expose_validation_for_tests();
-        }
-        ValidatedManifest(self)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-#[repr(transparent)]
-pub struct ValidatedManifest(VpcManifest);
-
-impl ValidatedManifest {
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.0.name
-    }
-
-    #[must_use]
-    pub fn valexp(&self) -> &[ValidatedExpose] {
-        &self.0.valexp
-    }
-
-    #[must_use]
-    pub fn default_expose(&self) -> Option<&ValidatedExpose> {
-        self.valexp().iter().find(|expose| expose.is_default())
-    }
-
-    fn filter_exposes<F>(&self, predicate: F) -> impl Iterator<Item = &ValidatedExpose>
-    where
-        F: FnMut(&&ValidatedExpose) -> bool,
-    {
-        self.valexp().iter().filter(predicate)
-    }
-
-    pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_stateless_nat())
-    }
-
-    pub fn stateful_nat_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_44())
-    }
-
-    pub fn stateful_nat_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_66())
-    }
-
-    pub fn no_stateful_nat_exposes_v4(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v4())
-    }
-
-    pub fn no_stateful_nat_exposes_v6(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v6())
-    }
-
-    pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_port_forwarding())
-    }
-
-    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_44())
-    }
-
-    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
     }
 }
 
