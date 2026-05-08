@@ -92,18 +92,6 @@ impl Overlay {
             .collect_peerings(&self.peering_table, &id_map)
     }
 
-    /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    pub(crate) unsafe fn fake_manifest_validation_for_tests(&mut self) {
-        // FIXME
-        todo!()
-    }
-
     /// FOR TESTS ONLY. Fake validation for the overlay.
     ///
     /// # Safety
@@ -133,6 +121,14 @@ pub struct ValidatedOverlay {
 }
 
 impl ValidatedOverlay {
+    #[must_use]
+    pub(crate) fn blank() -> Self {
+        Self {
+            vpc_table: ValidatedVpcTable::blank(),
+            peering_table: VpcPeeringTable::default(),
+        }
+    }
+
     #[must_use]
     pub fn vpc_table(&self) -> &ValidatedVpcTable {
         &self.vpc_table

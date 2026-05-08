@@ -566,6 +566,14 @@ pub struct ValidatedVpcTable {
 
 impl ValidatedVpcTable {
     #[must_use]
+    pub fn blank() -> Self {
+        Self {
+            vpcs: BTreeMap::new(),
+            ids: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
     pub fn len(&self) -> usize {
         self.vpcs.len()
     }
