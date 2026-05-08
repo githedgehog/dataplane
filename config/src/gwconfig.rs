@@ -116,8 +116,13 @@ impl GwConfig {
     /// Returns a [`ConfigError`] if the external configuration fails validation.
     pub fn validate(self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid());
-        self.external.validate()?;
-        Ok(ValidatedGwConfig(self))
+        let validated_external = self.external.validate()?;
+
+        Ok(ValidatedGwConfig {
+            meta: self.meta,
+            external: validated_external,
+            internal: self.internal.clone(),
+        })
     }
 
     /// FOR TESTS ONLY. Fake validation for the config.
@@ -128,54 +133,59 @@ impl GwConfig {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub unsafe fn fake_validated_config_for_tests(mut self) -> ValidatedGwConfig {
-        unsafe {
-            self.external.overlay.fake_manifest_validation_for_tests();
+    pub unsafe fn fake_validated_config_for_tests(self) -> ValidatedGwConfig {
+        let fake_valid_external = unsafe { self.external.fake_validated_external_for_tests() };
+
+        ValidatedGwConfig {
+            meta: self.meta,
+            external: fake_valid_external,
+            internal: self.internal.clone(),
         }
-        ValidatedGwConfig(self)
     }
 }
 
-#[repr(transparent)]
 #[derive(Debug)]
-pub struct ValidatedGwConfig(GwConfig);
+pub struct ValidatedGwConfig {
+    meta: ArcSwap<GwConfigMeta>,
+    external: ValidatedExternalConfig,
+    internal: Option<InternalConfig>,
+}
 
 impl ValidatedGwConfig {
     #[must_use]
     pub fn blank() -> Self {
         // The blank config has no overlay, peerings, or VPCs, so it trivially passes validation.
         // A unit test verifies this invariant.
-        ValidatedGwConfig(GwConfig::blank())
-    }
-
-    #[must_use]
-    pub fn meta(&self) -> &ArcSwap<GwConfigMeta> {
-        &self.0.meta
-    }
-
-    #[must_use]
-    pub fn external(&self) -> &ValidatedExternalConfig {
-        // SAFETY: ValidatedExternalConfig is #[repr(transparent)] over ExternalConfig. A
-        // ValidatedGwConfig is only obtained from `GwConfig::validated`, which validates the
-        // external config.
-        #[allow(unsafe_code)]
-        unsafe {
-            &*(&raw const self.0.external).cast::<ValidatedExternalConfig>()
+        let external = ValidatedExternalConfig::blank();
+        Self {
+            meta: ArcSwap::new(Arc::from(GwConfigMeta::new(external.genid()))),
+            external,
+            internal: None,
         }
     }
 
     #[must_use]
+    pub fn meta(&self) -> &ArcSwap<GwConfigMeta> {
+        &self.meta
+    }
+
+    #[must_use]
+    pub fn external(&self) -> &ValidatedExternalConfig {
+        &self.external
+    }
+
+    #[must_use]
     pub fn internal(&self) -> Option<&InternalConfig> {
-        self.0.internal.as_ref()
+        self.internal.as_ref()
     }
 
     pub fn set_internal_config(&mut self, internal: InternalConfig) {
-        self.0.internal = Some(internal);
+        self.internal = Some(internal);
     }
 
     #[must_use]
     pub fn genid(&self) -> GenId {
-        self.0.external.genid
+        self.external.genid()
     }
 }
 
