@@ -8,7 +8,7 @@
 
 use crate::portfw::PortFwTableError;
 use lpm::prefix::ip::Representable;
-use lpm::prefix::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix, Prefix};
+use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use std::collections::BTreeMap;
 use std::default;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
