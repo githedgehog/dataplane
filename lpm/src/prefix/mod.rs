@@ -4,14 +4,13 @@
 //! Type to represent IP-version neutral network prefixes.
 
 pub mod ip;
-pub use ip::{IpPrefix, IpPrefixCovering, Ipv4Prefix, Ipv6Prefix};
+pub use ip::{IpPrefix, Ipv4Prefix, Ipv6Prefix};
 
 pub mod range_map;
 
 pub mod with_ports;
 pub use with_ports::*;
 
-use crate::prefix::ip::IpPrefixColliding;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use serde::ser::SerializeStructVariant;
 use serde::{Deserialize, Serialize};
@@ -155,8 +154,8 @@ impl Prefix {
     #[must_use]
     pub fn covers_addr(&self, addr: &IpAddr) -> bool {
         match (self, addr) {
-            (Prefix::IPV4(p), IpAddr::V4(a)) => p.covers(a),
-            (Prefix::IPV6(p), IpAddr::V6(a)) => p.covers(a),
+            (Prefix::IPV4(p), IpAddr::V4(a)) => p.covers_addr(a),
+            (Prefix::IPV6(p), IpAddr::V6(a)) => p.covers_addr(a),
             _ => false,
         }
     }
