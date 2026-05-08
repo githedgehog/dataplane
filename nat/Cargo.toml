@@ -9,7 +9,7 @@ version.workspace = true
 shuttle = ["concurrency/shuttle", "dep:shuttle"]
 
 [dependencies]
-ahash = { workspace = true }
+ahash = { workspace = true, features = ["std"] }
 arc-swap = { workspace = true }
 bnum = { workspace = true }
 common = { workspace = true }
