@@ -294,12 +294,6 @@ impl Vpc {
         Ok(ValidatedVpc(self))
     }
 
-    /// Tell how many peerings this VPC has
-    #[must_use]
-    pub fn num_peerings(&self) -> usize {
-        self.peerings.len()
-    }
-
     /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
     ///
     /// # Safety
@@ -356,6 +350,12 @@ impl ValidatedVpc {
                 self.0.peerings.len(),
             )
         }
+    }
+
+    /// Tell how many peerings this VPC has
+    #[must_use]
+    pub fn num_peerings(&self) -> usize {
+        self.0.peerings.len()
     }
 
     /// Provide an iterator over all peerings that have either masquerade or port-forwarding
@@ -425,11 +425,6 @@ impl ValidatedVpc {
             }
         }
         Ok(())
-    }
-
-    #[must_use]
-    pub fn inner(&self) -> &Vpc {
-        &self.0
     }
 }
 
