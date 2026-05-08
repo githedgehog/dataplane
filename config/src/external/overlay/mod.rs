@@ -61,42 +61,35 @@ impl Overlay {
         id_map
     }
 
-    /// Top most validation function for `Overlay` configuration
+    /// Validate the overlay configuration, returning a `ValidatedOverlay` if successful.
     ///
     /// # Errors
     ///
     /// Returns an error if the overlay configuration is invalid.
-    pub fn validate(&mut self) -> ConfigResult {
+    pub fn validate(&self) -> Result<ValidatedOverlay, ConfigError> {
         debug!("Validating overlay configuration...");
 
         self.validate_peerings()?;
 
-        // collect peerings for every vpc.
-        self.collect_peerings();
+        // Collect peerings for every VPC and validate the table
+        let validated_vpc_table = self.collect_peerings().validate()?;
 
-        self.vpc_table.validate()?;
+        let validated_overlay = ValidatedOverlay {
+            vpc_table: validated_vpc_table,
+            peering_table: self.peering_table.clone(),
+        };
 
-        debug!("Overlay configuration is VALID:\n{self}");
-        Ok(())
-    }
-
-    /// Consume `self` and produce a [`ValidatedOverlay`] if it passes validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the overlay configuration is invalid.
-    pub fn validated(mut self) -> Result<ValidatedOverlay, ConfigError> {
-        self.validate()?;
-        Ok(ValidatedOverlay(self))
+        debug!("Overlay configuration is VALID:\n{validated_overlay}");
+        Ok(validated_overlay)
     }
 
     /// Collect peerings from the peering table for every VPC.
     ///
     /// Should only be called in `validate`, or in tests.
-    pub(crate) fn collect_peerings(&mut self) {
+    pub(crate) fn collect_peerings(&self) -> VpcTable {
         let id_map = self.vpcid_map();
         self.vpc_table
-            .collect_peerings(&self.peering_table, &id_map);
+            .collect_peerings(&self.peering_table, &id_map)
     }
 
     /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
@@ -119,39 +112,34 @@ impl Overlay {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub unsafe fn fake_validated_overlay_for_tests(mut self) -> ValidatedOverlay {
-        unsafe {
-            self.fake_manifest_validation_for_tests();
+    pub unsafe fn fake_validated_overlay_for_tests(&self) -> ValidatedOverlay {
+        let vpc_table = self.collect_peerings();
+        let fake_valid_vpc_table = unsafe { vpc_table.fake_validated_vpc_table_for_tests() };
+        ValidatedOverlay {
+            vpc_table: fake_valid_vpc_table,
+            peering_table: self.peering_table.clone(),
         }
-        ValidatedOverlay(self)
     }
 }
 
-#[repr(transparent)]
 #[derive(Clone, Debug)]
-pub struct ValidatedOverlay(Overlay);
+pub struct ValidatedOverlay {
+    vpc_table: ValidatedVpcTable,
+    // Note: unlike the vpc_table, the peering_table is not changed to a `Validated*` new type. A
+    // VpcPeering is symmetric (no local/remote distinction), and per-side validation is performed
+    // only on the asymmetric Peering copies held by the VPCs, in the vpc_table. Since the peering
+    // table is not validated independently, it is exposed as-is.
+    peering_table: VpcPeeringTable,
+}
 
 impl ValidatedOverlay {
     #[must_use]
     pub fn vpc_table(&self) -> &ValidatedVpcTable {
-        // SAFETY: ValidatedVpcTable is #[repr(transparent)] over VpcTable. A ValidatedOverlay is
-        // only ever obtained from `Overlay::validated`, which validates the underlying table.
-        #[allow(unsafe_code)]
-        unsafe {
-            &*(&raw const self.0.vpc_table).cast::<ValidatedVpcTable>()
-        }
+        &self.vpc_table
     }
 
-    /// Return the peering table.
-    ///
-    /// Note: unlike the other fields exposed on [`ValidatedOverlay`], the peering table is not
-    /// wrapped in a `Validated*` newtype. A [`crate::external::overlay::vpcpeering::VpcPeering`]
-    /// is symmetric (no local/remote distinction), and per-side validation is performed only on
-    /// the asymmetric [`crate::external::overlay::vpc::Peering`] copies that
-    /// [`Overlay::collect_peerings`] places on each VPC. Validating the peering table itself
-    /// would not provide useful guarantees on top of that, so consumers see the raw type.
     #[must_use]
     pub fn peering_table(&self) -> &VpcPeeringTable {
-        &self.0.peering_table
+        &self.peering_table
     }
 }

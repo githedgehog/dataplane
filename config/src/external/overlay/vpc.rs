@@ -489,14 +489,6 @@ impl VpcTable {
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
         self.vpcs.get(vpc_name)
     }
-    /// Get a [`Vpc`] by [`VpcId`]
-    #[must_use]
-    pub fn get_vpc_by_vpcid(&self, vpcid: &VpcId) -> Option<&Vpc> {
-        match self.ids.get(vpcid) {
-            Some(name) => self.vpcs.get(name),
-            None => None,
-        }
-    }
 
     /// Iterate over [`Vpc`]s in a [`VpcTable`]
     pub fn values(&self) -> impl Iterator<Item = &Vpc> {
@@ -514,72 +506,94 @@ impl VpcTable {
     }
 
     /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
-    pub(crate) fn collect_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    pub(crate) fn collect_peerings(
+        &self,
+        peering_table: &VpcPeeringTable,
+        idmap: &VpcIdMap,
+    ) -> VpcTable {
         debug!("Collecting peerings for all VPCs..");
-        self.values_mut()
+        let mut new_table = self.clone();
+        new_table
+            .values_mut()
             .for_each(|vpc| vpc.set_peerings(peering_table, idmap));
+        new_table
     }
 
-    /// Validate the [`VpcTable`]
-    pub fn validate(&mut self) -> ConfigResult {
-        for vpc in self.values_mut() {
-            vpc.validate()?;
-        }
-        Ok(())
-    }
-
-    /// Consume `self` and produce a [`ValidatedVpcTable`] if it passes validation.
+    /// Validate the [`VpcTable`] and produce a [`ValidatedVpcTable`] if it passes validation.
     ///
     /// # Errors
     ///
-    /// Returns an error if the table is invalid.
-    pub fn validated(mut self) -> Result<ValidatedVpcTable, ConfigError> {
-        self.validate()?;
-        Ok(ValidatedVpcTable(self))
+    /// Returns an error if any [`Vpc`] fails validation.
+    pub fn validate(&self) -> Result<ValidatedVpcTable, ConfigError> {
+        let validated_vpcs = self
+            .vpcs
+            .iter()
+            .map(|(name, vpc)| vpc.validate().map(|vpc| (name.clone(), vpc)))
+            .collect::<Result<_, _>>()?;
+        Ok(ValidatedVpcTable {
+            vpcs: validated_vpcs,
+            ids: self.ids.clone(),
+        })
+    }
+
+    /// FOR TESTS ONLY. Fake validation for the VPC table.
+    ///
+    /// # Safety
+    ///
+    /// All bets are off. Do not use outside of tests.
+    #[cfg(feature = "testing")]
+    #[allow(unsafe_code)]
+    #[must_use]
+    pub(crate) unsafe fn fake_validated_vpc_table_for_tests(&self) -> ValidatedVpcTable {
+        let fake_validated_vpcs = unsafe {
+            self.vpcs
+                .iter()
+                .map(|(name, vpc)| (name.clone(), vpc.fake_validated_vpc_for_tests()))
+                .collect()
+        };
+        ValidatedVpcTable {
+            vpcs: fake_validated_vpcs,
+            ids: self.ids.clone(),
+        }
     }
 }
 
-#[repr(transparent)]
 #[derive(Clone, Debug)]
-pub struct ValidatedVpcTable(VpcTable);
+pub struct ValidatedVpcTable {
+    vpcs: BTreeMap<String, ValidatedVpc>,
+    ids: BTreeMap<VpcId, String>, // name of vpc
+}
 
 impl ValidatedVpcTable {
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.vpcs.len()
+        self.vpcs.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.vpcs.is_empty()
+        self.vpcs.is_empty()
     }
 
     pub fn values(&self) -> impl Iterator<Item = &ValidatedVpc> {
-        // SAFETY: ValidatedVpc is #[repr(transparent)] over Vpc, and a ValidatedVpcTable can only
-        // be obtained from a successful `VpcTable::validated`, which validates every Vpc.
-        #[allow(unsafe_code)]
-        self.0
-            .vpcs
-            .values()
-            .map(|vpc| unsafe { &*(&raw const *vpc).cast::<ValidatedVpc>() })
+        self.vpcs.values()
     }
 
     #[must_use]
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&ValidatedVpc> {
-        self.0.get_vpc(vpc_name).map(|vpc| {
-            // SAFETY: ValidatedVpc is `#[repr(transparent)]` over Vpc, and a `ValidatedVpcTable`
-            // can only be obtained from `VpcTable::validated`, which validates every Vpc.
-            #[allow(unsafe_code)]
-            unsafe {
-                &*(&raw const *vpc).cast::<ValidatedVpc>()
-            }
-        })
+        self.vpcs.get(vpc_name)
+    }
+
+    fn get_vpc_by_vpcid(&self, vpcid: &VpcId) -> Option<&ValidatedVpc> {
+        match self.ids.get(vpcid) {
+            Some(name) => self.vpcs.get(name),
+            None => None,
+        }
     }
 
     #[must_use]
     pub fn get_remote_vni(&self, peering: &ValidatedPeering) -> Vni {
-        self.0
-            .get_vpc_by_vpcid(peering.remote_id())
+        self.get_vpc_by_vpcid(peering.remote_id())
             .unwrap_or_else(|| unreachable!())
             .vni
     }

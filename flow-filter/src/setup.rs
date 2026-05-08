@@ -1242,7 +1242,7 @@ mod tests {
             vpc_table,
             peering_table: VpcPeeringTable::new(),
         }
-        .validated()
+        .validate()
         .unwrap();
 
         let vpc1 = vpc1.validate().unwrap();
@@ -1315,7 +1315,7 @@ mod tests {
             vpc_table,
             peering_table: VpcPeeringTable::new(),
         }
-        .validated()
+        .validate()
         .unwrap();
 
         // vpc1 is not valid, we have to fake its transformation into a ValidatedVpc for this test
@@ -1390,7 +1390,7 @@ mod tests {
             vpc_table,
             peering_table,
         }
-        .validated()
+        .validate()
         .unwrap();
 
         let table = FlowFilterTable::build_from_overlay(&overlay).unwrap();
