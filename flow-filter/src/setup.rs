@@ -679,14 +679,14 @@ mod tests {
             "manifest1",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
             "manifest2",
             vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let overlap = get_manifest_ips_overlap(
@@ -712,14 +712,14 @@ mod tests {
             "manifest1",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
             "manifest2",
             vec![VpcExpose::empty().ip("10.0.0.0/25".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let overlap = get_manifest_ips_overlap(
@@ -751,7 +751,7 @@ mod tests {
             "manifest1",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
@@ -761,7 +761,7 @@ mod tests {
                 Some(PortRange::new(100, 200).unwrap()),
             ))],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let overlap = get_manifest_ips_overlap(
@@ -801,7 +801,7 @@ mod tests {
                     .ip("20.0.0.128/25".into()),
             ],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let manifest2 = VpcManifest::with_exposes(
@@ -816,7 +816,7 @@ mod tests {
                 VpcExpose::empty().ip("20.0.0.0/24".into()),
             ],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let overlap = get_manifest_ips_overlap(
@@ -907,7 +907,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            manifest.clone().validated(),
+            manifest.clone().validate(),
             Err(ConfigError::OverlappingPrefixes(_, _))
         ));
         let manifest = unsafe { manifest.fake_valid_manifest_for_tests() };
@@ -1070,7 +1070,7 @@ mod tests {
             "manifest",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let overlaps = BTreeMap::new();
@@ -1103,7 +1103,7 @@ mod tests {
             "manifest",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let mut overlaps = BTreeMap::new();
@@ -1162,7 +1162,7 @@ mod tests {
             "manifest_a",
             vec![VpcExpose::empty().ip("10.0.0.0/24".into())],
         )
-        .validated()
+        .validate()
         .unwrap();
 
         let mut overlaps = BTreeMap::new();

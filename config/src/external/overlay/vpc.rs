@@ -305,8 +305,9 @@ impl Vpc {
     pub unsafe fn fake_validated_vpc_for_tests(mut self) -> ValidatedVpc {
         for peering in &mut self.peerings {
             unsafe {
-                peering.local.fake_expose_validation_for_tests();
-                peering.remote.fake_expose_validation_for_tests();
+                // FIXME
+                //peering.local.fake_expose_validation_for_tests();
+                //peering.remote.fake_expose_validation_for_tests();
             }
         }
         ValidatedVpc(self)

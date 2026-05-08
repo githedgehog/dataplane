@@ -107,14 +107,8 @@ impl Overlay {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     pub(crate) unsafe fn fake_manifest_validation_for_tests(&mut self) {
-        for peering in self.peering_table.values_mut() {
-            for manifest in [&mut peering.left, &mut peering.right] {
-                unsafe {
-                    manifest.fake_expose_validation_for_tests();
-                }
-            }
-        }
-        self.collect_peerings();
+        // FIXME
+        todo!()
     }
 
     /// FOR TESTS ONLY. Fake validation for the overlay.
