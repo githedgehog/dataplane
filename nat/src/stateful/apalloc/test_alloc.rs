@@ -122,7 +122,7 @@ mod context {
         vpctable.add(vpc1).unwrap();
         vpctable.add(vpc2).unwrap();
 
-        vpctable.validated().unwrap()
+        vpctable.validate().unwrap()
     }
 
     pub fn build_allocator() -> NatAllocator {

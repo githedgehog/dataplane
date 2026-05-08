@@ -37,8 +37,8 @@ mod test {
         let mut peering_table = VpcPeeringTable::new();
         peering_table.add(peering).unwrap();
 
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        overlay.validate()
+        let overlay = Overlay::new(vpc_table, peering_table);
+        overlay.validate().map(|_| ())
     }
 
     // Helper: build an Overlay from three VPCs and two peerings, then validate it
@@ -58,8 +58,8 @@ mod test {
         peering_table.add(peering1).unwrap();
         peering_table.add(peering2).unwrap();
 
-        let mut overlay: Overlay = Overlay::new(vpc_table, peering_table);
-        overlay.validate()
+        let overlay: Overlay = Overlay::new(vpc_table, peering_table);
+        overlay.validate().map(|_| ())
     }
 
     // ==================================================================================
@@ -1417,7 +1417,7 @@ mod test {
         peering_table.add(peering1).unwrap();
         peering_table.add(peering2).unwrap();
 
-        let mut overlay = Overlay::new(vpc_table, peering_table);
+        let overlay = Overlay::new(vpc_table, peering_table);
         let result = overlay.validate();
         assert!(
             matches!(result, Err(ConfigError::DuplicateVpcPeerings(_))),

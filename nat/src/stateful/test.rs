@@ -106,9 +106,9 @@ fn setup_pipeline_stateful_nat(
 
 fn test_setup(
     genid: GenId,
-    overlay: Overlay,
+    overlay: &Overlay,
 ) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
-    let overlay = overlay.validated().unwrap();
+    let overlay = overlay.validate().unwrap();
 
     // build the configuration for the nat allocator
     let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid);
@@ -785,7 +785,7 @@ fn check_packet_icmp_error(
 #[traced_test]
 async fn test_icmp_error_nat() {
     // build setup: 2 vpcs with masquerading, vni 100 -> vni 200
-    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
 
     // ICMP Error msg: expose211 -> expose121, no previous session for inner packet
     test_case("Processing icmp error with no prior state");
@@ -1728,7 +1728,7 @@ fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
 #[traced_test]
 async fn test_masquerade_tcp_establish() {
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
-    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
     establish_tcp_connection(&mut pipeline);
     assert_eq!(flow_table.active_len(), Some(2));
 }
@@ -1737,7 +1737,7 @@ async fn test_masquerade_tcp_establish() {
 #[traced_test]
 async fn test_masquerade_check() {
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
-    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
 
     test_case("Establish TCP over masquerade peering");
     establish_tcp_connection(&mut pipeline);
@@ -1777,7 +1777,7 @@ async fn test_masquerade_check() {
 #[traced_test]
 async fn test_masquerade_tcp_reset() {
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
-    let (flow_table, mut pipeline, _allocw) = test_setup(1, build_overlay_2vpcs());
+    let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
     establish_tcp_connection(&mut pipeline);
     assert_eq!(flow_table.active_len(), Some(2));
 
@@ -1813,7 +1813,7 @@ async fn test_masquerade_tcp_reset() {
 async fn test_masquerade_reconfig_keep_flow() {
     let genid = 1;
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
-    let (flow_table, mut pipeline, mut allocw) = test_setup(genid, build_overlay_2vpcs());
+    let (flow_table, mut pipeline, mut allocw) = test_setup(genid, &build_overlay_2vpcs());
     establish_tcp_connection(&mut pipeline);
     assert_eq!(flow_table.active_len(), Some(2));
 
@@ -1829,7 +1829,7 @@ async fn test_masquerade_reconfig_keep_flow() {
     assert_eq!(flow_genid(&out).unwrap(), genid);
 
     // update the NAT allocator with an identical config
-    let overlay = build_overlay_2vpcs().validated().unwrap();
+    let overlay = build_overlay_2vpcs().validate().unwrap();
     let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid + 1);
     allocw.update_nat_allocator(nat_config, &flow_table);
 
@@ -1849,7 +1849,7 @@ async fn test_masquerade_reconfig_keep_flow() {
 async fn test_masquerade_reconfig_drop_flow() {
     let genid = 1;
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
-    let (flow_table, mut pipeline, mut allocw) = test_setup(genid, build_overlay_2vpcs());
+    let (flow_table, mut pipeline, mut allocw) = test_setup(genid, &build_overlay_2vpcs());
     establish_tcp_connection(&mut pipeline);
     assert_eq!(flow_table.active_len(), Some(2));
 
@@ -1865,7 +1865,7 @@ async fn test_masquerade_reconfig_drop_flow() {
     assert_eq!(flow_genid(&out).unwrap(), genid);
 
     // update the NAT allocator with an identical config
-    let overlay = build_overlay_2vpcs_modified().validated().unwrap();
+    let overlay = build_overlay_2vpcs_modified().validate().unwrap();
     let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid + 1);
     allocw.update_nat_allocator(nat_config, &flow_table);
 

@@ -377,9 +377,9 @@ pub mod test {
         peering_table.add(peering).unwrap();
 
         // Build overlay object and validate it
-        let mut overlay = Overlay::new(vpc_table, peering_table);
+        let overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(
-            overlay.validate(),
+            overlay.validate().map(|_| ()),
             Err(ConfigError::IncompatibleNatModes("Peering-1".to_owned()))
         );
     }
@@ -425,10 +425,11 @@ pub mod test {
         peering_table.add(peering).unwrap();
 
         // Build overlay object and validate it
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::IncompatibleNatModes("Peering-1".to_owned()))
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert!(
+            overlay
+                .validate()
+                .is_err_and(|e| e == ConfigError::IncompatibleNatModes("Peering-1".to_owned()))
         );
     }
 
@@ -449,10 +450,11 @@ pub mod test {
         peering_table.add(peering).expect("Should succeed");
 
         /* build overlay object and validate it */
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::NoSuchVpc("VPC-2".to_owned()))
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert!(
+            overlay
+                .validate()
+                .is_err_and(|e| e == ConfigError::NoSuchVpc("VPC-2".to_owned()))
         );
     }
 
@@ -483,10 +485,11 @@ pub mod test {
         peering_table.add(peering2).expect("Should succeed");
 
         /* build overlay object and validate it */
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::DuplicateVpcPeerings(name1))
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert!(
+            overlay
+                .validate()
+                .is_err_and(|e| e == ConfigError::DuplicateVpcPeerings(name1))
         );
     }
 
@@ -511,8 +514,8 @@ pub mod test {
         println!("{peering_table}");
 
         /* build overlay object and validate it */
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(overlay.validate(), Ok(()));
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert!(overlay.validate().is_ok());
     }
 
     #[test]
@@ -1041,10 +1044,9 @@ pub mod test {
             ))
             .unwrap();
 
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::OverlappingPrefixes(
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert!(overlay.validate().is_err_and(|e| e
+            == ConfigError::OverlappingPrefixes(
                 PrefixWithOptionalPorts::new(
                     "5.0.0.0/24".into(),
                     Some(PortRange::new(6001, 8000).unwrap())
@@ -1053,8 +1055,7 @@ pub mod test {
                     "5.0.0.0/25".into(),
                     Some(PortRange::new(5001, 7000).unwrap())
                 ),
-            )),
-        );
+            )));
     }
 
     #[test]
@@ -1105,7 +1106,7 @@ pub mod test {
             ))
             .unwrap();
 
-        let mut overlay = Overlay::new(vpc_table, peering_table);
+        let overlay = Overlay::new(vpc_table, peering_table);
         assert!(overlay.validate().is_ok());
     }
 
@@ -1150,7 +1151,7 @@ pub mod test {
             ))
             .unwrap();
 
-        let mut overlay = Overlay::new(vpc_table, peering_table);
+        let overlay = Overlay::new(vpc_table, peering_table);
         assert!(overlay.validate().is_ok());
     }
 
@@ -1195,13 +1196,10 @@ pub mod test {
             ))
             .unwrap();
 
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::Forbidden(
-                "Multiple 'default' destinations exposed to VPC"
-            )),
-        );
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert!(overlay.validate().is_err_and(
+            |e| e == ConfigError::Forbidden("Multiple 'default' destinations exposed to VPC")
+        ));
     }
 
     #[test]
@@ -1244,13 +1242,10 @@ pub mod test {
             ))
             .unwrap();
 
-        let mut overlay = Overlay::new(vpc_table, peering_table);
-        assert_eq!(
-            overlay.validate(),
-            Err(ConfigError::Forbidden(
-                "Manifest cannot have multiple default exposes",
-            )),
-        );
+        let overlay = Overlay::new(vpc_table, peering_table);
+        assert!(overlay.validate().is_err_and(
+            |e| e == ConfigError::Forbidden("Manifest cannot have multiple default exposes",)
+        ));
     }
 
     #[test]
