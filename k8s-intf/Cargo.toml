@@ -20,11 +20,10 @@ client = [
     "kube/runtime",
     "kube/rustls-tls",
 ]
-bolero = ["dep:bolero", "dep:hardware", "dep:net", "dep:lpm", "net/test_buffer", "net/bolero", "hardware/bolero"]
+bolero = ["dep:bolero", "dep:net", "dep:lpm", "net/test_buffer", "net/bolero"]
 
 [dependencies]
 # internal
-hardware = { workspace = true, optional = true, features = ["bolero"] }
 lpm = { workspace = true, optional = true }
 net = { workspace = true, optional = true, features = ["bolero"] }
 tracectl = { workspace = true, optional = true }
@@ -47,7 +46,6 @@ tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 bolero = { workspace = true }
-hardware = { workspace = true, features = ["bolero"] }
 lpm = { workspace = true, features = [] }
 net = { workspace = true, features = ["bolero", "test_buffer"] }
 

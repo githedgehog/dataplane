@@ -13,7 +13,6 @@ testing = []
 [dependencies]
 # internal
 common = { workspace = true }
-hardware = { workspace = true }
 k8s-intf = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }
@@ -36,7 +35,6 @@ tracectl = { workspace = true }
 # internal
 pipeline = { workspace = true } # should be removed w/ NAT
 lpm = { workspace = true, features = ["testing"] }
-hardware = { workspace = true, features = ["bolero"] }
 k8s-intf = { workspace = true, features = ["bolero"] }
 
 # external

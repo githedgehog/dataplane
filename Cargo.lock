@@ -1189,7 +1189,6 @@ version = "0.21.0"
 dependencies = [
  "bytecheck",
  "clap",
- "dataplane-hardware",
  "dataplane-id",
  "dataplane-net",
  "memmap2 0.9.10",
@@ -1256,7 +1255,6 @@ dependencies = [
  "caps",
  "chrono",
  "dataplane-common",
- "dataplane-hardware",
  "dataplane-k8s-intf",
  "dataplane-lpm",
  "dataplane-net",
@@ -1422,7 +1420,6 @@ version = "0.21.0"
 dependencies = [
  "bolero",
  "dataplane-dpdk-sysroot-helper",
- "dataplane-hardware",
  "dataplane-lpm",
  "dataplane-net",
  "dataplane-tracectl",

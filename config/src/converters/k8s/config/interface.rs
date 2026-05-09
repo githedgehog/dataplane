@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use hardware::pci::address::PciAddress;
 use k8s_intf::gateway_agent_crd::GatewayAgentGatewayInterfaces;
 use net::interface::Mtu;
 
@@ -42,7 +41,7 @@ impl TryFrom<(&str, &GatewayAgentGatewayInterfaces)> for InterfaceConfig {
         }
 
         if let Some(pci) = &iface.pci {
-            let pci = PciAddress::try_from(pci.as_str()).map_err(|e| {
+            let pci = net::pci::PciEbdf::try_new(pci.clone()).map_err(|e| {
                 FromK8sConversionError::InvalidData(format!("PCI address {pci}: {e}"))
             })?;
             interface_config = interface_config.set_pci(pci);
@@ -71,7 +70,7 @@ impl TryFrom<&InterfaceConfig> for GatewayAgentGatewayInterfaces {
         }
 
         let mtu = if_config.mtu.map(|m| m.to_u32());
-        let pci = if_config.pci.map(|p| p.to_string());
+        let pci = if_config.pci.as_ref().map(ToString::to_string);
 
         let ips = if_config
             .addresses

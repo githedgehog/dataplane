@@ -5,8 +5,6 @@ use std::ops::Bound;
 
 use bolero::{Driver, TypeGenerator, ValueGenerator};
 
-use hardware::pci::address::PciAddress;
-
 use crate::bolero::LegalValue;
 use crate::bolero::Normalize;
 use crate::bolero::support::{
@@ -36,7 +34,7 @@ impl TypeGenerator for LegalValue<GatewayAgentGatewayInterfaces> {
             },
             kernel: None, // We don't really use this so keep it at false for now
             pci: if d.gen_bool(None)? {
-                Some(d.produce::<PciAddress>()?.to_string())
+                Some(d.produce::<net::pci::PciEbdf>()?.to_string())
             } else {
                 None
             },
