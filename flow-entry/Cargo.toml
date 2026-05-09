@@ -31,4 +31,6 @@ bolero = { workspace = true, default-features = false }
 net = { workspace = true, features = ["bolero"] }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tracing-test = { workspace = true, features = [] }
+
+[target.'cfg(not(miri))'.dev-dependencies]
 shuttle = { workspace = true }

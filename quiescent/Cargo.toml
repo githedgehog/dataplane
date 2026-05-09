@@ -17,9 +17,11 @@ concurrency = { workspace = true }
 
 # external
 arc-swap = { workspace = true }
+static_assertions = { workspace = true }
+
+[target.'cfg(not(miri))'.dependencies]
 loom = { workspace = true, optional = true }
 shuttle = { workspace = true, optional = true }
-static_assertions = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }
