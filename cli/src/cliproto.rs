@@ -437,6 +437,7 @@ mod tests {
     /// Open 2 sockets, one for dataplane and one for cli. Spawn a thread representing dataplane.
     /// Send dataplane a request and receive a big response from it.
     #[test]
+    #[cfg_attr(miri, ignore = "miri does not support Unix sockets")]
     fn test_communications() {
         const DP_PATH: &str = "/tmp/dpsock";
         const CLI_PATH: &str = "/tmp/clisock";

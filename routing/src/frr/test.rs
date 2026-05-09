@@ -132,6 +132,10 @@ pub mod tests {
 
     #[traced_test]
     #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "binds Unix domain sockets at /tmp/*.sock for the fake FRR agent"
+    )]
     async fn test_fake_frr_agent() {
         let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
 
