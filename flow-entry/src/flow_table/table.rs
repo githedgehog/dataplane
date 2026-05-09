@@ -580,6 +580,15 @@ mod tests {
 
         #[tokio::test]
         #[traced_test]
+        // tokio::time::sleep counts wall-clock seconds, so a 4s sleep under miri's slow
+        // interpreter elapses many real-world seconds and the "extended" flow's std::Instant
+        // deadline gets passed too. Fixing this would require running on tokio's paused
+        // clock, but the per-flow timer task uses tokio::time::Instant::from_std on a
+        // wall-clock std deadline; mixing virtual and real instants is messy. Revisit.
+        #[cfg_attr(
+            miri,
+            ignore = "wall-clock sleep + std::Instant deadlines don't survive miri"
+        )]
         /// Test that invalidating flows causes timer to expire and flows to be removed
         async fn test_flow_table_flow_invalidation() {
             const NUM_FLOWS: u16 = 10;

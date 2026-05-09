@@ -167,6 +167,10 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reads /proc/net/arp and queries kernel interfaces, neither available under miri"
+    )]
     fn test_adjacency_resolver() {
         let (mut resolver, atabler) = AtResolver::new(true);
         resolver.start(1);

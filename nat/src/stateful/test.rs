@@ -1129,8 +1129,13 @@ fn check_packet_with_vpcd_lookup(
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn test_full_config_unidirectional_nat_overlapping_destination() {
-    let tctl = get_trace_ctl();
-    let _ = tctl.setup_from_string("vpc-routing=debug,flow-lookup=debug,stateful-nat=debug");
+    #[cfg(not(miri))]
+    {
+        // linkme's distributed_slice uses link_section, which miri can't load,
+        // so the trace targets registry is empty under miri; skip the filter setup.
+        let tctl = get_trace_ctl();
+        let _ = tctl.setup_from_string("vpc-routing=debug,flow-lookup=debug,stateful-nat=debug");
+    }
 
     let config =
         build_gwconfig_from_overlay(build_overlay_3vpcs_unidirectional_nat_overlapping_addr())

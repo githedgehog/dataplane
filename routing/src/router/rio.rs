@@ -483,6 +483,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    #[cfg_attr(miri, ignore = "binds Unix domain sockets at /tmp/hh_*.sock")]
     fn test_rio_ctl() {
         let cpi_bind_addr = "/tmp/hh_dataplane.sock".to_string();
         let cli_bind_addr = "/tmp/hh_cli.sock".to_string();
@@ -512,6 +513,7 @@ mod tests {
         assert_eq!(cpi.finish(), Ok(()));
     }
     #[test]
+    #[cfg_attr(miri, ignore = "exercises Unix domain socket bind paths")]
     fn test_rio_bad_path() {
         /* Build rio configuration with bad path for unix sock */
         let conf = RioConf {
