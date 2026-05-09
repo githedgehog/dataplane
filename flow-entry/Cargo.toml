@@ -29,7 +29,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 bolero = { workspace = true, default-features = false }
 net = { workspace = true, features = ["bolero"] }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tracing-test = { workspace = true, features = [] }
 
 [target.'cfg(not(miri))'.dev-dependencies]

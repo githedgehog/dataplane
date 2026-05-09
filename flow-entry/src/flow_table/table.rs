@@ -476,9 +476,15 @@ mod tests {
             assert!(result.0 == flow_key);
         }
 
-        #[tokio::test]
+        // start_paused so the timer task's sleep_until and the test's sleeps share tokio's
+        // virtual clock; otherwise miri's slow interpretation can drift the wall clock far
+        // enough between Instant::now() and the first sleep that the deadline elapses early.
+        // Anchor `now` on the virtual clock too -- a std::Instant::now() here would be many
+        // real-time seconds past the paused baseline under miri, putting the deadline beyond
+        // any virtual-time advance the test performs.
+        #[tokio::test(start_paused = true)]
         async fn test_flow_table_timeout() {
-            let now = Instant::now();
+            let now = tokio::time::Instant::now().into_std();
             let two_seconds = Duration::from_secs(2);
             let one_second = Duration::from_secs(1);
 
