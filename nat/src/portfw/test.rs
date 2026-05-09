@@ -238,6 +238,11 @@ mod nf_test {
 
         // process a packet in the reverse direction
         let reply = build_reply(&output);
+        // Snapshot just before the call so the assertion below can use a
+        // strict lower bound (`expires_at >= before + timeout`) that is
+        // independent of how long the rest of the test takes -- otherwise
+        // slow test execution (e.g. under miri) eats into the tolerance.
+        let before_reply = std::time::Instant::now();
         let output = process_packet(&mut pipeline, reply);
         assert_eq!(output.ip_source().unwrap().to_string(), "70.71.72.73");
         assert_eq!(output.ip_destination().unwrap().to_string(), "10.0.0.1");
@@ -248,14 +253,11 @@ mod nf_test {
 
         let flow_info = output.meta().flow_info.as_ref().unwrap();
         assert_eq!(flow_info.status(), FlowStatus::Active);
-        let expires_in = flow_info
-            .expires_at()
-            .saturating_duration_since(std::time::Instant::now())
-            .as_secs();
-        assert!(expires_in > PortFwEntry::DEFAULT_INITIAL_TOUT.as_secs() - 2);
+        assert!(flow_info.expires_at() >= before_reply + PortFwEntry::DEFAULT_INITIAL_TOUT);
 
         // process original packet again. It should be fast-natted
         let repeated = udp_packet_to_port_forward();
+        let before_repeated = std::time::Instant::now();
         let output = process_packet(&mut pipeline, repeated);
         assert_eq!(output.ip_source().unwrap().to_string(), "10.0.0.1");
         assert_eq!(output.ip_destination().unwrap().to_string(), "192.168.1.2");
@@ -265,11 +267,9 @@ mod nf_test {
         // flow entry should be there
         let flow_info = output.meta().flow_info.as_ref().unwrap();
         assert_eq!(flow_info.status(), FlowStatus::Active);
-        let expires_in = flow_info
-            .expires_at()
-            .saturating_duration_since(std::time::Instant::now())
-            .as_secs();
-        assert!(expires_in > PortFwEntry::DEFAULT_ESTABLISHED_TOUT_UDP.as_secs() - 5);
+        assert!(
+            flow_info.expires_at() >= before_repeated + PortFwEntry::DEFAULT_ESTABLISHED_TOUT_UDP
+        );
     }
 
     #[traced_test]
