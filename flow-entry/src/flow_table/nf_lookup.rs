@@ -150,7 +150,10 @@ mod test {
             .add_stage(lookup_nf)
             .add_stage(flowinfo_creator);
 
-        const NUM_PACKETS: u16 = 1000;
+        const NUM_PACKETS: u16 = cfg_select! {
+            miri => 10,
+            _ => 1000,
+        };
 
         // create NUM_PACKETS, each with a distinct port from in [1, NUM_PACKETS]
         let dst_ports = 1..=NUM_PACKETS;

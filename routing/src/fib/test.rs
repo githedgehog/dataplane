@@ -112,7 +112,10 @@ mod tests {
 
     #[test]
     fn test_concurrency_fib() {
-        const NUM_PACKETS: u64 = 100_000;
+        const NUM_PACKETS: u64 = cfg_select! {
+            miri => 50,
+            _ => 100_000,
+        };
         const NUM_WORKERS: u16 = 4;
 
         // sync main thread - worker thread(s)
@@ -250,7 +253,10 @@ mod tests {
     fn test_concurrency_fibtable() {
         // number of threads looking up fibtable
         const NUM_WORKERS: u16 = 6;
-        const NUM_PACKETS: u64 = 100_000;
+        const NUM_PACKETS: u64 = cfg_select! {
+            miri => 50,
+            _ => 100_000,
+        };
         const TENTH: u64 = NUM_PACKETS / 10;
 
         // create fibtable (empty, without any fib)
@@ -415,12 +421,16 @@ mod tests {
 
         let mut iterations = 0;
         loop {
+            const MAX_ITERATIONS: usize = cfg_select! {
+                miri => 50,
+                _ => 1000,
+            };
             let fibw = fibtw.add_fib(vrfid, None);
             thread::sleep(Duration::from_millis(5));
             fibtw.del_fib(vrfid, None);
             fibw.destroy();
             iterations += 1;
-            if iterations == 1000 {
+            if iterations == MAX_ITERATIONS {
                 stop.store(true, Ordering::Relaxed);
                 println!("created/deleted fib {iterations} times");
                 break;
@@ -463,7 +473,10 @@ mod tests {
         }
 
         const NUM_WORKERS: u16 = 6;
-        const ITERATIONS: usize = 5_000;
+        const ITERATIONS: usize = cfg_select! {
+            miri => 50,
+            _ => 5_000,
+        };
 
         // Shared, lock-protected factory (or None) that writer populates with a new factory
         // anytime a new write handle is created and which workers use to get fresh handles.
