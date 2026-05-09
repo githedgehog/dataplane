@@ -15,56 +15,54 @@
 //!
 //! [`Subscriber::snapshot`]: crate::Subscriber::snapshot
 
-use concurrency::sync::Arc;
+// Strict provenance checks fail with arc-swap since it uses hazard pointers and does not (yet) use the new
+// std features to expose provenance information in their mechanics.
+// As a result, we can still check for provenance violations in this crate, but only with the Mutex based
+// fallback implementation.
+cfg_select! {
+    any(feature = "loom", feature = "shuttle", feature = "_strict_provenance") => {
+        use concurrency::sync::{Arc, Mutex};
 
-#[cfg(not(any(feature = "loom", feature = "shuttle")))]
-mod imp {
-    use super::Arc;
-    use arc_swap::ArcSwap;
+        pub(crate) struct Slot<T>(Mutex<Arc<T>>);
 
-    pub(crate) struct Slot<T>(ArcSwap<T>);
+        impl<T> Slot<T> {
+            pub(crate) fn from_pointee(value: T) -> Self {
+                Self(Mutex::new(Arc::new(value)))
+            }
 
-    impl<T> Slot<T> {
-        #[inline]
-        pub(crate) fn from_pointee(value: T) -> Self {
-            Self(ArcSwap::from_pointee(value))
+            pub(crate) fn load_full(&self) -> Arc<T> {
+                #[allow(clippy::expect_used)] // poisoned only in unrecoverable cases
+                Arc::clone(&self.0.lock().expect("slot mutex poisoned"))
+            }
+
+            pub(crate) fn swap(&self, new: Arc<T>) -> Arc<T> {
+                #[allow(clippy::expect_used)]
+                let mut guard = self.0.lock().expect("slot mutex poisoned");
+                core::mem::replace(&mut *guard, new)
+            }
         }
+    }
+    _ => {
+        use concurrency::sync::Arc;
+        use arc_swap::ArcSwap;
 
-        #[inline]
-        pub(crate) fn load_full(&self) -> Arc<T> {
-            self.0.load_full()
-        }
+        pub(crate) struct Slot<T>(ArcSwap<T>);
 
-        #[inline]
-        pub(crate) fn swap(&self, new: Arc<T>) -> Arc<T> {
-            self.0.swap(new)
+        impl<T> Slot<T> {
+            #[inline]
+            pub(crate) fn from_pointee(value: T) -> Self {
+                Self(ArcSwap::from_pointee(value))
+            }
+
+            #[inline]
+            pub(crate) fn load_full(&self) -> Arc<T> {
+                self.0.load_full()
+            }
+
+            #[inline]
+            pub(crate) fn swap(&self, new: Arc<T>) -> Arc<T> {
+                self.0.swap(new)
+            }
         }
     }
 }
-
-#[cfg(any(feature = "loom", feature = "shuttle"))]
-mod imp {
-    use super::Arc;
-    use concurrency::sync::Mutex;
-
-    pub(crate) struct Slot<T>(Mutex<Arc<T>>);
-
-    impl<T> Slot<T> {
-        pub(crate) fn from_pointee(value: T) -> Self {
-            Self(Mutex::new(Arc::new(value)))
-        }
-
-        pub(crate) fn load_full(&self) -> Arc<T> {
-            #[allow(clippy::expect_used)] // poisoned only in unrecoverable cases
-            Arc::clone(&self.0.lock().expect("slot mutex poisoned"))
-        }
-
-        pub(crate) fn swap(&self, new: Arc<T>) -> Arc<T> {
-            #[allow(clippy::expect_used)]
-            let mut guard = self.0.lock().expect("slot mutex poisoned");
-            core::mem::replace(&mut *guard, new)
-        }
-    }
-}
-
-pub(crate) use imp::Slot;
