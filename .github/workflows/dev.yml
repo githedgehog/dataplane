@@ -325,6 +325,76 @@ jobs:
           recipe: "test-each"
       - *tmate
 
+  miri:
+    if: >-
+      ${{
+        needs.check_changes.outputs.devfiles == 'true'
+        || startsWith(github.event.ref, 'refs/tags/v')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    name: "check/miri/${{ matrix.cpu }}"
+    runs-on: "lab"
+    needs:
+      - check_changes
+      - check
+    permissions:
+      checks: "write"
+      pull-requests: "read"
+      contents: "read"
+      packages: "read"
+      id-token: "write"
+    env:
+      USER: "runner"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - cpu: "powerpc64" # ideal for testing concurrency due to very weak memory model (and is big endian)
+          # Disabled to save time in CI.  Enable if you are debugging memory issues and wish to bisect
+          # why something might pass on one CPU model but fail on another.
+          # Otherwise there is little benefit to enabling these CPUs in spite of their objectively more important
+          # support story.  They just don't really stress test endianness or memory model issues, and they don't
+          # meaningfully improve borrow check violation detection either.
+          # - cpu: "aarch64"
+          # - cpu: "x86_64"
+          # - cpu: "s390x" # this is miri's big endian CPU of choice, but it has a stronger memory model than powerpc64
+    steps:
+      - *checkout
+      - *nix-setup
+      - name: "all packages"
+        uses: *just
+        env:
+          JUST_VARS: >-
+            miri::cpu=${{ matrix.cpu }}
+        with:
+          recipe: "miri::test"
+      # quiescent is especially sensitive to concurrency violations and memory model issues so we run it
+      # again with and without strict provenance enabled and on many different random schedules
+      # The permissive provenance build runs with real arc-swap and could therefore catch issues which the strict can't.
+      # We run under extra schedules to make that effect stand out as much as possible (shuttle/loom can't test with the
+      # arc-swap in place either, so this is the closest we can get to fixing that coverage gap)
+      - name: "quiescent/permissive"
+        uses: *just
+        env:
+          JUST_VARS: >-
+            miri::seeds=8
+            miri::cpu=${{ matrix.cpu }}
+            miri::provenance=permissive
+        with:
+          recipe: "miri::test"
+          recipe_args: "--package=dataplane-quiescent"
+      - name: "quiescent/strict"
+        uses: *just
+        env:
+          JUST_VARS: >-
+            miri::cpu=${{ matrix.cpu }}
+            miri::provenance=strict
+        with:
+          recipe: "miri::test"
+          recipe_args: "--package=dataplane-quiescent --features=_strict_provenance"
+      - *tmate
+
   features:
     if: >-
       ${{
@@ -343,11 +413,6 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        build:
-          - *release-build
-        features:
-          - "shuttle"
-          - "loom"
         include:
           # The `loom` feature flips `concurrency::sync` to loom's
           # primitives workspace-wide, which breaks crates that rely on
@@ -355,9 +420,11 @@ jobs:
           # `loom::sync`).  Scope the loom build to only the quiescent
           # package so workspace feature unification doesn't poison
           # unrelated crates.
-          - features: "loom"
+          - build: *release-build
+            features: "loom"
             test_package: "quiescent"
-          - features: "shuttle"
+          - build: *release-build
+            features: "shuttle"
             test_package: ""
     steps:
       - *checkout
@@ -463,6 +530,7 @@ jobs:
       - build
       - vlab
       - test_each
+      - miri
     # Run always so this job can aggregate results even when one of its
     # dependencies failed or was skipped.
     #
@@ -491,6 +559,10 @@ jobs:
         run: |
           echo '::error:: Some sanitize job(s) failed'
           exit 1
+      - name: "Flag any miri matrix failures"
+        if: ${{ needs.miri.result != 'success' && needs.miri.result != 'skipped' }}
+        run: |
+          echo '::warning:: Some miri job(s) failed'
       - name: "Flag any build matrix failures"
         if: ${{ needs.build.result != 'success' && needs.build.result != 'skipped' }}
         run: |
