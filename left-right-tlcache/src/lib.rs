@@ -341,6 +341,7 @@ mod tests {
 
     use super::*;
     use left_right::{Absorb, ReadHandleFactory, WriteHandle};
+    #[cfg(not(miri))]
     use serial_test::serial;
     use std::sync::Mutex;
     // Our left-right protected struct
@@ -486,7 +487,7 @@ mod tests {
         }
     }
 
-    #[serial]
+    #[cfg_attr(not(miri), serial)]
     #[test]
     fn test_readhandle_cache_basic() {
         // start fresh
@@ -598,7 +599,7 @@ mod tests {
         });
     }
 
-    #[serial]
+    #[cfg_attr(not(miri), serial)]
     #[test]
     fn test_readhandle_cache_multi_invalidation() {
         // start fresh
@@ -647,14 +648,17 @@ mod tests {
         assert!(h.is_err_and(|e| e == ReadHandleCacheError::NotAccessible(alias)));
     }
 
-    #[serial]
+    #[cfg_attr(not(miri), serial)]
     #[test]
     fn test_readhandle_cache() {
         // start fresh
         ReadHandleCache::purge(&TEST_CACHE);
 
         // build provider and populate it
-        const NUM_HANDLES: u64 = 1000;
+        const NUM_HANDLES: u64 = cfg_select! {
+            miri => 10,
+            _ => 1000,
+        };
         let mut provider = TestProvider::new();
         for id in 0..=NUM_HANDLES {
             provider.add_object(id, id);
@@ -712,7 +716,7 @@ mod tests {
         TEST_CACHE.with(|cache| assert!(cache.handles.borrow().is_empty()));
     }
 
-    #[serial]
+    #[cfg_attr(not(miri), serial)]
     #[test]
     fn test_readhandle_cache_iter() {
         // start fresh

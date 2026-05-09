@@ -109,7 +109,10 @@ mod tests {
     fn test_hash_bounds() {
         let start: u64 = 4;
         let end: u64 = 10;
-        let num_packets: u64 = 2000;
+        let num_packets: u64 = cfg_select! {
+            miri => 20,
+            _ => 2000,
+        };
         let packets = build_test_packets(num_packets.try_into().unwrap());
         let mut values: BTreeMap<u64, u64> = BTreeMap::new();
         for packet in &packets {

@@ -285,13 +285,22 @@ pub fn generate_prefixes<D: Driver>(
 
 #[cfg(test)]
 mod test {
+    #[cfg(not(miri))]
+    const UNIQUE_COUNTS: [u16; 5] = [0, 1, 10, 16, 100];
+    #[cfg(miri)]
+    const UNIQUE_COUNTS: [u16; 4] = [0, 1, 10, 16];
+    const ITERATIONS: usize = cfg_select! {
+        miri => 3,
+        _ => 1000,
+    };
+
     #[test]
     fn test_unique_v4_cidr_generator() {
         for mask in 0..=32 {
             let generator = crate::bolero::support::UniqueV4CidrGenerator::new(10, mask);
             bolero::check!()
                 .with_generator(generator)
-                .with_iterations(1000) // Takes too long with auto-iterations
+                .with_iterations(ITERATIONS) // Takes too long with auto-iterations
                 .for_each(|cidrs| {
                     let mut seen = std::collections::HashSet::new();
                     for cidr in cidrs {
@@ -311,12 +320,13 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "just too slow on miri")]
     fn test_unique_v6_cidr_generator() {
         for mask in 0..=128 {
             let generator = crate::bolero::support::UniqueV6CidrGenerator::new(10, mask);
             bolero::check!()
                 .with_generator(generator)
-                .with_iterations(1000) // Takes too long with auto-iterations
+                .with_iterations(ITERATIONS) // Takes too long with auto-iterations
                 .for_each(|cidrs| {
                     let mut seen = std::collections::HashSet::new();
                     assert!(
@@ -337,7 +347,7 @@ mod test {
 
     #[test]
     fn test_unique_v4_interface_address_generator() {
-        for count in [0, 1, 10, 16, 100] {
+        for count in UNIQUE_COUNTS {
             let generator = crate::bolero::support::UniqueV4InterfaceAddressGenerator::new(count);
             bolero::check!()
                 .with_generator(generator)
@@ -372,7 +382,7 @@ mod test {
 
     #[test]
     fn test_unique_v6_interface_address_generator() {
-        for count in [0, 1, 10, 16, 100] {
+        for count in UNIQUE_COUNTS {
             let generator = crate::bolero::support::UniqueV6InterfaceAddressGenerator::new(count);
             bolero::check!()
                 .with_generator(generator)
