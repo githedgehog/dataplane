@@ -340,16 +340,18 @@ mod std_tests {
         let allocator1 = Arc::new(allocator);
         let allocator2 = allocator1.clone();
 
-        thread::spawn(move || {
+        let t1 = thread::spawn(move || {
             let _allocation1 = allocator1
                 .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
                 .unwrap();
         });
-        thread::spawn(move || {
+        let t2 = thread::spawn(move || {
             let _allocation2 = allocator2
-                .allocate_v4(vpcd2(), addr_v4("2.0.1.3"), NextHeader::TCP)
+                .allocate_v4(vpcd2(), addr_v4("1.2.0.0"), NextHeader::TCP)
                 .unwrap();
         });
+        t1.join().unwrap();
+        t2.join().unwrap();
     }
 }
 
