@@ -336,7 +336,6 @@ jobs:
     runs-on: "lab"
     needs:
       - check_changes
-      - check
     permissions:
       checks: "write"
       pull-requests: "read"
