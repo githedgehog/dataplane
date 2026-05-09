@@ -14,6 +14,9 @@
 
 pub mod macros;
 
+#[cfg(all(miri, any(feature = "shuttle", feature = "loom")))]
+compile_error!("miri does not meaningfully support 'loom' or 'shuttle'");
+
 #[cfg(not(any(feature = "loom", feature = "shuttle")))]
 pub use std::sync;
 

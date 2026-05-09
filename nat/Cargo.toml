@@ -24,11 +24,13 @@ net = { workspace = true }
 pipeline = { workspace = true }
 rand = { workspace = true, features = ["thread_rng"] }
 roaring = { workspace = true }
-shuttle = { workspace = true, optional = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(not(miri))'.dependencies]
+shuttle = { workspace = true, optional = true }
 
 [dev-dependencies]
 # internal
@@ -44,5 +46,7 @@ tracectl = { workspace = true }
 # external
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
 etherparse = { workspace = true }
-shuttle = { workspace = true, features = [] }
 tracing-test = { workspace = true, features = [] }
+
+[target.'cfg(not(miri))'.dev-dependencies]
+shuttle = { workspace = true, features = [] }
