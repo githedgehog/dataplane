@@ -92,8 +92,10 @@ mod contract {
             let domain = driver.produce::<u16>()?;
             let bus = driver.produce::<u8>()?;
             let device = driver.produce::<u8>()?;
-            let function = driver.produce::<u8>()?;
-            let s = format!("{domain:04x}:{bus:02x}.{device:02x}.{function:02x}");
+            // PCI function is 3 bits on the wire; PciEbdf::try_new also requires
+            // exactly 1 hex digit, so mask before formatting.
+            let function = driver.produce::<u8>()? & 0x07;
+            let s = format!("{domain:04x}:{bus:02x}:{device:02x}.{function:x}");
             PciEbdf::try_new(s).ok()
         }
     }
