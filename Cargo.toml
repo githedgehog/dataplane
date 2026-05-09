@@ -46,6 +46,18 @@ license = "Apache-2.0"
 publish = false
 repository = "https://github.com/githedgehog/dataplane/"
 
+[workspace.metadata.package]
+# these packages have either hardware or os level interactions which make them impossible to test on miri
+dataplane = { miri = false, package = "dataplane" }
+dpdk = { miri = false, package = "dataplane-dpdk" }
+dpdk-sys = { miri = false, package = "dataplane-dpdk-sys" }
+hardware = { miri = false, package = "dataplane-hardware" }
+init = { miri = false, package = "dataplane-init" }
+interface-manager = { miri = false, package = "dataplane-interface-manager" }
+mgmt = { miri = false, package = "dataplane-mgmt" }
+sysfs = { miri = false, package = "dataplane-sysfs" }
+tracectl = { miri = false, package = "dataplane-tracectl" }
+
 [workspace.dependencies]
 
 # Internal
