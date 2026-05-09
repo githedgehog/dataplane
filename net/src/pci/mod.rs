@@ -7,11 +7,26 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
 /// A PCI "extended" bus device function string (e.g. "0000:00:03.0")
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Deserialize,
+    Serialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub struct PciEbdf(String);
 
 /// Errors that can occur when parsing a PCI Ebdf string
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum PciEbdfError {
     /// The PCI Ebdf string is not valid
     #[error("Invalid PCI Ebdf format")]
