@@ -143,3 +143,7 @@ test-group = 'vm'
 
 [test-groups]
 vm = { max-threads = 1 }
+
+[profile.miri]
+threads-required = 8
+slow-timeout = { period = "500s" }

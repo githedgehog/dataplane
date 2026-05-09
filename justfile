@@ -5,6 +5,8 @@ set unstable := true
 set shell := ["/usr/bin/env", "bash", "-euo", "pipefail", "-c"]
 set script-interpreter := ["/usr/bin/env", "bash", "-euo", "pipefail"]
 
+mod miri
+
 # enable to debug just recipes
 debug_justfile := "false"
 
@@ -84,6 +86,9 @@ oci_image_frr_host := oci_repo + "/" + oci_frr_prefix + "-host:" + version
 _skopeo_dest_insecure := if oci_insecure == "true" { "--dest-tls-verify=false" } else { "" }
 
 [private]
+nightly := "false"
+
+[private]
 docker_sock := "/var/run/docker.sock"
 
 # Build a nix derivation with standard build arguments
@@ -102,6 +107,7 @@ build target="dataplane.tar" *args:
       --argstr instrumentation '{{ instrument }}' \
       --argstr platform '{{ platform }}' \
       --argstr tag '{{version}}' \
+      --argstr nightly '{{nightly}}' \
       --print-build-logs \
       --show-trace \
       --out-link "results/${target}" \
@@ -127,6 +133,7 @@ test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" 
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
 
+
 [script]
 test-each *args: (build "tests.pkg" args)
     {{ _just_debuggable_ }}
@@ -151,10 +158,15 @@ setup-roots *args:
     {{ _just_debuggable_ }}
     for root in devroot sysroot; do
       nix build -f default.nix "${root}" \
+        --argstr default-features '{{ default_features }}' \
+        --argstr features '{{ features }}' \
+        --argstr instrumentation '{{ instrument }}' \
+        --argstr kernel '{{ kernel }}' \
+        --argstr libc '{{ libc }}' \
+        --argstr nightly '{{nightly}}' \
+        --argstr platform '{{ platform }}' \
         --argstr profile '{{ profile }}' \
         --argstr sanitize '{{ sanitize }}' \
-        --argstr instrumentation '{{ instrument }}' \
-        --argstr platform '{{ platform }}' \
         --argstr tag '{{version}}' \
         --out-link "${root}" \
         {{ args }}
@@ -344,4 +356,16 @@ bump_version version:
 # Enter nix-shell
 [script]
 shell:
-   nix-shell
+   nix-shell \
+      --argstr default-features '{{ default_features }}' \
+      --argstr features '{{ features }}' \
+      --argstr instrumentation '{{ instrument }}' \
+      --argstr kernel '{{ kernel }}' \
+      --argstr libc '{{ libc }}' \
+      --argstr nightly '{{nightly}}' \
+      --argstr platform '{{ platform }}' \
+      --argstr profile '{{ profile }}' \
+      --argstr sanitize '{{ sanitize }}' \
+      --argstr tag '{{version}}'
+
+
