@@ -51,8 +51,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub use clap::Parser;
-use hardware::pci::address::InvalidPciAddress;
-use hardware::pci::address::PciAddress;
 use miette::{Context, IntoDiagnostic};
 use net::interface::IllegalInterfaceName;
 use net::interface::InterfaceName;
@@ -70,8 +68,8 @@ use std::time::Duration;
 )]
 #[rkyv(attr(derive(PartialEq, Eq, Debug)))]
 pub enum PortArg {
-    PCI(PciAddress),       // DPDK driver
-    KERNEL(InterfaceName), // kernel driver
+    PCI(net::pci::PciEbdf), // DPDK driver
+    KERNEL(InterfaceName),  // kernel driver
 }
 
 #[derive(
@@ -93,7 +91,8 @@ impl FromStr for PortArg {
 
         match disc {
             "pci" => {
-                let pciaddr = PciAddress::try_from(value).map_err(|e| e.to_string())?;
+                let pciaddr =
+                    net::pci::PciEbdf::try_new(value.to_string()).map_err(|e| e.to_string())?;
                 Ok(PortArg::PCI(pciaddr))
             }
             "kernel" => {
@@ -1050,7 +1049,7 @@ pub enum InvalidCmdArguments {
     /// PCI addresses must follow the format: `domain:bus:device.function`
     /// (e.g., `0000:01:00.0`)
     #[error(transparent)]
-    InvalidPciAddress(#[from] InvalidPciAddress),
+    InvalidPciAddress(#[from] net::pci::PciEbdfError),
 
     /// Invalid network interface name.
     ///
@@ -1078,7 +1077,7 @@ pub enum UnsupportedByDriver {
     #[error(
         "Kernel driver does not support interfaces specified by their dpdk driver name; {0} given"
     )]
-    Kernel(PciAddress),
+    Kernel(net::pci::PciEbdf),
 }
 
 impl TryFrom<CmdArgs> for LaunchConfiguration {
@@ -1471,11 +1470,6 @@ impl CmdArgs {
 
 #[cfg(test)]
 mod tests {
-    use hardware::pci::address::PciAddress;
-    use hardware::pci::bus::Bus;
-    use hardware::pci::device::Device;
-    use hardware::pci::domain::Domain;
-    use hardware::pci::function::Function;
     use net::interface::InterfaceName;
 
     use crate::{InterfaceArg, PortArg};
@@ -1488,12 +1482,9 @@ mod tests {
         assert_eq!(spec.interface.as_ref(), "GbEth1.9000");
         assert_eq!(
             spec.port,
-            Some(PortArg::PCI(PciAddress::new(
-                Domain::from(0),
-                Bus::new(2),
-                Device::try_from(1).unwrap(),
-                Function::try_from(7).unwrap()
-            )))
+            Some(PortArg::PCI(
+                net::pci::PciEbdf::try_new("0000:02:01.7".into()).unwrap()
+            ))
         );
 
         // interface + port as kernel interface
