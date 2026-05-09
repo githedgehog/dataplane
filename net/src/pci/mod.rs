@@ -34,6 +34,9 @@ pub enum PciEbdfError {
 }
 
 impl PciEbdf {
+    const MAX_DEVICE: u8 = 0x1f;
+    const MAX_FUNCTION: u8 = 0x07;
+
     /// Parse a string and confirm it is a valid PCI Ebdf string
     ///
     /// # Errors
@@ -72,6 +75,18 @@ impl PciEbdf {
         if func.chars().any(|c| !c.is_ascii_hexdigit()) {
             return Err(InvalidFormat(s));
         }
+        let Ok(dev) = u8::from_str_radix(dev, 16) else {
+            return Err(InvalidFormat(s));
+        };
+        if dev > Self::MAX_DEVICE {
+            return Err(InvalidFormat(s));
+        }
+        let Ok(func) = u8::from_str_radix(func, 16) else {
+            return Err(InvalidFormat(s));
+        };
+        if func > Self::MAX_FUNCTION {
+            return Err(InvalidFormat(s));
+        }
         Ok(PciEbdf(s))
     }
 }
@@ -91,10 +106,9 @@ mod contract {
         fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
             let domain = driver.produce::<u16>()?;
             let bus = driver.produce::<u8>()?;
-            let device = driver.produce::<u8>()?;
-            // PCI function is 3 bits on the wire; PciEbdf::try_new also requires
-            // exactly 1 hex digit, so mask before formatting.
-            let function = driver.produce::<u8>()? & 0x07;
+            // PCI device is 5 bits and function is 3 bits on the wire.
+            let device = driver.produce::<u8>()? & PciEbdf::MAX_DEVICE;
+            let function = driver.produce::<u8>()? & PciEbdf::MAX_FUNCTION;
             let s = format!("{domain:04x}:{bus:02x}:{device:02x}.{function:x}");
             PciEbdf::try_new(s).ok()
         }
@@ -121,19 +135,29 @@ mod tests {
         assert_eq!(split[1].len(), 1);
         assert!(split[0].chars().all(|c| c.is_ascii_hexdigit()));
         assert!(split[1].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(u8::from_str_radix(split[0], 16).unwrap() <= PciEbdf::MAX_DEVICE);
+        assert!(u8::from_str_radix(split[1], 16).unwrap() <= PciEbdf::MAX_FUNCTION);
     }
 
     #[test]
     fn basic_parse() {
-        let s = "0000:00:03.0";
-        validity_checks(s);
-        let _ = PciEbdf::try_new(s.to_string()).unwrap();
+        for s in ["0000:00:03.0", "ffff:ff:1f.7"] {
+            validity_checks(s);
+            let _ = PciEbdf::try_new(s.to_string()).unwrap();
+        }
     }
 
     #[test]
     fn basic_parse_invalid() {
-        let s = "0000:00:0x3.0";
-        let _ = PciEbdf::try_new(s.to_string()).unwrap_err();
+        for s in [
+            "0000:00:0x3.0",
+            "0000:00:20.0",
+            "0000:00:ff.0",
+            "0000:00:03.8",
+            "0000:00:03.f",
+        ] {
+            let _ = PciEbdf::try_new(s.to_string()).unwrap_err();
+        }
     }
 
     #[test]
