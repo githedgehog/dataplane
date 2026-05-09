@@ -340,8 +340,8 @@ pub struct TtlAlreadyZero;
 /// Error which is triggered during construction of an [`Ipv4`] object.
 #[derive(thiserror::Error, Debug)]
 pub enum Ipv4Error {
-    /// Source address is invalid because it is multicast.
-    #[error("multicast source forbidden (received {0})")]
+    /// Source address is invalid because it is not a unicast address.
+    #[error("multicast and broadcast source forbidden (received {0})")]
     InvalidSourceAddr(Ipv4Addr),
     /// Error triggered when etherparse fails to parse the header.
     #[error(transparent)]
@@ -581,7 +581,7 @@ mod test {
                             assert_eq!(e.actual, slice.len());
                         }
                         ParseError::Invalid(Ipv4Error::InvalidSourceAddr(source)) => {
-                            assert!(source.is_multicast());
+                            assert!(source.is_multicast() || source.is_broadcast());
                         }
                         ParseError::Invalid(Ipv4Error::Invalid(HeaderSliceError::Content(
                             HeaderError::UnexpectedVersion { version_number },
