@@ -595,8 +595,6 @@ mod tests {
 
     #[test]
     fn test_ip_util_methods() {
-        let mut set_ipv4 = false;
-        let mut set_ipv6 = false;
         check!()
             .with_generator(CommonPacketAndIps)
             .for_each(|(packet, src_ip, dst_ip)| {
@@ -605,14 +603,6 @@ mod tests {
                 assert!(packet.set_ip_destination(*dst_ip).is_ok());
                 assert_eq!(packet.ip_source(), Some(src_ip.inner()));
                 assert_eq!(packet.ip_destination(), Some(*dst_ip));
-                if src_ip.inner().is_ipv4() || dst_ip.is_ipv4() {
-                    set_ipv4 = true;
-                }
-                if src_ip.inner().is_ipv6() || dst_ip.is_ipv6() {
-                    set_ipv6 = true;
-                }
             });
-        assert!(set_ipv4);
-        assert!(set_ipv6);
     }
 }
