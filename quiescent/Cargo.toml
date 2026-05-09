@@ -10,6 +10,8 @@ version.workspace = true
 loom = ["concurrency/loom", "dep:loom"]
 # Shuttle equivalent.  Mutually exclusive with `loom`.
 shuttle = ["concurrency/shuttle", "dep:shuttle"]
+# for miri: enable strict provenance checks
+_strict_provenance = []
 
 [dependencies]
 # internal
