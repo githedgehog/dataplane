@@ -132,6 +132,59 @@ mod context {
     }
 }
 
+mod tests {
+    use super::context::*;
+    use concurrency::sync::Arc;
+    use concurrency::thread;
+    use net::ip::NextHeader;
+
+    // do not mark as a test
+    #[allow(dead_code)] // used by shuttle tests
+    pub(super) fn concurrent_allocations() {
+        let allocator = build_allocator();
+        let allocator_arc = Arc::new(allocator);
+        let allocator1 = allocator_arc.clone();
+        let allocator2 = allocator_arc.clone();
+        let allocator3 = allocator_arc.clone();
+
+        let mut handles = vec![];
+
+        handles.push(thread::spawn(move || {
+            let _allocation1 = allocator1
+                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .unwrap();
+        }));
+        handles.push(thread::spawn(move || {
+            let _allocation2 = allocator2
+                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .unwrap();
+        }));
+        handles.push(thread::spawn(move || {
+            let _allocation3 = allocator3
+                .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
+                .unwrap();
+        }));
+
+        let _results: Vec<()> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        // All allocations got out of scope and dropped when the threads terminated.
+
+        let mut allocator_again = Arc::try_unwrap(allocator_arc).unwrap();
+        let (bitmap, in_use) = get_ip_allocator_v4(
+            &mut allocator_again.pools_src44,
+            vpcd2(),
+            NextHeader::TCP,
+            addr_v4("1.1.0.0"),
+        )
+        .get_pool_clone_for_tests();
+        assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
+        assert!(in_use.front().unwrap().upgrade().is_none()); // Weak references in list no longer resolve
+    }
+}
+
 #[concurrency_mode(std)]
 mod std_tests {
     use super::context::*;
@@ -358,6 +411,7 @@ mod std_tests {
 #[concurrency_mode(shuttle)]
 mod tests_shuttle {
     use super::context::*;
+    use super::tests;
 
     use net::ip::NextHeader;
     use shuttle::sync::{Arc, Mutex};
@@ -381,10 +435,7 @@ mod tests_shuttle {
         );
     }
 
-    fn run_shuttle<F>(f: F)
-    where
-        F: Fn() + Sync + Send + 'static,
-    {
+    fn shuttle_config() -> shuttle::Config {
         let mut config = shuttle::Config::new();
         // Raise the stack size to avoid stack overflow in the coroutine. The default is 32 kB, but
         // the allocator uses Atomics for all port blocks for each allocated IP address, and in
@@ -392,57 +443,44 @@ mod tests_shuttle {
         //
         // Raise to 1 MB stack.
         config.stack_size = 1024 * 1024;
+        config
+    }
+
+    fn run_shuttle_random<F>(f: F)
+    where
+        F: Fn() + Sync + Send + 'static,
+    {
+        let config = shuttle_config();
         // One hundred iterations
         let runner = shuttle::Runner::new(shuttle::scheduler::RandomScheduler::new(100), config);
+        runner.run(f);
+    }
+
+    fn run_shuttle_pct<F>(f: F)
+    where
+        F: Fn() + Sync + Send + 'static,
+    {
+        let config = shuttle_config();
+        // replay test under 64 different schedules
+        const ITERATIONS: usize = 64;
+        // max of 4 preemption points per schedule
+        const PREEMPTIONS: usize = 4; // this is pretty aggressive, very rarely is larger than 3 useful.
+        let runner = shuttle::Runner::new(
+            shuttle::scheduler::PctScheduler::new(PREEMPTIONS, ITERATIONS),
+            config,
+        );
         runner.run(f);
     }
 
     // Run concurrent allocations for four different tuples (some of them sharing the same source
     // and destination IP addresses) using shuttle's random scheduler, see if anything breaks.
     #[test]
-    fn test_concurrent_allocations() {
-        run_shuttle(|| {
-            let allocator = build_allocator();
-            let allocator_arc = Arc::new(allocator);
-            let allocator1 = allocator_arc.clone();
-            let allocator2 = allocator_arc.clone();
-            let allocator3 = allocator_arc.clone();
+    fn test_concurrent_allocations_shuttle_random() {
+        run_shuttle_random(tests::concurrent_allocations);
+    }
 
-            let mut handles = vec![];
-
-            handles.push(thread::spawn(move || {
-                let _allocation1 = allocator1
-                    .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
-                    .unwrap();
-            }));
-            handles.push(thread::spawn(move || {
-                let _allocation2 = allocator2
-                    .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
-                    .unwrap();
-            }));
-            handles.push(thread::spawn(move || {
-                let _allocation3 = allocator3
-                    .allocate_v4(vpcd2(), addr_v4("1.1.0.0"), NextHeader::TCP)
-                    .unwrap();
-            }));
-
-            let _results: Vec<()> = handles
-                .into_iter()
-                .map(|handle| handle.join().unwrap())
-                .collect();
-
-            // All allocations got out of scope and dropped when the threads terminated.
-
-            let mut allocator_again = Arc::try_unwrap(allocator_arc).unwrap();
-            let (bitmap, in_use) = get_ip_allocator_v4(
-                &mut allocator_again.pools_src44,
-                vpcd2(),
-                NextHeader::TCP,
-                addr_v4("1.1.0.0"),
-            )
-            .get_pool_clone_for_tests();
-            assert_eq!(bitmap.len(), 3); // 3 IP addresses available to NAT 1.1.0.0
-            assert!(in_use.front().unwrap().upgrade().is_none()); // Weak references in list no longer resolve
-        });
+    #[test]
+    fn test_concurrent_allocations_shuttle_pct() {
+        run_shuttle_pct(tests::concurrent_allocations);
     }
 }
