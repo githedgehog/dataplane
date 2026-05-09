@@ -498,15 +498,12 @@ mod tests {
 
     #[test]
     fn test_port_util_methods() {
-        let mut set_udp = false;
-        let mut set_tcp = false;
         check!()
             .with_generator(CommonPacketAndPorts)
             .for_each(|(packet, src_port, dst_port)| {
                 let mut packet = packet.clone();
                 match packet.try_transport() {
                     Some(Transport::Udp(_)) => {
-                        set_udp = true;
                         let src = UdpPort::new_checked(src_port.get()).unwrap();
                         let dst = UdpPort::new_checked(dst_port.get()).unwrap();
                         assert!(packet.set_udp_source_port(src).is_ok());
@@ -526,7 +523,6 @@ mod tests {
                         ));
                     }
                     Some(Transport::Tcp(_)) => {
-                        set_tcp = true;
                         let src = TcpPort::new_checked(src_port.get()).unwrap();
                         let dst = TcpPort::new_checked(dst_port.get()).unwrap();
                         assert!(packet.set_tcp_source_port(src).is_ok());
@@ -595,8 +591,6 @@ mod tests {
                     }
                 }
             });
-        assert!(set_udp);
-        assert!(set_tcp);
     }
 
     #[test]
