@@ -10,6 +10,7 @@
   default-features ? "true",
   kernel ? "linux",
   tag ? "dev",
+  nightly ? "false",
 }:
 let
   sources = import ./npins;
@@ -44,8 +45,9 @@ let
     .${profile};
   overlays = import ./nix/overlays {
     inherit
-      sources
+      nightly
       sanitizers
+      sources
       ;
     profile = profile';
     platform = platform';
