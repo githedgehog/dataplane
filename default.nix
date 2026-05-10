@@ -111,7 +111,7 @@ let
     executable = false;
     destination = "/.clangd";
   };
-  crane = import sources.crane { };
+  crane = import sources.crane { inherit pkgs; };
   craneLib = crane.craneLib.overrideToolchain pkgs.rust-toolchain;
   devroot = pkgs.symlinkJoin {
     name = "dataplane-dev-shell";
