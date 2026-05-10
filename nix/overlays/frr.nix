@@ -106,6 +106,10 @@ in
             "lib=lib"
             "PAM_CAP=no"
             "CC:=${final.stdenv'.cc.targetPrefix}clang"
+            # _makenames is a build-host helper run during the build; pin it to
+            # a build-host clang so cross-arch builds (e.g. bluefield3) don't
+            # produce an aarch64 binary the build host cannot execute.
+            "BUILD_CC:=${final.pkgsBuildBuild.llvmPackages'.clang}/bin/clang"
             "SHARED=no"
             "LIBCSTATIC=no"
             "GOLANG=no"
