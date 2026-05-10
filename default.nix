@@ -45,6 +45,7 @@ let
     .${profile};
   overlays = import ./nix/overlays {
     inherit
+      libc
       nightly
       sanitizers
       sources
