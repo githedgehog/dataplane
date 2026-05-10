@@ -222,11 +222,18 @@ let
           TOMLQ = "${pkgs.pkgsBuildHost.yq}/bin/tomlq";
           JQ = "${pkgs.pkgsBuildHost.jq}/bin/jq";
         }
-        ''
-          $TOMLQ -r '.workspace.members | sort[]' ${src}/Cargo.toml | while read -r p; do
-            $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${src}/$p/Cargo.toml
-          done | $JQ --sort-keys --slurp 'add' > $out
-        ''
+        (
+          if platform == "wasm32-wasip1" then
+            ''
+              $TOMLQ -r '.workspace as $ws | [$ws.members[] | select($ws.metadata.package[.].wasm != false) as $p | { ($p): $ws.dependencies[$p].package }] | add' ${src}/Cargo.toml > $out
+            ''
+          else
+            ''
+              $TOMLQ -r '.workspace.members | sort[]' ${src}/Cargo.toml | while read -r p; do
+                  $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${src}/$p/Cargo.toml
+              done | $JQ --sort-keys --slurp 'add' > $out
+            ''
+        )
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
