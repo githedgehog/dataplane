@@ -707,7 +707,6 @@ let
     pkgs.less
     pkgs.libc.bin
     pkgs.libc.out
-    pkgs.libgcc.libgcc
     pkgs.man
     pkgs.nano
     pkgs.procps
@@ -717,6 +716,8 @@ let
     pkgs.wget
     pkgs.yq
     pkgs.zstd
+  ] ++ lib.optionals (libc == "gnu") [
+    pkgs.pkgsHostHost.glibc.libgcc
   ];
 
   containers.debug-tools = pkgs.dockerTools.buildLayeredImage {
