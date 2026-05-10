@@ -118,13 +118,19 @@ let
     paths = [
       clangd-config
     ]
-    ++ (with pkgs.pkgsBuildHost.llvmPackages'; [
+    # pkgsBuildBuild (not pkgsBuildHost): dev-shell tools run on, and target,
+    # the build host.  pkgsBuildHost is "runs on build, targets host", which
+    # under a cross pkgs (e.g. libc=musl, platform=bluefield3) installs only
+    # target-prefixed binaries (e.g. x86_64-unknown-linux-musl-pkg-config) --
+    # cargo build scripts that invoke `pkg-config`/`clang` unprefixed then fail
+    # to find them in PATH.
+    ++ (with pkgs.pkgsBuildBuild.llvmPackages'; [
       bintools
       clang
       libclang.lib
       lld
     ])
-    ++ (with pkgs.pkgsBuildHost; [
+    ++ (with pkgs.pkgsBuildBuild; [
       actionlint
       bash
       cargo-bolero
