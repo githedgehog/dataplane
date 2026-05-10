@@ -46,18 +46,6 @@ license = "Apache-2.0"
 publish = false
 repository = "https://github.com/githedgehog/dataplane/"
 
-[workspace.metadata.package]
-# these packages have either hardware or os level interactions which make them impossible to test on miri
-dataplane = { miri = false, package = "dataplane" }
-dpdk = { miri = false, package = "dataplane-dpdk" }
-dpdk-sys = { miri = false, package = "dataplane-dpdk-sys" }
-hardware = { miri = false, package = "dataplane-hardware" }
-init = { miri = false, package = "dataplane-init" }
-interface-manager = { miri = false, package = "dataplane-interface-manager" }
-mgmt = { miri = false, package = "dataplane-mgmt" }
-sysfs = { miri = false, package = "dataplane-sysfs" }
-tracectl = { miri = false, package = "dataplane-tracectl" }
-
 [workspace.dependencies]
 
 # Internal
@@ -222,3 +210,126 @@ rpath = true
 inherits = "release"
 debug-assertions = true
 overflow-checks = true
+
+# Some packages have either hardware or os level interactions which make them impossible to test on miri or use in wasm
+# We encode exclusions for our wasm and miri builds into the metadata here.
+# I have tried to divide the packages into miri/wasm enabled and disabled categories.
+#
+# hopeless + pointless: packages that are either hardware or os level interactions and are impossible to test on miri or
+#                       use in wasm.  These aren't just "fail to compile in this environment" - they are actually
+#                       impossible to compile or use in wasm/miri.  Even if you could somehow compile them, they simply
+#                       don't make any sense to use in wasm/miri.
+# split: crates which are at least potentially useful in wasm/miri, but which also contain hardware or os level
+#        interactions which are impossible or nonsensical in wasm/miri.  These crates would need to be split or
+#        modified to use conditional compilation to work in wasm/miri.
+# miss: packages that are not logically hopeless, or pointless in wasm/miri, but which currently just happen to contain
+#       logic which can and should eventually be factored out or abstracted into something suitable for wasm/miri.
+[workspace.metadata.package.args]
+package = "dataplane-args"
+miri = true
+wasm = false # miss
+
+[workspace.metadata.package.cli]
+package = "dataplane-cli"
+miri = true
+wasm = false # split
+
+[workspace.metadata.package.dataplane]
+package = "dataplane"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.dpdk]
+package = "dataplane-dpdk"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.dpdk-sys]
+package = "dataplane-dpdk-sys"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.flow-entry]
+package = "dataplane-flow-entry"
+miri = true
+wasm = false # miss
+
+[workspace.metadata.package.flow-filter]
+package = "dataplane-flow-filter"
+miri = true
+wasm = false # miss
+
+[workspace.metadata.package.hardware]
+package = "dataplane-hardware"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.init]
+package = "dataplane-init"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.interface-manager]
+package = "dataplane-interface-manager"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.k8s-intf]
+package = "dataplane-k8s-intf"
+miri = true
+wasm = false # split
+
+[workspace.metadata.package.k8s-less]
+package = "dataplane-k8s-less"
+miri = true
+wasm = false # split
+
+[workspace.metadata.package.mgmt]
+package = "dataplane-mgmt"
+miri = false
+wasm = false # split
+
+[workspace.metadata.package.nat]
+package = "dataplane-nat"
+miri = true
+wasm = false # split
+
+[workspace.metadata.package.pipeline]
+package = "dataplane-pipeline"
+miri = true
+wasm = false # miss
+
+[workspace.metadata.package.routing]
+package = "dataplane-routing"
+miri = true
+wasm = false # split
+
+[workspace.metadata.package.stats]
+package = "dataplane-stats"
+miri = true
+wasm = false # miss
+
+[workspace.metadata.package.sysfs]
+package = "dataplane-sysfs"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.test-utils]
+package = "dataplane-test-utils"
+miri = true
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.tracectl]
+package = "dataplane-tracectl"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.quiescent]
+package = "dataplane-quiescent"
+miri = true
+wasm = false # works but pointless
+
+[workspace.metadata.package.vpcmap]
+package = "dataplane-vpcmap"
+miri = true
+wasm = false # miss
