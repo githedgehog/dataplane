@@ -513,7 +513,32 @@ let
     dontPatchElf = true;
     buildPhase =
       let
-        libc = pkgs.pkgsHostHost.libc;
+        # `libc-pkg` and not `libc` so the outer function-arg `libc` (the
+        # string "gnu" / "musl" / "unknown") stays visible inside this scope
+        # for the conditional below.
+        libc-pkg = pkgs.pkgsHostHost.libc;
+        # libgcc_s.so.1 is consumed by glibc-dynamic Rust binaries for
+        # unwinding.  musl Rust targets static-link musl + Rust's
+        # compiler-builtins, so libgcc has no consumer; bundling it would
+        # waste closure space and pull in glibc-targeted build outputs that
+        # are wrong for a musl container.
+        #
+        # IMPORTANT: must be the path baked into the matching ld-linux's
+        # compiled-in search list, which is `pkgs.pkgsHostHost.glibc.libgcc`
+        # (the `xgcc-...-libgcc` / cross `libgcc-<triple>-...` derivation).
+        # `pkgs.stdenv.cc.cc.lib` ships the same `libgcc_s.so.1` content but
+        # at a different store path that ld-linux doesn't search, so the
+        # binary can't find it at runtime even though the file exists in
+        # the tar.
+        libgcc-tar-input = if libc == "gnu" then "${pkgs.pkgsHostHost.glibc.libgcc}" else "";
+        # libc.out is needed by anything dynamically linked in the tar,
+        # regardless of libc choice.  The Rust binaries on musl are
+        # statically linked and don't need it, but busybox (bundled below
+        # for `/bin/*` shell utilities) is dynamically linked against
+        # whichever libc its pkgset uses.  Omitting libc.out on musl leaves
+        # busybox applets referencing a `ld-musl-*.so.1` / `libc.so` that
+        # isn't present in the image.
+        libc-tar-input = "${libc-pkg.out}";
       in
       ''
         tmp="$(mktemp -d)"
@@ -556,10 +581,10 @@ let
           --no-selinux \
           \
           `# we already copied this stuff in to /etc directly, no need to copy it into the store again.` \
-          --exclude '${libc}/etc' \
+          --exclude '${libc-pkg}/etc' \
           \
           `# There are a few components of glibc which have absolutely nothing to do with our goals and present` \
-          `# material and trivially avoided hazzards just by their presence.  Thus, we filter them out here.` \
+          `# material and trivially avoided hazards just by their presence.  Thus, we filter them out here.` \
           `# None of this applies to musl (if we ever decide to ship with musl).  That said, these filters will` \
           `# just not do anything in that case. ` \
            \
@@ -570,7 +595,7 @@ let
           `# Go check out this one, it is a classic: ` \
           `# https://www.exploit-db.com/exploits/18105 ` \
           \
-          --exclude '${libc}/lib/audit*' \
+          --exclude '${libc-pkg}/lib/audit*' \
           \
           `# The glibc character set conversion code is not only useless to us, is is an increasingly common attack ` \
           `# vector (see CVE-2024-2961 for example).  We are 100% unicode only, so all of these legacy character ` \
@@ -579,20 +604,20 @@ let
           `# and it wouldn't be respected by rust's core/std libs anyway. ` \
           `# This is also how fedora packages glibc, and for the same basic reasons.` \
           `# See https://fedoraproject.org/wiki/Changes/Gconv_package_split_in_glibc` \
-          --exclude '${libc}/lib/gconv*' \
-          --exclude '${libc}/share/i18n*' \
-          --exclude '${libc}/share/locale*' \
+          --exclude '${libc-pkg}/lib/gconv*' \
+          --exclude '${libc-pkg}/share/i18n*' \
+          --exclude '${libc-pkg}/share/locale*' \
           \
           `# getconf isn't even shipped in the container so this is useless.  You couldn't change limits in the ` \
           `# container like this anyway.  Even if we needed to and could, we wouldn't use setconf et al.` \
-          --exclude '${libc}/libexec*' \
+          --exclude '${libc-pkg}/libexec*' \
           \
           --verbose \
           --file "$out" \
           \
           . \
-          ${libc.out} \
-          ${pkgs.pkgsHostHost.glibc.libgcc} \
+          ${libc-tar-input} \
+          ${libgcc-tar-input} \
           ${workspace.dataplane} \
           ${workspace.init} \
           ${workspace.cli} \
