@@ -98,13 +98,18 @@ stdenv.mkDerivation (finalAttrs: {
     c-ares
     json_c
     libcap
-    libgccjit
     libxcrypt
     libyang
     pcre2
     python3Minimal
     readline
   ]
+  # libgccjit is only the carrier for libatomic.so.1 on glibc targets
+  # (see the LDFLAGS comment in nix/overlays/frr.nix).  On musl FRR pulls
+  # libatomic from the cross-musl gcc-libs output via `stdenv.cc.cc.lib`
+  # in the overlay, so pulling libgccjit into the build closure here just
+  # bloats the runtime image without contributing any symbol.
+  ++ lib.optionals stdenv.hostPlatform.isGnu [ libgccjit ]
   ++ lib.optionals bgpRpki [ rtrlib ];
 
   # cross-compiling: clippy is compiled with the build host toolchain, split it out to ease
@@ -131,8 +136,8 @@ stdenv.mkDerivation (finalAttrs: {
     "--enable-config-rollbacks=no"
     "--disable-doc"
     "--disable-doc-html"
-    "--enable-grpc=no"
-    "--enable-protobuf=no"
+    "--disable-grpc"
+    "--disable-protobuf"
     "--enable-scripting=no"
     "--enable-sysrepo=no"
     "--enable-zeromq=no"
