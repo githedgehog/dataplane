@@ -251,7 +251,13 @@ let
   cargo-cmd-prefix = [
     "-Zunstable-options"
     "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
-    "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+    # glibc Rust binaries unwind through libgcc_s.so.1.  Non-glibc targets
+    # (musl, wasi) have no libgcc consumer; ask build-std to pull in LLVM's
+    # libunwind from the sysroot so panic-unwind has an actual unwinder.
+    (
+      "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+      + (if libc != "gnu" then ",system-llvm-libunwind" else "")
+    )
     "--target=${rustc-target}"
   ]
   ++ (if default-features == "false" then [ "--no-default-features" ] else [ ])
