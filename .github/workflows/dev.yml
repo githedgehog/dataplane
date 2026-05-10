@@ -394,6 +394,66 @@ jobs:
           recipe_args: "--package=dataplane-quiescent --features=_strict_provenance"
       - *tmate
 
+  must-build:
+    if: >-
+      ${{
+        needs.check_changes.outputs.devfiles == 'true'
+        || startsWith(github.event.ref, 'refs/tags/v')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    name: "must-build/${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
+    runs-on: "lab"
+    needs:
+      - check_changes
+      # - check # TODO: add dependency before PR lands
+    permissions:
+      checks: "write"
+      pull-requests: "read"
+      contents: "read"
+      packages: "read"
+      id-token: "write"
+    env:
+      USER: "runner"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: "wasm32-wasip1"
+            profile: "release"
+            libc: "unknown"
+            recipe: "build-each"
+            args: ""
+          - platform: "zen5"
+            profile: "release"
+            libc: "musl"
+            recipe: "build-container"
+            args: "dataplane"
+          - platform: "bluefield3"
+            profile: "debug"
+            libc: "gnu"
+            recipe: "build-container"
+            args: "dataplane"
+          - platform: "bluefield3"
+            profile: "debug"
+            libc: "musl"
+            recipe: "build-container"
+            args: "dataplane"
+    steps:
+      - *checkout
+      - *nix-setup
+      - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
+        uses: *just
+        env:
+          JUST_VARS: >-
+            platform=${{ matrix.platform }}
+            profile=${{ matrix.profile }}
+            libc=${{ matrix.libc }}
+        with:
+          recipe: "${{ matrix.recipe }}"
+          recipe_args: "${{ matrix.args }}"
+      - *tmate
+
   features:
     if: >-
       ${{
@@ -530,6 +590,7 @@ jobs:
       - vlab
       - test_each
       - miri
+      - must-build
     # Run always so this job can aggregate results even when one of its
     # dependencies failed or was skipped.
     #
@@ -567,6 +628,11 @@ jobs:
         if: ${{ needs.build.result != 'success' && needs.build.result != 'skipped' }}
         run: |
           echo '::error:: Some build job(s) failed'
+          exit 1
+      - name: "Flag any must-build matrix failures"
+        if: ${{ needs.must-build.result != 'success' && needs.must-build.result != 'skipped' }}
+        run: |
+          echo '::error:: Some must-build job(s) failed'
           exit 1
       - name: "Flag any vlab matrix failures"
         if: ${{ needs.vlab.result != 'success' && needs.vlab.result != 'skipped' }}

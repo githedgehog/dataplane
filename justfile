@@ -133,6 +133,9 @@ test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" 
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
 
+[script]
+build-each *args: (build "workspace" args)
+    {{ _just_debuggable_ }}
 
 [script]
 test-each *args: (build "tests.pkg" args)
