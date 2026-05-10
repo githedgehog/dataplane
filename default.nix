@@ -205,7 +205,7 @@ let
       "wasm32-wasip1"
     else
       pkgs.stdenv'.targetPlatform.rust.rustcTarget;
-  is-cross-compile = pkgs.stdenv'.hostPlatform.rust.rustcTarget != ctarget;
+  is-cross-compile = pkgs.stdenv'.buildPlatform.rust.rustcTarget != ctarget;
   cxx = if is-cross-compile then "${ctarget}-clang++" else "clang++";
   strip = if is-cross-compile then "${ctarget}-strip" else "strip";
   objcopy = if is-cross-compile then "${ctarget}-objcopy" else "objcopy";
