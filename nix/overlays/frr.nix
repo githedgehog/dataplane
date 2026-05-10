@@ -105,7 +105,7 @@ in
           makeFlags = [
             "lib=lib"
             "PAM_CAP=no"
-            "CC:=clang"
+            "CC:=${final.stdenv'.cc.targetPrefix}clang"
             "SHARED=no"
             "LIBCSTATIC=no"
             "GOLANG=no"
