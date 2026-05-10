@@ -16,6 +16,15 @@ stdenv.mkDerivation
   version = sources.dplane-rpc.revision;
   src = sources.dplane-rpc.outPath;
 
+  # workaround: cpmock.c uses memset/strcpy/strerror/memcmp without including
+  # <string.h>.  glibc transitively exposes those declarations through
+  # unrelated system headers; musl's header layout doesn't, so the compile
+  # fails with `call to undeclared library function 'memset'` under -std=c23.
+  # remove once fixed upstream in githedgehog/dplane-rpc.
+  postPatch = ''
+    sed -i '1i#include <string.h>' clib/bin/cpmock.c
+  '';
+
   doCheck = false;
   enableParallelBuilding = true;
 
