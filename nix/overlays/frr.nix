@@ -5,6 +5,7 @@
   sanitizers,
   platform,
   profile,
+  libc,
   ...
 }:
 final: prev:
@@ -39,11 +40,36 @@ let
             (orig.LDFLAGS or "")
             + " -L${final.fancy.readline}/lib -lreadline "
             + " -L${final.fancy.json_c}/lib -ljson-c "
-            + " -Wl,--push-state,--as-needed,--no-whole-archive,-Bstatic "
+            # libatomic must end up as a single dynamic dep in the process:
+            # libatomic's lock_for_pointer state is per-image, so a static
+            # copy inside libfrr.so cannot synchronize with any other
+            # consumer that picks up libatomic.so dynamically.  Path differs
+            # by libc because the libatomic.so that pairs with the chosen
+            # cross-compiler stdenv lives in a different store path:
+            #
+            #   glibc: `${fancy.libgccjit}/lib/libatomic.so.1`
+            #     The libgccjit overlay is currently built with the host
+            #     stdenv (see TODO note on the libgccjit override below), so
+            #     the libatomic next to it is glibc-targeted -- safe to link
+            #     against a glibc FRR.
+            #
+            #   musl: `${stdenv.cc.cc.lib}/${triple}/lib/libatomic.so.1`
+            #     This is the gcc-libs output of the cross-musl gcc that
+            #     backs the cross-musl clang stdenv (note: stdenv, not
+            #     stdenv' -- the prime is the clang stdenv whose cc.cc is
+            #     clang and contains no libatomic at all).
+            + (
+              if libc == "musl" then
+                " -L${final.stdenv.cc.cc.lib}/${final.stdenv.hostPlatform.config}/lib -latomic "
+              else if libc == "gnu" then
+                " -L${final.fancy.libgccjit}/lib -latomic "
+              else
+                throw "unhandled libc=${libc} for FRR -latomic LDFLAGS"
+            )
             + " -L${final.fancy.libxcrypt}/lib -lcrypt "
+            + " -Wl,--push-state,--as-needed,--no-whole-archive,-Bstatic "
             + " -L${final.fancy.pcre2}/lib -lpcre2-8 "
             + " -L${final.fancy.xxhash}/lib -lxxhash "
-            + " -L${final.fancy.libgccjit}/lib -latomic "
             + " -Wl,--pop-state";
           configureFlags = orig.configureFlags ++ [
             "--enable-shared"
@@ -62,8 +88,10 @@ let
                 -e ${final.stdenv'.cc.libc} \
                 -e ${final.python3Minimal} \
                 -e ${final.fancy.readline} \
-                -e ${final.fancy.libgccjit} \
+                -e ${final.fancy.libxcrypt} \
                 -e ${final.fancy.json_c} \
+                ${if libc == "gnu" then "-e ${final.fancy.libgccjit}" else ""} \
+                ${if libc == "musl" then "-e ${final.stdenv.cc.cc.lib}" else ""} \
                 '{}' +;
           '';
         })
@@ -210,7 +238,24 @@ in
         ];
       })
     );
-    frr-agent = dep (final.callPackage ../pkgs/frr-agent final.fancy);
+    frr-agent = dep (
+      (final.callPackage ../pkgs/frr-agent final.fancy).overrideAttrs (orig: {
+        nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.nukeReferences ];
+        # Keep refs to libc and (on glibc only) the libgcc path the
+        # ld-linux search list points at -- that's where glibc-dynamic
+        # Rust binaries find `libgcc_s.so.1` for unwinding.  Musl Rust
+        # uses llvm-libunwind and has no libgcc_s consumer, so don't
+        # bake glibc-targeted outputs into a musl image.
+        fixupPhase = ''
+          find "$out" \
+              -exec nuke-refs \
+              -e "$out" \
+              -e ${final.stdenv.cc.libc} \
+              ${if libc == "gnu" then "-e ${final.pkgsHostHost.glibc.libgcc}" else ""} \
+              '{}' +;
+        '';
+      })
+    );
     frr-config = dep (final.callPackage ../pkgs/frr-config final.fancy);
     dplane-rpc = dep (final.callPackage ../pkgs/dplane-rpc final.fancy);
     dplane-plugin = dep (final.callPackage ../pkgs/dplane-plugin final.fancy);
