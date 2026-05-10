@@ -8,7 +8,6 @@
   frr,
   libyang,
   pcre2,
-  protobufc,
   json_c,
 
   # args
@@ -44,7 +43,6 @@ stdenv.mkDerivation (finalAttrs: {
     json_c
     libyang
     pcre2
-    protobufc
   ];
 
   configurePhase = ''
