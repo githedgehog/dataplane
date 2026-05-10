@@ -173,6 +173,16 @@ let
       PKG_CONFIG_PATH = "${sysroot}/lib/pkgconfig";
       LIBCLANG_PATH = "${devroot}/lib";
       GW_CRD_PATH = "${pkgs.pkgsBuildHost.gateway-crd}/src/fabric/config/crd/bases";
+      # Pin native cargo invocations (cargo build/clippy/test --doc) to the
+      # same target the dev sysroot is built for.  Without this, cargo defaults
+      # to the build-host triple while LIBRARY_PATH/PKG_CONFIG_PATH point at
+      # cross-target libs, and the link picks up a libc that doesn't match the
+      # rust-std it's compiling against (e.g. glibc rust-std + musl libc =
+      # undefined `open64`/`fstat64`/...).
+      CARGO_BUILD_TARGET = rustc-target;
+      # Rust's pkg-config crate refuses cross-target builds by default; opt in
+      # since our PKG_CONFIG_PATH already points at the matching cross sysroot.
+      PKG_CONFIG_ALLOW_CROSS = "1";
     };
   };
   justfileFilter = p: _type: builtins.match ".*\.justfile$" p != null;
