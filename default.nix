@@ -2,7 +2,7 @@
 # Copyright Open Network Fabric Authors
 {
   platform ? "x86-64-v3",
-  libc ? "gnu",
+  libc ? "musl",
   profile ? "debug",
   instrumentation ? "none",
   sanitize ? "",
