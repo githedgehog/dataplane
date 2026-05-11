@@ -17,7 +17,7 @@ _just_debuggable_ := if debug_justfile == "true" { "set -x" } else { "" }
 jobs := "8"
 
 # libc
-libc := if platform == "wasm32-wasip1" { "unknown" } else { "gnu" }
+libc := if platform == "wasm32-wasip1" { "none" } else { "gnu" }
 
 # kernel (linux or wasip1)
 kernel := if platform == "wasm32-wasip1" { "wasip1" } else { "linux" }

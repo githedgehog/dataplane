@@ -564,7 +564,7 @@ let
     buildPhase =
       let
         # `libc-pkg` and not `libc` so the outer function-arg `libc` (the
-        # string "gnu" / "musl" / "unknown") stays visible inside this scope
+        # string "gnu" / "musl" / "none") stays visible inside this scope
         # for the conditional below.
         libc-pkg = pkgs.pkgsHostHost.libc;
         # libgcc_s.so.1 is consumed by glibc-dynamic Rust binaries for
