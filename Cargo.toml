@@ -48,6 +48,13 @@ repository = "https://github.com/githedgehog/dataplane/"
 
 [workspace.dependencies]
 
+# NOTE: please do not enable features in this file.  Enable the specific features you need (and only those features) in
+# the individual packages.  Enabling features here opts _everything_ into those features, which is actually quite
+# problematic from the perspective of
+#
+# 1. correctly documenting what each package actually depends on,
+# 2. allowing builds under different environments (e.g. cross-compilation, wasm, miri, and so on).
+
 # Internal
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
@@ -87,7 +94,7 @@ vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { version = "0.8.12", default-features = false, features = [] }
-anyhow = { version = "1.0.102", default-features = false, features = ["std"] }
+anyhow = { version = "1.0.102", default-features = false, features = [] }
 arc-swap = { version = "1.9.1", default-features = false, features = [] }
 arrayvec = { version = "0.7.6", default-features = false, features = [] }
 async-trait = { version = "0.1.89", default-features = false, features = [] }
@@ -115,7 +122,7 @@ dyn-iter = { version = "1.0.1", default-features = false, features = [] }
 etherparse = { version = "0.20.1", default-features = false, features = [] }
 fixin = { git = "https://github.com/githedgehog/fixin", branch = "main", features = [] }
 futures = { version = "0.3.32", default-features = false, features = [] }
-futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+futures-util = { version = "0.3.32", default-features = false, features = [] }
 hashbrown = { version = "0.17.1", default-features = false, features = [] }
 hwlocality = { version = "1.0.0-alpha.12", default-features = false, features = [] }
 hyper = { version = "1.9.0", default-features = false, features = [] }
@@ -142,7 +149,7 @@ multi_index_map = { version = "0.15.1", default-features = false, features = [] 
 n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.9", default-features = false, features = [], package = "n-vm" }
 netdev = { version = "0.43.0", default-features = false, features = [] }
 netgauze-bgp-pkt = { version = "0.11.0", features = [] }
-netgauze-bmp-pkt = { version = "0.11.0", features = ["codec"] }
+netgauze-bmp-pkt = { version = "0.11.0", features = [] }
 nix = { version = "0.31.2", default-features = false, features = [] }
 num-derive = { version = "0.4.2", default-features = false, features = [] }
 num-traits = { version = "0.2.19", default-features = false, features = [] }
@@ -155,9 +162,9 @@ pretty_assertions = { version = "1.4.1", default-features = false, features = []
 priority-queue = { version = "2.7.0", default-features = false, features = [] }
 proc-macro2 = { version = "1.0.106", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
-pyroscope = { version = "2.0.3", default-features = false, features = ["backend-pprof-rs"] }
+pyroscope = { version = "2.0.3", default-features = false, features = [] }
 quote = { version = "1.0.45", default-features = false, features = [] }
-rand = { version = "0.10.1", default-features = false, features = ["thread_rng"] }
+rand = { version = "0.10.1", default-features = false, features = [] }
 rapidhash = { version = "4.4.1", default-features = false, features = [] }
 reedline = { version = "0.47.0", default-features = false, features = [] }
 rkyv = { version = "0.8.16", default-features = false, features = [] }
