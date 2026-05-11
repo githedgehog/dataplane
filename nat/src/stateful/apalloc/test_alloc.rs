@@ -76,8 +76,7 @@ mod context {
             .make_stateful_nat(None)
             .unwrap()
             .ip("1.1.0.0/16".into())
-            .ip("1.2.0.0/16".into())
-            .ip("1.3.0.0/16".into())
+            .ip("1.2.0.0/15".into())
             .as_range("10.1.0.0/30".into())
             .unwrap()
             .not_as("10.1.0.3/32".into())
@@ -223,7 +222,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::TCP)
                 .count(),
-            3
+            2
         );
         assert_eq!(
             allocator
@@ -232,7 +231,7 @@ mod std_tests {
                 .keys()
                 .filter(|k| k.protocol == NextHeader::UDP)
                 .count(),
-            3
+            2
         );
 
         assert_eq!(allocator.pools_src66.0.len(), 0);
