@@ -147,7 +147,7 @@ lib.fix (
         };
         wasm32 = {
           wasip1 = {
-            unknown = {
+            none = {
               target = "wasm32-wasip1";
               machine = "wasm32";
               nixarch = "wasi32";
