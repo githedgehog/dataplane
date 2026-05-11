@@ -78,7 +78,16 @@ let
             # this overrides the base package's --enable-static-bin.
             "--disable-static-bin"
           ];
-          nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.nukeReferences ];
+          # `buildPackages.nukeReferences` rather than `prev.nukeReferences`:
+          # the `nuke-refs` script substitutes a perl path at build time, and
+          # under a cross pkgset `prev.nukeReferences` picks up target-arch
+          # perl.  The script is executed during this derivation's build
+          # phase on the build host, so the target-arch perl interpreter is
+          # unrunnable ("Exec format error").  `buildPackages` resolves to
+          # the build-host variant.  `removeReferencesTo` is shell-only and
+          # picks up build-host bash via `stdenvNoCC.shell` regardless of
+          # which pkgset it came from, so no equivalent fix is needed there.
+          nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ final.buildPackages.nukeReferences ];
           # disallowedReferences = (orig.disallowedReferences or []) ++ [ final.stdenv'.cc ];
           preFixup = ''
             find "$out" \
@@ -240,7 +249,10 @@ in
     );
     frr-agent = dep (
       (final.callPackage ../pkgs/frr-agent final.fancy).overrideAttrs (orig: {
-        nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ prev.nukeReferences ];
+        # See `nukeReferences` note in `frr-build` above: must be the
+        # build-host variant so the `nuke-refs` script's substituted perl is
+        # runnable on the build host under cross compilation.
+        nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ final.buildPackages.nukeReferences ];
         # Keep refs to libc and (on glibc only) the libgcc path the
         # ld-linux search list points at -- that's where glibc-dynamic
         # Rust binaries find `libgcc_s.so.1` for unwinding.  Musl Rust
