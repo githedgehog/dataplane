@@ -138,6 +138,14 @@ build-each *args: (build "workspace" args)
     {{ _just_debuggable_ }}
 
 [script]
+check package="" *args: (build (if package == "" { "check" } else { "check." + package }) args)
+    {{ _just_debuggable_ }}
+
+[script]
+check-each *args: (build "check" args)
+    {{ _just_debuggable_ }}
+
+[script]
 test-each *args: (build "tests.pkg" args)
     {{ _just_debuggable_ }}
     declare -a fail=()

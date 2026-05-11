@@ -414,6 +414,38 @@ let
     }
   ) package-list;
 
+  workspace-check =
+    {
+      pname ? null,
+      cargoArtifacts ? null,
+    }:
+    pkgs.callPackage invoke {
+      builder = craneLib.buildPackage;
+      args = {
+        inherit pname cargoArtifacts;
+        buildPhaseCargoCommand = builtins.concatStringsSep " " (
+          [
+            "cargoBuildLog=$(mktemp cargoBuildLogXXXX.json);"
+            "cargo"
+            "check"
+            "--package=${pname}"
+            "--profile=${cargo-profile}"
+          ]
+          ++ cargo-cmd-prefix
+          ++ [
+            "--message-format json-render-diagnostics > $cargoBuildLog"
+          ]
+        );
+      };
+    };
+
+  check = builtins.mapAttrs (
+    dir: pname:
+    workspace-check {
+      inherit pname;
+    }
+  ) package-list;
+
   test-builder =
     {
       package ? null,
@@ -884,12 +916,13 @@ let
 in
 {
   inherit
+    check
     clippy
     containers
+    dataplane
     devenv
     devroot
     docs
-    dataplane
     package-list
     pkgs
     sources
