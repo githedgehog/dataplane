@@ -52,8 +52,21 @@ let
         NIX_CFLAGS_LINK = [ ];
       };
     };
-    bluefield2 = rec {
+    aarch64 = rec {
       arch = "aarch64";
+      march = "generic";
+      numa = {
+        max-nodes = 8;
+      };
+      override = {
+        stdenv.env = rec {
+          NIX_CFLAGS_COMPILE = [ ];
+          NIX_CXXFLAGS_COMPILE = NIX_CFLAGS_COMPILE;
+          NIX_CFLAGS_LINK = [ ];
+        };
+      };
+    };
+    bluefield2 = lib.recursiveUpdate aarch64 rec {
       march = "armv8.2-a";
       mcpu = "cortex-a72";
       numa = {
@@ -95,6 +108,7 @@ lib.fix (
     name =
       {
         bluefield2 = "bluefield";
+        aarch64 = "generic";
       }
       .${platform} or platform;
     info =
