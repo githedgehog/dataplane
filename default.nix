@@ -157,6 +157,7 @@ let
       rust-toolchain
       shellcheck
       skopeo
+      wasmtime
       wget
       yq
     ]);
