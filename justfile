@@ -190,11 +190,21 @@ build-container target="dataplane" *args: (build (if target == "dataplane" { "da
     declare -xr DOCKER_HOST="${DOCKER_HOST:-unix://{{docker_sock}}}"
     case "{{target}}" in
         "dataplane")
+            declare docker_platform
+            case "{{platform}}" in
+                aarch64|bluefield2|bluefield3) docker_platform="linux/arm64" ;;
+                x86-64-v3|x86-64-v4|zen3|zen4|zen5) docker_platform="linux/amd64" ;;
+                *)
+                    >&2 echo "build-container: no docker platform mapping for {{platform}}"
+                    exit 1
+                    ;;
+            esac
+            declare -r docker_platform
             declare img
-            img="$(docker import --change 'ENTRYPOINT ["/bin/dataplane"]' ./results/dataplane.tar)"
+            img="$(docker import --platform "${docker_platform}" --change 'ENTRYPOINT ["/bin/dataplane"]' ./results/dataplane.tar)"
             declare -r img
             docker tag "${img}" "{{oci_image_dataplane}}"
-            echo "imported {{ oci_image_dataplane }}"
+            echo "imported {{ oci_image_dataplane }} (${docker_platform})"
             ;;
         "dataplane-debugger")
             docker load < ./results/containers.dataplane-debugger
