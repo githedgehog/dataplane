@@ -394,18 +394,17 @@ jobs:
           recipe_args: "--package=dataplane-quiescent --features=_strict_provenance"
       - *tmate
 
-  must-build:
+  wasm:
     if: >-
       ${{
         needs.check_changes.outputs.devfiles == 'true'
         || startsWith(github.event.ref, 'refs/tags/v')
         || github.event_name == 'workflow_dispatch'
       }}
-    name: "must-build/${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
+    name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
     runs-on: "lab"
     needs:
       - check_changes
-      # - check # TODO: add dependency before PR lands
     permissions:
       checks: "write"
       pull-requests: "read"
@@ -422,23 +421,9 @@ jobs:
           - platform: "wasm32-wasip1"
             profile: "release"
             libc: "unknown"
-            recipe: "build-each"
-            args: ""
-          - platform: "zen5"
-            profile: "release"
-            libc: "musl"
-            recipe: "build-container"
-            args: "dataplane"
-          - platform: "bluefield3"
-            profile: "debug"
-            libc: "gnu"
-            recipe: "build-container"
-            args: "dataplane"
-          - platform: "bluefield3"
-            profile: "debug"
-            libc: "musl"
-            recipe: "build-container"
-            args: "dataplane"
+            recipe:
+              name: "check"
+              args: ""
     steps:
       - *checkout
       - *nix-setup
@@ -450,8 +435,66 @@ jobs:
             profile=${{ matrix.profile }}
             libc=${{ matrix.libc }}
         with:
-          recipe: "${{ matrix.recipe }}"
-          recipe_args: "${{ matrix.args }}"
+          recipe: "${{ matrix.recipe.name }}"
+          recipe_args: "${{ matrix.recipe.args }}"
+      - *tmate
+
+  cross:
+    if: >-
+      ${{
+        github.event_name == 'pull_request'
+        && (
+          contains(github.event.pull_request.labels.*.name, 'ci:+cross')
+        )
+        || (github.event_name == 'push' || github.event_name == 'merge_group')
+      }}
+    name: "${{ matrix.recipe.name }}/${{ matrix.recipe.args }}/${{ matrix.platform }}/${{ matrix.libc }}"
+    runs-on: "lab"
+    # Cross is advisory: leg failures show red on the job badge but the
+    # workflow run as a whole still passes.  `needs.cross.result` reports
+    # `success` to dependents regardless of outcome, so don't gate on it.
+    continue-on-error: true
+    needs:
+      - check_changes
+      - check
+    permissions:
+      checks: "write"
+      pull-requests: "read"
+      contents: "read"
+      packages: "read"
+      id-token: "write"
+    env:
+      USER: "runner"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        platform:
+          - "aarch64"
+          - "bluefield3"
+        libc:
+          - "gnu"
+          - "musl"
+        profile:
+          - "debug"
+        recipe:
+          - name: "build-container"
+            args: "dataplane"
+          - name: "build-container"
+            args: "frr.dataplane"
+    steps:
+      - *checkout
+      - *nix-setup
+      - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}/${{ matrix.recipe.args }}"
+        uses: *just
+        env:
+          JUST_VARS: >-
+            platform=${{ matrix.platform }}
+            profile=${{ matrix.profile }}
+            libc=${{ matrix.libc }}
+        with:
+          recipe: "${{ matrix.recipe.name }}"
+          recipe_args: "${{ matrix.recipe.args }}"
       - *tmate
 
   features:
@@ -590,7 +633,8 @@ jobs:
       - vlab
       - test_each
       - miri
-      - must-build
+      - wasm
+      - cross
     # Run always so this job can aggregate results even when one of its
     # dependencies failed or was skipped.
     #
@@ -629,10 +673,10 @@ jobs:
         run: |
           echo '::error:: Some build job(s) failed'
           exit 1
-      - name: "Flag any must-build matrix failures"
-        if: ${{ needs.must-build.result != 'success' && needs.must-build.result != 'skipped' }}
+      - name: "Flag any wasm failures"
+        if: ${{ needs.wasm.result != 'success' && needs.wasm.result != 'skipped' }}
         run: |
-          echo '::error:: Some must-build job(s) failed'
+          echo '::error:: Some wasm job(s) failed'
           exit 1
       - name: "Flag any vlab matrix failures"
         if: ${{ needs.vlab.result != 'success' && needs.vlab.result != 'skipped' }}
