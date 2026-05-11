@@ -420,7 +420,7 @@ jobs:
         include:
           - platform: "wasm32-wasip1"
             profile: "release"
-            libc: "unknown"
+            libc: "none"
             recipe:
               name: "check"
               args: ""
