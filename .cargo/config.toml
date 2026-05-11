@@ -14,5 +14,11 @@ CARGO_LLVM_COV_BUILD_DIR = { value = "target/llvm-cov/target", relative = true, 
 [build]
 rustflags = ["--cfg=tokio_unstable"]
 
+[target.wasm32-wasip1]
+# Trailing `--` separates wasmtime's CLI from the module + module args
+# that cargo appends, so e.g. `--nocapture` from libtest reaches the
+# wasm module instead of being parsed as a wasmtime option.
+runner = "wasmtime run --dir . --"
+
 [alias]
 nt = "nextest"
