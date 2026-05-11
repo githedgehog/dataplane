@@ -253,11 +253,26 @@ in
         # build-host variant so the `nuke-refs` script's substituted perl is
         # runnable on the build host under cross compilation.
         nativeBuildInputs = (orig.nativeBuildInputs or [ ]) ++ [ final.buildPackages.nukeReferences ];
+        # On musl, force `+crt-static` so the C runtime and libgcc_eh
+        # are linked statically.  Without this, nixpkgs' musl
+        # `rustPlatform` (which `frr-agent` is built with) emits a
+        # binary with `DT_NEEDED libgcc_s.so.1` and `_Unwind_*@GCC_*`
+        # references -- there's no `libgcc_s.so.1` in the musl image
+        # and the loader bails before `main`.  TODO: switch
+        # `frr-agent` to the same crane/`system-llvm-libunwind` path
+        # the rest of the workspace uses so we get a proper LLVM
+        # libunwind link instead of pulling in libgcc_eh.
+        env = (orig.env or { }) // (
+          if libc == "musl" then {
+            RUSTFLAGS = ((orig.env or { }).RUSTFLAGS or "") + " -C target-feature=+crt-static";
+          } else { }
+        );
         # Keep refs to libc and (on glibc only) the libgcc path the
         # ld-linux search list points at -- that's where glibc-dynamic
-        # Rust binaries find `libgcc_s.so.1` for unwinding.  Musl Rust
-        # uses llvm-libunwind and has no libgcc_s consumer, so don't
-        # bake glibc-targeted outputs into a musl image.
+        # Rust binaries find `libgcc_s.so.1` for unwinding.  On musl
+        # we've forced `+crt-static` above, so there's no `libgcc_s`
+        # consumer at runtime and we deliberately don't bake the
+        # glibc-targeted libgcc into the image.
         fixupPhase = ''
           find "$out" \
               -exec nuke-refs \
