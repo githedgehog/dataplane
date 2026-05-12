@@ -22,13 +22,51 @@ let
     else
       builtins.filter (elm: builtins.isString elm) (builtins.split split-on string);
   lib = (import sources.nixpkgs { }).lib;
+  extra-platforms =
+    if platform == "all" then
+      let
+        triples = import ./nix/triples.nix;
+        # Flatten triples.nix into a list of records carrying arch, os,
+        # libc plus the leaf fields (target, machine, nixarch, ...).
+        options = lib.flatten (
+          lib.mapAttrsToList (
+            arch: oses:
+            lib.mapAttrsToList (
+              os: libcs:
+              lib.mapAttrsToList (libc: leaf: leaf // { inherit arch os libc; }) libcs
+            ) oses
+          ) triples
+        );
+        # One canonical hardware name per arch.  hardware.nix carries
+        # SOC-specific march tuning (zen*, bluefield*, x86-64-v4, ...),
+        # but the cargo target triple is arch-determined, not
+        # march-determined -- so for "support every target" we only
+        # need one hardware per arch.  To exercise SOC tuning, invoke
+        # platform=<specific-name> directly.
+        canonical-hardware = {
+          x86_64 = "x86-64-v3";
+          aarch64 = "aarch64";
+          wasm32 = "wasm32-wasip1";
+        };
+      in
+      map (
+        option:
+        import ./nix/platforms.nix {
+          inherit lib;
+          platform = canonical-hardware.${option.arch};
+          kernel = option.os;
+          libc = option.libc;
+        }
+      ) options
+    else
+      [ ];
   platform' = import ./nix/platforms.nix {
     inherit
       lib
-      platform
       libc
       kernel
       ;
+    platform = (if platform == "all" then "x86-64-v3" else platform);
   };
   sanitizers = split-str ",+" sanitize;
   cargo-features = split-str ",+" features;
@@ -45,6 +83,7 @@ let
     .${profile};
   overlays = import ./nix/overlays {
     inherit
+      extra-platforms
       libc
       nightly
       sanitizers
@@ -931,6 +970,7 @@ in
     sysroot
     tests
     workspace
+    extra-platforms
     ;
   profile = profile';
   platform = platform';
