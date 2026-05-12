@@ -60,6 +60,61 @@ let
       ) options
     else
       [ ];
+  # Matrix presets for the `cross` CI job.  Pure data: each entry is
+  # `{ platform, libc }` (kernel is implied by the arch -- `linux` for
+  # x86_64/aarch64, `wasip1` for wasm32 which is already covered by the
+  # `wasm` CI job and therefore omitted from cross).  Consumed by
+  # `.github/workflows/dev.yml` via `nix eval --json -f default.nix
+  # 'cross-matrix.<preset>'`.
+  cross-matrix =
+    let
+      hardware = import ./nix/hardware.nix { inherit lib; };
+      triples = import ./nix/triples.nix;
+      # Every hardware in hardware.nix × every valid libc for that
+      # hardware's arch per triples.nix.  Skips wasm32 because the
+      # `wasm` CI job already covers it and the build path is materially
+      # different anyway.
+      all-linux-targets = lib.concatMap (
+        hw:
+        let
+          arch = hardware.${hw}.arch;
+        in
+        if arch == "wasm32" then
+          [ ]
+        else
+          lib.mapAttrsToList (libc: _: { platform = hw; inherit libc; }) triples.${arch}.linux
+      ) (builtins.attrNames hardware);
+    in
+    {
+      # Today's hand-picked default set: aarch64 + bluefield3 × gnu + musl.
+      # Exercises the SOC-specific cross paths most likely to catch a
+      # regression without the cost of building every variant.
+      default = [
+        {
+          platform = "aarch64";
+          libc = "gnu";
+        }
+        {
+          platform = "aarch64";
+          libc = "musl";
+        }
+        {
+          platform = "bluefield3";
+          libc = "gnu";
+        }
+        {
+          platform = "bluefield3";
+          libc = "musl";
+        }
+      ];
+      # Rare full-suite mode: every hardware × every valid libc.
+      # Currently 16 records (8 hardware × 2 libcs each, wasm32-wasip1
+      # excluded).  Triggered by the `ci:+full-cross` PR label or
+      # `cross_scope=full` on workflow_dispatch.
+      full = all-linux-targets;
+      # Explicit opt-out: produces no cross legs.
+      skip = [ ];
+    };
   platform' = import ./nix/platforms.nix {
     inherit
       lib
@@ -1002,6 +1057,7 @@ in
     tests
     workspace
     extra-platforms
+    cross-matrix
     ;
   profile = profile';
   platform = platform';
