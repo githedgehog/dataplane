@@ -386,6 +386,16 @@ let
       // args
     )).overrideAttrs
       (orig: {
+        # Source-volatile: tag with a distinctive prefix so the CI
+        # cachix pushFilter can exclude every cargo-derived path in
+        # one regex, and disable substitute attempts so a cold runner
+        # doesn't waste a roundtrip asking the cache for a path that
+        # always misses (it would always miss because the source
+        # revision is in the input closure).
+        name = "dataplane-cargo-${orig.pname}-${orig.version}";
+        allowSubstitutes = false;
+        preferLocalBuild = true;
+
         separateDebugInfo = true;
 
         # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
@@ -594,8 +604,11 @@ let
   };
 
   dataplane.tar = pkgs.stdenv'.mkDerivation {
-    pname = "dataplane.tar";
-    inherit version;
+    name = "dataplane-cargo-tar-${version}";
+    # Source-volatile: see comment on `invoke` for why we opt out of
+    # cachix push/substitute on the cargo-derived surface.
+    allowSubstitutes = false;
+    preferLocalBuild = true;
     dontUnpack = true;
     src = null;
     dontPatchShebangs = true;
@@ -715,7 +728,7 @@ let
       '';
   };
 
-  containers.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -736,9 +749,17 @@ let
       ];
     };
     config.Entrypoint = [ "/bin/dataplane" ];
-  };
+  }).overrideAttrs (_: {
+    # Source-volatile: see comment on `invoke`.  Push-filtered by name
+    # in the cachix workflow; flag both knobs so a cold runner doesn't
+    # query cachix either.  Set on the underlying derivation rather
+    # than the buildLayeredImage args because buildLayeredImage's
+    # arg-set doesn't accept these.
+    allowSubstitutes = false;
+    preferLocalBuild = true;
+  });
 
-  containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane-debugger = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/debugger";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -764,51 +785,57 @@ let
         workspace.init.debug
       ];
     };
-  };
+  }).overrideAttrs (_: {
+    allowSubstitutes = false;
+    preferLocalBuild = true;
+  });
 
-  debug-tools = pkgs: [
-    ## Packages which might be helpful for debugging but aren't enabled by default.
-    ## Uncomment them as needed, but be mindful of container size please.
-    # pkgs.dmidecode
-    # pkgs.emacs
-    # pkgs.gdb # TODO: consider a way to let the user pick gdb' from dev-pkgs (works better in vm)
-    # pkgs.neovim
-    # pkgs.rr
-    # pkgs.valgrind
-    # pkgs.wireshark-cli
+  debug-tools =
+    pkgs:
+    [
+      ## Packages which might be helpful for debugging but aren't enabled by default.
+      ## Uncomment them as needed, but be mindful of container size please.
+      # pkgs.dmidecode
+      # pkgs.emacs
+      # pkgs.gdb # TODO: consider a way to let the user pick gdb' from dev-pkgs (works better in vm)
+      # pkgs.neovim
+      # pkgs.rr
+      # pkgs.valgrind
+      # pkgs.wireshark-cli
 
-    pkgs.bashInteractive
-    pkgs.coreutils
-    pkgs.curl
-    pkgs.debianutils
-    pkgs.dockerTools.usrBinEnv
-    pkgs.ethtool
-    pkgs.findutils
-    pkgs.gawk
-    pkgs.gnugrep
-    pkgs.gnused
-    pkgs.gnutar
-    pkgs.gzip
-    pkgs.htop
-    pkgs.iproute2
-    pkgs.iptables
-    pkgs.iputils
-    pkgs.jq
-    pkgs.less
-    pkgs.libc.bin
-    pkgs.libc.out
-    pkgs.man
-    pkgs.nano
-    pkgs.procps
-    pkgs.tcpdump
-    pkgs.util-linux
-    pkgs.vim
-    pkgs.wget
-    pkgs.yq
-    pkgs.zstd
-  ] ++ lib.optionals (libc == "gnu") [
-    pkgs.pkgsHostHost.glibc.libgcc
-  ];
+      pkgs.bashInteractive
+      pkgs.coreutils
+      pkgs.curl
+      pkgs.debianutils
+      pkgs.dockerTools.usrBinEnv
+      pkgs.ethtool
+      pkgs.findutils
+      pkgs.gawk
+      pkgs.gnugrep
+      pkgs.gnused
+      pkgs.gnutar
+      pkgs.gzip
+      pkgs.htop
+      pkgs.iproute2
+      pkgs.iptables
+      pkgs.iputils
+      pkgs.jq
+      pkgs.less
+      pkgs.libc.bin
+      pkgs.libc.out
+      pkgs.man
+      pkgs.nano
+      pkgs.procps
+      pkgs.tcpdump
+      pkgs.util-linux
+      pkgs.vim
+      pkgs.wget
+      pkgs.yq
+      pkgs.zstd
+    ]
+    ++ lib.optionals (libc == "gnu") [
+      pkgs.pkgsHostHost.glibc.libgcc
+    ];
 
   containers.debug-tools = pkgs.dockerTools.buildLayeredImage {
     name = "debug-tools";
@@ -843,7 +870,7 @@ let
 
   };
 
-  containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.frr.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -897,7 +924,11 @@ let
       "--"
     ];
     config.Cmd = [ "/libexec/frr/docker-start" ];
-  };
+  }).overrideAttrs (_: {
+    # Bundles frr-agent (Rust); source-volatile.
+    allowSubstitutes = false;
+    preferLocalBuild = true;
+  });
 
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr-host";

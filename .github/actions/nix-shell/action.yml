@@ -32,6 +32,23 @@ runs:
         signingKey: '${{ inputs.cachix_signing_key }}'
         # prettier-ignore
         authToken: '${{ inputs.cachix_auth_token }}'
+        # Exclude source-volatile paths from cachix push.  These rebuild
+        # on every source revision, so caching them is net-negative
+        # (push cost without ever hitting on substitute).
+        #
+        # Two arms:
+        #   1. `-dataplane-cargo-` covers every cargo derivation and
+        #      the dataplane.tar assembly -- they're all tagged with
+        #      this `name = ...` prefix in default.nix's `invoke`
+        #      block and the dataplane.tar derivation.
+        #   2. `-(dataplane|debugger|frr)\.tar\.gz` covers the
+        #      cargo-bearing OCI images.  dockerTools.buildLayeredImage
+        #      strips the registry/org from the OCI name when computing
+        #      its store-path basename, so the container store paths
+        #      land as e.g. `<hash>-dataplane.tar.gz`.  The other two
+        #      containers (frr-host, debug-tools) don't bundle cargo
+        #      outputs and are still pushed normally.
+        pushFilter: '(-dataplane-cargo-|-(dataplane|debugger|frr)\.tar\.gz)'
 
     - name: "use nix shell"
       uses: "rrbutani/use-nix-shell-action@v1"
