@@ -5,7 +5,6 @@
   profile,
   sanitizers,
   instrumentation,
-  
 }:
 let
   common.NIX_CFLAGS_COMPILE = [
@@ -41,6 +40,7 @@ let
     "-Copt-level=0"
     "-Cdebug-assertions=on"
     "-Coverflow-checks=on"
+    "-Cforce-frame-pointers=yes"
   ]
   ++ (map (flag: "-Clink-arg=${flag}") optimize-for.debug.NIX_CFLAGS_LINK);
   optimize-for.performance.NIX_CFLAGS_COMPILE = [
@@ -79,7 +79,8 @@ let
     "-mrtm" # TODO: try to convince DPDK not to rely on rtm
     "-mcrc32"
     "-mssse3"
-    "-fcf-protection=full"
+    # "-fcf-protection=full" # TODO: cf-protection is not properly enabled due to missing support from nix glibc / musl
+                             # We will need to rebuild musl to enable cf-protection properly.  Disabling for now.
   ];
   march.x86_64.NIX_CXXFLAGS_COMPILE = march.x86_64.NIX_CFLAGS_COMPILE;
   march.x86_64.NIX_CFLAGS_LINK = march.x86_64.NIX_CXXFLAGS_COMPILE;
@@ -90,7 +91,7 @@ let
     # proved to be broken in Intel's implementation, and AMD never built them in the first place.
     # "-Ctarget-feature=+rtm,+crc32,+ssse3"
     "-Ctarget-feature=+ssse3"
-    "-Zcf-protection=full"
+    # "-Zcf-protection=full" # see -fcf-protection note above
   ]
   ++ (map (flag: "-Clink-arg=${flag}") march.x86_64.NIX_CFLAGS_LINK);
   march.aarch64.NIX_CFLAGS_COMPILE = [ ];
@@ -100,15 +101,22 @@ let
   march.wasm32 = { };
   sanitize.address.NIX_CFLAGS_COMPILE = [
     "-fsanitize=address,local-bounds"
+    "-O2" # turn down optimization a bit to make debugging of asan results easier
+    "-fno-omit-frame-pointer" # frame pointer can assist feedback driven fuzzing, especially debug
+    "-fno-lto" # The general consensus is to disable LTO for asan, but that isn't a universal opinon.
+               # I'm disabling for now because it is blowing up memory usage in the CI builds and forcing us to retreat
+               # to -O0, which is objectively less effective than the simply disabling LTO
   ];
   sanitize.address.NIX_CXXFLAGS_COMPILE = sanitize.address.NIX_CFLAGS_COMPILE;
   sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
     "-static-libasan"
-    "-Wl,--thinlto-jobs=4"
   ];
   sanitize.address.RUSTFLAGS = [
     "-Zsanitizer=address"
     "-Zexternal-clangrt"
+    "-Copt-level=2" # turn down optimization a bit to make debugging of asan results easier
+    "-Clto=off" # See -fno-lto note above
+    "-Cforce-frame-pointers=yes" # frame pointer can assist feedback driven fuzzing, especially debug
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.address.NIX_CFLAGS_LINK);
   sanitize.leak.NIX_CFLAGS_COMPILE = [
@@ -123,6 +131,10 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
   sanitize.thread.NIX_CFLAGS_COMPILE = [
     "-fsanitize=thread"
+    "-fno-omit-frame-pointer" # frame pointer can assist feedback driven fuzzing, especially debug
+    "-fno-lto" # The general consensus is to disable LTO for tsan because it can actually make some code paths fast
+               # enough that you mask more race conditions.  You still generally want optimizations to get good
+               # coverage, but lto is (it seems) a step too far.
   ];
   sanitize.thread.NIX_CXXFLAGS_COMPILE = sanitize.thread.NIX_CFLAGS_COMPILE;
   sanitize.thread.NIX_CFLAGS_LINK = sanitize.thread.NIX_CFLAGS_COMPILE ++ [
@@ -131,6 +143,9 @@ let
   sanitize.thread.RUSTFLAGS = [
     "-Zsanitizer=thread"
     "-Zexternal-clangrt"
+    "-Copt-level=2" # turn down optimization a bit to make debugging of tsan results easier
+    "-Clto=off" # See -fno-lto note above
+    "-Cforce-frame-pointers=yes" # frame pointer can assist feedback driven fuzzing, especially debug
     # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
     "-Cunsafe-allow-abi-mismatch=sanitizer"
   ]
