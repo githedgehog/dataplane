@@ -135,6 +135,7 @@ jobs:
         instrument=${{ matrix.build.instrument }}
         features=${{ matrix.features }}
         oci_repo=ghcr.io
+        jobs=${{ matrix.build.jobs || 8 }}
     strategy:
       fail-fast: false
       matrix:
@@ -280,9 +281,10 @@ jobs:
       matrix:
         build:
           - name: "address"
-            profile: "debug"
+            profile: "fuzz"
             sanitize: "address"
             instrument: "none"
+            jobs: 1
           - name: "thread"
             profile: "fuzz"
             sanitize: "thread"
