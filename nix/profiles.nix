@@ -101,22 +101,17 @@ let
   march.wasm32 = { };
   sanitize.address.NIX_CFLAGS_COMPILE = [
     "-fsanitize=address,local-bounds"
-    "-O2" # turn down optimization a bit to make debugging of asan results easier
-    "-fno-omit-frame-pointer" # frame pointer can assist feedback driven fuzzing, especially debug
-    "-fno-lto" # The general consensus is to disable LTO for asan, but that isn't a universal opinon.
-               # I'm disabling for now because it is blowing up memory usage in the CI builds and forcing us to retreat
-               # to -O0, which is objectively less effective than the simply disabling LTO
+    "-fno-omit-frame-pointer" # assist feedback driven fuzzing, especially debug
   ];
   sanitize.address.NIX_CXXFLAGS_COMPILE = sanitize.address.NIX_CFLAGS_COMPILE;
   sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
     "-static-libasan"
+    "-Wl,--thinlto-jobs=6" # control memory use in CI by limiting the number of LTO jobs
   ];
   sanitize.address.RUSTFLAGS = [
     "-Zsanitizer=address"
     "-Zexternal-clangrt"
-    "-Copt-level=2" # turn down optimization a bit to make debugging of asan results easier
-    "-Clto=off" # See -fno-lto note above
-    "-Cforce-frame-pointers=yes" # frame pointer can assist feedback driven fuzzing, especially debug
+    "-Cforce-frame-pointers=yes" # assist feedback driven fuzzing, especially debug
   ]
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.address.NIX_CFLAGS_LINK);
   sanitize.leak.NIX_CFLAGS_COMPILE = [
@@ -132,9 +127,6 @@ let
   sanitize.thread.NIX_CFLAGS_COMPILE = [
     "-fsanitize=thread"
     "-fno-omit-frame-pointer" # frame pointer can assist feedback driven fuzzing, especially debug
-    "-fno-lto" # The general consensus is to disable LTO for tsan because it can actually make some code paths fast
-               # enough that you mask more race conditions.  You still generally want optimizations to get good
-               # coverage, but lto is (it seems) a step too far.
   ];
   sanitize.thread.NIX_CXXFLAGS_COMPILE = sanitize.thread.NIX_CFLAGS_COMPILE;
   sanitize.thread.NIX_CFLAGS_LINK = sanitize.thread.NIX_CFLAGS_COMPILE ++ [
@@ -143,8 +135,6 @@ let
   sanitize.thread.RUSTFLAGS = [
     "-Zsanitizer=thread"
     "-Zexternal-clangrt"
-    "-Copt-level=2" # turn down optimization a bit to make debugging of tsan results easier
-    "-Clto=off" # See -fno-lto note above
     "-Cforce-frame-pointers=yes" # frame pointer can assist feedback driven fuzzing, especially debug
     # gimli doesn't like thread sanitizer, but it shouldn't be an issue since that is all build time logic
     "-Cunsafe-allow-abi-mismatch=sanitizer"
