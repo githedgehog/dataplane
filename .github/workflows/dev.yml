@@ -480,6 +480,8 @@ jobs:
     permissions:
       contents: "read"
       pull-requests: "read"
+    env:
+      USER: "runner"
     outputs:
       matrix: "${{ steps.compute.outputs.matrix }}"
       has_legs: "${{ steps.compute.outputs.has_legs }}"
