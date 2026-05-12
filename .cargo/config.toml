@@ -25,12 +25,10 @@ runner = "wasmtime run --dir . --"
 # invocation, and cargo refuses to disambiguate between two cfg-pattern
 # matches.  Exact triple entries side-step the conflict because cargo
 # treats them as more specific than `cfg(all())` and selects them
-# directly.
-#
-# Caveat: if you ever run `just miri cpu=x86_64` (or aarch64), the
-# triple entry below would still win over cargo-miri's runner and
-# silently bypass miri.  The default `just miri` uses cpu=powerpc64, so
-# none of the entries below match and cargo-miri is correctly selected.
+# directly.  See scripts/test-runner.sh for how the script then detects
+# the miri context and re-delegates to .cargo-miri-wrapped so a miri
+# run with a matching host arch still goes through the miri interpreter
+# instead of running natively under the qemu wrapper.
 [target.x86_64-unknown-linux-gnu]
 runner = "scripts/test-runner.sh x86_64"
 
