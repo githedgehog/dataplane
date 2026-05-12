@@ -20,10 +20,27 @@ rustflags = ["--cfg=tokio_unstable"]
 # wasm module instead of being parsed as a wasmtime option.
 runner = "wasmtime run --dir . --"
 
-[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']
+# Explicit-triple form (NOT cfg-patterns) is intentional: `cargo miri`
+# injects `--config target.cfg(all()).runner=cargo-miri-wrapped` on every
+# invocation, and cargo refuses to disambiguate between two cfg-pattern
+# matches.  Exact triple entries side-step the conflict because cargo
+# treats them as more specific than `cfg(all())` and selects them
+# directly.
+#
+# Caveat: if you ever run `just miri cpu=x86_64` (or aarch64), the
+# triple entry below would still win over cargo-miri's runner and
+# silently bypass miri.  The default `just miri` uses cpu=powerpc64, so
+# none of the entries below match and cargo-miri is correctly selected.
+[target.x86_64-unknown-linux-gnu]
 runner = "scripts/test-runner.sh x86_64"
 
-[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))']
+[target.x86_64-unknown-linux-musl]
+runner = "scripts/test-runner.sh x86_64"
+
+[target.aarch64-unknown-linux-gnu]
+runner = "scripts/test-runner.sh aarch64"
+
+[target.aarch64-unknown-linux-musl]
 runner = "scripts/test-runner.sh aarch64"
 
 [alias]
