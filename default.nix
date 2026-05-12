@@ -154,6 +154,7 @@ let
       oras
       pkg-config
       python3Packages.pyflakes
+      qemu-user
       rust-toolchain
       shellcheck
       skopeo
