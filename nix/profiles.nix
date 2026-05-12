@@ -103,7 +103,7 @@ let
   sanitize.address.NIX_CXXFLAGS_COMPILE = sanitize.address.NIX_CFLAGS_COMPILE;
   sanitize.address.NIX_CFLAGS_LINK = sanitize.address.NIX_CFLAGS_COMPILE ++ [
     "-static-libasan"
-    "-Wl,--thinlto-jobs=1"
+    "-Wl,--thinlto-jobs=4"
   ];
   sanitize.address.RUSTFLAGS = [
     "-Zsanitizer=address"
