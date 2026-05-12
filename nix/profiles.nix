@@ -101,7 +101,6 @@ let
   march.wasm32 = { };
   sanitize.address.NIX_CFLAGS_COMPILE = [
     "-fsanitize=address,local-bounds"
-    "-fno-whole-program-vtables"
     "-O2" # turn down optimization a bit to make debugging of asan results easier
     "-fno-omit-frame-pointer" # frame pointer can assist feedback driven fuzzing, especially debug
     "-fno-lto" # The general consensus is to disable LTO for asan, but that isn't a universal opinon.
@@ -132,8 +131,6 @@ let
   ++ (map (flag: "-Clink-arg=${flag}") sanitize.leak.NIX_CFLAGS_LINK);
   sanitize.thread.NIX_CFLAGS_COMPILE = [
     "-fsanitize=thread"
-    "-fno-whole-program-vtables"
-    "-O2" # turn down optimization a bit to make debugging of asan results easier
     "-fno-omit-frame-pointer" # frame pointer can assist feedback driven fuzzing, especially debug
     "-fno-lto" # The general consensus is to disable LTO for tsan because it can actually make some code paths fast
                # enough that you mask more race conditions.  You still generally want optimizations to get good
