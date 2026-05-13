@@ -456,8 +456,8 @@ jobs:
   #
   # Scope resolution:
   #   - workflow_dispatch  -> use the `cross_scope` input
-  #   - PR with `ci:+full-cross` label                 -> full
-  #   - PR with `ci:+cross` label (without full-cross) -> default
+  #   - PR with `ci:+cross/full` label                  -> full
+  #   - PR with `ci:+cross` label (without full-cross)  -> default
   #   - push / merge_group                              -> default
   #   - other (incl. PR without ci:+cross label)        -> skip
   #
@@ -485,6 +485,7 @@ jobs:
     outputs:
       matrix: "${{ steps.compute.outputs.matrix }}"
       has_legs: "${{ steps.compute.outputs.has_legs }}"
+      scope: "${{ steps.compute.outputs.scope }}"
     steps:
       - *checkout
       - *nix-setup
@@ -513,29 +514,27 @@ jobs:
           esac
           echo "Resolved cross scope: $scope"
           preset="$(nix eval --json -f default.nix "cross-matrix.${scope}")"
-          # Expand each {platform, libc} into one row per recipe variant
-          # the cross job runs (build-container dataplane + build-container
-          # frr.dataplane).  Keeps the per-recipe fan-out in one place.
-          matrix="$(printf '%s' "$preset" | jq -c '
-            map(. as $p | [
-              { platform: $p.platform, libc: $p.libc, profile: "debug",
-                recipe_name: "build-container", recipe_args: "dataplane" },
-              { platform: $p.platform, libc: $p.libc, profile: "debug",
-                recipe_name: "build-container", recipe_args: "frr.dataplane" }
-            ]) | flatten
-          ')"
+          # One row per (platform, libc, profile).  The cross job runs
+          # multiple steps per leg (optional `just test`, then
+          # build-container for dataplane and frr.dataplane); the
+          # per-recipe fan-out moves out of this matrix and into the
+          # job's step list.
+          matrix="$(printf '%s' "$preset" | jq -c 'map(. + { profile: "debug" })')"
           has_legs=false
           if [ "$(printf '%s' "$matrix" | jq 'length')" -gt 0 ]; then
             has_legs=true
           fi
-          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
-          echo "has_legs=${has_legs}" >> "$GITHUB_OUTPUT"
-          echo "Emitted $(printf '%s' "$matrix" | jq 'length') leg(s)"
+          {
+            echo "matrix=${matrix}"
+            echo "has_legs=${has_legs}"
+            echo "scope=${scope}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Emitted $(printf '%s' "$matrix" | jq 'length') leg(s) at scope=${scope}"
 
   cross:
     if: >-
       ${{ needs.cross_matrix.outputs.has_legs == 'true' }}
-    name: "${{ matrix.recipe_name }}/${{ matrix.recipe_args }}/${{ matrix.platform }}/${{ matrix.libc }}"
+    name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
     runs-on: "lab"
     # Cross is advisory: leg failures show red on the job badge but the
     # workflow run as a whole still passes.  `needs.cross.result` reports
@@ -547,6 +546,7 @@ jobs:
       - miri
       - wasm
       - cross_matrix
+      - sanitize
     permissions:
       checks: "write"
       pull-requests: "read"
@@ -555,6 +555,12 @@ jobs:
       id-token: "write"
     env:
       USER: "runner"
+      # The three step bodies all want the same just-vars triple, so
+      # set it at the job level rather than per-step.
+      JUST_VARS: >-
+        platform=${{ matrix.platform }}
+        profile=${{ matrix.profile }}
+        libc=${{ matrix.libc }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -563,16 +569,27 @@ jobs:
     steps:
       - *checkout
       - *nix-setup
-      - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}/${{ matrix.recipe_args }}"
+      # Test step runs only under the rare `cross_scope=full` mode --
+      # exercises the cross-compiled test archive under qemu-user
+      # (scripts/test-runner.sh wraps non-native targets) for every
+      # platform/libc in the full SOC sweep.  Default scope stays
+      # build-only since qemu-user signal value is limited for our
+      # workload and the wall-clock cost is significant.
+      - name: "test"
+        if: ${{ needs.cross_matrix.outputs.scope == 'full' }}
         uses: *just
-        env:
-          JUST_VARS: >-
-            platform=${{ matrix.platform }}
-            profile=${{ matrix.profile }}
-            libc=${{ matrix.libc }}
         with:
-          recipe: "${{ matrix.recipe_name }}"
-          recipe_args: "${{ matrix.recipe_args }}"
+          recipe: "test"
+      - name: "build-container dataplane"
+        uses: *just
+        with:
+          recipe: "build-container"
+          recipe_args: "dataplane"
+      - name: "build-container frr.dataplane"
+        uses: *just
+        with:
+          recipe: "build-container"
+          recipe_args: "frr.dataplane"
       - *tmate
 
   features:
