@@ -540,11 +540,11 @@ jobs:
     continue-on-error: true
     needs:
       - check_changes
-      #- check
-      #- miri
-      #- wasm
+      - check
+      - miri
+      - wasm
       - cross_matrix
-      #- sanitize
+      - sanitize
     permissions:
       checks: "write"
       pull-requests: "read"
