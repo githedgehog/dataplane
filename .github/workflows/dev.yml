@@ -519,7 +519,7 @@ jobs:
           # build-container for dataplane and frr.dataplane); the
           # per-recipe fan-out moves out of this matrix and into the
           # job's step list.
-          matrix="$(printf '%s' "$preset" | jq -c 'map(. + { profile: "debug" })')"
+          matrix="$(printf '%s' "$preset" | jq -c 'map(. + { profile: "release" })')" # todo: swap back to debug
           has_legs=false
           if [ "$(printf '%s' "$matrix" | jq 'length')" -gt 0 ]; then
             has_legs=true
