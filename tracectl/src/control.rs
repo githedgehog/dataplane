@@ -5,17 +5,31 @@
 
 use ordermap::OrderMap;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock, Mutex};
-use std::{collections::HashSet, sync::MutexGuard};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::{collections::HashSet, sync::MutexGuard, time::Duration};
 use thiserror::Error;
 #[allow(unused)]
-use tracing::{debug, error, info, warn};
-use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, prelude::*, reload};
+use tracing::{Level, Subscriber, debug, error, info, warn};
+use tracing_subscriber::{
+    EnvFilter, Registry,
+    filter::{FilterExt, LevelFilter, filter_fn},
+    layer::{Filter, Layer},
+    prelude::*,
+    registry::LookupSpan,
+    reload,
+};
+use tracing_throttle::{Policy, TracingRateLimitLayer};
 
 use crate::display::TargetCfgDbByTag;
 use crate::targets::{TRACING_TAG_ALL, TRACING_TARGETS};
 use crate::trace_target;
 trace_target!("tracectl", LevelFilter::INFO, &[]);
+
+#[derive(Copy, Clone, Debug)]
+pub struct TracingRateLimitConfig {
+    pub burst: u32,
+    pub replenish_per_second: u32,
+}
 
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TraceCtlError {
@@ -278,32 +292,128 @@ impl TargetCfgDb {
     }
 }
 
+type BoxedTracingLayer<S> = Box<dyn Layer<S> + Send + Sync>;
+
+type ReloadLayer = reload::Layer<EnvFilter, Registry>;
+
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
     reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
 }
 impl TracingControl {
-    fn new() -> Self {
-        let db = TargetCfgDb::new();
-        let (filter, reload_filter) = reload::Layer::new(db.env_filter());
-
-        // formatting layer
-        let fmt_layer = tracing_subscriber::fmt::layer()
+    fn fmt_layer<S>() -> impl Layer<S> + Send + Sync
+    where
+        S: Subscriber + for<'span> LookupSpan<'span>,
+    {
+        tracing_subscriber::fmt::layer()
             .with_line_number(true)
             .with_target(true)
             .with_thread_ids(false)
             .with_thread_names(true)
-            .with_level(true);
+            .with_level(true)
+    }
 
-        // we should not be initializing the subscriber here, but that's fine atm
+    // To get rid of spaghetti filters in the layers, we split the fmt layer into two:
+    // one for unthrottled levels and one for throttled levels.
+
+    // `DEBUG` level remains unthrottled if we assume that it is the most verbose level
+    // that users would want to enable while digging into particular issues.
+    fn unthrottled_level_filter<S>() -> impl Filter<S> + Send + Sync
+    where
+        S: Subscriber + for<'span> LookupSpan<'span>,
+    {
+        filter_fn(|meta| matches!(*meta.level(), Level::DEBUG))
+    }
+
+    fn throttled_level_filter<S>() -> impl Filter<S> + Send + Sync
+    where
+        S: Subscriber + for<'span> LookupSpan<'span>,
+    {
+        filter_fn(|meta| {
+            matches!(
+                *meta.level(),
+                Level::INFO | Level::TRACE | Level::ERROR | Level::WARN
+            )
+        })
+    }
+
+    fn unthrottled_fmt_layer<S>() -> BoxedTracingLayer<S>
+    where
+        S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
+    {
+        Self::fmt_layer()
+            .with_filter(Self::unthrottled_level_filter())
+            .boxed()
+    }
+
+    fn throttled_fmt_layer<S>(
+        rate_limit_config: Option<TracingRateLimitConfig>,
+    ) -> BoxedTracingLayer<S>
+    where
+        S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
+    {
+        if let Some(rate_limit) = Self::build_rate_limit_layer(rate_limit_config) {
+            Self::fmt_layer()
+                .with_filter(Self::throttled_level_filter().and(rate_limit))
+                .boxed()
+        } else {
+            Self::fmt_layer()
+                .with_filter(Self::throttled_level_filter())
+                .boxed()
+        }
+    }
+
+    fn build_rate_limit_layer(
+        rate_limit_config: Option<TracingRateLimitConfig>,
+    ) -> Option<TracingRateLimitLayer> {
+        let rate_limit_config = rate_limit_config?;
+
+        let policy = match Policy::token_bucket(
+            f64::from(rate_limit_config.burst),
+            f64::from(rate_limit_config.replenish_per_second),
+        ) {
+            Ok(policy) => policy,
+            Err(e) => {
+                eprintln!(
+                    "Failed to create tracing throttle policy: {e}; falling back to unthrottled logging"
+                );
+                return None;
+            }
+        };
+
+        match TracingRateLimitLayer::builder()
+            .with_policy(policy)
+            .with_summary_interval(Duration::from_secs(30))
+            .build()
+        {
+            Ok(rate_limit) => Some(rate_limit),
+            Err(e) => {
+                eprintln!(
+                    "Failed to create tracing throttle layer: {e}; falling back to unthrottled logging"
+                );
+                None
+            }
+        }
+    }
+
+    fn init_subscriber(filter: ReloadLayer, rate_limit_config: Option<TracingRateLimitConfig>) {
         if let Err(e) = tracing_subscriber::registry()
             .with(filter)
-            .with(fmt_layer)
+            .with(Self::unthrottled_fmt_layer())
+            .with(Self::throttled_fmt_layer(rate_limit_config))
             .with(tracing_error::ErrorLayer::default())
             .try_init()
         {
             eprintln!("Failed to set global tracing subscriber: {e} !!");
         }
+    }
+
+    fn new(rate_limit_config: Option<TracingRateLimitConfig>) -> Self {
+        let db = TargetCfgDb::new();
+        let (filter, reload_filter) = reload::Layer::new(db.env_filter());
+
+        Self::init_subscriber(filter, rate_limit_config);
+
         if let Err(e) = color_eyre::install() {
             eprintln!("Failed to initialize color_eyre:\n{e}");
         }
@@ -339,17 +449,35 @@ impl TracingControl {
 }
 
 /// Get a reference to a static [`TracingControl`], initializing it if needed
-static TRACING_CTL: LazyLock<TracingControl> = LazyLock::new(TracingControl::new);
+static TRACING_CTL: OnceLock<TracingControl> = OnceLock::new();
 #[must_use]
 pub fn get_trace_ctl() -> &'static TracingControl {
-    #[allow(clippy::explicit_auto_deref)] // needed by mechanics of lazy lock
-    &*TRACING_CTL
+    TRACING_CTL.get_or_init(|| TracingControl::new(None))
 }
 
 // public methods for TracingControl
 impl TracingControl {
+    fn init_once(
+        tracing_ctl: &OnceLock<TracingControl>,
+        rate_limit_config: Option<TracingRateLimitConfig>,
+    ) -> bool {
+        let mut initialized = false;
+        let _ = tracing_ctl.get_or_init(|| {
+            initialized = true;
+            TracingControl::new(rate_limit_config)
+        });
+        initialized
+    }
+
     pub fn init() {
         let _ = get_trace_ctl();
+    }
+    pub fn init_with_rate_limit(rate_limit_config: Option<TracingRateLimitConfig>) {
+        let has_rate_limit_config = rate_limit_config.is_some();
+        let initialized = Self::init_once(&TRACING_CTL, rate_limit_config);
+        if has_rate_limit_config && !initialized {
+            warn!("TracingControl already initialized; ignoring provided rate-limit config");
+        }
     }
     fn set_tag_level(&self, tag: &str, level: LevelFilter) -> Result<(), TraceCtlError> {
         let mut db = self.lock()?;
@@ -485,6 +613,7 @@ mod tests {
     use crate::targets::TRACING_TARGETS;
     use crate::{LevelFilter, custom_target, trace_target};
     use serial_test::serial;
+    use std::sync::OnceLock;
     use tracing::Level;
     use tracing::event_enabled;
     #[allow(unused)]
@@ -522,6 +651,25 @@ mod tests {
             tctl.get_default_level().unwrap()
         );
         println!("{:#?}", tctl.db.lock().unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn test_init_with_rate_limit() {
+        let tracing_ctl = OnceLock::new();
+        let rate_limit_config = Some(crate::control::TracingRateLimitConfig {
+            burst: 10,
+            replenish_per_second: 1,
+        });
+
+        assert!(TracingControl::init_once(&tracing_ctl, rate_limit_config));
+        assert!(tracing_ctl.get().is_some());
+        assert_eq!(
+            tracing_ctl.get().unwrap().get_default_level().unwrap(),
+            crate::control::DEFAULT_DEFAULT_LOGLEVEL
+        );
+
+        assert!(!TracingControl::init_once(&tracing_ctl, rate_limit_config));
     }
 
     #[test]
