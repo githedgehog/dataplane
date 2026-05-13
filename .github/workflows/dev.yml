@@ -561,7 +561,7 @@ jobs:
         libc=${{ matrix.libc }}
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 4 # TODO: temporary scratch just for testing the build
       matrix:
         include: "${{ fromJSON(needs.cross_matrix.outputs.matrix) }}"
     steps:
