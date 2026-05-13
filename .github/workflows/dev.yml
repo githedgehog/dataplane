@@ -524,11 +524,9 @@ jobs:
           if [ "$(printf '%s' "$matrix" | jq 'length')" -gt 0 ]; then
             has_legs=true
           fi
-          {
-            echo "matrix=${matrix}"
-            echo "has_legs=${has_legs}"
-            echo "scope=${scope}"
-          } >> "$GITHUB_OUTPUT"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "has_legs=${has_legs}" >> "$GITHUB_OUTPUT"
+          echo "scope=${scope}" >> "$GITHUB_OUTPUT"
           echo "Emitted $(printf '%s' "$matrix" | jq 'length') leg(s) at scope=${scope}"
 
   cross:
