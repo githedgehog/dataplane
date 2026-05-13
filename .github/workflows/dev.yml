@@ -466,7 +466,7 @@ jobs:
   # without the label) cleanly turns into a no-op rather than a failed
   # zero-leg job.
   cross_matrix:
-    name: "Resolve cross-build matrix"
+    name: "compute cross-matrix"
     if: >-
       ${{
         github.event_name == 'pull_request'
@@ -494,7 +494,7 @@ jobs:
           EVENT_NAME: "${{ github.event_name }}"
           DISPATCH_SCOPE: "${{ inputs.cross_scope || '' }}"
           HAS_CI_CROSS: "${{ contains(github.event.pull_request.labels.*.name, 'ci:+cross') }}"
-          HAS_CI_FULL_CROSS: "${{ contains(github.event.pull_request.labels.*.name, 'ci:+full-cross') }}"
+          HAS_CI_FULL_CROSS: "${{ contains(github.event.pull_request.labels.*.name, 'ci:+cross/full') }}"
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
