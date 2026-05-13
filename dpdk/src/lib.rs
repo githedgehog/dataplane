@@ -33,6 +33,7 @@
 extern crate alloc;
 extern crate core;
 
+pub mod acl;
 pub mod dev;
 pub mod eal;
 pub mod flow;

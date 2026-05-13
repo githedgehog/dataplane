@@ -93,11 +93,12 @@ fn main() {
         "rte_hash",
         "rte_rcu",
         "rte_ring",
+        "rte_acl",
         "rte_eal",
         "rte_argparse",
         "rte_kvargs",
-        "rte_telemetry",
-        "rte_log",
+        "rte_telemetry", // todo: see if you can't remove telemetry
+        "rte_log", // todo: see if you can't remove log
         "ibverbs",
         "mlx5",
         "mlx4",
