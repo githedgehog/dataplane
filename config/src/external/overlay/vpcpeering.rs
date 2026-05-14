@@ -292,13 +292,6 @@ impl VpcExpose {
             ));
         }
 
-        let prefix_sets = [
-            &self.ips,
-            &self.nots,
-            self.as_range_or_empty(),
-            self.not_as_or_empty(),
-        ];
-
         // Check that all prefixes in a list are of the same IP version, as we don't support NAT46
         // or NAT64 at the moment.
         //
@@ -306,7 +299,12 @@ impl VpcExpose {
         //       considerations might be required to validate independently the IPv4 and the IPv6
         //       prefixes and exclusion prefixes in the rest of this function.
         let mut is_ipv4_opt = None;
-        for prefixes in prefix_sets {
+        for prefixes in [
+            &self.ips,
+            &self.nots,
+            self.as_range_or_empty(),
+            self.not_as_or_empty(),
+        ] {
             if prefixes.iter().any(|p| {
                 if let Some(is_ipv4) = is_ipv4_opt {
                     p.prefix().is_ipv4() != is_ipv4
@@ -335,8 +333,8 @@ impl VpcExpose {
 
         // Warn if any exclusion prefix does not overlap with any allowed prefix.
         for (prefixes, excludes) in [
-            (prefix_sets[0], prefix_sets[1]),
-            (prefix_sets[2], prefix_sets[3]),
+            (&self.ips, &self.nots),
+            (self.as_range_or_empty(), self.not_as_or_empty()),
         ] {
             for exclude in excludes {
                 if !prefixes.iter().any(|p| p.overlaps(exclude)) {
