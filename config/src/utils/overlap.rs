@@ -131,6 +131,198 @@ pub fn merge_contiguous_prefixes(prefixes: &mut PrefixPortsSet) {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+    use lpm::prefix::PortRange;
+
+    #[test]
+    fn test_merge_contiguous_prefixes_simple() {
+        let mut prefixes = PrefixPortsSet::from([
+            PrefixWithOptionalPorts::new("192.168.0.0/24".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.1.0/24".parse().unwrap(), None),
+        ]);
+        merge_contiguous_prefixes(&mut prefixes);
+        assert_eq!(prefixes.len(), 1, "{prefixes:?}");
+        assert_eq!(
+            prefixes.iter().next().unwrap(),
+            &PrefixWithOptionalPorts::new("192.168.0.0/23".parse().unwrap(), None)
+        );
+    }
+
+    #[test]
+    fn test_merge_contiguous_prefixes_complex() {
+        let mut prefixes = PrefixPortsSet::from([
+            PrefixWithOptionalPorts::new("192.168.0.0/24".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.2.0/23".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.8.0/21".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.5.0/24".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.1.0/24".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.6.0/24".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.7.0/24".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new("192.168.4.0/24".parse().unwrap(), None),
+        ]);
+        merge_contiguous_prefixes(&mut prefixes);
+        assert_eq!(prefixes.len(), 1, "{prefixes:?}");
+        assert_eq!(
+            prefixes.iter().next().unwrap(),
+            &PrefixWithOptionalPorts::new("192.168.0.0/20".parse().unwrap(), None)
+        );
+    }
+
+    #[test]
+    fn test_merge_contiguous_port_ranges() {
+        let mut prefixes = PrefixPortsSet::from([
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 80).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/24".parse().unwrap(),
+                Some(PortRange::new(81, 100).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/24".parse().unwrap(),
+                Some(PortRange::new(1, 79).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/24".parse().unwrap(),
+                Some(PortRange::new(101, 180).unwrap()),
+            ),
+        ]);
+        merge_contiguous_prefixes(&mut prefixes);
+        assert_eq!(prefixes.len(), 1, "{prefixes:?}");
+        assert_eq!(
+            prefixes.iter().next().unwrap(),
+            &PrefixWithOptionalPorts::new(
+                "192.168.0.0/24".parse().unwrap(),
+                Some(PortRange::new(1, 180).unwrap())
+            )
+        );
+    }
+
+    #[test]
+    fn test_merge_contiguous_prefixes_and_ports() {
+        let mut prefixes = PrefixPortsSet::from([
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 100).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.1.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 100).unwrap()),
+            ), // merges with 192.168.0.0/24, 80-100 to do 192.168.0.0/23, 80-100
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/23".parse().unwrap(),
+                Some(PortRange::new(101, 200).unwrap()),
+            ), // merges with 192.168.0.0/23, 80-100 to do 192.168.0.0/23, 101-200
+            PrefixWithOptionalPorts::new(
+                "192.168.2.0/23".parse().unwrap(),
+                Some(PortRange::new(80, 200).unwrap()),
+            ), // merges with 192.168.0.0/23, 80-200 to do 192.168.0.0/22, 80-200
+            PrefixWithOptionalPorts::new(
+                "192.168.4.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 80).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.4.0/24".parse().unwrap(),
+                Some(PortRange::new(81, 110).unwrap()),
+            ), // merges with 192.168.4.0/24, 80-80 to do 192.168.4.0/24, 80-110
+            PrefixWithOptionalPorts::new(
+                "192.168.5.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 110).unwrap()),
+            ), // merges with 192.168.4.0/24, 80-110 to do 192.168.4.0/23, 80-110
+            PrefixWithOptionalPorts::new(
+                "192.168.4.0/23".parse().unwrap(),
+                Some(PortRange::new(110, 200).unwrap()),
+            ), // merges with 192.168.4.0/23, 80-110 to do 192.168.4.0/23, 80-200
+            PrefixWithOptionalPorts::new(
+                "192.168.6.0/23".parse().unwrap(),
+                Some(PortRange::new(80, 200).unwrap()),
+            ), // merges with 192.168.4.0/23, 80-200 to do 192.168.4.0/22, 80-200;
+            // then merges with 192.168.0.0/22, 80-200 to do 192.168.0.0/21, 80-200
+            PrefixWithOptionalPorts::new(
+                "192.168.8.0/21".parse().unwrap(),
+                Some(PortRange::new(80, 200).unwrap()),
+            ), // merges with 192.168.0.0/21, 80-200 to do 192.168.0.0/20, 80-200
+        ]);
+        merge_contiguous_prefixes(&mut prefixes);
+        assert_eq!(prefixes.len(), 1, "{prefixes:?}");
+        assert_eq!(
+            prefixes.iter().next().unwrap(),
+            &PrefixWithOptionalPorts::new(
+                "192.168.0.0/20".parse().unwrap(),
+                Some(PortRange::new(80, 200).unwrap())
+            )
+        );
+    }
+
+    #[test]
+    fn test_merge_contiguous_prefixes_full_mix() {
+        let mut prefixes = PrefixPortsSet::from([
+            // Same prefixes and ports as in test_merge_contiguous_prefixes_and_ports(), with a
+            // different order, and the addition of more prefixes to cover all ports, plus more
+            // prefixes without associated port ranges.
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/20".parse().unwrap(),
+                Some(PortRange::new(0, 79).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 100).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.1.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 100).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new("192.168.16.0/21".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new(
+                "192.168.4.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 80).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/23".parse().unwrap(),
+                Some(PortRange::new(101, 200).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.2.0/23".parse().unwrap(),
+                Some(PortRange::new(80, 200).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.4.0/24".parse().unwrap(),
+                Some(PortRange::new(81, 110).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.5.0/24".parse().unwrap(),
+                Some(PortRange::new(80, 110).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.6.0/23".parse().unwrap(),
+                Some(PortRange::new(80, 200).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new("192.168.24.0/21".parse().unwrap(), None),
+            PrefixWithOptionalPorts::new(
+                "192.168.8.0/21".parse().unwrap(),
+                Some(PortRange::new(80, 200).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.4.0/23".parse().unwrap(),
+                Some(PortRange::new(110, 200).unwrap()),
+            ),
+            PrefixWithOptionalPorts::new(
+                "192.168.0.0/20".parse().unwrap(),
+                Some(PortRange::new(201, u16::MAX).unwrap()),
+            ),
+        ]);
+        merge_contiguous_prefixes(&mut prefixes);
+        assert_eq!(prefixes.len(), 1, "{prefixes:?}");
+        assert_eq!(
+            prefixes.iter().next().unwrap(),
+            &PrefixWithOptionalPorts::new("192.168.0.0/19".parse().unwrap(), None)
+        );
+    }
+}
+
+#[cfg(test)]
 mod bolero_tests {
     use super::*;
     use std::ops::Bound::{Excluded, Unbounded};
