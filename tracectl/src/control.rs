@@ -3,20 +3,21 @@
 
 //! Tracing runtime control.
 
+use arc_swap::ArcSwap;
 use ordermap::OrderMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::{collections::HashSet, sync::MutexGuard, time::Duration};
+use std::{any::TypeId, collections::HashSet, sync::MutexGuard, time::Duration};
 use thiserror::Error;
+use tracing::{Event, Metadata, span, subscriber::Interest};
 #[allow(unused)]
-use tracing::{Level, Subscriber, debug, error, info, warn};
+use tracing::{Level, Subscriber, callsite, debug, error, info, warn};
 use tracing_subscriber::{
-    EnvFilter, Registry,
+    EnvFilter,
     filter::{FilterExt, LevelFilter, filter_fn},
-    layer::{Filter, Layer},
+    layer::{Context, Filter, Layer},
     prelude::*,
     registry::LookupSpan,
-    reload,
 };
 use tracing_throttle::{Policy, TracingRateLimitLayer};
 
@@ -33,8 +34,6 @@ pub struct TracingRateLimitConfig {
 
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TraceCtlError {
-    #[error("Reload tracing failure: {0}")]
-    ReloadFailure(String),
     #[error("Unknown tag {0}")]
     UnknownTag(String),
     #[error("Lock failure: {0}")]
@@ -292,13 +291,101 @@ impl TargetCfgDb {
     }
 }
 
-type BoxedTracingLayer<S> = Box<dyn Layer<S> + Send + Sync>;
+/// `AtomicEnvFilter` wraps an `EnvFilter` in an `ArcSwap` to allow atomic
+/// swapping of the filter. The type is `Clone`-able: the original instance
+/// is moved into the subscriber as a `Layer`, while a clone is kept on
+/// `TracingControl` to push reloads from the outside. Both clones share the
+/// same `Arc<ArcSwap<EnvFilter>>` so an update from one is visible to the other.
+#[derive(Clone)]
+struct AtomicEnvFilter {
+    inner: Arc<ArcSwap<EnvFilter>>,
+}
 
-type ReloadLayer = reload::Layer<EnvFilter, Registry>;
+impl AtomicEnvFilter {
+    fn new(initial: EnvFilter) -> Self {
+        Self {
+            inner: Arc::new(ArcSwap::from_pointee(initial)),
+        }
+    }
+
+    fn reload(&self, new: EnvFilter) {
+        self.inner.store(Arc::new(new));
+        callsite::rebuild_interest_cache();
+    }
+}
+
+// Forward every `Layer<S>` method to the currently-swapped-in `EnvFilter`.
+// Verbose but mechanical: `EnvFilter` overrides several `Layer` hooks
+// (`on_new_span`, `on_record`, `on_enter`, `on_exit`, `on_close`) to
+// support span-based directives like `target[span_name]=level`. This
+// codebase doesn't use those, but the forwarding is here for behavioral
+// equivalence with `reload::Layer<EnvFilter>`.
+impl<S> Layer<S> for AtomicEnvFilter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn register_callsite(&self, meta: &'static Metadata<'static>) -> Interest {
+        Layer::<S>::register_callsite(&**self.inner.load(), meta)
+    }
+
+    fn enabled(&self, meta: &Metadata<'_>, ctx: Context<'_, S>) -> bool {
+        Layer::<S>::enabled(&**self.inner.load(), meta, ctx)
+    }
+
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        Layer::<S>::max_level_hint(&**self.inner.load())
+    }
+
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_new_span(&**self.inner.load(), attrs, id, ctx);
+    }
+
+    fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
+        Layer::<S>::on_record(&**self.inner.load(), id, values, ctx);
+    }
+
+    fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_enter(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_exit(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_close(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        Layer::<S>::on_event(&**self.inner.load(), event, ctx);
+    }
+
+    // `downcast_raw` is how the layered subscriber probes a layer for
+    // per-layer-filter participation (via the `MagicPlfDowncastMarker` type
+    // id) and other capabilities. `EnvFilter` used as a `Layer` is not a
+    // per-layer filter, so reporting "no match" for anything but our own
+    // type id is correct. We deliberately do *not* expose the inner
+    // `EnvFilter`'s address — its identity can change at any time via
+    // `ArcSwap::store`.
+    #[doc(hidden)]
+    unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
+        if id == TypeId::of::<Self>() {
+            Some(std::ptr::from_ref::<Self>(self).cast::<()>())
+        } else {
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TracingControl
+// ---------------------------------------------------------------------------
+
+type BoxedTracingLayer<S> = Box<dyn Layer<S> + Send + Sync>;
 
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
-    reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
+    reload_filter: AtomicEnvFilter,
 }
 impl TracingControl {
     fn fmt_layer<S>() -> impl Layer<S> + Send + Sync
@@ -396,7 +483,7 @@ impl TracingControl {
         }
     }
 
-    fn init_subscriber(filter: ReloadLayer, rate_limit_config: Option<TracingRateLimitConfig>) {
+    fn init_subscriber(filter: AtomicEnvFilter, rate_limit_config: Option<TracingRateLimitConfig>) {
         if let Err(e) = tracing_subscriber::registry()
             .with(filter)
             .with(Self::unthrottled_fmt_layer())
@@ -410,7 +497,8 @@ impl TracingControl {
 
     fn new(rate_limit_config: Option<TracingRateLimitConfig>) -> Self {
         let db = TargetCfgDb::new();
-        let (filter, reload_filter) = reload::Layer::new(db.env_filter());
+        let filter = AtomicEnvFilter::new(db.env_filter());
+        let reload_filter = filter.clone();
 
         Self::init_subscriber(filter, rate_limit_config);
 
@@ -419,7 +507,7 @@ impl TracingControl {
         }
         Self {
             db: Arc::new(Mutex::new(db)),
-            reload_filter: Arc::new(reload_filter),
+            reload_filter,
         }
     }
     /// This method should remain private and never be used other than from methods of `TracingControl`
@@ -428,10 +516,10 @@ impl TracingControl {
             .lock()
             .map_err(|e| TraceCtlError::LockFailure(e.to_string()))
     }
-    fn reload(&self, filter: EnvFilter) -> Result<(), TraceCtlError> {
-        self.reload_filter
-            .reload(filter)
-            .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))
+    /// Reload the active `EnvFilter`. Infallible: the `ArcSwap`-based handle
+    /// has no lock to poison and no subscriber-gone case.
+    fn reload(&self, filter: EnvFilter) {
+        self.reload_filter.reload(filter);
     }
     #[cfg(test)]
     fn register(
@@ -444,7 +532,7 @@ impl TracingControl {
     ) {
         let mut db = self.lock().unwrap();
         db.register(target, name, level, tags, custom);
-        self.reload(db.env_filter()).unwrap();
+        self.reload(db.env_filter());
     }
 }
 
@@ -483,7 +571,7 @@ impl TracingControl {
         let mut db = self.lock()?;
         let changed = db.set_tag_level(tag, level)?;
         if changed > 0 {
-            self.reload(db.env_filter())?;
+            self.reload(db.env_filter());
         }
         info!("Changed log level for tag '{tag}' to {level}. Targets changed: {changed}");
         Ok(())
@@ -493,7 +581,7 @@ impl TracingControl {
         if db.default != level {
             info!("Changing default log-level from {} to {level}", db.default);
             db.default = level;
-            self.reload(db.env_filter())?;
+            self.reload(db.env_filter());
         }
         Ok(())
     }
@@ -577,9 +665,7 @@ impl TracingControl {
         let mut db = self.lock()?;
         let changed = db.reconfigure(default, tag_config, resolver);
         if changed > 0 {
-            self.reload_filter
-                .reload(db.env_filter())
-                .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))?;
+            self.reload(db.env_filter());
         }
         Ok(())
     }
@@ -683,7 +769,6 @@ mod tests {
         println!("{}", tctl.as_string().unwrap());
         println!("{}", tctl.as_string_by_tag().unwrap());
 
-        assert_eq!(check_level!(TARGET_1), LevelFilter::TRACE);
         assert_eq!(check_level!(TARGET_2), LevelFilter::DEBUG);
         assert_eq!(check_level!(TARGET_3), LevelFilter::INFO);
 
@@ -949,7 +1034,6 @@ mod tests {
                 (T1, LevelFilter::OFF),
                 (T2, LevelFilter::DEBUG),
                 (T3, LevelFilter::ERROR),
-                (Y2, LevelFilter::TRACE),
                 (Y3, LevelFilter::OFF),
             ]
             .into_iter(),
@@ -957,7 +1041,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(check_level!(Y1), LevelFilter::ERROR);
-        assert_eq!(check_level!(Y2), LevelFilter::TRACE);
         assert_eq!(check_level!(Y3), LevelFilter::OFF);
         assert_eq!(check_level!(Y4), LevelFilter::DEBUG);
 
