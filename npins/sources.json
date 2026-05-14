@@ -11,10 +11,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.16.45",
-      "revision": "90de97946bb60aa82108d6dbb217cf10602d8709",
-      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.16.45",
-      "hash": "sha256-jODZp0M6OvUU+vqIhVT5DE+FusCjBC7fww2JKdZOPzA="
+      "version": "v0.16.46",
+      "revision": "2c25b47da1dd47714d4610f093325abbfa9e88b2",
+      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.16.46",
+      "hash": "sha256-hyQ6ZpLJof/57ouUo+NK8g+P//nV35gRdCdaBNg/MhA="
     },
     "crane": {
       "type": "GitRelease",
@@ -97,9 +97,9 @@
       },
       "branch": "stable/10.5",
       "submodules": false,
-      "revision": "bb6e115d4a7f44caa10df09c04c51092928c05be",
-      "url": "https://github.com/FRRouting/frr/archive/bb6e115d4a7f44caa10df09c04c51092928c05be.tar.gz",
-      "hash": "sha256-1XihhtOPZSeAuP4ASq+gk5ZDqyBeN0DP59obc63QZaU="
+      "revision": "c81e8f27d94b843456fac15a0a24804c8801ae3f",
+      "url": "https://github.com/FRRouting/frr/archive/c81e8f27d94b843456fac15a0a24804c8801ae3f.tar.gz",
+      "hash": "sha256-TRncM5xSv3ZGo+FxDddxwUy+QZfs40mR9b0ZXDqdLyA="
     },
     "frr-agent": {
       "type": "Git",
@@ -154,16 +154,16 @@
       "version_upper_bound": null,
       "release_prefix": "mermaid@",
       "submodules": false,
-      "version": "mermaid@11.14.0",
-      "revision": "88e8e5e25c6a07d67dc024c13333b6e72bdb4b34",
-      "url": "https://api.github.com/repos/mermaid-js/mermaid/tarball/refs/tags/mermaid@11.14.0",
-      "hash": "sha256-TytcEn4Nf2Vg6ib+SPAanqjJKzCn/4vmRTIhvG1UAXY="
+      "version": "mermaid@11.15.0",
+      "revision": "7373a1ed5bd159e3f4f5b35b726cbc0f9fbf4c85",
+      "url": "https://api.github.com/repos/mermaid-js/mermaid/tarball/refs/tags/mermaid@11.15.0",
+      "hash": "sha256-nBuZGj7/OaXeIQX4fiLfMl34c88LDyacrWGiliaHB34="
     },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre994919.b3da656039dc/nixexprs.tar.xz",
-      "hash": "sha256-lMg7Dj7kyGN5cj9RGag5Is100HnQPKM9zEsuAOL2TLA="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre997230.eef00dfd8a71/nixexprs.tar.xz",
+      "hash": "sha256-Tf7q8/0aIwg4Btd/GUMNHXDTqlrWTr5o/vZ8euFUAQY="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -176,10 +176,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v1.20.0",
-      "revision": "19a2dd0a3c964370d58ebc67e8ad7ce42079b665",
-      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.20.0",
-      "hash": "sha256-RVZ1yAdyas9rb1Xx01cbpZ6U/Q/NWwBEqeW+W/1rYM0="
+      "version": "v1.21.0",
+      "revision": "146ca6b12422e5f2718c6e506badfb035c9f49aa",
+      "url": "https://api.github.com/repos/opengrep/opengrep/tarball/refs/tags/v1.21.0",
+      "hash": "sha256-MKzEYF3WgP/VlCz0z+3ff1ZjJcIb3dw/Q2uUCm1OEcw="
     },
     "perftest": {
       "type": "Git",
@@ -232,9 +232,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "4852a8aa041c94af55e136cde5b8b6d42c3563e8",
-      "url": "https://github.com/oxalica/rust-overlay/archive/4852a8aa041c94af55e136cde5b8b6d42c3563e8.tar.gz",
-      "hash": "sha256-NTZzJ7xJvMXOonYqut3WLUhryeZj5QuuL0ANcqS7d30="
+      "revision": "83a17ebffcfacb17b49e1b5e9dc15eed07936648",
+      "url": "https://github.com/oxalica/rust-overlay/archive/83a17ebffcfacb17b49e1b5e9dc15eed07936648.tar.gz",
+      "hash": "sha256-+gIOsOzqWNfn+ThCXBQGcLHVEnaGQW59XjghE9JUIYk="
     }
   },
   "version": 7
