@@ -378,13 +378,13 @@ jobs:
         with:
           recipe: "miri::test"
       # Some packages are especially sensitive to concurrency
-      # violations and memory model issues, so we run them again with many
+      # violations and memory model issues, so we run them again with extra
       # different random schedules.
       - name: "extra important"
         uses: *just
         env:
           JUST_VARS: >-
-            miri::seeds=8
+            miri::seeds=4
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"

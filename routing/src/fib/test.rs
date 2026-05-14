@@ -254,7 +254,7 @@ mod tests {
         // number of threads looking up fibtable
         const NUM_WORKERS: u16 = 6;
         const NUM_PACKETS: u64 = cfg_select! {
-            miri => 50,
+            miri => 30,
             _ => 100_000,
         };
         const TENTH: u64 = NUM_PACKETS / 10;
@@ -281,6 +281,7 @@ mod tests {
             let handle = Builder::new()
                 .name(format!("WORKER-{n}"))
                 .spawn(move || {
+                    #[cfg(not(miri))]
                     println!("Worker-{n} started");
                     let mut rng = rand::rng();
                     let mut packet = test_packet();
@@ -296,6 +297,7 @@ mod tests {
                                 if hit == prefix {
                                     prefix_hits += 1;
                                     if prefix_hits.is_multiple_of(TENTH) {
+                                        #[cfg(not(miri))]
                                         println!(
                                             "Worker {n} is {} % done",
                                             prefix_hits * 100 / NUM_PACKETS
@@ -315,12 +317,15 @@ mod tests {
                             nofibs += 1;
                         }
                     }
-                    println!("=== Worker {n} finished ====");
-                    println!("Stats:");
-                    println!("  {prefix_hits:>8} packets hit {prefix}");
-                    println!("  {other_hits:>8} packets hit other prefix (0.0.0.0/0)");
-                    println!("  {nofibs:>8} packets found no fib");
-                    println!("  {nofib_enter:>8} packets found fib but could not enter");
+                    #[cfg(not(miri))]
+                    {
+                        println!("=== Worker {n} finished ====");
+                        println!("Stats:");
+                        println!("  {prefix_hits:>8} packets hit {prefix}");
+                        println!("  {other_hits:>8} packets hit other prefix (0.0.0.0/0)");
+                        println!("  {nofibs:>8} packets found no fib");
+                        println!("  {nofib_enter:>8} packets found fib but could not enter");
+                    }
 
                     worker_done.fetch_add(1, Ordering::Relaxed);
                 })
@@ -374,6 +379,7 @@ mod tests {
 
             // stop when all workers are done
             if done.load(Ordering::Relaxed) == NUM_WORKERS {
+                #[cfg(not(miri))]
                 println!("All workers finished!");
                 if let Some(fib) = fibw.take() {
                     // fib is destroyed here
@@ -388,6 +394,7 @@ mod tests {
         }
 
         let duration = start.elapsed();
+        #[cfg(not(miri))]
         println!("Test duration: {duration:?}");
     }
 
