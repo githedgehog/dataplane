@@ -377,14 +377,10 @@ jobs:
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
-      # The quiescent QSBR module is especially sensitive to concurrency
-      # violations and memory model issues, so we run it again with many
-      # different random schedules.  The build here runs with real arc-swap
-      # and could therefore catch issues which shuttle/loom can't.  We run
-      # under extra schedules to make that effect stand out as much as
-      # possible (this is the closest we can get to fixing that coverage
-      # gap).
-      - name: "concurrency"
+      # Some packages are especially sensitive to concurrency
+      # violations and memory model issues, so we run them again with many
+      # different random schedules.
+      - name: "extra important"
         uses: *just
         env:
           JUST_VARS: >-
@@ -392,7 +388,7 @@ jobs:
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
-          recipe_args: "--package=dataplane-concurrency"
+          recipe_args: "--package=dataplane-concurrency --package=dataplane-flow-entry --package=dataplane-flow-filter --package=dataplane-nat"
       - *tmate
 
   wasm:
