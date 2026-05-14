@@ -132,6 +132,14 @@ impl Prefix {
         }
     }
 
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        match *self {
+            Prefix::IPV4(p) => p.parent().map(Prefix::IPV4),
+            Prefix::IPV6(p) => p.parent().map(Prefix::IPV6),
+        }
+    }
+
     /// Get prefix length
     #[must_use]
     pub fn length(&self) -> u8 {
@@ -343,6 +351,13 @@ impl Prefix {
     ///     Some(prefix_v4("1.0.1.0/24"))
     /// );
     ///
+    /// let prefix1 = prefix_v4("1.0.1.128/25");
+    /// let prefix2 = prefix_v4("1.0.1.0/25");
+    /// assert_eq!(
+    ///     prefix1.merge(&prefix2),
+    ///     Some(prefix_v4("1.0.1.0/24"))
+    /// );
+    ///
     /// let prefix1 = prefix_v4("1.0.0.0/24");
     /// let prefix2 = prefix_v4("1.0.1.0/24");
     /// assert_eq!(
@@ -399,15 +414,9 @@ impl Prefix {
         debug_assert_ne!(self.length(), 0);
         debug_assert_ne!(other.length(), 0);
 
-        let parent = match self {
-            Prefix::IPV4(prefix) => {
-                Prefix::IPV4(Ipv4Prefix::new(prefix.network(), prefix.len() - 1).ok()?)
-            }
-            Prefix::IPV6(prefix) => {
-                Prefix::IPV6(Ipv6Prefix::new(prefix.network(), prefix.len() - 1).ok()?)
-            }
-        };
-        if parent.covers(other) {
+        if let Some(parent) = self.parent()
+            && parent.covers(other)
+        {
             // The immediate parent CIDR covers both distinct prefixes, so we're good
             Some(parent)
         } else {
