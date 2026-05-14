@@ -373,7 +373,7 @@ fn flow_lookup<Buf: PacketBufferMut>(flow_table: &FlowTable, packet: &mut Packet
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(miri), traced_test)]
 #[allow(clippy::too_many_lines)]
 async fn test_full_config() {
     let config = build_gwconfig_from_overlay(build_overlay_4vpcs())
@@ -544,7 +544,7 @@ fn build_overlay_2vpcs_no_nat() -> Overlay {
 }
 
 #[test]
-#[traced_test]
+#[cfg_attr(not(miri), traced_test)]
 fn test_full_config_no_nat() {
     let config = build_gwconfig_from_overlay(build_overlay_2vpcs_no_nat())
         .validate()
@@ -1418,7 +1418,7 @@ fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(miri), traced_test)]
 #[allow(clippy::too_many_lines)]
 async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peering() {
     let config =

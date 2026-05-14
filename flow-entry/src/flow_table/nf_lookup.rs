@@ -140,7 +140,7 @@ mod test {
         }
     }
 
-    #[traced_test]
+    #[cfg_attr(not(miri), traced_test)]
     #[tokio::test]
     async fn test_lookup_nf_with_expiration() {
         let flow_table = Arc::new(FlowTable::default());
