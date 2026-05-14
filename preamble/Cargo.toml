@@ -1,0 +1,19 @@
+[package]
+name = "dataplane-preamble"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+default = []
+
+concurrency = ["dep:concurrency"]
+
+[dependencies]
+# internal
+concurrency = { workspace = true, optional = true }
+
+
+
+[dev-dependencies]

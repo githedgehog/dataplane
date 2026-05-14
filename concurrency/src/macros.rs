@@ -15,7 +15,7 @@
 ///     }
 /// }
 /// ```
-#[cfg(all(feature = "shuttle", not(feature = "silence_clippy")))]
+#[cfg(all(feature = "shuttle", not(feature = "_silence_clippy")))]
 #[macro_export]
 macro_rules! with_shuttle {
     ($($item:item)*) => {
@@ -39,7 +39,7 @@ macro_rules! with_shuttle {
 ///     }
 /// }
 /// ```
-#[cfg(any(not(feature = "shuttle"), feature = "silence_clippy"))]
+#[cfg(any(not(feature = "shuttle"), feature = "_silence_clippy"))]
 #[macro_export]
 macro_rules! with_shuttle {
     ($($item:item)*) => {};
@@ -59,7 +59,7 @@ macro_rules! with_shuttle {
 ///     }
 /// }
 /// ```
-#[cfg(all(feature = "loom", not(feature = "silence_clippy")))]
+#[cfg(all(feature = "loom", not(feature = "_silence_clippy")))]
 #[macro_export]
 macro_rules! with_loom {
     ($($item:item)*) => {
@@ -83,7 +83,7 @@ macro_rules! with_loom {
 ///     }
 /// }
 /// ```
-#[cfg(any(not(feature = "loom"), feature = "silence_clippy"))]
+#[cfg(any(not(feature = "loom"), feature = "_silence_clippy"))]
 #[macro_export]
 macro_rules! with_loom {
     ($($item:item)*) => {};
@@ -127,7 +127,7 @@ macro_rules! with_std {
 ///     }
 /// }
 /// ```
-#[cfg(all(feature = "loom", feature = "shuttle", feature = "silence_clippy"))]
+#[cfg(all(feature = "loom", feature = "shuttle", feature = "_silence_clippy"))]
 #[macro_export]
 macro_rules! with_std {
     ($($item:item)*) => {
@@ -152,7 +152,7 @@ macro_rules! with_std {
 /// }
 /// ```
 #[cfg(all(
-    not(feature = "silence_clippy"),
+    not(feature = "_silence_clippy"),
     any(feature = "loom", feature = "shuttle")
 ))]
 #[macro_export]

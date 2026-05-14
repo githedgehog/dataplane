@@ -987,6 +987,9 @@ name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "crossterm"
@@ -1232,9 +1235,14 @@ dependencies = [
 name = "dataplane-concurrency"
 version = "0.21.0"
 dependencies = [
+ "arc-swap",
+ "bolero",
+ "crossbeam-utils",
  "dataplane-concurrency-macros",
  "loom",
+ "parking_lot",
  "shuttle",
+ "static_assertions",
 ]
 
 [[package]]
@@ -1476,6 +1484,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-lsm"
+version = "0.21.0"
+dependencies = [
+ "arc-swap",
+ "dashmap",
+ "dataplane-concurrency",
+ "hashbrown 0.17.1",
+ "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
+]
+
+[[package]]
 name = "dataplane-mgmt"
 version = "0.21.0"
 dependencies = [
@@ -1595,18 +1614,6 @@ dependencies = [
  "strum 0.28.0",
  "thiserror",
  "tracing",
-]
-
-[[package]]
-name = "dataplane-quiescent"
-version = "0.21.0"
-dependencies = [
- "arc-swap",
- "bolero",
- "dataplane-concurrency",
- "loom",
- "shuttle",
- "static_assertions",
 ]
 
 [[package]]
@@ -5639,6 +5646,7 @@ dependencies = [
  "bytes",
  "libc 0.2.186",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Multi-threaded protocol tests for `dataplane_quiescent`.
+//! Multi-threaded protocol tests for `dataplane_concurrency::quiescent`.
 //!
 //! The single-threaded protocol invariants (snapshot legality,
 //! reclamation gating, conservation of `Versioned` allocations) are
-//! covered by the bolero property tests in `tests/properties.rs`.
-//! This file holds only the tests that genuinely need real OS threads:
+//! covered by the bolero property tests in
+//! `tests/quiescent_properties.rs`.  This file holds only the tests
+//! that genuinely need real OS threads:
 //!
 //! - **Drop affinity**: drops must run on the Publisher's
 //!   thread, even when the last Subscriber drops concurrently with
@@ -20,7 +21,7 @@
 //! requires `'static`) won't work; `thread::scope` matches the
 //! lifetime exactly.
 //!
-//! Loom-modeled tests live in `tests/loom.rs`.
+//! Loom-modeled tests live in `tests/quiescent_loom.rs`.
 
 #![cfg(not(any(feature = "loom", feature = "shuttle")))]
 
@@ -29,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use dataplane_quiescent::channel;
+use dataplane_concurrency::quiescent::channel;
 
 // ---------- helpers ----------
 

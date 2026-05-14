@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Bolero x shuttle property tests.
+//! Bolero x shuttle property tests for `dataplane_concurrency::quiescent`.
 //!
 //! Generates a [`Plan`] (Publisher ops + Subscriber ops, dispatched to
 //! two separate threads) via bolero, then runs each plan once under
@@ -9,7 +9,7 @@
 //! explores one shape x one interleaving; thousands of bolero
 //! iterations widen both axes cheaply.
 //!
-//! This is the cheap-per-call counterpart to `tests/loom.rs`'s
+//! This is the cheap-per-call counterpart to `tests/quiescent_loom.rs`'s
 //! exhaustive small-shape model checking.  Loom proves "no
 //! interleaving of these shapes breaks"; shuttle says "we tried many
 //! interleavings of many shapes and didn't see a break."  Together
@@ -23,11 +23,11 @@
 use std::panic::RefUnwindSafe;
 
 use bolero::TypeGenerator;
-use concurrency::sync::Arc;
-use concurrency::sync::atomic::{AtomicUsize, Ordering};
-use concurrency::thread;
+use dataplane_concurrency::sync::Arc;
+use dataplane_concurrency::sync::atomic::{AtomicUsize, Ordering};
+use dataplane_concurrency::thread;
 
-use dataplane_quiescent::{Subscriber, channel};
+use dataplane_concurrency::quiescent::{Subscriber, channel};
 
 // ---------- ops & plan ----------
 

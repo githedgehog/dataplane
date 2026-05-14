@@ -54,7 +54,7 @@ _cargo_feature_flags := \
 _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profile }
 
 # filters for nextest
-filter := if features == "shuttle" { "shuttle" } else if features == "loom" { "-E 'binary(loom)'" } else { "" }
+filter := if features == "shuttle" { "shuttle" } else if features == "loom" { "-E 'binary(/loom/)'" } else { "" }
 
 # instrumentation mode (none/coverage)
 instrument := "none"

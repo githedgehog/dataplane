@@ -1627,7 +1627,6 @@ fn nat_flow_status(packet: &Packet<TestBuffer>) -> Option<NatFlowStatus> {
         .as_ref()?
         .locked
         .read()
-        .unwrap()
         .nat_state
         .as_ref()
         .and_then(|s| s.extract_ref::<MasqueradeState>())
@@ -1641,7 +1640,6 @@ fn masquerade_state(packet: &Packet<TestBuffer>) -> Option<MasqueradeState> {
         .as_ref()?
         .locked
         .read()
-        .unwrap()
         .nat_state
         .as_ref()
         .and_then(|s| s.extract_ref::<MasqueradeState>())

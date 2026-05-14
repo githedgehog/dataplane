@@ -202,10 +202,7 @@ impl FlowInfo {
     ///
     /// This method panics if the inner lock is poisoned
     pub fn get_dst_vpcd(&self) -> Option<VpcDiscriminant> {
-        self.locked
-            .read()
-            .expect("Failure locking flow-info for reading")
-            .dst_vpcd
+        self.locked.read().dst_vpcd
     }
 
     /// Set the generation Id of a flow

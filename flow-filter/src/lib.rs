@@ -78,7 +78,7 @@ impl FlowFilter {
         if flow_info.genid() == genid {
             return false;
         }
-        let locked_info = flow_info.locked.read().unwrap();
+        let locked_info = flow_info.locked.read();
         let flow_port_fw = locked_info.port_fw_state.is_some();
         let flow_masquerade = locked_info.nat_state.is_some();
         let flowkey = flow_info.flowkey();
@@ -318,14 +318,7 @@ impl FlowFilter {
     fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
     ) -> Result<(), ()> {
-        let locked_info = packet
-            .meta()
-            .flow_info
-            .as_ref()
-            .ok_or(())?
-            .locked
-            .read()
-            .map_err(|_| ())?;
+        let locked_info = packet.meta().flow_info.as_ref().ok_or(())?.locked.read();
         let needs_stateful_nat = locked_info.nat_state.is_some();
         let needs_port_forwarding = locked_info.port_fw_state.is_some();
         drop(locked_info);

@@ -198,7 +198,7 @@ fn fake_flow_session<Buf: PacketBufferMut>(
     // pretend that flow is in table
     flow_info.update_status(FlowStatus::Active);
 
-    let mut binding = flow_info.locked.write().unwrap();
+    let mut binding = flow_info.locked.write();
     binding.dst_vpcd = Some(dst_vpcd);
     if set_nat_state {
         // Content should be a NatFlowState object but we can't include it in this crate without
