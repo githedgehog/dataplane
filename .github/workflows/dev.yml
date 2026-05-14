@@ -384,6 +384,8 @@ jobs:
         uses: *just
         env:
           JUST_VARS: >-
+            miri::preemption_rate=0.50
+            miri::weak_failure_rate=0.05
             miri::seeds=4
             miri::cpu=${{ matrix.cpu }}
         with:
