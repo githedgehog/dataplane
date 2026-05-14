@@ -271,6 +271,19 @@ impl PrefixWithOptionalPorts {
             }
         }
     }
+
+    /// Change variant from `PrefixPorts` to `Prefix` if the port range is the full range.
+    #[must_use]
+    pub fn simplify(&self) -> Self {
+        match self {
+            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports)
+                if prefix_with_ports.ports().is_max_range() =>
+            {
+                PrefixWithOptionalPorts::Prefix(prefix_with_ports.prefix())
+            }
+            _ => *self,
+        }
+    }
 }
 
 impl IpRangeWithPorts for PrefixWithOptionalPorts {

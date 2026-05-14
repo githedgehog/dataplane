@@ -113,7 +113,8 @@ pub fn merge_contiguous_prefixes(prefixes: &mut PrefixPortsSet) {
                 continue 'next_prefix;
             }
         }
-        merged_prefixes.insert(prefix_left);
+        // Also "simplify" the prefix before inserting: remove the associated port range if relevant
+        merged_prefixes.insert(prefix_left.simplify());
     }
     *prefixes = merged_prefixes;
 
