@@ -6,14 +6,21 @@
   sanitizers,
   instrumentation,
   cargo-features ? [ ],
+  for-tests ? false,
 }:
 let
-  # The `loom` feature compiles in a concurrency model checker that
-  # uses `std::panic::catch_unwind` internally to recover from
-  # per-schedule assertion failures.  `catch_unwind` is a no-op under
-  # `-Cpanic=abort` (the panic just aborts the process), so loom-feature
-  # builds must keep the cargo default of `panic = "unwind"`.
-  needs-unwind = builtins.elem "loom" cargo-features;
+  # The `loom` and `shuttle` features compile in concurrency model
+  # checkers that use `std::panic::catch_unwind` internally to recover
+  # from per-schedule assertion failures.  `catch_unwind` is a no-op
+  # under `-Cpanic=abort` (the panic just aborts the process), so
+  # builds with either feature must keep the cargo default of
+  # `panic = "unwind"`.
+  #
+  # Test builds also need unwinding so fixture cleanup (the
+  # `catch_unwind` calls in `test-utils`) runs on panic; without it, a
+  # failing test aborts the runner and leaks state (netns / caps).
+  needs-unwind =
+    for-tests || builtins.elem "loom" cargo-features || builtins.elem "shuttle" cargo-features;
   common.NIX_CFLAGS_COMPILE = [
     "-g3"
     "-gdwarf-5"

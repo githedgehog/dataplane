@@ -33,8 +33,26 @@ let
   sanitizers = split-str ",+" sanitize;
   cargo-features = split-str ",+" features;
   profile' = import ./nix/profiles.nix {
-    inherit sanitizers instrumentation profile cargo-features;
+    inherit
+      sanitizers
+      instrumentation
+      profile
+      cargo-features
+      ;
     inherit (platform') arch;
+  };
+  # Test archives run on the host (e.g. `cargo nextest run --archive-file`)
+  # rather than in the nix build sandbox, so panics in fixtures must
+  # unwind for cleanup (netns / caps) to run.  See `test-utils/src/lib.rs`.
+  profile-tests' = import ./nix/profiles.nix {
+    inherit
+      sanitizers
+      instrumentation
+      profile
+      cargo-features
+      ;
+    inherit (platform') arch;
+    for-tests = true;
   };
   cargo-profile =
     {
@@ -249,30 +267,40 @@ let
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
-  # The `loom` feature requires `panic = "unwind"` (see nix/profiles.nix),
-  # so the sysroot needs the matching panic runtime and std feature.
-  needs-unwind = builtins.elem "loom" cargo-features;
-  panic-runtime = if needs-unwind then "panic_unwind" else "panic_abort";
-  cargo-cmd-prefix = [
-    "-Zunstable-options"
-    "-Zbuild-std=std,${panic-runtime}"
-    # note: retention of libunwind on non-glibc is correct in spite of the panic=abort; `backtrace` needs a stack
-    # walker even when panic=abort.  In the case of glibc, libgcc_s.so fills that role.  You can't escape libgcc_s.so
-    # regardless: it is linked to glibc's libc.so anyway.
-    (
-      "-Zbuild-std-features=backtrace"
-      + (if needs-unwind then ",panic-unwind" else "")
-      + (if libc != "gnu" then ",system-llvm-libunwind" else "")
-    )
-    "--target=${rustc-target}"
-  ]
-  ++ (if default-features == "false" then [ "--no-default-features" ] else [ ])
-  ++ (
-    if cargo-features != [ ] then
-      [ "--features=${builtins.concatStringsSep "," cargo-features}" ]
-    else
-      [ ]
-  );
+  # The `loom` and `shuttle` features require `panic = "unwind"` (see
+  # nix/profiles.nix), as do test builds.  The sysroot needs the matching
+  # panic runtime and std feature, so we build two cargo command prefixes:
+  # `cargo-cmd-prefix` for production code and `cargo-cmd-prefix-tests`
+  # for the nextest archives.
+  mk-needs-unwind =
+    for-tests:
+    for-tests || builtins.elem "loom" cargo-features || builtins.elem "shuttle" cargo-features;
+  needs-unwind = mk-needs-unwind false;
+  needs-unwind-tests = mk-needs-unwind true;
+  mk-cargo-cmd-prefix =
+    unwind:
+    [
+      "-Zunstable-options"
+      "-Zbuild-std=std,${if unwind then "panic_unwind" else "panic_abort"}"
+      # note: retention of libunwind on non-glibc is correct in spite of the panic=abort; `backtrace` needs a stack
+      # walker even when panic=abort.  In the case of glibc, libgcc_s.so fills that role.  You can't escape libgcc_s.so
+      # regardless: it is linked to glibc's libc.so anyway.
+      (
+        "-Zbuild-std-features=backtrace"
+        + (if unwind then ",panic-unwind" else "")
+        + (if libc != "gnu" then ",system-llvm-libunwind" else "")
+      )
+      "--target=${rustc-target}"
+    ]
+    ++ (if default-features == "false" then [ "--no-default-features" ] else [ ])
+    ++ (
+      if cargo-features != [ ] then
+        [ "--features=${builtins.concatStringsSep "," cargo-features}" ]
+      else
+        [ ]
+    );
+  cargo-cmd-prefix = mk-cargo-cmd-prefix needs-unwind;
+  cargo-cmd-prefix-tests = mk-cargo-cmd-prefix needs-unwind-tests;
   invoke =
     {
       builder,
@@ -280,6 +308,7 @@ let
         pname = null;
         cargoArtifacts = null;
       },
+      profile,
       cargo-nextest,
       hwloc,
       llvmPackages',
@@ -325,7 +354,7 @@ let
           RUSTFLAGS =
             if rustc-target != "wasm32-wasip1" then
               builtins.concatStringsSep " " (
-                profile'.RUSTFLAGS
+                profile.RUSTFLAGS
                 ++ [
                   "-Clinker=${pkgs.pkgsBuildHost.llvmPackages'.clang}/bin/${cxx}"
                   "-Clink-arg=--ld-path=${pkgs.pkgsBuildHost.llvmPackages'.lld}/bin/ld.lld"
@@ -395,6 +424,7 @@ let
     }:
     pkgs.callPackage invoke {
       builder = craneLib.buildPackage;
+      profile = profile';
       args = {
         inherit pname cargoArtifacts;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
@@ -427,6 +457,7 @@ let
     }:
     pkgs.callPackage invoke {
       builder = craneLib.buildPackage;
+      profile = profile';
       args = {
         inherit pname cargoArtifacts;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
@@ -462,6 +493,7 @@ let
     in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
+      profile = profile-tests';
       args = {
         inherit pname cargoArtifacts;
         buildPhaseCargoCommand = builtins.concatStringsSep " " (
@@ -475,7 +507,7 @@ let
             "--cargo-profile=${cargo-profile}"
           ]
           ++ (if package != null then [ "--package=${pname}" ] else [ ])
-          ++ cargo-cmd-prefix
+          ++ cargo-cmd-prefix-tests
         );
       };
     };
@@ -496,6 +528,7 @@ let
     }:
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
+      profile = profile';
       args = {
         inherit pname;
         cargoArtifacts = null;
@@ -531,6 +564,7 @@ let
     in
     pkgs.callPackage invoke {
       builder = craneLib.mkCargoDerivation;
+      profile = profile';
       args = {
         inherit pname;
         cargoArtifacts = null;
@@ -731,49 +765,52 @@ let
     };
   };
 
-  debug-tools = pkgs: [
-    ## Packages which might be helpful for debugging but aren't enabled by default.
-    ## Uncomment them as needed, but be mindful of container size please.
-    # pkgs.dmidecode
-    # pkgs.emacs
-    # pkgs.gdb # TODO: consider a way to let the user pick gdb' from dev-pkgs (works better in vm)
-    # pkgs.neovim
-    # pkgs.rr
-    # pkgs.valgrind
-    # pkgs.wireshark-cli
+  debug-tools =
+    pkgs:
+    [
+      ## Packages which might be helpful for debugging but aren't enabled by default.
+      ## Uncomment them as needed, but be mindful of container size please.
+      # pkgs.dmidecode
+      # pkgs.emacs
+      # pkgs.gdb # TODO: consider a way to let the user pick gdb' from dev-pkgs (works better in vm)
+      # pkgs.neovim
+      # pkgs.rr
+      # pkgs.valgrind
+      # pkgs.wireshark-cli
 
-    pkgs.bashInteractive
-    pkgs.coreutils
-    pkgs.curl
-    pkgs.debianutils
-    pkgs.dockerTools.usrBinEnv
-    pkgs.ethtool
-    pkgs.findutils
-    pkgs.gawk
-    pkgs.gnugrep
-    pkgs.gnused
-    pkgs.gnutar
-    pkgs.gzip
-    pkgs.htop
-    pkgs.iproute2
-    pkgs.iptables
-    pkgs.iputils
-    pkgs.jq
-    pkgs.less
-    pkgs.libc.bin
-    pkgs.libc.out
-    pkgs.man
-    pkgs.nano
-    pkgs.procps
-    pkgs.tcpdump
-    pkgs.util-linux
-    pkgs.vim
-    pkgs.wget
-    pkgs.yq
-    pkgs.zstd
-  ] ++ lib.optionals (libc == "gnu") [
-    pkgs.pkgsHostHost.glibc.libgcc
-  ];
+      pkgs.bashInteractive
+      pkgs.coreutils
+      pkgs.curl
+      pkgs.debianutils
+      pkgs.dockerTools.usrBinEnv
+      pkgs.ethtool
+      pkgs.findutils
+      pkgs.gawk
+      pkgs.gnugrep
+      pkgs.gnused
+      pkgs.gnutar
+      pkgs.gzip
+      pkgs.htop
+      pkgs.iproute2
+      pkgs.iptables
+      pkgs.iputils
+      pkgs.jq
+      pkgs.less
+      pkgs.libc.bin
+      pkgs.libc.out
+      pkgs.man
+      pkgs.nano
+      pkgs.procps
+      pkgs.tcpdump
+      pkgs.util-linux
+      pkgs.vim
+      pkgs.wget
+      pkgs.yq
+      pkgs.zstd
+    ]
+    ++ lib.optionals (libc == "gnu") [
+      pkgs.pkgsHostHost.glibc.libgcc
+    ];
 
   containers.debug-tools = pkgs.dockerTools.buildLayeredImage {
     name = "debug-tools";
