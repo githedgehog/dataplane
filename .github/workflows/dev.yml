@@ -388,7 +388,12 @@ jobs:
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
-          recipe_args: "--package=dataplane-concurrency --package=dataplane-flow-entry --package=dataplane-flow-filter --package=dataplane-nat"
+          recipe_args: >-
+            --package=dataplane-concurrency
+            --package=dataplane-flow-entry
+            --package=dataplane-flow-filter
+            --package=dataplane-nat
+            --package=dataplane-routing
       - *tmate
 
   wasm:
