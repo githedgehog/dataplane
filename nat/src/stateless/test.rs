@@ -606,7 +606,7 @@ fn check_packet(
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 
-    let packets_out: Vec<_> = nat.process(vec![packet].into_iter()).collect();
+    let packets_out: Vec<_> = nat.process([packet].into_iter()).collect();
     let hdr_out = packets_out[0]
         .try_ipv4()
         .expect("Failed to get IPv4 header");
@@ -616,12 +616,13 @@ fn check_packet(
 }
 
 #[test]
-#[traced_test]
+#[cfg_attr(not(miri), traced_test)]
 #[allow(clippy::too_many_lines)]
 fn test_full_config() {
     let config = build_sample_config();
 
     let nat_tables = build_nat_configuration(config.external().overlay().vpc_table()).unwrap();
+    #[cfg(not(miri))]
     println!("Nat tables: {:#?}", &nat_tables);
 
     let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");

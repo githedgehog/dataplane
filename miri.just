@@ -19,7 +19,7 @@ export schedule_seed := choose('5', "0123456789")
 export seeds := "1"
 export stacked_borrow_check := "disabled"
 export preemption_rate := "0.10"
-export weak_failure_rate := "0.15"
+export weak_failure_rate := "0.05"
 export randomize_struct_layout := "enabled"
 export layout_seed := `printf '%u' "$((16#$(git rev-parse HEAD)))"`
 
