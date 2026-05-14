@@ -9,7 +9,6 @@ use crate::utils::{
 };
 use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use std::collections::BTreeMap;
-use std::ops::Bound::{Excluded, Unbounded};
 use std::time::Duration;
 use tracing::warn;
 
@@ -330,23 +329,6 @@ impl VpcExpose {
                     return Err(ConfigError::Forbidden(
                         "Port 0 is not allowed in expose prefix port ranges",
                     ));
-                }
-            }
-        }
-
-        // Check that items in prefix lists of each kind don't overlap
-        for prefixes in prefix_sets {
-            for prefix_with_ports in prefixes {
-                // Loop over the remaining prefixes in the tree
-                for other_prefix in prefixes.range((Excluded(prefix_with_ports), Unbounded)) {
-                    if prefix_with_ports.overlaps(other_prefix)
-                        || other_prefix.overlaps(prefix_with_ports)
-                    {
-                        return Err(ConfigError::OverlappingPrefixes(
-                            *prefix_with_ports,
-                            *other_prefix,
-                        ));
-                    }
                 }
             }
         }

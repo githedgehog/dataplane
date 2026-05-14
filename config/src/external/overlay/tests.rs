@@ -151,6 +151,18 @@ pub mod test {
             .unwrap();
         assert!(expose.validate().is_ok());
 
+        // Overlapping prefixes
+        let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
+            .ip("10.0.0.0/16".into())
+            .ip("10.0.0.0/17".into())
+            .as_range("2.0.0.0/17".into())
+            .unwrap()
+            .as_range("2.0.0.0/16".into())
+            .unwrap();
+        assert!(expose.validate().is_ok());
+
         // Out-of-range exclusion prefix
         let expose = VpcExpose::empty()
             .make_stateful_nat(None)
@@ -203,24 +215,6 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
-        );
-
-        // Incorrect: prefix overlapping
-        let expose = VpcExpose::empty()
-            .make_stateless_nat()
-            .unwrap()
-            .ip("10.0.0.0/16".into())
-            .ip("10.0.0.0/17".into())
-            .as_range("2.0.0.0/16".into())
-            .unwrap()
-            .as_range("3.0.0.0/17".into())
-            .unwrap();
-        assert_eq!(
-            expose.validate(),
-            Err(ConfigError::OverlappingPrefixes(
-                "10.0.0.0/16".into(),
-                "10.0.0.0/17".into(),
-            ))
         );
 
         // Incorrect: all prefixes excluded
@@ -787,6 +781,30 @@ pub mod test {
             ));
         assert!(expose.validate().is_ok());
 
+        // Overlapping prefixes
+        let expose = VpcExpose::empty()
+            .make_stateless_nat()
+            .unwrap()
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/16".into(),
+                Some(PortRange::new(5001, 6000).unwrap()),
+            ))
+            .ip(PrefixWithOptionalPorts::new(
+                "10.0.0.0/17".into(),
+                Some(PortRange::new(5001, 5500).unwrap()),
+            ))
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/16".into(),
+                Some(PortRange::new(8001, 9000).unwrap()),
+            ))
+            .unwrap()
+            .as_range(PrefixWithOptionalPorts::new(
+                "2.0.0.0/17".into(),
+                Some(PortRange::new(8001, 8500).unwrap()),
+            ))
+            .unwrap();
+        assert!(expose.validate().is_ok());
+
         // Out-of-range exclusion prefix (IPs)
         let expose = VpcExpose::empty()
             .ip(PrefixWithOptionalPorts::new(
@@ -870,42 +888,6 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
-        );
-
-        // Incorrect: prefix overlapping
-        let expose = VpcExpose::empty()
-            .make_stateless_nat()
-            .unwrap()
-            .ip(PrefixWithOptionalPorts::new(
-                "10.0.0.0/16".into(),
-                Some(PortRange::new(5001, 6000).unwrap()),
-            ))
-            .ip(PrefixWithOptionalPorts::new(
-                "10.0.0.0/17".into(),
-                Some(PortRange::new(5001, 5500).unwrap()),
-            ))
-            .as_range(PrefixWithOptionalPorts::new(
-                "2.0.0.0/16".into(),
-                Some(PortRange::new(8001, 9000).unwrap()),
-            ))
-            .unwrap()
-            .as_range(PrefixWithOptionalPorts::new(
-                "3.0.0.0/17".into(),
-                Some(PortRange::new(8001, 8500).unwrap()),
-            ))
-            .unwrap();
-        assert_eq!(
-            expose.validate(),
-            Err(ConfigError::OverlappingPrefixes(
-                PrefixWithOptionalPorts::new(
-                    "10.0.0.0/16".into(),
-                    Some(PortRange::new(5001, 6000).unwrap())
-                ),
-                PrefixWithOptionalPorts::new(
-                    "10.0.0.0/17".into(),
-                    Some(PortRange::new(5001, 5500).unwrap())
-                ),
-            ))
         );
 
         // Incorrect: all prefixes excluded
