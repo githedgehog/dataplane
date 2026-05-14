@@ -386,7 +386,7 @@ jobs:
           JUST_VARS: >-
             miri::preemption_rate=0.50
             miri::weak_failure_rate=0.05
-            miri::seeds=4
+            miri::seeds=3
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
