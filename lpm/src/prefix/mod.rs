@@ -957,11 +957,7 @@ impl Div<u128> for PrefixSize {
 
     fn div(self, int: u128) -> Self {
         match (self, int) {
-            #[allow(unconditional_panic)]
-            (_, 0) => {
-                // Division by 0 - make it panic, on purpose.
-                PrefixSize::U128(1 / 0)
-            }
+            (_, 0) => panic!("attempt to divide by zero"),
             (PrefixSize::U128(size), int) => PrefixSize::U128(size / int),
             (PrefixSize::Ipv6MaxAddrs, 1) => PrefixSize::Ipv6MaxAddrs,
             (PrefixSize::Ipv6MaxAddrs, int) => {
@@ -1219,17 +1215,6 @@ mod tests {
         assert_eq!(u128::try_from(prefix_size1).unwrap(), 2u128.pow(8));
     }
 
-    // Credits to https://stackoverflow.com/a/59211519
-    fn catch_unwind_silent<F: FnOnce() -> R + std::panic::UnwindSafe, R>(
-        f: F,
-    ) -> std::thread::Result<R> {
-        let panic_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let result = std::panic::catch_unwind(f);
-        std::panic::set_hook(panic_hook);
-        result
-    }
-
     #[test]
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::op_ref)]
@@ -1395,12 +1380,6 @@ mod tests {
         assert!((PrefixSize::Overflow - 1).is_overflow());
         assert!((PrefixSize::Overflow - u128::MAX).is_overflow());
 
-        let result = catch_unwind_silent(|| PrefixSize::U128(0) - 1);
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| PrefixSize::U128(7) - u128::MAX);
-        assert!(result.is_err());
-
         // Sub trait: PrefixSize - PrefixSize
         assert_eq!(
             PrefixSize::U128(0) - PrefixSize::U128(0),
@@ -1445,21 +1424,6 @@ mod tests {
         assert!((PrefixSize::Overflow - PrefixSize::U128(0)).is_overflow());
         assert!((PrefixSize::Overflow - PrefixSize::U128(u128::MAX)).is_overflow());
         assert!((PrefixSize::Overflow - PrefixSize::Ipv6MaxAddrs).is_overflow());
-
-        let result = catch_unwind_silent(|| PrefixSize::U128(7) - PrefixSize::U128(8));
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| PrefixSize::U128(u128::MAX) - PrefixSize::Ipv6MaxAddrs);
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| PrefixSize::U128(u128::MAX) - PrefixSize::Overflow);
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| PrefixSize::Ipv6MaxAddrs - PrefixSize::Overflow);
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| PrefixSize::Overflow - PrefixSize::Overflow);
-        assert!(result.is_err());
 
         // Sub trait: by reference, composition
         assert_eq!(
@@ -1540,14 +1504,6 @@ mod tests {
             PrefixSize::U128(1)
         );
 
-        let result = catch_unwind_silent(|| {
-            PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(u128::MAX) - &PrefixSize::U128(1) - 1
-        });
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| &PrefixSize::Overflow - &PrefixSize::Overflow);
-        assert!(result.is_err());
-
         // SubAssign
         let mut prefix_size = PrefixSize::U128(20);
         prefix_size -= PrefixSize::U128(5);
@@ -1575,12 +1531,6 @@ mod tests {
         prefix_size -= &PrefixSize::U128(1);
         prefix_size -= PrefixSize::Ipv6MaxAddrs;
         assert!(prefix_size.is_overflow());
-
-        let result = catch_unwind_silent(|| {
-            let mut prefix_size = PrefixSize::Overflow;
-            prefix_size -= PrefixSize::Overflow;
-        });
-        assert!(result.is_err());
 
         // Mul trait: PrefixSize * u128
         assert_eq!(PrefixSize::U128(0) * 2, PrefixSize::U128(0));
@@ -1692,26 +1642,6 @@ mod tests {
         assert!(prefix_size.is_overflow());
 
         // Div trait: PrefixSize / u128
-        let result = catch_unwind_silent(|| {
-            let _ = PrefixSize::U128(0) / 0;
-        });
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| {
-            let _ = PrefixSize::U128(5) / 0;
-        });
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| {
-            let _ = PrefixSize::Ipv6MaxAddrs / 0;
-        });
-        assert!(result.is_err());
-
-        let result = catch_unwind_silent(|| {
-            let _ = PrefixSize::Overflow / 0;
-        });
-        assert!(result.is_err());
-
         assert_eq!(PrefixSize::U128(0) / 5, PrefixSize::U128(0));
         assert_eq!(PrefixSize::U128(5) / 5, PrefixSize::U128(1));
         assert_eq!(PrefixSize::U128(10) / 5, PrefixSize::U128(2));
@@ -1785,12 +1715,6 @@ mod tests {
         prefix_size /= 2;
         assert!(prefix_size.is_overflow());
 
-        let result = catch_unwind_silent(|| {
-            let mut prefix_size = PrefixSize::U128(1);
-            prefix_size /= 0;
-        });
-        assert!(result.is_err());
-
         // All combined
         let mut prefix_size = PrefixSize::U128(0);
         prefix_size += PrefixSize::U128(1) + 2 + &PrefixSize::U128(3) + (4 * PrefixSize::U128(2))
@@ -1805,6 +1729,100 @@ mod tests {
                 PrefixSize::U128(1 + 2 + 3 + 4 * 2 - 1 + 0 - 2 - 2)
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_u128_underflow_zero() {
+        let _ = PrefixSize::U128(0) - 1;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_u128_underflow_seven() {
+        let _ = PrefixSize::U128(7) - u128::MAX;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_prefixsize_underflow() {
+        let _ = PrefixSize::U128(7) - PrefixSize::U128(8);
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_u128max_minus_ipv6max() {
+        let _ = PrefixSize::U128(u128::MAX) - PrefixSize::Ipv6MaxAddrs;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_u128_minus_overflow() {
+        let _ = PrefixSize::U128(u128::MAX) - PrefixSize::Overflow;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_ipv6max_minus_overflow() {
+        let _ = PrefixSize::Ipv6MaxAddrs - PrefixSize::Overflow;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_overflow_minus_overflow() {
+        let _ = PrefixSize::Overflow - PrefixSize::Overflow;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    #[allow(clippy::op_ref)] // exercise by-reference operator overloads
+    fn prefix_size_sub_chained_underflow() {
+        let _ = PrefixSize::Ipv6MaxAddrs - PrefixSize::U128(u128::MAX) - &PrefixSize::U128(1) - 1;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    #[allow(clippy::op_ref)] // exercise by-reference operator overloads
+    fn prefix_size_sub_ref_overflow_minus_ref_overflow() {
+        let _ = &PrefixSize::Overflow - &PrefixSize::Overflow;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn prefix_size_sub_assign_overflow_minus_overflow() {
+        let mut prefix_size = PrefixSize::Overflow;
+        prefix_size -= PrefixSize::Overflow;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn prefix_size_div_zero_by_zero() {
+        let _ = PrefixSize::U128(0) / 0;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn prefix_size_div_five_by_zero() {
+        let _ = PrefixSize::U128(5) / 0;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn prefix_size_div_ipv6max_by_zero() {
+        let _ = PrefixSize::Ipv6MaxAddrs / 0;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn prefix_size_div_overflow_by_zero() {
+        let _ = PrefixSize::Overflow / 0;
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn prefix_size_div_assign_by_zero() {
+        let mut prefix_size = PrefixSize::U128(1);
+        prefix_size /= 0;
     }
 
     #[test]
