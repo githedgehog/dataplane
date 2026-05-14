@@ -5,14 +5,9 @@
 //!
 //! The fixtures in this module use [`std::panic::catch_unwind`] to run
 //! cleanup (e.g. removing the network namespace, dropping raised
-//! capabilities) when a test panics. This relies on `panic = "unwind"`.
-//! Under `panic = "abort"` (the strategy used by nix builds, see
-//! `nix/profiles.nix`), `catch_unwind` cannot catch panics: the process
-//! aborts at the panic site and the cleanup code never runs. Plain
-//! `cargo test` keeps the cargo default of unwind, so cleanup works for
-//! local development; nix-based test runs may leak netns/cap state on
-//! panic and are expected to rely on the ephemeral build environment for
-//! teardown.
+//! capabilities) when a test panics, so they require `panic = "unwind"`.
+//! Plain `cargo test` keeps the cargo default of unwind, and the nix
+//! test archive build forces unwind via `for-tests` in `nix/profiles.nix`.
 
 use caps::{CapSet, Capability};
 use rtnetlink::NetworkNamespace;
