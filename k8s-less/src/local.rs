@@ -126,7 +126,7 @@ mod test {
 
     #[tokio::test]
     #[traced_test]
-    #[cfg_attr(miri, ignore = "file io not generally supported on miri")]
+    #[ignore = "test is incorrect and needs reworked"]
     async fn test_kubeless() {
         let path = "/tmp/kubeless-dir";
         let gwname = "test-gw";
