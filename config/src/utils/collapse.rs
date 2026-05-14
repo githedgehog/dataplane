@@ -548,10 +548,21 @@ mod tests {
 
     #[test]
     fn test_bolero_collapse_prefix_lists() {
-        let generator = PrefixExcludeAddrsGenerator {
-            prefix_max: 100,
-            exclude_max: 100,
-            addr_count: 1000,
+        let generator = cfg_select! {
+           miri => {
+               PrefixExcludeAddrsGenerator {
+                    prefix_max: 10,
+                    exclude_max: 10,
+                    addr_count: 100,
+                }
+           }
+           _ => {
+               PrefixExcludeAddrsGenerator {
+                    prefix_max: 100,
+                    exclude_max: 100,
+                    addr_count: 1000,
+                }
+           }
         };
         bolero::check!()
             .with_generator(generator)
