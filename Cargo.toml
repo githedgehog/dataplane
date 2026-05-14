@@ -196,8 +196,17 @@ ureq = { version = "3.3.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.23.1", default-features = false, features = [] }
 
+# NOTE: panic strategy is intentionally left unset here.
+#
+# Nix builds set panic=abort via RUSTFLAGS in `nix/profiles.nix` (`-Cpanic=abort`
+# plus `-Zpanic_abort_tests`, the latter requiring RUSTC_BOOTSTRAP=1).
+#
+# We don't set `panic = "abort"` in these profiles because that would also
+# apply to plain `cargo test`, where `-Zpanic_abort_tests` is unstable.
+# Leaving panic unset keeps the cargo default (unwind) for local development,
+# so `catch_unwind`/`#[should_panic]` work without nightly/RUSTC_BOOTSTRAP,
+# while the shipped nix-built binaries still abort on panic.
 [profile.dev]
-panic = "unwind"
 debug-assertions = true
 overflow-checks = true
 debug = "full"
@@ -205,7 +214,6 @@ rpath = true
 
 [profile.release]
 opt-level = 3
-panic = "unwind"
 debug = "full"
 lto = "thin"
 debug-assertions = false

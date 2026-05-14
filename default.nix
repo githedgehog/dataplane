@@ -33,7 +33,7 @@ let
   sanitizers = split-str ",+" sanitize;
   cargo-features = split-str ",+" features;
   profile' = import ./nix/profiles.nix {
-    inherit sanitizers instrumentation profile;
+    inherit sanitizers instrumentation profile cargo-features;
     inherit (platform') arch;
   };
   cargo-profile =
@@ -249,14 +249,19 @@ let
     )
   );
   version = (craneLib.crateNameFromCargoToml { inherit src; }).version;
+  # The `loom` feature requires `panic = "unwind"` (see nix/profiles.nix),
+  # so the sysroot needs the matching panic runtime and std feature.
+  needs-unwind = builtins.elem "loom" cargo-features;
+  panic-runtime = if needs-unwind then "panic_unwind" else "panic_abort";
   cargo-cmd-prefix = [
     "-Zunstable-options"
-    "-Zbuild-std=compiler_builtins,core,alloc,std,panic_unwind,panic_abort,sysroot,unwind"
-    # glibc Rust binaries unwind through libgcc_s.so.1.  Non-glibc targets
-    # (musl, wasi) have no libgcc consumer; ask build-std to pull in LLVM's
-    # libunwind from the sysroot so panic-unwind has an actual unwinder.
+    "-Zbuild-std=std,${panic-runtime}"
+    # note: retention of libunwind on non-glibc is correct in spite of the panic=abort; `backtrace` needs a stack
+    # walker even when panic=abort.  In the case of glibc, libgcc_s.so fills that role.  You can't escape libgcc_s.so
+    # regardless: it is linked to glibc's libc.so anyway.
     (
-      "-Zbuild-std-features=backtrace,panic-unwind,mem,compiler-builtins-mem"
+      "-Zbuild-std-features=backtrace"
+      + (if needs-unwind then ",panic-unwind" else "")
       + (if libc != "gnu" then ",system-llvm-libunwind" else "")
     )
     "--target=${rustc-target}"

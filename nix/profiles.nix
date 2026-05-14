@@ -5,8 +5,15 @@
   profile,
   sanitizers,
   instrumentation,
+  cargo-features ? [ ],
 }:
 let
+  # The `loom` feature compiles in a concurrency model checker that
+  # uses `std::panic::catch_unwind` internally to recover from
+  # per-schedule assertion failures.  `catch_unwind` is a no-op under
+  # `-Cpanic=abort` (the panic just aborts the process), so loom-feature
+  # builds must keep the cargo default of `panic = "unwind"`.
+  needs-unwind = builtins.elem "loom" cargo-features;
   common.NIX_CFLAGS_COMPILE = [
     "-g3"
     "-gdwarf-5"
@@ -29,6 +36,15 @@ let
     "-Csymbol-mangling-version=v0"
     "-Clink-arg=-Wl,--as-needed,--gc-sections" # FRR builds don't like this, but rust does fine
   ]
+  ++ (
+    if needs-unwind then
+      [ ]
+    else
+      [
+        "-Zpanic_abort_tests"
+        "-Cpanic=abort"
+      ]
+  )
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"
