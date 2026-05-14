@@ -3,20 +3,21 @@
 
 //! Tracing runtime control.
 
+use arc_swap::ArcSwap;
 use ordermap::OrderMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::{collections::HashSet, sync::MutexGuard, time::Duration};
+use std::{any::TypeId, collections::HashSet, sync::MutexGuard, time::Duration};
 use thiserror::Error;
+use tracing::{Event, Metadata, span, subscriber::Interest};
 #[allow(unused)]
-use tracing::{Level, Subscriber, debug, error, info, warn};
+use tracing::{Level, Subscriber, callsite, debug, error, info, warn};
 use tracing_subscriber::{
-    EnvFilter, Registry,
+    EnvFilter,
     filter::{FilterExt, LevelFilter, filter_fn},
-    layer::{Filter, Layer},
+    layer::{Context, Filter, Layer},
     prelude::*,
     registry::LookupSpan,
-    reload,
 };
 use tracing_throttle::{Policy, TracingRateLimitLayer};
 
@@ -33,7 +34,11 @@ pub struct TracingRateLimitConfig {
 
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TraceCtlError {
+    // Preserved for API compatibility. With the `ArcSwap`-based filter swap
+    // below, reload is infallible, so this variant is no longer constructed
+    // from inside this crate.
     #[error("Reload tracing failure: {0}")]
+    #[allow(dead_code)]
     ReloadFailure(String),
     #[error("Unknown tag {0}")]
     UnknownTag(String),
@@ -292,13 +297,146 @@ impl TargetCfgDb {
     }
 }
 
-type BoxedTracingLayer<S> = Box<dyn Layer<S> + Send + Sync>;
+// ---------------------------------------------------------------------------
+// AtomicEnvFilter
+// ---------------------------------------------------------------------------
+//
+// Drop-in replacement for `tracing_subscriber::reload::Layer<EnvFilter>`.
+//
+// Same external behavior: swap the inner `EnvFilter` at runtime, then
+// invalidate the per-callsite `Interest` cache so the new directives take
+// effect. The only thing that changes is *how* the inner `EnvFilter` is
+// stored.
+//
+// The previous `reload::Layer` wraps its inner in an `RwLock` — see
+// `tracing_subscriber/src/reload.rs`:
+//
+//     fn enabled(&self, m: &Metadata<'_>, ctx: layer::Context<'_, S>) -> bool {
+//         try_lock!(self.inner.read(), else return false).enabled(m, ctx)
+//     }
+//
+// On the dataplane hot path that lock is acquired per event by every worker
+// thread, because the per-layer-filter accumulator (`FilterState`) in the
+// layer stack produces `Interest::sometimes()` for every callsite that
+// passes `EnvFilter` (the two `Filtered` fmt layers have mutually exclusive
+// level filters, and the rate-limit filter is dynamic). The lock itself is
+// uncontended in the data-race sense, but every read still atomically
+// updates the lock word, which cache-line-pings between cores — that's the
+// `RwLock::read_contended` line in the Pyroscope profile.
+//
+// `ArcSwap::load` is an atomic-pointer load plus a hazard-pointer slot
+// acquire — no shared mutable cache line, no contention. The reload path
+// (`store` + `rebuild_interest_cache`) is identical in behavior to the old
+// `reload::Handle::reload` path.
 
-type ReloadLayer = reload::Layer<EnvFilter, Registry>;
+/// Holds the currently-active `EnvFilter`. Cheap, lock-free reads via
+/// `ArcSwap`; reloads via `store` + `callsite::rebuild_interest_cache`.
+struct AtomicEnvFilter {
+    inner: Arc<ArcSwap<EnvFilter>>,
+}
+
+/// Handle used to atomically swap in a new `EnvFilter` from outside the
+/// subscriber. Mirrors `reload::Handle`.
+#[derive(Clone)]
+struct AtomicEnvFilterHandle {
+    inner: Arc<ArcSwap<EnvFilter>>,
+}
+
+impl AtomicEnvFilter {
+    fn new(initial: EnvFilter) -> (Self, AtomicEnvFilterHandle) {
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        (
+            Self {
+                inner: inner.clone(),
+            },
+            AtomicEnvFilterHandle { inner },
+        )
+    }
+}
+
+impl AtomicEnvFilterHandle {
+    fn reload(&self, new: EnvFilter) {
+        self.inner.store(Arc::new(new));
+        // Re-evaluate `register_callsite` for every existing callsite, so
+        // they pick up the new directives. Same call that
+        // `reload::Handle::reload` makes internally after replacing its
+        // inner.
+        callsite::rebuild_interest_cache();
+    }
+}
+
+// Forward every `Layer<S>` method to the currently-swapped-in `EnvFilter`.
+// Verbose but mechanical: `EnvFilter` overrides several `Layer` hooks
+// (`on_new_span`, `on_record`, `on_enter`, `on_exit`, `on_close`) to
+// support span-based directives like `target[span_name]=level`. This
+// codebase doesn't use those, but the forwarding is here for behavioral
+// equivalence with `reload::Layer<EnvFilter>`.
+impl<S> Layer<S> for AtomicEnvFilter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn register_callsite(&self, meta: &'static Metadata<'static>) -> Interest {
+        Layer::<S>::register_callsite(&**self.inner.load(), meta)
+    }
+
+    fn enabled(&self, meta: &Metadata<'_>, ctx: Context<'_, S>) -> bool {
+        Layer::<S>::enabled(&**self.inner.load(), meta, ctx)
+    }
+
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        Layer::<S>::max_level_hint(&**self.inner.load())
+    }
+
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_new_span(&**self.inner.load(), attrs, id, ctx);
+    }
+
+    fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
+        Layer::<S>::on_record(&**self.inner.load(), id, values, ctx);
+    }
+
+    fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_enter(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_exit(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_close(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        Layer::<S>::on_event(&**self.inner.load(), event, ctx);
+    }
+
+    // `downcast_raw` is how the layered subscriber probes a layer for
+    // per-layer-filter participation (via the `MagicPlfDowncastMarker` type
+    // id) and other capabilities. `EnvFilter` used as a `Layer` is not a
+    // per-layer filter, so reporting "no match" for anything but our own
+    // type id is correct. We deliberately do *not* expose the inner
+    // `EnvFilter`'s address — its identity can change at any time via
+    // `ArcSwap::store`.
+    #[doc(hidden)]
+    unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
+        if id == TypeId::of::<Self>() {
+            Some(self as *const _ as *const ())
+        } else {
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TracingControl
+// ---------------------------------------------------------------------------
+
+type BoxedTracingLayer<S> = Box<dyn Layer<S> + Send + Sync>;
 
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
-    reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
+    reload_filter: AtomicEnvFilterHandle,
 }
 impl TracingControl {
     fn fmt_layer<S>() -> impl Layer<S> + Send + Sync
@@ -396,7 +534,7 @@ impl TracingControl {
         }
     }
 
-    fn init_subscriber(filter: ReloadLayer, rate_limit_config: Option<TracingRateLimitConfig>) {
+    fn init_subscriber(filter: AtomicEnvFilter, rate_limit_config: Option<TracingRateLimitConfig>) {
         if let Err(e) = tracing_subscriber::registry()
             .with(filter)
             .with(Self::unthrottled_fmt_layer())
@@ -410,7 +548,7 @@ impl TracingControl {
 
     fn new(rate_limit_config: Option<TracingRateLimitConfig>) -> Self {
         let db = TargetCfgDb::new();
-        let (filter, reload_filter) = reload::Layer::new(db.env_filter());
+        let (filter, reload_filter) = AtomicEnvFilter::new(db.env_filter());
 
         Self::init_subscriber(filter, rate_limit_config);
 
@@ -419,7 +557,7 @@ impl TracingControl {
         }
         Self {
             db: Arc::new(Mutex::new(db)),
-            reload_filter: Arc::new(reload_filter),
+            reload_filter,
         }
     }
     /// This method should remain private and never be used other than from methods of `TracingControl`
@@ -428,10 +566,14 @@ impl TracingControl {
             .lock()
             .map_err(|e| TraceCtlError::LockFailure(e.to_string()))
     }
+    /// Reload the active `EnvFilter`. Infallible with the `ArcSwap`-based
+    /// handle: there's no lock to poison and no subscriber-gone case. The
+    /// `Result` return type is kept for API stability with the previous
+    /// version that used `reload::Handle::reload`.
+    #[allow(clippy::unnecessary_wraps)]
     fn reload(&self, filter: EnvFilter) -> Result<(), TraceCtlError> {
-        self.reload_filter
-            .reload(filter)
-            .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))
+        self.reload_filter.reload(filter);
+        Ok(())
     }
     #[cfg(test)]
     fn register(
@@ -577,9 +719,7 @@ impl TracingControl {
         let mut db = self.lock()?;
         let changed = db.reconfigure(default, tag_config, resolver);
         if changed > 0 {
-            self.reload_filter
-                .reload(db.env_filter())
-                .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))?;
+            self.reload(db.env_filter())?;
         }
         Ok(())
     }
