@@ -15,6 +15,7 @@ use net::vxlan::Vni;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::net::IpAddr;
+use std::num::NonZero;
 use std::ops::{Bound, RangeBounds};
 use tracing::debug;
 
@@ -96,7 +97,7 @@ impl PerVniTable {
         addr: &IpAddr,
         port: Option<u16>,
         dst_vni: Vni,
-    ) -> Option<(UnicastIpAddr, Option<u16>)> {
+    ) -> Option<(UnicastIpAddr, Option<NonZero<u16>>)> {
         debug!("Looking up source mapping for address: {addr}, port: {port:?}, dst_vni: {dst_vni}");
         let result = Self::find_mapping(addr, port, self.src_nat.get(&dst_vni)?);
         match result {
@@ -123,7 +124,7 @@ impl PerVniTable {
         &self,
         addr: &IpAddr,
         port: Option<u16>,
-    ) -> Option<(IpAddr, Option<u16>)> {
+    ) -> Option<(IpAddr, Option<NonZero<u16>>)> {
         debug!("Looking up destination mapping for address: {addr}, port: {port:?}");
         let result = Self::find_mapping(addr, port, &self.dst_nat);
         match result {
@@ -139,7 +140,7 @@ impl PerVniTable {
         addr: &IpAddr,
         port_opt: Option<u16>,
         table: &NatRuleTable,
-    ) -> Option<(IpAddr, Option<u16>)> {
+    ) -> Option<(IpAddr, Option<NonZero<u16>>)> {
         let (prefix, value) = table.lookup(addr, port_opt)?;
         match value {
             NatTableValue::Nat(ranges) => {
@@ -164,9 +165,13 @@ impl PerVniTable {
                 debug!(
                     "Mapping {addr}:{port:?} from prefix {prefix} to ranges {ranges:?}: found offset {offset:?}"
                 );
-                ranges
-                    .get_entry(addr, port, offset)
-                    .map(|(new_addr, new_port)| (new_addr, Some(new_port)))
+                let (new_addr, new_port) = ranges.get_entry(addr, port, offset)?;
+                if let Some(nonzero_port) = NonZero::<u16>::new(new_port) {
+                    Some((new_addr, Some(nonzero_port)))
+                } else {
+                    debug!("Found port 0 for {addr}:{port:?}, cannot use it for PAT");
+                    None
+                }
             }
         }
     }
