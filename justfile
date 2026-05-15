@@ -69,7 +69,15 @@ _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profil
 # right answer: nextest walks every archived binary, the cfg-gated
 # ones contain no tests, and the loom-compatible ones run under their
 # `#[concurrency::test]`-routed `loom::model` body.
-filter := if features == "shuttle" { "shuttle" } else { "" }
+# Match all shuttle variants (`shuttle`, `shuttle_pct`, `shuttle_dfs`).
+# Under any shuttle backend, `concurrency::sync` types ARE shuttle
+# primitives, and touching them outside a `shuttle::check_*`-wrapped
+# body panics with `ExecutionState NotSet`. Tests that are designed
+# to run under shuttle either go through `#[concurrency::test]` (which
+# emits a `concurrency_model::<backend>` leaf -- the substring matches)
+# or live in a `*_shuttle` module / `*shuttle*` binary by convention.
+# Other workspace tests would fail spuriously without this filter.
+filter := if features =~ "^shuttle" { "shuttle" } else { "" }
 
 # instrumentation mode (none/coverage)
 instrument := "none"
