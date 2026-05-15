@@ -5,6 +5,7 @@
   platform,
   profile,
   nightly,
+  extra-platforms,
   ...
 }:
 final: prev:
@@ -46,7 +47,8 @@ let
     targets = [
       platform.info.target
       "wasm32-wasip1"
-    ];
+    ]
+    ++ (map (p: p.info.target) extra-platforms);
   };
   rustPlatform' = final.makeRustPlatform {
     stdenv = stdenv';

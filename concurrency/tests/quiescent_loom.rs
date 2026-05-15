@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Loom model-checking tests for `dataplane_quiescent`.
+//! Loom model-checking tests for `dataplane_concurrency::quiescent`.
 //!
 //! These tests run only under `--features loom`.  Standard protocol
-//! tests live in `tests/protocol.rs`; bolero properties in
-//! `tests/properties.rs`; bolero x shuttle in `tests/shuttle.rs`.
+//! tests live in `tests/quiescent_protocol.rs`; bolero properties in
+//! `tests/quiescent_properties.rs`; bolero x shuttle in
+//! `tests/quiescent_shuttle.rs`.
 //!
 //! Run with:
 //!
 //! ```sh
-//! cargo test --release -p dataplane-quiescent --features loom --test loom
+//! cargo test --release -p dataplane-concurrency --features loom --test quiescent_loom
 //! ```
 //!
 //! ## Why the `unsafe`
@@ -41,7 +42,7 @@
 
 use loom::thread;
 
-use dataplane_quiescent::{Publisher, channel};
+use dataplane_concurrency::quiescent::{Publisher, channel};
 
 /// Run `body` with a `&'static` reference to a freshly-constructed
 /// `Publisher`.  After `body` returns, recover the `Box` and drop the

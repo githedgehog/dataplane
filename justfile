@@ -19,6 +19,9 @@ jobs := "8"
 # libc
 libc := if platform == "wasm32-wasip1" { "none" } else { "gnu" }
 
+# enable all platforms (extends build and uses significantly more cachix space)
+all-platforms := "false"
+
 # kernel (linux or wasip1)
 kernel := if platform == "wasm32-wasip1" { "wasip1" } else { "linux" }
 
@@ -51,7 +54,7 @@ _cargo_feature_flags := \
 _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profile }
 
 # filters for nextest
-filter := if features == "shuttle" { "shuttle" } else if features == "loom" { "-E 'binary(loom)'" } else { "" }
+filter := if features == "shuttle" { "shuttle" } else if features == "loom" { "-E 'binary(/loom/)'" } else { "" }
 
 # instrumentation mode (none/coverage)
 instrument := "none"
@@ -98,6 +101,7 @@ build target="dataplane.tar" *args:
     mkdir -p results
     declare -r target="{{target}}"
     nix build -f default.nix "${target}" \
+      --argstr all-platforms '{{ all-platforms }}' \
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \
       --argstr libc '{{ libc }}' \
@@ -169,6 +173,7 @@ setup-roots *args:
     {{ _just_debuggable_ }}
     for root in devroot sysroot; do
       nix build -f default.nix "${root}" \
+        --argstr all-platforms '{{ all-platforms }}' \
         --argstr default-features '{{ default_features }}' \
         --argstr features '{{ features }}' \
         --argstr instrumentation '{{ instrument }}' \
@@ -378,15 +383,14 @@ bump_version version:
 [script]
 shell:
    nix-shell \
+      --argstr all-platforms '{{ all-platforms }}' \
       --argstr default-features '{{ default_features }}' \
       --argstr features '{{ features }}' \
       --argstr instrumentation '{{ instrument }}' \
       --argstr kernel '{{ kernel }}' \
       --argstr libc '{{ libc }}' \
-      --argstr nightly '{{nightly}}' \
+      --argstr nightly '{{ nightly }}' \
       --argstr platform '{{ platform }}' \
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \
-      --argstr tag '{{version}}'
-
-
+      --argstr tag '{{ version }}'

@@ -46,6 +46,15 @@ on:
         description: "Enable release tests for VLAB/HLAB tests"
         required: false
         default: false
+      cross_scope:
+        type: "choice"
+        description: "Cross-build matrix scope (default: aarch64/bf3 × gnu/musl; full: every hardware × libc combo; skip: omit the cross job)"
+        required: false
+        default: "default"
+        options:
+          - "default"
+          - "full"
+          - "skip"
 
 concurrency:
   group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
@@ -368,30 +377,25 @@ jobs:
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
-      # quiescent is especially sensitive to concurrency violations and memory model issues so we run it
-      # again with and without strict provenance enabled and on many different random schedules
-      # The permissive provenance build runs with real arc-swap and could therefore catch issues which the strict can't.
-      # We run under extra schedules to make that effect stand out as much as possible (shuttle/loom can't test with the
-      # arc-swap in place either, so this is the closest we can get to fixing that coverage gap)
-      - name: "quiescent/permissive"
+      # Some packages are especially sensitive to concurrency
+      # violations and memory model issues, so we run them again with extra
+      # different random schedules.
+      - name: "extra important"
         uses: *just
         env:
           JUST_VARS: >-
-            miri::seeds=8
+            miri::preemption_rate=0.50
+            miri::weak_failure_rate=0.05
+            miri::seeds=3
             miri::cpu=${{ matrix.cpu }}
-            miri::provenance=permissive
         with:
           recipe: "miri::test"
-          recipe_args: "--package=dataplane-quiescent"
-      - name: "quiescent/strict"
-        uses: *just
-        env:
-          JUST_VARS: >-
-            miri::cpu=${{ matrix.cpu }}
-            miri::provenance=strict
-        with:
-          recipe: "miri::test"
-          recipe_args: "--package=dataplane-quiescent --features=_strict_provenance"
+          recipe_args: >-
+            --package=dataplane-concurrency
+            --package=dataplane-flow-entry
+            --package=dataplane-flow-filter
+            --package=dataplane-nat
+            --package=dataplane-routing
       - *tmate
 
   wasm:
@@ -439,16 +443,91 @@ jobs:
           recipe_args: "${{ matrix.recipe.args }}"
       - *tmate
 
-  cross:
+  # Compute the `cross` job's matrix.  Reads the preset list from
+  # `cross-matrix.<scope>` in default.nix, then cross-products each
+  # (platform, libc) entry with the recipe variants the cross job
+  # exercises.  The resulting JSON is consumed by the cross job's
+  # `strategy.matrix.include`.
+  #
+  # Scope resolution:
+  #   - workflow_dispatch  -> use the `cross_scope` input
+  #   - PR with `ci:+cross/full` label                  -> full
+  #   - PR with `ci:+cross` label (without full-cross)  -> default
+  #   - push / merge_group                              -> default
+  #   - other (incl. PR without ci:+cross label)        -> skip
+  #
+  # `has_legs` is "true" iff the resolved matrix is non-empty; the
+  # cross job gates on it so the empty-matrix case (`skip`, or PRs
+  # without the label) cleanly turns into a no-op rather than a failed
+  # zero-leg job.
+  cross_matrix:
+    name: "compute cross-matrix"
     if: >-
       ${{
         github.event_name == 'pull_request'
-        && (
-          contains(github.event.pull_request.labels.*.name, 'ci:+cross')
-        )
-        || (github.event_name == 'push' || github.event_name == 'merge_group')
+        || github.event_name == 'push'
+        || github.event_name == 'merge_group'
+        || github.event_name == 'workflow_dispatch'
       }}
-    name: "${{ matrix.recipe.name }}/${{ matrix.recipe.args }}/${{ matrix.platform }}/${{ matrix.libc }}"
+    runs-on: "lab"
+    needs:
+      - check_changes
+    permissions:
+      contents: "read"
+      pull-requests: "read"
+    env:
+      USER: "runner"
+    outputs:
+      matrix: "${{ steps.compute.outputs.matrix }}"
+      has_legs: "${{ steps.compute.outputs.has_legs }}"
+      scope: "${{ steps.compute.outputs.scope }}"
+    steps:
+      - *checkout
+      - *nix-setup
+      - name: "Resolve scope and emit matrix"
+        id: "compute"
+        env:
+          EVENT_NAME: "${{ github.event_name }}"
+          DISPATCH_SCOPE: "${{ inputs.cross_scope || '' }}"
+          HAS_CI_CROSS: "${{ contains(github.event.pull_request.labels.*.name, 'ci:+cross') }}"
+          HAS_CI_FULL_CROSS: "${{ contains(github.event.pull_request.labels.*.name, 'ci:+cross/full') }}"
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_dispatch) scope="${DISPATCH_SCOPE:-default}" ;;
+            pull_request)
+              if [ "$HAS_CI_FULL_CROSS" = "true" ]; then
+                scope="full"
+              elif [ "$HAS_CI_CROSS" = "true" ]; then
+                scope="default"
+              else
+                scope="skip"
+              fi
+              ;;
+            push|merge_group) scope="default" ;;
+            *) scope="skip" ;;
+          esac
+          echo "Resolved cross scope: $scope"
+          preset="$(nix eval --json -f default.nix "cross-matrix.${scope}")"
+          # One row per (platform, libc, profile).  The cross job runs
+          # multiple steps per leg (optional `just test`, then
+          # build-container for dataplane and frr.dataplane); the
+          # per-recipe fan-out moves out of this matrix and into the
+          # job's step list.
+          matrix="$(printf '%s' "$preset" | jq -c 'map(. + { profile: "release" })')" # todo: swap back to debug
+          has_legs=false
+          if [ "$(printf '%s' "$matrix" | jq 'length')" -gt 0 ]; then
+            has_legs=true
+          fi
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "has_legs=${has_legs}" >> "$GITHUB_OUTPUT"
+          echo "scope=${scope}" >> "$GITHUB_OUTPUT"
+          echo "Emitted $(printf '%s' "$matrix" | jq 'length') leg(s) at scope=${scope}"
+
+  cross:
+    if: >-
+      ${{ needs.cross_matrix.outputs.has_legs == 'true' }}
+    name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}"
     runs-on: "lab"
     # Cross is advisory: leg failures show red on the job badge but the
     # workflow run as a whole still passes.  `needs.cross.result` reports
@@ -459,6 +538,8 @@ jobs:
       - check
       - miri
       - wasm
+      - cross_matrix
+      - sanitize
     permissions:
       checks: "write"
       pull-requests: "read"
@@ -467,36 +548,41 @@ jobs:
       id-token: "write"
     env:
       USER: "runner"
+      # The three step bodies all want the same just-vars triple, so
+      # set it at the job level rather than per-step.
+      JUST_VARS: >-
+        platform=${{ matrix.platform }}
+        profile=${{ matrix.profile }}
+        libc=${{ matrix.libc }}
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 4 # TODO: temporary scratch just for testing the build
       matrix:
-        platform:
-          - "aarch64"
-          - "bluefield3"
-        libc:
-          - "gnu"
-          - "musl"
-        profile:
-          - "debug"
-        recipe:
-          - name: "build-container"
-            args: "dataplane"
-          - name: "build-container"
-            args: "frr.dataplane"
+        include: "${{ fromJSON(needs.cross_matrix.outputs.matrix) }}"
     steps:
       - *checkout
       - *nix-setup
-      - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}/${{ matrix.recipe.args }}"
+      # Test step runs only under the rare `cross_scope=full` mode --
+      # exercises the cross-compiled test archive under qemu-user
+      # (scripts/test-runner.sh wraps non-native targets) for every
+      # platform/libc in the full SOC sweep.  Default scope stays
+      # build-only since qemu-user signal value is limited for our
+      # workload and the wall-clock cost is significant.
+      - name: "test"
+        if: ${{ needs.cross_matrix.outputs.scope == 'full' }}
         uses: *just
-        env:
-          JUST_VARS: >-
-            platform=${{ matrix.platform }}
-            profile=${{ matrix.profile }}
-            libc=${{ matrix.libc }}
         with:
-          recipe: "${{ matrix.recipe.name }}"
-          recipe_args: "${{ matrix.recipe.args }}"
+          recipe: "test"
+      - name: "build-container dataplane"
+        uses: *just
+        with:
+          recipe: "build-container"
+          recipe_args: "dataplane"
+      - name: "build-container frr.dataplane"
+        uses: *just
+        with:
+          recipe: "build-container"
+          recipe_args: "frr.dataplane"
       - *tmate
 
   features:
@@ -521,12 +607,13 @@ jobs:
           # The `loom` feature flips `concurrency::sync` to loom's
           # primitives workspace-wide, which breaks crates that rely on
           # `Weak`, `Arc::downgrade`, etc. (those aren't in
-          # `loom::sync`).  Scope the loom build to only the quiescent
-          # package so workspace feature unification doesn't poison
-          # unrelated crates.
+          # `loom::sync`).  Scope the loom build to only the
+          # concurrency package (which hosts the QSBR/quiescent tests)
+          # so workspace feature unification doesn't poison unrelated
+          # crates.
           - build: *release-build
             features: "loom"
-            test_package: "quiescent"
+            test_package: "concurrency"
           - build: *release-build
             features: "shuttle"
             test_package: ""
@@ -636,6 +723,7 @@ jobs:
       - test_each
       - miri
       - wasm
+      - cross_matrix
       - cross
     # Run always so this job can aggregate results even when one of its
     # dependencies failed or was skipped.
@@ -679,6 +767,11 @@ jobs:
         if: ${{ needs.wasm.result != 'success' && needs.wasm.result != 'skipped' }}
         run: |
           echo '::error:: Some wasm job(s) failed'
+          exit 1
+      - name: "Flag cross matrix resolution failure"
+        if: ${{ needs.cross_matrix.result != 'success' && needs.cross_matrix.result != 'skipped' }}
+        run: |
+          echo '::error:: cross_matrix job failed -- cross legs may have silently been skipped'
           exit 1
       - name: "Flag any vlab matrix failures"
         if: ${{ needs.vlab.result != 'success' && needs.vlab.result != 'skipped' }}

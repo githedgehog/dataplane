@@ -9,7 +9,7 @@ impl CliSource for FlowTable {}
 
 impl Display for FlowTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Ok(table) = self.table.try_read() {
+        if let Some(table) = self.table.try_read() {
             Heading(format!("Flow Table ({} entries)", table.len())).fmt(f)?;
             for entry in table.iter() {
                 let key = entry.key();

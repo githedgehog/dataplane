@@ -22,13 +22,106 @@ let
     else
       builtins.filter (elm: builtins.isString elm) (builtins.split split-on string);
   lib = (import sources.nixpkgs { }).lib;
+  extra-platforms =
+    if platform == "all" then
+      let
+        triples = import ./nix/triples.nix;
+        # Flatten triples.nix into a list of records carrying arch, os,
+        # libc plus the leaf fields (target, machine, nixarch, ...).
+        options = lib.flatten (
+          lib.mapAttrsToList (
+            arch: oses:
+            lib.mapAttrsToList (
+              os: libcs:
+              lib.mapAttrsToList (libc: leaf: leaf // { inherit arch os libc; }) libcs
+            ) oses
+          ) triples
+        );
+        # One canonical hardware name per arch.  hardware.nix carries
+        # SOC-specific march tuning (zen*, bluefield*, x86-64-v4, ...),
+        # but the cargo target triple is arch-determined, not
+        # march-determined -- so for "support every target" we only
+        # need one hardware per arch.  To exercise SOC tuning, invoke
+        # platform=<specific-name> directly.
+        canonical-hardware = {
+          x86_64 = "x86-64-v3";
+          aarch64 = "aarch64";
+          wasm32 = "wasm32-wasip1";
+        };
+      in
+      map (
+        option:
+        import ./nix/platforms.nix {
+          inherit lib;
+          platform = canonical-hardware.${option.arch};
+          kernel = option.os;
+          libc = option.libc;
+        }
+      ) options
+    else
+      [ ];
+  # Matrix presets for the `cross` CI job.  Pure data: each entry is
+  # `{ platform, libc }` (kernel is implied by the arch -- `linux` for
+  # x86_64/aarch64, `wasip1` for wasm32 which is already covered by the
+  # `wasm` CI job and therefore omitted from cross).  Consumed by
+  # `.github/workflows/dev.yml` via `nix eval --json -f default.nix
+  # 'cross-matrix.<preset>'`.
+  cross-matrix =
+    let
+      hardware = import ./nix/hardware.nix { inherit lib; };
+      triples = import ./nix/triples.nix;
+      # Every hardware in hardware.nix × every valid libc for that
+      # hardware's arch per triples.nix.  Skips wasm32 because the
+      # `wasm` CI job already covers it and the build path is materially
+      # different anyway.
+      all-linux-targets = lib.concatMap (
+        hw:
+        let
+          arch = hardware.${hw}.arch;
+        in
+        if arch == "wasm32" then
+          [ ]
+        else
+          lib.mapAttrsToList (libc: _: { platform = hw; inherit libc; }) triples.${arch}.linux
+      ) (builtins.attrNames hardware);
+    in
+    {
+      # Today's hand-picked default set: aarch64 + bluefield3 × gnu + musl.
+      # Exercises the SOC-specific cross paths most likely to catch a
+      # regression without the cost of building every variant.
+      default = [
+        {
+          platform = "aarch64";
+          libc = "gnu";
+        }
+        {
+          platform = "aarch64";
+          libc = "musl";
+        }
+        {
+          platform = "bluefield3";
+          libc = "gnu";
+        }
+        {
+          platform = "bluefield3";
+          libc = "musl";
+        }
+      ];
+      # Rare full-suite mode: every hardware × every valid libc.
+      # Currently 16 records (8 hardware × 2 libcs each, wasm32-wasip1
+      # excluded).  Triggered by the `ci:+full-cross` PR label or
+      # `cross_scope=full` on workflow_dispatch.
+      full = all-linux-targets;
+      # Explicit opt-out: produces no cross legs.
+      skip = [ ];
+    };
   platform' = import ./nix/platforms.nix {
     inherit
       lib
-      platform
       libc
       kernel
       ;
+    platform = (if platform == "all" then "x86-64-v3" else platform);
   };
   sanitizers = split-str ",+" sanitize;
   cargo-features = split-str ",+" features;
@@ -63,6 +156,7 @@ let
     .${profile};
   overlays = import ./nix/overlays {
     inherit
+      extra-platforms
       libc
       nightly
       sanitizers
@@ -172,6 +266,7 @@ let
       oras
       pkg-config
       python3Packages.pyflakes
+      qemu-user
       rust-toolchain
       shellcheck
       skopeo
@@ -380,6 +475,16 @@ let
       // args
     )).overrideAttrs
       (orig: {
+        # Source-volatile: tag with a distinctive prefix so the CI
+        # cachix pushFilter can exclude every cargo-derived path in
+        # one regex, and disable substitute attempts so a cold runner
+        # doesn't waste a roundtrip asking the cache for a path that
+        # always misses (it would always miss because the source
+        # revision is in the input closure).
+        name = "dataplane-cargo-${orig.pname}-${orig.version}";
+        allowSubstitutes = false;
+        preferLocalBuild = true;
+
         separateDebugInfo = true;
 
         # I'm not 100% sure if I would call it a bug in crane or a bug in cargo, but cross compile is tricky here.
@@ -593,8 +698,11 @@ let
   };
 
   dataplane.tar = pkgs.stdenv'.mkDerivation {
-    pname = "dataplane.tar";
-    inherit version;
+    name = "dataplane-cargo-tar-${version}";
+    # Source-volatile: see comment on `invoke` for why we opt out of
+    # cachix push/substitute on the cargo-derived surface.
+    allowSubstitutes = false;
+    preferLocalBuild = true;
     dontUnpack = true;
     src = null;
     dontPatchShebangs = true;
@@ -714,7 +822,7 @@ let
       '';
   };
 
-  containers.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -735,9 +843,17 @@ let
       ];
     };
     config.Entrypoint = [ "/bin/dataplane" ];
-  };
+  }).overrideAttrs (_: {
+    # Source-volatile: see comment on `invoke`.  Push-filtered by name
+    # in the cachix workflow; flag both knobs so a cold runner doesn't
+    # query cachix either.  Set on the underlying derivation rather
+    # than the buildLayeredImage args because buildLayeredImage's
+    # arg-set doesn't accept these.
+    allowSubstitutes = false;
+    preferLocalBuild = true;
+  });
 
-  containers.dataplane-debugger = pkgs.dockerTools.buildLayeredImage {
+  containers.dataplane-debugger = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/debugger";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -763,7 +879,10 @@ let
         workspace.init.debug
       ];
     };
-  };
+  }).overrideAttrs (_: {
+    allowSubstitutes = false;
+    preferLocalBuild = true;
+  });
 
   debug-tools =
     pkgs:
@@ -845,7 +964,7 @@ let
 
   };
 
-  containers.frr.dataplane = pkgs.dockerTools.buildLayeredImage {
+  containers.frr.dataplane = (pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr";
     inherit tag;
     contents = pkgs.buildEnv {
@@ -899,7 +1018,11 @@ let
       "--"
     ];
     config.Cmd = [ "/libexec/frr/docker-start" ];
-  };
+  }).overrideAttrs (_: {
+    # Bundles frr-agent (Rust); source-volatile.
+    allowSubstitutes = false;
+    preferLocalBuild = true;
+  });
 
   containers.frr.host = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/githedgehog/dataplane/frr-host";
@@ -972,6 +1095,8 @@ in
     sysroot
     tests
     workspace
+    extra-platforms
+    cross-matrix
     ;
   profile = profile';
   platform = platform';

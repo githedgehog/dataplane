@@ -22,11 +22,11 @@ members = [
     "k8s-less",
     "left-right-tlcache",
     "lpm",
+    "lsm",
     "mgmt",
     "nat",
     "net",
     "pipeline",
-    "quiescent",
     "rekon",
     "routing",
     "stats",
@@ -77,11 +77,12 @@ k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", default-featur
 k8s-less = { path = "./k8s-less", package = "dataplane-k8s-less", features = [] }
 left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
+lsm = { path = "./lsm", package = "dataplane-lsm", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
-quiescent = { path = "./quiescent", package = "dataplane-quiescent", features = [] }
+preamble = { path = "./preamble", package = "dataplane-preamble", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
@@ -112,6 +113,8 @@ chrono = { version = "0.4.44", default-features = false, features = [] }
 clap = { version = "4.6.1", default-features = true, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
 colored = { version = "3.1.1", default-features = false, features = [] }
+crossbeam = { version = "0.8.4", default-features = false, features = [] }
+crossbeam-utils = { version = "0.8.21", default-features = false, features = [] }
 ctrlc = { version = "3.5.2", default-features = false, features = [] }
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = [] }
@@ -185,14 +188,13 @@ strum_macros = { version = "0.28.0", default-features = false, features = [] }
 syn = { version = "2.0.117", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
-tokio = { version = "1.52.3", default-features = false, features = [] }
+tokio = { version = "1.52.3", default-features = false, features = ["parking_lot"] }
 tokio-util = { version = "0.7.18", default-features = false, features = [] }
 tonic = { version = "0.14.6", default-features = false, features = [] }
 tracing = { version = "0.1.44", default-features = false, features = [] }
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [] }
 tracing-test = { version = "0.2.6", default-features = false, features = [] }
-ureq = { version = "3.3.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.23.1", default-features = false, features = [] }
 
@@ -248,6 +250,12 @@ wasm = false # miss
 package = "dataplane-cli"
 miri = true
 wasm = false # split
+
+[workspace.metadata.package.concurrency]
+package = "dataplane-concurrency"
+miri = true # must ALWAYS work
+# NOTE: concurrency should likely be dependency gated as `cfg(unix)` or `cfg(not(target_arch = "wasm32"))`
+wasm = false # hopeless + pointless
 
 [workspace.metadata.package.dataplane]
 package = "dataplane"
@@ -338,11 +346,6 @@ wasm = false # hopeless + pointless
 package = "dataplane-tracectl"
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
-
-[workspace.metadata.package.quiescent]
-package = "dataplane-quiescent"
-miri = true
-wasm = false # works but pointless
 
 [workspace.metadata.package.vpcmap]
 package = "dataplane-vpcmap"

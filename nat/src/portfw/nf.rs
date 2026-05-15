@@ -120,7 +120,7 @@ impl PortForwarder {
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
 
         // get the state we just created for the FORWARD direction
-        let locked = fw_flow.locked.read().unwrap();
+        let locked = fw_flow.locked.read();
         let pfw_state = locked
             .port_fw_state
             .extract_ref::<PortFwState>()
@@ -271,7 +271,7 @@ impl PortForwarder {
     }
 
     fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
-        let mut flow_info_locked = flow_info.locked.write().unwrap();
+        let mut flow_info_locked = flow_info.locked.write();
         if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {
             state.rule = Arc::downgrade(entry);
         }

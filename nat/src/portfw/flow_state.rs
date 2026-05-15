@@ -140,11 +140,10 @@ pub(crate) fn setup_forward_flow(
     );
 
     // set the port forwarding state in the flow
-    if let Ok(mut write_guard) = forward_flow.locked.write() {
+    {
+        let mut write_guard = forward_flow.locked.write();
         write_guard.port_fw_state = Some(Box::new(port_fw_state));
         write_guard.dst_vpcd = Some(entry.dst_vpcd);
-    } else {
-        unreachable!()
     }
     debug!("Set up FORWARD flow for port-forwarding;\nkey={flow_key}\ninfo={forward_flow}");
     status
@@ -162,11 +161,10 @@ pub(crate) fn setup_reverse_flow(
     let port_fw_state = PortFwState::new_snat(dst_ip, dst_port, Arc::downgrade(entry), status);
 
     // set the port forwarding state in the flow
-    if let Ok(mut write_guard) = reverse_flow.locked.write() {
+    {
+        let mut write_guard = reverse_flow.locked.write();
         write_guard.port_fw_state = Some(Box::new(port_fw_state));
         write_guard.dst_vpcd = Some(entry.key.src_vpcd());
-    } else {
-        unreachable!()
     }
     debug!("Set up REVERSE flow for port-forwarding;\nkey={reverse_key}\ninfo={reverse_flow}");
 }
@@ -185,20 +183,20 @@ pub(crate) fn get_packet_port_fw_state<Buf: PacketBufferMut>(
         debug!("Packet flow-info is not active (status:{status})");
         return None;
     }
-    let Ok(flow_info_locked) = flow.locked.read() else {
-        error!("Packet has flow-info but it could not be locked");
-        return None;
-    };
-    let Some(state) = flow_info_locked
+    let guard = flow.locked.read();
+    let Some(state) = guard
         .port_fw_state
         .as_ref()
         .and_then(|s| s.extract_ref::<PortFwState>())
     else {
+        drop(guard);
         debug!("Packet flow-info does not contain port-forwarding state");
         return None;
     };
+    let out = state.clone();
+    drop(guard);
     debug!("Packet hit entry with port-forwarding state: {flow}");
-    Some(state.clone())
+    Some(out)
 }
 
 /// Update the port-forwarding state of a flow entry after processing a packet.

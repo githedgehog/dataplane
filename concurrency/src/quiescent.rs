@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../QUIESCENT.md")]
 #![forbid(unsafe_code)]
 #![deny(
     missing_docs,
@@ -11,18 +11,15 @@
     clippy::panic
 )]
 
-mod slot;
-
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::num::NonZero;
 
-use concurrency::sync::{
+use crate::slot::Slot;
+use crate::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
-
-use crate::slot::Slot;
 
 struct Versioned<T> {
     /// Monotonic version stamp assigned by the Publisher.
@@ -66,17 +63,12 @@ impl Domain {
 
     fn register(&self) -> Epoch {
         let epoch = Epoch::new();
-        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
-        self.active
-            .lock()
-            .expect("qsbr mutex poisoned")
-            .push(Arc::clone(&epoch.cell));
+        self.active.lock().push(Arc::clone(&epoch.cell));
         epoch
     }
 
     fn min_observed(&self) -> Option<Version> {
-        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
-        let mut active = self.active.lock().expect("qsbr mutex poisoned");
+        let mut active = self.active.lock();
         let mut min = u64::MAX;
         let mut any_in_flight = false;
         active.retain(|cell| {
@@ -102,7 +94,7 @@ impl Domain {
                 // any subsequent `retired.clear()` decrement of the
                 // matching `Versioned` is now ordered after the
                 // Subscriber's prior `cached = None` decrement.
-                concurrency::sync::atomic::fence(Ordering::Acquire);
+                crate::sync::atomic::fence(Ordering::Acquire);
                 return false;
             }
             let observed = cell.load();

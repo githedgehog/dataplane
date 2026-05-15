@@ -6,11 +6,30 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-loom = ["dep:loom", "concurrency-macros/loom"]
+default = ["arc-swap", "crossbeam", "parking_lot"]
+
+arc-swap = ["dep:arc-swap"]
+crossbeam = ["dep:crossbeam-utils", "crossbeam-utils/std"]
+loom = ["dep:loom", "concurrency-macros/loom", "crossbeam-utils/loom"]
+parking_lot = ["dep:parking_lot"]
 shuttle = ["dep:shuttle", "concurrency-macros/shuttle"]
-silence_clippy = ["concurrency-macros/silence_clippy"] # Do not manually enable this feature, let --all-features do it for you
+# Force the Mutex-based `slot` fallback even under default features so
+# miri's strict-provenance checks (which arc_swap currently fails) can
+# run against the quiescent protocol.
+_strict_provenance = []
+_silence_clippy = ["concurrency-macros/silence_clippy"] # Do not manually enable this feature, let --all-features do it for you
 
 [dependencies]
-loom = { workspace = true, optional = true, features = [] }
-shuttle = { workspace = true, optional = true, features = [] }
+arc-swap = { workspace = true, optional = true, features = [] }
 concurrency-macros = { workspace = true, features = [] }
+crossbeam-utils = { workspace = true, optional = true, features = [] }
+loom = { workspace = true, optional = true, features = [] }
+parking_lot = { workspace = true, optional = true, features = [] }
+shuttle = { workspace = true, optional = true, features = [] }
+static_assertions = { workspace = true }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
+
+# [lints.rust]
+# unexpected_cfgs = { level = "warn", check-cfg = ['cfg(conc)', 'cfg(another_flag, values("value1", "value2"))'] }

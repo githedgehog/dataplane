@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Property-based protocol tests for `dataplane_quiescent`.
+//! Property-based protocol tests for `dataplane_concurrency::quiescent`.
 //!
 //! Generates random sequences of [`Op`]s and checks the
 //! single-threaded protocol invariants after every step:
@@ -24,7 +24,8 @@
 //! resurrected, this assertion fires.
 //!
 //! Multi-threaded tests (drop affinity, concurrent stress) live in
-//! `tests/protocol.rs`; loom-modeled tests live in `tests/loom.rs`.
+//! `tests/quiescent_protocol.rs`; loom-modeled tests live in
+//! `tests/quiescent_loom.rs`.
 
 #![cfg(not(any(feature = "loom", feature = "shuttle")))]
 
@@ -32,7 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bolero::TypeGenerator;
-use dataplane_quiescent::channel;
+use dataplane_concurrency::quiescent::channel;
 
 // ---------- ops & state ----------
 
@@ -171,7 +172,7 @@ fn protocol_invariants() {
 /// gap on a function that only differs from the auto-derive in name.
 #[test]
 fn factory_clone_uses_explicit_impl() {
-    let publisher = dataplane_quiescent::channel(0u32);
+    let publisher = dataplane_concurrency::quiescent::channel(0u32);
     let factory = publisher.factory();
     #[allow(clippy::clone_on_copy)]
     let _factory_clone = factory.clone();
