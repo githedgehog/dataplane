@@ -1231,6 +1231,7 @@ name = "dataplane-common"
 version = "0.21.0"
 dependencies = [
  "arc-swap",
+ "dataplane-concurrency",
  "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
 ]
 
@@ -1242,6 +1243,7 @@ dependencies = [
  "bolero",
  "dataplane-concurrency-macros",
  "loom",
+ "parking_lot",
  "shuttle",
  "static_assertions",
 ]
@@ -1338,6 +1340,7 @@ name = "dataplane-flow-filter"
 version = "0.21.0"
 dependencies = [
  "dataplane-common",
+ "dataplane-concurrency",
  "dataplane-config",
  "dataplane-lpm",
  "dataplane-net",
@@ -1594,7 +1597,7 @@ dependencies = [
 name = "dataplane-pipeline"
 version = "0.21.0"
 dependencies = [
- "arc-swap",
+ "dataplane-concurrency",
  "dataplane-id",
  "dataplane-net",
  "dataplane-tracectl",
@@ -5636,6 +5639,7 @@ dependencies = [
  "bytes",
  "libc 0.2.186",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

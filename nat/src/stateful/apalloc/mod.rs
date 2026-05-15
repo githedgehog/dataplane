@@ -319,7 +319,7 @@ impl NatAllocator {
         let allow_null = next_header == NextHeader::ICMP || next_header == NextHeader::ICMP6;
         let mut allocation = pool.allocate(allow_null)?;
         allocation.set_genid(self.config.genid());
-        let idle_timeout = pool.idle_timeout().unwrap_or_else(|| unreachable!());
+        let idle_timeout = pool.idle_timeout();
 
         Ok(AllocationResult {
             allocation,

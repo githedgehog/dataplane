@@ -438,7 +438,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         let reserve_zero = !allow_null && block.base_port_idx == 0;
         let reserve_range = reserved_port_range.is_some();
         if reserve_zero || reserve_range {
-            let mut mutex_guard = block.usage_bitmap.lock().unwrap();
+            let mut mutex_guard = block.usage_bitmap.lock();
             if reserve_zero {
                 mutex_guard.reserve_port_from_bitmap(0).map_err(|()| {
                     AllocatorError::InternalIssue(
@@ -467,7 +467,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
     }
 
     fn is_full(&self) -> bool {
-        self.usage_bitmap.lock().unwrap().bitmap_full()
+        self.usage_bitmap.lock().bitmap_full()
     }
 
     fn covers(&self, port: NatPort) -> bool {
@@ -479,7 +479,6 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
     fn deallocate_port_from_block(&self, port: NatPort) -> Result<(), AllocatorError> {
         self.usage_bitmap
             .lock()
-            .unwrap()
             .deallocate_port_from_bitmap(
                 u8::try_from(port.as_u16().checked_sub(self.base_port_idx).ok_or(
                     AllocatorError::InternalIssue(
@@ -502,7 +501,6 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
         let bitmap_offset = self
             .usage_bitmap
             .lock()
-            .unwrap()
             .allocate_port_from_bitmap()
             .map_err(|()| AllocatorError::NoFreePort(self.base_port_idx))?;
 
@@ -526,7 +524,6 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
     ) -> Result<AllocatedPort<I>, AllocatorError> {
         self.usage_bitmap
             .lock()
-            .unwrap()
             .reserve_port_from_bitmap(
                 u8::try_from(port.as_u16().checked_sub(self.base_port_idx).ok_or(
                     AllocatorError::InternalIssue(
@@ -548,7 +545,6 @@ impl<I: NatIpWithBitmap> AllocatedPortBlock<I> {
     fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
         self.usage_bitmap
             .lock()
-            .unwrap()
             .allocated_port_ranges()
             .iter()
             .map(|range| {
@@ -640,17 +636,13 @@ impl ThreadPortMap {
     fn get(&self) -> Option<usize> {
         self.0
             .read()
-            .unwrap()
             .get(&std::thread::current().id())
             .copied()
             .unwrap_or(None)
     }
 
     fn set(&self, index: Option<usize>) {
-        self.0
-            .write()
-            .unwrap()
-            .insert(std::thread::current().id(), index);
+        self.0.write().insert(std::thread::current().id(), index);
     }
 }
 
@@ -682,11 +674,11 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
     }
 
     fn get_weak(&self, index: usize) -> Option<Weak<AllocatedPortBlock<I>>> {
-        self.0.read().unwrap().get(&index).cloned()
+        self.0.read().get(&index).cloned()
     }
 
     fn remove(&self, index: usize) {
-        self.0.write().unwrap().remove(&index);
+        self.0.write().remove(&index);
     }
 
     fn get(&self, index: usize) -> Option<Arc<AllocatedPortBlock<I>>> {
@@ -697,19 +689,18 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
     }
 
     fn insert(&self, index: usize, block: Weak<AllocatedPortBlock<I>>) {
-        self.0.write().unwrap().insert(index, block);
+        self.0.write().insert(index, block);
     }
 
     fn has_entries_with_free_ports(&self) -> bool {
         self.0
             .read()
-            .unwrap()
             .values()
             .any(|block| block.upgrade().is_some_and(|block| !block.is_full()))
     }
 
     fn search_for_block(&self, port: NatPort) -> Option<Arc<AllocatedPortBlock<I>>> {
-        let blocks = self.0.read().unwrap();
+        let blocks = self.0.read();
         blocks
             .values()
             .find(|block| block.upgrade().is_some_and(|block| block.covers(port)))?
@@ -718,7 +709,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
 
     // Used for Display
     fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
-        let blocks = self.0.read().unwrap();
+        let blocks = self.0.read();
         let mut ranges = BTreeSet::<PortRange>::new();
         for (_, block) in blocks.iter() {
             if let Some(block) = block.upgrade() {

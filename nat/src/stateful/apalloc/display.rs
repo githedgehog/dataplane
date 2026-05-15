@@ -68,7 +68,7 @@ where
     I: NatIpWithBitmap + Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        let pool = self.read().map_err(|_| Error)?;
+        let pool = self.read();
         write!(f, "{pool}")
     }
 }

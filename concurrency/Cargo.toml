@@ -6,8 +6,26 @@ publish.workspace = true
 version.workspace = true
 
 [features]
+default = ["parking_lot"]
 loom = ["dep:loom", "concurrency-macros/loom"]
+parking_lot = ["dep:parking_lot"]
+# `shuttle*` are three views of one backend, not three backends:
+#
+#   * `shuttle`     -- shuttle with the random scheduler (the default
+#                      for first-time users -- you almost always want
+#                      this one).
+#   * `shuttle_pct` -- shuttle with the PCT scheduler. Use when you
+#                      want to bias toward rare interleavings.
+#   * `shuttle_dfs` -- shuttle with the DFS scheduler. Use for
+#                      exhaustive small-state exploration.
+#
+# Arranged as a chain (`shuttle_dfs` -> `shuttle_pct` -> `shuttle`)
+# so a single `feature = "shuttle"` cfg check is true under every
+# variant. The scheduler is selected at runtime by
+# `concurrency::stress` (added in a later PR of this stack).
 shuttle = ["dep:shuttle", "concurrency-macros/shuttle"]
+shuttle_pct = ["shuttle"]
+shuttle_dfs = ["shuttle_pct"]
 silence_clippy = ["concurrency-macros/silence_clippy"] # Do not manually enable this feature, let --all-features do it for you
 # Force the Mutex-based slot fallback even without a model checker.
 # Intended for the CI miri job that exercises the fallback slot under
@@ -20,6 +38,7 @@ _strict_provenance = []
 arc-swap = { workspace = true }
 concurrency-macros = { workspace = true, features = [] }
 loom = { workspace = true, optional = true, features = [] }
+parking_lot = { workspace = true, optional = true, features = [] }
 shuttle = { workspace = true, optional = true, features = [] }
 static_assertions = { workspace = true }
 

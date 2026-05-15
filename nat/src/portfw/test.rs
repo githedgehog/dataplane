@@ -47,7 +47,6 @@ mod nf_test {
             .as_ref()?
             .locked
             .read()
-            .unwrap()
             .port_fw_state
             .as_ref()
             .and_then(|s| s.extract_ref::<PortFwState>())
@@ -61,7 +60,6 @@ mod nf_test {
             .as_ref()?
             .locked
             .read()
-            .unwrap()
             .port_fw_state
             .as_ref()
             .and_then(|s| s.extract_ref::<PortFwState>())
@@ -583,7 +581,7 @@ mod nf_test {
         let flow = packet.meta().flow_info.as_ref().unwrap();
 
         // flow entry should have port-forwarding state
-        let locked = flow.locked.read().unwrap();
+        let locked = flow.locked.read();
         let state = locked
             .port_fw_state
             .as_ref()
@@ -599,7 +597,7 @@ mod nf_test {
         let flow = packet.meta().flow_info.as_ref().unwrap();
 
         // flow entry should have port-forwarding state
-        let locked = flow.locked.read().unwrap();
+        let locked = flow.locked.read();
         let state = locked
             .port_fw_state
             .as_ref()

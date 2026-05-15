@@ -21,9 +21,8 @@ use tracing::{debug, error};
 pub(crate) fn invalidate_all_masquerading_flows(flow_table: &FlowTable) {
     debug!("INVALIDATING all masquerading flows...");
     flow_table.for_each_flow(|_key, flow_info| {
-        if let Ok(locked) = flow_info.locked.read()
-            && locked.nat_state.as_ref().is_some()
-        {
+        let locked = flow_info.locked.read();
+        if locked.nat_state.as_ref().is_some() {
             flow_info.invalidate_pair();
         }
     });
@@ -36,9 +35,8 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
     flow_table.for_each_flow_filtered(
         |_key, flow_info: &FlowInfo| flow_info.is_active(),
         |_, flow_info| {
-            if let Ok(locked) = flow_info.locked.read()
-                && locked.nat_state.as_ref().is_some()
-            {
+            let locked = flow_info.locked.read();
+            if locked.nat_state.as_ref().is_some() {
                 flow_info.set_genid(genid);
                 count += 1;
             }
@@ -48,7 +46,7 @@ pub(crate) fn upgrade_all_masquerading_flows(flow_table: &FlowTable, genid: GenI
 }
 
 fn get_flow_masquerading_allocation(flow_info: &FlowInfo) -> Option<(IpAddr, NatPort)> {
-    let locked = flow_info.locked.read().ok()?;
+    let locked = flow_info.locked.read();
     let alloc = locked
         .nat_state
         .extract_ref::<MasqueradeState>()?
@@ -72,7 +70,7 @@ fn re_reserve_ip_and_port(
     match new_allocator.reserve_port(proto, dst_vpcd, src_ip, ip, port) {
         Ok(alloc) => {
             debug!("Successfully re-reserved ip {ip} port {port_u16}");
-            let mut guard = flow_info.locked.write().map_err(|_| ())?;
+            let mut guard = flow_info.locked.write();
             let nat_state = guard.nat_state.as_mut().ok_or(())?;
             let nat_state = nat_state
                 .extract_mut::<MasqueradeState>()

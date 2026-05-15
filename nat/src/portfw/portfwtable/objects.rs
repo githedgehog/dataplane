@@ -4,6 +4,10 @@
 //! Port forwarding objects
 
 use ahash::RandomState;
+use concurrency::sync::Arc;
+#[cfg(test)]
+use concurrency::sync::Weak;
+use concurrency::sync::atomic::{AtomicU64, Ordering};
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use net::ip::NextHeader;
 use net::ip::UnicastIpAddr;
@@ -13,11 +17,6 @@ use std::fmt::Debug;
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Weak;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tracing::error;
@@ -110,15 +109,12 @@ impl PortFwEntry {
 
     #[must_use]
     pub fn init_timeout(&self) -> Duration {
-        Duration::from_secs(self.init_timeout.load(std::sync::atomic::Ordering::Relaxed))
+        Duration::from_secs(self.init_timeout.load(Ordering::Relaxed))
     }
 
     #[must_use]
     pub fn estab_timeout(&self) -> Duration {
-        Duration::from_secs(
-            self.estab_timeout
-                .load(std::sync::atomic::Ordering::Relaxed),
-        )
+        Duration::from_secs(self.estab_timeout.load(Ordering::Relaxed))
     }
 
     pub fn set_init_timeout(&self, duration: Duration) {
@@ -362,11 +358,11 @@ impl PortFwTable {
 #[cfg(test)]
 mod test {
     use super::{PortFwEntry, PortFwKey, PortFwTable, PortFwTableError};
+    use concurrency::sync::Arc;
     use lpm::prefix::Prefix;
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
     use std::str::FromStr;
-    use std::sync::Arc;
     use std::time::Duration;
     use tracing_test::traced_test;
 

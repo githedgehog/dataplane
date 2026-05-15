@@ -67,7 +67,7 @@ pub(crate) fn handle_icmp_error_port_forwarding<Buf: PacketBufferMut>(
     let f = flow_info.logfmt();
     debug!("(port-forwarding): Processing ICMP error packet from {src_vpcd} using flow {f}");
 
-    let flow_info_locked = flow_info.locked.read().unwrap();
+    let flow_info_locked = flow_info.locked.read();
     let state = flow_info_locked
         .port_fw_state
         .extract_ref::<PortFwState>()

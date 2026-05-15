@@ -7,11 +7,11 @@ use crate::RouterError;
 use crate::fib::fibtype::{FibKey, FibReader, FibReaderFactory, FibWriter};
 use crate::rib::vrf::VrfId;
 
+use concurrency::sync::Arc;
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::Arc;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
 
