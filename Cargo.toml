@@ -26,7 +26,6 @@ members = [
     "nat",
     "net",
     "pipeline",
-    "quiescent",
     "rekon",
     "routing",
     "stats",
@@ -81,7 +80,6 @@ mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
-quiescent = { path = "./quiescent", package = "dataplane-quiescent", features = [] }
 rekon = { path = "./rekon", package = "dataplane-rekon", features = [] }
 routing = { path = "./routing", package = "dataplane-routing", features = [] }
 stats = { path = "./stats", package = "dataplane-stats", features = [] }
@@ -338,11 +336,6 @@ wasm = false # hopeless + pointless
 package = "dataplane-tracectl"
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
-
-[workspace.metadata.package.quiescent]
-package = "dataplane-quiescent"
-miri = true
-wasm = false # works but pointless
 
 [workspace.metadata.package.vpcmap]
 package = "dataplane-vpcmap"

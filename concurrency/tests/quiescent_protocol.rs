@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use dataplane_quiescent::channel;
+use dataplane_concurrency::quiescent::channel;
 
 // ---------- helpers ----------
 

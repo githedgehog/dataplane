@@ -21,21 +21,21 @@
 // fallback implementation.
 cfg_select! {
     any(feature = "loom", feature = "shuttle", feature = "_strict_provenance") => {
-        use concurrency::sync::{Arc, Mutex};
+        use crate::sync::{Arc, Mutex};
 
-        pub(crate) struct Slot<T>(Mutex<Arc<T>>);
+        pub struct Slot<T>(Mutex<Arc<T>>);
 
         impl<T> Slot<T> {
-            pub(crate) fn from_pointee(value: T) -> Self {
+            pub fn from_pointee(value: T) -> Self {
                 Self(Mutex::new(Arc::new(value)))
             }
 
-            pub(crate) fn load_full(&self) -> Arc<T> {
+            pub fn load_full(&self) -> Arc<T> {
                 #[allow(clippy::expect_used)] // poisoned only in unrecoverable cases
                 Arc::clone(&self.0.lock().expect("slot mutex poisoned"))
             }
 
-            pub(crate) fn swap(&self, new: Arc<T>) -> Arc<T> {
+            pub fn swap(&self, new: Arc<T>) -> Arc<T> {
                 #[allow(clippy::expect_used)]
                 let mut guard = self.0.lock().expect("slot mutex poisoned");
                 core::mem::replace(&mut *guard, new)
@@ -43,24 +43,24 @@ cfg_select! {
         }
     }
     _ => {
-        use concurrency::sync::Arc;
+        use crate::sync::Arc;
         use arc_swap::ArcSwap;
 
-        pub(crate) struct Slot<T>(ArcSwap<T>);
+        pub struct Slot<T>(ArcSwap<T>);
 
         impl<T> Slot<T> {
             #[inline]
-            pub(crate) fn from_pointee(value: T) -> Self {
+            pub fn from_pointee(value: T) -> Self {
                 Self(ArcSwap::from_pointee(value))
             }
 
             #[inline]
-            pub(crate) fn load_full(&self) -> Arc<T> {
+            pub fn load_full(&self) -> Arc<T> {
                 self.0.load_full()
             }
 
             #[inline]
-            pub(crate) fn swap(&self, new: Arc<T>) -> Arc<T> {
+            pub fn swap(&self, new: Arc<T>) -> Arc<T> {
                 self.0.swap(new)
             }
         }

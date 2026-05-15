@@ -1,28 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-#![doc = include_str!("../README.md")]
-#![forbid(unsafe_code)]
-#![deny(
-    missing_docs,
-    clippy::pedantic,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-
-mod slot;
+#![doc = include_str!("../QUIESCENT.md")]
 
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::num::NonZero;
 
-use concurrency::sync::{
+use crate::slot::Slot;
+use crate::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
-
-use crate::slot::Slot;
 
 struct Versioned<T> {
     /// Monotonic version stamp assigned by the Publisher.
@@ -102,7 +91,7 @@ impl Domain {
                 // any subsequent `retired.clear()` decrement of the
                 // matching `Versioned` is now ordered after the
                 // Subscriber's prior `cached = None` decrement.
-                concurrency::sync::atomic::fence(Ordering::Acquire);
+                crate::sync::atomic::fence(Ordering::Acquire);
                 return false;
             }
             let observed = cell.load();
