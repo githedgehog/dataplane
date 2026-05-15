@@ -10,6 +10,7 @@ use lpm::prefix::{
     ppsize_zero,
 };
 use lpm::trie::{IpPortPrefixTrie, ValueWithAssociatedRanges};
+use net::ip::UnicastIpAddr;
 use net::vxlan::Vni;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
@@ -95,16 +96,26 @@ impl PerVniTable {
         addr: &IpAddr,
         port: Option<u16>,
         dst_vni: Vni,
-    ) -> Option<(IpAddr, Option<u16>)> {
+    ) -> Option<(UnicastIpAddr, Option<u16>)> {
         debug!("Looking up source mapping for address: {addr}, port: {port:?}, dst_vni: {dst_vni}");
         let result = Self::find_mapping(addr, port, self.src_nat.get(&dst_vni)?);
         match result {
-            None => debug!("No src mapping found for {addr}:{port:?}, dst_vni: {dst_vni}"),
+            None => {
+                debug!("No src mapping found for {addr}:{port:?}, dst_vni: {dst_vni}");
+                None
+            }
             Some((ipaddr, opt_port)) => {
-                debug!("Found src mapping; ipdaddr: {ipaddr} port: {opt_port:?}");
+                if let Ok(unicast_ipaddr) = UnicastIpAddr::try_from(ipaddr) {
+                    debug!("Found src mapping; addr: {ipaddr}, port: {opt_port:?}");
+                    Some((unicast_ipaddr, opt_port))
+                } else {
+                    debug!(
+                        "Found src mapping; addr: {ipaddr}, port: {opt_port:?}, but cannot use non-unicast address!"
+                    );
+                    None
+                }
             }
         }
-        result
     }
 
     #[must_use]
@@ -118,7 +129,7 @@ impl PerVniTable {
         match result {
             None => debug!("No dst mapping found for {addr}:{port:?}"),
             Some((ipaddr, opt_port)) => {
-                debug!("Found dst mapping; ipdaddr: {ipaddr} port: {opt_port:?}");
+                debug!("Found dst mapping; addr: {ipaddr}, port: {opt_port:?}");
             }
         }
         result
