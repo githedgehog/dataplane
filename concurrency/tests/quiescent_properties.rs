@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Property-based protocol tests for `dataplane_quiescent`.
+//! Property-based protocol tests for `dataplane_concurrency::quiescent`.
 //!
 //! Generates random sequences of [`Op`]s and checks the
 //! single-threaded protocol invariants after every step:
@@ -24,15 +24,17 @@
 //! resurrected, this assertion fires.
 //!
 //! Multi-threaded tests (drop affinity, concurrent stress) live in
-//! `tests/protocol.rs`; loom-modeled tests live in `tests/loom.rs`.
+//! `tests/quiescent_protocol.rs`; loom-modeled tests live in
+//! `tests/quiescent_loom.rs`.
 
+// Single-threaded bolero property tests; only meaningful under the
+// default backend.  Same rationale as in `quiescent_protocol.rs`.
 #![cfg(not(any(feature = "loom", feature = "shuttle")))]
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bolero::TypeGenerator;
 use dataplane_concurrency::quiescent::channel;
+use dataplane_concurrency::sync::Arc;
+use dataplane_concurrency::sync::atomic::{AtomicUsize, Ordering};
 
 // ---------- ops & state ----------
 

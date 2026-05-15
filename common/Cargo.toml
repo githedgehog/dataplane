@@ -7,5 +7,6 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-left-right = { workspace = true }
 arc-swap = { workspace = true }
+concurrency = { workspace = true }
+left-right = { workspace = true }

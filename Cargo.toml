@@ -53,6 +53,9 @@ repository = "https://github.com/githedgehog/dataplane/"
 #
 # 1. correctly documenting what each package actually depends on,
 # 2. allowing builds under different environments (e.g. cross-compilation, wasm, miri, and so on).
+#
+# Exceptions: see `tokio = { ..., features = ["parking_lot"] }` below.  Each exception has a comment
+# justifying why it is workspace-wide.
 
 # Internal
 args = { path = "./args", package = "dataplane-args", features = [] }
@@ -110,6 +113,7 @@ chrono = { version = "0.4.44", default-features = false, features = [] }
 clap = { version = "4.6.1", default-features = true, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
 colored = { version = "3.1.1", default-features = false, features = [] }
+crossbeam-utils = { version = "0.8.21", default-features = false, features = [] }
 ctrlc = { version = "3.5.2", default-features = false, features = [] }
 dashmap = { version = "6.1.0", default-features = false, features = [] }
 derive_builder = { version = "0.20.2", default-features = false, features = [] }
@@ -158,6 +162,7 @@ pci-ids = { version = "0.2.6", default-features = false, features = [] }
 prefix-trie = { version = "0.8.4", default-features = false, features = [] }
 pretty_assertions = { version = "1.4.1", default-features = false, features = [] }
 priority-queue = { version = "2.7.0", default-features = false, features = [] }
+proc-macro-crate = { version = "3.5.0", default-features = false, features = [] }
 proc-macro2 = { version = "1.0.106", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
 pyroscope = { version = "2.0.3", default-features = false, features = [] }
@@ -183,7 +188,13 @@ strum_macros = { version = "0.28.0", default-features = false, features = [] }
 syn = { version = "2.0.117", default-features = false, features = [] }
 thiserror = { version = "2.0.18", default-features = false, features = [] }
 thread_local = { version = "1.1.9", default-features = false, features = [] }
-tokio = { version = "1.52.3", default-features = false, features = [] }
+# Exception to the "no workspace-wide features" rule above.  `tokio/parking_lot` is
+# not an additive feature in the usual sense -- it picks the lock implementation
+# tokio uses internally for its runtime.  Production builds already pull
+# parking_lot in via `concurrency::sync`, so the only thing scoping this
+# per-crate would buy is divergent runtime behaviour between test binaries
+# and the real dataplane.  Keep it global.
+tokio = { version = "1.52.3", default-features = false, features = ["parking_lot"] }
 tokio-util = { version = "0.7.18", default-features = false, features = [] }
 tonic = { version = "0.14.6", default-features = false, features = [] }
 tracing = { version = "0.1.44", default-features = false, features = [] }
@@ -246,6 +257,12 @@ wasm = false # miss
 package = "dataplane-cli"
 miri = true
 wasm = false # split
+
+[workspace.metadata.package.concurrency]
+package = "dataplane-concurrency"
+miri = true # must ALWAYS work
+# NOTE: concurrency should likely be dependency gated as `cfg(unix)` or `cfg(not(target_arch = "wasm32"))`
+wasm = false # hopeless + pointless
 
 [workspace.metadata.package.dataplane]
 package = "dataplane"

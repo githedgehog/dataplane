@@ -21,7 +21,7 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     let f = flow_info.logfmt();
     debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
 
-    let flow_info_locked = flow_info.locked.read().unwrap();
+    let flow_info_locked = flow_info.locked.read();
     let state = flow_info_locked
         .nat_state
         .extract_ref::<MasqueradeState>()
