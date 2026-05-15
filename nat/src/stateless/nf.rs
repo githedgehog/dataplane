@@ -34,8 +34,6 @@ enum StatelessNatError {
     FailedToSetDestIp(NetError),
     #[error("No transport header")]
     NoTransportHeader,
-    #[error("TCP or UDP port cannot be zero")]
-    ZeroPort,
     #[error("Failed to set source port")]
     FailedToSetSourcePort,
     #[error("Failed to set destination port")]
@@ -108,7 +106,7 @@ impl StatelessNat {
     fn translate_src_port<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        new_port: u16,
+        new_port: NonZero<u16>,
     ) -> Result<(), StatelessNatError> {
         let nfi = self.name();
         let transport = packet
@@ -121,9 +119,7 @@ impl StatelessNat {
                     transport.src_port()
                 );
                 packet
-                    .set_source_port(
-                        NonZero::try_from(new_port).map_err(|_| StatelessNatError::ZeroPort)?,
-                    )
+                    .set_source_port(new_port)
                     .map_err(|_| StatelessNatError::FailedToSetSourcePort)?;
             }
             Transport::Icmp4(_) | Transport::Icmp6(_) => {
@@ -136,7 +132,7 @@ impl StatelessNat {
     fn translate_dst_port<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        new_port: u16,
+        new_port: NonZero<u16>,
     ) -> Result<(), StatelessNatError> {
         let nfi = self.name();
         let transport = packet
@@ -149,9 +145,7 @@ impl StatelessNat {
                     transport.dst_port()
                 );
                 packet
-                    .set_destination_port(
-                        NonZero::try_from(new_port).map_err(|_| StatelessNatError::ZeroPort)?,
-                    )
+                    .set_destination_port(new_port)
                     .map_err(|_| StatelessNatError::FailedToSetDestPort)?;
             }
             Transport::Icmp4(_) | Transport::Icmp6(_) => {
@@ -191,7 +185,7 @@ impl StatelessNat {
         let Some((src_addr, src_port)) = table.find_dst_mapping(&addr, port) else {
             return Err(StatelessNatError::NoMappingFound);
         };
-        let src_port = src_port.and_then(|p| NatPort::new_port_checked(p).ok());
+        let src_port = src_port.map(NatPort::new_port);
         nat_translate_icmp_inner_src::<Buf>(packet, src_addr, src_port)
             .map_err(StatelessNatError::IcmpErrorMsg)?;
         Ok(true)
@@ -215,7 +209,7 @@ impl StatelessNat {
         let Some((dst_addr, dst_port)) = table.find_src_mapping(&addr, port, dst_vni) else {
             return Err(StatelessNatError::NoMappingFound);
         };
-        let dst_port = dst_port.and_then(|p| NatPort::new_port_checked(p).ok());
+        let dst_port = dst_port.map(NatPort::new_port);
         nat_translate_icmp_inner_dst::<Buf>(packet, dst_addr.inner(), dst_port)
             .map_err(StatelessNatError::IcmpErrorMsg)?;
         Ok(true)
@@ -247,7 +241,7 @@ impl StatelessNat {
                 modified = true;
             }
             if let (Some(src_port), Some(new_src_port)) = (src_port_opt, new_src_port_opt)
-                && new_src_port != src_port
+                && new_src_port.get() != src_port
             {
                 self.translate_src_port(packet, new_src_port)?;
                 modified = true;
@@ -288,7 +282,7 @@ impl StatelessNat {
                 modified = true;
             }
             if let (Some(dst_port), Some(new_dst_port)) = (dst_port_opt, new_dst_port_opt)
-                && new_dst_port != dst_port
+                && new_dst_port.get() != dst_port
             {
                 self.translate_dst_port(packet, new_dst_port)?;
                 modified = true;
@@ -375,7 +369,6 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
 
         StatelessNatError::FailedToSetSourcePort
         | StatelessNatError::FailedToSetDestPort
-        | StatelessNatError::ZeroPort
         | StatelessNatError::NoTransportHeader
         | StatelessNatError::IcmpPortTranslation => DoneReason::NatUnsupportedProto,
 
