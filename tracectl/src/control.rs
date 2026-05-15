@@ -3,23 +3,42 @@
 
 //! Tracing runtime control.
 
+use arc_swap::ArcSwap;
 use ordermap::OrderMap;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock, Mutex};
-use std::{collections::HashSet, sync::MutexGuard};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::{any::TypeId, collections::HashSet, sync::MutexGuard, time::Duration};
 use thiserror::Error;
+use tracing::{Event, Metadata, span, subscriber::Interest};
 #[allow(unused)]
-use tracing::{debug, error, info, warn};
-use tracing_subscriber::{EnvFilter, Registry, filter::LevelFilter, prelude::*, reload};
+use tracing::{Level, Subscriber, callsite, debug, error, info, warn};
+use tracing_subscriber::{
+    EnvFilter,
+    filter::{FilterExt, LevelFilter, filter_fn},
+    layer::{Context, Filter, Layer},
+    prelude::*,
+    registry::LookupSpan,
+};
+use tracing_throttle::{Policy, TracingRateLimitLayer};
 
 use crate::display::TargetCfgDbByTag;
 use crate::targets::{TRACING_TAG_ALL, TRACING_TARGETS};
 use crate::trace_target;
 trace_target!("tracectl", LevelFilter::INFO, &[]);
 
+#[derive(Copy, Clone, Debug)]
+pub struct TracingRateLimitConfig {
+    pub burst: u32,
+    pub replenish_per_second: u32,
+}
+
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TraceCtlError {
+    // Preserved for API compatibility. With the `ArcSwap`-based filter swap
+    // below, reload is infallible, so this variant is no longer constructed
+    // from inside this crate.
     #[error("Reload tracing failure: {0}")]
+    #[allow(dead_code)]
     ReloadFailure(String),
     #[error("Unknown tag {0}")]
     UnknownTag(String),
@@ -278,38 +297,267 @@ impl TargetCfgDb {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AtomicEnvFilter
+// ---------------------------------------------------------------------------
+//
+// Drop-in replacement for `tracing_subscriber::reload::Layer<EnvFilter>`.
+//
+// Same external behavior: swap the inner `EnvFilter` at runtime, then
+// invalidate the per-callsite `Interest` cache so the new directives take
+// effect. The only thing that changes is *how* the inner `EnvFilter` is
+// stored.
+//
+// The previous `reload::Layer` wraps its inner in an `RwLock` — see
+// `tracing_subscriber/src/reload.rs`:
+//
+//     fn enabled(&self, m: &Metadata<'_>, ctx: layer::Context<'_, S>) -> bool {
+//         try_lock!(self.inner.read(), else return false).enabled(m, ctx)
+//     }
+//
+// On the dataplane hot path that lock is acquired per event by every worker
+// thread, because the per-layer-filter accumulator (`FilterState`) in the
+// layer stack produces `Interest::sometimes()` for every callsite that
+// passes `EnvFilter` (the two `Filtered` fmt layers have mutually exclusive
+// level filters, and the rate-limit filter is dynamic). The lock itself is
+// uncontended in the data-race sense, but every read still atomically
+// updates the lock word, which cache-line-pings between cores — that's the
+// `RwLock::read_contended` line in the Pyroscope profile.
+//
+// `ArcSwap::load` is an atomic-pointer load plus a hazard-pointer slot
+// acquire — no shared mutable cache line, no contention. The reload path
+// (`store` + `rebuild_interest_cache`) is identical in behavior to the old
+// `reload::Handle::reload` path.
+
+/// Holds the currently-active `EnvFilter`. Cheap, lock-free reads via
+/// `ArcSwap`; reloads via `store` + `callsite::rebuild_interest_cache`.
+struct AtomicEnvFilter {
+    inner: Arc<ArcSwap<EnvFilter>>,
+}
+
+/// Handle used to atomically swap in a new `EnvFilter` from outside the
+/// subscriber. Mirrors `reload::Handle`.
+#[derive(Clone)]
+struct AtomicEnvFilterHandle {
+    inner: Arc<ArcSwap<EnvFilter>>,
+}
+
+impl AtomicEnvFilter {
+    fn new(initial: EnvFilter) -> (Self, AtomicEnvFilterHandle) {
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        (
+            Self {
+                inner: inner.clone(),
+            },
+            AtomicEnvFilterHandle { inner },
+        )
+    }
+}
+
+impl AtomicEnvFilterHandle {
+    fn reload(&self, new: EnvFilter) {
+        self.inner.store(Arc::new(new));
+        // Re-evaluate `register_callsite` for every existing callsite, so
+        // they pick up the new directives. Same call that
+        // `reload::Handle::reload` makes internally after replacing its
+        // inner.
+        callsite::rebuild_interest_cache();
+    }
+}
+
+// Forward every `Layer<S>` method to the currently-swapped-in `EnvFilter`.
+// Verbose but mechanical: `EnvFilter` overrides several `Layer` hooks
+// (`on_new_span`, `on_record`, `on_enter`, `on_exit`, `on_close`) to
+// support span-based directives like `target[span_name]=level`. This
+// codebase doesn't use those, but the forwarding is here for behavioral
+// equivalence with `reload::Layer<EnvFilter>`.
+impl<S> Layer<S> for AtomicEnvFilter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn register_callsite(&self, meta: &'static Metadata<'static>) -> Interest {
+        Layer::<S>::register_callsite(&**self.inner.load(), meta)
+    }
+
+    fn enabled(&self, meta: &Metadata<'_>, ctx: Context<'_, S>) -> bool {
+        Layer::<S>::enabled(&**self.inner.load(), meta, ctx)
+    }
+
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        Layer::<S>::max_level_hint(&**self.inner.load())
+    }
+
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_new_span(&**self.inner.load(), attrs, id, ctx);
+    }
+
+    fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
+        Layer::<S>::on_record(&**self.inner.load(), id, values, ctx);
+    }
+
+    fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_enter(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_exit(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
+        Layer::<S>::on_close(&**self.inner.load(), id, ctx);
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        Layer::<S>::on_event(&**self.inner.load(), event, ctx);
+    }
+
+    // `downcast_raw` is how the layered subscriber probes a layer for
+    // per-layer-filter participation (via the `MagicPlfDowncastMarker` type
+    // id) and other capabilities. `EnvFilter` used as a `Layer` is not a
+    // per-layer filter, so reporting "no match" for anything but our own
+    // type id is correct. We deliberately do *not* expose the inner
+    // `EnvFilter`'s address — its identity can change at any time via
+    // `ArcSwap::store`.
+    #[doc(hidden)]
+    unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
+        if id == TypeId::of::<Self>() {
+            Some(self as *const _ as *const ())
+        } else {
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TracingControl
+// ---------------------------------------------------------------------------
+
+type BoxedTracingLayer<S> = Box<dyn Layer<S> + Send + Sync>;
+
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
-    reload_filter: Arc<reload::Handle<EnvFilter, Registry>>,
+    reload_filter: AtomicEnvFilterHandle,
 }
 impl TracingControl {
-    fn new() -> Self {
-        let db = TargetCfgDb::new();
-        let (filter, reload_filter) = reload::Layer::new(db.env_filter());
-
-        // formatting layer
-        let fmt_layer = tracing_subscriber::fmt::layer()
+    fn fmt_layer<S>() -> impl Layer<S> + Send + Sync
+    where
+        S: Subscriber + for<'span> LookupSpan<'span>,
+    {
+        tracing_subscriber::fmt::layer()
             .with_line_number(true)
             .with_target(true)
             .with_thread_ids(false)
             .with_thread_names(true)
-            .with_level(true);
+            .with_level(true)
+    }
 
-        // we should not be initializing the subscriber here, but that's fine atm
+    // To get rid of spaghetti filters in the layers, we split the fmt layer into two:
+    // one for unthrottled levels and one for throttled levels.
+
+    // `DEBUG` level remains unthrottled if we assume that it is the most verbose level
+    // that users would want to enable while digging into particular issues.
+    fn unthrottled_level_filter<S>() -> impl Filter<S> + Send + Sync
+    where
+        S: Subscriber + for<'span> LookupSpan<'span>,
+    {
+        filter_fn(|meta| matches!(*meta.level(), Level::DEBUG))
+    }
+
+    fn throttled_level_filter<S>() -> impl Filter<S> + Send + Sync
+    where
+        S: Subscriber + for<'span> LookupSpan<'span>,
+    {
+        filter_fn(|meta| {
+            matches!(
+                *meta.level(),
+                Level::INFO | Level::TRACE | Level::ERROR | Level::WARN
+            )
+        })
+    }
+
+    fn unthrottled_fmt_layer<S>() -> BoxedTracingLayer<S>
+    where
+        S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
+    {
+        Self::fmt_layer()
+            .with_filter(Self::unthrottled_level_filter())
+            .boxed()
+    }
+
+    fn throttled_fmt_layer<S>(
+        rate_limit_config: Option<TracingRateLimitConfig>,
+    ) -> BoxedTracingLayer<S>
+    where
+        S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
+    {
+        if let Some(rate_limit) = Self::build_rate_limit_layer(rate_limit_config) {
+            Self::fmt_layer()
+                .with_filter(Self::throttled_level_filter().and(rate_limit))
+                .boxed()
+        } else {
+            Self::fmt_layer()
+                .with_filter(Self::throttled_level_filter())
+                .boxed()
+        }
+    }
+
+    fn build_rate_limit_layer(
+        rate_limit_config: Option<TracingRateLimitConfig>,
+    ) -> Option<TracingRateLimitLayer> {
+        let rate_limit_config = rate_limit_config?;
+
+        let policy = match Policy::token_bucket(
+            f64::from(rate_limit_config.burst),
+            f64::from(rate_limit_config.replenish_per_second),
+        ) {
+            Ok(policy) => policy,
+            Err(e) => {
+                eprintln!(
+                    "Failed to create tracing throttle policy: {e}; falling back to unthrottled logging"
+                );
+                return None;
+            }
+        };
+
+        match TracingRateLimitLayer::builder()
+            .with_policy(policy)
+            .with_summary_interval(Duration::from_secs(30))
+            .build()
+        {
+            Ok(rate_limit) => Some(rate_limit),
+            Err(e) => {
+                eprintln!(
+                    "Failed to create tracing throttle layer: {e}; falling back to unthrottled logging"
+                );
+                None
+            }
+        }
+    }
+
+    fn init_subscriber(filter: AtomicEnvFilter, rate_limit_config: Option<TracingRateLimitConfig>) {
         if let Err(e) = tracing_subscriber::registry()
             .with(filter)
-            .with(fmt_layer)
+            .with(Self::unthrottled_fmt_layer())
+            .with(Self::throttled_fmt_layer(rate_limit_config))
             .with(tracing_error::ErrorLayer::default())
             .try_init()
         {
             eprintln!("Failed to set global tracing subscriber: {e} !!");
         }
+    }
+
+    fn new(rate_limit_config: Option<TracingRateLimitConfig>) -> Self {
+        let db = TargetCfgDb::new();
+        let (filter, reload_filter) = AtomicEnvFilter::new(db.env_filter());
+
+        Self::init_subscriber(filter, rate_limit_config);
+
         if let Err(e) = color_eyre::install() {
             eprintln!("Failed to initialize color_eyre:\n{e}");
         }
         Self {
             db: Arc::new(Mutex::new(db)),
-            reload_filter: Arc::new(reload_filter),
+            reload_filter,
         }
     }
     /// This method should remain private and never be used other than from methods of `TracingControl`
@@ -318,10 +566,14 @@ impl TracingControl {
             .lock()
             .map_err(|e| TraceCtlError::LockFailure(e.to_string()))
     }
+    /// Reload the active `EnvFilter`. Infallible with the `ArcSwap`-based
+    /// handle: there's no lock to poison and no subscriber-gone case. The
+    /// `Result` return type is kept for API stability with the previous
+    /// version that used `reload::Handle::reload`.
+    #[allow(clippy::unnecessary_wraps)]
     fn reload(&self, filter: EnvFilter) -> Result<(), TraceCtlError> {
-        self.reload_filter
-            .reload(filter)
-            .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))
+        self.reload_filter.reload(filter);
+        Ok(())
     }
     #[cfg(test)]
     fn register(
@@ -339,17 +591,35 @@ impl TracingControl {
 }
 
 /// Get a reference to a static [`TracingControl`], initializing it if needed
-static TRACING_CTL: LazyLock<TracingControl> = LazyLock::new(TracingControl::new);
+static TRACING_CTL: OnceLock<TracingControl> = OnceLock::new();
 #[must_use]
 pub fn get_trace_ctl() -> &'static TracingControl {
-    #[allow(clippy::explicit_auto_deref)] // needed by mechanics of lazy lock
-    &*TRACING_CTL
+    TRACING_CTL.get_or_init(|| TracingControl::new(None))
 }
 
 // public methods for TracingControl
 impl TracingControl {
+    fn init_once(
+        tracing_ctl: &OnceLock<TracingControl>,
+        rate_limit_config: Option<TracingRateLimitConfig>,
+    ) -> bool {
+        let mut initialized = false;
+        let _ = tracing_ctl.get_or_init(|| {
+            initialized = true;
+            TracingControl::new(rate_limit_config)
+        });
+        initialized
+    }
+
     pub fn init() {
         let _ = get_trace_ctl();
+    }
+    pub fn init_with_rate_limit(rate_limit_config: Option<TracingRateLimitConfig>) {
+        let has_rate_limit_config = rate_limit_config.is_some();
+        let initialized = Self::init_once(&TRACING_CTL, rate_limit_config);
+        if has_rate_limit_config && !initialized {
+            warn!("TracingControl already initialized; ignoring provided rate-limit config");
+        }
     }
     fn set_tag_level(&self, tag: &str, level: LevelFilter) -> Result<(), TraceCtlError> {
         let mut db = self.lock()?;
@@ -449,9 +719,7 @@ impl TracingControl {
         let mut db = self.lock()?;
         let changed = db.reconfigure(default, tag_config, resolver);
         if changed > 0 {
-            self.reload_filter
-                .reload(db.env_filter())
-                .map_err(|e| TraceCtlError::ReloadFailure(e.to_string()))?;
+            self.reload(db.env_filter())?;
         }
         Ok(())
     }
@@ -485,6 +753,7 @@ mod tests {
     use crate::targets::TRACING_TARGETS;
     use crate::{LevelFilter, custom_target, trace_target};
     use serial_test::serial;
+    use std::sync::OnceLock;
     use tracing::Level;
     use tracing::event_enabled;
     #[allow(unused)]
@@ -522,6 +791,25 @@ mod tests {
             tctl.get_default_level().unwrap()
         );
         println!("{:#?}", tctl.db.lock().unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn test_init_with_rate_limit() {
+        let tracing_ctl = OnceLock::new();
+        let rate_limit_config = Some(crate::control::TracingRateLimitConfig {
+            burst: 10,
+            replenish_per_second: 1,
+        });
+
+        assert!(TracingControl::init_once(&tracing_ctl, rate_limit_config));
+        assert!(tracing_ctl.get().is_some());
+        assert_eq!(
+            tracing_ctl.get().unwrap().get_default_level().unwrap(),
+            crate::control::DEFAULT_DEFAULT_LOGLEVEL
+        );
+
+        assert!(!TracingControl::init_once(&tracing_ctl, rate_limit_config));
     }
 
     #[test]
