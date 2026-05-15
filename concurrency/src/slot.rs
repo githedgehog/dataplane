@@ -15,6 +15,17 @@
 //! protocol -- atomic publish, atomic load -- which is all the model
 //! checker needs to see.
 //!
+//! **Important coverage limit.** Model-checker tests that go through
+//! `Slot` / `SlotOption` exercise the *protocol* of a single-slot
+//! atomic publication: one writer swaps, readers see either old or
+//! new, no torn read.  They do *not* exercise `arc_swap`'s internal
+//! hazard-pointer machinery, which is what the production path
+//! actually runs.  A bug inside `arc_swap` itself (e.g. a missed
+//! retire, an incorrect epoch comparison) cannot surface under loom
+//! or shuttle here.  If you want coverage of `arc_swap`'s internals,
+//! the miri job (which runs against the real `ArcSwap` in
+//! permissive-provenance mode) is where it lives.
+//!
 //! [`Subscriber::snapshot`]: crate::Subscriber::snapshot
 
 // Strict provenance checks fail with arc-swap since it uses hazard pointers and does not (yet) use the new
