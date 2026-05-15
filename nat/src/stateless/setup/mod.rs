@@ -10,7 +10,8 @@ mod display;
 pub mod range_builder;
 pub mod tables;
 
-use crate::stateless::{NatTableValue, NatTables, PerVniTable};
+use tables::{NatTableValue, NatTables, PerVniTable};
+
 use config::ConfigError;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpcTable};
 use config::external::overlay::vpcpeering::ValidatedExpose;
