@@ -13,12 +13,10 @@
 #![allow(missing_docs)]
 
 pub mod macros;
+pub mod sync;
 
 #[cfg(all(miri, any(feature = "shuttle", feature = "loom")))]
 compile_error!("miri does not meaningfully support 'loom' or 'shuttle'");
-
-#[cfg(not(any(feature = "loom", feature = "shuttle")))]
-pub use std::sync;
 
 #[cfg(not(any(feature = "loom", feature = "shuttle")))]
 pub use std::thread;
@@ -28,21 +26,7 @@ pub use std::thread;
     not(feature = "shuttle"),
     not(feature = "silence_clippy")
 ))]
-pub use loom::sync;
-
-#[cfg(all(
-    feature = "loom",
-    not(feature = "shuttle"),
-    not(feature = "silence_clippy")
-))]
 pub use loom::thread;
-
-#[cfg(all(
-    feature = "shuttle",
-    not(feature = "loom"),
-    not(feature = "silence_clippy")
-))]
-pub use shuttle::sync;
 
 #[cfg(all(
     feature = "shuttle",
@@ -57,9 +41,6 @@ compile_error!("Cannot enable both 'loom' and 'shuttle' features at the same tim
 //////////////////////
 // This is a workaround to silence clippy warnings when both loom and shuttle
 // features are enabled in the clippy checks which uses --all-features.
-#[cfg(all(feature = "shuttle", feature = "loom", feature = "silence_clippy"))]
-pub use std::sync;
-
 #[cfg(all(feature = "shuttle", feature = "loom", feature = "silence_clippy"))]
 pub use std::thread;
 //////////////////////

@@ -29,8 +29,9 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use concurrency::sync::Arc;
 use tracing_test::traced_test;
 
 fn vni(id: u32) -> Vni {
@@ -198,7 +199,7 @@ fn fake_flow_session<Buf: PacketBufferMut>(
     // pretend that flow is in table
     flow_info.update_status(FlowStatus::Active);
 
-    let mut binding = flow_info.locked.write().unwrap();
+    let mut binding = flow_info.locked.write();
     binding.dst_vpcd = Some(dst_vpcd);
     if set_nat_state {
         // Content should be a NatFlowState object but we can't include it in this crate without

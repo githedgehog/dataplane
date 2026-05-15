@@ -7,9 +7,9 @@ use crate::packet::VpcDiscriminant;
 use concurrency::sync::Arc;
 use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
+use concurrency::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::fmt::{Debug, Display};
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -80,7 +80,7 @@ pub struct AtomicFlowStatus(AtomicU8);
 
 impl Debug for AtomicFlowStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.load(std::sync::atomic::Ordering::Relaxed))
+        write!(f, "{:?}", self.load(Ordering::Relaxed))
     }
 }
 
@@ -202,10 +202,7 @@ impl FlowInfo {
     ///
     /// This method panics if the inner lock is poisoned
     pub fn get_dst_vpcd(&self) -> Option<VpcDiscriminant> {
-        self.locked
-            .read()
-            .expect("Failure locking flow-info for reading")
-            .dst_vpcd
+        self.locked.read().dst_vpcd
     }
 
     /// Set the generation Id of a flow
@@ -285,7 +282,7 @@ impl FlowInfo {
     }
 
     pub fn expires_at(&self) -> Instant {
-        self.expires_at.load(std::sync::atomic::Ordering::Relaxed)
+        self.expires_at.load(Ordering::Relaxed)
     }
 
     /// Extend the expiry of the flow if it is not expired.
@@ -295,7 +292,7 @@ impl FlowInfo {
     /// Returns `FlowInfoError::FlowExpired` if the flow is expired with the expiry `Instant`
     ///
     pub fn extend_expiry(&self, duration: Duration) -> Result<(), FlowInfoError> {
-        if self.status.load(std::sync::atomic::Ordering::Relaxed) == FlowStatus::Expired {
+        if self.status.load(Ordering::Relaxed) == FlowStatus::Expired {
             return Err(FlowInfoError::FlowExpired(self.expires_at()));
         }
         self.extend_expiry_unchecked(duration);
@@ -309,8 +306,7 @@ impl FlowInfo {
     /// This method is thread-safe.
     ///
     pub fn extend_expiry_unchecked(&self, duration: Duration) {
-        self.expires_at
-            .fetch_add(duration, std::sync::atomic::Ordering::Relaxed);
+        self.expires_at.fetch_add(duration, Ordering::Relaxed);
     }
 
     /// Reset the expiry of the flow if it is not expired.
@@ -325,7 +321,7 @@ impl FlowInfo {
     /// Returns `FlowInfoError::TimeoutUnchanged` if the new timeout is smaller than the current.
     /// Returns `FlowInfoError::FlowCancelled` if the flow had been cancelled
     pub fn reset_expiry(&self, duration: Duration) -> Result<(), FlowInfoError> {
-        match self.status.load(std::sync::atomic::Ordering::Relaxed) {
+        match self.status.load(Ordering::Relaxed) {
             FlowStatus::Active => self.reset_expiry_unchecked(duration),
             FlowStatus::Cancelled => Err(FlowInfoError::FlowCancelled),
             FlowStatus::Detached => Err(FlowInfoError::FlowDetached),
@@ -349,8 +345,7 @@ impl FlowInfo {
         if new < current {
             return Err(FlowInfoError::TimeoutUnchanged);
         }
-        self.expires_at
-            .store(new, std::sync::atomic::Ordering::Relaxed);
+        self.expires_at.store(new, Ordering::Relaxed);
         Ok(())
     }
 
@@ -360,7 +355,7 @@ impl FlowInfo {
     ///
     /// This method is thread-safe.
     pub fn status(&self) -> FlowStatus {
-        self.status.load(std::sync::atomic::Ordering::Relaxed)
+        self.status.load(Ordering::Relaxed)
     }
 
     /// Tell if a `FlowInfo` is active, i.e. eligible for processing packets that match it.
@@ -408,7 +403,6 @@ impl FlowInfo {
     ///
     /// This method is thread-safe.
     pub fn update_status(&self, status: FlowStatus) -> FlowStatus {
-        self.status
-            .store(status, std::sync::atomic::Ordering::Relaxed)
+        self.status.store(status, Ordering::Relaxed)
     }
 }

@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use atomic_instant_full;
+use concurrency::sync::atomic::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 #[repr(transparent)]

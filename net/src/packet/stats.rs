@@ -4,7 +4,7 @@
 //! Module to compute packet processing counters
 
 use super::meta::DoneReason;
-use std::sync::atomic::{AtomicU64, Ordering};
+use concurrency::sync::atomic::{AtomicU64, Ordering};
 use strum::EnumCount;
 
 /// A 64-byte aligned atomic u64

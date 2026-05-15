@@ -51,29 +51,19 @@ impl VpcStatsStore {
     }
 
     pub fn set_many_vpc_names_sync(&self, pairs: Vec<(VpcId, String)>) {
-        let mut m = self
-            .vpc_names
-            .write()
-            .expect("vpc_names write lock poisoned");
+        let mut m = self.vpc_names.write();
         for (id, name) in pairs {
             m.insert(id, name);
         }
     }
 
     pub fn set_vpc_name_sync(&self, id: VpcId, name: String) {
-        let mut m = self
-            .vpc_names
-            .write()
-            .expect("vpc_names write lock poisoned");
+        let mut m = self.vpc_names.write();
         m.insert(id, name);
     }
 
     pub fn name_of(&self, id: VpcId) -> Option<String> {
-        self.vpc_names
-            .read()
-            .expect("vpc_names read lock poisoned")
-            .get(&id)
-            .cloned()
+        self.vpc_names.read().get(&id).cloned()
     }
 
     // ---------- Pair (src -> dst) ----------
@@ -163,10 +153,7 @@ impl VpcStatsStore {
             vpcs.retain(|vpc, _| alive.contains(vpc));
         }
         {
-            let mut names = self
-                .vpc_names
-                .write()
-                .expect("vpc_names write lock poisoned");
+            let mut names = self.vpc_names.write();
             names.retain(|vpc, _| alive.contains(vpc));
         }
     }
@@ -185,9 +172,6 @@ impl VpcStatsStore {
     /// Snapshot all VPC names. Declared async to match callers that `.await` it,
     /// but it does not perform any awaits internally.
     pub async fn snapshot_names(&self) -> HashMap<VpcId, String> {
-        self.vpc_names
-            .read()
-            .expect("vpc_names read lock poisoned")
-            .clone()
+        self.vpc_names.read().clone()
     }
 }

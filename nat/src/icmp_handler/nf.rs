@@ -14,8 +14,8 @@ use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
 use net::icmp6::Icmp6Type;
 use net::packet::{DoneReason, Packet};
 
+use concurrency::sync::Arc;
 use pipeline::NetworkFunction;
-use std::sync::Arc;
 use strum::EnumMessage;
 use tracectl::trace_target;
 use tracing::{debug, warn};
@@ -162,7 +162,7 @@ impl IcmpErrorHandler {
             return;
         }
 
-        let flow_info_locked = flow.locked.read().unwrap();
+        let flow_info_locked = flow.locked.read();
         let Some(dst_vpcd) = flow_info_locked.dst_vpcd else {
             warn!("Flow for {rev_flow_key} has no dst VPC discriminant set. This is a bug");
             packet.done(DoneReason::InternalFailure);
