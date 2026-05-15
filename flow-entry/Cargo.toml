@@ -7,6 +7,8 @@ version.workspace = true
 
 [features]
 shuttle = ["concurrency/shuttle"]
+shuttle_pct = ["concurrency/shuttle_pct", "shuttle"]
+shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle_pct"]
 std = []
 testing = []
 bolero = ["dep:bolero", "net/bolero"]

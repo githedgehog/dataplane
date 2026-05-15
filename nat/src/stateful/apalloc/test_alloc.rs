@@ -412,9 +412,9 @@ mod tests_shuttle {
     use super::context::*;
     use super::tests;
 
+    use concurrency::sync::{Arc, Mutex};
+    use concurrency::thread;
     use net::ip::NextHeader;
-    use shuttle::sync::{Arc, Mutex};
-    use shuttle::thread;
 
     #[should_panic(expected = "assertion `left == right` failed")]
     #[test]
@@ -425,10 +425,10 @@ mod tests_shuttle {
                 let lock2 = lock.clone();
 
                 thread::spawn(move || {
-                    *lock.lock().unwrap() = 1;
+                    *lock.lock() = 1;
                 });
 
-                assert_eq!(0, *lock2.lock().unwrap());
+                assert_eq!(0, *lock2.lock());
             },
             100,
         );

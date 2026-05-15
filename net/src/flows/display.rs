@@ -6,6 +6,7 @@
 use super::flow_info::{FlowInfo, FlowInfoLocked};
 use super::flow_key::{FlowKey, FlowKeyData};
 
+use concurrency::sync::Weak;
 use std::fmt::Display;
 use std::time::Instant;
 
@@ -58,21 +59,15 @@ impl Display for FlowInfo {
         let expires_at = self.expires_at();
         let expires_in = expires_at.saturating_duration_since(Instant::now());
         let genid = self.genid();
-
-        if let Ok(info) = self.locked.read() {
-            write!(f, "{info}")?;
-        } else {
-            write!(f, "could not lock!")?;
-        }
+        let info = self.locked.read();
         let has_related = self
             .related
             .as_ref()
-            .and_then(std::sync::Weak::upgrade)
+            .and_then(Weak::upgrade)
             .map_or("no", |_| "yes");
-
         writeln!(
             f,
-            "      status: {:?}, expires in {}s, related: {has_related}, genid: {genid}",
+            "{info}      status: {:?}, expires in {}s, related: {has_related}, genid: {genid}",
             self.status(),
             expires_in.as_secs(),
         )
@@ -106,18 +101,15 @@ impl Display for FlowInfoOneLiner<'_> {
         let r = flow_info
             .related
             .as_ref()
-            .and_then(std::sync::Weak::upgrade)
+            .and_then(Weak::upgrade)
             .map_or("no", |_| "yes");
 
-        if let Ok(info) = flow_info.locked.read() {
-            write!(
-                f,
-                "{key} {} related:{r} genid:{genid}",
-                FlowInfoLockedOneLiner(&info)
-            )
-        } else {
-            write!(f, "{key} info:inaccessible! related:{r} genid:{genid}")
-        }
+        let info = flow_info.locked.read();
+        write!(
+            f,
+            "{key} {} related:{r} genid:{genid}",
+            FlowInfoLockedOneLiner(&info)
+        )
     }
 }
 

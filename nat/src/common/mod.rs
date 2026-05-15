@@ -5,9 +5,9 @@
 //! While common to both NAT flavors, their use is not dictated here
 //! but individually by each NAT flavor implementation.
 
+use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicU8, Ordering};
 use std::fmt::Display;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
 
 /// A type to represent a NAT action
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,11 +95,10 @@ impl AtomicNatFlowStatus {
 
     #[must_use]
     pub fn load(&self) -> NatFlowStatus {
-        self.0.load(std::sync::atomic::Ordering::Relaxed).into()
+        self.0.load(Ordering::Relaxed).into()
     }
 
     pub fn store(&self, status: NatFlowStatus) {
-        self.0
-            .store(status.into(), std::sync::atomic::Ordering::Relaxed);
+        self.0.store(status.into(), Ordering::Relaxed);
     }
 }

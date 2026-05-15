@@ -6,7 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-arc-swap = { workspace = true }
+concurrency = { workspace = true }
 dyn-iter = { workspace = true }
 id = { workspace = true }
 linkme = { workspace = true }

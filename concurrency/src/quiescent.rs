@@ -55,17 +55,13 @@ impl Domain {
 
     fn register(&self) -> Epoch {
         let epoch = Epoch::new();
-        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
-        self.active
-            .lock()
-            .expect("qsbr mutex poisoned")
-            .push(Arc::clone(&epoch.cell));
+        let mut guard = self.active.lock();
+        guard.push(Arc::clone(&epoch.cell));
         epoch
     }
 
     fn min_observed(&self) -> Option<Version> {
-        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
-        let mut active = self.active.lock().expect("qsbr mutex poisoned");
+        let mut active = self.active.lock();
         let mut min = u64::MAX;
         let mut any_in_flight = false;
         active.retain(|cell| {

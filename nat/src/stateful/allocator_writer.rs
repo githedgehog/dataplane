@@ -2,13 +2,13 @@
 // Copyright Open Network Fabric Authors
 
 use crate::stateful::apalloc::NatAllocator;
-use arc_swap::ArcSwapOption;
+use concurrency::slot::SlotOption;
+use concurrency::sync::Arc;
 use config::GenId;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpcTable};
 use config::external::overlay::vpcpeering::ValidatedExpose;
 use flow_entry::flow_table::FlowTable;
 use net::packet::VpcDiscriminant;
-use std::sync::Arc;
 use tracing::debug;
 
 use crate::stateful::flows::check_masquerading_flows;
@@ -95,12 +95,12 @@ impl StatefulNatConfig {
 }
 
 #[derive(Debug)]
-pub struct NatAllocatorWriter(Arc<ArcSwapOption<NatAllocator>>);
+pub struct NatAllocatorWriter(Arc<SlotOption<NatAllocator>>);
 
 impl NatAllocatorWriter {
     #[must_use]
     pub fn new() -> Self {
-        Self(Arc::new(ArcSwapOption::new(None)))
+        Self(Arc::new(SlotOption::empty()))
     }
 
     #[must_use]
@@ -121,7 +121,7 @@ impl NatAllocatorWriter {
     /// will be transferred (reserved) in the new allocator.
     pub fn update_nat_allocator(&mut self, nat_config: StatefulNatConfig, flow_table: &FlowTable) {
         let genid = nat_config.genid();
-        let curr_allocator = self.0.load();
+        let curr_allocator = self.0.load_full();
 
         // keep state as-is if config did not change, and just upgrade flows
         if let Some(current) = curr_allocator.as_ref()
@@ -164,17 +164,17 @@ impl Default for NatAllocatorWriter {
 }
 
 #[derive(Debug, Clone)]
-pub struct NatAllocatorReader(Arc<ArcSwapOption<NatAllocator>>);
+pub struct NatAllocatorReader(Arc<SlotOption<NatAllocator>>);
 
 impl NatAllocatorReader {
     pub fn get(&self) -> Option<Arc<NatAllocator>> {
-        self.0.load().clone()
+        self.0.load_full()
     }
     #[must_use]
     pub fn factory(&self) -> NatAllocatorReaderFactory {
         NatAllocatorReaderFactory(self.clone())
     }
-    pub fn inner(&self) -> Arc<ArcSwapOption<NatAllocator>> {
+    pub fn inner(&self) -> Arc<SlotOption<NatAllocator>> {
         self.0.clone()
     }
 }
