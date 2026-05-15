@@ -24,7 +24,7 @@ graph TD
 ## Quick start
 
 ```rust,ignore
-use dataplane_quiescent::channel;
+use dataplane_concurrency::quiescent::channel;
 
 #[derive(Debug)]
 struct MyConfig { /* ... */ }
@@ -142,7 +142,7 @@ profile:
 Construction:
 
 ```rust,ignore
-use dataplane_quiescent::channel;
+use dataplane_concurrency::quiescent::channel;
 
 let publisher = channel(initial_value);
 ```
@@ -354,7 +354,7 @@ the `Publisher`. This makes the destructor-thread-affinity guarantee a
 In practice:
 
 ```rust,ignore
-use dataplane_quiescent::channel;
+use dataplane_concurrency::quiescent::channel;
 
 let publisher = channel(initial);
 
