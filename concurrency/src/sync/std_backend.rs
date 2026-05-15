@@ -207,7 +207,7 @@ impl<T> RwLock<T> {
     /// Acquire an upgradable read guard.
     ///
     /// std `RwLock` has no native upgradable-read; this is implemented
-    /// as an exclusive `write()`. Subsequent backends (parking_lot)
+    /// as an exclusive `write()`. Subsequent backends (`parking_lot`)
     /// will replace this with a true upgradable read; meanwhile the
     /// surface is consistent across backends, sound in all cases, and
     /// merely loses the many-readers-plus-one-upgradable schedule that
