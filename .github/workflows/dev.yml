@@ -144,8 +144,7 @@ jobs:
             profile: "debug"
             sanitize: ""
             instrument: "none"
-          - &release-build
-            name: "release"
+          - name: "release"
             profile: "release"
             sanitize: "" # TODO: enable cfi and safe-stack when possible
             instrument: "none"
@@ -502,45 +501,64 @@ jobs:
           recipe_args: "${{ matrix.recipe.args }}"
       - *tmate
 
-  features:
+  concurrency:
     if: >-
       ${{
         needs.check_changes.outputs.devfiles == 'true'
         || startsWith(github.event.ref, 'refs/tags/v')
         || github.event_name == 'workflow_dispatch'
       }}
-    name: "features/${{ matrix.build.name }}/${{ matrix.features }}"
+    name: "concurrency"
     runs-on: "lab"
     needs:
       - check_changes
       - check
     permissions: *check-perms
     env: *check-env
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          # The `loom` feature flips `concurrency::sync` to loom's
-          # primitives workspace-wide, which breaks crates that rely on
-          # `Weak`, `Arc::downgrade`, etc. (those aren't in
-          # `loom::sync`).  Scope the loom build to only the concurrency
-          # package (which hosts the quiescent tests) so workspace
-          # feature unification doesn't poison unrelated crates.
-          - build: *release-build
-            features: "loom"
-            test_package: "concurrency"
-          - build: *release-build
-            features: "shuttle"
-            test_package: ""
     steps:
       - *checkout
       - *nix-setup
-      - name: "test/${{ matrix.features }}"
+      - name: "shuttle"
+        env:
+          JUST_VARS: >-
+            profile=release
+            features=shuttle
         uses: *just
         with:
           recipe: "test"
-          recipe_args: "${{ matrix.test_package }}"
+      - name: "shuttle_pct"
+        env:
+          JUST_VARS: >-
+            profile=release
+            features=shuttle_pct
+        uses: *just
+        with:
+          recipe: "test"
+      - name: "shuttle_dfs"
+        env:
+          JUST_VARS: >-
+            profile=release
+            features=shuttle_dfs
+        uses: *just
+        with:
+          recipe: "test"
+      # The `loom` feature flips `concurrency::sync` to loom's
+      # primitives workspace-wide, which breaks crates that rely on
+      # `Weak`, `Arc::downgrade`, etc. (those aren't in
+      # `loom::sync`).  Scope the loom build to only the concurrency
+      # package (which hosts the core concurrency tests) so workspace
+      # feature unification doesn't poison unrelated crates.
+      #
+      # TODO: gate tests which can't be used with loom
+      - name: "loom"
+        env:
+          JUST_VARS: >-
+            profile=release
+            features=loom
+        uses: *just
+        with:
+          recipe: "test"
+          recipe_args: "concurrency"
       - *tmate
 
   vlab:
@@ -633,7 +651,7 @@ jobs:
     needs:
       - check
       - sanitize
-      - features
+      - concurrency
       - build
       - vlab
       - test_each
@@ -653,10 +671,10 @@ jobs:
         run: |
           echo '::error:: Some check job(s) failed'
           exit 1
-      - name: "Flag any features matrix failures"
-        if: ${{ needs.features.result != 'success' && needs.features.result != 'skipped' }}
+      - name: "Flag any concurrency job failures"
+        if: ${{ needs.concurrency.result != 'success' && needs.concurrency.result != 'skipped' }}
         run: |
-          echo '::error:: Some features job(s) failed'
+          echo '::error:: concurrency job failed'
           exit 1
       - name: "Flag any test_each matrix failures"
         if: ${{ needs.test_each.result != 'success' && needs.test_each.result != 'skipped' }}
