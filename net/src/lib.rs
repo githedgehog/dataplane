@@ -38,6 +38,7 @@ pub mod parse;
 pub mod pci;
 pub mod route;
 pub mod tcp;
+pub mod tcp_udp;
 pub mod udp;
 pub mod vlan;
 pub mod vxlan;
