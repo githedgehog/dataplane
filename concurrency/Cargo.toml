@@ -14,15 +14,20 @@ parking_lot = ["dep:parking_lot"]
 #   * `shuttle`     -- shuttle with the random scheduler (the default
 #                      for first-time users -- you almost always want
 #                      this one).
-#   * `shuttle_pct` -- shuttle with the PCT scheduler. Use when you
+#   * `shuttle_pct` -- shuttle with the PCT scheduler.  Use when you
 #                      want to bias toward rare interleavings.
-#   * `shuttle_dfs` -- shuttle with the DFS scheduler. Use for
+#   * `shuttle_dfs` -- shuttle with the DFS scheduler.  Use for
 #                      exhaustive small-state exploration.
 #
-# Arranged as a chain (`shuttle_dfs` -> `shuttle_pct` -> `shuttle`)
-# so a single `feature = "shuttle"` cfg check is true under every
-# variant. The scheduler is selected at runtime by
-# `concurrency::stress` (added in a later PR of this stack).
+# All three share the same `dep:shuttle` machinery; only the scheduler
+# selected at runtime differs.  See `concurrency::stress` for the
+# dispatch and the `#[concurrency::test]` attribute macro for the
+# write-once-run-everywhere wrapper.
+#
+# The features form a chain (`shuttle_dfs` -> `shuttle_pct` -> `shuttle`)
+# so that any `feature = "shuttle"` cfg check is true under all three
+# variants.  cfg_select-style precedence (most-specific first) still
+# picks the right scheduler.  See `concurrency::stress`.
 shuttle = ["dep:shuttle", "concurrency-macros/shuttle"]
 shuttle_pct = ["shuttle"]
 shuttle_dfs = ["shuttle_pct"]

@@ -14,6 +14,12 @@ shuttle = []
 silence_clippy = []
 
 [dependencies]
+# `proc-macro-crate` resolves the consumer's actual import name for
+# `dataplane-concurrency`. This crate is publishable, so the `test`
+# macro cannot assume a fixed `::concurrency` alias -- workspace
+# consumers often rename it, external users typically don't. See
+# `pub fn test` for how the resolution feeds into the emitted path.
+proc-macro-crate = { workspace = true, default-features = true }
 proc-macro2 = { workspace = true, default-features = true }
 quote = { workspace = true, default-features = true }
 syn = { workspace = true, default-features = true, features = ["full"] }
