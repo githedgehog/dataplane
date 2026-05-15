@@ -18,18 +18,23 @@ pub mod sync;
 #[cfg(all(miri, any(feature = "shuttle", feature = "loom")))]
 compile_error!("miri does not meaningfully support 'loom' or 'shuttle'");
 
-#[cfg(not(any(feature = "loom", feature = "shuttle")))]
+#[cfg(not(any(
+    feature = "loom",
+    feature = "shuttle",
+    feature = "shuttle_pct",
+    feature = "shuttle_dfs"
+)))]
 pub use std::thread;
 
 #[cfg(all(
     feature = "loom",
-    not(feature = "shuttle"),
+    not(any(feature = "shuttle", feature = "shuttle_pct", feature = "shuttle_dfs")),
     not(feature = "silence_clippy")
 ))]
 pub use loom::thread;
 
 #[cfg(all(
-    feature = "shuttle",
+    any(feature = "shuttle", feature = "shuttle_pct", feature = "shuttle_dfs"),
     not(feature = "loom"),
     not(feature = "silence_clippy")
 ))]

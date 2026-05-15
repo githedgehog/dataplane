@@ -164,13 +164,13 @@ fn fuzz_test<Arg: Clone + TypeGenerator + RefUnwindSafe + std::fmt::Debug>(
 }
 
 #[test]
-#[cfg(feature = "shuttle")]
+#[cfg(any(feature = "shuttle", feature = "shuttle_pct", feature = "shuttle_dfs"))]
 fn protocol_under_shuttle() {
     fuzz_test(|plan: Plan| shuttle::check_random(move || run_plan(&plan), 1));
 }
 
 #[test]
-#[cfg(feature = "shuttle")]
+#[cfg(any(feature = "shuttle", feature = "shuttle_pct", feature = "shuttle_dfs"))]
 fn protocol_under_shuttle_pct() {
     fuzz_test(|plan: Plan| {
         // PCT requires both threads to actually do atomic ops; if
@@ -194,7 +194,7 @@ fn protocol_under_shuttle_pct() {
 }
 
 #[test]
-#[cfg(not(feature = "shuttle"))]
+#[cfg(not(any(feature = "shuttle", feature = "shuttle_pct", feature = "shuttle_dfs")))]
 fn protocol_under_std() {
     fuzz_test(|plan: Plan| run_plan(&plan));
 }

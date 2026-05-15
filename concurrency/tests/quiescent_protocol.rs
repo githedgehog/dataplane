@@ -28,7 +28,12 @@
 // backend (loom or any shuttle variant) the surrounding facade is rewired
 // and the std-shaped types these tests use would either fail to compile or
 // fault outside the corresponding runtime.
-#![cfg(not(any(feature = "loom", feature = "shuttle")))]
+#![cfg(not(any(
+    feature = "loom",
+    feature = "shuttle",
+    feature = "shuttle_pct",
+    feature = "shuttle_dfs"
+)))]
 
 use dataplane_concurrency::quiescent::channel;
 use dataplane_concurrency::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

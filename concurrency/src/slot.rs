@@ -22,8 +22,22 @@
 // As a result, we can still check for provenance violations in this crate, but only with the Mutex based
 // fallback implementation.
 cfg_select! {
-    any(feature = "loom", feature = "shuttle", feature = "_strict_provenance") => {
+    any(feature = "loom", feature = "shuttle", feature = "shuttle_pct", feature = "shuttle_dfs", feature = "_strict_provenance") => {
         use crate::sync::{Arc, Mutex};
+
+        // Loom still exposes `LockResult`-shaped `.lock()`; the wrapped
+        // backends (shuttle, _strict_provenance) return naked guards.
+        // PR 6 wraps loom too and drops this helper.
+        macro_rules! unwrap_lock {
+            ($guard:expr) => {{
+                #[cfg(feature = "loom")]
+                #[allow(clippy::expect_used)] // poisoned only in unrecoverable cases
+                let g = $guard.expect("slot mutex poisoned");
+                #[cfg(not(feature = "loom"))]
+                let g = $guard;
+                g
+            }};
+        }
 
         pub struct Slot<T>(Mutex<Arc<T>>);
 
@@ -38,20 +52,17 @@ cfg_select! {
             }
 
             pub fn load_full(&self) -> Arc<T> {
-                #[allow(clippy::expect_used)] // poisoned only in unrecoverable cases
-                let guard = self.0.lock().expect("slot mutex poisoned");
+                let guard = unwrap_lock!(self.0.lock());
                 Arc::clone(&*guard)
             }
 
             pub fn swap(&self, new: Arc<T>) -> Arc<T> {
-                #[allow(clippy::expect_used)]
-                let mut guard = self.0.lock().expect("slot mutex poisoned");
+                let mut guard = unwrap_lock!(self.0.lock());
                 core::mem::replace(&mut *guard, new)
             }
 
             pub fn store(&self, new: Arc<T>) {
-                #[allow(clippy::expect_used)]
-                let mut guard = self.0.lock().expect("slot mutex poisoned");
+                let mut guard = unwrap_lock!(self.0.lock());
                 *guard = new;
             }
         }
@@ -77,20 +88,17 @@ cfg_select! {
             }
 
             pub fn load_full(&self) -> Option<Arc<T>> {
-                #[allow(clippy::expect_used)]
-                let guard = self.0.lock().expect("slot mutex poisoned");
+                let guard = unwrap_lock!(self.0.lock());
                 guard.as_ref().map(Arc::clone)
             }
 
             pub fn swap(&self, new: Option<Arc<T>>) -> Option<Arc<T>> {
-                #[allow(clippy::expect_used)]
-                let mut guard = self.0.lock().expect("slot mutex poisoned");
+                let mut guard = unwrap_lock!(self.0.lock());
                 core::mem::replace(&mut *guard, new)
             }
 
             pub fn store(&self, new: Option<Arc<T>>) {
-                #[allow(clippy::expect_used)]
-                let mut guard = self.0.lock().expect("slot mutex poisoned");
+                let mut guard = unwrap_lock!(self.0.lock());
                 *guard = new;
             }
         }
