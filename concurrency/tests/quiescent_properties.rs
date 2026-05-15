@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bolero::TypeGenerator;
-use dataplane_quiescent::channel;
+use dataplane_concurrency::quiescent::channel;
 
 // ---------- ops & state ----------
 
@@ -171,7 +171,7 @@ fn protocol_invariants() {
 /// gap on a function that only differs from the auto-derive in name.
 #[test]
 fn factory_clone_uses_explicit_impl() {
-    let publisher = dataplane_quiescent::channel(0u32);
+    let publisher = dataplane_concurrency::quiescent::channel(0u32);
     let factory = publisher.factory();
     #[allow(clippy::clone_on_copy)]
     let _factory_clone = factory.clone();

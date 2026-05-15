@@ -368,12 +368,15 @@ jobs:
             miri::cpu=${{ matrix.cpu }}
         with:
           recipe: "miri::test"
-      # quiescent is especially sensitive to concurrency violations and memory model issues so we run it
-      # again with and without strict provenance enabled and on many different random schedules
-      # The permissive provenance build runs with real arc-swap and could therefore catch issues which the strict can't.
-      # We run under extra schedules to make that effect stand out as much as possible (shuttle/loom can't test with the
-      # arc-swap in place either, so this is the closest we can get to fixing that coverage gap)
-      - name: "quiescent/permissive"
+      # The quiescent code is especially sensitive to concurrency violations
+      # and memory-model issues so we run it again with and without strict
+      # provenance enabled and on many different random schedules.  The
+      # permissive-provenance build runs with real arc-swap and could
+      # therefore catch issues which the strict run can't.  We run under
+      # extra schedules to make that effect stand out as much as possible
+      # (shuttle/loom can't test with arc-swap in place either, so this is
+      # the closest we can get to fixing that coverage gap).
+      - name: "concurrency/permissive"
         uses: *just
         env:
           JUST_VARS: >-
@@ -382,8 +385,8 @@ jobs:
             miri::provenance=permissive
         with:
           recipe: "miri::test"
-          recipe_args: "--package=dataplane-quiescent"
-      - name: "quiescent/strict"
+          recipe_args: "--package=dataplane-concurrency"
+      - name: "concurrency/strict"
         uses: *just
         env:
           JUST_VARS: >-
@@ -391,7 +394,7 @@ jobs:
             miri::provenance=strict
         with:
           recipe: "miri::test"
-          recipe_args: "--package=dataplane-quiescent --features=_strict_provenance"
+          recipe_args: "--package=dataplane-concurrency --features=_strict_provenance"
       - *tmate
 
   wasm:
@@ -521,12 +524,12 @@ jobs:
           # The `loom` feature flips `concurrency::sync` to loom's
           # primitives workspace-wide, which breaks crates that rely on
           # `Weak`, `Arc::downgrade`, etc. (those aren't in
-          # `loom::sync`).  Scope the loom build to only the quiescent
-          # package so workspace feature unification doesn't poison
-          # unrelated crates.
+          # `loom::sync`).  Scope the loom build to only the concurrency
+          # package (which hosts the quiescent tests) so workspace
+          # feature unification doesn't poison unrelated crates.
           - build: *release-build
             features: "loom"
-            test_package: "quiescent"
+            test_package: "concurrency"
           - build: *release-build
             features: "shuttle"
             test_package: ""

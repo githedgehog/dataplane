@@ -23,11 +23,11 @@
 use std::panic::RefUnwindSafe;
 
 use bolero::TypeGenerator;
-use concurrency::sync::Arc;
-use concurrency::sync::atomic::{AtomicUsize, Ordering};
-use concurrency::thread;
+use dataplane_concurrency::sync::Arc;
+use dataplane_concurrency::sync::atomic::{AtomicUsize, Ordering};
+use dataplane_concurrency::thread;
 
-use dataplane_quiescent::{Subscriber, channel};
+use dataplane_concurrency::quiescent::{Subscriber, channel};
 
 // ---------- ops & plan ----------
 

@@ -1232,9 +1232,12 @@ dependencies = [
 name = "dataplane-concurrency"
 version = "0.21.0"
 dependencies = [
+ "arc-swap",
+ "bolero",
  "dataplane-concurrency-macros",
  "loom",
  "shuttle",
+ "static_assertions",
 ]
 
 [[package]]
@@ -1595,18 +1598,6 @@ dependencies = [
  "strum 0.28.0",
  "thiserror",
  "tracing",
-]
-
-[[package]]
-name = "dataplane-quiescent"
-version = "0.21.0"
-dependencies = [
- "arc-swap",
- "bolero",
- "dataplane-concurrency",
- "loom",
- "shuttle",
- "static_assertions",
 ]
 
 [[package]]

@@ -41,7 +41,7 @@
 
 use loom::thread;
 
-use dataplane_quiescent::{Publisher, channel};
+use dataplane_concurrency::quiescent::{Publisher, channel};
 
 /// Run `body` with a `&'static` reference to a freshly-constructed
 /// `Publisher`.  After `body` returns, recover the `Box` and drop the
