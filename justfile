@@ -51,7 +51,18 @@ _cargo_feature_flags := \
 _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profile }
 
 # filters for nextest
-filter := if features == "shuttle" { "shuttle" } else if features == "loom" { "-E 'binary(loom)'" } else { "" }
+#
+# Under `shuttle`, isolate the bolero x shuttle suite (a `shuttle`
+# substring matches both the test binary and the test-name
+# convention).
+#
+# Under `loom`, the legacy filter `-E 'binary(loom)'` matched the
+# old `dataplane-quiescent` `loom` test binary.  After absorbing
+# the crate, the binary is `quiescent_loom` (and later test files
+# add more); an empty filter lets nextest walk every archived
+# binary.  Tests that don't apply under loom are cfg-gated out and
+# compile to zero entries.
+filter := if features == "shuttle" { "shuttle" } else { "" }
 
 # instrumentation mode (none/coverage)
 instrument := "none"
