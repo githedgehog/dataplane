@@ -1236,6 +1236,7 @@ dependencies = [
  "bolero",
  "dataplane-concurrency-macros",
  "loom",
+ "parking_lot",
  "shuttle",
  "static_assertions",
 ]
@@ -5629,6 +5630,7 @@ dependencies = [
  "bytes",
  "libc 0.2.186",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

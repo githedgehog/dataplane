@@ -4,21 +4,39 @@
 //! Backend-routed synchronization primitives.
 //!
 //! Exposes a `parking_lot`-shaped surface for `Mutex` / `RwLock` that
-//! compiles unchanged across backends. The default (non-model-checker)
-//! backend currently routes through `std_backend` -- a thin
-//! poison-as-panic wrapper around `std::sync::{Mutex, RwLock}` that
-//! exposes naked guards (no `LockResult` to `.unwrap()` at call
-//! sites). This workspace treats a crashed thread as a crashed
-//! process, so silently inheriting state from a poisoned lock is
-//! wrong; surfacing it as a panic propagates the failure correctly.
+//! compiles unchanged across backends.
 //!
-//! Loom and shuttle still re-export their raw `LockResult`-based
-//! primitives at this point in the stack; subsequent PRs add the same
-//! poison-as-panic wrap for those backends.
+//! Selection (in priority order):
+//!
+//! * `loom` / `shuttle` features: raw re-export of the model-checker's
+//!   `LockResult`-based primitives. Subsequent PRs wrap these too.
+//! * `parking_lot` feature (default): zero-cost re-export of
+//!   `parking_lot`'s naked-guard locks; the production hot path.
+//! * Otherwise: `std_backend` -- a thin poison-as-panic wrapper around
+//!   `std::sync`. Same surface as the `parking_lot` re-export, one
+//!   extra match on acquire. Lets `--no-default-features` builds
+//!   compile without depending on `parking_lot`.
 
-#[cfg(not(any(feature = "loom", feature = "shuttle")))]
+#[cfg(all(
+    not(any(feature = "loom", feature = "shuttle")),
+    feature = "parking_lot",
+))]
+mod parking_lot_backend;
+#[cfg(all(
+    not(any(feature = "loom", feature = "shuttle")),
+    feature = "parking_lot",
+))]
+pub use parking_lot_backend::*;
+
+#[cfg(all(
+    not(any(feature = "loom", feature = "shuttle")),
+    not(feature = "parking_lot"),
+))]
 mod std_backend;
-#[cfg(not(any(feature = "loom", feature = "shuttle")))]
+#[cfg(all(
+    not(any(feature = "loom", feature = "shuttle")),
+    not(feature = "parking_lot"),
+))]
 pub use std_backend::*;
 
 #[cfg(all(
