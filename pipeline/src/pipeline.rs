@@ -5,14 +5,14 @@
 
 use crate::dyn_nf::DynNetworkFunctionImpl;
 use crate::{DynNetworkFunction, NetworkFunction, nf_dyn};
+use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicI64, Ordering};
 use dyn_iter::{DynIter, IntoDynIterator};
 use id::Id;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use ordermap::OrderMap;
 use std::any::Any;
-use std::sync::Arc;
-use std::sync::atomic::AtomicI64;
 
 /// A type that represents an Id for a stage or NF
 pub type StageId<Buf> = Id<Box<dyn DynNetworkFunction<Buf>>>;
@@ -33,12 +33,11 @@ impl PipelineData {
     }
     /// Read the generation id
     pub fn genid(&self) -> i64 {
-        self.genid.load(std::sync::atomic::Ordering::Relaxed)
+        self.genid.load(Ordering::Relaxed)
     }
     /// Set the generation id
     pub fn set_genid(&self, genid: i64) {
-        self.genid
-            .store(genid, std::sync::atomic::Ordering::Relaxed);
+        self.genid.store(genid, Ordering::Relaxed);
     }
 }
 

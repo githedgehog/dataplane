@@ -10,11 +10,11 @@ use super::lpmmap::LpmMap;
 use super::objects::PortFwEntry;
 use super::rangeset::{PrefixMap, RangeSet, RangeSetError};
 use crate::portfw::PortRange;
+use concurrency::sync::Arc;
 use lpm::prefix::{IpPrefix, Ipv4Prefix, Ipv6Prefix, Prefix};
 use net::ip::UnicastIpAddr;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::NonZero;
-use std::sync::Arc;
 #[allow(unused)]
 use tracing::{debug, warn};
 
@@ -84,10 +84,10 @@ impl PortForwarder {
 #[cfg(test)]
 mod test {
     use crate::portfw::{PortFwEntry, PortFwKey};
+    use concurrency::sync::Arc;
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
     use std::num::NonZero;
-    use std::sync::Arc;
 
     use super::{PortForwarder, PrefixMap};
     use lpm::prefix::Prefix;

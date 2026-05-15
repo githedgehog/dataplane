@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use concurrency::sync::Arc;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use crate::PipelineData;
 

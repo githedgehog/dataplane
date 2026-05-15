@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Multi-threaded protocol tests for `dataplane_quiescent`.
+//! Multi-threaded protocol tests for `dataplane_concurrency::quiescent`.
 //!
 //! The single-threaded protocol invariants (snapshot legality,
 //! reclamation gating, conservation of `Versioned` allocations) are
-//! covered by the bolero property tests in `tests/properties.rs`.
-//! This file holds only the tests that genuinely need real OS threads:
+//! covered by the bolero property tests in
+//! `tests/quiescent_properties.rs`.  This file holds only the tests
+//! that genuinely need real OS threads:
 //!
 //! - **Drop affinity**: drops must run on the Publisher's
 //!   thread, even when the last Subscriber drops concurrently with
@@ -20,16 +21,20 @@
 //! requires `'static`) won't work; `thread::scope` matches the
 //! lifetime exactly.
 //!
-//! Loom-modeled tests live in `tests/loom.rs`.
+//! Loom-modeled tests live in `tests/quiescent_loom.rs`.
 
+// Protocol tests use real OS threads via `thread::scope` + `thread::sleep`,
+// which only make sense under the default backend.  Under any model-checker
+// backend (loom or any shuttle variant) the surrounding facade is rewired
+// and the std-shaped types these tests use would either fail to compile or
+// fault outside the corresponding runtime.
 #![cfg(not(any(feature = "loom", feature = "shuttle")))]
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-
 use dataplane_concurrency::quiescent::channel;
+use dataplane_concurrency::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use dataplane_concurrency::sync::{Arc, Mutex};
+use dataplane_concurrency::thread;
+use std::time::Duration;
 
 // ---------- helpers ----------
 
@@ -47,7 +52,7 @@ impl Drop for Marker {
     fn drop(&mut self) {
         self.drop_counter.fetch_add(1, Ordering::Relaxed);
         if let Some(slot) = &self.drop_threads {
-            slot.lock().unwrap().push(thread::current().id());
+            slot.lock().push(thread::current().id());
         }
     }
 }
@@ -96,7 +101,7 @@ fn destructor_of_initial_runs_on_publisher_thread() {
     publisher.publish(marker(1, &drops));
     publisher.reclaim();
 
-    let observed = initial_drop_threads.lock().unwrap();
+    let observed = initial_drop_threads.lock();
     assert_eq!(
         observed.as_slice(),
         &[publisher_thread_id],
@@ -136,7 +141,7 @@ fn destructor_runs_on_publisher_when_last_subscriber_drops_concurrently() {
         publisher.reclaim();
     }
 
-    let observed = drop_threads.lock().unwrap();
+    let observed = drop_threads.lock();
     assert!(
         !observed.is_empty(),
         "no drops recorded; the test setup never exercised the Drop path",

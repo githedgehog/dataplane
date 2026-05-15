@@ -2,7 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use crate::NetworkFunction;
-use arc_swap::ArcSwapOption;
+use concurrency::slot::SlotOption;
+use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicBool, Ordering};
 use net::buffer::PacketBufferMut;
 use net::eth::mac::{DestinationMac, Mac};
 use net::headers::TryIcmp4;
@@ -11,9 +13,6 @@ use net::headers::{TryEthMut, TryHeaders, TryIpv4Mut, TryIpv6Mut};
 use net::packet::{DoneReason, Packet, PacketStats};
 use net::vxlan::Vxlan;
 use std::ops::Deref;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use strum::EnumCount;
 use tracectl::custom_target;
 use tracectl::tdebug;
@@ -43,7 +42,7 @@ pub struct PacketDumper<Buf: PacketBufferMut> {
     name: String,
     enabled: AtomicBool,
     count: u64,
-    filter: ArcSwapOption<DumperFilter<Buf>>,
+    filter: SlotOption<DumperFilter<Buf>>,
 }
 
 /// A type that represents a [`Packet`] filter to selectively dump packets.
@@ -106,7 +105,7 @@ impl<Buf: PacketBufferMut> PacketDumper<Buf> {
             name: name.to_owned(),
             enabled: AtomicBool::new(enabled),
             count: 0,
-            filter: ArcSwapOption::from_pointee(filter),
+            filter: SlotOption::from_pointee(filter),
         }
     }
     /// Tells if the [`PacketDumper`] is enabled.

@@ -176,7 +176,7 @@ impl StatefulNat {
             return None;
         }
         debug!("Hit ACTIVE flow: {}", flow_info.logfmt());
-        let value = flow_info.locked.read().unwrap();
+        let value = flow_info.locked.read();
         let Some(state) = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>() else {
             debug!("Unable to access masquerade state");
             return None;
@@ -200,7 +200,7 @@ impl StatefulNat {
     ) -> Option<(NatTranslate, Duration)> {
         let flow_key = FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info);
         let flow_info = self.flow_table.lookup(&flow_key)?;
-        let value = flow_info.locked.read().unwrap();
+        let value = flow_info.locked.read();
         let state = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>()?;
         Some((state.as_translate(), state.idle_timeout()))
     }
@@ -212,13 +212,10 @@ impl StatefulNat {
     ) {
         let flow_key = flow_info.flowkey();
         debug!("Setting up masquerade flow state: {flow_key} -> {state}");
-        if let Ok(mut write_guard) = flow_info.locked.write() {
-            write_guard.nat_state = Some(Box::new(state));
-            write_guard.dst_vpcd = Some(dst_vpcd);
-        } else {
-            // flow info is just locally created
-            unreachable!()
-        }
+        let state = Box::new(state);
+        let mut write_guard = flow_info.locked.write();
+        write_guard.nat_state = Some(state);
+        write_guard.dst_vpcd = Some(dst_vpcd);
     }
 
     fn get_reverse_mapping(flow_key: &FlowKey) -> Result<(IpAddr, NatPort), StatefulNatError> {
@@ -397,7 +394,6 @@ impl StatefulNat {
         let translate = installed
             .locked
             .read()
-            .unwrap()
             .nat_state
             .extract_ref::<MasqueradeState>()
             .ok_or(StatefulNatError::Bug("Unexpected masquerade state miss"))?
