@@ -20,6 +20,7 @@ use crate::parse::{
     Reader, Writer,
 };
 use crate::tcp::{Tcp, TcpChecksumPayload, TcpPort};
+use crate::tcp_udp::{TcpUdp, TcpUdpMut};
 use crate::udp::{Udp, UdpChecksumPayload, UdpEncap, UdpPort};
 use crate::vlan::{Pcp, Vid, Vlan};
 use crate::vxlan::Vxlan;
@@ -976,6 +977,36 @@ impl TryIcmpAnyMut for Headers {
     }
 }
 
+// TCP/UDP protocol-agnostic traits -- irregular return type, kept hand-written.
+
+pub trait TryTcpUdp {
+    fn try_tcp_udp(&self) -> Option<TcpUdp<'_>>;
+}
+
+pub trait TryTcpUdpMut {
+    fn try_tcp_udp_mut(&mut self) -> Option<TcpUdpMut<'_>>;
+}
+
+impl TryTcpUdp for Headers {
+    fn try_tcp_udp(&self) -> Option<TcpUdp<'_>> {
+        match &self.transport {
+            Some(Transport::Tcp(header)) => Some(TcpUdp::Tcp(header)),
+            Some(Transport::Udp(header)) => Some(TcpUdp::Udp(header)),
+            _ => None,
+        }
+    }
+}
+
+impl TryTcpUdpMut for Headers {
+    fn try_tcp_udp_mut(&mut self) -> Option<TcpUdpMut<'_>> {
+        match &mut self.transport {
+            Some(Transport::Tcp(header)) => Some(TcpUdpMut::Tcp(header)),
+            Some(Transport::Udp(header)) => Some(TcpUdpMut::Udp(header)),
+            _ => None,
+        }
+    }
+}
+
 impl_from_for_enum![
     Header,
     Eth(Eth),
@@ -1033,6 +1064,7 @@ pub trait AbstractHeaders:
     + TryIcmp4
     + TryIcmp6
     + TryIcmpAny
+    + TryTcpUdp
     + TryTransport
     + TryVxlan
     + DeParse
@@ -1050,6 +1082,7 @@ impl<T> AbstractHeaders for T where
         + TryIcmp4
         + TryIcmp6
         + TryIcmpAny
+        + TryTcpUdp
         + TryTransport
         + TryVxlan
         + DeParse
@@ -1067,6 +1100,7 @@ pub trait AbstractHeadersMut:
     + TryIcmp4Mut
     + TryIcmp6Mut
     + TryIcmpAnyMut
+    + TryTcpUdpMut
     + TryTransportMut
     + TryVxlanMut
 {
@@ -1083,6 +1117,7 @@ impl<T> AbstractHeadersMut for T where
         + TryIcmp4Mut
         + TryIcmp6Mut
         + TryIcmpAnyMut
+        + TryTcpUdpMut
         + TryTransportMut
         + TryVxlanMut
 {
@@ -1132,6 +1167,26 @@ where
 {
     fn try_icmp_any_mut(&mut self) -> Option<IcmpAnyMut<'_>> {
         self.headers_mut().try_icmp_any_mut()
+    }
+}
+
+// TryTcpUdp delegation -- irregular return type, kept hand-written.
+
+impl<T> TryTcpUdp for T
+where
+    T: TryHeaders,
+{
+    fn try_tcp_udp(&self) -> Option<TcpUdp<'_>> {
+        self.headers().try_tcp_udp()
+    }
+}
+
+impl<T> TryTcpUdpMut for T
+where
+    T: TryHeadersMut,
+{
+    fn try_tcp_udp_mut(&mut self) -> Option<TcpUdpMut<'_>> {
+        self.headers_mut().try_tcp_udp_mut()
     }
 }
 
