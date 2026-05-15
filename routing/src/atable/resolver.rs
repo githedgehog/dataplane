@@ -3,11 +3,11 @@
 
 //! Module to resolve ARP from the /proc. This module only supports ARP (IPv4)
 
+use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicBool, Ordering};
+use concurrency::thread;
+use concurrency::thread::JoinHandle;
 use std::net::IpAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use netdev::Interface;

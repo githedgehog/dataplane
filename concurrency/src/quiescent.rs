@@ -55,17 +55,29 @@ impl Domain {
 
     fn register(&self) -> Epoch {
         let epoch = Epoch::new();
-        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
-        self.active
-            .lock()
-            .expect("qsbr mutex poisoned")
-            .push(Arc::clone(&epoch.cell));
+        let guard = self.active.lock();
+        // Loom and shuttle still expose `LockResult<MutexGuard>`; PRs
+        // extending the poison-as-panic wrapper to those backends will
+        // drop this `.expect` (the default backend already returns a
+        // naked guard).
+        #[cfg(any(feature = "loom", feature = "shuttle"))]
+        #[allow(clippy::expect_used)]
+        // the mutex is poisoned only in unrecoverable error cases
+        let mut guard = guard.expect("qsbr mutex poisoned");
+        #[cfg(not(any(feature = "loom", feature = "shuttle")))]
+        let mut guard = guard;
+        guard.push(Arc::clone(&epoch.cell));
         epoch
     }
 
     fn min_observed(&self) -> Option<Version> {
-        #[allow(clippy::expect_used)] // the mutex is poisoned only in unrecoverable error cases
-        let mut active = self.active.lock().expect("qsbr mutex poisoned");
+        let guard = self.active.lock();
+        #[cfg(any(feature = "loom", feature = "shuttle"))]
+        #[allow(clippy::expect_used)]
+        // the mutex is poisoned only in unrecoverable error cases
+        let mut active = guard.expect("qsbr mutex poisoned");
+        #[cfg(not(any(feature = "loom", feature = "shuttle")))]
+        let mut active = guard;
         let mut min = u64::MAX;
         let mut any_in_flight = false;
         active.retain(|cell| {

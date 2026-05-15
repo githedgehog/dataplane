@@ -4,6 +4,7 @@
 //! Port forwarding stage
 
 use crate::portfw::{PortFwEntry, PortFwKey, PortFwState, PortFwTable, PortFwTableReader};
+use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::table::FlowTable;
 
 use net::buffer::PacketBufferMut;
@@ -13,7 +14,6 @@ use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use pipeline::{NetworkFunction, PipelineData};
 use std::num::NonZero;
-use std::sync::Arc;
 use std::time::Instant;
 
 use crate::common::NatAction;
@@ -120,7 +120,7 @@ impl PortForwarder {
         setup_reverse_flow(&rev_key, &rev_flow, entry, dst_ip, dst_port, status);
 
         // get the state we just created for the FORWARD direction
-        let locked = fw_flow.locked.read().unwrap();
+        let locked = fw_flow.locked.read();
         let pfw_state = locked
             .port_fw_state
             .extract_ref::<PortFwState>()
@@ -271,7 +271,7 @@ impl PortForwarder {
     }
 
     fn reassign_port_fw_rule(flow_info: &FlowInfo, entry: &Arc<PortFwEntry>) {
-        let mut flow_info_locked = flow_info.locked.write().unwrap();
+        let mut flow_info_locked = flow_info.locked.write();
         if let Some(state) = flow_info_locked.port_fw_state.extract_mut::<PortFwState>() {
             state.rule = Arc::downgrade(entry);
         }
@@ -297,11 +297,7 @@ impl PortForwarder {
         // point to it so that subsequent packets are fast-forwarded.
         if let Some(entry) = entry.as_ref() {
             Self::reassign_port_fw_rule(flow_info, entry);
-            if let Some(related) = flow_info
-                .related
-                .as_ref()
-                .and_then(std::sync::Weak::upgrade)
-            {
+            if let Some(related) = flow_info.related.as_ref().and_then(Weak::upgrade) {
                 Self::reassign_port_fw_rule(&related, entry);
             }
         }

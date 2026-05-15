@@ -45,25 +45,23 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
         }
     }
 
-    pub(crate) fn read(&self) -> Result<RwLockReadGuard<'_, NatPool<I>>, AllocatorError> {
-        self.pool.read().map_err(|_| {
-            AllocatorError::InternalIssue("Failed to acquire read lock (poisoned)".to_string())
-        })
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, NatPool<I>> {
+        self.pool.read()
     }
 
-    pub(crate) fn idle_timeout(&self) -> Option<Duration> {
-        Some(self.pool.read().ok()?.idle_timeout())
+    pub(crate) fn idle_timeout(&self) -> Duration {
+        self.pool.read().idle_timeout()
     }
 
     fn deallocate_ip(&self, ip: I) {
-        self.pool.write().unwrap().deallocate_from_pool(ip);
+        self.pool.write().deallocate_from_pool(ip);
     }
 
     fn reuse_allocated_ip(
         &self,
         allow_null: bool,
     ) -> Result<port_alloc::AllocatedPort<I>, AllocatorError> {
-        let allocated_ips = self.pool.read().unwrap();
+        let allocated_ips = self.pool.read();
         for ip_weak in allocated_ips.ips_in_use() {
             let Some(ip) = ip_weak.upgrade() else {
                 continue;
@@ -85,7 +83,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     }
 
     fn allocate_new_ip_from_pool(&self) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
-        let mut allocated_ips = self.pool.write().unwrap();
+        let mut allocated_ips = self.pool.write();
         let new_ip = allocated_ips.use_new_ip(self.clone(), self.randomize)?;
         let arc_ip = Arc::new(new_ip);
         allocated_ips.add_in_use(&arc_ip);
@@ -102,7 +100,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     }
 
     fn cleanup_used_ips(&self) {
-        let mut allocated_ips = self.pool.write().unwrap();
+        let mut allocated_ips = self.pool.write();
         allocated_ips.cleanup();
     }
 
@@ -122,7 +120,6 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     fn get_allocated_ip(&self, ip: I) -> Result<Arc<AllocatedIp<I>>, AllocatorError> {
         self.pool
             .write()
-            .unwrap()
             .reserve_from_pool(ip, self.clone(), self.randomize)
     }
 
@@ -138,7 +135,7 @@ impl<I: NatIpWithBitmap> IpAllocator<I> {
     // Helper to access IpAllocator's internals for tests. Not to be used outside of tests.
     #[cfg(test)]
     pub fn get_pool_clone_for_tests(&self) -> (RoaringBitmap, VecDeque<Weak<AllocatedIp<I>>>) {
-        let pool = self.pool.read().unwrap();
+        let pool = self.pool.read();
         (pool.bitmap.0.clone(), pool.in_use.clone())
     }
 }
