@@ -28,9 +28,6 @@ use tracing::{debug, error, warn};
 enum StatelessNatError {
     #[error("No IP header")]
     NoIpHeader,
-    #[error("Invalid address {0}")]
-    // this should not happen if the nat tables contained sanitized data
-    InvalidAddress(IpAddr),
     #[error("Failed to set source IP: {0}")]
     FailedToSetSourceIp(NetError),
     #[error("Failed to set destination IP: {0}")]
@@ -90,12 +87,14 @@ impl StatelessNat {
         &self.name
     }
 
-    fn translate_src(&self, net: &mut Net, target_src: IpAddr) -> Result<(), StatelessNatError> {
-        let new_src = UnicastIpAddr::try_from(target_src)
-            .map_err(|_| StatelessNatError::InvalidAddress(target_src))?;
+    fn translate_src(
+        &self,
+        net: &mut Net,
+        target_src: UnicastIpAddr,
+    ) -> Result<(), StatelessNatError> {
         let nfi = self.name();
-        debug!("{nfi}: Changing IP src: {} -> {new_src}", net.src_addr());
-        net.try_set_source(new_src)
+        debug!("{nfi}: Changing IP src: {} -> {target_src}", net.src_addr());
+        net.try_set_source(target_src)
             .map_err(StatelessNatError::FailedToSetSourceIp)
     }
 
@@ -217,7 +216,7 @@ impl StatelessNat {
             return Err(StatelessNatError::NoMappingFound);
         };
         let dst_port = dst_port.and_then(|p| NatPort::new_port_checked(p).ok());
-        nat_translate_icmp_inner_dst::<Buf>(packet, dst_addr, dst_port)
+        nat_translate_icmp_inner_dst::<Buf>(packet, dst_addr.inner(), dst_port)
             .map_err(StatelessNatError::IcmpErrorMsg)?;
         Ok(true)
     }
@@ -243,7 +242,7 @@ impl StatelessNat {
             table.find_src_mapping(&src_addr, src_port_opt, dst_vni)
         {
             let net = packet.try_ip_mut().ok_or(StatelessNatError::NoIpHeader)?;
-            if new_src_addr != src_addr {
+            if new_src_addr.inner() != src_addr {
                 self.translate_src(net, new_src_addr)?;
                 modified = true;
             }
@@ -384,10 +383,7 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
 
         StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::InvalidPort(_)) => DoneReason::Malformed,
 
-        StatelessNatError::InvalidAddress(_)
-        | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::NotUnicast(_)) => {
-            DoneReason::NatFailure
-        }
+        StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::NotUnicast(_)) => DoneReason::NatFailure,
 
         StatelessNatError::FailedToSetDestIp(_)
         | StatelessNatError::FailedToSetSourceIp(_)
