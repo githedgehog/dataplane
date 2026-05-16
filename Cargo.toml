@@ -2,6 +2,7 @@
 
 members = [
     "args",
+    "cascade",
     "cli",
     "common",
     "concurrency",
@@ -59,6 +60,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 
 # Internal
 args = { path = "./args", package = "dataplane-args", features = [] }
+cascade = { path = "./cascade", package = "dataplane-cascade", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
 concurrency = { path = "./concurrency", package = "dataplane-concurrency", features = [] }
