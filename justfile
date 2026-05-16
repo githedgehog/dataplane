@@ -52,17 +52,32 @@ _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profil
 
 # filters for nextest
 #
-# Under `shuttle`, isolate the bolero x shuttle suite (a `shuttle`
-# substring matches both the test binary and the test-name
-# convention).
+# Under `shuttle`, the legacy `dataplane-quiescent` test layout had a
+# `shuttle` binary that hosted the bolero x shuttle suite, and we used
+# `--package=shuttle` (now an `-E 'package(shuttle)'`-style filter
+# embedded in nextest's argv) to isolate it.  Today that suite lives in
+# `concurrency/tests/quiescent_shuttle.rs`, and the test binary is
+# `quiescent_shuttle`; matching the substring `shuttle` is good enough.
 #
-# Under `loom`, the legacy filter `-E 'binary(loom)'` matched the
-# old `dataplane-quiescent` `loom` test binary.  After absorbing
-# the crate, the binary is `quiescent_loom` (and later test files
-# add more); an empty filter lets nextest walk every archived
-# binary.  Tests that don't apply under loom are cfg-gated out and
-# compile to zero entries.
-filter := if features == "shuttle" { "shuttle" } else { "" }
+# Under `loom`, the legacy filter `-E 'binary(loom)'` matched
+# `quiescent_loom`, the single integration-test binary that opted into
+# `loom::model`.  After the concurrency rework, loom-compatible tests
+# are spread across multiple binaries (`quiescent_model`,
+# `thread_scope`, `arc_weak`, `stress_dispatch`); the rest are gated
+# with `#![cfg(not(any(feature = "loom", ...)))]` and compile down to
+# zero tests under the loom feature.  An empty filter is therefore the
+# right answer: nextest walks every archived binary, the cfg-gated
+# ones contain no tests, and the loom-compatible ones run under their
+# `#[concurrency::test]`-routed `loom::model` body.
+# Match all shuttle variants (`shuttle`, `shuttle_pct`, `shuttle_dfs`).
+# Under any shuttle backend, `concurrency::sync` types ARE shuttle
+# primitives, and touching them outside a `shuttle::check_*`-wrapped
+# body panics with `ExecutionState NotSet`. Tests that are designed
+# to run under shuttle either go through `#[concurrency::test]` (which
+# emits a `concurrency_model::<backend>` leaf -- the substring matches)
+# or live in a `*_shuttle` module / `*shuttle*` binary by convention.
+# Other workspace tests would fail spuriously without this filter.
+filter := if features =~ "^shuttle" { "shuttle" } else { "" }
 
 # instrumentation mode (none/coverage)
 instrument := "none"
