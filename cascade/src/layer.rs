@@ -96,6 +96,7 @@ impl<T> Outcome<T> {
 /// output is computed at lookup time should either store the
 /// computed value in `Self` and return a borrow, or use interior
 /// mutability with care.
+// TODO: I still suspect that this trait should be replaced with Lookup
 pub trait Layer {
     /// The lookup input type (key, IP address, packet headers, ...).
     type Input: ?Sized;

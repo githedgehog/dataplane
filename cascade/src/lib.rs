@@ -14,10 +14,10 @@
 //! Cascade-shaped match-action storage primitive.
 //!
 //! Models a small in-memory LSM: writes land in a concurrent
-//! multi-writer **head**, periodically sealed into immutable
+//! multi-writer **head**, periodically frozen into immutable
 //! intermediate layers, eventually compacted into an immutable
 //! **tail** that is the ground-truth state.  Readers walk the
-//! resulting chain head -> sealed[] -> tail and stop at the first
+//! resulting chain head -> frozen[] -> tail and stop at the first
 //! definitive answer.
 //!
 //! The same primitive serves three distinct problems:
@@ -35,11 +35,11 @@
 //!    pending-replication memory; snapshot fallback covers extended
 //!    peer outages.
 //!
-//! The unifying observation is that "drain a head into a sealed
-//! layer", "fuse two sealed layers", "compact sealed layers into
+//! The unifying observation is that "freeze a head into a frozen
+//! layer", "fuse two frozen layers", "compact frozen layers into
 //! the tail", and "merge a drain into a consumer's pending diff"
 //! are all the same operation applied to different operands.  The
-//! cascade exposes that operation via the [`Absorb`] trait.
+//! cascade exposes that operation via the [`Upsert`] trait.
 //!
 //! # Reader model
 //!
@@ -53,24 +53,24 @@
 //!
 //! Writes carry an [`Op`](MutableHead::Op) value into the head via
 //! [`MutableHead::write`].  Concurrent writers to the same key
-//! are merged via the value type's [`Absorb`] impl.  Periodically
-//! (on head pressure or external trigger) the head is sealed and
+//! are merged via the value type's [`Upsert`] impl.  Periodically
+//! (on head pressure or external trigger) the head is frozen and
 //! a new head takes its place.
 //!
 //! # Consumer model
 //!
-//! Drain events deliver `Arc<Sealed>` to subscribers.  Each consumer
+//! Drain events deliver `Arc<Frozen>` to subscribers.  Each consumer
 //! is expected to take its snapshot promptly and release the `Arc`,
 //! managing its own slow work against a private copy.  See
 //! [`DiffBuffer`] for the standard "consumer-side merged pending"
 //! helper.
 
-pub mod absorb;
 pub mod cascade;
 pub mod diff_buffer;
 pub mod head;
 pub mod layer;
 pub mod merge;
+pub mod upsert;
 
 /// Reusable property-test harness for cascade-related traits.
 ///
@@ -81,9 +81,9 @@ pub mod merge;
 #[cfg(any(test, feature = "bolero"))]
 pub mod property_tests;
 
-pub use absorb::{Absorb, LastWriteWins};
 pub use cascade::{Cascade, Snapshot};
 pub use diff_buffer::DiffBuffer;
 pub use head::MutableHead;
 pub use layer::{Layer, Outcome};
 pub use merge::MergeInto;
+pub use upsert::{LastWriteWins, Upsert};

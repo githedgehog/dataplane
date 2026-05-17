@@ -37,16 +37,16 @@
 
 use cascade::{Cascade, Snapshot};
 
-use crate::layers::{AclHead, AclOp, AclSealed, AclTail};
+use crate::layers::{AclFrozen, AclHead, AclOp, AclTail};
 use crate::types::{AclRule, Action, Headers};
 
 /// The consumer-facing ACL classifier.
 ///
-/// Wraps a [`Cascade<AclHead, AclSealed, AclTail>`] and adds the
+/// Wraps a [`Cascade<AclHead, AclFrozen, AclTail>`] and adds the
 /// ACL-specific surface: classify-by-headers, install, default
 /// action, etc.
 pub struct Classifier {
-    cascade: Cascade<AclHead, AclSealed, AclTail>,
+    cascade: Cascade<AclHead, AclFrozen, AclTail>,
     /// The action to apply when no rule matches.  Captured at
     /// construction; not mutable, because changing the default
     /// fate of an in-flight classifier is a semantically loaded
@@ -96,7 +96,7 @@ impl Classifier {
     /// Becomes visible to readers after the next
     /// [`rotate`](Self::rotate).  Concurrent installs at the same
     /// priority resolve via last-writer-wins (see the per-key
-    /// `Absorb` impl on `AclRule`).
+    /// `Upsert` impl on `AclRule`).
     pub fn install(&self, rule: AclRule) {
         self.cascade.write(AclOp::Install(rule));
     }
@@ -123,8 +123,8 @@ impl Classifier {
 
     /// Number of sealed layers currently in the cascade.  Diagnostic.
     #[must_use]
-    pub fn sealed_depth(&self) -> usize {
-        self.cascade.sealed_depth()
+    pub fn frozen_depth(&self) -> usize {
+        self.cascade.frozen_depth()
     }
 
     /// Take a snapshot of the classifier.
@@ -135,7 +135,7 @@ impl Classifier {
     /// rule set for diagnostics).  Most callers should use
     /// [`classify`](Self::classify) instead.
     #[must_use]
-    pub fn snapshot(&self) -> Snapshot<AclHead, AclSealed, AclTail> {
+    pub fn snapshot(&self) -> Snapshot<AclHead, AclFrozen, AclTail> {
         self.cascade.snapshot()
     }
 }

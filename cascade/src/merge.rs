@@ -3,10 +3,10 @@
 
 //! Type-encoded compaction logic.
 //!
-//! [`MergeInto<Target>`] is the trait that sealed layers implement
+//! [`MergeInto<Target>`] is the trait that frozen layers implement
 //! to declare \"here is how I fold myself into a tail of type
 //! `Target`\".  The cascade's compactor walks the to-be-merged
-//! sealed slice and folds each layer through `merge_into`, replacing
+//! frozen slice and folds each layer through `merge_into`, replacing
 //! the tail with the result.
 //!
 //! # Why a trait instead of a closure
@@ -23,14 +23,14 @@
 //!   compactions use the same logic by construction.
 //! - **Testing.**  A free-floating closure cannot be the subject of
 //!   a trait-based property test.  Encoding merge in `MergeInto`
-//!   lets us share an Absorb-laws-style harness across all
+//!   lets us share an `Upsert`-laws-style harness across all
 //!   implementations.
 //!
 //! # Algebraic expectations
 //!
 //! Implementations are expected to produce the same result
-//! regardless of the order sealed layers were drained, *modulo* the
-//! per-layer ordering enforced by the cascade's fold (oldest sealed
+//! regardless of the order frozen layers were drained, *modulo* the
+//! per-layer ordering enforced by the cascade's fold (oldest frozen
 //! is merged first, then progressively newer).  The fold ordering
 //! is fixed by the cascade walk semantic -- newer layers shadow
 //! older ones -- so implementations should preserve that property
@@ -45,7 +45,7 @@
 //! # Example
 //!
 //! ```ignore
-//! impl MergeInto<MyTail> for MySealed {
+//! impl MergeInto<MyTail> for MyFrozen {
 //!     fn merge_into(&self, target: &MyTail) -> MyTail {
 //!         let mut out = target.clone();
 //!         for (k, v) in &self.entries {
@@ -59,7 +59,7 @@
 /// Fold `self` into a copy of `target`, producing a new `Target`.
 ///
 /// Called by [`Cascade::compact`](crate::Cascade::compact) once per
-/// sealed layer being merged.  The cascade folds oldest sealed
+/// frozen layer being merged.  The cascade folds oldest frozen
 /// first; each call accumulates onto the previous merge's result.
 ///
 /// # Contract

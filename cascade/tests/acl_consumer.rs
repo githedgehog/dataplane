@@ -79,7 +79,7 @@ struct Headers {
 }
 
 // ---------------------------------------------------------------------------
-// AclSealed: immutable rule list sorted ascending by priority.
+// AclFrozen: immutable rule list sorted ascending by priority.
 //
 // The cascade walks layers head -> sealed[] -> tail looking for the
 // first Match.  Within a layer, ACL classification walks rules in
@@ -88,13 +88,13 @@ struct Headers {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-struct AclSealed {
+struct AclFrozen {
     /// Sorted ascending by priority on construction so the lookup
     /// is a linear scan in precedence order.
     rules: Vec<AclRule>,
 }
 
-impl AclSealed {
+impl AclFrozen {
     fn from_rules<I: IntoIterator<Item = AclRule>>(it: I) -> Self {
         let mut rules: Vec<AclRule> = it.into_iter().collect();
         rules.sort_by_key(|r| r.priority);
@@ -102,7 +102,7 @@ impl AclSealed {
     }
 }
 
-impl Layer for AclSealed {
+impl Layer for AclFrozen {
     type Input = Headers;
     type Output = AclRule;
 
@@ -156,7 +156,7 @@ enum AclOp {
 
 impl MutableHead for AclHead {
     type Op = AclOp;
-    type Sealed = AclSealed;
+    type Frozen = AclFrozen;
 
     fn write(&self, op: AclOp) {
         let AclOp::Install(rule) = op;
@@ -167,9 +167,9 @@ impl MutableHead for AclHead {
         guard.insert(rule.priority, rule);
     }
 
-    fn seal(&self) -> AclSealed {
+    fn freeze(&self) -> AclFrozen {
         let guard = self.rules.lock().expect("acl head mutex poisoned");
-        AclSealed::from_rules(guard.values().copied())
+        AclFrozen::from_rules(guard.values().copied())
     }
 
     fn approx_size(&self) -> usize {
@@ -184,8 +184,8 @@ impl MutableHead for AclHead {
 // and self is always newer than target by the time we're invoked.
 // ---------------------------------------------------------------------------
 
-impl MergeInto<AclSealed> for AclSealed {
-    fn merge_into(&self, target: &AclSealed) -> AclSealed {
+impl MergeInto<AclFrozen> for AclFrozen {
+    fn merge_into(&self, target: &AclFrozen) -> AclFrozen {
         let mut by_priority: BTreeMap<Priority, AclRule> = BTreeMap::new();
         // Seed from target first.
         for r in &target.rules {
@@ -195,7 +195,7 @@ impl MergeInto<AclSealed> for AclSealed {
         for r in &self.rules {
             by_priority.insert(r.priority, *r);
         }
-        AclSealed::from_rules(by_priority.into_values())
+        AclFrozen::from_rules(by_priority.into_values())
     }
 }
 
@@ -227,7 +227,7 @@ fn allow_any() -> AclRule {
     )
 }
 
-fn classify(c: &Cascade<AclHead, AclSealed, AclSealed>, headers: &Headers) -> Option<Action> {
+fn classify(c: &Cascade<AclHead, AclFrozen, AclFrozen>, headers: &Headers) -> Option<Action> {
     c.snapshot().lookup(headers).map(|r| r.action)
 }
 
@@ -245,13 +245,13 @@ fn pkt(src: &str, dst: &str, port: u16) -> Headers {
 
 #[test]
 fn empty_cascade_returns_no_match() {
-    let c = Cascade::new(AclHead::empty(), AclSealed::from_rules([]));
+    let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([]));
     assert_eq!(classify(&c, &pkt("10.0.0.1", "10.0.0.2", 80)), None);
 }
 
 #[test]
 fn default_allow_in_tail_matches() {
-    let c = Cascade::new(AclHead::empty(), AclSealed::from_rules([allow_any()]));
+    let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
     assert_eq!(
         classify(&c, &pkt("10.0.0.1", "10.0.0.2", 80)),
         Some(Action::Allow)
@@ -260,7 +260,7 @@ fn default_allow_in_tail_matches() {
 
 #[test]
 fn install_rule_takes_effect_after_rotation() {
-    let c = Cascade::new(AclHead::empty(), AclSealed::from_rules([allow_any()]));
+    let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
     let pkt_22 = pkt("10.0.0.1", "10.0.0.2", 22);
 
     // Before rotate: head holds the rule but Layer::lookup on the
@@ -285,7 +285,7 @@ fn install_rule_takes_effect_after_rotation() {
 
 #[test]
 fn higher_precedence_rule_shadows_lower() {
-    let c = Cascade::new(AclHead::empty(), AclSealed::from_rules([allow_any()]));
+    let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
 
     // Drop all traffic to port 22 (priority 100).
     c.write(AclOp::Install(rule(
@@ -334,7 +334,7 @@ fn cascade_walk_respects_sealed_order() {
     // newest sealed first.  Same priority value in two layers means
     // the newer wins because the cascade short-circuits on first
     // match.
-    let c = Cascade::new(AclHead::empty(), AclSealed::from_rules([allow_any()]));
+    let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
 
     // Older rotation: drop port 22 at priority 100.
     c.write(AclOp::Install(rule(
@@ -369,7 +369,7 @@ fn cascade_walk_respects_sealed_order() {
 
 #[test]
 fn compact_collapses_layers_preserving_precedence() {
-    let c = Cascade::new(AclHead::empty(), AclSealed::from_rules([allow_any()]));
+    let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
 
     // Three rotations, each introducing a rule at decreasing
     // priority value (increasing precedence).
@@ -389,7 +389,7 @@ fn compact_collapses_layers_preserving_precedence() {
         )));
         c.rotate(AclHead::empty);
     }
-    assert_eq!(c.sealed_depth(), 3);
+    assert_eq!(c.frozen_depth(), 3);
 
     // The walk before compaction: newest-first -> Allow at 100 wins.
     let pre = pkt("10.0.0.1", "10.0.0.2", 22);
@@ -397,7 +397,7 @@ fn compact_collapses_layers_preserving_precedence() {
 
     // Compact: keep 1 sealed layer, fold the rest into the tail.
     c.compact(1);
-    assert_eq!(c.sealed_depth(), 1);
+    assert_eq!(c.frozen_depth(), 1);
 
     // Walk after compaction: Allow at 100 still wins, but now from
     // a fused-into-tail position.
@@ -452,6 +452,6 @@ fn compact_collapses_layers_preserving_precedence() {
 //    `Op::Install(AclRule)` is a single-valued enum here because we
 //    only support install.  Adding remove/replace turns it into a
 //    richer enum, which is fine.  The `MutableHead::Op` and
-//    `Absorb::Op` distinction we drew earlier remains useful: the
+//    `Upsert::Op` distinction we drew earlier remains useful: the
 //    head decomposes its `Op` into per-key absorb-able pieces.
 // ---------------------------------------------------------------------------

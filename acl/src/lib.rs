@@ -23,11 +23,11 @@
 //! # Composition
 //!
 //! ```text
-//!   Cascade<H = AclHead, S = AclSealed, T = AclTail>
+//!   Cascade<H = AclHead, S = AclFrozen, T = AclTail>
 //!     - AclHead   : multi-writer BTreeMap, returns Continue (writes
 //!                   visible after the next rotate)
-//!     - AclSealed : immutable priority-sorted Vec<AclRule>
-//!     - AclTail   : same shape as AclSealed for now (DPDK ACL
+//!     - AclFrozen : immutable priority-sorted Vec<AclRule>
+//!     - AclTail   : same shape as AclFrozen for now (DPDK ACL
 //!                   variant will land later)
 //! ```
 //!
@@ -39,5 +39,5 @@ pub mod layers;
 pub mod types;
 
 pub use classifier::Classifier;
-pub use layers::{AclHead, AclOp, AclSealed, AclTail};
+pub use layers::{AclFrozen, AclHead, AclOp, AclTail};
 pub use types::{AclRule, Action, Headers, Match, Priority, Protocol};

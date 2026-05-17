@@ -3,14 +3,14 @@
 
 //! Self-test for the property harness.
 //!
-//! Exercises `check_absorb_order_independent` against the provided
+//! Exercises `check_upsert_order_independent` against the provided
 //! [`LastWriteWins`] wrapper, which we know is correct by
 //! construction.  If this test fails, the harness itself is
 //! broken; if it passes, the harness is a useful black-box check
-//! for consumer `Absorb` impls.
+//! for consumer `Upsert` impls.
 //!
 //! The test does *not* try to construct a deliberately broken
-//! `Absorb` impl to confirm the harness catches violations -- that
+//! `Upsert` impl to confirm the harness catches violations -- that
 //! kind of negative test is hostile to property frameworks because
 //! the "expected failure" depends on which counter-example the
 //! generator happens to produce on a given run.  The positive
@@ -22,8 +22,8 @@
 
 use bolero::TypeGenerator;
 
-use dataplane_cascade::property_tests::check_absorb_order_independent;
-use dataplane_cascade::{Absorb, LastWriteWins};
+use dataplane_cascade::property_tests::check_upsert_order_independent;
+use dataplane_cascade::{LastWriteWins, Upsert};
 
 // Wrapper type so we can implement `TypeGenerator` on
 // `LastWriteWins<u32>`'s Op without orphan-rule trouble.
@@ -39,11 +39,11 @@ struct LwwOpInner {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Wrapped(LastWriteWins<u32>);
 
-impl Absorb for Wrapped {
+impl Upsert for Wrapped {
     type Op = LwwOp;
 
-    fn absorb(&mut self, op: Self::Op) {
-        self.0.absorb(LastWriteWins {
+    fn upsert(&mut self, op: Self::Op) {
+        self.0.upsert(LastWriteWins {
             version: u64::from(op.0.version),
             value: op.0.value,
         });
@@ -59,5 +59,5 @@ impl Absorb for Wrapped {
 
 #[test]
 fn last_write_wins_satisfies_order_independence() {
-    check_absorb_order_independent::<Wrapped>();
+    check_upsert_order_independent::<Wrapped>();
 }

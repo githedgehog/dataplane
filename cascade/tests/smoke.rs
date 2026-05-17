@@ -9,7 +9,7 @@
 //! tail, tombstones in the head suppress lower-layer hits).  Also
 //! exercises [`Cascade::rotate`]'s seal-and-publish flow.
 //!
-//! This test is *not* an Absorb-laws property suite -- those will
+//! This test is *not* an Upsert-laws property suite -- those will
 //! live in their own test file once the property harness lands.
 
 #![allow(clippy::expect_used)]
@@ -17,10 +17,10 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use dataplane_cascade::{Absorb, Cascade, Layer, MergeInto, MutableHead, Outcome};
+use dataplane_cascade::{Cascade, Layer, MergeInto, MutableHead, Outcome, Upsert};
 
 // ---------------------------------------------------------------------------
-// A trivial value type with two-position Absorb so we exercise both
+// A trivial value type with two-position Upsert so we exercise both
 // arms (replace and tombstone).
 // ---------------------------------------------------------------------------
 
@@ -36,10 +36,10 @@ enum Entry {
     Tombstone,
 }
 
-impl Absorb for Entry {
+impl Upsert for Entry {
     type Op = Op;
 
-    fn absorb(&mut self, op: Self::Op) {
+    fn upsert(&mut self, op: Self::Op) {
         *self = Self::seed(op);
     }
 
@@ -85,20 +85,20 @@ impl Layer for TestHead {
 
 impl MutableHead for TestHead {
     type Op = (u32, Op);
-    type Sealed = SealedMap;
+    type Frozen = FrozenMap;
 
     fn write(&self, op: (u32, Op)) {
         let mut guard = self.inner.lock().expect("test head mutex poisoned");
         let (k, op) = op;
         guard
             .entry(k)
-            .and_modify(|e| e.absorb(op))
+            .and_modify(|e| e.upsert(op))
             .or_insert_with(|| Entry::seed(op));
     }
 
-    fn seal(&self) -> SealedMap {
+    fn freeze(&self) -> FrozenMap {
         let guard = self.inner.lock().expect("test head mutex poisoned");
-        SealedMap {
+        FrozenMap {
             inner: guard.clone(),
         }
     }
@@ -113,11 +113,11 @@ impl MutableHead for TestHead {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct SealedMap {
+struct FrozenMap {
     inner: HashMap<u32, Entry>,
 }
 
-impl SealedMap {
+impl FrozenMap {
     fn from_pairs<I: IntoIterator<Item = (u32, Entry)>>(it: I) -> Self {
         Self {
             inner: it.into_iter().collect(),
@@ -125,7 +125,7 @@ impl SealedMap {
     }
 }
 
-impl Layer for SealedMap {
+impl Layer for FrozenMap {
     type Input = u32;
     type Output = Entry;
 
@@ -138,12 +138,12 @@ impl Layer for SealedMap {
     }
 }
 
-// `merge_into` for SealedMap-on-SealedMap: walk self's entries and
+// `merge_into` for FrozenMap-on-FrozenMap: walk self's entries and
 // overlay them on a clone of target.  Value entries overwrite;
 // tombstones remove (the merged tail does not carry tombstones, it
 // just lacks the entry).  Newer-wins as required by the trait.
-impl MergeInto<SealedMap> for SealedMap {
-    fn merge_into(&self, target: &SealedMap) -> SealedMap {
+impl MergeInto<FrozenMap> for FrozenMap {
+    fn merge_into(&self, target: &FrozenMap) -> FrozenMap {
         let mut out = target.inner.clone();
         for (k, v) in &self.inner {
             match v {
@@ -155,7 +155,7 @@ impl MergeInto<SealedMap> for SealedMap {
                 }
             }
         }
-        SealedMap { inner: out }
+        FrozenMap { inner: out }
     }
 }
 
@@ -165,8 +165,8 @@ impl MergeInto<SealedMap> for SealedMap {
 
 fn build_cascade(
     tail_pairs: impl IntoIterator<Item = (u32, Entry)>,
-) -> Cascade<TestHead, SealedMap, SealedMap> {
-    Cascade::new(TestHead::empty(), SealedMap::from_pairs(tail_pairs))
+) -> Cascade<TestHead, FrozenMap, FrozenMap> {
+    Cascade::new(TestHead::empty(), FrozenMap::from_pairs(tail_pairs))
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn rotate_seals_head_into_sealed_layer() {
     c.rotate(TestHead::empty);
 
     let snap = c.snapshot();
-    assert_eq!(snap.sealed_depth(), 1);
+    assert_eq!(snap.frozen_depth(), 1);
     assert_eq!(snap.lookup(&42), Some(&Entry::Value(200)));
 }
 
@@ -202,8 +202,8 @@ fn rotated_tombstone_in_sealed_suppresses_tail_hit() {
     c.rotate(TestHead::empty);
 
     let snap = c.snapshot();
-    assert_eq!(snap.sealed_depth(), 1);
-    // Sealed layer has a tombstone for 42; tail has a value.
+    assert_eq!(snap.frozen_depth(), 1);
+    // Frozen layer has a tombstone for 42; tail has a value.
     // Cascade walk hits the tombstone first -> Forbid -> None.
     assert_eq!(snap.lookup(&42), None);
 }
@@ -222,7 +222,7 @@ fn multiple_rotations_stack_in_newest_first_order() {
     c.rotate(TestHead::empty);
 
     let snap = c.snapshot();
-    assert_eq!(snap.sealed_depth(), 3);
+    assert_eq!(snap.frozen_depth(), 3);
     // sealed[0] contains 400, sealed[1] contains 300, sealed[2]
     // contains 200, tail contains 100.  Newest-first order means
     // we hit 400 first.
@@ -233,7 +233,7 @@ fn multiple_rotations_stack_in_newest_first_order() {
 fn compact_with_no_sealed_is_noop() {
     let c = build_cascade([(42, Entry::Value(100))]);
     c.compact(0);
-    assert_eq!(c.sealed_depth(), 0);
+    assert_eq!(c.frozen_depth(), 0);
     assert_eq!(c.snapshot().lookup(&42), Some(&Entry::Value(100)));
 }
 
@@ -246,13 +246,13 @@ fn compact_folds_oldest_sealed_into_tail() {
     c.rotate(TestHead::empty);
 
     // Two sealed layers, tail has 1.
-    assert_eq!(c.sealed_depth(), 2);
+    assert_eq!(c.frozen_depth(), 2);
 
     // keep = 1 -> fold the oldest sealed (containing {2: 20}) into
     // the tail.  After compact: sealed has 1 layer ({3: 30}), tail
     // has {1: 10, 2: 20}.
     c.compact(1);
-    assert_eq!(c.sealed_depth(), 1);
+    assert_eq!(c.frozen_depth(), 1);
 
     let snap = c.snapshot();
     assert_eq!(snap.lookup(&1), Some(&Entry::Value(10)));
@@ -267,10 +267,10 @@ fn compact_to_zero_keeps_no_sealed() {
         c.write((v, Op::Set(v * 10)));
         c.rotate(TestHead::empty);
     }
-    assert_eq!(c.sealed_depth(), 5);
+    assert_eq!(c.frozen_depth(), 5);
 
     c.compact(0);
-    assert_eq!(c.sealed_depth(), 0);
+    assert_eq!(c.frozen_depth(), 0);
 
     let snap = c.snapshot();
     for v in 1u32..=5 {
@@ -290,7 +290,7 @@ fn compact_applies_tombstones_to_tail() {
     // sealed vec is empty and the tail no longer contains 42 at
     // all (the merge removed it).
     c.compact(0);
-    assert_eq!(c.sealed_depth(), 0);
+    assert_eq!(c.frozen_depth(), 0);
     assert_eq!(c.snapshot().lookup(&42), None);
 }
 
@@ -307,7 +307,7 @@ fn snapshot_held_across_compact_keeps_old_layers_alive() {
 
     // Compact: merges the sealed layer into the tail.
     c.compact(0);
-    assert_eq!(c.sealed_depth(), 0);
+    assert_eq!(c.frozen_depth(), 0);
 
     // pre_compact still sees the old composition because its Arcs
     // point at the pre-compact generations.  Both keys are visible.
@@ -317,7 +317,7 @@ fn snapshot_held_across_compact_keeps_old_layers_alive() {
     // Fresh snapshot sees the post-compact state -- same logical
     // contents, different physical layout.
     let post_compact = c.snapshot();
-    assert_eq!(post_compact.sealed_depth(), 0);
+    assert_eq!(post_compact.frozen_depth(), 0);
     assert_eq!(post_compact.lookup(&1), Some(&Entry::Value(10)));
     assert_eq!(post_compact.lookup(&2), Some(&Entry::Value(20)));
 }
