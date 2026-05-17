@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "acl",
     "args",
     "cascade",
     "cli",
@@ -59,6 +60,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 # justifying why it is workspace-wide.
 
 # Internal
+acl = { path = "./acl", package = "dataplane-acl", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
 cascade = { path = "./cascade", package = "dataplane-cascade", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
