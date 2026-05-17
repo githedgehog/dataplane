@@ -46,7 +46,7 @@
 //! Data-plane readers load `Arc<Head>` once via [`Cascade::head`]
 //! and walk the chain.  Each layer answers with an [`Outcome`]:
 //! [`Match`](Outcome::Match) stops the cascade with a hit,
-//! [`Miss`](Outcome::Miss) falls through, [`Forbid`](Outcome::Forbid)
+//! [`Continue`](Outcome::Continue) falls through, [`Forbid`](Outcome::Forbid)
 //! stops the cascade with no match (the generalised tombstone).
 //!
 //! # Writer model
@@ -70,9 +70,20 @@ pub mod cascade;
 pub mod diff_buffer;
 pub mod head;
 pub mod layer;
+pub mod merge;
+
+/// Reusable property-test harness for cascade-related traits.
+///
+/// Available when the `bolero` feature is enabled; consumer crates
+/// should add `dataplane-cascade = { workspace = true, features = ["bolero"] }`
+/// to their dev-dependencies to call into the harness from their
+/// own test bodies.
+#[cfg(any(test, feature = "bolero"))]
+pub mod property_tests;
 
 pub use absorb::{Absorb, LastWriteWins};
-pub use cascade::Cascade;
+pub use cascade::{Cascade, Snapshot};
 pub use diff_buffer::DiffBuffer;
 pub use head::MutableHead;
 pub use layer::{Layer, Outcome};
+pub use merge::MergeInto;
