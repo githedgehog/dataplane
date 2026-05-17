@@ -49,8 +49,21 @@ pub trait MutableHead: Layer {
     /// [`Absorb`](crate::Absorb) impl.
     fn write(&self, op: Self::Op);
 
-    /// Convert this head into an immutable sealed layer.
-    fn seal(self) -> Self::Sealed;
+    /// Snapshot this head into an immutable sealed layer.
+    ///
+    /// Takes `&self` because in production the head is published
+    /// via [`Slot`](concurrency::slot::Slot) and lives behind an
+    /// `Arc`.  The sealed layer captures the head's contents at
+    /// the moment of the call; concurrent writes may or may not be
+    /// reflected depending on the implementation's internal
+    /// synchronisation, and any writes arriving after the seal that
+    /// still land on this (now-orphaned) head are silently lost.
+    /// Callers are expected to refresh their head `Arc` from the
+    /// [`Cascade`](crate::Cascade) frequently enough that this
+    /// transient is not a correctness concern -- see the cascade's
+    /// [`rotate`](crate::Cascade::rotate) flow for the ordering
+    /// guarantees that make this safe.
+    fn seal(&self) -> Self::Sealed;
 
     /// Approximate occupancy, used by the drain trigger.  Need not
     /// be precise; the cascade only consults it to decide "is this

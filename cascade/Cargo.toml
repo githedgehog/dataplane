@@ -7,9 +7,22 @@ version.workspace = true
 
 [features]
 default = []
+# Exposes the property-test harness in `cascade::property_tests` so
+# consumer crates can verify their `Absorb` impls against the
+# cascade's algebraic laws.  Off by default to keep bolero out of
+# the production build graph.
+bolero = ["dep:bolero"]
 
 [dependencies]
 concurrency = { workspace = true, features = [] }
+bolero = { workspace = true, optional = true, features = ["std"] }
 
 [dev-dependencies]
+# Self-test of the property harness against `LastWriteWins`.  Uses
+# the same crate's `bolero` feature so the harness is exercised
+# the way a consumer would exercise it.  The self-path dev-dep
+# enables the feature for integration tests in `tests/` (which
+# compile the library without `cfg(test)` and therefore would not
+# otherwise see the harness module).
+dataplane-cascade = { path = ".", features = ["bolero"] }
 bolero = { workspace = true, features = ["std"] }
