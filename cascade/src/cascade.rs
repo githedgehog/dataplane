@@ -20,9 +20,11 @@
 //! Generation rotation -- sealing the current head into a fresh
 //! sealed layer and installing a new empty head -- is driven by
 //! [`Cascade::rotate`].  Compaction (fusing old sealed layers into
-//! the tail) is intentionally not yet implemented; the sealed vec
-//! grows unboundedly under repeated rotation until the compactor
-//! lands in a follow-on commit.
+//! the tail via [`MergeInto`]) is driven by [`Cascade::compact`].
+//!
+//! When the `subscribe` feature is enabled, each rotate also
+//! publishes the freshly-sealed `Arc<S>` to subscribers via a
+//! tokio broadcast channel; see [`Cascade::subscribe`].
 
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
@@ -114,14 +116,34 @@ where
     pub fn sealed_depth(&self) -> usize {
         self.sealed.len()
     }
+
+    /// Access the sealed-layer Arcs in this snapshot, newest-first.
+    ///
+    /// Returns a reference to the snapshot's internal vector; the
+    /// borrow is tied to `&self`.  Consumers that want to retain
+    /// individual sealed layers beyond the snapshot's lifetime
+    /// should `Arc::clone` the entries they need.
+    #[must_use]
+    pub fn sealed(&self) -> &[Arc<S>] {
+        &self.sealed
+    }
 }
+
+/// Default capacity for the drain broadcast channel when the
+/// `subscribe` feature is enabled.  Subscribers that consume drain
+/// events slower than this many rotations behind get a
+/// `RecvError::Lagged(n)` from the receiver and are expected to
+/// react by resyncing from a fresh [`Snapshot`].
+#[cfg(feature = "subscribe")]
+const DEFAULT_DRAIN_CHANNEL_CAPACITY: usize = 16;
 
 /// A cascade.
 ///
 /// Owns the three publication slots and exposes the lifecycle
-/// operations (snapshot, write, rotate).  Production deployments
-/// will additionally drive a compactor and a drain subscription
-/// alongside; neither has landed yet.
+/// operations (snapshot, write, rotate, compact).  When the
+/// `subscribe` feature is enabled, additionally publishes each
+/// rotation's freshly-sealed layer to subscribers via a tokio
+/// broadcast channel; see [`Cascade::subscribe`].
 pub struct Cascade<H, S, T>
 where
     H: MutableHead<Sealed = S>,
@@ -131,6 +153,11 @@ where
     head: Slot<H>,
     sealed: Slot<Vec<Arc<S>>>,
     tail: Slot<T>,
+    /// Broadcast channel for drain events.  Each successful
+    /// [`rotate`](Cascade::rotate) emits the freshly-sealed
+    /// `Arc<S>` to all current subscribers.
+    #[cfg(feature = "subscribe")]
+    drain_sender: tokio::sync::broadcast::Sender<Arc<S>>,
 }
 
 impl<H, S, T> Cascade<H, S, T>
@@ -139,14 +166,90 @@ where
     S: Layer<Input = H::Input, Output = H::Output>,
     T: Layer<Input = H::Input, Output = H::Output>,
 {
-    /// Construct a cascade with the given initial head and tail and
-    /// an empty sealed vector.
+    /// Construct a cascade with the given initial head and tail
+    /// and an empty sealed vector.
+    ///
+    /// When the `subscribe` feature is enabled, this also creates
+    /// the drain broadcast channel with
+    /// [`DEFAULT_DRAIN_CHANNEL_CAPACITY`] slots.  Use
+    /// [`Cascade::with_drain_capacity`] to choose a different
+    /// capacity.
     pub fn new(head: H, tail: T) -> Self {
+        #[cfg(feature = "subscribe")]
+        let (drain_sender, _) = tokio::sync::broadcast::channel(DEFAULT_DRAIN_CHANNEL_CAPACITY);
         Self {
             head: Slot::from_pointee(head),
             sealed: Slot::from_pointee(Vec::new()),
             tail: Slot::from_pointee(tail),
+            #[cfg(feature = "subscribe")]
+            drain_sender,
         }
+    }
+
+    /// Construct a cascade with an explicit drain broadcast
+    /// channel capacity.
+    ///
+    /// Larger capacities let subscribers fall further behind
+    /// before receiving `RecvError::Lagged`.  Smaller capacities
+    /// keep memory usage lower at the cost of stricter
+    /// subscriber pace requirements.  The default is
+    /// [`DEFAULT_DRAIN_CHANNEL_CAPACITY`].
+    #[cfg(feature = "subscribe")]
+    pub fn with_drain_capacity(head: H, tail: T, capacity: usize) -> Self {
+        let (drain_sender, _) = tokio::sync::broadcast::channel(capacity);
+        Self {
+            head: Slot::from_pointee(head),
+            sealed: Slot::from_pointee(Vec::new()),
+            tail: Slot::from_pointee(tail),
+            drain_sender,
+        }
+    }
+
+    /// Subscribe to drain events.
+    ///
+    /// Each successful [`rotate`](Cascade::rotate) sends the
+    /// freshly-sealed `Arc<S>` to the returned receiver.  The
+    /// receiver only sees drains that happen *after* the call to
+    /// `subscribe` -- the broadcast channel does not backfill.
+    /// Consumers that need both the current state and the future
+    /// stream should call `subscribe` first, then [`snapshot`]
+    /// -- a drain that lands between the two calls will appear in
+    /// both, and consumers are responsible for tolerating that
+    /// double-application (typically by ensuring their
+    /// state-update is idempotent under repeated application of
+    /// the same `Arc<S>`).
+    ///
+    /// # Lag
+    ///
+    /// If a subscriber consumes drain events slower than they are
+    /// produced and falls more than `DEFAULT_DRAIN_CHANNEL_CAPACITY`
+    /// (or the value passed to [`with_drain_capacity`]) behind,
+    /// the next `recv` returns `RecvError::Lagged(skipped_count)`.
+    /// The convention is for the subscriber to respond by
+    /// resyncing from a fresh [`snapshot`](Cascade::snapshot) and
+    /// resuming receive from the now-current position.
+    ///
+    /// # Discipline
+    ///
+    /// Subscribers are expected to take the `Arc<S>` from `recv`,
+    /// promptly snapshot the layer's contents into private state,
+    /// and drop the `Arc`.  The cascade's compactor reclaims old
+    /// sealed layers by `Arc::try_unwrap` semantics indirectly --
+    /// holding the `Arc` indefinitely keeps the layer alive and
+    /// blocks reclamation.
+    ///
+    /// [`snapshot`]: Cascade::snapshot
+    /// [`with_drain_capacity`]: Cascade::with_drain_capacity
+    #[cfg(feature = "subscribe")]
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Arc<S>> {
+        self.drain_sender.subscribe()
+    }
+
+    /// Current number of subscribers.  Diagnostic.
+    #[cfg(feature = "subscribe")]
+    #[must_use]
+    pub fn subscriber_count(&self) -> usize {
+        self.drain_sender.receiver_count()
     }
 
     /// Take a coherent snapshot of the cascade's three slots.
@@ -232,6 +335,13 @@ where
         let old_head = self.head.load_full();
         let new_sealed = Arc::new(old_head.seal());
 
+        // Clone the new sealed Arc up front so we can emit it to
+        // subscribers after the stores complete.  Cloning an Arc is
+        // one atomic increment -- negligible relative to the seal
+        // and slot stores.
+        #[cfg(feature = "subscribe")]
+        let new_sealed_for_emit = Arc::clone(&new_sealed);
+
         // 2. Build the new sealed vector with the freshly-sealed
         //    layer at the front (newest first).
         let current = self.sealed.load_full();
@@ -245,6 +355,18 @@ where
 
         // 4. Install the new (empty) head.
         self.head.store(Arc::new(fresh_head()));
+
+        // 5. Notify drain subscribers.  After both stores so
+        //    subscribers can never observe state that the cascade
+        //    itself does not observe.  `send` is non-blocking; an
+        //    `Err` here just means there are no current subscribers
+        //    (which is fine) or the channel is full (which means
+        //    some subscriber is lagging and will see
+        //    `RecvError::Lagged` on their next recv).
+        #[cfg(feature = "subscribe")]
+        {
+            let _ = self.drain_sender.send(new_sealed_for_emit);
+        }
 
         // The old head's Arc is now held only by readers (if any)
         // and by the local `old_head` binding, which drops here.
