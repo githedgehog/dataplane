@@ -14,16 +14,16 @@
 //!   control-plane reconciliation interval.  See the cascade docs
 //!   on \"head readability under high write rate\" for the rationale.
 //!
-//! - [`AclSealed`] -- an immutable rule list sorted ascending by
+//! - [`AclFrozen`] -- an immutable rule list sorted ascending by
 //!   priority.  `Layer::lookup` walks the list in priority order
 //!   and returns the first match.
 //!
-//! - [`AclTail`] -- structurally identical to [`AclSealed`] in this
+//! - [`AclTail`] -- structurally identical to [`AclFrozen`] in this
 //!   first slice.  Kept as a distinct type so we can later swap in
 //!   a richer representation (DPDK ACL context, two-tier compiled
 //!   classifier) without touching the cascade composition.
 //!
-//! Compaction via [`MergeInto<AclTail>`] for [`AclSealed`] dedups
+//! Compaction via [`MergeInto<AclTail>`] for [`AclFrozen`] dedups
 //! by priority with newer-wins-on-conflict, mirroring the cascade
 //! walk's \"newer shadows older\" semantic.
 //!
@@ -33,20 +33,20 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use cascade::{Absorb, Layer, MergeInto, MutableHead, Outcome};
+use cascade::{Layer, MergeInto, MutableHead, Outcome, Upsert};
 
 use crate::types::{AclRule, Headers, Priority};
 
 // ---------------------------------------------------------------------------
-// AclRule wears Absorb at the per-key level via last-writer-wins.
+// AclRule wears Upsert at the per-key level via last-writer-wins.
 // The head decomposes its `Op` into (priority, AclRule) pairs and
 // dispatches through this impl on the BTreeMap entry API.
 // ---------------------------------------------------------------------------
 
-impl Absorb for AclRule {
+impl Upsert for AclRule {
     type Op = AclRule;
 
-    fn absorb(&mut self, op: Self::Op) {
+    fn upsert(&mut self, op: Self::Op) {
         // Last-writer-wins.  Concurrent installs at the same priority
         // converge to whichever arrived last in the head's internal
         // ordering; for ACL workloads this is acceptable because the
@@ -55,6 +55,7 @@ impl Absorb for AclRule {
         *self = op;
     }
 
+    // TODO: is this method strictly necessary?  If we reframe this as Evolve then
     fn seed(op: Self::Op) -> Self {
         op
     }
@@ -95,7 +96,7 @@ pub enum AclOp {
 /// the lock across the entire walk, which we are not willing to do.
 /// Writes become visible to readers after the next
 /// [`Cascade::rotate`](cascade::Cascade::rotate) seals this head into
-/// an [`AclSealed`] layer.
+/// an [`AclFrozen`] layer.
 pub struct AclHead {
     rules: Mutex<BTreeMap<Priority, AclRule>>,
 }
@@ -127,7 +128,7 @@ impl Layer for AclHead {
 
 impl MutableHead for AclHead {
     type Op = AclOp;
-    type Sealed = AclSealed;
+    type Frozen = AclFrozen;
 
     fn write(&self, op: AclOp) {
         let AclOp::Install(rule) = op;
@@ -137,16 +138,16 @@ impl MutableHead for AclHead {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .entry(rule.priority)
-            .and_modify(|existing| existing.absorb(rule))
+            .and_modify(|existing| existing.upsert(rule))
             .or_insert_with(|| AclRule::seed(rule));
     }
 
-    fn seal(&self) -> AclSealed {
+    fn freeze(&self) -> AclFrozen {
         let guard = self
             .rules
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        AclSealed::from_rules(guard.values().copied())
+        AclFrozen::from_rules(guard.values().copied())
     }
 
     fn approx_size(&self) -> usize {
@@ -155,7 +156,7 @@ impl MutableHead for AclHead {
 }
 
 // ---------------------------------------------------------------------------
-// AclSealed -- immutable rule list, priority-sorted for linear-scan
+// AclFrozen -- immutable rule list, priority-sorted for linear-scan
 // classification.
 // ---------------------------------------------------------------------------
 
@@ -168,12 +169,12 @@ impl MutableHead for AclHead {
 /// hand-tuned trie, etc.) -- but that lives in a different `Tail`
 /// type, not here.
 #[derive(Debug, Clone)]
-pub struct AclSealed {
+pub struct AclFrozen {
     /// Sorted ascending by priority on construction.
     rules: Vec<AclRule>,
 }
 
-impl AclSealed {
+impl AclFrozen {
     /// Build a sealed layer from an iterator of rules.  Sorts by
     /// priority once; subsequent lookups are linear scan over the
     /// sorted vec.
@@ -198,7 +199,7 @@ impl AclSealed {
     }
 }
 
-impl Layer for AclSealed {
+impl Layer for AclFrozen {
     type Input = Headers;
     type Output = AclRule;
 
@@ -213,7 +214,7 @@ impl Layer for AclSealed {
 }
 
 // ---------------------------------------------------------------------------
-// AclTail -- structurally identical to AclSealed in this first slice.
+// AclTail -- structurally identical to AclFrozen in this first slice.
 //
 // Kept as a distinct nominal type so consumers' generics bind
 // against `AclTail` specifically.  When we add a DPDK-backed tail
@@ -223,7 +224,7 @@ impl Layer for AclSealed {
 
 /// The ground-truth ACL layer the cascade compacts into.
 ///
-/// Same shape as [`AclSealed`] in this first slice.  Maintained as
+/// Same shape as [`AclFrozen`] in this first slice.  Maintained as
 /// a distinct nominal type so that swapping to a hardware-backed
 /// tail (`DpdkAclTail` wrapping `dpdk::acl::AclContext`) is a
 /// localised change.
@@ -266,14 +267,14 @@ impl Layer for AclTail {
 }
 
 // ---------------------------------------------------------------------------
-// MergeInto<AclTail> for AclSealed -- compaction logic.
+// MergeInto<AclTail> for AclFrozen -- compaction logic.
 //
 // Builds a dedup-by-priority BTreeMap seeded from the old tail,
 // then overlays self's rules (newer wins on conflict, mirroring
 // the cascade walk semantic).  The result becomes the new tail.
 // ---------------------------------------------------------------------------
 
-impl MergeInto<AclTail> for AclSealed {
+impl MergeInto<AclTail> for AclFrozen {
     fn merge_into(&self, target: &AclTail) -> AclTail {
         let mut by_priority: BTreeMap<Priority, AclRule> = BTreeMap::new();
         // Seed from the existing tail (lower precedence).

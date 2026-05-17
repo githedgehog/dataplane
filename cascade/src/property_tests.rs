@@ -3,7 +3,7 @@
 
 //! Reusable property-test harness for cascade-related traits.
 //!
-//! Consumer crates implementing [`Absorb`](crate::Absorb) on their
+//! Consumer crates implementing [`Upsert`](crate::Upsert) on their
 //! own value types can verify the algebraic laws by calling these
 //! functions from their own `#[test]` bodies, provided they (a)
 //! enable the `bolero` feature on `dataplane-cascade`, and (b)
@@ -22,7 +22,7 @@
 //!
 //! # What the harness checks
 //!
-//! - [`check_absorb_order_independent`] -- `Absorb` is commutative
+//! - [`check_upsert_order_independent`] -- `Upsert` is commutative
 //!   and associative across the user-supplied ops.  For any
 //!   sequence of three ops applied to the same seed, all 6
 //!   orderings produce the same final state.
@@ -37,7 +37,7 @@ use core::fmt::Debug;
 
 use bolero::TypeGenerator;
 
-use crate::Absorb;
+use crate::Upsert;
 
 /// Property: applying a fixed multiset of ops to the same seed in
 /// any order yields the same final state.
@@ -45,12 +45,12 @@ use crate::Absorb;
 /// Concretely: for every 3-tuple of ops `(a, b, c)` produced by the
 /// user's generator, this checks that all 6 orderings -- `(a,b,c)`,
 /// `(a,c,b)`, `(b,a,c)`, `(b,c,a)`, `(c,a,b)`, `(c,b,a)` -- starting
-/// from `seed(first_op)` and absorbing the rest, converge to the
+/// from `seed(first_op)` and upserting the rest, converge to the
 /// same `V`.
 ///
 /// This subsumes both commutativity (pairwise reorderings agree)
 /// and associativity (regroupings agree).  Failures usually mean
-/// the [`Absorb`] impl is missing a per-op monotone tiebreaker; the
+/// the [`Upsert`] impl is missing a per-op monotone tiebreaker; the
 /// fix is typically the [`LastWriteWins`](crate::LastWriteWins)
 /// wrapper or a similar version-counter discipline.
 ///
@@ -63,7 +63,7 @@ use crate::Absorb;
 ///
 /// # Panics
 ///
-/// Panics when the [`Absorb`] impl violates order independence --
+/// Panics when the [`Upsert`] impl violates order independence --
 /// the panic message identifies the canonical and divergent
 /// orderings plus the op triple that produced the divergence.
 /// This is the intended failure mode of the test.
@@ -71,16 +71,16 @@ use crate::Absorb;
 /// # Example
 ///
 /// ```ignore
-/// use dataplane_cascade::property_tests::check_absorb_order_independent;
+/// use dataplane_cascade::property_tests::check_upsert_order_independent;
 ///
 /// #[test]
-/// fn flow_entry_absorb_is_order_independent() {
-///     check_absorb_order_independent::<FlowEntry>();
+/// fn flow_entry_upsert_is_order_independent() {
+///     check_upsert_order_independent::<FlowEntry>();
 /// }
 /// ```
-pub fn check_absorb_order_independent<V>()
+pub fn check_upsert_order_independent<V>()
 where
-    V: Absorb + Clone + PartialEq + Debug + 'static,
+    V: Upsert + Clone + PartialEq + Debug + 'static,
     V::Op: TypeGenerator + Clone + Debug + 'static,
 {
     bolero::check!()
@@ -91,7 +91,7 @@ where
                 let alt = apply_in_order::<V>(ops, perm);
                 assert_eq!(
                     alt, canonical,
-                    "Absorb violates order independence: \
+                    "Upsert violates order independence: \
                      canonical order [0,1,2] -> {canonical:?} but \
                      order {perm:?} -> {alt:?} for ops {ops:?}"
                 );
@@ -101,11 +101,11 @@ where
 
 fn apply_in_order<V>(ops: &[V::Op; 3], order: [usize; 3]) -> V
 where
-    V: Absorb,
+    V: Upsert,
     V::Op: Clone,
 {
     let mut state = V::seed(ops[order[0]].clone());
-    state.absorb(ops[order[1]].clone());
-    state.absorb(ops[order[2]].clone());
+    state.upsert(ops[order[1]].clone());
+    state.upsert(ops[order[2]].clone());
     state
 }

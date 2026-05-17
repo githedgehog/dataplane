@@ -93,7 +93,7 @@ fn install_then_rotate_makes_rule_visible() {
     c.rotate();
 
     assert_eq!(c.classify(&target), Action::Drop);
-    assert_eq!(c.sealed_depth(), 1);
+    assert_eq!(c.frozen_depth(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ fn rules_from_multiple_rotations_compose_correctly() {
     c.install(rule(100, match_dst_port(23), Action::Drop));
     c.rotate();
 
-    assert_eq!(c.sealed_depth(), 3);
+    assert_eq!(c.frozen_depth(), 3);
 
     let ssh = pkt("10.0.0.1", "10.0.0.2", Protocol::Tcp, 12345, 22);
     let http = pkt("10.0.0.1", "10.0.0.2", Protocol::Tcp, 12345, 80);
@@ -201,7 +201,7 @@ fn compact_preserves_classification_results() {
         c.install(rule(prio, match_dst_port(port), action));
         c.rotate();
     }
-    assert_eq!(c.sealed_depth(), 3);
+    assert_eq!(c.frozen_depth(), 3);
 
     // Sample classifications BEFORE compaction.
     let before = [
@@ -213,7 +213,7 @@ fn compact_preserves_classification_results() {
 
     // Compact down to one sealed layer; the others fold into tail.
     c.compact(1);
-    assert_eq!(c.sealed_depth(), 1);
+    assert_eq!(c.frozen_depth(), 1);
 
     // Same classifications AFTER compaction.
     let after = [

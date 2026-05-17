@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use dataplane_cascade::{Absorb, Cascade, Layer, MergeInto, MutableHead, Outcome};
+use dataplane_cascade::{Cascade, Layer, MergeInto, MutableHead, Outcome, Upsert};
 
 // ---------------------------------------------------------------------------
 // Reuse the smoke-test minimal data model: a Mutex<HashMap> head, a
@@ -33,9 +33,9 @@ enum Entry {
     Tombstone,
 }
 
-impl Absorb for Entry {
+impl Upsert for Entry {
     type Op = Op;
-    fn absorb(&mut self, op: Self::Op) {
+    fn upsert(&mut self, op: Self::Op) {
         *self = Self::seed(op);
     }
     fn seed(op: Self::Op) -> Self {
@@ -68,20 +68,20 @@ impl Layer for TestHead {
 
 impl MutableHead for TestHead {
     type Op = (u32, Op);
-    type Sealed = SealedMap;
+    type Frozen = FrozenMap;
 
     fn write(&self, op: (u32, Op)) {
         let mut guard = self.inner.lock().expect("test head mutex poisoned");
         let (k, op) = op;
         guard
             .entry(k)
-            .and_modify(|e| e.absorb(op))
+            .and_modify(|e| e.upsert(op))
             .or_insert_with(|| Entry::seed(op));
     }
 
-    fn seal(&self) -> SealedMap {
+    fn freeze(&self) -> FrozenMap {
         let guard = self.inner.lock().expect("test head mutex poisoned");
-        SealedMap {
+        FrozenMap {
             inner: guard.clone(),
         }
     }
@@ -92,11 +92,11 @@ impl MutableHead for TestHead {
 }
 
 #[derive(Clone, Debug)]
-struct SealedMap {
+struct FrozenMap {
     inner: HashMap<u32, Entry>,
 }
 
-impl SealedMap {
+impl FrozenMap {
     fn from_pairs<I: IntoIterator<Item = (u32, Entry)>>(it: I) -> Self {
         Self {
             inner: it.into_iter().collect(),
@@ -104,7 +104,7 @@ impl SealedMap {
     }
 }
 
-impl Layer for SealedMap {
+impl Layer for FrozenMap {
     type Input = u32;
     type Output = Entry;
     fn lookup(&self, k: &u32) -> Outcome<&Entry> {
@@ -116,8 +116,8 @@ impl Layer for SealedMap {
     }
 }
 
-impl MergeInto<SealedMap> for SealedMap {
-    fn merge_into(&self, target: &SealedMap) -> SealedMap {
+impl MergeInto<FrozenMap> for FrozenMap {
+    fn merge_into(&self, target: &FrozenMap) -> FrozenMap {
         let mut out = target.inner.clone();
         for (k, v) in &self.inner {
             match v {
@@ -129,7 +129,7 @@ impl MergeInto<SealedMap> for SealedMap {
                 }
             }
         }
-        SealedMap { inner: out }
+        FrozenMap { inner: out }
     }
 }
 
@@ -140,7 +140,7 @@ impl MergeInto<SealedMap> for SealedMap {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rotate_emits_drain_event_to_subscriber() {
-    let c = Cascade::new(TestHead::empty(), SealedMap::from_pairs([]));
+    let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
     let mut sub = c.subscribe();
 
     c.write((42, Op::Set(100)));
@@ -152,7 +152,7 @@ async fn rotate_emits_drain_event_to_subscriber() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn multiple_subscribers_each_get_their_own_copy() {
-    let c = Cascade::new(TestHead::empty(), SealedMap::from_pairs([]));
+    let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
     let mut sub_a = c.subscribe();
     let mut sub_b = c.subscribe();
     assert_eq!(c.subscriber_count(), 2);
@@ -172,7 +172,7 @@ async fn no_subscribers_does_not_panic_on_rotate() {
     // Sender::send returns Err when no receivers exist; we
     // explicitly swallow it inside rotate, so this should be a
     // clean no-op.
-    let c = Cascade::new(TestHead::empty(), SealedMap::from_pairs([]));
+    let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
     c.write((1, Op::Set(1)));
     c.rotate(TestHead::empty);
     // No assertion needed -- we just verify it doesn't panic.
@@ -180,7 +180,7 @@ async fn no_subscribers_does_not_panic_on_rotate() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn subscriber_created_after_rotate_misses_that_drain() {
-    let c = Cascade::new(TestHead::empty(), SealedMap::from_pairs([]));
+    let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
 
     c.write((1, Op::Set(1)));
     c.rotate(TestHead::empty); // happens before subscribe
@@ -208,7 +208,7 @@ async fn subscriber_created_after_rotate_misses_that_drain() {
 #[tokio::test(flavor = "current_thread")]
 async fn slow_subscriber_sees_lagged_when_channel_overflows() {
     // Capacity 2; emit 5 events with no recv calls in between.
-    let c = Cascade::with_drain_capacity(TestHead::empty(), SealedMap::from_pairs([]), 2);
+    let c = Cascade::with_drain_capacity(TestHead::empty(), FrozenMap::from_pairs([]), 2);
     let mut sub = c.subscribe();
 
     for i in 1..=5 {
@@ -239,7 +239,7 @@ async fn rotate_emitted_arc_is_the_same_as_in_sealed_vec() {
     // load-bearing for the consumer's "drop the Arc to release the
     // hold" reclamation discipline -- the subscriber's Arc shares
     // refcount with the cascade's own retention.
-    let c = Cascade::new(TestHead::empty(), SealedMap::from_pairs([]));
+    let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
     let mut sub = c.subscribe();
 
     c.write((1, Op::Set(1)));
@@ -247,7 +247,7 @@ async fn rotate_emitted_arc_is_the_same_as_in_sealed_vec() {
 
     let from_sub = sub.recv().await.expect("recv");
     let snap = c.snapshot();
-    let from_snap = snap.sealed().first().expect("sealed has one entry");
+    let from_snap = snap.frozen().first().expect("sealed has one entry");
 
     // Pointer-equal Arcs -- the broadcast emitted the same
     // allocation that's stored in the sealed vec.

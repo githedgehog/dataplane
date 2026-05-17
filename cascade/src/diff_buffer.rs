@@ -44,8 +44,10 @@ pub struct DiffBuffer<K, V> {
     // once we add the dep; for now keep the type parameters honest
     // via PhantomData so consumers can compile against the trait
     // surface.
-    _phantom: PhantomData<fn() -> (K, V)>,
+    _phantom: PhantomCovariant<(K, V)>,
 }
+
+type PhantomCovariant<T> = PhantomData<fn() -> T>;
 
 impl<K, V> DiffBuffer<K, V> {
     /// An empty buffer.
