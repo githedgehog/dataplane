@@ -1184,6 +1184,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-acl"
+version = "0.21.0"
+dependencies = [
+ "dataplane-cascade",
+ "dataplane-concurrency",
+]
+
+[[package]]
 name = "dataplane-args"
 version = "0.21.0"
 dependencies = [
