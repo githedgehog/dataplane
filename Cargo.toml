@@ -25,6 +25,7 @@ members = [
     "left-right-tlcache",
     "lifecycle",
     "lpm",
+    "mat",
     "mgmt",
     "nat",
     "net",
@@ -85,6 +86,7 @@ k8s-less = { path = "./k8s-less", package = "dataplane-k8s-less", features = [] 
 left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache", features = [] }
 lifecycle = { path = "./lifecycle", package = "dataplane-lifecycle", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
+mat = { path = "./mat", package = "dataplane-mat", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }

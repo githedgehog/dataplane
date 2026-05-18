@@ -1504,6 +1504,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-mat"
+version = "0.21.0"
+dependencies = [
+ "dataplane-cascade",
+]
+
+[[package]]
 name = "dataplane-mgmt"
 version = "0.21.0"
 dependencies = [
