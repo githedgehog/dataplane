@@ -17,7 +17,23 @@
 
 use core::net::Ipv4Addr;
 
-use dataplane_acl::{AclRule, Action, Classifier, Headers, Match, Priority, Protocol};
+use dataplane_acl::{AclRule, Action, Classifier, Generation, Headers, Match, Priority, Protocol};
+
+/// Tiny generation allocator for tests.  In production the manager
+/// owns this counter.
+struct GenAlloc(Generation);
+
+impl GenAlloc {
+    fn new() -> Self {
+        Self(Generation::FIRST)
+    }
+
+    fn next(&mut self) -> Generation {
+        let g = self.0;
+        self.0 = self.0.next().expect("test gen counter overflow");
+        g
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,10 +103,11 @@ fn install_alone_is_not_yet_visible() {
 #[test]
 fn install_then_rotate_makes_rule_visible() {
     let c = Classifier::new(Action::Allow);
+    let mut g_alloc = GenAlloc::new();
     let target = pkt("10.0.0.1", "10.0.0.2", Protocol::Tcp, 12345, 22);
 
     c.install(rule(100, match_dst_port(22), Action::Drop));
-    c.rotate();
+    c.rotate(g_alloc.next());
 
     assert_eq!(c.classify(&target), Action::Drop);
     assert_eq!(c.frozen_depth(), 1);
@@ -103,17 +120,18 @@ fn install_then_rotate_makes_rule_visible() {
 #[test]
 fn lower_priority_value_shadows_higher_value() {
     let c = Classifier::new(Action::Drop);
+    let mut g_alloc = GenAlloc::new();
     let target = pkt("10.0.0.1", "10.0.0.2", Protocol::Tcp, 12345, 22);
 
     // High-priority value (lower precedence) Drop rule.
     c.install(rule(200, match_dst_port(22), Action::Drop));
-    c.rotate();
+    c.rotate(g_alloc.next());
     assert_eq!(c.classify(&target), Action::Drop);
 
     // Low-priority value (higher precedence) Allow rule for the
     // same traffic.
     c.install(rule(50, match_dst_port(22), Action::Allow));
-    c.rotate();
+    c.rotate(g_alloc.next());
     assert_eq!(c.classify(&target), Action::Allow);
 }
 
@@ -124,6 +142,7 @@ fn lower_priority_value_shadows_higher_value() {
 #[test]
 fn src_ip_narrows_rule_to_allowlist() {
     let c = Classifier::new(Action::Drop);
+    let mut g_alloc = GenAlloc::new();
 
     // Allow SSH from 10.0.0.1 only.
     c.install(rule(
@@ -135,7 +154,7 @@ fn src_ip_narrows_rule_to_allowlist() {
         },
         Action::Allow,
     ));
-    c.rotate();
+    c.rotate(g_alloc.next());
 
     // Matches the allowlist source.
     assert_eq!(
@@ -157,19 +176,20 @@ fn src_ip_narrows_rule_to_allowlist() {
 #[test]
 fn rules_from_multiple_rotations_compose_correctly() {
     let c = Classifier::new(Action::Drop);
+    let mut g_alloc = GenAlloc::new();
 
     // Rotation 1: allow SSH.
     c.install(rule(100, match_dst_port(22), Action::Allow));
-    c.rotate();
+    c.rotate(g_alloc.next());
 
     // Rotation 2: allow HTTP.
     c.install(rule(100, match_dst_port(80), Action::Allow));
-    c.rotate();
+    c.rotate(g_alloc.next());
 
     // Rotation 3: drop telnet (would have been default-dropped anyway,
     // but this rule documents intent).
     c.install(rule(100, match_dst_port(23), Action::Drop));
-    c.rotate();
+    c.rotate(g_alloc.next());
 
     assert_eq!(c.frozen_depth(), 3);
 
@@ -191,6 +211,7 @@ fn rules_from_multiple_rotations_compose_correctly() {
 #[test]
 fn compact_preserves_classification_results() {
     let c = Classifier::new(Action::Drop);
+    let mut g_alloc = GenAlloc::new();
 
     // Install three distinct rules across three rotations.
     for (prio, port, action) in [
@@ -199,7 +220,7 @@ fn compact_preserves_classification_results() {
         (100, 443, Action::Allow),
     ] {
         c.install(rule(prio, match_dst_port(port), action));
-        c.rotate();
+        c.rotate(g_alloc.next());
     }
     assert_eq!(c.frozen_depth(), 3);
 
@@ -248,17 +269,18 @@ fn compact_preserves_classification_results() {
 #[test]
 fn snapshot_held_across_rotation_pins_old_state() {
     let c = Classifier::new(Action::Drop);
+    let mut g_alloc = GenAlloc::new();
     let target = pkt("10.0.0.1", "10.0.0.2", Protocol::Tcp, 12345, 22);
 
     // Install and rotate an Allow rule.
     c.install(rule(100, match_dst_port(22), Action::Allow));
-    c.rotate();
+    c.rotate(g_alloc.next());
     let snap = c.snapshot();
     assert_eq!(snap.lookup(&target).map(|r| r.action), Some(Action::Allow),);
 
     // Now install and rotate a higher-precedence Drop rule.
     c.install(rule(50, match_dst_port(22), Action::Drop));
-    c.rotate();
+    c.rotate(g_alloc.next());
 
     // The held snapshot continues to see the pre-second-rotate
     // state (Allow wins because there is no higher-priority Drop

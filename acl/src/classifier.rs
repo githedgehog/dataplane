@@ -17,7 +17,9 @@
 //!     Match { dst_port: Some(80), ..Match::any() },
 //!     Action::Allow,
 //! ));
-//! classifier.rotate();  // make the install visible to readers
+//! // `generation` comes from the pipeline manager's policy-gen allocator
+//! // in production; tests carry a small local counter.
+//! classifier.rotate(generation);  // make the install visible to readers
 //!
 //! let outcome: Action = classifier.classify(&headers);
 //! ```
@@ -35,7 +37,7 @@
 //! deferring it until a real consumer demonstrates the shape it
 //! wants.
 
-use cascade::{Cascade, Snapshot};
+use cascade::{Cascade, Generation, Snapshot};
 
 use crate::layers::{AclFrozen, AclHead, AclOp, AclTail};
 use crate::types::{AclRule, Action, Headers};
@@ -101,14 +103,21 @@ impl Classifier {
         self.cascade.write(AclOp::Install(rule));
     }
 
-    /// Seal the current head into a sealed layer and install a
-    /// fresh empty head.
+    /// Seal the current head into a sealed layer tagged with
+    /// `generation` and install a fresh empty head.
     ///
     /// After this returns, rules installed prior to the call are
     /// visible to [`classify`](Self::classify); rules installed
     /// concurrently with this call may or may not be captured.
-    pub fn rotate(&self) {
-        self.cascade.rotate(AclHead::empty);
+    ///
+    /// `generation` is supplied by the caller (in production, the
+    /// pipeline manager's policy-gen allocator).  Frozen layers in
+    /// the cascade carry this generation so that
+    /// [`Snapshot::lookup_at`](cascade::Snapshot::lookup_at) can
+    /// filter the walk by horizon for per-packet-consistent slow-
+    /// path classification.
+    pub fn rotate(&self, generation: Generation) {
+        self.cascade.rotate(generation, AclHead::empty);
     }
 
     /// Fold older sealed layers into the tail.
@@ -117,8 +126,24 @@ impl Classifier {
     /// sealed vector; the rest are merged into the tail.  Passing
     /// `keep = 1` matches the cascade-depth-of-two invariant we
     /// want on the read hot path.
+    ///
+    /// For consumers requiring per-packet consistency with hardware
+    /// offload, prefer [`compact_through`](Self::compact_through).
     pub fn compact(&self, keep: usize) {
         self.cascade.compact(keep);
+    }
+
+    /// Fold every frozen layer with `generation <= watermark` into
+    /// the tail.
+    ///
+    /// Pass-through to
+    /// [`Cascade::compact_through`](cascade::Cascade::compact_through).
+    /// Used by per-packet-consistent consumers: the manager
+    /// aggregates subscriber watermarks (e.g. "I have drained past
+    /// generation N" from the hardware-offload programmer) and
+    /// supplies the minimum as the watermark here.
+    pub fn compact_through(&self, watermark: Generation) {
+        self.cascade.compact_through(watermark);
     }
 
     /// Number of sealed layers currently in the cascade.  Diagnostic.

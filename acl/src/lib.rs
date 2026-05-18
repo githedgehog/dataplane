@@ -38,6 +38,7 @@ pub mod classifier;
 pub mod layers;
 pub mod types;
 
+pub use cascade::Generation;
 pub use classifier::Classifier;
 pub use layers::{AclFrozen, AclHead, AclOp, AclTail};
 pub use types::{AclRule, Action, Headers, Match, Priority, Protocol};
