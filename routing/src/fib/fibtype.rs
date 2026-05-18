@@ -91,8 +91,8 @@ impl Default for Fib {
     }
 }
 
-pub type FibRouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &FibRoute)) -> bool>;
-pub type FibRouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &FibRoute)) -> bool>;
+pub type FibRouteV4Filter = Box<dyn Fn(&(Ipv4Prefix, &FibRoute)) -> bool>;
+pub type FibRouteV6Filter = Box<dyn Fn(&(Ipv6Prefix, &FibRoute)) -> bool>;
 
 impl Fib {
     /// Set the id for this [`Fib`]
@@ -208,12 +208,12 @@ impl Fib {
     }
 
     /// Iterate over IPv4 routes/entries
-    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &FibRoute)> {
+    pub fn iter_v4(&self) -> impl Iterator<Item = (Ipv4Prefix, &FibRoute)> {
         self.routesv4.iter()
     }
 
     /// Iterate over IPv6 routes/entries
-    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &FibRoute)> {
+    pub fn iter_v6(&self) -> impl Iterator<Item = (Ipv6Prefix, &FibRoute)> {
         self.routesv6.iter()
     }
 
@@ -240,11 +240,11 @@ impl Fib {
         match target {
             IpAddr::V4(a) => {
                 let (prefix, route) = self.routesv4.lookup(*a).unwrap_or_else(|| unreachable!());
-                (Prefix::IPV4(*prefix), route)
+                (Prefix::IPV4(prefix), route)
             }
             IpAddr::V6(a) => {
                 let (prefix, route) = self.routesv6.lookup(*a).unwrap_or_else(|| unreachable!());
-                (Prefix::IPV6(*prefix), route)
+                (Prefix::IPV6(prefix), route)
             }
         }
     }

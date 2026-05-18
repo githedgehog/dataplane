@@ -183,8 +183,8 @@ impl RouterVrfConfig {
     }
 }
 
-pub type RouteV4Filter = Box<dyn Fn(&(&Ipv4Prefix, &Route)) -> bool>;
-pub type RouteV6Filter = Box<dyn Fn(&(&Ipv6Prefix, &Route)) -> bool>;
+pub type RouteV4Filter = Box<dyn Fn(&(Ipv4Prefix, &Route)) -> bool>;
+pub type RouteV6Filter = Box<dyn Fn(&(Ipv6Prefix, &Route)) -> bool>;
 
 impl Vrf {
     /// The `VrfId` of the default `Vrf`.
@@ -592,10 +592,10 @@ impl Vrf {
     // ///////////////////////////////////////////////////////////////////////
     // iterators, filters and counts
     // //////////////////////////////////////////////////////////////////////
-    pub fn iter_v4(&self) -> impl Iterator<Item = (&Ipv4Prefix, &Route)> {
+    pub fn iter_v4(&self) -> impl Iterator<Item = (Ipv4Prefix, &Route)> {
         self.routesv4.iter()
     }
-    pub fn iter_v6(&self) -> impl Iterator<Item = (&Ipv6Prefix, &Route)> {
+    pub fn iter_v6(&self) -> impl Iterator<Item = (Ipv6Prefix, &Route)> {
         self.routesv6.iter()
     }
     pub fn len_v4(&self) -> usize {
@@ -609,13 +609,13 @@ impl Vrf {
     /////////////////////////////////////////////////////////////////////////
 
     #[inline]
-    fn lpm_v4(&self, target: Ipv4Prefix) -> (&Ipv4Prefix, &Route) {
+    fn lpm_v4(&self, target: Ipv4Prefix) -> (Ipv4Prefix, &Route) {
         self.routesv4
             .lookup(target)
             .unwrap_or_else(|| unreachable!())
     }
     #[inline]
-    fn lpm_v6(&self, target: Ipv6Prefix) -> (&Ipv6Prefix, &Route) {
+    fn lpm_v6(&self, target: Ipv6Prefix) -> (Ipv6Prefix, &Route) {
         self.routesv6
             .lookup(target)
             .unwrap_or_else(|| unreachable!())
@@ -624,11 +624,11 @@ impl Vrf {
         match target {
             IpAddr::V4(a) => {
                 let (p, r) = self.lpm_v4(a.into());
-                (Prefix::IPV4(*p), r)
+                (Prefix::IPV4(p), r)
             }
             IpAddr::V6(a) => {
                 let (p, r) = self.lpm_v6(a.into());
-                (Prefix::IPV6(*p), r)
+                (Prefix::IPV6(p), r)
             }
         }
     }
@@ -640,14 +640,14 @@ impl Vrf {
         self.routesv4
             .iter_mut()
             .filter(|(prefix, route)| {
-                **prefix != Ipv4Prefix::default() && !route.is_preset_drop_route()
+                *prefix != Ipv4Prefix::default() && !route.is_preset_drop_route()
             })
             .for_each(|(_, route)| route.set_stale(value));
 
         self.routesv6
             .iter_mut()
             .filter(|(prefix, route)| {
-                **prefix != Ipv6Prefix::default() && !route.is_preset_drop_route()
+                *prefix != Ipv6Prefix::default() && !route.is_preset_drop_route()
             })
             .for_each(|(_, route)| route.set_stale(value));
     }
@@ -661,13 +661,11 @@ impl Vrf {
         let prefixes: Vec<_> = self
             .routesv4
             .iter()
-            .filter_map(|(prefix, route)| {
-                if route.is_stale() {
-                    Some(*prefix)
-                } else {
-                    None
-                }
-            })
+            .filter_map(
+                |(prefix, route)| {
+                    if route.is_stale() { Some(prefix) } else { None }
+                },
+            )
             .collect();
         // delete the routes
         for prefix in prefixes {
@@ -682,13 +680,11 @@ impl Vrf {
         let prefixes: Vec<_> = self
             .routesv6
             .iter()
-            .filter_map(|(prefix, route)| {
-                if route.is_stale() {
-                    Some(*prefix)
-                } else {
-                    None
-                }
-            })
+            .filter_map(
+                |(prefix, route)| {
+                    if route.is_stale() { Some(prefix) } else { None }
+                },
+            )
             .collect();
         for prefix in prefixes {
             debug!("vrf {}: removing stale route to {}..", self.name, prefix);
