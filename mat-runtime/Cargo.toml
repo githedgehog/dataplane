@@ -12,3 +12,6 @@ default = []
 cascade = { workspace = true, features = [] }
 concurrency = { workspace = true, features = [] }
 mat = { workspace = true, features = [] }
+
+[dev-dependencies]
+mat-state-sync = { workspace = true, features = [] }
