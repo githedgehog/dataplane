@@ -51,6 +51,6 @@ pub mod subscriber;
 pub mod wire;
 
 pub use cascade::Generation;
-pub use origin::{FlowOrigin, OriginId, OriginSeq};
+pub use origin::{FlowOrigin, HasOrigin, OriginId, OriginSeq};
 pub use subscriber::{MatSubscriber, WatermarkReporter};
 pub use wire::{StateSyncMessage, TransportSeq};

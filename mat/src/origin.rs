@@ -117,6 +117,28 @@ impl FlowOrigin {
     }
 }
 
+/// Trait for value types that carry a [`FlowOrigin`].
+///
+/// Required by the state-sync receiver's dedup/buffer machinery to
+/// extract origin metadata from incoming entries.  Any value type
+/// shipped between dataplanes must implement this.
+///
+/// The trait is intentionally minimal -- it does not require the
+/// implementor to *store* a [`FlowOrigin`] by value, only that one
+/// can be produced on demand.  This leaves room for value types
+/// that pack the origin metadata into a smaller representation
+/// (e.g. bit-stealing in a `u128`) and reconstruct on access.
+pub trait HasOrigin {
+    /// The flow origin attached to this value.
+    fn origin(&self) -> FlowOrigin;
+}
+
+impl HasOrigin for FlowOrigin {
+    fn origin(&self) -> FlowOrigin {
+        *self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
