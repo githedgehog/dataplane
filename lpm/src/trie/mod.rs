@@ -43,8 +43,8 @@ pub trait TrieMap {
     where
         B: Borrow<Self::Prefix>;
 
-    fn iter(&self) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>;
-    fn iter_mut(&mut self) -> impl Iterator<Item = (&Self::Prefix, &mut Self::Value)>;
+    fn iter(&self) -> impl Iterator<Item = (Self::Prefix, &Self::Value)>;
+    fn iter_mut(&mut self) -> impl Iterator<Item = (Self::Prefix, &mut Self::Value)>;
     fn is_empty(&self) -> bool;
 
     fn insert(&mut self, prefix: Self::Prefix, value: Self::Value) -> Option<Self::Value>;
@@ -52,11 +52,11 @@ pub trait TrieMap {
     fn len(&self) -> usize;
 
     /// Gets the prefix with the longest match
-    fn lookup<A>(&self, addr: A) -> Option<(&Self::Prefix, &Self::Value)>
+    fn lookup<A>(&self, addr: A) -> Option<(Self::Prefix, &Self::Value)>
     where
         A: Into<Self::Prefix>;
 
-    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>
+    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (Self::Prefix, &Self::Value)>
     where
         A: Into<Self::Prefix>;
 
@@ -99,8 +99,8 @@ impl<V: Clone> IpPrefixTrie<V> {
         Q: Into<IpAddr>,
     {
         match addr.into() {
-            IpAddr::V4(ip) => self.ipv4.lookup(ip).map(|(k, v)| (Prefix::IPV4(*k), v)),
-            IpAddr::V6(ip) => self.ipv6.lookup(ip).map(|(k, v)| (Prefix::IPV6(*k), v)),
+            IpAddr::V4(ip) => self.ipv4.lookup(ip).map(|(k, v)| (Prefix::IPV4(k), v)),
+            IpAddr::V6(ip) => self.ipv6.lookup(ip).map(|(k, v)| (Prefix::IPV6(k), v)),
         }
     }
 
@@ -132,12 +132,12 @@ impl<V: Clone> IpPrefixTrie<V> {
             IpAddr::V4(ip) => Box::new(
                 self.ipv4
                     .matching_entries(ip)
-                    .map(|(k, v)| (Prefix::IPV4(*k), v)),
+                    .map(|(k, v)| (Prefix::IPV4(k), v)),
             ),
             IpAddr::V6(ip) => Box::new(
                 self.ipv6
                     .matching_entries(ip)
-                    .map(|(k, v)| (Prefix::IPV6(*k), v)),
+                    .map(|(k, v)| (Prefix::IPV6(k), v)),
             ),
         }
     }
@@ -152,20 +152,20 @@ impl<V: Clone> IpPrefixTrie<V> {
 
     pub fn iter_for_prefix(&self, prefix: &Prefix) -> Box<dyn Iterator<Item = (Prefix, &V)> + '_> {
         match prefix {
-            Prefix::IPV4(_) => Box::new(self.ipv4.iter().map(|(k, v)| (Prefix::IPV4(*k), v))),
-            Prefix::IPV6(_) => Box::new(self.ipv6.iter().map(|(k, v)| (Prefix::IPV6(*k), v))),
+            Prefix::IPV4(_) => Box::new(self.ipv4.iter().map(|(k, v)| (Prefix::IPV4(k), v))),
+            Prefix::IPV6(_) => Box::new(self.ipv6.iter().map(|(k, v)| (Prefix::IPV6(k), v))),
         }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Prefix, &V)> {
-        let ipv4 = self.ipv4.iter().map(|(p, v)| (Prefix::IPV4(*p), v));
-        let ipv6 = self.ipv6.iter().map(|(p, v)| (Prefix::IPV6(*p), v));
+        let ipv4 = self.ipv4.iter().map(|(p, v)| (Prefix::IPV4(p), v));
+        let ipv6 = self.ipv6.iter().map(|(p, v)| (Prefix::IPV6(p), v));
         ipv4.chain(ipv6)
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Prefix, &mut V)> {
-        let ipv4 = self.ipv4.iter_mut().map(|(p, v)| (Prefix::IPV4(*p), v));
-        let ipv6 = self.ipv6.iter_mut().map(|(p, v)| (Prefix::IPV6(*p), v));
+        let ipv4 = self.ipv4.iter_mut().map(|(p, v)| (Prefix::IPV4(p), v));
+        let ipv6 = self.ipv6.iter_mut().map(|(p, v)| (Prefix::IPV6(p), v));
         ipv4.chain(ipv6)
     }
 }

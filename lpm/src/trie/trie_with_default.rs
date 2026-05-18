@@ -52,7 +52,7 @@ impl<T: TrieMap<Value: Default> + TrieMapFactory<T>> TrieMapWithDefault<T> {
     /// a result since there is a default prefix in the trie.  `lookup` will
     /// may return None.  As a result, the return type here is just `&Value`
     /// not `Option<&Value>`
-    pub fn lookup_wd<B>(&self, addr: B) -> (&<T as TrieMap>::Prefix, &<T as TrieMap>::Value)
+    pub fn lookup_wd<B>(&self, addr: B) -> (<T as TrieMap>::Prefix, &<T as TrieMap>::Value)
     where
         B: Into<<T as TrieMap>::Prefix>,
     {
@@ -76,11 +76,11 @@ impl<T: TrieMap<Value: Default> + TrieMapFactory<T>> TrieMap for TrieMapWithDefa
     type Value = <T as TrieMap>::Value;
     type Error = <T as TrieMap>::Error;
 
-    fn iter(&self) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)> {
+    fn iter(&self) -> impl Iterator<Item = (Self::Prefix, &Self::Value)> {
         self.0.iter()
     }
 
-    fn iter_mut(&mut self) -> impl Iterator<Item = (&Self::Prefix, &mut Self::Value)> {
+    fn iter_mut(&mut self) -> impl Iterator<Item = (Self::Prefix, &mut Self::Value)> {
         self.0.iter_mut()
     }
 
@@ -110,14 +110,14 @@ impl<T: TrieMap<Value: Default> + TrieMapFactory<T>> TrieMap for TrieMapWithDefa
         self.0.len()
     }
 
-    fn lookup<A>(&self, addr: A) -> Option<(&Self::Prefix, &Self::Value)>
+    fn lookup<A>(&self, addr: A) -> Option<(Self::Prefix, &Self::Value)>
     where
         A: Into<Self::Prefix>,
     {
         self.0.lookup(addr)
     }
 
-    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (&Self::Prefix, &Self::Value)>
+    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (Self::Prefix, &Self::Value)>
     where
         A: Into<Self::Prefix>,
     {

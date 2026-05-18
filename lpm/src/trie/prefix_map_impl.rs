@@ -83,12 +83,12 @@ where
     type Value = V;
     type Error = std::convert::Infallible;
 
-    fn iter(&self) -> impl Iterator<Item = (&P, &V)> {
-        self.0.iter().map(|(p, v)| (&p.0, v))
+    fn iter(&self) -> impl Iterator<Item = (P, &V)> {
+        self.0.iter().map(|(p, v)| (p.0, v))
     }
 
-    fn iter_mut(&mut self) -> impl Iterator<Item = (&P, &mut V)> {
-        self.0.iter_mut().map(|(p, v)| (&p.0, v))
+    fn iter_mut(&mut self) -> impl Iterator<Item = (P, &mut V)> {
+        self.0.iter_mut().map(|(p, v)| (p.0, v))
     }
 
     fn get<B>(&self, prefix: B) -> Option<&V>
@@ -124,24 +124,20 @@ where
         self.0.remove(&IpPrefixW(prefix.borrow().clone()))
     }
 
-    fn lookup<A>(&self, addr: A) -> Option<(&P, &V)>
+    fn lookup<A>(&self, addr: A) -> Option<(P, &V)>
     where
         A: Into<Self::Prefix>,
     {
         self.0
             .get_lpm(&IpPrefixW(addr.into()))
-            .map(|(p, v)| (&p.0, v))
+            .map(|(p, v)| (p.0, v))
     }
 
-    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (&P, &V)>
+    fn matching_entries<A>(&self, addr: A) -> impl Iterator<Item = (P, &V)>
     where
         A: Into<Self::Prefix>,
     {
-        self.0
-            .cover(&IpPrefixW(addr.into()))
-            .collect::<Vec<_>>() // FIXME: Can we avoid the .collect() here?
-            .into_iter()
-            .map(|(p, v)| (&p.0, v))
+        self.0.cover(&IpPrefixW(addr.into())).map(|(p, v)| (p.0, v))
     }
 }
 

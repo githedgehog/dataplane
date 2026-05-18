@@ -125,7 +125,7 @@ fn show_ipv6_routes_multi(
 fn route_filter_v4(request: &CliRequest) -> RouteV4Filter {
     let filter: RouteV4Filter = if let Some(protocol) = &request.args.protocol {
         let origin = RouteOrigin::from(protocol);
-        Box::new(move |(_, route): &(&Ipv4Prefix, &Route)| route.origin == origin)
+        Box::new(move |(_, route): &(Ipv4Prefix, &Route)| route.origin == origin)
     } else {
         Box::new(|(_, _)| true)
     };
@@ -134,7 +134,7 @@ fn route_filter_v4(request: &CliRequest) -> RouteV4Filter {
 fn route_filter_v6(request: &CliRequest) -> RouteV6Filter {
     let filter: RouteV6Filter = if let Some(protocol) = &request.args.protocol {
         let origin = RouteOrigin::from(protocol);
-        Box::new(move |(_, route): &(&Ipv6Prefix, &Route)| route.origin == origin)
+        Box::new(move |(_, route): &(Ipv6Prefix, &Route)| route.origin == origin)
     } else {
         Box::new(|(_, _)| true)
     };
