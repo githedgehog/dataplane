@@ -17,7 +17,24 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use dataplane_cascade::{Cascade, Layer, MergeInto, MutableHead, Outcome, Upsert};
+use dataplane_cascade::{Cascade, Generation, Layer, MergeInto, MutableHead, Outcome, Upsert};
+
+/// Tiny generation allocator for tests.  In production the manager
+/// owns this counter; tests carry their own to avoid pulling in
+/// runtime machinery.
+struct GenAlloc(Generation);
+
+impl GenAlloc {
+    fn new() -> Self {
+        Self(Generation::FIRST)
+    }
+
+    fn next(&mut self) -> Generation {
+        let g = self.0;
+        self.0 = self.0.next().expect("test gen counter overflow");
+        g
+    }
+}
 
 // ---------------------------------------------------------------------------
 // A trivial value type with two-position Upsert so we exercise both
@@ -184,11 +201,12 @@ fn miss_in_all_layers_returns_none() {
 #[test]
 fn rotate_seals_head_into_sealed_layer() {
     let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
 
     // Write to head, then rotate.  The write should land in a
     // sealed layer and shadow the tail value.
     c.write((42, Op::Set(200)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     let snap = c.snapshot();
     assert_eq!(snap.frozen_depth(), 1);
@@ -198,8 +216,9 @@ fn rotate_seals_head_into_sealed_layer() {
 #[test]
 fn rotated_tombstone_in_sealed_suppresses_tail_hit() {
     let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
     c.write((42, Op::Tombstone));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     let snap = c.snapshot();
     assert_eq!(snap.frozen_depth(), 1);
@@ -211,15 +230,16 @@ fn rotated_tombstone_in_sealed_suppresses_tail_hit() {
 #[test]
 fn multiple_rotations_stack_in_newest_first_order() {
     let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
 
     // Three rotations, each writing a different value for the same
     // key.  After all three, the most recent value should win.
     c.write((42, Op::Set(200)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
     c.write((42, Op::Set(300)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
     c.write((42, Op::Set(400)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     let snap = c.snapshot();
     assert_eq!(snap.frozen_depth(), 3);
@@ -240,10 +260,11 @@ fn compact_with_no_sealed_is_noop() {
 #[test]
 fn compact_folds_oldest_sealed_into_tail() {
     let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
     c.write((2, Op::Set(20)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
     c.write((3, Op::Set(30)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     // Two sealed layers, tail has 1.
     assert_eq!(c.frozen_depth(), 2);
@@ -263,9 +284,10 @@ fn compact_folds_oldest_sealed_into_tail() {
 #[test]
 fn compact_to_zero_keeps_no_sealed() {
     let c = build_cascade([]);
+    let mut g_alloc = GenAlloc::new();
     for v in 1..=5 {
         c.write((v, Op::Set(v * 10)));
-        c.rotate(TestHead::empty);
+        c.rotate(g_alloc.next(), TestHead::empty);
     }
     assert_eq!(c.frozen_depth(), 5);
 
@@ -281,8 +303,9 @@ fn compact_to_zero_keeps_no_sealed() {
 #[test]
 fn compact_applies_tombstones_to_tail() {
     let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
     c.write((42, Op::Tombstone));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     assert_eq!(c.snapshot().lookup(&42), None);
 
@@ -297,8 +320,9 @@ fn compact_applies_tombstones_to_tail() {
 #[test]
 fn snapshot_held_across_compact_keeps_old_layers_alive() {
     let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
     c.write((2, Op::Set(20)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     // Snapshot before compaction.  The snapshot's sealed-vec Arc
     // contains the (still-live) sealed layer with {2: 20}; its
@@ -325,20 +349,78 @@ fn snapshot_held_across_compact_keeps_old_layers_alive() {
 #[test]
 fn snapshot_held_across_rotation_keeps_old_state() {
     let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
 
     // Take a snapshot.  Then rotate after writing a new value.
     // The snapshot should still see the old state because it
     // holds Arcs to the pre-rotate generations.
     c.write((42, Op::Set(200)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
     let old_snap = c.snapshot();
 
     // Rotate again with a new value.
     c.write((42, Op::Set(300)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     // old_snap still sees 200 because its sealed-vec Arc pre-dates
     // the second rotate.
     assert_eq!(old_snap.lookup(&42), Some(&Entry::Value(200)));
     assert_eq!(c.snapshot().lookup(&42), Some(&Entry::Value(300)));
+}
+
+// ---------------------------------------------------------------------------
+// lookup_at: generation-horizon filtered walk
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lookup_at_skips_layers_above_horizon() {
+    let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
+
+    // Three rotations, each setting key 1 to a different value.
+    c.write((1, Op::Set(200)));
+    let g_v200 = g_alloc.next();
+    c.rotate(g_v200, TestHead::empty);
+
+    c.write((1, Op::Set(300)));
+    let g_v300 = g_alloc.next();
+    c.rotate(g_v300, TestHead::empty);
+
+    c.write((1, Op::Set(400)));
+    let g_v400 = g_alloc.next();
+    c.rotate(g_v400, TestHead::empty);
+
+    let snap = c.snapshot();
+    // lookup_at(g_v300) walks frozen entries with gen <= g_v300:
+    // that's g_v200 and g_v300 (skipping g_v400).  Newest-first
+    // walk hits g_v300 first -> Value(300).
+    assert_eq!(snap.lookup_at(&1, g_v300), Some(&Entry::Value(300)));
+
+    // lookup_at(g_v200) skips both g_v300 and g_v400, hits g_v200.
+    assert_eq!(snap.lookup_at(&1, g_v200), Some(&Entry::Value(200)));
+
+    // lookup() (no horizon) sees everything: hits g_v400.
+    assert_eq!(snap.lookup(&1), Some(&Entry::Value(400)));
+}
+
+#[test]
+fn lookup_at_falls_through_to_tail_when_all_frozen_above_horizon() {
+    let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
+
+    // Reserve a low generation that pre-dates any rotation.
+    let g_low = g_alloc.next();
+
+    // Rotate with newer generations.
+    c.write((1, Op::Set(200)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+    c.write((2, Op::Set(20)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    let snap = c.snapshot();
+    // lookup_at(g_low): all frozen layers are above this horizon.
+    // Walk skips them, falls through to tail.
+    assert_eq!(snap.lookup_at(&1, g_low), Some(&Entry::Value(10)));
+    // Key 2 not in tail, no frozen entries below horizon -> None.
+    assert_eq!(snap.lookup_at(&2, g_low), None);
 }

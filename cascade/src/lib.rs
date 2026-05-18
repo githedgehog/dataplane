@@ -67,6 +67,7 @@
 
 pub mod cascade;
 pub mod diff_buffer;
+pub mod generation;
 pub mod head;
 pub mod layer;
 pub mod merge;
@@ -81,8 +82,9 @@ pub mod upsert;
 #[cfg(any(test, feature = "bolero"))]
 pub mod property_tests;
 
-pub use cascade::{Cascade, Snapshot};
+pub use cascade::{Cascade, DrainEvent, FrozenEntry, Snapshot};
 pub use diff_buffer::DiffBuffer;
+pub use generation::Generation;
 pub use head::MutableHead;
 pub use layer::{Layer, Outcome};
 pub use merge::MergeInto;

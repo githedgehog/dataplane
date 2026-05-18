@@ -12,7 +12,24 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use dataplane_cascade::{Cascade, Layer, MergeInto, MutableHead, Outcome, Upsert};
+use dataplane_cascade::{Cascade, Generation, Layer, MergeInto, MutableHead, Outcome, Upsert};
+
+/// Tiny generation allocator for tests.  In production the manager
+/// owns this counter; tests carry their own to avoid pulling in
+/// runtime machinery.
+struct GenAlloc(Generation);
+
+impl GenAlloc {
+    fn new() -> Self {
+        Self(Generation::FIRST)
+    }
+
+    fn next(&mut self) -> Generation {
+        let g = self.0;
+        self.0 = self.0.next().expect("test gen counter overflow");
+        g
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Reuse the smoke-test minimal data model: a Mutex<HashMap> head, a
@@ -141,30 +158,35 @@ impl MergeInto<FrozenMap> for FrozenMap {
 #[tokio::test(flavor = "current_thread")]
 async fn rotate_emits_drain_event_to_subscriber() {
     let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
+    let mut g_alloc = GenAlloc::new();
     let mut sub = c.subscribe();
 
     c.write((42, Op::Set(100)));
-    c.rotate(TestHead::empty);
+    let g = g_alloc.next();
+    c.rotate(g, TestHead::empty);
 
     let event = sub.recv().await.expect("recv");
-    assert_eq!(event.inner.get(&42), Some(&Entry::Value(100)));
+    assert_eq!(event.generation, g);
+    assert_eq!(event.layer.inner.get(&42), Some(&Entry::Value(100)));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn multiple_subscribers_each_get_their_own_copy() {
     let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
+    let mut g_alloc = GenAlloc::new();
     let mut sub_a = c.subscribe();
     let mut sub_b = c.subscribe();
     assert_eq!(c.subscriber_count(), 2);
 
     c.write((7, Op::Set(70)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     let a = sub_a.recv().await.expect("a recv");
     let b = sub_b.recv().await.expect("b recv");
-    // Same Arc<S> -- shared, both subscribers see identical contents.
-    assert_eq!(a.inner.get(&7), Some(&Entry::Value(70)));
-    assert_eq!(b.inner.get(&7), Some(&Entry::Value(70)));
+    // Same Arc<F> inside -- shared, both subscribers see identical
+    // contents.
+    assert_eq!(a.layer.inner.get(&7), Some(&Entry::Value(70)));
+    assert_eq!(b.layer.inner.get(&7), Some(&Entry::Value(70)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -173,17 +195,19 @@ async fn no_subscribers_does_not_panic_on_rotate() {
     // explicitly swallow it inside rotate, so this should be a
     // clean no-op.
     let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
+    let mut g_alloc = GenAlloc::new();
     c.write((1, Op::Set(1)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
     // No assertion needed -- we just verify it doesn't panic.
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn subscriber_created_after_rotate_misses_that_drain() {
     let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
+    let mut g_alloc = GenAlloc::new();
 
     c.write((1, Op::Set(1)));
-    c.rotate(TestHead::empty); // happens before subscribe
+    c.rotate(g_alloc.next(), TestHead::empty); // happens before subscribe
 
     let mut sub = c.subscribe();
 
@@ -198,22 +222,23 @@ async fn subscriber_created_after_rotate_misses_that_drain() {
 
     // But a future rotate IS delivered.
     c.write((2, Op::Set(2)));
-    c.rotate(TestHead::empty);
+    c.rotate(g_alloc.next(), TestHead::empty);
 
     let event = sub.recv().await.expect("recv future rotate");
-    assert_eq!(event.inner.get(&2), Some(&Entry::Value(2)));
-    assert_eq!(event.inner.get(&1), None); // first rotate's content not in this layer
+    assert_eq!(event.layer.inner.get(&2), Some(&Entry::Value(2)));
+    assert_eq!(event.layer.inner.get(&1), None); // first rotate's content not in this layer
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn slow_subscriber_sees_lagged_when_channel_overflows() {
     // Capacity 2; emit 5 events with no recv calls in between.
     let c = Cascade::with_drain_capacity(TestHead::empty(), FrozenMap::from_pairs([]), 2);
+    let mut g_alloc = GenAlloc::new();
     let mut sub = c.subscribe();
 
     for i in 1..=5 {
         c.write((i, Op::Set(i * 10)));
-        c.rotate(TestHead::empty);
+        c.rotate(g_alloc.next(), TestHead::empty);
     }
 
     // The first recv returns Lagged because we've fallen behind.
@@ -240,16 +265,22 @@ async fn rotate_emitted_arc_is_the_same_as_in_sealed_vec() {
     // hold" reclamation discipline -- the subscriber's Arc shares
     // refcount with the cascade's own retention.
     let c = Cascade::new(TestHead::empty(), FrozenMap::from_pairs([]));
+    let mut g_alloc = GenAlloc::new();
     let mut sub = c.subscribe();
 
     c.write((1, Op::Set(1)));
-    c.rotate(TestHead::empty);
+    let g = g_alloc.next();
+    c.rotate(g, TestHead::empty);
 
     let from_sub = sub.recv().await.expect("recv");
     let snap = c.snapshot();
     let from_snap = snap.frozen().first().expect("sealed has one entry");
 
+    // The subscriber's generation matches the entry's generation.
+    assert_eq!(from_sub.generation, g);
+    assert_eq!(from_snap.generation, g);
+
     // Pointer-equal Arcs -- the broadcast emitted the same
     // allocation that's stored in the sealed vec.
-    assert!(std::sync::Arc::ptr_eq(&from_sub, from_snap));
+    assert!(std::sync::Arc::ptr_eq(&from_sub.layer, &from_snap.layer));
 }

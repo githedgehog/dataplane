@@ -3,35 +3,114 @@
 
 //! The cascade and its read-side snapshot.
 //!
-//! Wires a [`MutableHead`], a `Vec<Arc<Frozen>>` of intermediate
+//! Wires a [`MutableHead`], a `Vec<FrozenEntry<F>>` of intermediate
 //! layers, and an immutable tail into a single read path.  All three
-//! are published via [`Slot`] so the LSM-manager can install new
+//! are published via [`Slot`] so the manager can install new
 //! generations without disturbing in-flight readers.
 //!
 //! Reads go through [`Snapshot`], which captures a coherent view of
 //! all three publication slots in a single triple of `Arc`s.  The
 //! reader holds the snapshot for the duration of a batch (one DPDK
 //! `rx_burst` worth of packets, typically) and walks the cascade via
-//! [`Snapshot::lookup`].
+//! [`Snapshot::lookup`] (no generation horizon -- walks everything)
+//! or [`Snapshot::lookup_at`] (filters to layers at or below a
+//! caller-supplied [`Generation`] horizon).
 //!
 //! Writes go directly through [`Cascade::write`], which forwards to
 //! the current head's [`MutableHead::write`].
 //!
 //! Generation rotation -- freezing the current head into a fresh
-//! frozen layer and installing a new empty head -- is driven by
-//! [`Cascade::rotate`].  Compaction (fusing old frozen layers into
-//! the tail via [`MergeInto`]) is driven by [`Cascade::compact`].
+//! frozen layer tagged with a caller-supplied [`Generation`] and
+//! installing a new empty head -- is driven by [`Cascade::rotate`].
+//! The cascade does not allocate generations; the caller (typically
+//! a pipeline manager) supplies them.  See
+//! `.scratch/mat-pipeline-rfc/` for the design.
+//!
+//! Compaction (fusing old frozen layers into the tail via
+//! [`MergeInto`]) is driven by [`Cascade::compact`] (depth-based)
+//! or [`Cascade::compact_through`] (generation-based, suitable for
+//! callers that need per-packet consistency).
 //!
 //! When the `subscribe` feature is enabled, each rotate also
-//! publishes the freshly-frozen `Arc<F>` to subscribers via a
-//! tokio broadcast channel; see [`Cascade::subscribe`].
+//! publishes a [`DrainEvent`] to subscribers via a tokio broadcast
+//! channel; see [`Cascade::subscribe`].
 
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 
+use crate::generation::Generation;
 use crate::head::MutableHead;
 use crate::layer::{Layer, Outcome};
 use crate::merge::MergeInto;
+
+/// A frozen layer paired with the [`Generation`] it was rotated under.
+///
+/// The cascade stores these in its frozen vector.  Consumers walking
+/// a snapshot see them as elements of [`Snapshot::frozen`].
+pub struct FrozenEntry<F> {
+    /// The generation supplied to [`Cascade::rotate`] when this
+    /// layer was produced.
+    pub generation: Generation,
+    /// The frozen layer itself.  Same `Arc` allocation that the
+    /// subscribe channel emits in its corresponding [`DrainEvent`].
+    pub layer: Arc<F>,
+}
+
+impl<F> Clone for FrozenEntry<F> {
+    fn clone(&self) -> Self {
+        Self {
+            generation: self.generation,
+            layer: Arc::clone(&self.layer),
+        }
+    }
+}
+
+impl<F: core::fmt::Debug> core::fmt::Debug for FrozenEntry<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FrozenEntry")
+            .field("generation", &self.generation)
+            .field("layer", &self.layer)
+            .finish()
+    }
+}
+
+/// Event delivered to drain subscribers on each successful
+/// [`Cascade::rotate`].
+///
+/// Carries both the [`Generation`] (so subscribers can report
+/// watermarks back to the manager) and the freshly-frozen layer
+/// `Arc<F>`.  The `Arc<F>` is the same allocation that lives in
+/// the cascade's frozen vector -- holding it indefinitely pins the
+/// layer and blocks reclamation.
+///
+/// The type is available regardless of the `subscribe` feature so
+/// downstream facades can name it; only the broadcast channel
+/// machinery itself is feature-gated.
+pub struct DrainEvent<F> {
+    /// Generation supplied to the [`rotate`](Cascade::rotate) call
+    /// that produced this layer.
+    pub generation: Generation,
+    /// The freshly-frozen layer.
+    pub layer: Arc<F>,
+}
+
+impl<F> Clone for DrainEvent<F> {
+    fn clone(&self) -> Self {
+        Self {
+            generation: self.generation,
+            layer: Arc::clone(&self.layer),
+        }
+    }
+}
+
+impl<F: core::fmt::Debug> core::fmt::Debug for DrainEvent<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DrainEvent")
+            .field("generation", &self.generation)
+            .field("layer", &self.layer)
+            .finish()
+    }
+}
 
 /// A coherent view of a cascade at a moment in time.
 ///
@@ -52,11 +131,12 @@ where
 {
     head: Arc<H>,
     // TODO: there is a real case for making this
-    // `Arc<ArrayVec<Arc<F>, N>>` under the theory that more than a
-    // handful of layers is indicative of a break.  Saves a dynamic
-    // allocation and an pointer load, and enforces a reasonable
-    // constraint.  Could expose N as a const generic on Cascade.
-    frozen: Arc<Vec<Arc<F>>>,
+    // `Arc<ArrayVec<FrozenEntry<F>, N>>` under the theory that more
+    // than a handful of layers is indicative of a break.  Saves a
+    // dynamic allocation and a pointer load, and enforces a
+    // reasonable constraint.  Could expose N as a const generic on
+    // Cascade.
+    frozen: Arc<Vec<FrozenEntry<F>>>,
     tail: Arc<T>,
 }
 
@@ -70,12 +150,17 @@ where
     F: Layer<Input = H::Input, Output = H::Output>,
     T: Layer<Input = H::Input, Output = H::Output>,
 {
-    /// Walk the cascade and return the first definitive match.
+    /// Walk head + every frozen layer + tail.  Returns the first
+    /// definitive match.
     ///
     /// Order: head, then frozen layers newest-first, then tail.
     /// Each layer's [`may_contain`](Layer::may_contain) is consulted
     /// before [`lookup`](Layer::lookup) to skip layers that the
     /// bloom hint excludes.
+    ///
+    /// Use this for software-originated packets that have no
+    /// generation tag.  For hardware-classified packets carrying a
+    /// generation stamp, use [`lookup_at`](Self::lookup_at) instead.
     pub fn lookup(&self, input: &H::Input) -> Option<&H::Output> {
         // Head first.  No bloom (the head is mutable and a filter
         // would have to be atomic to stay coherent).
@@ -88,7 +173,8 @@ where
         // Frozen layers, newest-first.  `frozen[0]` is the most
         // recently frozen head; `frozen[len-1]` is the oldest
         // frozen layer not yet compacted into the tail.
-        for layer in self.frozen.iter() {
+        for entry in self.frozen.iter() {
+            let layer = entry.layer.as_ref();
             if !layer.may_contain(input) {
                 continue;
             }
@@ -100,6 +186,42 @@ where
         }
 
         // Tail.
+        if !self.tail.may_contain(input) {
+            return None;
+        }
+        match self.tail.lookup(input) {
+            Outcome::Match(v) => Some(v),
+            Outcome::Forbid | Outcome::Continue => None,
+        }
+    }
+
+    /// Walk frozen layers with `entry.generation <= horizon`, then
+    /// tail.  Skip the head entirely (its contents post-date the
+    /// most recent rotate, so they are newer than any horizon).
+    ///
+    /// Used for Reitblatt-style per-packet consistency: hardware
+    /// stamps packets with the generation it classified them
+    /// against, and the slow path consults that generation's view
+    /// via this method.
+    pub fn lookup_at(&self, input: &H::Input, horizon: Generation) -> Option<&H::Output> {
+        // No head consult: head contents are post-rotate writes
+        // that are newer than any horizon by construction.
+
+        for entry in self.frozen.iter() {
+            if entry.generation > horizon {
+                continue;
+            }
+            let layer = entry.layer.as_ref();
+            if !layer.may_contain(input) {
+                continue;
+            }
+            match layer.lookup(input) {
+                Outcome::Match(v) => return Some(v),
+                Outcome::Forbid => return None,
+                Outcome::Continue => {}
+            }
+        }
+
         if !self.tail.may_contain(input) {
             return None;
         }
@@ -128,15 +250,16 @@ where
         self.frozen.len()
     }
 
-    /// Access the frozen-layer Arcs in this snapshot, newest-first.
+    /// Access the frozen entries in this snapshot, newest-first.
     ///
-    /// Returns a reference to the snapshot's internal vector; the
-    /// borrow is tied to `&self`.  Consumers that want to retain
-    /// individual frozen layers beyond the snapshot's lifetime
-    /// should `Arc::clone` the entries they need.
-    // TODO: do we want that to be pub?
+    /// Each [`FrozenEntry`] carries both the [`Generation`] the layer
+    /// was rotated under and an `Arc` to the layer itself.
+    /// Consumers that want to retain individual frozen layers
+    /// beyond the snapshot's lifetime should `Arc::clone` the
+    /// `layer` field of the entries they need (or clone the whole
+    /// `FrozenEntry` -- the layer is the only Arc inside).
     #[must_use]
-    pub fn frozen(&self) -> &[Arc<F>] {
+    pub fn frozen(&self) -> &[FrozenEntry<F>] {
         &self.frozen
     }
 }
@@ -154,8 +277,13 @@ const DEFAULT_DRAIN_CHANNEL_CAPACITY: usize = 16;
 /// Owns the three publication slots and exposes the lifecycle
 /// operations (snapshot, write, rotate, compact).  When the
 /// `subscribe` feature is enabled, additionally publishes each
-/// rotation's freshly-frozen layer to subscribers via a tokio
-/// broadcast channel; see [`Cascade::subscribe`].
+/// rotation's [`DrainEvent`] to subscribers via a tokio broadcast
+/// channel; see [`Cascade::subscribe`].
+///
+/// The cascade does not own a generation counter.  Callers of
+/// [`rotate`](Cascade::rotate) supply the [`Generation`] for each
+/// rotation; in production this is the pipeline manager's
+/// `current_policy_gen` allocator.
 pub struct Cascade<H, F, T>
 where
     H: MutableHead<Frozen = F>,
@@ -163,13 +291,13 @@ where
     T: Layer<Input = H::Input, Output = H::Output>,
 {
     head: Slot<H>,
-    frozen: Slot<Vec<Arc<F>>>,
+    frozen: Slot<Vec<FrozenEntry<F>>>,
     tail: Slot<T>,
     /// Broadcast channel for drain events.  Each successful
-    /// [`rotate`](Cascade::rotate) emits the freshly-frozen
-    /// `Arc<F>` to all current subscribers.
+    /// [`rotate`](Cascade::rotate) emits a [`DrainEvent`] to all
+    /// current subscribers.
     #[cfg(feature = "subscribe")]
-    drain_sender: tokio::sync::broadcast::Sender<Arc<F>>,
+    drain_sender: tokio::sync::broadcast::Sender<DrainEvent<F>>,
 }
 
 impl<H, F, T> Cascade<H, F, T>
@@ -219,17 +347,17 @@ where
 
     /// Subscribe to drain events.
     ///
-    /// Each successful [`rotate`](Cascade::rotate) sends the
-    /// freshly-frozen `Arc<F>` to the returned receiver.  The
-    /// receiver only sees drains that happen *after* the call to
-    /// `subscribe` -- the broadcast channel does not backfill.
-    /// Consumers that need both the current state and the future
-    /// stream should call `subscribe` first, then [`snapshot`]
-    /// -- a drain that lands between the two calls will appear in
-    /// both, and consumers are responsible for tolerating that
-    /// double-application (typically by ensuring their
-    /// state-update is idempotent under repeated application of
-    /// the same `Arc<F>`).
+    /// Each successful [`rotate`](Cascade::rotate) sends a
+    /// [`DrainEvent`] to the returned receiver.  The receiver only
+    /// sees drains that happen *after* the call to `subscribe` --
+    /// the broadcast channel does not backfill.  Consumers that
+    /// need both the current state and the future stream should
+    /// call `subscribe` first, then [`snapshot`] -- a drain that
+    /// lands between the two calls will appear in both, and
+    /// consumers are responsible for tolerating that double-
+    /// application (typically by ensuring their state-update is
+    /// idempotent under repeated application of the same
+    /// `Arc<F>`).
     ///
     /// # Lag
     ///
@@ -243,17 +371,17 @@ where
     ///
     /// # Discipline
     ///
-    /// Subscribers are expected to take the `Arc<F>` from `recv`,
-    /// promptly snapshot the layer's contents into private state,
-    /// and drop the `Arc`.  The cascade's compactor reclaims old
-    /// frozen layers by `Arc::try_unwrap` semantics indirectly --
-    /// holding the `Arc` indefinitely keeps the layer alive and
-    /// blocks reclamation.
+    /// Subscribers are expected to take the `Arc<F>` out of the
+    /// [`DrainEvent`], promptly snapshot the layer's contents into
+    /// private state, and drop the `Arc`.  The cascade's compactor
+    /// reclaims old frozen layers by `Arc::try_unwrap` semantics
+    /// indirectly -- holding the `Arc` indefinitely keeps the layer
+    /// alive and blocks reclamation.
     ///
     /// [`snapshot`]: Cascade::snapshot
     /// [`with_drain_capacity`]: Cascade::with_drain_capacity
     #[cfg(feature = "subscribe")]
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Arc<F>> {
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<DrainEvent<F>> {
         self.drain_sender.subscribe()
     }
 
@@ -312,13 +440,19 @@ where
         self.head.load_full()
     }
 
-    /// Freeze the current head into a fresh frozen layer, push it
-    /// onto the frozen vector, and install a new empty head.
+    /// Freeze the current head into a fresh frozen layer tagged
+    /// with `generation`, push it onto the frozen vector, and
+    /// install a new empty head.
     ///
-    /// The caller supplies `fresh_head`, a closure that constructs
-    /// the new empty head.  This avoids a `Default` bound on `H`
-    /// and lets implementations choose their initial capacity, RNG
-    /// seed, etc.
+    /// The caller supplies `generation` -- the cascade does not
+    /// allocate.  In production this comes from the pipeline
+    /// manager's policy-gen allocator; in tests, callers maintain a
+    /// small monotone counter.
+    ///
+    /// The caller also supplies `fresh_head`, a closure that
+    /// constructs the new empty head.  This avoids a `Default`
+    /// bound on `H` and lets implementations choose their initial
+    /// capacity, RNG seed, etc.
     ///
     /// # Ordering
     ///
@@ -342,23 +476,26 @@ where
     /// alive; when the last snapshot drops, the old head drops too.
     /// This is the QSBR-style reclamation that bounds the
     /// "duplicate state in flight" window.
-    pub fn rotate<MkH: FnOnce() -> H>(&self, fresh_head: MkH) {
+    pub fn rotate<MkH: FnOnce() -> H>(&self, generation: Generation, fresh_head: MkH) {
         // 1. Load current head and freeze a snapshot of it.
         let old_head = self.head.load_full();
-        let new_frozen = Arc::new(old_head.freeze());
+        let new_layer: Arc<F> = Arc::new(old_head.freeze());
 
-        // Clone the new frozen Arc up front so we can emit it to
+        // Clone the new layer Arc up front so we can emit it to
         // subscribers after the stores complete.  Cloning an Arc is
         // one atomic increment -- negligible relative to the freeze
         // and slot stores.
         #[cfg(feature = "subscribe")]
-        let new_frozen_for_emit = Arc::clone(&new_frozen);
+        let layer_for_emit = Arc::clone(&new_layer);
 
         // 2. Build the new frozen vector with the freshly-frozen
         //    layer at the front (newest first).
         let current = self.frozen.load_full();
-        let mut next: Vec<Arc<F>> = Vec::with_capacity(current.len() + 1);
-        next.push(new_frozen);
+        let mut next: Vec<FrozenEntry<F>> = Vec::with_capacity(current.len() + 1);
+        next.push(FrozenEntry {
+            generation,
+            layer: new_layer,
+        });
         next.extend(current.iter().cloned());
 
         // 3. Install the new frozen vector FIRST.  This gives
@@ -377,7 +514,10 @@ where
         //    `RecvError::Lagged` on their next recv).
         #[cfg(feature = "subscribe")]
         {
-            let _ = self.drain_sender.send(new_frozen_for_emit);
+            let _ = self.drain_sender.send(DrainEvent {
+                generation,
+                layer: layer_for_emit,
+            });
         }
 
         // The old head's Arc is now held only by readers (if any)
@@ -385,25 +525,17 @@ where
         drop(old_head);
     }
 
-    /// Fuse the oldest frozen layers into the tail.
+    /// Fuse the oldest frozen layers into the tail, retaining
+    /// `keep` newest layers in the chain.
     ///
-    /// Retains `keep` frozen layers at the front of the frozen
-    /// vector (the newest ones) and folds the rest into a new tail
-    /// via the [`MergeInto`] trait that `F` must implement against
-    /// `T`.  Passing `keep = 0` collapses every frozen layer into
-    /// the tail on each call; `keep = 1` keeps one buffer layer in
-    /// front of the tail (matching the cascade-depth-of-two
-    /// invariant we want for hot paths).
+    /// See the module-level docs and [`compact_through`] for the
+    /// generation-aware variant that consumers requiring per-packet
+    /// consistency should use instead.
     ///
-    /// The merge logic is encoded in `F::merge_into` rather than
-    /// passed as a closure.  This makes the merge discoverable via
-    /// `cargo doc`, consistent across all `compact` call sites for
-    /// the same layer type, and shareable with the property-test
-    /// harness once that lands.  Exact-match maps walk both layers
-    /// and produce a merged `HashMap`; ACL compilation re-runs the
-    /// full rule-set compile with the merged rule set as input;
-    /// time-aware structures (rate limiters) can apply a decay
-    /// function as part of the merge.
+    /// `keep = 0` collapses every frozen layer into the tail on each
+    /// call; `keep = 1` keeps one buffer layer in front of the tail
+    /// (matching the cascade-depth-of-two invariant we want for hot
+    /// paths).
     ///
     /// # Ordering of merges
     ///
@@ -436,12 +568,12 @@ where
     ///
     /// # Concurrency
     ///
-    /// The cascade assumes a single-writer LSM-manager.  Concurrent
+    /// The cascade assumes a single-writer manager.  Concurrent
     /// calls to [`rotate`](Cascade::rotate) and `compact` race in
     /// ways that can lose entries.  Production deployments should
     /// drive both from one task; this is documented as a contract,
-    /// not enforced by the type system, because the eventual
-    /// LSM-manager wrapper will own that invariant explicitly.
+    /// not enforced by the type system, because the manager wrapper
+    /// owns that invariant explicitly.
     ///
     /// # Cost
     ///
@@ -449,16 +581,11 @@ where
     /// folded in.  Cheap merges (exact-match maps) finish in
     /// microseconds; expensive ones (DPDK ACL rebuild) can take
     /// milliseconds.  The cascade does not throw the work onto a
-    /// worker pool -- that is the LSM-manager's decision -- so the
+    /// worker pool -- that is the manager's decision -- so the
     /// caller should arrange for `compact` to run on a thread that
     /// is free to block.
     ///
-    /// For workloads where a batched single-pass merge would be
-    /// substantially more efficient than the fold, an implementation
-    /// can provide a higher-level operation alongside its layer
-    /// types and bypass this default.  The cascade does not yet
-    /// expose a batched-merge entry point; one will land when a
-    /// consumer demonstrates the need.
+    /// [`compact_through`]: Cascade::compact_through
     pub fn compact(&self, keep: usize)
     where
         F: MergeInto<T>,
@@ -472,24 +599,74 @@ where
         // Newest-first layout: indices 0..keep are the youngest
         // frozen layers we retain; keep..end are the older ones we
         // fold into the tail.
-        let to_keep: &[Arc<F>] = &current[..keep];
-        let to_merge: &[Arc<F>] = &current[keep..];
+        let to_keep: Vec<FrozenEntry<F>> = current[..keep].to_vec();
+        let to_merge: &[FrozenEntry<F>] = &current[keep..];
 
+        self.fold_and_publish(&to_keep, to_merge);
+    }
+
+    /// Fuse every frozen layer with `entry.generation <= watermark`
+    /// into the tail, leaving newer layers in the chain.
+    ///
+    /// Used by consumers that require per-packet consistency: the
+    /// manager aggregates subscriber watermarks (e.g. "I have
+    /// drained past generation N" from the hardware-offload
+    /// programmer) and supplies the minimum as the watermark here.
+    /// Frozen layers above the watermark remain available to
+    /// [`Snapshot::lookup_at`] for packets stamped with older
+    /// generations.
+    ///
+    /// All other semantics (oldest-first fold, install order, single-
+    /// writer assumption, cost) match [`compact`](Cascade::compact).
+    pub fn compact_through(&self, watermark: Generation)
+    where
+        F: MergeInto<T>,
+    {
+        let current = self.frozen.load_full();
+
+        // Partition keeps newest-first order within each half because
+        // the input is newest-first.
+        let mut to_keep: Vec<FrozenEntry<F>> = Vec::new();
+        let mut to_merge: Vec<FrozenEntry<F>> = Vec::new();
+        for entry in current.iter() {
+            if entry.generation > watermark {
+                to_keep.push(entry.clone());
+            } else {
+                to_merge.push(entry.clone());
+            }
+        }
+
+        if to_merge.is_empty() {
+            return;
+        }
+
+        self.fold_and_publish(&to_keep, &to_merge);
+    }
+
+    /// Shared back-half of [`compact`] and [`compact_through`].
+    ///
+    /// Folds `to_merge` (newest-first) into the current tail
+    /// oldest-first, installs the new tail, then installs the
+    /// truncated frozen vector (which is just `to_keep`).
+    ///
+    /// `to_merge` must be non-empty; callers gate that.
+    fn fold_and_publish(&self, to_keep: &[FrozenEntry<F>], to_merge: &[FrozenEntry<F>])
+    where
+        F: MergeInto<T>,
+    {
         let old_tail = self.tail.load_full();
 
         // Fold oldest-first.  `to_merge` is newest-first so we
-        // iterate in reverse.  The let-else handles the
-        // theoretically-impossible empty case (the early return at
-        // the top of this function ensures to_merge is non-empty)
-        // by no-op'ing rather than panicking, in case some
-        // invariant changes later.
+        // iterate in reverse.
         let mut iter = to_merge.iter().rev();
         let Some(oldest) = iter.next() else {
+            // Defensive: documented as caller-gated, but no-op if
+            // empty rather than panicking.
             return;
         };
-        let mut accumulator: T = oldest.merge_into(old_tail.as_ref());
-        for frozen in iter {
-            accumulator = frozen.merge_into(&accumulator);
+        let mut accumulator: T = oldest.layer.merge_into(old_tail.as_ref());
+        for entry in iter {
+            accumulator = entry.layer.merge_into(&accumulator);
         }
 
         // 1. Install the new tail.  Readers can now observe

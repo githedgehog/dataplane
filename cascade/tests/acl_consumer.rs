@@ -34,7 +34,24 @@ use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
 
-use dataplane_cascade::{Cascade, Layer, MergeInto, MutableHead, Outcome};
+use dataplane_cascade::{Cascade, Generation, Layer, MergeInto, MutableHead, Outcome};
+
+/// Tiny generation allocator for tests.  In production the manager
+/// owns this counter; tests carry their own to avoid pulling in
+/// runtime machinery.
+struct GenAlloc(Generation);
+
+impl GenAlloc {
+    fn new() -> Self {
+        Self(Generation::FIRST)
+    }
+
+    fn next(&mut self) -> Generation {
+        let g = self.0;
+        self.0 = self.0.next().expect("test gen counter overflow");
+        g
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Minimal ACL primitives.
@@ -261,6 +278,7 @@ fn default_allow_in_tail_matches() {
 #[test]
 fn install_rule_takes_effect_after_rotation() {
     let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
+    let mut g_alloc = GenAlloc::new();
     let pkt_22 = pkt("10.0.0.1", "10.0.0.2", 22);
 
     // Before rotate: head holds the rule but Layer::lookup on the
@@ -279,13 +297,14 @@ fn install_rule_takes_effect_after_rotation() {
 
     // After rotate: the head's contents are in a sealed layer that
     // does walk its rules; the drop rule fires first by priority.
-    c.rotate(AclHead::empty);
+    c.rotate(g_alloc.next(), AclHead::empty);
     assert_eq!(classify(&c, &pkt_22), Some(Action::Drop));
 }
 
 #[test]
 fn higher_precedence_rule_shadows_lower() {
     let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
+    let mut g_alloc = GenAlloc::new();
 
     // Drop all traffic to port 22 (priority 100).
     c.write(AclOp::Install(rule(
@@ -297,7 +316,7 @@ fn higher_precedence_rule_shadows_lower() {
         },
         Action::Drop,
     )));
-    c.rotate(AclHead::empty);
+    c.rotate(g_alloc.next(), AclHead::empty);
     assert_eq!(
         classify(&c, &pkt("10.0.0.1", "10.0.0.2", 22)),
         Some(Action::Drop)
@@ -314,7 +333,7 @@ fn higher_precedence_rule_shadows_lower() {
         },
         Action::Allow,
     )));
-    c.rotate(AclHead::empty);
+    c.rotate(g_alloc.next(), AclHead::empty);
 
     // Allowlisted source: hits the higher-precedence Allow.
     assert_eq!(
@@ -335,6 +354,7 @@ fn cascade_walk_respects_sealed_order() {
     // the newer wins because the cascade short-circuits on first
     // match.
     let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
+    let mut g_alloc = GenAlloc::new();
 
     // Older rotation: drop port 22 at priority 100.
     c.write(AclOp::Install(rule(
@@ -346,7 +366,7 @@ fn cascade_walk_respects_sealed_order() {
         },
         Action::Drop,
     )));
-    c.rotate(AclHead::empty);
+    c.rotate(g_alloc.next(), AclHead::empty);
 
     // Newer rotation: allow port 22 at priority 100 (overrides the
     // older drop rule because newer-sealed comes first in the walk).
@@ -359,7 +379,7 @@ fn cascade_walk_respects_sealed_order() {
         },
         Action::Allow,
     )));
-    c.rotate(AclHead::empty);
+    c.rotate(g_alloc.next(), AclHead::empty);
 
     assert_eq!(
         classify(&c, &pkt("10.0.0.1", "10.0.0.2", 22)),
@@ -370,6 +390,7 @@ fn cascade_walk_respects_sealed_order() {
 #[test]
 fn compact_collapses_layers_preserving_precedence() {
     let c = Cascade::new(AclHead::empty(), AclFrozen::from_rules([allow_any()]));
+    let mut g_alloc = GenAlloc::new();
 
     // Three rotations, each introducing a rule at decreasing
     // priority value (increasing precedence).
@@ -387,7 +408,7 @@ fn compact_collapses_layers_preserving_precedence() {
             },
             action,
         )));
-        c.rotate(AclHead::empty);
+        c.rotate(g_alloc.next(), AclHead::empty);
     }
     assert_eq!(c.frozen_depth(), 3);
 
