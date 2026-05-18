@@ -26,6 +26,7 @@ members = [
     "lifecycle",
     "lpm",
     "mat",
+    "mat-runtime",
     "mgmt",
     "nat",
     "net",
@@ -87,6 +88,7 @@ left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-
 lifecycle = { path = "./lifecycle", package = "dataplane-lifecycle", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
 mat = { path = "./mat", package = "dataplane-mat", features = [] }
+mat-runtime = { path = "./mat-runtime", package = "dataplane-mat-runtime", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }

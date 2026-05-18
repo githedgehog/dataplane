@@ -1511,6 +1511,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-mat-runtime"
+version = "0.21.0"
+dependencies = [
+ "dataplane-cascade",
+ "dataplane-concurrency",
+ "dataplane-mat",
+]
+
+[[package]]
 name = "dataplane-mgmt"
 version = "0.21.0"
 dependencies = [
