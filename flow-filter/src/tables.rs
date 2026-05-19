@@ -504,9 +504,12 @@ impl RemoteData {
             || self.dst_nat_req == Some(NatRequirement::Stateful)
     }
 
-    pub(crate) fn requires_stateless_nat(&self) -> bool {
+    pub(crate) fn requires_static_nat_src(&self) -> bool {
         self.src_nat_req == Some(NatRequirement::Stateless)
-            || self.dst_nat_req == Some(NatRequirement::Stateless)
+    }
+
+    pub(crate) fn requires_static_nat_dst(&self) -> bool {
+        self.dst_nat_req == Some(NatRequirement::Stateless)
     }
 
     pub(crate) fn requires_port_forwarding(&self, packet_proto: L4Protocol) -> bool {
