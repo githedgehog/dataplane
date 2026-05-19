@@ -156,16 +156,21 @@ impl PacketMeta {
         ret.flags = flags;
         ret
     }
+
+    fn set_flag(&mut self, flag: MetaFlags, value: bool) {
+        if value {
+            self.flags.insert(flag);
+        } else {
+            self.flags.remove(flag);
+        }
+    }
+
     #[must_use]
     pub fn is_natted(&self) -> bool {
         self.flags.contains(MetaFlags::NATTED)
     }
     pub fn natted(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::NATTED);
-        } else {
-            self.flags.remove(MetaFlags::NATTED);
-        }
+        self.set_flag(MetaFlags::NATTED, value);
     }
 
     #[must_use]
@@ -173,33 +178,21 @@ impl PacketMeta {
         self.flags.contains(MetaFlags::REQ_STATEFUL_NAT)
     }
     pub fn set_stateful_nat(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::REQ_STATEFUL_NAT);
-        } else {
-            self.flags.remove(MetaFlags::REQ_STATEFUL_NAT);
-        }
+        self.set_flag(MetaFlags::REQ_STATEFUL_NAT, value);
     }
     #[must_use]
     pub fn requires_stateless_nat(&self) -> bool {
         self.flags.contains(MetaFlags::REQ_STATELESS_NAT)
     }
     pub fn set_stateless_nat(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::REQ_STATELESS_NAT);
-        } else {
-            self.flags.remove(MetaFlags::REQ_STATELESS_NAT);
-        }
+        self.set_flag(MetaFlags::REQ_STATELESS_NAT, value);
     }
     #[must_use]
     pub fn requires_port_forwarding(&self) -> bool {
         self.flags.contains(MetaFlags::REQ_PORT_FORWARDING)
     }
     pub fn set_port_forwarding(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::REQ_PORT_FORWARDING);
-        } else {
-            self.flags.remove(MetaFlags::REQ_PORT_FORWARDING);
-        }
+        self.set_flag(MetaFlags::REQ_PORT_FORWARDING, value);
     }
 
     #[must_use]
@@ -211,11 +204,7 @@ impl PacketMeta {
         self.flags.contains(MetaFlags::IS_L2_BCAST)
     }
     pub fn set_l2bcast(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::IS_L2_BCAST);
-        } else {
-            self.flags.remove(MetaFlags::IS_L2_BCAST);
-        }
+        self.set_flag(MetaFlags::IS_L2_BCAST, value);
     }
 
     #[must_use]
@@ -224,11 +213,7 @@ impl PacketMeta {
     }
 
     pub fn set_overlay(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::IS_OVERLAY);
-        } else {
-            self.flags.remove(MetaFlags::IS_OVERLAY);
-        }
+        self.set_flag(MetaFlags::IS_OVERLAY, value);
     }
 
     #[must_use]
@@ -236,22 +221,14 @@ impl PacketMeta {
         self.flags.contains(MetaFlags::REFR_CHKSUM)
     }
     pub fn set_checksum_refresh(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::REFR_CHKSUM);
-        } else {
-            self.flags.remove(MetaFlags::REFR_CHKSUM);
-        }
+        self.set_flag(MetaFlags::REFR_CHKSUM, value);
     }
     #[must_use]
     pub fn keep(&self) -> bool {
         self.flags.contains(MetaFlags::KEEP)
     }
     pub fn set_keep(&mut self, value: bool) {
-        if value {
-            self.flags.insert(MetaFlags::KEEP);
-        } else {
-            self.flags.remove(MetaFlags::KEEP);
-        }
+        self.set_flag(MetaFlags::KEEP, value);
     }
 }
 impl Drop for PacketMeta {
