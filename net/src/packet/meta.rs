@@ -124,8 +124,9 @@ bitflags! {
         const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
         const IS_OVERLAY  = 0b0010_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
         const REQ_STATEFUL_NAT  = 0b0100_0000;      /* Packet requires stateful NAT (source and/or destination) */
-        const REQ_STATELESS_NAT = 0b1000_0000;      /* Packet requires stateless NAT (source and/or destination) */
-        const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
+        const REQ_PORT_FORWARDING = 0b1000_0000; /* Packet requires port forwarding */
+        const REQ_STATIC_NAT_SRC = 0b0001_0000_0000;      /* Packet requires stateless NAT (source) */
+        const REQ_STATIC_NAT_DST = 0b0010_0000_0000;      /* Packet requires stateless NAT (destination) */
     }
 }
 
@@ -181,18 +182,29 @@ impl PacketMeta {
         self.set_flag(MetaFlags::REQ_STATEFUL_NAT, value);
     }
     #[must_use]
-    pub fn requires_stateless_nat(&self) -> bool {
-        self.flags.contains(MetaFlags::REQ_STATELESS_NAT)
-    }
-    pub fn set_stateless_nat(&mut self, value: bool) {
-        self.set_flag(MetaFlags::REQ_STATELESS_NAT, value);
-    }
-    #[must_use]
     pub fn requires_port_forwarding(&self) -> bool {
         self.flags.contains(MetaFlags::REQ_PORT_FORWARDING)
     }
     pub fn set_port_forwarding(&mut self, value: bool) {
         self.set_flag(MetaFlags::REQ_PORT_FORWARDING, value);
+    }
+    #[must_use]
+    pub fn requires_static_nat_src(&self) -> bool {
+        self.flags.contains(MetaFlags::REQ_STATIC_NAT_SRC)
+    }
+    pub fn set_static_nat_src(&mut self, value: bool) {
+        self.set_flag(MetaFlags::REQ_STATIC_NAT_SRC, value);
+    }
+    #[must_use]
+    pub fn requires_static_nat_dst(&self) -> bool {
+        self.flags.contains(MetaFlags::REQ_STATIC_NAT_DST)
+    }
+    pub fn set_static_nat_dst(&mut self, value: bool) {
+        self.set_flag(MetaFlags::REQ_STATIC_NAT_DST, value);
+    }
+    #[must_use]
+    pub fn requires_static_nat(&self) -> bool {
+        self.requires_static_nat_src() || self.requires_static_nat_dst()
     }
 
     #[must_use]
