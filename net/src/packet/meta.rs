@@ -119,14 +119,15 @@ bitflags! {
     struct MetaFlags: u32 {
         const INITIALIZED = 0b0000_0001; /* initialized */
         const IS_L2_BCAST = 0b0000_0010; /* frame is eth broadcast */
-        const NATTED      = 0b0000_0100; /* set to true if a packet has been NATed */
-        const REFR_CHKSUM = 0b0000_1000; /* if true, an indication that packet checksums need to be refreshed */
-        const KEEP        = 0b0001_0000; /* Keep the Packet even if it should be dropped */
-        const IS_OVERLAY  = 0b0010_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
-        const REQ_STATEFUL_NAT  = 0b0100_0000;      /* Packet requires stateful NAT (source and/or destination) */
-        const REQ_PORT_FORWARDING = 0b1000_0000; /* Packet requires port forwarding */
-        const REQ_STATIC_NAT_SRC = 0b0001_0000_0000;      /* Packet requires stateless NAT (source) */
-        const REQ_STATIC_NAT_DST = 0b0010_0000_0000;      /* Packet requires stateless NAT (destination) */
+        const NATTED_SRC  = 0b0000_0100; /* set to true if source address of a packet has been NATed */
+        const NATTED_DST  = 0b0000_1000; /* set to true if destination address of a packet has been NATed */
+        const REFR_CHKSUM = 0b0001_0000; /* if true, an indication that packet checksums need to be refreshed */
+        const KEEP        = 0b0010_0000; /* Keep the Packet even if it should be dropped */
+        const IS_OVERLAY  = 0b0100_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
+        const REQ_STATEFUL_NAT  = 0b1000_0000;      /* Packet requires stateful NAT (source and/or destination) */
+        const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
+        const REQ_STATIC_NAT_SRC = 0b0010_0000_0000;      /* Packet requires stateless NAT (source) */
+        const REQ_STATIC_NAT_DST = 0b0100_0000_0000;      /* Packet requires stateless NAT (destination) */
     }
 }
 
@@ -167,11 +168,22 @@ impl PacketMeta {
     }
 
     #[must_use]
-    pub fn is_natted(&self) -> bool {
-        self.flags.contains(MetaFlags::NATTED)
+    pub fn is_src_natted(&self) -> bool {
+        self.flags.contains(MetaFlags::NATTED_SRC)
     }
-    pub fn natted(&mut self, value: bool) {
-        self.set_flag(MetaFlags::NATTED, value);
+    pub fn src_natted(&mut self, value: bool) {
+        self.set_flag(MetaFlags::NATTED_SRC, value);
+    }
+    #[must_use]
+    pub fn is_dst_natted(&self) -> bool {
+        self.flags.contains(MetaFlags::NATTED_DST)
+    }
+    pub fn dst_natted(&mut self, value: bool) {
+        self.set_flag(MetaFlags::NATTED_DST, value);
+    }
+    #[must_use]
+    pub fn is_natted(&self) -> bool {
+        self.is_src_natted() || self.is_dst_natted()
     }
 
     #[must_use]

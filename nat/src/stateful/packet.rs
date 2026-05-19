@@ -91,6 +91,7 @@ fn snat<Buf: PacketBufferMut>(
         _ => return Err(NatPacketError::UnsupportedTraffic),
     }
     if modified {
+        packet.meta_mut().src_natted(true);
         packet.meta_mut().set_checksum_refresh(true);
     }
     Ok(())
@@ -159,6 +160,7 @@ fn dnat<Buf: PacketBufferMut>(
     }
 
     if modified {
+        packet.meta_mut().dst_natted(true);
         packet.meta_mut().set_checksum_refresh(true);
     }
     Ok(())

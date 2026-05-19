@@ -214,6 +214,9 @@ impl StatelessNat {
             modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
         }
 
+        if modified {
+            packet.meta_mut().src_natted(true);
+        }
         Ok(modified)
     }
 
@@ -253,6 +256,10 @@ impl StatelessNat {
         // ICMP Error messages
         if Self::is_icmp_inner_translation_candidate(packet) {
             modified |= Self::translate_icmp_inner_packet_src_if_any(table, packet)?;
+        }
+
+        if modified {
+            packet.meta_mut().dst_natted(true);
         }
         Ok(modified)
     }
@@ -314,7 +321,6 @@ impl StatelessNat {
                 if modified {
                     packet.meta_mut().set_checksum_refresh(true);
                     debug!("{nfi}: Packet was NAT'ed");
-                    packet.meta_mut().natted(true);
                 } else {
                     debug!("{nfi}: No NAT translation needed");
                 }

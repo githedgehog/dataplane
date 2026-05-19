@@ -377,8 +377,11 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.requires_static_nat_src() {
         write!(f, " req-static-nat-src")?;
     }
-    if meta.is_natted() {
-        write!(f, " natted")?;
+    if meta.is_src_natted() {
+        write!(f, " natted-src")?;
+    }
+    if meta.is_dst_natted() {
+        write!(f, " natted-dst")?;
     }
     if meta.is_overlay() {
         write!(f, " overlay")?;
