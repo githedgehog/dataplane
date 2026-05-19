@@ -468,7 +468,6 @@ impl StatefulNat {
             debug!("Did not masquerade packet: {error}");
         } else {
             packet.meta_mut().set_checksum_refresh(true);
-            packet.meta_mut().natted(true);
         }
     }
 }
