@@ -359,7 +359,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
             if !packet.is_done()
-                && packet.meta().requires_stateless_nat()
+                && packet.meta().requires_static_nat()
                 && !packet.meta().is_natted()
             {
                 // Packet should never be marked for NAT and reach this point if it is not overlay

@@ -307,8 +307,11 @@ impl FlowFilter {
         if data.requires_stateful_nat() {
             packet.meta_mut().set_stateful_nat(true);
         }
-        if data.requires_static_nat_src() || data.requires_static_nat_dst() {
-            packet.meta_mut().set_stateless_nat(true);
+        if data.requires_static_nat_src() {
+            packet.meta_mut().set_static_nat_src(true);
+        }
+        if data.requires_static_nat_dst() {
+            packet.meta_mut().set_static_nat_dst(true);
         }
         if data.requires_port_forwarding(get_l4_proto(packet)) {
             packet.meta_mut().set_port_forwarding(true);
