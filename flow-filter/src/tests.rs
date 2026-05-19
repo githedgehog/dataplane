@@ -44,12 +44,12 @@ fn vpcd(id: u32) -> VpcDiscriminant {
 
 fn needs_masquerade<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
     packet.meta().requires_stateful_nat()
-        && !packet.meta().requires_stateless_nat()
+        && !packet.meta().requires_static_nat()
         && !packet.meta().requires_port_forwarding()
 }
 
 fn needs_static_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-    packet.meta().requires_stateless_nat()
+    packet.meta().requires_static_nat()
         && !packet.meta().requires_stateful_nat()
         && !packet.meta().requires_port_forwarding()
 }
@@ -57,12 +57,12 @@ fn needs_static_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
 fn needs_port_forwarding<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
     packet.meta().requires_port_forwarding()
         && !packet.meta().requires_stateful_nat()
-        && !packet.meta().requires_stateless_nat()
+        && !packet.meta().requires_static_nat()
 }
 
 fn needs_no_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
     !packet.meta().requires_stateful_nat()
-        && !packet.meta().requires_stateless_nat()
+        && !packet.meta().requires_static_nat()
         && !packet.meta().requires_port_forwarding()
 }
 
