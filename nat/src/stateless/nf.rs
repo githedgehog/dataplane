@@ -283,8 +283,12 @@ impl StatelessNat {
             return Err(StatelessNatError::MissingTable(src_vni));
         };
 
-        modified |= self.source_nat(table, packet, dst_vni)?;
-        modified |= self.destination_nat(table, packet)?;
+        if packet.meta().requires_static_nat_src() && !packet.meta().is_src_natted() {
+            modified |= self.source_nat(table, packet, dst_vni)?;
+        }
+        if packet.meta().requires_static_nat_dst() && !packet.meta().is_dst_natted() {
+            modified |= self.destination_nat(table, packet)?;
+        }
         Ok(modified)
     }
 
