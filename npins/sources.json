@@ -201,11 +201,11 @@
         "owner": "githedgehog",
         "repo": "rdma-core"
       },
-      "branch": "fix-lto-61.0",
+      "branch": "fix-lto-63.0",
       "submodules": false,
-      "revision": "998375a38e27e66bc74ed7419a0b93d0066e8194",
-      "url": "https://github.com/githedgehog/rdma-core/archive/998375a38e27e66bc74ed7419a0b93d0066e8194.tar.gz",
-      "hash": "sha256-Qm5IhgRI5k+sDdBzyTIILg60jlmYroGWYyERSHKfuV4="
+      "revision": "ad5fba0693267e86be6bc632b6847deb19d82d4c",
+      "url": "https://github.com/githedgehog/rdma-core/archive/ad5fba0693267e86be6bc632b6847deb19d82d4c.tar.gz",
+      "hash": "sha256-XKwSYMd7wuZSUIZ0+fBRi7KThslrqauXifFQvtHQ+Vo="
     },
     "rust": {
       "type": "GitRelease",
