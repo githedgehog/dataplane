@@ -419,7 +419,7 @@ mod tests {
             let five_seconds_from_now = now + five_seconds;
 
             let flow_table = FlowTable::default();
-            let flow_key = FlowKey::uni(
+            let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -449,7 +449,7 @@ mod tests {
             let one_second = Duration::from_secs(1);
 
             let flow_table = FlowTable::default();
-            let flow_key = FlowKey::uni(
+            let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(42).unwrap())),
                 "10.0.0.1".parse::<IpAddr>().unwrap(),
                 "10.0.0.2".parse::<IpAddr>().unwrap(),
@@ -481,7 +481,7 @@ mod tests {
             let second_expiry_time = now + Duration::from_secs(10);
 
             let flow_table = FlowTable::default();
-            let flow_key = FlowKey::uni(
+            let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -566,7 +566,7 @@ mod tests {
 
             let mut flow_keys = vec![];
             for src_port in 1..=NUM_FLOWS {
-                let flow_key = FlowKey::uni(
+                let flow_key = FlowKey::new(
                     Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                     "1.2.3.4".parse::<IpAddr>().unwrap(),
                     "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -607,7 +607,7 @@ mod tests {
             let now = Instant::now();
             let deadline = now + Duration::from_secs(2);
 
-            let flow_key = FlowKey::uni(
+            let flow_key = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -643,7 +643,7 @@ mod tests {
             for i in 1u16..=2 {
                 let src_port = TcpPort::new_checked(1000 + i).unwrap();
                 let dst_port = TcpPort::new_checked(80).unwrap();
-                let flow_key = FlowKey::uni(
+                let flow_key = FlowKey::new(
                     Some(src_vpcd),
                     src_ip,
                     dst_ip,
@@ -655,7 +655,7 @@ mod tests {
             }
 
             // One more insert must fail with CapacityExceeded.
-            let overflow_key = FlowKey::uni(
+            let overflow_key = FlowKey::new(
                 Some(src_vpcd),
                 src_ip,
                 dst_ip,
@@ -689,7 +689,7 @@ mod tests {
             let two_seconds = Duration::from_secs(2);
             let flow_keys: Vec<_> = (0u16..2u16)
                 .map(|i| {
-                    FlowKey::uni(
+                    FlowKey::new(
                         Some(VpcDiscriminant::VNI(
                             Vni::new_checked(u32::from(i) + 1).unwrap(),
                         )),
@@ -805,7 +805,7 @@ mod tests {
             let flow_table = Arc::new(FlowTable::default());
 
             let five_seconds_from_now = Instant::now() + Duration::from_secs(5);
-            let flow_key1 = FlowKey::uni(
+            let flow_key1 = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -815,7 +815,7 @@ mod tests {
                 }),
             );
 
-            let flow_key2 = FlowKey::uni(
+            let flow_key2 = FlowKey::new(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(10).unwrap())),
                 "10.2.3.4".parse::<IpAddr>().unwrap(),
                 "40.5.6.7".parse::<IpAddr>().unwrap(),

@@ -462,11 +462,12 @@ pub struct FlowKey {
 }
 
 impl FlowKey {
-    /// Create a unidirectional flow key
+    /// Create a flow key.
     ///
-    /// packets with src -> dst will match, but dst -> src will not
+    /// Flow keys are unidirectional: packets with src -> dst will match, but
+    /// dst -> src will not.
     #[must_use]
-    pub fn uni(
+    pub fn new(
         src_vpcd: Option<VpcDiscriminant>,
         src_ip: IpAddr,
         dst_ip: IpAddr,
@@ -611,7 +612,7 @@ fn flow_key_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<Fl
     };
 
     let src_vpcd = packet.meta().src_vpcd;
-    Some(FlowKey::uni(src_vpcd, src_ip, dst_ip, ip_proto_key))
+    Some(FlowKey::new(src_vpcd, src_ip, dst_ip, ip_proto_key))
 }
 
 impl<Buf: PacketBufferMut> TryFrom<Uni<&Packet<Buf>>> for FlowKey {
@@ -676,7 +677,7 @@ pub fn flowkey_embedded_in_icmp_error<Buf: PacketBufferMut>(
             return Err(FlowKeyError::EmbeddedMissingIcmpId);
         }
     };
-    Ok(FlowKey::uni(None, src_ip, dst_ip, proto_key))
+    Ok(FlowKey::new(None, src_ip, dst_ip, proto_key))
 }
 
 #[cfg(any(test, feature = "bolero"))]
@@ -809,7 +810,7 @@ mod contract {
                 )
             };
             let proto_key_info = super::IpProtoKey::generate(driver)?;
-            Some(FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info))
+            Some(FlowKey::new(src_vpcd, src_ip, dst_ip, proto_key_info))
         }
     }
 }
@@ -830,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_flow_key_reverse() {
-        let flow_key = FlowKey::uni(
+        let flow_key = FlowKey::new(
             Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
             "1.2.3.4".parse::<IpAddr>().unwrap(),
             "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -851,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_flow_key_uni_hash() {
-        let flow_key = FlowKey::uni(
+        let flow_key = FlowKey::new(
             None,
             "1.2.3.4".parse::<IpAddr>().unwrap(),
             "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -1062,7 +1063,7 @@ mod tests {
             };
             if let Some(proto) = proto {
                 let (flow_key, mut packet) =
-                    (FlowKey::uni(src_vpcd, src_ip, dst_ip, proto), packet);
+                    (FlowKey::new(src_vpcd, src_ip, dst_ip, proto), packet);
                 set_packet_fields(&mut packet, &flow_key);
                 Some((Some(flow_key), packet))
             } else {
