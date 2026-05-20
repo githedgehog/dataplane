@@ -184,6 +184,12 @@ in
             # We have absolutely no need or desire to support the legacy mode, and we can potentially save ourselves
             # some instruction cache pressure by disabling that old code at compile time.
             "-DIOCTL_MODE=ioctl"
+            # Redirect the systemd sysusers.d config file into the package's own lib/ tree.  Upstream defaults to
+            # querying systemd's pkg-config for sysusersdir and falls back to /usr/lib/sysusers.d, neither of which
+            # works for our build (systemd isn't a build input, and the nix sandbox can't write outside $out).  We
+            # don't run systemd against this build, so the file is inert -- it just needs an installable path.
+            # Made possible by the cherry-picked upstream commit that turned SYSUSERS_DIR into a cache variable.
+            "-DSYSUSERS_DIR=lib/sysusers.d"
           ]
           ++
             final.lib.optionals
