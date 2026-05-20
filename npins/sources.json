@@ -39,11 +39,11 @@
         "owner": "githedgehog",
         "repo": "dpdk"
       },
-      "branch": "pr/daniel-noland/cross-compile-fix",
+      "branch": "v26.03-hh",
       "submodules": false,
-      "revision": "6736a6e32f5b3a8d16b2bd0e84b73af32540de77",
-      "url": "https://github.com/githedgehog/dpdk/archive/6736a6e32f5b3a8d16b2bd0e84b73af32540de77.tar.gz",
-      "hash": "sha256-aVtrmUtFkkC2SsnfWJmRN/Klwfb/EGLG+YYtSLm5tBY="
+      "revision": "fa7e361d592b845cedbd341eb959016aa029132c",
+      "url": "https://github.com/githedgehog/dpdk/archive/fa7e361d592b845cedbd341eb959016aa029132c.tar.gz",
+      "hash": "sha256-2lNzH6Yk7mhIujkJ+vt7AL+BTy1O+6zOYadFqMysr4I="
     },
     "dplane-plugin": {
       "type": "Git",
