@@ -369,7 +369,7 @@ impl FlowFilter {
             return;
         }
 
-        let Ok(flow_key) = FlowKey::try_from(net::flow_key::Uni(&*packet)) else {
+        let Ok(flow_key) = FlowKey::try_from(&*packet) else {
             return;
         };
 
