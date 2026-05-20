@@ -110,7 +110,13 @@ impl PortForwarder {
 
         // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
         let timeout = Instant::now() + entry.init_timeout();
-        let (fw_flow, rev_flow) = FlowInfo::related_pair(timeout, fw_key, rev_key);
+        let (fw_flow, rev_flow) = FlowInfo::related_pair(
+            timeout,
+            fw_key,
+            packet.meta().compute_flow_flags_forward(),
+            rev_key,
+            packet.meta().compute_flow_flags_reverse(),
+        );
 
         // set the generation id for the flow
         fw_flow.set_genid_pair(self.pipeline_data.genid());

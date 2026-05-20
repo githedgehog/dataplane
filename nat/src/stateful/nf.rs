@@ -261,7 +261,13 @@ impl StatefulNat {
 
         // build a flow pair from the keys (without NAT state)
         let expires_at = Instant::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
-        let (forward, reverse) = FlowInfo::related_pair(expires_at, *flow_key, reverse_key);
+        let (forward, reverse) = FlowInfo::related_pair(
+            expires_at,
+            *flow_key,
+            packet.meta().compute_flow_flags_forward(),
+            reverse_key,
+            packet.meta().compute_flow_flags_reverse(),
+        );
 
         // set up their NAT state
         Self::setup_flow_nat_state(&forward, forward_state, dst_vpc_id);

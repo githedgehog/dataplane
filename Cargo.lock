@@ -1315,6 +1315,7 @@ dependencies = [
 name = "dataplane-flow-filter"
 version = "0.21.0"
 dependencies = [
+ "bitflags 2.13.0",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
