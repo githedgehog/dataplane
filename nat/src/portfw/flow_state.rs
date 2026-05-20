@@ -105,23 +105,25 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     new_dst_ip: UnicastIpAddr, // destination ip to forward to
     new_dst_port: NonZero<u16>, // destination port to forward to
     dst_vpcd: VpcDiscriminant, // destination VPC to forward to
-) -> (FlowKey, FlowKey) {
-    // build the keys for the forward path and the reverse path.
-    let key_forward = FlowKey::try_from(Uni(&*packet)).unwrap_or_else(|_| unreachable!());
-    let proto = key_forward.data().proto();
-    let src_port = key_forward
-        .data()
-        .src_port()
-        .unwrap_or_else(|| unreachable!());
+) -> Result<(FlowKey, FlowKey), ()> {
+    // Retrieve the key for the forward path (before any other NAT translation)
+    let initial_flow_key = packet.meta().flow_key.ok_or(())?;
 
-    let mut key_forward_dnated = key_forward;
+    // Build the keys for the reverse path
+    let current_flow_key = FlowKey::try_from(Uni(&*packet)).map_err(|_| ())?;
+
+    // Build the key for the reverse path
+    let proto = current_flow_key.data().proto();
+    let src_port = current_flow_key.data().src_port().ok_or(())?;
+
+    let mut key_forward_dnated = current_flow_key;
     key_forward_dnated.data_mut().set_dst_ip(new_dst_ip.inner());
     key_forward_dnated
         .data_mut()
         .set_ip_proto_key(IpProtoKey::from((proto, src_port, new_dst_port)));
     let key_reverse = key_forward_dnated.reverse(Some(dst_vpcd));
 
-    (key_forward, key_reverse)
+    Ok((initial_flow_key, key_reverse))
 }
 
 pub(crate) fn setup_forward_flow(

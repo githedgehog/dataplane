@@ -239,7 +239,8 @@ impl StatefulNat {
     fn create_flow_pair<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-        flow_key: &FlowKey,
+        initial_flow_key: &FlowKey,
+        current_flow_key: &FlowKey,
         alloc: AllocationResult<Allocation>,
     ) -> Result<(), StatefulNatError> {
         let idle_timeout = alloc.idle_timeout;
@@ -249,11 +250,14 @@ impl StatefulNat {
         let src_vpc_id = packet.meta().src_vpcd().unwrap_or_else(|| unreachable!());
         let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
-        // build key for reverse flow
-        let reverse_key = Self::new_reverse_session(flow_key, &alloc, dst_vpc_id)?;
+        // build key for reverse flow, based on the current packet headers: if we use masquerading
+        // with static NAT, we assume we've already been through static destination NAT and we'll
+        // receive replies with the translated source address, not the initial destination for this
+        // packet
+        let reverse_key = Self::new_reverse_session(current_flow_key, &alloc, dst_vpc_id)?;
 
         // get original src address and port/Id
-        let (src_ip, src_port) = Self::get_reverse_mapping(flow_key)?;
+        let (src_ip, src_port) = Self::get_reverse_mapping(initial_flow_key)?;
 
         // build NAT state for both flows
         let (forward_state, reverse_state) =
@@ -263,7 +267,7 @@ impl StatefulNat {
         let expires_at = Instant::now() + Self::MASQUERADE_ONEWAY_TIMEOUT;
         let (forward, reverse) = FlowInfo::related_pair(
             expires_at,
-            *flow_key,
+            *initial_flow_key,
             packet.meta().compute_flow_flags_forward(),
             reverse_key,
             packet.meta().compute_flow_flags_reverse(),
@@ -369,14 +373,20 @@ impl StatefulNat {
 
         let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
-        // build flow key for the current packet
-        let flow_key =
+        // Retrieve initial flow key for the current packet (before any other NAT translation)
+        let initial_flow_key = packet
+            .meta()
+            .flow_key
+            .ok_or(StatefulNatError::FlowKeyError)?;
+
+        // Build a new flow key for the current packet
+        let current_flow_key =
             FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::FlowKeyError)?;
 
         // Create a new session and translate the address
-        let src_ip = *flow_key.data().src_ip();
+        let src_ip = *initial_flow_key.data().src_ip();
         let alloc = allocator
-            .allocate(dst_vpcd, src_ip, flow_key.data().proto())
+            .allocate(dst_vpcd, src_ip, initial_flow_key.data().proto())
             .map_err(StatefulNatError::AllocationFailure)?;
 
         // Forbid addresses we won't know how to translate. This is a work around of a larger change
@@ -388,12 +398,12 @@ impl StatefulNat {
         debug!("{nfi}: Allocated: {alloc}");
 
         // create flow pair
-        self.create_flow_pair(packet, &flow_key, alloc)?;
+        self.create_flow_pair(packet, &initial_flow_key, &current_flow_key, alloc)?;
 
         // lookup the flow (forward) just created. We should always find it.
         let installed = self
             .flow_table
-            .lookup(&flow_key)
+            .lookup(&initial_flow_key)
             .ok_or(StatefulNatError::Bug("Unexpected flow lookup failure"))?;
 
         // check that the masquerade state is readable

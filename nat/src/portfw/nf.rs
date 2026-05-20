@@ -105,8 +105,15 @@ impl PortForwarder {
         debug!("Will translate {dst_ip}:{dst_port} -> {new_dst_ip}:{new_dst_port} as per {entry}");
 
         // build keys for the FORWARD and REVERSE flows
-        let (fw_key, rev_key) =
-            build_portfw_flow_keys(packet, new_dst_ip, new_dst_port, entry.dst_vpcd);
+        let Ok((fw_key, rev_key)) =
+            build_portfw_flow_keys(packet, new_dst_ip, new_dst_port, entry.dst_vpcd)
+        else {
+            warn!(
+                "Failed to build flow keys for port forwarding: {dst_ip}:{dst_port} -> {new_dst_ip}:{new_dst_port}"
+            );
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
 
         // create a pair of related flow entries (outside the flow table). Timeout is set according to the rule matched
         let timeout = Instant::now() + entry.init_timeout();
