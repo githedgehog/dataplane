@@ -30,6 +30,8 @@ pub mod portfw;
 mod ranges;
 pub mod stateful;
 pub mod stateless;
+#[cfg(test)]
+mod test;
 
 pub use icmp_handler::nf::IcmpErrorHandler;
 pub use port::NatPort;
