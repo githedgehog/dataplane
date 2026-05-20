@@ -122,55 +122,39 @@ impl ValidatedPeering {
     fn validate_nat_combinations(&self) -> ConfigResult {
         // If stateful NAT is set up on one side of the peering, we don't support NAT (stateless or
         // stateful) on the other side.
-        let mut local_has_stateless_nat = false;
-        let mut local_has_stateful_nat = false;
+        let mut local_has_masquerading = false;
         let mut local_has_port_forwarding = false;
         for expose in self.local.valexp() {
             match expose.nat_config() {
                 Some(VpcExposeNatConfig::Stateful { .. }) => {
-                    local_has_stateful_nat = true;
-                }
-                Some(VpcExposeNatConfig::Stateless { .. }) => {
-                    local_has_stateless_nat = true;
+                    local_has_masquerading = true;
                 }
                 Some(VpcExposeNatConfig::PortForwarding { .. }) => {
                     local_has_port_forwarding = true;
                 }
-                None => {}
+                Some(VpcExposeNatConfig::Stateless { .. }) | None => {}
             }
         }
-        let local_has_nat =
-            local_has_stateless_nat || local_has_stateful_nat || local_has_port_forwarding;
 
-        if !local_has_nat {
+        // No NAT or static NAT only is compatible with all other modes on the other side
+        if !(local_has_masquerading || local_has_port_forwarding) {
             return Ok(());
         }
-
-        let local_has_stateless_nat_only =
-            local_has_stateless_nat && !local_has_stateful_nat && !local_has_port_forwarding;
 
         // Allowed:
         //
         // - no NAT ------------ *
-        // - stateless NAT ----- stateless NAT
+        // - stateless NAT ----- *
         //
         // Disallowed (some of them may be supported in the future):
         //
-        // - stateful NAT ------ stateless NAT
-        // - stateful NAT ------ stateful NAT
-        // - stateful NAT ------ port forwarding
+        // - masquerading ------ masquerading
+        // - masquerading ------ port forwarding
         // - port forwarding --- port forwarding
-        // - port forwarding --- stateless NAT
-
         for remote_expose in self.remote.valexp() {
-            if !remote_expose.has_nat() {
-                continue;
+            if remote_expose.has_stateful_nat() || remote_expose.has_port_forwarding() {
+                return Err(ConfigError::IncompatibleNatModes(self.name.clone()));
             }
-            if local_has_stateless_nat_only && remote_expose.has_stateless_nat() {
-                continue;
-            }
-            // Other combinations are rejected
-            return Err(ConfigError::IncompatibleNatModes(self.name.clone()));
         }
         Ok(())
     }

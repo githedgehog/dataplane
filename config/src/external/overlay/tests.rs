@@ -420,11 +420,7 @@ pub mod test {
 
         // Build overlay object and validate it
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(
-            overlay
-                .validate()
-                .is_err_and(|e| e == ConfigError::IncompatibleNatModes("Peering-1".to_owned()))
-        );
+        assert!(overlay.validate().is_ok());
     }
 
     #[test]
