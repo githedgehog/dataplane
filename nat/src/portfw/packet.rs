@@ -46,6 +46,11 @@ fn snat_packet<Buf: PacketBufferMut>(
     new_src_ip: UnicastIpAddr,
     new_src_port: NonZero<u16>,
 ) -> Result<bool, NatPacketError> {
+    debug_assert!(
+        !packet.meta().is_src_natted(),
+        "Trying to apply double source NAT to packet!"
+    );
+
     let mut modified = false;
     match packet
         .headers_mut()
@@ -93,6 +98,11 @@ fn dnat_packet<Buf: PacketBufferMut>(
     new_dst_ip: IpAddr,
     new_dst_port: NonZero<u16>,
 ) -> Result<bool, NatPacketError> {
+    debug_assert!(
+        !packet.meta().is_dst_natted(),
+        "Trying to apply double destination NAT to packet!"
+    );
+
     let mut modified = false;
     match packet
         .headers_mut()

@@ -98,7 +98,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
-        let stateless_nat = StatelessNat::with_reader("stateless-NAT", nattabler_factory.handle());
+        let static_nat = StatelessNat::with_reader("static-NAT-1", nattabler_factory.handle());
         let stateful_nat = StatefulNat::new(
             "stateful-NAT",
             flow_table_clone.clone(),
@@ -125,8 +125,8 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
             .add_stage(icmp_error_handler)
             .add_stage(flow_lookup)
             .add_stage(flow_filter)
+            .add_stage(static_nat)
             .add_stage(portfw)
-            .add_stage(stateless_nat)
             .add_stage(stateful_nat)
             .add_stage(iprouter2)
             .add_stage(stage_egress)

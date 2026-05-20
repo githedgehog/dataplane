@@ -514,13 +514,12 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done()
-                && packet.meta().requires_stateful_nat()
-                && !packet.is_icmp_error()
-                && !packet.meta().is_natted()
+            if !packet.is_done() && packet.meta().requires_stateful_nat() && !packet.is_icmp_error()
             {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
                 debug_assert!(packet.meta().is_overlay());
+                // Packet should never go through both masquerading and port forwarding
+                debug_assert!(!packet.meta().requires_port_forwarding());
 
                 self.process_packet(&mut packet);
             }
