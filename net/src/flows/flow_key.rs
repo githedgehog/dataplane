@@ -454,26 +454,29 @@ impl HashDst for IpProtoKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
-pub struct FlowKeyData {
+pub struct FlowKey {
     src_vpcd: Option<VpcDiscriminant>,
     src_ip: IpAddr,
     dst_ip: IpAddr,
     proto_key_info: IpProtoKey,
 }
 
-impl FlowKeyData {
+impl FlowKey {
+    /// Create a unidirectional flow key
+    ///
+    /// packets with src -> dst will match, but dst -> src will not
     #[must_use]
-    pub fn new(
+    pub fn uni(
         src_vpcd: Option<VpcDiscriminant>,
         src_ip: IpAddr,
         dst_ip: IpAddr,
-        ip_proto_key: IpProtoKey,
+        proto_key_info: IpProtoKey,
     ) -> Self {
         Self {
             src_vpcd,
             src_ip,
             dst_ip,
-            proto_key_info: ip_proto_key,
+            proto_key_info,
         }
     }
 
@@ -571,7 +574,7 @@ impl FlowKeyData {
     }
 }
 
-impl Hash for FlowKeyData {
+impl Hash for FlowKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.src_vpcd.hash(state);
         self.src_ip.hash(state);
@@ -581,45 +584,12 @@ impl Hash for FlowKeyData {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
-pub struct FlowKey(pub FlowKeyData);
-
-impl FlowKey {
-    #[must_use]
-    pub fn data(&self) -> &FlowKeyData {
-        &self.0
-    }
-    #[must_use]
-    pub fn data_mut(&mut self) -> &mut FlowKeyData {
-        &mut self.0
-    }
-
-    /// Create a unidirectional flow key
-    ///
-    /// packets with src -> dst will match, but dst -> src will not
-    #[must_use]
-    pub fn uni(
-        src_vpcd: Option<VpcDiscriminant>,
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
-        proto_key_info: IpProtoKey,
-    ) -> FlowKey {
-        FlowKey(FlowKeyData::new(src_vpcd, src_ip, dst_ip, proto_key_info))
-    }
-
-    // Creates the flow key with src and dst swapped
-    #[must_use]
-    pub fn reverse(&self, src_vpcd: Option<VpcDiscriminant>) -> FlowKey {
-        FlowKey(self.0.reverse(src_vpcd))
-    }
-}
-
 /// Wrapper to specify unidirectional `FlowKey` creation
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Uni<T>(pub T);
 
-fn flow_key_data_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<FlowKeyData> {
+fn flow_key_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<FlowKey> {
     let ip = packet.headers().try_ip()?;
     let src_ip = ip.src_addr();
     let dst_ip = ip.dst_addr();
@@ -641,21 +611,13 @@ fn flow_key_data_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opti
     };
 
     let src_vpcd = packet.meta().src_vpcd;
-    Some(FlowKeyData::new(src_vpcd, src_ip, dst_ip, ip_proto_key))
+    Some(FlowKey::uni(src_vpcd, src_ip, dst_ip, ip_proto_key))
 }
 
 impl<Buf: PacketBufferMut> TryFrom<Uni<&Packet<Buf>>> for FlowKey {
     type Error = FlowKeyError;
     fn try_from(packet: Uni<&Packet<Buf>>) -> Result<Self, Self::Error> {
-        let packet = packet.0;
-        let FlowKeyData {
-            src_vpcd,
-            src_ip,
-            dst_ip,
-            proto_key_info,
-        } = flow_key_data_from_packet(packet).ok_or(FlowKeyError::NoFlowKeyData)?;
-
-        Ok(FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info))
+        flow_key_from_packet(packet.0).ok_or(FlowKeyError::NoFlowKeyData)
     }
 }
 
@@ -720,8 +682,8 @@ pub fn flowkey_embedded_in_icmp_error<Buf: PacketBufferMut>(
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::{
-        EmbeddedPacketData, FlowKey, FlowKeyData, IcmpProtoKey, InnerIcmpProtoKey, InnerIpProtoKey,
-        IpProtoKey, TcpProtoKey, UdpProtoKey,
+        EmbeddedPacketData, FlowKey, IcmpProtoKey, InnerIcmpProtoKey, InnerIpProtoKey, IpProtoKey,
+        TcpProtoKey, UdpProtoKey,
     };
     use crate::ip::UnicastIpAddr;
     use crate::ipv4::addr::UnicastIpv4Addr;
@@ -830,7 +792,7 @@ mod contract {
         }
     }
 
-    impl TypeGenerator for FlowKeyData {
+    impl TypeGenerator for FlowKey {
         fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
             let src_vpcd = driver.produce();
             let v6 = driver.produce::<bool>()?;
@@ -847,19 +809,7 @@ mod contract {
                 )
             };
             let proto_key_info = super::IpProtoKey::generate(driver)?;
-            Some(FlowKeyData {
-                src_vpcd,
-                src_ip,
-                dst_ip,
-                proto_key_info,
-            })
-        }
-    }
-
-    impl TypeGenerator for FlowKey {
-        fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
-            let data = FlowKeyData::generate(driver)?;
-            Some(FlowKey(data))
+            Some(FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info))
         }
     }
 }
@@ -891,11 +841,11 @@ mod tests {
         );
 
         let reverse_flow_key = flow_key.reverse(None);
-        assert_eq!(flow_key.data().src_ip, reverse_flow_key.data().dst_ip);
-        assert_eq!(flow_key.data().dst_ip, reverse_flow_key.data().src_ip);
+        assert_eq!(flow_key.src_ip, reverse_flow_key.dst_ip);
+        assert_eq!(flow_key.dst_ip, reverse_flow_key.src_ip);
         assert_eq!(
-            flow_key.data().proto_key_info,
-            reverse_flow_key.data().proto_key_info.reverse()
+            flow_key.proto_key_info,
+            reverse_flow_key.proto_key_info.reverse()
         );
     }
 
@@ -931,12 +881,11 @@ mod tests {
     /// This function panics if the packet has a different transport protocol than the flow key.
     /// It also panics if the packet IP address family does not match the flow key.
     fn set_packet_fields(packet: &mut Packet<TestBuffer>, flow_key: &FlowKey) {
-        let flow_key_data = flow_key.data();
         packet
-            .set_ip_source(flow_key_data.src_ip.try_into().unwrap())
+            .set_ip_source(flow_key.src_ip.try_into().unwrap())
             .unwrap();
-        packet.set_ip_destination(flow_key_data.dst_ip).unwrap();
-        match flow_key_data.proto_key_info {
+        packet.set_ip_destination(flow_key.dst_ip).unwrap();
+        match flow_key.proto_key_info {
             IpProtoKey::Tcp(tcp) => {
                 packet.set_tcp_source_port(tcp.src_port).unwrap();
                 packet.set_tcp_destination_port(tcp.dst_port).unwrap();

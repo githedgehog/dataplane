@@ -4,13 +4,13 @@
 //! Flow keys
 
 use super::flow_info::{FlowInfo, FlowInfoLocked};
-use super::flow_key::{FlowKey, FlowKeyData};
+use super::flow_key::FlowKey;
 
 use concurrency::sync::Weak;
 use std::fmt::Display;
 use std::time::Instant;
 
-impl Display for FlowKeyData {
+impl Display for FlowKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(vpcd) = self.src_vpcd() {
             write!(f, "from {vpcd},")?;
@@ -28,12 +28,6 @@ impl Display for FlowKeyData {
             write!(f, " id:{id}")?;
         }
         Ok(())
-    }
-}
-
-impl Display for FlowKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.data())
     }
 }
 

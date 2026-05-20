@@ -61,9 +61,9 @@ fn re_reserve_ip_and_port(
     port: NatPort,
 ) -> Result<(), ()> {
     let flow_key = flow_info.flowkey();
-    let proto = flow_key.data().proto();
+    let proto = flow_key.proto();
     let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
-    let src_ip = *flow_key.data().src_ip();
+    let src_ip = *flow_key.src_ip();
     let port_u16 = port.as_u16();
     debug!("Attempting to reserve {ip} {port_u16} {proto}...");
 
@@ -104,7 +104,7 @@ pub(crate) fn check_masquerading_flow(
         return;
     };
     let dst_vpcd = flow_info.get_dst_vpcd().unwrap_or_else(|| unreachable!());
-    let src_vpcd = flow_key.data().src_vpcd().unwrap_or_else(|| unreachable!());
+    let src_vpcd = flow_key.src_vpcd().unwrap_or_else(|| unreachable!());
 
     debug!("Checking flow {}", flow_info.logfmt());
 
