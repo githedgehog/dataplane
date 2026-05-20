@@ -10,6 +10,10 @@
 //!   [`FieldType`][field::FieldType], [`FieldSize`][field::FieldSize]).
 //! - [`error`]: dedicated error enums for the fallible ACL operations
 //!   (`create`, `add_rules`, `build`, `classify`, `set_algorithm`).
+//! - [`classify`]: the [`ClassifyAlgorithm`][classify::ClassifyAlgorithm]
+//!   enum that selects DPDK's classify backend (Default / Scalar / NEON
+//!   / SSE / AVX2 / AVX512X16 / AVX512X32 / Altivec).
 
+pub mod classify;
 pub mod error;
 pub mod field;
