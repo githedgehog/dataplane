@@ -15,6 +15,7 @@
 
 use crate::tables::{NatRequirement, RemoteData, VpcdLookupResult};
 use lpm::prefix::L4Protocol;
+use net::FlowKey;
 use net::buffer::PacketBufferMut;
 use net::headers::{Transport, TryIp, TryTransport};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -349,6 +350,32 @@ impl FlowFilter {
         Ok(())
     }
 
+    fn maybe_tag_with_flow_key<Buf: PacketBufferMut>(
+        packet: &mut Packet<Buf>,
+        dst_vpcd: VpcDiscriminant,
+        genid: i64,
+    ) {
+        // No need to allocate for the flow key if we already have a valid flow info
+        if packet.meta().flow_info.is_some()
+            && !Self::should_invalidate_flow(packet, dst_vpcd, genid)
+        {
+            return;
+        }
+
+        // Only attach the flow key when using {port forwarding, masquerading} + static NAT
+        if !((packet.meta().requires_port_forwarding() || packet.meta().requires_stateful_nat())
+            && packet.meta().requires_static_nat())
+        {
+            return;
+        }
+
+        let Ok(flow_key) = FlowKey::try_from(net::flow_key::Uni(&*packet)) else {
+            return;
+        };
+
+        packet.meta_mut().flow_key = Some(Box::new(flow_key));
+    }
+
     /// Process a packet.
     fn process_packet<Buf: PacketBufferMut>(
         &self,
@@ -446,6 +473,11 @@ impl FlowFilter {
         };
         debug!("{nfi}: Flow {tuple} is allowed. Dst VPC is {dst_vpcd}");
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+
+        // Port forwarding or masquerading used in combination with static NAT need to keep track of
+        // the initial IP addresses for creating the right flow table entries, so we may have to
+        // attach the flow key to packet's metadata.
+        Self::maybe_tag_with_flow_key(packet, dst_vpcd, genid);
 
         // The packet is ALLOWED. However, if it refers to a flow, the flow may no longer be valid and a new one
         // be needed. The flow-filter cannot always tell if a flow is valid or not, as it lacks the context and state
