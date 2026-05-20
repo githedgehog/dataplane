@@ -3,11 +3,13 @@
 
 //! Safe Rust abstraction over DPDK's ACL (Access Control List) library.
 //!
-//! This module is built up incrementally across several commits.  At this
-//! stage the only public sub-module is [`field`], which carries the
-//! field-layout primitives ([`FieldDef`][field::FieldDef],
-//! [`FieldType`][field::FieldType], [`FieldSize`][field::FieldSize]) that the
-//! rest of the wrapper -- errors, rules, build configuration, context,
-//! classify -- will depend on.
+//! This module is built up incrementally across several commits.  Sub-modules
+//! present so far:
+//!
+//! - [`field`]: field-layout primitives ([`FieldDef`][field::FieldDef],
+//!   [`FieldType`][field::FieldType], [`FieldSize`][field::FieldSize]).
+//! - [`error`]: dedicated error enums for the fallible ACL operations
+//!   (`create`, `add_rules`, `build`, `classify`, `set_algorithm`).
 
+pub mod error;
 pub mod field;
