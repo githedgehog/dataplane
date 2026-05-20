@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use crate::packet::VpcDiscriminant;
+use bitflags::bitflags;
 use concurrency::sync::Arc;
 use concurrency::sync::RwLock;
 use concurrency::sync::Weak;
@@ -136,6 +137,26 @@ impl From<FlowStatus> for AtomicFlowStatus {
     }
 }
 
+bitflags! {
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct FlowInfoFlags: u8 {
+        const REQ_STATIC_NAT_SRC = 0b0000_0001;      /* Packet requires stateless NAT (source) */
+        const REQ_STATIC_NAT_DST = 0b0000_0010;      /* Packet requires stateless NAT (destination) */
+    }
+}
+
+impl FlowInfoFlags {
+    #[must_use]
+    pub const fn requires_static_nat_src(self) -> bool {
+        self.contains(FlowInfoFlags::REQ_STATIC_NAT_SRC)
+    }
+
+    #[must_use]
+    pub const fn requires_static_nat_dst(self) -> bool {
+        self.contains(FlowInfoFlags::REQ_STATIC_NAT_DST)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FlowInfoLocked {
     // We need this to use downcast to avoid circular dependencies between crates.
@@ -163,6 +184,7 @@ pub struct FlowInfo {
     flowkey: FlowKey,
     genid: AtomicI64,
     status: AtomicFlowStatus,
+    flags: FlowInfoFlags,
     pub locked: RwLock<FlowInfoLocked>,
     pub related: Option<Weak<FlowInfo>>,
     pub token: CancellationToken,
@@ -179,6 +201,7 @@ impl FlowInfo {
             flowkey,
             genid: AtomicI64::new(0),
             status: AtomicFlowStatus::from(FlowStatus::Detached),
+            flags: FlowInfoFlags::default(),
             locked: RwLock::new(FlowInfoLocked::default()),
             related: None,
             token: CancellationToken::new(),
@@ -189,6 +212,17 @@ impl FlowInfo {
     fn set_related(mut self, related: Weak<FlowInfo>) -> Self {
         self.related = Some(related);
         self
+    }
+
+    /// Set the flags of a flow
+    fn set_flags(mut self, flags: FlowInfoFlags) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    #[must_use]
+    pub fn get_flags(&self) -> FlowInfoFlags {
+        self.flags
     }
 
     #[must_use]
@@ -248,7 +282,9 @@ impl FlowInfo {
     pub fn related_pair(
         expires_at: Instant,
         key1: FlowKey,
+        flags1: FlowInfoFlags,
         key2: FlowKey,
+        flags2: FlowInfoFlags,
     ) -> (Arc<FlowInfo>, Arc<FlowInfo>) {
         // keys MUST differ
         debug_assert!(
@@ -274,8 +310,16 @@ impl FlowInfo {
             let one_weak = Weak::from_raw(Weak::into_raw(one_weak) as *const Self);
             let two_weak = Weak::from_raw(Weak::into_raw(two_weak) as *const Self);
             // overwrite the memory locations with the FlowInfo's
-            one_p.write(FlowInfo::new(key1, expires_at).set_related(two_weak));
-            two_p.write(FlowInfo::new(key2, expires_at).set_related(one_weak));
+            one_p.write(
+                FlowInfo::new(key1, expires_at)
+                    .set_flags(flags1)
+                    .set_related(two_weak),
+            );
+            two_p.write(
+                FlowInfo::new(key2, expires_at)
+                    .set_flags(flags2)
+                    .set_related(one_weak),
+            );
             // turn back into Arc's
             (one.assume_init(), two.assume_init())
         }

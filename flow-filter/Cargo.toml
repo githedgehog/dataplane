@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+bitflags = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
