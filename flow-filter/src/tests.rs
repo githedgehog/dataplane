@@ -12,7 +12,6 @@ use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, 
 use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts};
 use net::FlowKey;
 use net::buffer::{PacketBufferMut, TestBuffer};
-use net::flow_key::Uni;
 use net::flows::{FlowInfo, FlowStatus};
 use net::headers::{Net, TryHeadersMut, TryIpMut};
 use net::ip::NextHeader;
@@ -191,7 +190,7 @@ fn fake_flow_session<Buf: PacketBufferMut>(
     set_port_fw_state: bool,
 ) {
     // build flow key
-    let flow_key = FlowKey::try_from(Uni(&*packet)).unwrap();
+    let flow_key = FlowKey::try_from(&*packet).unwrap();
 
     // Create flow_info with dst_vpcd and NAT info and attach it to the packet
     let flow_info = FlowInfo::new(flow_key, Instant::now() + Duration::from_secs(60));

@@ -6,7 +6,6 @@
 #![allow(clippy::single_match_else)]
 
 use net::buffer::PacketBufferMut;
-use net::flow_key::Uni;
 use net::flows::{ExtractRef, FlowStatus};
 use net::ip::UnicastIpAddr;
 use net::packet::{Packet, VpcDiscriminant};
@@ -107,7 +106,7 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
     dst_vpcd: VpcDiscriminant, // destination VPC to forward to
 ) -> Result<(FlowKey, FlowKey), ()> {
     // Extract flow key for the current packet
-    let current_flow_key = FlowKey::try_from(Uni(&*packet)).map_err(|_| ())?;
+    let current_flow_key = FlowKey::try_from(&*packet).map_err(|_| ())?;
 
     // Retrieve initial flow key for the current packet (before any other NAT translation); if
     // we don't have the information, we didn't populate it because we don't need it and fall

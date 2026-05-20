@@ -18,7 +18,6 @@ use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
 use net::buffer::{PacketBufferMut, TestBuffer};
 use net::eth::mac::Mac;
-use net::flow_key::Uni;
 use net::flows::FlowStatus;
 use net::flows::flow_info_item::ExtractRef;
 use net::headers::TryTcpMut;
@@ -366,7 +365,7 @@ fn check_packet(
 }
 
 fn flow_lookup<Buf: PacketBufferMut>(flow_table: &FlowTable, packet: &mut Packet<Buf>) {
-    let flow_key = FlowKey::try_from(Uni(&*packet)).unwrap();
+    let flow_key = FlowKey::try_from(&*packet).unwrap();
     if let Some(flow_info) = flow_table.lookup(&flow_key) {
         packet.meta_mut().flow_info = Some(flow_info);
     }
