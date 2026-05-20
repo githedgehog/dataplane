@@ -3,6 +3,7 @@
 
 #![allow(missing_docs)] // TODO
 
+use crate::FlowKey;
 use crate::flows::{FlowInfo, FlowInfoFlags};
 use crate::interface::InterfaceIndex;
 use crate::ip::dscp::Dscp;
@@ -146,6 +147,7 @@ pub struct PacketMeta {
     pub flow_info: Option<Arc<FlowInfo>>, /* flow specific information that can be looked up in the flow table */
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
     pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
+    pub flow_key: Option<Box<FlowKey>>,   /* the flow key to use for NAT flow creation */
 }
 impl PacketMeta {
     #[must_use]
