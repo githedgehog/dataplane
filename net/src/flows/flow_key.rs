@@ -585,40 +585,37 @@ impl Hash for FlowKey {
     }
 }
 
-/// Wrapper to specify unidirectional `FlowKey` creation
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Uni<T>(pub T);
-
-fn flow_key_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<FlowKey> {
-    let ip = packet.headers().try_ip()?;
-    let src_ip = ip.src_addr();
-    let dst_ip = ip.dst_addr();
-
-    let transport = packet.headers().try_transport()?;
-    let ip_proto_key = match transport {
-        Transport::Tcp(tcp) => IpProtoKey::Tcp(TcpProtoKey {
-            src_port: tcp.source(),
-            dst_port: tcp.destination(),
-        }),
-        Transport::Udp(udp) => IpProtoKey::Udp(UdpProtoKey {
-            src_port: udp.source(),
-            dst_port: udp.destination(),
-        }),
-        Transport::Icmp4(icmp) => IpProtoKey::Icmp(IcmpProtoKey::new_icmp_v4(packet, icmp)),
-        Transport::Icmp6(icmp) => IpProtoKey::Icmp(IcmpProtoKey::new_icmp_v6(packet, icmp)),
-        #[allow(unreachable_patterns)]
-        _ => return None,
-    };
-
-    let src_vpcd = packet.meta().src_vpcd;
-    Some(FlowKey::new(src_vpcd, src_ip, dst_ip, ip_proto_key))
-}
-
-impl<Buf: PacketBufferMut> TryFrom<Uni<&Packet<Buf>>> for FlowKey {
+impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for FlowKey {
     type Error = FlowKeyError;
-    fn try_from(packet: Uni<&Packet<Buf>>) -> Result<Self, Self::Error> {
-        flow_key_from_packet(packet.0).ok_or(FlowKeyError::NoFlowKeyData)
+    fn try_from(packet: &Packet<Buf>) -> Result<Self, Self::Error> {
+        let ip = packet
+            .headers()
+            .try_ip()
+            .ok_or(FlowKeyError::NoFlowKeyData)?;
+        let src_ip = ip.src_addr();
+        let dst_ip = ip.dst_addr();
+
+        let transport = packet
+            .headers()
+            .try_transport()
+            .ok_or(FlowKeyError::NoFlowKeyData)?;
+        let ip_proto_key = match transport {
+            Transport::Tcp(tcp) => IpProtoKey::Tcp(TcpProtoKey {
+                src_port: tcp.source(),
+                dst_port: tcp.destination(),
+            }),
+            Transport::Udp(udp) => IpProtoKey::Udp(UdpProtoKey {
+                src_port: udp.source(),
+                dst_port: udp.destination(),
+            }),
+            Transport::Icmp4(icmp) => IpProtoKey::Icmp(IcmpProtoKey::new_icmp_v4(packet, icmp)),
+            Transport::Icmp6(icmp) => IpProtoKey::Icmp(IcmpProtoKey::new_icmp_v6(packet, icmp)),
+            #[allow(unreachable_patterns)]
+            _ => return Err(FlowKeyError::NoFlowKeyData),
+        };
+
+        let src_vpcd = packet.meta().src_vpcd;
+        Ok(FlowKey::new(src_vpcd, src_ip, dst_ip, ip_proto_key))
     }
 }
 
@@ -1078,7 +1075,7 @@ mod tests {
             .with_generator(FlowKeyAndPacket)
             .for_each(|(flow_key, packet)| match flow_key {
                 Some(_) => {
-                    let gen_flow_key = FlowKey::try_from(Uni(packet)).unwrap();
+                    let gen_flow_key = FlowKey::try_from(packet).unwrap();
                     assert_eq!(
                         gen_flow_key,
                         flow_key.unwrap(),
@@ -1087,7 +1084,7 @@ mod tests {
                     );
                 }
                 None => {
-                    assert!(FlowKey::try_from(Uni(packet)).is_err());
+                    assert!(FlowKey::try_from(packet).is_err());
                 }
             });
     }

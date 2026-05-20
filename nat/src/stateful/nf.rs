@@ -16,7 +16,7 @@ use crate::stateful::state::MasqueradeState;
 use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;
-use net::flow_key::{IcmpProtoKey, Uni};
+use net::flow_key::IcmpProtoKey;
 use net::flows::{ExtractRef, FlowInfo};
 use net::headers::{TryIp, TryTcp};
 use net::ip::UnicastIpAddr;
@@ -375,7 +375,7 @@ impl StatefulNat {
 
         // Extract flow key for the current packet
         let current_flow_key =
-            FlowKey::try_from(Uni(&*packet)).map_err(|_| StatefulNatError::FlowKeyError)?;
+            FlowKey::try_from(&*packet).map_err(|_| StatefulNatError::FlowKeyError)?;
 
         // Retrieve initial flow key for the current packet (before any other NAT translation); if
         // we don't have the information, we didn't populate it because we don't need it and fall

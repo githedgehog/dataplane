@@ -12,7 +12,6 @@ use pipeline::NetworkFunction;
 
 use crate::flow_table::FlowTable;
 use net::FlowKey;
-use net::flow_key;
 
 use tracectl::trace_target;
 trace_target!("flow-lookup", LevelFilter::INFO, &["pipeline"]);
@@ -40,7 +39,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowLookup {
         input.filter_map(move |mut packet| {
             let nfi = &self.name;
             if !packet.is_done() && packet.meta().is_overlay() && packet.meta().dst_vpcd.is_none() {
-                if let Ok(flow_key) = FlowKey::try_from(flow_key::Uni(&packet)) {
+                if let Ok(flow_key) = FlowKey::try_from(&packet) {
                     if let Some(flow_info) = self.flow_table.lookup(&flow_key) {
                         debug!("{nfi}: Tagging packet with flow info for flow key {flow_key}",);
                         packet.meta_mut().flow_info = Some(flow_info);
@@ -101,7 +100,7 @@ mod test {
         packet.meta_mut().set_overlay(true);
 
         // Insert matching flow entry
-        let flow_key = FlowKey::try_from(net::flow_key::Uni(&packet)).unwrap();
+        let flow_key = FlowKey::try_from(&packet).unwrap();
         let flow_info = FlowInfo::new(flow_key, Instant::now() + Duration::from_secs(10));
         flow_table.insert(flow_info).unwrap();
 
@@ -130,7 +129,7 @@ mod test {
             input: Input,
         ) -> impl Iterator<Item = Packet<Buf>> + 'a {
             input.filter_map(move |packet| {
-                let flow_key = FlowKey::try_from(net::flow_key::Uni(&packet)).unwrap();
+                let flow_key = FlowKey::try_from(&packet).unwrap();
                 let flow_info = FlowInfo::new(flow_key, Instant::now() + self.timeout);
                 self.flow_table
                     .insert(flow_info)
@@ -193,8 +192,8 @@ mod test {
             packet_2.meta_mut().set_overlay(true);
 
             // build keys for the packets
-            let key_1 = FlowKey::try_from(net::flow_key::Uni(&packet_1)).unwrap();
-            let key_2 = FlowKey::try_from(net::flow_key::Uni(&packet_2)).unwrap();
+            let key_1 = FlowKey::try_from(&packet_1).unwrap();
+            let key_2 = FlowKey::try_from(&packet_2).unwrap();
 
             // create a pair of related flow entries; flow_2 will get a longer timeout
             let expires_at = tokio::time::Instant::now().into_std() + Duration::from_secs(2);
@@ -251,8 +250,8 @@ mod test {
         let mut packet_2 = build_test_udp_ipv4_packet("192.168.1.1", "20.0.0.1", 500, 80);
         packet_1.meta_mut().set_overlay(true);
         packet_2.meta_mut().set_overlay(true);
-        let key_1 = FlowKey::try_from(net::flow_key::Uni(&packet_1)).unwrap();
-        let key_2 = FlowKey::try_from(net::flow_key::Uni(&packet_2)).unwrap();
+        let key_1 = FlowKey::try_from(&packet_1).unwrap();
+        let key_2 = FlowKey::try_from(&packet_2).unwrap();
         let input = vec![packet_1, packet_2];
         let out: Vec<_> = pipeline.process(input.into_iter()).collect();
         let packet_1 = &out[0];
