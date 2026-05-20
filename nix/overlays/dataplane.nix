@@ -156,6 +156,16 @@ in
         # Just null it.
         postFixup = null;
 
+        # rdma-core 63 installs rdma-sysusers.conf via systemd's pkg-config sysusersdir, falling back to a hard-coded
+        # absolute /usr/lib/sysusers.d (see CMakeLists.txt around the SYSUSERS_DIR block).  Neither path is usable in
+        # the nix sandbox: systemd isn't in our build inputs (so the lookup fails), and the absolute fallback can't be
+        # created outside $out.  We don't run systemd against this build, so just redirect the install into the
+        # package's own lib/ tree.  CMake treats a relative DESTINATION as prefix-relative.
+        postPatch = (orig.postPatch or "") + ''
+          substituteInPlace CMakeLists.txt \
+            --replace-fail '"/usr/lib/sysusers.d"' '"lib/sysusers.d"'
+        '';
+
         outputs = (orig.outputs or [ ]) ++ [
           "static"
         ];
