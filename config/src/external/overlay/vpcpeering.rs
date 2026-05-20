@@ -536,13 +536,6 @@ impl ValidatedExpose {
     }
 
     #[must_use]
-    pub(crate) fn has_nat(&self) -> bool {
-        self.nat
-            .as_ref()
-            .is_some_and(|nat| !nat.as_range.is_empty())
-    }
-
-    #[must_use]
     pub fn has_stateful_nat(&self) -> bool {
         self.nat.as_ref().is_some_and(VpcExposeNat::is_stateful)
     }

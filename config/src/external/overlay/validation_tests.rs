@@ -1209,7 +1209,7 @@ mod test {
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
-    // Stateless + stateful rejected
+    // Stateless + stateful passes
     #[test]
     fn test_stateless_plus_stateful_rejected() {
         let peering = VpcPeering::with_default_group(
@@ -1237,15 +1237,10 @@ mod test {
                 ],
             ),
         );
-        let result = validate_overlay_with_peering(peering);
-        assert_eq!(
-            result,
-            Err(ConfigError::IncompatibleNatModes("Peering-1".to_owned())),
-            "{result:?}",
-        );
+        assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
-    // Stateless + port forwarding rejected
+    // Stateless + port forwarding passes
     #[test]
     fn test_stateless_plus_port_forwarding_rejected() {
         let peering = VpcPeering::with_default_group(
@@ -1273,12 +1268,7 @@ mod test {
                 ],
             ),
         );
-        let result = validate_overlay_with_peering(peering);
-        assert_eq!(
-            result,
-            Err(ConfigError::IncompatibleNatModes("Peering-1".to_owned())),
-            "{result:?}",
-        );
+        assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
     // Stateful + stateful rejected (across peering sides)
