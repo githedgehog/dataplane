@@ -120,14 +120,12 @@ pub(crate) fn build_portfw_flow_keys<Buf: PacketBufferMut>(
         .unwrap_or(current_flow_key);
 
     // Build the key for the reverse path
-    let proto = current_flow_key.data().proto();
-    let src_port = current_flow_key.data().src_port().ok_or(())?;
+    let proto = current_flow_key.proto();
+    let src_port = current_flow_key.src_port().ok_or(())?;
 
     let mut key_forward_dnated = current_flow_key;
-    key_forward_dnated.data_mut().set_dst_ip(new_dst_ip.inner());
-    key_forward_dnated
-        .data_mut()
-        .set_ip_proto_key(IpProtoKey::from((proto, src_port, new_dst_port)));
+    key_forward_dnated.set_dst_ip(new_dst_ip.inner());
+    key_forward_dnated.set_ip_proto_key(IpProtoKey::from((proto, src_port, new_dst_port)));
     let key_reverse = key_forward_dnated.reverse(Some(dst_vpcd));
 
     Ok((initial_flow_key, key_reverse))
