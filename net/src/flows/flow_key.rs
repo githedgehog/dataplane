@@ -581,23 +581,17 @@ impl Hash for FlowKeyData {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialOrd, Ord)]
-pub enum FlowKey {
-    Unidirectional(FlowKeyData),
-}
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub struct FlowKey(pub FlowKeyData);
 
 impl FlowKey {
     #[must_use]
     pub fn data(&self) -> &FlowKeyData {
-        match self {
-            FlowKey::Unidirectional(data) => data,
-        }
+        &self.0
     }
     #[must_use]
     pub fn data_mut(&mut self) -> &mut FlowKeyData {
-        match self {
-            FlowKey::Unidirectional(data) => data,
-        }
+        &mut self.0
     }
 
     /// Create a unidirectional flow key
@@ -610,32 +604,13 @@ impl FlowKey {
         dst_ip: IpAddr,
         proto_key_info: IpProtoKey,
     ) -> FlowKey {
-        FlowKey::Unidirectional(FlowKeyData::new(src_vpcd, src_ip, dst_ip, proto_key_info))
+        FlowKey(FlowKeyData::new(src_vpcd, src_ip, dst_ip, proto_key_info))
     }
 
     // Creates the flow key with src and dst swapped
     #[must_use]
     pub fn reverse(&self, src_vpcd: Option<VpcDiscriminant>) -> FlowKey {
-        match self {
-            FlowKey::Unidirectional(data) => FlowKey::Unidirectional(data.reverse(src_vpcd)),
-        }
-    }
-}
-
-// The FlowKey Eq is symmetric, src == src or src == dst
-impl PartialEq for FlowKey {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (FlowKey::Unidirectional(a), FlowKey::Unidirectional(b)) => a == b,
-        }
-    }
-}
-
-impl Hash for FlowKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            FlowKey::Unidirectional(a) => a.hash(state),
-        }
+        FlowKey(self.0.reverse(src_vpcd))
     }
 }
 
@@ -884,7 +859,7 @@ mod contract {
     impl TypeGenerator for FlowKey {
         fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
             let data = FlowKeyData::generate(driver)?;
-            Some(FlowKey::Unidirectional(data))
+            Some(FlowKey(data))
         }
     }
 }
@@ -1152,7 +1127,7 @@ mod tests {
         bolero::check!()
             .with_generator(FlowKeyAndPacket)
             .for_each(|(flow_key, packet)| match flow_key {
-                Some(FlowKey::Unidirectional(_)) => {
+                Some(_) => {
                     let gen_flow_key = FlowKey::try_from(Uni(packet)).unwrap();
                     assert_eq!(
                         gen_flow_key,
