@@ -45,6 +45,4 @@ pub mod vxlan;
 
 // re-export
 #[cfg(unix)]
-pub use flows::flow_key::{
-    self, FlowKey, FlowKeyData, IcmpProtoKey, IpProtoKey, TcpProtoKey, UdpProtoKey,
-};
+pub use flows::flow_key::{self, FlowKey, IcmpProtoKey, IpProtoKey, TcpProtoKey, UdpProtoKey};

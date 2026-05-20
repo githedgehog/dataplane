@@ -403,7 +403,7 @@ mod tests {
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
 
-    use net::{FlowKey, FlowKeyData, IpProtoKey, TcpProtoKey};
+    use net::{FlowKey, IpProtoKey, TcpProtoKey};
 
     #[concurrency_mode(std)]
     mod std_tests {
@@ -419,7 +419,7 @@ mod tests {
             let five_seconds_from_now = now + five_seconds;
 
             let flow_table = FlowTable::default();
-            let flow_key = FlowKey(FlowKeyData::new(
+            let flow_key = FlowKey::uni(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -427,7 +427,7 @@ mod tests {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
                 }),
-            ));
+            );
 
             let flow_info = FlowInfo::new(flow_key, five_seconds_from_now);
 
@@ -449,7 +449,7 @@ mod tests {
             let one_second = Duration::from_secs(1);
 
             let flow_table = FlowTable::default();
-            let flow_key = FlowKey(FlowKeyData::new(
+            let flow_key = FlowKey::uni(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(42).unwrap())),
                 "10.0.0.1".parse::<IpAddr>().unwrap(),
                 "10.0.0.2".parse::<IpAddr>().unwrap(),
@@ -457,7 +457,7 @@ mod tests {
                     src_port: TcpPort::new_checked(1234).unwrap(),
                     dst_port: TcpPort::new_checked(5678).unwrap(),
                 }),
-            ));
+            );
 
             let flow_info = FlowInfo::new(flow_key, now + two_seconds);
             flow_table.insert(flow_info).unwrap();
@@ -481,7 +481,7 @@ mod tests {
             let second_expiry_time = now + Duration::from_secs(10);
 
             let flow_table = FlowTable::default();
-            let flow_key = FlowKey(FlowKeyData::new(
+            let flow_key = FlowKey::uni(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -489,7 +489,7 @@ mod tests {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
                 }),
-            ));
+            );
 
             // Insert first entry.
             let first_arc = Arc::new(FlowInfo::new(flow_key, first_expiry_time));
@@ -566,7 +566,7 @@ mod tests {
 
             let mut flow_keys = vec![];
             for src_port in 1..=NUM_FLOWS {
-                let flow_key = FlowKey(FlowKeyData::new(
+                let flow_key = FlowKey::uni(
                     Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                     "1.2.3.4".parse::<IpAddr>().unwrap(),
                     "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -574,7 +574,7 @@ mod tests {
                         src_port: TcpPort::new_checked(src_port).unwrap(),
                         dst_port: TcpPort::new_checked(2048).unwrap(),
                     }),
-                ));
+                );
                 let flow_info = FlowInfo::new(flow_key, deadline);
                 flow_table.insert(flow_info).unwrap();
                 flow_keys.push(flow_key);
@@ -607,7 +607,7 @@ mod tests {
             let now = Instant::now();
             let deadline = now + Duration::from_secs(2);
 
-            let flow_key = FlowKey(FlowKeyData::new(
+            let flow_key = FlowKey::uni(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -615,7 +615,7 @@ mod tests {
                     src_port: TcpPort::new_checked(1).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
                 }),
-            ));
+            );
             let flow_info = FlowInfo::new(flow_key, deadline);
             flow_table.insert(flow_info).unwrap();
 
@@ -643,19 +643,19 @@ mod tests {
             for i in 1u16..=2 {
                 let src_port = TcpPort::new_checked(1000 + i).unwrap();
                 let dst_port = TcpPort::new_checked(80).unwrap();
-                let flow_key = FlowKey(FlowKeyData::new(
+                let flow_key = FlowKey::uni(
                     Some(src_vpcd),
                     src_ip,
                     dst_ip,
                     IpProtoKey::Tcp(TcpProtoKey { src_port, dst_port }),
-                ));
+                );
                 flow_table
                     .insert(FlowInfo::new(flow_key, far_future))
                     .expect("insert under capacity should succeed");
             }
 
             // One more insert must fail with CapacityExceeded.
-            let overflow_key = FlowKey(FlowKeyData::new(
+            let overflow_key = FlowKey::uni(
                 Some(src_vpcd),
                 src_ip,
                 dst_ip,
@@ -663,7 +663,7 @@ mod tests {
                     src_port: TcpPort::new_checked(9999).unwrap(),
                     dst_port: TcpPort::new_checked(80).unwrap(),
                 }),
-            ));
+            );
             assert!(matches!(
                 flow_table.insert(FlowInfo::new(overflow_key, far_future)),
                 Err(FlowTableError::CapacityExceeded)
@@ -689,7 +689,7 @@ mod tests {
             let two_seconds = Duration::from_secs(2);
             let flow_keys: Vec<_> = (0u16..2u16)
                 .map(|i| {
-                    FlowKey(FlowKeyData::new(
+                    FlowKey::uni(
                         Some(VpcDiscriminant::VNI(
                             Vni::new_checked(u32::from(i) + 1).unwrap(),
                         )),
@@ -699,7 +699,7 @@ mod tests {
                             src_port: TcpPort::new_checked(1000 + i).unwrap(),
                             dst_port: TcpPort::new_checked(2000 + i).unwrap(),
                         }),
-                    ))
+                    )
                 })
                 .collect();
 
@@ -805,7 +805,7 @@ mod tests {
             let flow_table = Arc::new(FlowTable::default());
 
             let five_seconds_from_now = Instant::now() + Duration::from_secs(5);
-            let flow_key1 = FlowKey(FlowKeyData::new(
+            let flow_key1 = FlowKey::uni(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
                 "1.2.3.4".parse::<IpAddr>().unwrap(),
                 "4.5.6.7".parse::<IpAddr>().unwrap(),
@@ -813,9 +813,9 @@ mod tests {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
                 }),
-            ));
+            );
 
-            let flow_key2 = FlowKey(FlowKeyData::new(
+            let flow_key2 = FlowKey::uni(
                 Some(VpcDiscriminant::VNI(Vni::new_checked(10).unwrap())),
                 "10.2.3.4".parse::<IpAddr>().unwrap(),
                 "40.5.6.7".parse::<IpAddr>().unwrap(),
@@ -823,7 +823,7 @@ mod tests {
                     src_port: TcpPort::new_checked(1025).unwrap(),
                     dst_port: TcpPort::new_checked(2048).unwrap(),
                 }),
-            ));
+            );
 
             let flow_table_clone1 = flow_table.clone();
             let flow_table_clone2 = flow_table.clone();

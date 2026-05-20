@@ -219,8 +219,8 @@ impl StatefulNat {
     }
 
     fn get_reverse_mapping(flow_key: &FlowKey) -> Result<(IpAddr, NatPort), StatefulNatError> {
-        let src_ip = *flow_key.data().src_ip();
-        let src_port = match flow_key.data().proto_key_info() {
+        let src_ip = *flow_key.src_ip();
+        let src_port = match flow_key.proto_key_info() {
             IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
             IpProtoKey::Udp(udp) => udp.src_port.into(),
             IpProtoKey::Icmp(icmp) => NatPort::Identifier(Self::get_icmp_query_id(icmp)?),
@@ -313,12 +313,12 @@ impl StatefulNat {
         // So we want:
         // - tuple r.init = (src: f.nated.dst, dst: f.nated.src)
         // - mapping r.nated = (src: f.init.dst, dst: f.init.src)
-        let reverse_src_addr = *flow_key.data().dst_ip();
+        let reverse_src_addr = *flow_key.dst_ip();
         let reverse_dst_addr = alloc.allocation.ip();
         let dst_port = alloc.allocation.port();
 
         // Reverse the forward protocol key and adjust ports to use the allocated values.
-        let mut reverse_proto_key = flow_key.data().proto_key_info().reverse();
+        let mut reverse_proto_key = flow_key.proto_key_info().reverse();
         match reverse_proto_key {
             IpProtoKey::Tcp(_) | IpProtoKey::Udp(_) => {
                 reverse_proto_key
@@ -388,9 +388,9 @@ impl StatefulNat {
             .unwrap_or(current_flow_key);
 
         // Create a new session and translate the address
-        let src_ip = *initial_flow_key.data().src_ip();
+        let src_ip = *initial_flow_key.src_ip();
         let alloc = allocator
-            .allocate(dst_vpcd, src_ip, initial_flow_key.data().proto())
+            .allocate(dst_vpcd, src_ip, initial_flow_key.proto())
             .map_err(StatefulNatError::AllocationFailure)?;
 
         // Forbid addresses we won't know how to translate. This is a work around of a larger change
