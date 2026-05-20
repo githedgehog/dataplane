@@ -3,6 +3,7 @@
 
 #![allow(missing_docs)] // TODO
 
+use crate::FlowKey;
 use crate::flows::{FlowInfo, FlowInfoFlags};
 use crate::interface::InterfaceIndex;
 use crate::ip::dscp::Dscp;
@@ -146,6 +147,7 @@ pub struct PacketMeta {
     pub flow_info: Option<Arc<FlowInfo>>, /* flow specific information that can be looked up in the flow table */
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
     pub ecn: Option<Ecn>,                 /* Ecn to preserve for egress traffic */
+    pub flow_key: Option<FlowKey>,        /* the flow key to use for NAT flow creation */
 }
 impl PacketMeta {
     #[must_use]
@@ -166,6 +168,10 @@ impl PacketMeta {
 
     pub fn set_src_vpcd(&mut self, vpcd: Option<VpcDiscriminant>) {
         self.src_vpcd = vpcd;
+        if let Some(flow_key) = self.flow_key.as_mut() {
+            let data = flow_key.data();
+            *flow_key = FlowKey::uni(vpcd, *data.src_ip(), *data.dst_ip(), *data.proto_key_info());
+        }
     }
 
     fn set_flag(&mut self, flag: MetaFlags, value: bool) {

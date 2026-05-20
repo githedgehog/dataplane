@@ -19,9 +19,11 @@ pub use contract::*;
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_utils;
 
+use crate::FlowKey;
 use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::Eth;
 use crate::eth::EthError;
+use crate::flow_key::Uni;
 use crate::flows::{FlowInfo, FlowStatus};
 use crate::headers::{
     EmbeddedHeaders, Headers, Net, Transport, TryEmbeddedHeaders, TryEmbeddedHeadersMut,
@@ -76,11 +78,13 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         mbuf.trim_from_start(consumed.get())
             .unwrap_or_else(|e| unreachable!("{:?}", e));
 
-        Ok(Packet {
+        let mut packet = Packet {
             headers,
             payload: mbuf,
             meta: PacketMeta::new(true), /* keep the packet until destructor */
-        })
+        };
+        packet.update_flow_key();
+        Ok(packet)
     }
 
     /// Get a reference to the payload of this packet
@@ -91,6 +95,12 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     /// Add / Replace Ethernet header
     pub fn set_eth(&mut self, eth: Eth) {
         self.headers.set_eth(eth);
+    }
+
+    /// Update the flow key of this packet based on its current state
+    pub fn update_flow_key(&mut self) {
+        let flow_key = FlowKey::try_from(Uni(&*self)).ok();
+        self.meta.flow_key = flow_key;
     }
 
     /// Get the length of the packet's payload

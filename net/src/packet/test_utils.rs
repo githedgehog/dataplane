@@ -169,6 +169,7 @@ pub fn build_test_udp_ipv4_frame(
     packet
         .set_udp_destination_port(UdpPort::new_checked(dport).expect("Bad dst port"))
         .expect("Could not set dst port");
+    packet.update_flow_key();
 
     packet
 }
@@ -221,6 +222,7 @@ pub fn build_test_tcp_ipv4_packet(
     packet
         .set_tcp_destination_port(TcpPort::new_checked(dport).expect("Bad dst port"))
         .expect("Could not set dst port");
+    packet.update_flow_key();
 
     packet
 }
