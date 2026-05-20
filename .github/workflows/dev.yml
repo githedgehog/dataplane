@@ -278,13 +278,13 @@ jobs:
       max-parallel: 1
       matrix:
         build:
-          - name: "address"
-            profile: "debug"
-            sanitize: "address"
-            instrument: "none"
           - name: "thread"
             profile: "fuzz"
             sanitize: "thread"
+            instrument: "none"
+          - name: "address"
+            profile: "debug"
+            sanitize: "address"
             instrument: "none"
     steps:
       - *checkout
