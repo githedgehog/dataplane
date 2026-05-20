@@ -15,7 +15,7 @@ use net::headers::{
 use net::icmp_any::TruncatedIcmpAny;
 use net::icmp_any::{IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
 use net::ipv4::Ipv4;
-use net::packet::Packet;
+use net::packet::{DoneReason, Packet};
 use std::net::IpAddr;
 use std::num::NonZero;
 
@@ -39,6 +39,25 @@ pub enum IcmpErrorMsgError {
     NotUnicast(IpAddr),
     #[error("no translation possible")]
     NoTranslationPossible,
+}
+
+impl From<&IcmpErrorMsgError> for DoneReason {
+    fn from(error: &IcmpErrorMsgError) -> Self {
+        match error {
+            IcmpErrorMsgError::NoIpHeader => DoneReason::NotIp,
+            IcmpErrorMsgError::InvalidPort(_) => DoneReason::Malformed,
+            IcmpErrorMsgError::NotUnicast(_) => DoneReason::NatFailure,
+            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoTranslationPossible => {
+                DoneReason::InternalFailure
+            }
+            IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_) => {
+                DoneReason::InvalidChecksum
+            }
+            IcmpErrorMsgError::NoEmbeddedHeaders | IcmpErrorMsgError::NoInnerIpHeader => {
+                DoneReason::Filtered
+            }
+        }
+    }
 }
 
 // # Return
