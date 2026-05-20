@@ -198,7 +198,7 @@ impl StatefulNat {
         dst_ip: IpAddr,
         proto_key_info: IpProtoKey,
     ) -> Option<(NatTranslate, Duration)> {
-        let flow_key = FlowKey::uni(src_vpcd, src_ip, dst_ip, proto_key_info);
+        let flow_key = FlowKey::new(src_vpcd, src_ip, dst_ip, proto_key_info);
         let flow_info = self.flow_table.lookup(&flow_key)?;
         let value = flow_info.locked.read();
         let state = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>()?;
@@ -339,7 +339,7 @@ impl StatefulNat {
             }
         }
 
-        Ok(FlowKey::uni(
+        Ok(FlowKey::new(
             Some(dst_vpc_id),
             reverse_src_addr,
             reverse_dst_addr,
