@@ -3,6 +3,7 @@
 
 #include <rte_config.h>
 
+#include <rte_acl.h>
 #include <rte_alarm.h>
 #include <rte_atomic.h>
 #include <rte_bitmap.h>
