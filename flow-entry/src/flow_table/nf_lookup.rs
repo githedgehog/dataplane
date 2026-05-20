@@ -93,7 +93,7 @@ mod test {
 
         // Create a packet with the right info
         let mut packet = build_test_ipv4_packet_with_transport(100, Some(NextHeader::TCP)).unwrap();
-        packet.meta_mut().src_vpcd = Some(src_vpcd);
+        packet.meta_mut().set_src_vpcd(Some(src_vpcd));
         packet.set_ip_source(src_ip).unwrap();
         packet.set_ip_destination(dst_ip).unwrap();
         packet.set_tcp_source_port(src_port).unwrap();

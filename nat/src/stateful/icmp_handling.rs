@@ -17,7 +17,7 @@ pub(crate) fn handle_icmp_error_masquerading<Buf: PacketBufferMut>(
     packet: &mut Packet<Buf>,
     flow_info: &FlowInfo,
 ) -> Result<NatFlowStatus, DoneReason> {
-    let src_vpcd = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
+    let src_vpcd = packet.meta().src_vpcd().unwrap_or_else(|| unreachable!());
     let f = flow_info.logfmt();
     debug!("(masquerade): Processing ICMP error message from {src_vpcd} with flow {f}");
 

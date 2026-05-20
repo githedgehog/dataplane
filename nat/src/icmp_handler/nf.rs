@@ -109,7 +109,7 @@ fn is_icmp_unrecoverable<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> (boo
 impl IcmpErrorHandler {
     fn handle_icmp_error_msg<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         // check origin of icmp error packet
-        let Some(src_vpcd) = packet.meta().src_vpcd else {
+        let Some(src_vpcd) = packet.meta().src_vpcd() else {
             debug!("Dropping ICMP error packet: no src vpc discriminant");
             packet.done(DoneReason::Unroutable);
             return;

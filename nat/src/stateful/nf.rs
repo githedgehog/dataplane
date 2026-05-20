@@ -115,7 +115,7 @@ impl StatefulNat {
     }
 
     fn get_src_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {
-        packet.meta().src_vpcd
+        packet.meta().src_vpcd()
     }
 
     fn get_dst_vpc_id<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<VpcDiscriminant> {
@@ -246,7 +246,7 @@ impl StatefulNat {
         let genid = alloc.allocation.genid();
 
         // src and dst vpc of this packet
-        let src_vpc_id = packet.meta().src_vpcd.unwrap_or_else(|| unreachable!());
+        let src_vpc_id = packet.meta().src_vpcd().unwrap_or_else(|| unreachable!());
         let dst_vpc_id = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
         // build key for reverse flow

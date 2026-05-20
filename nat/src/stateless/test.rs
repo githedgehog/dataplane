@@ -277,9 +277,13 @@ fn test_dst_nat_stateless_44() {
 
     let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
     let mut packet_reply = packet.clone();
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(vni(100))));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
-    packet_reply.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+    packet_reply
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(vni(200))));
     packet_reply.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_static_nat_src(true);
@@ -347,7 +351,9 @@ fn test_nat_icmp_error_msg_stateless_44() {
     )
     .unwrap();
 
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(200)));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(vni(200))));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(vni(100)));
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_static_nat_src(true);
@@ -606,7 +612,9 @@ fn check_packet(
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_static_nat_src(true);
     packet.meta_mut().set_static_nat_dst(true);
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(src_vni)));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
 
@@ -824,7 +832,9 @@ fn check_packet_with_ports(
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_static_nat_src(true);
     packet.meta_mut().set_static_nat_dst(true);
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(src_vni)));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     set_addresses_v4(&mut packet, orig_src_ip, orig_dst_ip);
     set_ports(&mut packet, orig_src_port, orig_dst_port);

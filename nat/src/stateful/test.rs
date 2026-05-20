@@ -72,7 +72,7 @@ impl NetworkFunction<TestBuffer> for TestFlowFilter {
         input: Input,
     ) -> impl Iterator<Item = Packet<TestBuffer>> + 'a {
         input.map(|mut packet| {
-            let src_vpcd = packet.meta().src_vpcd.unwrap(); // packets must have src vpcd
+            let src_vpcd = packet.meta().src_vpcd().unwrap(); // packets must have src vpcd
             debug!("packet comes from {src_vpcd}");
             let Some(dst_vpcd) = self.0.get(&src_vpcd) else {
                 panic!("Did not find dst vpcd for source  vpcd: {src_vpcd}");
@@ -346,7 +346,9 @@ fn check_packet(
     );
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_stateful_nat(true);
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(src_vni)));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
     flow_lookup(nat.sessions(), &mut packet);
@@ -569,7 +571,9 @@ fn check_packet_icmp_echo(
         build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_stateful_nat(true);
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(src_vni)));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
     flow_lookup(nat.sessions(), &mut packet);
@@ -599,7 +603,9 @@ fn check_packet_icmp_echo_new(
         build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_stateful_nat(true);
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(src_vni)));
 
     let packets_out: Vec<_> = pipeline.process(vec![packet].into_iter()).collect();
     let hdr_out = packets_out[0].try_ipv4().unwrap();
@@ -744,7 +750,9 @@ fn check_packet_icmp_error(
     .unwrap();
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().set_stateful_nat(false); // set to false since ICMP error handler will take care
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(src_vni)));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
     packet.meta_mut().dst_vpcd.take(); // remove to force processing by stateful
 
@@ -1086,7 +1094,9 @@ fn check_packet_with_vpcd_lookup(
         dport,
     );
     packet.meta_mut().set_overlay(true);
-    packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
+    packet
+        .meta_mut()
+        .set_src_vpcd(Some(VpcDiscriminant::VNI(src_vni)));
 
     // Flow table lookup
     let packets_from_flow_lookup: Vec<_> = if let Some(stage) = flow_lookup_stage {
@@ -1602,7 +1612,7 @@ fn tcp_packet_to_masquerade() -> Packet<TestBuffer> {
     packet.try_tcp_mut().unwrap().set_rst(false);
 
     packet.meta_mut().set_overlay(true);
-    packet.meta_mut().src_vpcd = Some(vpcd(100));
+    packet.meta_mut().set_src_vpcd(Some(vpcd(100)));
     packet.meta_mut().set_stateful_nat(true);
     packet
 }
@@ -1657,7 +1667,7 @@ fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
 
     let mut reply = packet.clone();
     reply.meta_reset();
-    reply.meta_mut().src_vpcd = dst_vpcd;
+    reply.meta_mut().set_src_vpcd(dst_vpcd);
     reply.meta_mut().set_stateful_nat(true);
     reply.meta_mut().set_overlay(true);
 

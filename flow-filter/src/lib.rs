@@ -369,7 +369,7 @@ impl FlowFilter {
             return;
         };
 
-        let Some(src_vpcd) = packet.meta().src_vpcd else {
+        let Some(src_vpcd) = packet.meta().src_vpcd() else {
             debug!("{nfi}: Missing source VPC discriminant, dropping packet");
             packet.done(DoneReason::Unroutable);
             return;

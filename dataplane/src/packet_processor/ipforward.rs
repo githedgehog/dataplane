@@ -156,7 +156,9 @@ impl IpForwarder {
                 /* At this point decapsulation has already happened and `Packet` refers to
                 the innner packet. Annotate the incoming vni and the corresponding vrf to
                 make lookups from */
-                packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni));
+                packet
+                    .meta_mut()
+                    .set_src_vpcd(Some(VpcDiscriminant::VNI(vni)));
                 packet.meta_mut().vrf = Some(next_vrf);
                 packet.meta_mut().set_overlay(true);
             }

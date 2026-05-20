@@ -77,7 +77,7 @@ mod nf_test {
         let dst_port = packet.transport_dst_port().unwrap();
 
         let mut reply = packet.clone();
-        reply.meta_mut().src_vpcd = dst_vpcd;
+        reply.meta_mut().set_src_vpcd(dst_vpcd);
         reply.meta_mut().dst_vpcd.take(); // strip dst vpcd
         reply.set_eth_source(dst_mac).unwrap();
         reply.set_eth_destination(src_mac).unwrap();
@@ -134,7 +134,7 @@ mod nf_test {
         let mut packet: Packet<TestBuffer> =
             build_test_udp_ipv4_packet("10.0.0.1", "70.71.72.73", 9876, 3053);
         packet.meta_mut().set_overlay(true);
-        packet.meta_mut().src_vpcd = Some(vpcd1());
+        packet.meta_mut().set_src_vpcd(Some(vpcd1()));
         packet.meta_mut().set_port_forwarding(true);
         packet
     }
@@ -148,7 +148,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_rst(false);
 
         packet.meta_mut().set_overlay(true);
-        packet.meta_mut().src_vpcd = Some(vpcd1());
+        packet.meta_mut().set_src_vpcd(Some(vpcd1()));
         packet.meta_mut().set_port_forwarding(true);
         packet
     }
@@ -161,7 +161,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_rst(false);
 
         packet.meta_mut().set_overlay(true);
-        packet.meta_mut().src_vpcd = Some(vpcd2());
+        packet.meta_mut().set_src_vpcd(Some(vpcd2()));
         packet.meta_mut().set_port_forwarding(true);
         packet
     }
@@ -185,7 +185,7 @@ mod nf_test {
             input: Input,
         ) -> impl Iterator<Item = Packet<TestBuffer>> + 'a {
             input.map(|mut packet| {
-                let dst_vpcd = if packet.meta().src_vpcd == Some(vpcd1()) {
+                let dst_vpcd = if packet.meta().src_vpcd() == Some(vpcd1()) {
                     vpcd2()
                 } else {
                     vpcd1()

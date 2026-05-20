@@ -141,7 +141,7 @@ pub struct PacketMeta {
     pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
     pub bridge: Option<BridgeDomain>, /* the bridge domain to forward the packet to */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
-    pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
+    src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
     pub flow_info: Option<Arc<FlowInfo>>, /* flow specific information that can be looked up in the flow table */
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
@@ -157,6 +157,15 @@ impl PacketMeta {
         let mut ret = Self::default();
         ret.flags = flags;
         ret
+    }
+
+    #[must_use]
+    pub fn src_vpcd(&self) -> Option<VpcDiscriminant> {
+        self.src_vpcd
+    }
+
+    pub fn set_src_vpcd(&mut self, vpcd: Option<VpcDiscriminant>) {
+        self.src_vpcd = vpcd;
     }
 
     fn set_flag(&mut self, flag: MetaFlags, value: bool) {

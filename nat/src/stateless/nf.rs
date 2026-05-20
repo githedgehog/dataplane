@@ -302,7 +302,7 @@ impl StatelessNat {
         let nfi = self.name();
 
         /* get source VNI annotation */
-        let Some(VpcDiscriminant::VNI(src_vni)) = packet.meta().src_vpcd else {
+        let Some(VpcDiscriminant::VNI(src_vni)) = packet.meta().src_vpcd() else {
             warn!("{nfi}: Packet has no source VNI annotation!. Will drop...");
             packet.done(DoneReason::Unroutable);
             return;

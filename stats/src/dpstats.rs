@@ -810,7 +810,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Stats {
             }
         }
         input.filter_map(|mut packet| {
-            let sdisc = packet.meta().src_vpcd;
+            let sdisc = packet.meta().src_vpcd();
             let ddisc = packet.meta().dst_vpcd;
             let is_drop =
                 !(packet.get_done().unwrap_or_else(|| unreachable!()) == DoneReason::Delivered);

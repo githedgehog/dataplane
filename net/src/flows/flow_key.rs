@@ -665,7 +665,7 @@ fn flow_key_data_from_packet<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Opti
         _ => return None,
     };
 
-    let src_vpcd = packet.meta().src_vpcd;
+    let src_vpcd = packet.meta().src_vpcd();
     Some(FlowKeyData::new(src_vpcd, src_ip, dst_ip, ip_proto_key))
 }
 
@@ -1103,7 +1103,7 @@ mod tests {
                 )
             };
 
-            let src_vpcd = packet.meta().src_vpcd;
+            let src_vpcd = packet.meta().src_vpcd();
 
             let transport = packet.headers().try_transport()?;
             let proto = match transport {

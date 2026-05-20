@@ -292,7 +292,7 @@ impl Display for PacketMeta {
         write!(f, "   ")?;
         fmt_opt(f, " iif", self.iif, false)?;
         fmt_opt(f, " oif", self.oif, false)?;
-        fmt_opt(f, "    src-vpcd", self.src_vpcd, false)?;
+        fmt_opt(f, "    src-vpcd", self.src_vpcd(), false)?;
         fmt_opt(f, "    dst-vpcd", self.dst_vpcd, true)?;
         fmt_opt(f, "    vrf", self.vrf, false)?;
         fmt_opt(f, "    bd", self.bridge, true)?;

@@ -124,7 +124,7 @@ fn create_test_ipv4_udp_packet_with_ports(
     packet
         .set_udp_destination_port(dst_port.try_into().unwrap())
         .unwrap();
-    packet.meta_mut().src_vpcd = src_vpcd;
+    packet.meta_mut().set_src_vpcd(src_vpcd);
     packet
 }
 
@@ -146,7 +146,7 @@ fn create_test_ipv4_tcp_packet_with_ports(
     packet
         .set_tcp_destination_port(net::tcp::TcpPort::new_checked(dst_port).unwrap())
         .unwrap();
-    packet.meta_mut().src_vpcd = src_vpcd;
+    packet.meta_mut().set_src_vpcd(src_vpcd);
     packet
 }
 
@@ -168,7 +168,7 @@ fn create_test_ipv6_udp_packet_with_ports(
     packet
         .set_udp_destination_port(dst_port.try_into().unwrap())
         .unwrap();
-    packet.meta_mut().src_vpcd = src_vpcd;
+    packet.meta_mut().set_src_vpcd(src_vpcd);
     packet
 }
 
@@ -179,7 +179,7 @@ fn create_test_icmp_v4_packet(
 ) -> Packet<TestBuffer> {
     let mut packet =
         build_test_icmp4_echo(src_addr, dst_addr, 1, IcmpEchoDirection::Request).unwrap();
-    packet.meta_mut().src_vpcd = src_vpcd;
+    packet.meta_mut().set_src_vpcd(src_vpcd);
     packet.meta_mut().set_overlay(true);
     packet
 }

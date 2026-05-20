@@ -56,7 +56,7 @@ impl PortForwarder {
     ) -> Option<(PortFwKey, UnicastIpAddr, NonZero<u16>)> {
         debug!("checking packet for port-forwarding ...");
 
-        let Some(src_vpcd) = packet.meta().src_vpcd else {
+        let Some(src_vpcd) = packet.meta().src_vpcd() else {
             error!("packet lacks src vpc annotation: will drop");
             packet.done(DoneReason::InternalFailure);
             return None;
@@ -199,7 +199,7 @@ impl PortForwarder {
         pfwtable: &PortFwTable,
     ) -> Option<Arc<PortFwEntry>> {
         // These could be retrieved from the FlowKey, but we don't have it :( ...
-        let src_vpcd = packet.meta().src_vpcd?;
+        let src_vpcd = packet.meta().src_vpcd()?;
         let net = packet.try_ip()?;
         let proto = net.next_header();
         let dst_ip = net.dst_addr();
@@ -239,7 +239,7 @@ impl PortForwarder {
         pfwtable: &PortFwTable,
     ) -> Option<Arc<PortFwEntry>> {
         // get required properties from packet
-        let src_vpcd = packet.meta().src_vpcd?;
+        let src_vpcd = packet.meta().src_vpcd()?;
         let net = packet.try_ip()?;
         let proto = net.next_header();
         let src_ip = net.src_addr();
