@@ -3,7 +3,7 @@
 
 #![allow(missing_docs)] // TODO
 
-use crate::flows::FlowInfo;
+use crate::flows::{FlowInfo, FlowInfoFlags};
 use crate::interface::InterfaceIndex;
 use crate::ip::dscp::Dscp;
 use crate::ip::ecn::Ecn;
@@ -253,6 +253,30 @@ impl PacketMeta {
     }
     pub fn set_keep(&mut self, value: bool) {
         self.set_flag(MetaFlags::KEEP, value);
+    }
+
+    #[must_use]
+    pub fn compute_flow_flags_forward(&self) -> FlowInfoFlags {
+        let mut flags = FlowInfoFlags::default();
+        if self.requires_static_nat_src() {
+            flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
+        }
+        if self.requires_static_nat_dst() {
+            flags |= FlowInfoFlags::REQ_STATIC_NAT_DST;
+        }
+        flags
+    }
+
+    #[must_use]
+    pub fn compute_flow_flags_reverse(&self) -> FlowInfoFlags {
+        let mut flags = FlowInfoFlags::default();
+        if self.requires_static_nat_src() {
+            flags |= FlowInfoFlags::REQ_STATIC_NAT_DST;
+        }
+        if self.requires_static_nat_dst() {
+            flags |= FlowInfoFlags::REQ_STATIC_NAT_SRC;
+        }
+        flags
     }
 }
 impl Drop for PacketMeta {

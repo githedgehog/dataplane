@@ -322,7 +322,11 @@ impl FlowFilter {
     fn set_nat_requirements_from_flow_info<Buf: PacketBufferMut>(
         packet: &mut Packet<Buf>,
     ) -> Result<(), ()> {
-        let locked_info = packet.meta().flow_info.as_ref().ok_or(())?.locked.read();
+        let flow_info = packet.meta().flow_info.as_ref().ok_or(())?;
+        let needs_static_nat_src = flow_info.get_flags().requires_static_nat_src();
+        let needs_static_nat_dst = flow_info.get_flags().requires_static_nat_dst();
+
+        let locked_info = flow_info.locked.read();
         let needs_stateful_nat = locked_info.nat_state.is_some();
         let needs_port_forwarding = locked_info.port_fw_state.is_some();
         drop(locked_info);
@@ -330,14 +334,19 @@ impl FlowFilter {
         match (needs_stateful_nat, needs_port_forwarding) {
             (true, false) => {
                 packet.meta_mut().set_stateful_nat(true);
-                Ok(())
             }
             (false, true) => {
                 packet.meta_mut().set_port_forwarding(true);
-                Ok(())
             }
-            _ => Err(()),
+            _ => return Err(()),
         }
+        if needs_static_nat_src {
+            packet.meta_mut().set_static_nat_src(true);
+        }
+        if needs_static_nat_dst {
+            packet.meta_mut().set_static_nat_dst(true);
+        }
+        Ok(())
     }
 
     /// Process a packet.

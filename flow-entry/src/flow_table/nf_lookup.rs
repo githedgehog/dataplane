@@ -62,7 +62,7 @@ mod test {
     use net::FlowKey;
     use net::buffer::PacketBufferMut;
     use net::buffer::TestBuffer;
-    use net::flows::FlowInfo;
+    use net::flows::{FlowInfo, FlowInfoFlags};
     use net::ip::NextHeader;
     use net::ip::UnicastIpAddr;
     use net::packet::Packet;
@@ -198,7 +198,13 @@ mod test {
 
             // create a pair of related flow entries; flow_2 will get a longer timeout
             let expires_at = tokio::time::Instant::now().into_std() + Duration::from_secs(2);
-            let (flow_1, flow_2) = FlowInfo::related_pair(expires_at, key_1, key_2);
+            let (flow_1, flow_2) = FlowInfo::related_pair(
+                expires_at,
+                key_1,
+                FlowInfoFlags::default(),
+                key_2,
+                FlowInfoFlags::default(),
+            );
             assert_eq!(Arc::weak_count(&flow_1), 1);
             assert_eq!(Arc::weak_count(&flow_2), 1);
             assert_eq!(Arc::strong_count(&flow_1), 1);
