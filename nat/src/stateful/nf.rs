@@ -484,7 +484,7 @@ impl StatefulNat {
 
         // TODO: Check whether the packet is fragmented
         if let Err(error) = self.masquerade_packet(packet) {
-            packet.done(translate_error(&error));
+            packet.done((&error).into());
             debug!("Did not masquerade packet: {error}");
         } else {
             packet.meta_mut().set_checksum_refresh(true);
@@ -492,39 +492,22 @@ impl StatefulNat {
     }
 }
 
-fn translate_error(error: &StatefulNatError) -> DoneReason {
-    match error {
-        StatefulNatError::BadTransportHeader
-        | StatefulNatError::AllocationFailure(AllocatorError::UnsupportedProtocol(_)) => {
-            DoneReason::NatUnsupportedProto
+impl From<&StatefulNatError> for DoneReason {
+    fn from(error: &StatefulNatError) -> Self {
+        match error {
+            StatefulNatError::BadTransportHeader => DoneReason::NatUnsupportedProto,
+            StatefulNatError::FlowKeyError | StatefulNatError::InvalidPort(_) => {
+                DoneReason::Malformed
+            }
+            StatefulNatError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
+            StatefulNatError::NoAllocator
+            | StatefulNatError::UnexpectedKeyVariant
+            | StatefulNatError::IcmpUnsupportedCategory
+            | StatefulNatError::IcmpError
+            | StatefulNatError::NatError(_) => DoneReason::NatFailure,
+            StatefulNatError::Bug(_) | StatefulNatError::IntendedDrop(_) => DoneReason::Filtered,
+            StatefulNatError::AllocationFailure(inner) => inner.into(),
         }
-
-        StatefulNatError::FlowKeyError | StatefulNatError::InvalidPort(_) => DoneReason::Malformed,
-
-        StatefulNatError::AllocationFailure(
-            AllocatorError::NoFreeIp | AllocatorError::NoPortBlock | AllocatorError::NoFreePort(_),
-        ) => DoneReason::NatOutOfResources,
-
-        StatefulNatError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
-        StatefulNatError::NoAllocator
-        | StatefulNatError::UnexpectedKeyVariant
-        | StatefulNatError::IcmpUnsupportedCategory
-        | StatefulNatError::IcmpError
-        | StatefulNatError::AllocationFailure(
-            AllocatorError::PortAllocationFailed(_)
-            | AllocatorError::PortReservationFailed(_)
-            | AllocatorError::MissingDiscriminant
-            | AllocatorError::UnsupportedDiscriminant,
-        )
-        | StatefulNatError::NatError(_) => DoneReason::NatFailure,
-
-        StatefulNatError::AllocationFailure(AllocatorError::InternalIssue(_)) => {
-            DoneReason::InternalFailure
-        }
-
-        StatefulNatError::AllocationFailure(AllocatorError::Denied)
-        | StatefulNatError::Bug(_)
-        | StatefulNatError::IntendedDrop(_) => DoneReason::Filtered,
     }
 }
 

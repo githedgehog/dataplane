@@ -5,6 +5,7 @@
 
 use crate::port::NatPortError;
 use net::ip::NextHeader;
+use net::packet::DoneReason;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 
@@ -32,6 +33,23 @@ pub enum AllocatorError {
     InternalIssue(String),
     #[error("new NAT session creation denied")]
     Denied,
+}
+
+impl From<&AllocatorError> for DoneReason {
+    fn from(error: &AllocatorError) -> Self {
+        match error {
+            AllocatorError::UnsupportedProtocol(_) => DoneReason::NatUnsupportedProto,
+            AllocatorError::NoFreeIp
+            | AllocatorError::NoPortBlock
+            | AllocatorError::NoFreePort(_) => DoneReason::NatOutOfResources,
+            AllocatorError::PortAllocationFailed(_)
+            | AllocatorError::PortReservationFailed(_)
+            | AllocatorError::MissingDiscriminant
+            | AllocatorError::UnsupportedDiscriminant => DoneReason::NatFailure,
+            AllocatorError::InternalIssue(_) => DoneReason::InternalFailure,
+            AllocatorError::Denied => DoneReason::Filtered,
+        }
+    }
 }
 
 /// `AllocationResult` is a struct to represent the result of an allocation.

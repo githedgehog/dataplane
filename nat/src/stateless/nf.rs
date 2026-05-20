@@ -322,7 +322,7 @@ impl StatelessNat {
         match self.translate(nat_tables, packet, src_vni, dst_vni) {
             Err(error) => {
                 debug!("{nfi}: Translation failed: {error}");
-                packet.done(translate_error(&error));
+                packet.done((&error).into());
             }
             Ok(modified) => {
                 if modified {
@@ -336,30 +336,16 @@ impl StatelessNat {
     }
 }
 
-fn translate_error(error: &StatelessNatError) -> DoneReason {
-    match error {
-        StatelessNatError::NoIpHeader
-        | StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::NoIpHeader) => DoneReason::NotIp,
-
-        StatelessNatError::MissingTable(_) => DoneReason::Unroutable,
-
-        StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::InvalidPort(_)) => DoneReason::Malformed,
-
-        StatelessNatError::IcmpErrorMsg(IcmpErrorMsgError::NotUnicast(_)) => DoneReason::NatFailure,
-
-        StatelessNatError::FailedToSetDestIp(_)
-        | StatelessNatError::FailedToSetSourceIp(_)
-        | StatelessNatError::IcmpErrorMsg(
-            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoTranslationPossible,
-        ) => DoneReason::InternalFailure,
-
-        StatelessNatError::IcmpErrorMsg(
-            IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_),
-        ) => DoneReason::InvalidChecksum,
-
-        StatelessNatError::IcmpErrorMsg(
-            IcmpErrorMsgError::NoEmbeddedHeaders | IcmpErrorMsgError::NoInnerIpHeader,
-        ) => DoneReason::Filtered,
+impl From<&StatelessNatError> for DoneReason {
+    fn from(error: &StatelessNatError) -> Self {
+        match error {
+            StatelessNatError::NoIpHeader => DoneReason::NotIp,
+            StatelessNatError::MissingTable(_) => DoneReason::Unroutable,
+            StatelessNatError::FailedToSetSourceIp(_) | StatelessNatError::FailedToSetDestIp(_) => {
+                DoneReason::InternalFailure
+            }
+            StatelessNatError::IcmpErrorMsg(inner) => inner.into(),
+        }
     }
 }
 
