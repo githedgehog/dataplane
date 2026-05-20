@@ -39,7 +39,7 @@ npins add github githedgehog rdma-core --branch fix-lto-63.0 # Floats with branc
 # dpdk has a trivially side-stepped problem with cross compilation (it fails to identify the correct version of ar when
 # cross compiling due to a bug in their meson.build).  I hope to submit the fix to DPDK soon, at which point we can
 # pin to the official dpdk github instead of our fork / branch.
-npins add github githedgehog dpdk --branch pr/daniel-noland/cross-compile-fix
+npins add github githedgehog dpdk --branch v26.03-hh
 
 # Project does not cut releases or tags. Float with master on pin bump.
 # Normally I would say that is not reasonable, but we only use this in testing and it is still technically pinned so
