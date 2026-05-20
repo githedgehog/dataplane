@@ -1286,10 +1286,14 @@ dependencies = [
 name = "dataplane-dpdk"
 version = "0.21.0"
 dependencies = [
+ "bolero",
+ "dataplane-concurrency",
  "dataplane-dpdk-sys",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-errno",
+ "dataplane-id",
  "dataplane-net",
+ "nix 0.31.3",
  "serde",
  "thiserror",
  "tracing",
