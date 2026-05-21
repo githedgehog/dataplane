@@ -12,6 +12,7 @@ bolero = ["dep:bolero", "netdevsim", "net/test_buffer", "net/serde", "net/bolero
 
 [dependencies]
 # internal
+concurrency = { workspace = true }
 net = { workspace = true, features = [] }
 rekon = { workspace = true }
 

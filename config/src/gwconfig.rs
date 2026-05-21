@@ -7,7 +7,7 @@ use crate::errors::{ConfigError, ConfigResult};
 use crate::external::{ExternalConfig, GenId, ValidatedExternalConfig};
 use crate::internal::InternalConfig;
 use arc_swap::ArcSwap;
-use std::sync::Arc;
+use concurrency::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
 

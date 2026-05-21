@@ -8,9 +8,9 @@
 //!
 //! [sysfs]: https://www.kernel.org/doc/Documentation/filesystems/sysfs.txt
 
+use concurrency::sync::LazyLock;
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use tracing::{error, info};
 

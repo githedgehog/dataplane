@@ -13,6 +13,7 @@ testing = []
 [dependencies]
 # internal
 common = { workspace = true }
+concurrency = { workspace = true }
 k8s-intf = { workspace = true }
 net = { workspace = true }
 lpm = { workspace = true }

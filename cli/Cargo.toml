@@ -12,6 +12,7 @@ path = "bin/main.rs"
 
 [dependencies]
 clap = { workspace = true, features = ["derive", "std", "usage"] }
+concurrency = { workspace = true }
 colored = { workspace = true, features = [] }
 nix = { workspace = true, features = ["socket"] }
 rkyv = { workspace = true, features = ["alloc", "bytecheck", "std"] }

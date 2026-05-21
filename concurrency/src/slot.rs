@@ -28,6 +28,8 @@
 //!
 //! [`Subscriber::snapshot`]: crate::Subscriber::snapshot
 
+#![allow(clippy::disallowed_types)]
+
 // Strict provenance checks fail with arc-swap since it uses hazard pointers and does not (yet) use the new
 // std features to expose provenance information in their mechanics.
 // As a result, we can still check for provenance violations in this crate, but only with the Mutex based

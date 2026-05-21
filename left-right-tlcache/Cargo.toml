@@ -11,4 +11,5 @@ ahash = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+concurrency = { workspace = true }
 serial_test = { workspace = true }

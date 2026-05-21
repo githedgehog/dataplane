@@ -16,7 +16,8 @@ pub use parking_lot::{
     Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard,
 };
 
+#[allow(clippy::disallowed_types)]
 pub use std::sync::{
-    Arc, Barrier, BarrierWaitResult, Condvar, LockResult, Once, OnceLock, OnceState, PoisonError,
-    TryLockError, TryLockResult, WaitTimeoutResult, Weak, atomic, mpsc,
+    Arc, Barrier, BarrierWaitResult, Condvar, LazyLock, LockResult, Once, OnceLock, OnceState,
+    PoisonError, TryLockError, TryLockResult, WaitTimeoutResult, Weak, atomic, mpsc,
 };

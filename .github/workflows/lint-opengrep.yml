@@ -40,4 +40,6 @@ jobs:
               shell: "bash"
               run: |
                   set -euo pipefail
-                  opengrep scan --experimental --verbose --error
+                  opengrep scan --experimental --verbose --error \
+                      --config auto \
+                      --config .semgrep/rules

@@ -50,8 +50,9 @@ use core::ops::{Deref, DerefMut};
 use loom::sync as inner;
 
 pub use loom::sync::{Barrier, Condvar, WaitTimeoutResult, atomic, mpsc};
+#[allow(clippy::disallowed_types)]
 pub use std::sync::{
-    BarrierWaitResult, LockResult, Once, OnceLock, OnceState, PoisonError, TryLockError,
+    BarrierWaitResult, LazyLock, LockResult, Once, OnceLock, OnceState, PoisonError, TryLockError,
     TryLockResult,
 };
 

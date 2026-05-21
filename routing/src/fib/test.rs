@@ -24,12 +24,12 @@ mod tests {
 
     use lpm::prefix::{IpAddr, Prefix};
 
+    use concurrency::sync::Arc;
+    use concurrency::sync::atomic::AtomicBool;
+    use concurrency::sync::atomic::AtomicU16;
     use rand::RngExt;
     use rand::rngs::ThreadRng;
     use std::str::FromStr;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::AtomicU16;
     use std::thread;
     use std::thread::Builder;
     use std::time::{Duration, Instant};
@@ -456,8 +456,8 @@ mod tests {
     // *not* in our code.
     #[test]
     fn test_leftright_destroy_race_simple() {
+        use concurrency::sync::RwLock;
         use left_right::{Absorb, ReadHandle, ReadHandleFactory};
-        use std::sync::RwLock;
 
         #[derive(Default)]
         struct Tiny {
@@ -502,7 +502,7 @@ mod tests {
                     let mut misses = 0u64;
                     loop {
                         let rh: Option<ReadHandle<Tiny>> =
-                            slot.read().unwrap().as_ref().map(ReadHandleFactory::handle);
+                            slot.read().as_ref().map(ReadHandleFactory::handle);
                         if let Some(rh) = rh {
                             match rh.enter() {
                                 Some(g) => {
@@ -531,7 +531,7 @@ mod tests {
             let (mut w, r) = left_right::new::<Tiny, TinyOp>();
 
             // Publish the factory so workers can get handles
-            *factory.write().unwrap() = Some(r.factory());
+            *factory.write() = Some(r.factory());
             drop(r);
 
             // Let workers race with the upcoming drop. `yield_now` is enough;
@@ -545,7 +545,7 @@ mod tests {
             // Remove the factory so that no further handles can be created.
             // Workers already holding a read handle should get a None when
             // attempting to `enter()`.
-            *factory.write().unwrap() = None;
+            *factory.write() = None;
         }
         stop.store(true, Ordering::Relaxed);
         for h in handles {

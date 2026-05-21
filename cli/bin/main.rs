@@ -12,11 +12,11 @@ use cmdline::Cmdline;
 use cmdtree::Node;
 use cmdtree_dp::gw_cmd_tree;
 use colored::Colorize;
+use concurrency::sync::Arc;
 use dataplane_cli::cliproto::CliLocalError;
 use dataplane_cli::cliproto::{CliAction, CliRequest, CliResponse};
 use std::io::stdin;
 use std::os::unix::net::UnixDatagram;
-use std::sync::Arc;
 use terminal::{TermInput, Terminal};
 
 mod argsparse;
