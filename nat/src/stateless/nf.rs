@@ -12,8 +12,8 @@ use crate::icmp_handler::icmp_error_msg::{
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
 use net::headers::{
-    Net, NetError, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp, TryIp,
-    TryIpMut, TryTcpUdpMut,
+    Net, NetError, TryEmbeddedHeaders, TryEmbeddedTransport, TryHeadersMut, TryIcmpAny, TryInnerIp,
+    TryIp,
 };
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -183,27 +183,36 @@ impl StatelessNat {
         let nfi = self.name();
         let mut modified = false;
 
-        // Get source IP address, port
-        let Some(src_addr) = packet.ip_source() else {
+        // Walk the header stack once: eth / net / (optional) transport. The
+        // structural shape lets us read addresses/ports and (later) mutate
+        // them through the same chain, without re-borrowing the packet.
+        let Some((_, ip, tp_opt)) = packet
+            .headers_mut()
+            .pat_mut()
+            .eth()
+            .net()
+            .opt_transport()
+            .done()
+        else {
             error!("{nfi}: Failed to get source IP address");
             return Err(StatelessNatError::NoIpHeader);
         };
-        let src_port_opt = packet.transport_src_port().map(NonZero::get);
+        let mut tcp_udp = tp_opt.and_then(|t| TcpUdpMut::try_from(t).ok());
 
-        // Source NAT
+        let src_addr = ip.src_addr();
+        let src_port_opt = tcp_udp.as_ref().map(|t| t.src_port().get());
+
         if let Some((new_src_addr, new_src_port_opt)) =
             table.find_src_mapping(&src_addr, src_port_opt, dst_vni)
         {
-            let net = packet.try_ip_mut().ok_or(StatelessNatError::NoIpHeader)?;
             if new_src_addr.inner() != src_addr {
-                self.translate_src(net, new_src_addr)?;
+                self.translate_src(ip, new_src_addr)?;
                 modified = true;
             }
-            if let (Some(mut transport), Some(new_src_port)) =
-                (packet.try_tcp_udp_mut(), new_src_port_opt)
-                && new_src_port.get() != transport.src_port().get()
+            if let (Some(transport), Some(new_src_port)) = (&mut tcp_udp, new_src_port_opt)
+                && new_src_port != transport.src_port()
             {
-                self.translate_src_port(&mut transport, new_src_port);
+                self.translate_src_port(transport, new_src_port);
                 modified = true;
             }
         }
@@ -228,27 +237,33 @@ impl StatelessNat {
         let nfi = self.name();
         let mut modified = false;
 
-        // Get destination IP address, port
-        let Some(dst_addr) = packet.ip_destination() else {
+        let Some((_, ip, tp_opt)) = packet
+            .headers_mut()
+            .pat_mut()
+            .eth()
+            .net()
+            .opt_transport()
+            .done()
+        else {
             error!("{nfi}: Failed to get destination IP address");
             return Err(StatelessNatError::NoIpHeader);
         };
-        let dst_port_opt = packet.transport_dst_port().map(NonZero::get);
+        let mut tcp_udp = tp_opt.and_then(|t| TcpUdpMut::try_from(t).ok());
 
-        // Destination NAT
+        let dst_addr = ip.dst_addr();
+        let dst_port_opt = tcp_udp.as_ref().map(|t| t.dst_port().get());
+
         if let Some((new_dst_addr, new_dst_port_opt)) =
             table.find_dst_mapping(&dst_addr, dst_port_opt)
         {
-            let net = packet.try_ip_mut().ok_or(StatelessNatError::NoIpHeader)?;
             if new_dst_addr != dst_addr {
-                self.translate_dst(net, new_dst_addr)?;
+                self.translate_dst(ip, new_dst_addr)?;
                 modified = true;
             }
-            if let (Some(mut transport), Some(new_dst_port)) =
-                (packet.try_tcp_udp_mut(), new_dst_port_opt)
-                && new_dst_port.get() != transport.dst_port().get()
+            if let (Some(transport), Some(new_dst_port)) = (&mut tcp_udp, new_dst_port_opt)
+                && new_dst_port != transport.dst_port()
             {
-                self.translate_dst_port(&mut transport, new_dst_port);
+                self.translate_dst_port(transport, new_dst_port);
                 modified = true;
             }
         }
