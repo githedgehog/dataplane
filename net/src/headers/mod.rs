@@ -223,6 +223,7 @@ pub enum TransportError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub enum Transport {
     Tcp(Tcp),
     Udp(Udp),
