@@ -1379,6 +1379,112 @@ mod test {
         );
     }
 
+    // ----------------------------------------------------------------------------------
+    // Matrix property test: NAT-mode allowlist across all (local, remote) pairings.
+    //
+    // The named tests above spot-check individual cells in the matrix. This test asserts
+    // the *entire* matrix matches the documented spec, in one shot: for every pair of
+    // (local mode, remote mode), the validator agrees with `expected_allowed`. The spec
+    // function below is the single source of truth -- when the allowlist changes, edit
+    // `expected_allowed` and the matrix re-validates against the implementation.
+    // ----------------------------------------------------------------------------------
+
+    #[derive(Debug, Clone, Copy)]
+    enum NatMode {
+        None,
+        Stateless,
+        Stateful,
+        PortForwarding,
+    }
+
+    impl NatMode {
+        const ALL: [NatMode; 4] = [
+            NatMode::None,
+            NatMode::Stateless,
+            NatMode::Stateful,
+            NatMode::PortForwarding,
+        ];
+
+        fn from_byte(b: u8) -> Self {
+            Self::ALL[(b as usize) % Self::ALL.len()]
+        }
+    }
+
+    /// The documented spec: which (local, remote) combinations are accepted by
+    /// `validate_nat_combinations` (see `config/src/external/overlay/vpc.rs`).
+    ///
+    /// Disallowed iff both sides use stateful or port-forwarding NAT.
+    fn expected_allowed(local: NatMode, remote: NatMode) -> bool {
+        let is_stateful_or_pf = |m| matches!(m, NatMode::Stateful | NatMode::PortForwarding);
+        !(is_stateful_or_pf(local) && is_stateful_or_pf(remote))
+    }
+
+    /// Build a single-expose `VpcManifest` for the given side and NAT mode. Each
+    /// side gets a distinct /16 to avoid prefix overlap across the two sides.
+    fn manifest_with_mode(vpc: &'static str, side: u8, mode: NatMode) -> VpcManifest {
+        // side 0 -> 1.x / 2.x ; side 1 -> 3.x / 4.x
+        let priv_octet = 1 + side * 2;
+        let pub_octet = 2 + side * 2;
+
+        let expose = match mode {
+            NatMode::None => {
+                VpcExpose::empty().ip(format!("{priv_octet}.0.0.0/16").as_str().into())
+            }
+            NatMode::Stateless => VpcExpose::empty()
+                .make_stateless_nat()
+                .unwrap()
+                .ip(format!("{priv_octet}.0.0.0/16").as_str().into())
+                .as_range(format!("{pub_octet}.0.0.0/16").as_str().into())
+                .unwrap(),
+            NatMode::Stateful => VpcExpose::empty()
+                .make_stateful_nat(None)
+                .unwrap()
+                .ip(format!("{priv_octet}.0.0.0/16").as_str().into())
+                .as_range(format!("{pub_octet}.0.0.0/16").as_str().into())
+                .unwrap(),
+            NatMode::PortForwarding => VpcExpose::empty()
+                .make_port_forwarding(None, None)
+                .unwrap()
+                .ip(prefix_with_ports(
+                    format!("{priv_octet}.0.0.1/32").as_str(),
+                    80,
+                    80,
+                ))
+                .as_range(prefix_with_ports(
+                    format!("{pub_octet}.0.0.1/32").as_str(),
+                    8080,
+                    8080,
+                ))
+                .unwrap(),
+        };
+        VpcManifest::with_exposes(vpc, vec![expose])
+    }
+
+    fn peering_with_modes(local: NatMode, remote: NatMode) -> VpcPeering {
+        VpcPeering::with_default_group(
+            "Peering-1",
+            manifest_with_mode("VPC-1", 0, local),
+            manifest_with_mode("VPC-2", 1, remote),
+        )
+    }
+
+    #[test]
+    fn nat_combination_matrix_matches_spec() {
+        bolero::check!()
+            .with_type::<(u8, u8)>()
+            .for_each(|(local_b, remote_b)| {
+                let local = NatMode::from_byte(*local_b);
+                let remote = NatMode::from_byte(*remote_b);
+                let result = validate_overlay_with_peering(peering_with_modes(local, remote));
+                let expected = expected_allowed(local, remote);
+                assert_eq!(
+                    result.is_ok(),
+                    expected,
+                    "validate_nat_combinations({local:?}, {remote:?}) -> {result:?}, expected ok={expected}",
+                );
+            });
+    }
+
     // ==================================================================================
     // Overlay-level tests (cross-peering)
     // ==================================================================================
