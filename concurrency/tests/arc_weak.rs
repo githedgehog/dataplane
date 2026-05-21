@@ -6,40 +6,15 @@
 //! Direct coverage for the `concurrency::sync::Arc<T>` wrapper and
 //! `Weak<T>` shim.
 //!
-//! Loom 0.7 does not ship `Weak<T>` and does not give `loom::sync::Arc`
-//! an associated `downgrade` function. The crate adds both as a thin
-//! wrapper around `loom::sync::Arc` (see `concurrency/src/sync/test_facade.rs`).
-//! Because the shim is custom code -- not a re-export -- it needs its
-//! own test coverage; otherwise the only thing exercising it is
-//! `quiescent_model.rs`, which uses it as a building block and would
-//! surface failures as misbehaving QSBR tests rather than as
-//! localised shim bugs.
+//! Loom 0.7 has no `Weak<T>`, so the facade's local shim gets direct
+//! coverage here.
 //!
-//! Run under loom with:
-//!
-//! ```sh
-//! cargo test --release -p dataplane-concurrency --features loom --test arc_weak
-//! ```
-//!
-//! The tests also pass on the default and shuttle backends -- the
-//! contract is the same; only the *internals* of `Arc`/`Weak` differ.
-//! Documented quirks of the loom shim (e.g. `Weak::upgrade` succeeds
-//! even after the last `Arc` drop, `weak_count` is always `0`) have
-//! tests gated to `concurrency = "loom"` to avoid asserting on real
-//! `std::sync` / `shuttle::sync` semantics.
-//!
-//! `shuttle_pct` is opted out at file level: PCT is for biasing toward
-//! rare interleavings of concurrent code, but most of the tests in this
-//! file are protocol-level checks on `Arc` / `Weak` and either run on a
-//! single thread or only briefly spawn a helper. PCT panics on bodies
-//! that do not exercise sustained concurrency on the main thread, and
-//! the contract being tested here is identical to what the plain
-//! `shuttle` (random) variant already covers.
+//! `shuttle` is opted out at file level: the portfolio runs PCT
+//! alongside Random, and most of these protocol checks cannot satisfy
+//! PCT's concurrency requirement.
 
-#![cfg(not(feature = "shuttle_pct"))]
+#![cfg(not(feature = "shuttle"))]
 
-// `#[concurrency::test]` is provided by `dataplane-concurrency`; alias
-// the crate so the macro path resolves inside this integration test.
 extern crate dataplane_concurrency as concurrency;
 
 use dataplane_concurrency::sync::Arc;
@@ -134,15 +109,7 @@ fn arc_pointer_format_yields_address() {
     assert!(p.starts_with("0x"), "pointer format unexpected: {p}");
 }
 
-// ---------- documented-quirk tests (loom-only) ----------
-
-/// Under the loom shim, `Weak` holds a strong clone of the inner
-/// `loom::sync::Arc`, so `upgrade` succeeds even after every original
-/// `Arc` has dropped. This is the documented limitation explained in
-/// the module-level docs of `concurrency/src/sync/loom_backend.rs`;
-/// the test pins the behaviour so a future "real `Weak`"
-/// implementation fails this test loudly rather than silently
-/// changing semantics.
+/// Pins the loom shim quirk: `Weak` keeps a strong clone alive.
 #[cfg(feature = "loom")]
 #[concurrency::test]
 fn loom_quirk_weak_keeps_strong_alive() {
@@ -154,8 +121,6 @@ fn loom_quirk_weak_keeps_strong_alive() {
     let upgraded = w.upgrade().expect("loom shim quirk: Weak keeps strong");
     assert_eq!(*upgraded, 42);
 }
-
-// ---------- multi-thread (loom multiplies via scheduling) ----------
 
 /// Two threads each clone, read, and drop independent `Arc` clones.
 /// Loom explores all interleavings of the strong-count operations.
@@ -177,10 +142,7 @@ fn two_threads_clone_and_drop_independently() {
     assert_eq!(Arc::strong_count(&a), 1);
 }
 
-/// A `Weak` registered in a `Mutex`-protected slot survives concurrent
-/// reader access. This is a tiny analogue of the QSBR usage pattern in
-/// `nat::stateful::apalloc`: a `Weak<T>` slot upgraded by a reader
-/// thread while another thread holds an `Arc` to the value.
+/// A tiny analogue of the NAT allocator's `Weak<T>` slot pattern.
 #[concurrency::test]
 fn mutex_protected_weak_slot_upgrade() {
     let a = Arc::new(99u32);

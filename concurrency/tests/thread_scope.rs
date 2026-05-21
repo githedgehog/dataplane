@@ -3,30 +3,8 @@
 
 #![allow(clippy::disallowed_types)]
 
-//! Direct coverage for `concurrency::thread::scope` -- the loom shim
-//! in particular, but the tests pass under every backend.
-//!
-//! Loom 0.7 does not ship `thread::scope`. The crate provides one in
-//! `concurrency/src/thread/loom_scope.rs` built on `loom::spawn` plus
-//! an `Arc<Mutex<Option<T>>>` keepalive pattern that preserves the
-//! drop-affinity guarantee `std::thread::scope` offers.
-//!
-//! The shim is exercised indirectly by `tests/quiescent_model.rs`, but
-//! those tests would surface failures as quiescent-protocol bugs rather
-//! than as localised shim bugs. The tests in this file pin the
-//! `thread::scope` contract itself so a future regression in the shim
-//! fails here loudly and at the right layer.
-//!
-//! The same source runs under every backend via `#[concurrency::test]`,
-//! and on the default and shuttle backends it exercises the *real*
-//! `std::thread::scope` / `shuttle::thread::scope` -- which is the
-//! point: the contract is the same; only the *internals* differ.
-//!
-//! Run under loom (the headline use case) with:
-//!
-//! ```sh
-//! cargo test --release -p dataplane-concurrency --features loom --test thread_scope
-//! ```
+//! Direct coverage for `concurrency::thread::scope`, especially the
+//! loom shim.
 
 extern crate dataplane_concurrency as concurrency;
 
@@ -34,16 +12,11 @@ use concurrency::sync::Arc;
 use concurrency::sync::atomic::{AtomicUsize, Ordering};
 use concurrency::thread;
 
-// Several tests below have the spawn-and-wait shape ("main spawns,
-// joins via the implicit auto-join, reads only after scope returns"),
-// which PCT counts as "the main thread did no concurrent work" and
-// panics on. Same approach `quiescent_model.rs` takes for its
-// single-threaded `snapshot_after_publish_observes_published` test.
-// Tests with two or more spawns issuing atomic ops (e.g.
-// `multiple_spawns_all_join_before_return`) are PCT-compatible.
+// PCT rejects spawn-and-wait bodies where the main thread does no
+// concurrent work, so some scope contract tests are std/loom-only.
 
 /// `scope()` returns the body's value.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn scope_returns_body_value() {
     let v = thread::scope(|_| 42u32);
@@ -52,7 +25,7 @@ fn scope_returns_body_value() {
 
 /// A single spawned thread is joined before `scope()` returns; the
 /// `AtomicUsize` it wrote is visible to the caller (Acquire on join).
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn single_spawn_joins_before_return() {
     let counter = Arc::new(AtomicUsize::new(0));
@@ -83,7 +56,7 @@ fn multiple_spawns_all_join_before_return() {
 }
 
 /// `ScopedJoinHandle::join` returns the spawned thread's value.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn explicit_join_returns_value() {
     thread::scope(|s| {
@@ -96,7 +69,7 @@ fn explicit_join_returns_value() {
 /// Spawned closures may borrow data of any lifetime that outlives the
 /// scope -- the headline `std::thread::scope` guarantee. Under loom
 /// this is the shim's `mem::transmute` doing its job.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn spawn_can_borrow_from_enclosing_scope() {
     let counter = Arc::new(AtomicUsize::new(0));
@@ -136,13 +109,7 @@ fn two_spawns_independent_writes() {
     assert_eq!(b.load(Ordering::SeqCst), 2);
 }
 
-/// A scoped thread that itself calls `s.spawn(...)` on the parent
-/// scope pushes new entries onto the scope's `pending` queue after
-/// the parent thread has already entered the teardown drain. The
-/// shim must keep draining until the queue stays empty across a full
-/// pass; otherwise the nested spawn's `JoinHandle` is leaked and the
-/// `'scope` -> `'static` transmute is unsound (the closure outlives
-/// `'scope`).
+/// The loom shim must join nested scoped spawns before `scope` returns.
 #[concurrency::test]
 fn nested_scoped_spawn_is_joined() {
     let outer_done = Arc::new(AtomicUsize::new(0));
@@ -151,13 +118,6 @@ fn nested_scoped_spawn_is_joined() {
         let outer_for_thread = Arc::clone(&outer_done);
         let inner_for_thread = Arc::clone(&inner_done);
         s.spawn(move || {
-            // Re-enter `s` from inside an already-spawned scoped
-            // thread. The handle for this inner spawn is registered
-            // in the same `Scope`'s `pending` list, but it can land
-            // there after the parent thread has already taken a
-            // snapshot of `pending` to drain. The shim's teardown
-            // must keep looping until `pending` is empty across a
-            // full pass.
             s.spawn(move || {
                 inner_for_thread.fetch_add(1, Ordering::SeqCst);
             });
@@ -180,7 +140,7 @@ fn nested_scoped_spawn_is_joined() {
 /// latest) when the spawned thread is joined -- i.e. before `scope()`
 /// returns. Pinned via an `AtomicUsize` incremented from within the
 /// payload's `Drop` impl.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn moved_value_drop_runs_before_scope_returns() {
     struct Bump(Arc<AtomicUsize>);

@@ -11,10 +11,7 @@
 //! * `loom` feature: poison-as-panic wrapper around `loom::sync`, plus
 //!   a local `Arc<T>` / `Weak<T>` shim (loom 0.7 ships `Arc` but no
 //!   `Weak`).
-//! * `shuttle` / `shuttle_pct` / `shuttle_dfs` features: poison-as-panic
-//!   wrapper around `shuttle::sync`. All three flavours share one
-//!   wrapper module; the scheduler difference is runtime-only (see
-//!   `concurrency::stress`).
+//! * `shuttle` feature (plus the additive `shuttle_dfs` opt-in):
 //! * `parking_lot` feature (default): zero-cost re-export of
 //!   `parking_lot`'s naked-guard locks; the production hot path.
 //!   Skipped when `_strict_provenance` is on, even if `parking_lot`

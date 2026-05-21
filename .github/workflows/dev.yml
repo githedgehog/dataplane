@@ -535,17 +535,6 @@ jobs:
         uses: *just
         with:
           recipe: "test"
-      - name: "shuttle_pct"
-        env:
-          JUST_VARS: >-
-            docker_sock=/run/docker/docker.sock
-            debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
-            profile=release
-            features=shuttle_pct
-            oci_repo=ghcr.io
-        uses: *just
-        with:
-          recipe: "test"
       # The `loom` feature flips `concurrency::sync` to loom's
       # primitives workspace-wide, which breaks crates that rely on
       # `Weak`, `Arc::downgrade`, etc. (those aren't in
