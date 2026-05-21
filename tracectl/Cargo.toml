@@ -19,3 +19,4 @@ tracing-throttle = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
+tracing-test = { workspace = true }

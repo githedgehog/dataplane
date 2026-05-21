@@ -1061,4 +1061,70 @@ mod tests {
         assert_eq!(check_level!(Y3), LevelFilter::ERROR);
         assert_eq!(check_level!(Y4), LevelFilter::DEBUG);
     }
+
+    // Verify the rate limiter actually drops events past the burst.
+    #[test]
+    #[serial]
+    fn test_rate_limit_drops_burst_overflow() {
+        use crate::control::{TracingControl, TracingRateLimitConfig};
+        use std::sync::Mutex;
+        use tracing_subscriber::{EnvFilter, filter::FilterExt, layer::Layer, prelude::*};
+        use tracing_test::internal::MockWriter;
+
+        const INFO_MARKER: &str = "HH_RATE_TEST_INFO";
+        const DEBUG_MARKER: &str = "HH_RATE_TEST_DEBUG";
+        const BURST: u32 = 5;
+        const EMITTED: usize = 100;
+
+        // We leak a `Mutex<Vec<u8>>` to get a `'static` writer buffer for the subscriber layer.
+        let buf: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
+
+        let rate_limit = TracingControl::build_rate_limit_layer(Some(TracingRateLimitConfig {
+            burst: BURST,
+            replenish_per_second: 1,
+        }))
+        .expect("build rate-limit layer");
+
+        // Same for dataplane: `DEBUG` events are unthrottled, `INFO` events are
+        let fmt_unthrottled = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(MockWriter::new(buf))
+            .with_filter(TracingControl::unthrottled_level_filter());
+
+        let fmt_throttled = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(MockWriter::new(buf))
+            .with_filter(TracingControl::throttled_level_filter().and(rate_limit));
+
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("debug"))
+            .with(fmt_unthrottled)
+            .with(fmt_throttled);
+
+        tracing::subscriber::with_default(subscriber, || {
+            for _ in 0..EMITTED {
+                tracing::debug!("{DEBUG_MARKER}");
+                tracing::info!("{INFO_MARKER}");
+            }
+        });
+
+        let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let info_kept = captured.matches(INFO_MARKER).count();
+        let debug_kept = captured.matches(DEBUG_MARKER).count();
+
+        // DEBUG is unthrottled — every event must make it through, and the
+        // throttle layer never sees it so it can't burn tokens budgeted for INFO.
+        assert_eq!(
+            debug_kept, EMITTED,
+            "DEBUG events must pass the unthrottled layer; got {debug_kept}/{EMITTED}"
+        );
+        assert!(
+            info_kept >= 1,
+            "rate limiter swallowed the entire INFO burst"
+        );
+        assert!(
+            info_kept < EMITTED / 2,
+            "rate limiter let through {info_kept}/{EMITTED} INFO events; expected ≪ {EMITTED}\n{captured}"
+        );
+    }
 }

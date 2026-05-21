@@ -1719,6 +1719,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-subscriber",
+ "tracing-test",
  "tracing-throttle",
 ]
 
