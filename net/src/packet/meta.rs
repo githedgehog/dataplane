@@ -301,3 +301,54 @@ impl Drop for PacketMeta {
         }
     }
 }
+
+/// `compute_flow_flags_forward` and `compute_flow_flags_reverse` are mirror
+/// images: SRC in one is DST in the other and vice versa. Pin that invariant
+/// with a property test so a future hand-edit can't silently de-synchronize
+/// them.
+#[cfg(test)]
+mod compute_flow_flags_tests {
+    use super::{FlowInfoFlags, PacketMeta};
+
+    #[test]
+    fn forward_and_reverse_swap_src_and_dst() {
+        bolero::check!()
+            .with_type::<(bool, bool)>()
+            .cloned()
+            .for_each(|(needs_src, needs_dst)| {
+                let mut meta = PacketMeta::default();
+                meta.set_static_nat_src(needs_src);
+                meta.set_static_nat_dst(needs_dst);
+
+                let fwd = meta.compute_flow_flags_forward();
+                let rev = meta.compute_flow_flags_reverse();
+
+                assert_eq!(
+                    fwd.contains(FlowInfoFlags::REQ_STATIC_NAT_SRC),
+                    rev.contains(FlowInfoFlags::REQ_STATIC_NAT_DST),
+                    "fwd SRC must mirror rev DST (needs_src={needs_src}, needs_dst={needs_dst})",
+                );
+                assert_eq!(
+                    fwd.contains(FlowInfoFlags::REQ_STATIC_NAT_DST),
+                    rev.contains(FlowInfoFlags::REQ_STATIC_NAT_SRC),
+                    "fwd DST must mirror rev SRC (needs_src={needs_src}, needs_dst={needs_dst})",
+                );
+            });
+    }
+
+    #[test]
+    fn forward_passes_through_requirements() {
+        bolero::check!()
+            .with_type::<(bool, bool)>()
+            .cloned()
+            .for_each(|(needs_src, needs_dst)| {
+                let mut meta = PacketMeta::default();
+                meta.set_static_nat_src(needs_src);
+                meta.set_static_nat_dst(needs_dst);
+
+                let fwd = meta.compute_flow_flags_forward();
+                assert_eq!(fwd.contains(FlowInfoFlags::REQ_STATIC_NAT_SRC), needs_src,);
+                assert_eq!(fwd.contains(FlowInfoFlags::REQ_STATIC_NAT_DST), needs_dst,);
+            });
+    }
+}
