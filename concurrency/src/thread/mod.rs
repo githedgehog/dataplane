@@ -45,3 +45,70 @@ pub use loom_scope::{Scope, ScopedJoinHandle, scope};
 // type-checks; it is never executed in that configuration.
 #[cfg(all(feature = "shuttle", feature = "loom", feature = "silence_clippy"))]
 pub use std::thread::*;
+
+pub trait BuilderExt {
+    /// Spawn a thread within `scope`.
+    ///
+    /// # Errors
+    /// Returns the underlying [`std::io::Error`] if the backend fails to
+    /// spawn the thread. Under loom and shuttle this is always `Ok`.
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope;
+}
+
+#[cfg(not(any(feature = "loom", feature = "shuttle")))]
+impl BuilderExt for Builder {
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        std::thread::Builder::spawn_scoped(self, scope, f)
+    }
+}
+
+#[cfg(all(
+    feature = "shuttle",
+    not(feature = "loom"),
+    not(feature = "silence_clippy")
+))]
+impl BuilderExt for Builder {
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        let _ = self;
+        Ok(scope.spawn(f))
+    }
+}
+
+#[cfg(all(feature = "loom", not(feature = "silence_clippy")))]
+impl BuilderExt for Builder {
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        let _ = self;
+        Ok(scope.spawn(f))
+    }
+}
