@@ -3,7 +3,7 @@
 
 //! K8s client that glues the gateway to k8s
 
-use std::sync::Arc;
+use concurrency::sync::Arc;
 use std::time::SystemTime;
 
 use chrono::{TimeZone, Utc};

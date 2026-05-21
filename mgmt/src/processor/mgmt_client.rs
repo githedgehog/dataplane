@@ -9,7 +9,7 @@ use config::GenId;
 use config::internal::status::DataplaneStatus;
 use config::{GwConfig, ValidatedGwConfig};
 
-use std::sync::Arc;
+use concurrency::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;

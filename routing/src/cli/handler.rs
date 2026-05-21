@@ -22,11 +22,11 @@ use crate::routingdb::RoutingDb;
 
 use chrono::Local;
 use cli::cliproto::{CliAction, CliError, CliRequest, CliResponse, RequestArgs, RouteProtocol};
+use concurrency::sync::Arc;
 use config::{ConfigSummary, GwConfigMeta, ValidatedGwConfig};
 use lpm::prefix::{Ipv4Prefix, Ipv6Prefix};
 use net::vxlan::Vni;
 use std::os::unix::net::SocketAddr;
-use std::sync::Arc;
 
 use common::cliprovider::{CliDataProvider, Heading};
 use strum::IntoEnumIterator;

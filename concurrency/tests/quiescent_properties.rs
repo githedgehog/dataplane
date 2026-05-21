@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::disallowed_types)]
+
 //! Property-based protocol tests for `dataplane_concurrency::quiescent`.
 //!
 //! Generates random sequences of [`Op`]s and checks the

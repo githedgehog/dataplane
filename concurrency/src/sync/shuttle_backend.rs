@@ -25,7 +25,8 @@ pub use shuttle::sync::{
     Arc, Barrier, BarrierWaitResult, Condvar, LockResult, Once, OnceState, PoisonError,
     TryLockError, TryLockResult, WaitTimeoutResult, Weak, atomic, mpsc,
 };
-pub use std::sync::OnceLock;
+#[allow(clippy::disallowed_types)]
+pub use std::sync::{LazyLock, OnceLock};
 
 #[inline(never)]
 #[cold]

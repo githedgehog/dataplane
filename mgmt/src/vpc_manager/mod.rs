@@ -3,6 +3,7 @@
 
 use crate::processor::confbuild::namegen::VpcInterfacesNames;
 
+use concurrency::sync::Arc;
 use config::InternalConfig;
 use config::internal::interfaces::interface::{InterfaceConfigTable, InterfaceType};
 use config::internal::routing::evpn::VtepConfig;
@@ -29,7 +30,6 @@ use rekon::{Observe, Op, Reconcile, Remove};
 use rtnetlink::Handle;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
-use std::sync::Arc;
 use tracing::{debug, error, warn};
 
 #[derive(Clone, Debug)]

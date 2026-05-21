@@ -743,7 +743,7 @@ mod tests {
     /// to give the OS scheduler a chance to interleave.
     #[test]
     fn classify_concurrent_arc_shared() {
-        use std::sync::Arc;
+        use concurrency::sync::Arc;
         use std::thread;
 
         let _eal = start_eal();

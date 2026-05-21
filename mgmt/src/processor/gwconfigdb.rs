@@ -4,8 +4,8 @@
 //! Configuration database
 
 use crate::processor::confbuild::internal::build_internal_config;
+use concurrency::sync::Arc;
 use config::{ConfigSummary, GenId, GwConfigMeta, ValidatedGwConfig};
-use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]

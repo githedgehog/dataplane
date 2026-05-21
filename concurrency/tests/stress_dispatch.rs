@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::disallowed_types)]
+
 //! Tests for `concurrency::stress` backend dispatch.
 //!
 //! `stress(body)` is the small router that `#[concurrency::test]`

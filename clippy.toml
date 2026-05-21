@@ -2,3 +2,10 @@
 allow-expect-in-tests = true # panic is completely reasonable in a test setting
 allow-panic-in-tests = true # panic is completely reasonable in a test setting
 allow-unwrap-in-tests = true # panic is completely reasonable in a test setting
+disallowed-types = [
+    "std::sync::Mutex",
+    "std::sync::MutexGuard",
+    "std::sync::RwLock",
+    "std::sync::RwLockReadGuard",
+    "std::sync::RwLockWriteGuard",
+]

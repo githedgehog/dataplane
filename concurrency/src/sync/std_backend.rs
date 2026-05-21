@@ -15,14 +15,15 @@
 // Wrapping below panics on poison. clippy::panic is denied at the
 // crate root; allow it locally for the cold poisoned() helper.
 #![allow(clippy::panic)]
+#![allow(clippy::disallowed_types)]
 
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 use std::sync as inner;
 
 pub use std::sync::{
-    Arc, Barrier, BarrierWaitResult, Condvar, LockResult, Once, OnceLock, OnceState, PoisonError,
-    TryLockError, TryLockResult, WaitTimeoutResult, Weak, atomic, mpsc,
+    Arc, Barrier, BarrierWaitResult, Condvar, LazyLock, LockResult, Once, OnceLock, OnceState,
+    PoisonError, TryLockError, TryLockResult, WaitTimeoutResult, Weak, atomic, mpsc,
 };
 
 #[inline(never)]

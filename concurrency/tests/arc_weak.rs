@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::disallowed_types)]
+
 //! Direct coverage for the `concurrency::sync::Arc<T>` wrapper and
 //! `Weak<T>` shim.
 //!

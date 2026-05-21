@@ -1,0 +1,36 @@
+#
+#
+#
+rules:
+  - id: rust-no-direct-std-sync-import
+    languages: [rust]
+    severity: ERROR
+    message: |
+      Import synchronization primitives via `concurrency::sync::*`, not
+      `std::sync::*`. The workspace's `concurrency::sync` facade hands
+      you parking_lot-backed locks in production and loom/shuttle
+      equivalents under the model-checker features; importing directly
+      from `std::sync` bypasses that backend swap.
+    paths:
+      exclude:
+        - concurrency/src/sync/
+        - concurrency/src/quiescent.rs
+        - concurrency/src/slot.rs
+        - concurrency/tests/
+    pattern-either:
+      - pattern: use std::sync::Arc;
+      - pattern: use std::sync::Weak;
+      - pattern: use std::sync::Mutex;
+      - pattern: use std::sync::MutexGuard;
+      - pattern: use std::sync::RwLock;
+      - pattern: use std::sync::RwLockReadGuard;
+      - pattern: use std::sync::RwLockWriteGuard;
+      - pattern: use std::sync::OnceLock;
+      - pattern: use std::sync::LazyLock;
+      - pattern: use std::sync::Once;
+      - pattern: use std::sync::Barrier;
+      - pattern: use std::sync::Condvar;
+      - pattern: use std::sync::atomic;
+      - pattern: use std::sync::atomic::$X;
+      - pattern: use std::sync::PoisonError;
+      - pattern-regex: '^\s*use\s+std::sync::\{[^}]*\b(?:Arc|Weak|Mutex|MutexGuard|RwLock|RwLockReadGuard|RwLockWriteGuard|OnceLock|LazyLock|Once|Barrier|Condvar|PoisonError|atomic)\b'
