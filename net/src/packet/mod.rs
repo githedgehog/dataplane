@@ -861,3 +861,153 @@ mod qos_roundtrip_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod flow_key_staleness_after_decap_tests {
+    //! Regression tests that document a known bug: `Packet::new()` populates
+    //! `PacketMeta::flow_key` from the *outer* (VXLAN underlay) headers, and
+    //! `vxlan_decap()` does not refresh it. The cached key therefore disagrees
+    //! with the inner (overlay) packet that NAT stages operate on.
+    //!
+    //! When the bug is fixed (e.g. by calling `update_flow_key()` from
+    //! `vxlan_decap()`), the final `assert_ne!` in
+    //! `flow_key_is_stale_after_vxlan_decap` becomes wrong and must flip to
+    //! `assert_eq!` (and the function name should be updated to drop the
+    //! "stale" framing).
+    use crate::FlowKey;
+    use crate::buffer::TestBuffer;
+    use crate::flow_key::Uni;
+    use crate::headers::builder::HeaderStack;
+    use crate::ipv4::addr::UnicastIpv4Addr;
+    use crate::packet::Packet;
+    use crate::parse::DeParse;
+    use crate::udp::port::UdpPort;
+    use crate::vxlan::{Vni, Vxlan};
+    use std::net::Ipv4Addr;
+
+    // Fixed shape used by both tests:
+    //   outer  1.2.3.4 -> 5.6.7.8  UDP 12345 -> 4789 (VXLAN, VNI 100)
+    //   inner 10.0.0.1 -> 10.0.0.2 UDP  1000 -> 2000
+    const OUTER_SRC: Ipv4Addr = Ipv4Addr::new(1, 2, 3, 4);
+    const OUTER_DST: Ipv4Addr = Ipv4Addr::new(5, 6, 7, 8);
+    const OUTER_SRC_PORT: u16 = 12345;
+    const INNER_SRC: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
+    const INNER_DST: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 2);
+    const INNER_SRC_PORT: u16 = 1000;
+    const INNER_DST_PORT: u16 = 2000;
+    const VNI: u32 = 100;
+
+    // Build a VXLAN/UDP/IPv4 frame whose inner payload is a UDP/IPv4 ETH frame.
+    // Returns wire bytes ready for `Packet::new`.
+    //
+    // The builder handles next-header chaining, length fields, and checksums; we
+    // just deparse the headers and append the inner bytes.
+    fn build_vxlan_over_udp() -> Vec<u8> {
+        let inner_headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(INNER_SRC).unwrap());
+                ip.set_destination(INNER_DST);
+                ip.set_ttl(64);
+            })
+            .udp(|udp| {
+                udp.set_source(UdpPort::new_checked(INNER_SRC_PORT).unwrap());
+                udp.set_destination(UdpPort::new_checked(INNER_DST_PORT).unwrap());
+            })
+            .build_headers_with_payload([])
+            .unwrap();
+        let mut inner_bytes = vec![0u8; inner_headers.size().get() as usize];
+        inner_headers.deparse(inner_bytes.as_mut()).unwrap();
+
+        let outer_headers = HeaderStack::new()
+            .eth(|_| {})
+            .ipv4(|ip| {
+                ip.set_source(UnicastIpv4Addr::new(OUTER_SRC).unwrap());
+                ip.set_destination(OUTER_DST);
+                ip.set_ttl(64);
+            })
+            .udp(|udp| {
+                // `.vxlan()` below conforms the dst port to Vxlan::PORT.
+                udp.set_source(UdpPort::new_checked(OUTER_SRC_PORT).unwrap());
+            })
+            .vxlan(|v| *v = Vxlan::new(Vni::new_checked(VNI).unwrap()))
+            .build_headers_with_payload(&inner_bytes)
+            .unwrap();
+
+        let total_len = outer_headers.size().get() as usize + inner_bytes.len();
+        let mut data = vec![0u8; total_len];
+        outer_headers.deparse(data.as_mut()).unwrap();
+        let inner_off = outer_headers.size().get() as usize;
+        data[inner_off..inner_off + inner_bytes.len()].copy_from_slice(&inner_bytes);
+        data
+    }
+
+    /// Baseline: at parse time the cached `flow_key` mirrors the outer underlay.
+    #[test]
+    fn flow_key_reflects_outer_headers_before_decap() {
+        let data = build_vxlan_over_udp();
+        let p: Packet<TestBuffer> = Packet::new(TestBuffer::from_raw_data(&data)).unwrap();
+
+        let stored = p.meta().flow_key.expect("flow_key was populated on parse");
+        assert_eq!(*stored.data().src_ip(), std::net::IpAddr::V4(OUTER_SRC));
+        assert_eq!(*stored.data().dst_ip(), std::net::IpAddr::V4(OUTER_DST));
+        assert_eq!(
+            stored.data().src_port().map(std::num::NonZero::get),
+            Some(OUTER_SRC_PORT)
+        );
+        assert_eq!(
+            stored.data().dst_port().map(std::num::NonZero::get),
+            Some(Vxlan::PORT.into())
+        );
+    }
+
+    /// Demonstrates the bug: `vxlan_decap()` does not refresh `flow_key`, so the
+    /// cached value disagrees with the inner packet that NAT stages then process.
+    #[test]
+    fn flow_key_is_stale_after_vxlan_decap() {
+        let data = build_vxlan_over_udp();
+        let mut p: Packet<TestBuffer> = Packet::new(TestBuffer::from_raw_data(&data)).unwrap();
+
+        // Outer underlay key, snapshotted at parse time.
+        let outer_stored = p.meta().flow_key.expect("flow_key was populated on parse");
+
+        // Strip the outer VXLAN headers; `p.headers()` now describes the inner packet.
+        let _ = p.vxlan_decap().expect("had vxlan").expect("decap parses");
+
+        // The cached flow_key is *unchanged* -- still the outer underlay key.
+        let still_stored = p.meta().flow_key.expect("flow_key still present");
+        assert_eq!(still_stored, outer_stored, "flow_key was not refreshed");
+        assert_eq!(
+            *still_stored.data().src_ip(),
+            std::net::IpAddr::V4(OUTER_SRC)
+        );
+        assert_eq!(
+            *still_stored.data().dst_ip(),
+            std::net::IpAddr::V4(OUTER_DST)
+        );
+
+        // A fresh FlowKey computed from the decapped packet -- this is what
+        // `flow_lookup` (and the rest of the pipeline) compute for this packet.
+        let fresh = FlowKey::try_from(Uni(&p)).expect("inner is parseable");
+        assert_eq!(*fresh.data().src_ip(), std::net::IpAddr::V4(INNER_SRC));
+        assert_eq!(*fresh.data().dst_ip(), std::net::IpAddr::V4(INNER_DST));
+        assert_eq!(
+            fresh.data().src_port().map(std::num::NonZero::get),
+            Some(INNER_SRC_PORT)
+        );
+        assert_eq!(
+            fresh.data().dst_port().map(std::num::NonZero::get),
+            Some(INNER_DST_PORT)
+        );
+
+        // The bug: the cached `flow_key` (consumed as `initial_flow_key` by
+        // `nat::portfw::flow_state::build_portfw_flow_keys` and
+        // `nat::stateful::nf::StatefulNat::process_packet`) does NOT match the
+        // fresh key computed from the inner packet that NAT actually operates on.
+        // Flip this to `assert_eq!` when `vxlan_decap` is taught to refresh the key.
+        assert_ne!(
+            still_stored, fresh,
+            "stored initial_flow_key matches inner packet -- bug would be absent",
+        );
+    }
+}
