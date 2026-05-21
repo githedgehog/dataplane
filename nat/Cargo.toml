@@ -7,8 +7,7 @@ version.workspace = true
 
 [features]
 shuttle = ["concurrency/shuttle", "dep:shuttle"]
-shuttle_pct = ["concurrency/shuttle_pct", "shuttle"]
-shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle_pct"]
+shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
 [dependencies]
 ahash = { workspace = true, features = ["std"] }
