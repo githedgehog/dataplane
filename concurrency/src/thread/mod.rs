@@ -45,3 +45,95 @@ pub use loom_scope::{Scope, ScopedJoinHandle, scope};
 // type-checks; it is never executed in that configuration.
 #[cfg(all(feature = "shuttle", feature = "loom", feature = "silence_clippy"))]
 pub use std::thread::*;
+
+// ============================== BuilderExt ===============================
+//
+// `Builder::spawn_scoped` is only inherent on `std::thread::Builder`.
+// `loom::thread::Builder` and `shuttle::thread::Builder` lack it; both
+// backends provide `Scope::spawn` instead. This extension trait closes
+// the gap so call sites can write `builder.spawn_scoped(scope, f)`
+// uniformly across all three backends.
+//
+// Under std the trait impl forwards to the inherent method (Rust's
+// method-resolution prefers the inherent over the trait method when both
+// match, so the trait is never actually called there, but the impl is
+// kept for symmetry and to give consumers a stable trait reference).
+//
+// Under loom and shuttle the trait body wraps `Scope::spawn` and
+// discards the Builder's name/stack_size, which both backends treat as
+// advisory (no OS thread, no real stack to size).
+
+/// Extension trait that adds `Builder::spawn_scoped` for backends that
+/// don't ship it natively.
+///
+/// `use concurrency::thread::BuilderExt;` makes `builder.spawn_scoped(
+/// scope, f)` work under any backend.
+pub trait BuilderExt {
+    /// Spawn a thread within `scope`.
+    ///
+    /// # Errors
+    /// Returns the underlying [`std::io::Error`] if the backend fails to
+    /// spawn the thread. Under loom and shuttle this is always `Ok`.
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope;
+}
+
+#[cfg(not(any(feature = "loom", feature = "shuttle")))]
+impl BuilderExt for Builder {
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        // Fully-qualified path to avoid recursing into the trait impl.
+        std::thread::Builder::spawn_scoped(self, scope, f)
+    }
+}
+
+#[cfg(all(
+    feature = "shuttle",
+    not(feature = "loom"),
+    not(feature = "silence_clippy")
+))]
+impl BuilderExt for Builder {
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        // Discard advisory Builder config; shuttle doesn't model OS
+        // thread name or stack size.
+        let _ = self;
+        Ok(scope.spawn(f))
+    }
+}
+
+#[cfg(all(feature = "loom", not(feature = "silence_clippy")))]
+impl BuilderExt for Builder {
+    fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        let _ = self;
+        Ok(scope.spawn(f))
+    }
+}
