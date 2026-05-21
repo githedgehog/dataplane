@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 color-eyre = { workspace = true , features = [ "capture-spantrace", "color-spantrace", "tracing-error", "track-caller" ] }
 common = { workspace = true }
+concurrency = { workspace = true }
 linkme = { workspace = true }
 ordermap = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }

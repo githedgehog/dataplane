@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 #![doc = include_str!("../QUIESCENT.md")]
+#![allow(clippy::disallowed_types)]
 
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;

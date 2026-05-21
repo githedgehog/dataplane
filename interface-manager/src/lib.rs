@@ -15,8 +15,8 @@
 #![allow(missing_docs)] // multi-index-map generates undocumented structures
 #![allow(clippy::unsafe_derive_deserialize)] // generated code uses unsafe
 
+use concurrency::sync::Arc;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 pub mod interface;
 pub mod tc;

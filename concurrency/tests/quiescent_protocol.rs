@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::disallowed_types)]
+
 //! Multi-threaded protocol tests for `dataplane_concurrency::quiescent`.
 //!
 //! The single-threaded protocol invariants (snapshot legality,

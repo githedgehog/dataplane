@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::disallowed_types)]
+
 //! Bolero property test for `thread::scope`.
 //!
 //! Generates a [`Plan`] (a small number of spawned threads, each with a

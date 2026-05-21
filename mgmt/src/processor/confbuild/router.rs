@@ -3,7 +3,7 @@
 
 //! Functions to build router configurations
 
-use std::sync::Arc;
+use concurrency::sync::Arc;
 
 use netdev::Interface as NetDevInterface;
 use netdev::get_interfaces;

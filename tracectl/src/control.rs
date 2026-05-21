@@ -3,10 +3,10 @@
 
 //! Tracing runtime control.
 
+use concurrency::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use ordermap::OrderMap;
+use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock, Mutex};
-use std::{collections::HashSet, sync::MutexGuard};
 use thiserror::Error;
 #[allow(unused)]
 use tracing::{debug, error, info, warn};
@@ -312,11 +312,9 @@ impl TracingControl {
             reload_filter: Arc::new(reload_filter),
         }
     }
-    /// This method should remain private and never be used other than from methods of `TracingControl`
-    fn lock(&self) -> Result<MutexGuard<'_, TargetCfgDb>, TraceCtlError> {
-        self.db
-            .lock()
-            .map_err(|e| TraceCtlError::LockFailure(e.to_string()))
+    /// This method should remain private and never be used other than from methods of `TracingControl`.
+    fn lock(&self) -> MutexGuard<'_, TargetCfgDb> {
+        self.db.lock()
     }
     fn reload(&self, filter: EnvFilter) -> Result<(), TraceCtlError> {
         self.reload_filter
@@ -332,7 +330,7 @@ impl TracingControl {
         tags: &'static [&'static str],
         custom: bool,
     ) {
-        let mut db = self.lock().unwrap();
+        let mut db = self.lock();
         db.register(target, name, level, tags, custom);
         self.reload(db.env_filter()).unwrap();
     }
@@ -352,7 +350,7 @@ impl TracingControl {
         let _ = get_trace_ctl();
     }
     fn set_tag_level(&self, tag: &str, level: LevelFilter) -> Result<(), TraceCtlError> {
-        let mut db = self.lock()?;
+        let mut db = self.lock();
         let changed = db.set_tag_level(tag, level)?;
         if changed > 0 {
             self.reload(db.env_filter())?;
@@ -361,7 +359,7 @@ impl TracingControl {
         Ok(())
     }
     pub fn set_default_level(&self, level: LevelFilter) -> Result<(), TraceCtlError> {
-        let mut db = self.lock()?;
+        let mut db = self.lock();
         if db.default != level {
             info!("Changing default log-level from {} to {level}", db.default);
             db.default = level;
@@ -370,7 +368,7 @@ impl TracingControl {
         Ok(())
     }
     pub fn get_default_level(&self) -> Result<LevelFilter, TraceCtlError> {
-        let db = self.lock()?;
+        let db = self.lock();
         Ok(db.default)
     }
 
@@ -409,27 +407,27 @@ impl TracingControl {
     #[cfg(test)]
     #[allow(clippy::missing_panics_doc)]
     pub fn get_tags(&self) -> impl Iterator<Item = Tag> {
-        self.db.lock().unwrap().tags.clone().into_values()
+        self.db.lock().tags.clone().into_values()
     }
 
     #[cfg(test)]
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn get_tag(&self, tag: &str) -> Option<Tag> {
-        self.db.lock().unwrap().tags.get(tag).cloned()
+        self.db.lock().tags.get(tag).cloned()
     }
 
     #[cfg(test)]
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn get_target(&self, target: &str) -> Option<TargetCfg> {
-        self.db.lock().unwrap().targets.get(target).cloned()
+        self.db.lock().targets.get(target).cloned()
     }
 
     #[cfg(test)]
     #[allow(clippy::missing_panics_doc)]
     pub fn get_targets_by_tag(&self, tag: &str) -> impl Iterator<Item = TargetCfg> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         db.tag_targets(tag)
             .map(|x| (*x).clone())
             .collect::<Vec<_>>()
@@ -437,7 +435,7 @@ impl TracingControl {
     }
 
     pub fn as_config_string(&self) -> Result<String, TraceCtlError> {
-        Ok(self.lock()?.as_config_string())
+        Ok(self.lock().as_config_string())
     }
 
     fn reconfigure_internal<'a>(
@@ -446,7 +444,7 @@ impl TracingControl {
         tag_config: impl Iterator<Item = (&'a str, LevelFilter)>,
         resolver: &dyn Resolver,
     ) -> Result<(), TraceCtlError> {
-        let mut db = self.lock()?;
+        let mut db = self.lock();
         let changed = db.reconfigure(default, tag_config, resolver);
         if changed > 0 {
             self.reload_filter
@@ -466,13 +464,13 @@ impl TracingControl {
         self.reconfigure_internal(default, tag_config, &ResolveByTagSize)
     }
     pub fn check_tags(&self, tags: &[&str]) -> Result<(), TraceCtlError> {
-        self.lock()?.check_tags(tags)
+        self.lock().check_tags(tags)
     }
     pub fn as_string(&self) -> Result<String, TraceCtlError> {
-        Ok(self.lock()?.to_string())
+        Ok(self.lock().to_string())
     }
     pub fn as_string_by_tag(&self) -> Result<String, TraceCtlError> {
-        let db = self.lock()?;
+        let db = self.lock();
         Ok(TargetCfgDbByTag(&db).to_string())
     }
 }
@@ -521,7 +519,7 @@ mod tests {
             "The current default loglevel is {}",
             tctl.get_default_level().unwrap()
         );
-        println!("{:#?}", tctl.db.lock().unwrap());
+        println!("{:#?}", tctl.db.lock());
     }
 
     #[test]
@@ -586,12 +584,12 @@ mod tests {
 
         // check target presence in database: all should be there even if defined later
         let tctl = get_trace_ctl();
-        assert!(tctl.db.lock().unwrap().targets.contains_key(module_path!()));
-        assert!(tctl.db.lock().unwrap().targets.contains_key("target-1"));
-        assert!(tctl.db.lock().unwrap().targets.contains_key("target-2"));
-        assert!(tctl.db.lock().unwrap().targets.contains_key("target-3"));
-        assert!(tctl.db.lock().unwrap().targets.contains_key("target-4"));
-        assert!(tctl.db.lock().unwrap().targets.contains_key("func1"));
+        assert!(tctl.db.lock().targets.contains_key(module_path!()));
+        assert!(tctl.db.lock().targets.contains_key("target-1"));
+        assert!(tctl.db.lock().targets.contains_key("target-2"));
+        assert!(tctl.db.lock().targets.contains_key("target-3"));
+        assert!(tctl.db.lock().targets.contains_key("target-4"));
+        assert!(tctl.db.lock().targets.contains_key("func1"));
 
         // this is declared after the checks
         custom_target!("target-4", LevelFilter::OFF, &["target-4"]);
@@ -626,7 +624,7 @@ mod tests {
         custom_target!(TARGET, LevelFilter::TRACE, &[]);
 
         let tctl = get_trace_ctl();
-        assert!(tctl.db.lock().unwrap().targets.contains_key(TARGET));
+        assert!(tctl.db.lock().targets.contains_key(TARGET));
         let target = tctl.get_target(TARGET).expect("Should be found");
         assert_eq!(target.level, LevelFilter::TRACE);
 

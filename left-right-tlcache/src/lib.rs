@@ -340,10 +340,10 @@ mod tests {
     #![allow(clippy::collapsible_if)]
 
     use super::*;
+    use concurrency::sync::Mutex;
     use left_right::{Absorb, ReadHandleFactory, WriteHandle};
     #[cfg(not(miri))]
     use serial_test::serial;
-    use std::sync::Mutex;
     // Our left-right protected struct
     #[derive(Debug, Clone)]
     struct TestStruct {
@@ -439,7 +439,7 @@ mod tests {
             if let Some(object) = self.data.get_mut(&key) {
                 if let Some(writer_lock) = &mut object.writer {
                     #[allow(clippy::mut_mutex_lock)] // lock exists just to make provider Sync
-                    let mut writer = writer_lock.lock().unwrap();
+                    let mut writer = writer_lock.lock();
                     writer.append(TestStructChange::Update(data.to_owned()));
                     writer.publish();
                 }

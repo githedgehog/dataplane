@@ -3,9 +3,9 @@
 
 //! Control channel for the router
 
+use concurrency::sync::Arc;
 use config::{GwConfigMeta, ValidatedGwConfig};
 use mio::Interest;
-use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::oneshot;

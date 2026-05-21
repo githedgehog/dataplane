@@ -4,8 +4,8 @@
 //! Adds command completions
 
 use crate::cmdtree::Node;
+use concurrency::sync::Arc;
 use reedline::{Completer, Span, Suggestion};
-use std::sync::Arc;
 
 #[derive(Default)]
 pub struct CmdCompleter {

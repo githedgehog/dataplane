@@ -11,6 +11,7 @@ default = ["client"]
 # Disable this feature (default-features = false) for WASM/WASI builds that
 # only need the generated CRD types.
 client = [
+    "dep:concurrency",
     "dep:futures",
     "dep:linkme",
     "dep:rustls",
@@ -24,6 +25,7 @@ bolero = ["dep:bolero", "dep:net", "dep:lpm", "net/test_buffer", "net/bolero"]
 
 [dependencies]
 # internal
+concurrency = { workspace = true, optional = true }
 lpm = { workspace = true, optional = true }
 net = { workspace = true, optional = true, features = ["bolero"] }
 tracectl = { workspace = true, optional = true }

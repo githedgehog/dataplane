@@ -1218,6 +1218,7 @@ version = "0.21.0"
 dependencies = [
  "clap",
  "colored",
+ "dataplane-concurrency",
  "nix 0.31.3",
  "rand 0.10.1",
  "reedline",
@@ -1267,6 +1268,7 @@ dependencies = [
  "caps",
  "chrono",
  "dataplane-common",
+ "dataplane-concurrency",
  "dataplane-k8s-intf",
  "dataplane-lpm",
  "dataplane-net",
@@ -1416,6 +1418,7 @@ name = "dataplane-interface-manager"
 version = "0.21.0"
 dependencies = [
  "bolero",
+ "dataplane-concurrency",
  "dataplane-net",
  "dataplane-rekon",
  "derive_builder",
@@ -1436,6 +1439,7 @@ name = "dataplane-k8s-intf"
 version = "0.21.0"
 dependencies = [
  "bolero",
+ "dataplane-concurrency",
  "dataplane-dpdk-sysroot-helper",
  "dataplane-lpm",
  "dataplane-net",
@@ -1472,6 +1476,7 @@ name = "dataplane-left-right-tlcache"
 version = "0.21.0"
 dependencies = [
  "ahash",
+ "dataplane-concurrency",
  "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
  "serial_test",
  "thiserror",
@@ -1689,6 +1694,7 @@ dependencies = [
 name = "dataplane-sysfs"
 version = "0.21.0"
 dependencies = [
+ "dataplane-concurrency",
  "n-vm",
  "nix 0.31.3",
  "procfs",
@@ -1713,6 +1719,7 @@ version = "0.21.0"
 dependencies = [
  "color-eyre",
  "dataplane-common",
+ "dataplane-concurrency",
  "linkme",
  "ordermap",
  "serial_test",

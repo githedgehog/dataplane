@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::disallowed_types)]
+
 //! Model-checking tests for `dataplane_concurrency::quiescent`.
 //!
 //! Each test is marked `#[concurrency::test]`, which routes the body to

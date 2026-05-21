@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+use concurrency::sync::Arc;
 use futures::{StreamExt, TryStreamExt};
 use kube::api::PostParams;
 use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Api, Client};
-use std::sync::Arc;
 use std::time::Duration;
 
 use tracectl::trace_target;

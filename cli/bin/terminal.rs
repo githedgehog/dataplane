@@ -12,6 +12,7 @@ use reedline::{
     PromptHistorySearch, Reedline, ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
 };
 
+use concurrency::sync::Arc;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -22,7 +23,6 @@ use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::path::Path;
-use std::sync::Arc;
 
 // our completer
 use crate::completions::CmdCompleter;

@@ -1,0 +1,64 @@
+# Path-aware enforcement of the `concurrency::sync` facade.
+#
+# `clippy::disallowed_types` resolves through re-exports: it sees
+# `concurrency::sync::Arc` as `std::sync::Arc` (same canonical path),
+# so it cannot distinguish "imported via the workspace facade" from
+# "imported directly from std::sync". opengrep's source-level pattern
+# matching has no such limit — it sees what was written, not what was
+# resolved.
+#
+# These rules forbid direct `use std::sync::X;` imports for any type
+# the `concurrency::sync` facade exposes. Switching to `concurrency::sync`
+# is the migration that lets future loom/shuttle test builds hook these
+# types via the backend cfg. The lock types (Mutex/RwLock and guards)
+# are also caught by `clippy::disallowed_types` because parking_lot
+# provides a distinct production type; this rule is the only enforcement
+# for Arc/Weak/atomic/LazyLock/OnceLock/Once/Barrier/Condvar imports.
+#
+# The `concurrency` crate itself is exempt (it IS the facade) and so are
+# its tests (which use the facade by design but are flagged by clippy's
+# alias resolution; that allow is per-file). Anywhere else, a hit means
+# "switch the import to `use concurrency::sync::X;`".
+rules:
+  - id: rust-no-direct-std-sync-import
+    languages: [rust]
+    severity: ERROR
+    message: |
+      Import synchronization primitives via `concurrency::sync::*`, not
+      `std::sync::*`. The workspace's `concurrency::sync` facade hands
+      you parking_lot-backed locks in production and loom/shuttle
+      equivalents under the model-checker features; importing directly
+      from `std::sync` bypasses that backend swap.
+    paths:
+      exclude:
+        # The wrapper layer is allowed to use std::sync directly.
+        - concurrency/src/sync/
+        # quiescent/slot are concurrency-internal users of the facade
+        # that still parse as std::sync because the lint matches paths
+        # textually here too.
+        - concurrency/src/quiescent.rs
+        - concurrency/src/slot.rs
+        # Tests for the concurrency crate use the wrapped types
+        # deliberately; the allow is at the file head.
+        - concurrency/tests/
+    pattern-either:
+      - pattern: use std::sync::Arc;
+      - pattern: use std::sync::Weak;
+      - pattern: use std::sync::Mutex;
+      - pattern: use std::sync::MutexGuard;
+      - pattern: use std::sync::RwLock;
+      - pattern: use std::sync::RwLockReadGuard;
+      - pattern: use std::sync::RwLockWriteGuard;
+      - pattern: use std::sync::OnceLock;
+      - pattern: use std::sync::LazyLock;
+      - pattern: use std::sync::Once;
+      - pattern: use std::sync::Barrier;
+      - pattern: use std::sync::Condvar;
+      - pattern: use std::sync::atomic;
+      - pattern: use std::sync::atomic::$X;
+      - pattern: use std::sync::PoisonError;
+      # Grouped imports: `use std::sync::{Arc, Mutex};` and friends.
+      # AST-level matching for `use ... :: { ... }` is hit-and-miss
+      # across tree-sitter versions, so the safety net is a regex
+      # that catches any of the forbidden names inside the braces.
+      - pattern-regex: '^\s*use\s+std::sync::\{[^}]*\b(?:Arc|Weak|Mutex|MutexGuard|RwLock|RwLockReadGuard|RwLockWriteGuard|OnceLock|LazyLock|Once|Barrier|Condvar|PoisonError|atomic)\b'

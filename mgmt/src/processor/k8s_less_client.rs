@@ -4,11 +4,11 @@
 //! "Kubeless" client that learns configs from a directory and requests
 //! the configuration processor to apply them.
 
+use concurrency::sync::Arc;
 use config::{ExternalConfig, GwConfig};
 use futures::TryFutureExt;
 use k8s_less::kubeless_watch_gateway_agent_crd;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::fs::create_dir_all;
 use tracing::{error, info};
 

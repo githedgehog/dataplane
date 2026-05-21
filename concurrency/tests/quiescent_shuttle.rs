@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+#![allow(clippy::disallowed_types)]
+
 //! Bolero x shuttle property tests.
 //!
 //! Generates a [`Plan`] (Publisher ops + Subscriber ops, dispatched to

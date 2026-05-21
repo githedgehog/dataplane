@@ -26,12 +26,12 @@ use dplane_rpc::socks::RpcCachedSock;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 
+use concurrency::sync::Arc;
 use nix::sys::socket::{getsockopt, setsockopt, sockopt::SndBuf};
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
-use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
