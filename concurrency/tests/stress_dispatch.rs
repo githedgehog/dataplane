@@ -6,34 +6,23 @@
 //! Tests for `concurrency::stress` backend dispatch.
 //!
 //! `stress(body)` is the small router that `#[concurrency::test]`
-//! expands to: it picks one of `loom::model`,
-//! `shuttle::check_random` / `_pct` / `_dfs`, or direct `body()` based
-//! on the active backend's feature. The dispatch table lives in
-//! `concurrency/src/stress.rs`.
+//! expands to: it picks one of `loom::model`, the shuttle
+//! `PortfolioRunner` (Random + PCT, optionally DFS), or direct
+//! `body()` based on the active backend's feature.  The dispatch
+//! table lives in `concurrency/src/stress.rs`.
 //!
-//! This file pins two coarse but important properties:
+//! This file pins one coarse but important property: on the default
+//! backend, `stress` invokes `body` exactly once.  There is no
+//! scheduling exploration; the call should round-trip untouched.
 //!
-//! 1. On the default backend, `stress` invokes `body` exactly once.
-//!    There is no scheduling exploration; the call should round-trip
-//!    untouched.
-//!
-//! 2. On `loom` or `shuttle` (random scheduler), `stress` invokes
-//!    `body` more than once -- the backend explores multiple
-//!    schedules / interleavings. Exact counts depend on the backend's
-//!    internal iteration budget and can change; the test only asserts
-//!    the contract that exploration actually happens.
-//!
-//! PCT and DFS are skipped: PCT panics on test bodies that do no
-//! concurrent work *on the main thread*, and DFS returns after a
-//! single iteration in the schedule we hand it. Both are valid
-//! shuttle schedulers but stricter than `check_random`; the dispatch
-//! contract is the same for all three, so verifying it under
-//! `shuttle` + `loom` is enough.
+//! The corresponding "more-than-once" check for the model-checker
+//! backends is skipped: PCT panics on bodies that do no concurrent
+//! work *on the main thread* (and the portfolio always runs PCT
+//! under `shuttle`), so the obvious `INVOCATIONS` counter shape can't
+//! cohabit with the portfolio.  The dispatch contract is identical
+//! for loom (where it is exercised) and shuttle.
 
-// With the `shuttle_dfs -> shuttle_pct -> shuttle` chain in
-// `Cargo.toml`, `not(feature = "shuttle_pct")` is true exactly when
-// neither PCT nor DFS is selected.
-#![cfg(not(feature = "shuttle_pct"))]
+#![cfg(not(feature = "shuttle"))]
 
 extern crate dataplane_concurrency as concurrency;
 
@@ -102,14 +91,13 @@ fn model_check_backend_invokes_body_more_than_once() {
 // emitted attributes (or swallows them) breaks here loudly instead
 // of silently turning real test signals into no-ops.
 
-#[cfg(not(feature = "shuttle_pct"))]
 #[concurrency::test]
 #[should_panic(expected = "intentional")]
 fn should_panic_attribute_attaches() {
     panic!("intentional");
 }
 
-#[cfg(not(any(feature = "loom", feature = "shuttle_pct")))]
+#[cfg(not(feature = "loom"))]
 #[concurrency::test]
 #[ignore = "verifies #[ignore] threads through; not run by default"]
 fn ignore_attribute_attaches() {

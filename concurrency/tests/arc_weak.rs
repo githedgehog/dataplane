@@ -28,15 +28,15 @@
 //! tests gated to `concurrency = "loom"` to avoid asserting on real
 //! `std::sync` / `shuttle::sync` semantics.
 //!
-//! `shuttle_pct` is opted out at file level: PCT is for biasing toward
-//! rare interleavings of concurrent code, but most of the tests in this
-//! file are protocol-level checks on `Arc` / `Weak` and either run on a
-//! single thread or only briefly spawn a helper. PCT panics on bodies
-//! that do not exercise sustained concurrency on the main thread, and
-//! the contract being tested here is identical to what the plain
-//! `shuttle` (random) variant already covers.
+//! `shuttle` is opted out at file level: the portfolio runs PCT
+//! alongside Random, and PCT panics on bodies that do not exercise
+//! sustained concurrency on the main thread.  Most of the tests in
+//! this file are protocol-level checks on `Arc` / `Weak` that either
+//! run on a single thread or only briefly spawn a helper, so they
+//! cannot satisfy PCT.  The contract being tested here is identical
+//! to what loom already covers.
 
-#![cfg(not(feature = "shuttle_pct"))]
+#![cfg(not(feature = "shuttle"))]
 
 // `#[concurrency::test]` is provided by `dataplane-concurrency`; alias
 // the crate so the macro path resolves inside this integration test.

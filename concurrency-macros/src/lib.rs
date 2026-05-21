@@ -108,10 +108,9 @@ pub fn concurrency_mode(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `#[test] fn <name>() { concurrency::stress(|| { original }) }`,
 /// which calls the body once.
 ///
-/// Under any model-checker backend (`loom`, `shuttle`, `shuttle_pct`,
-/// `shuttle_dfs`), expands to a nested module so the test's binary
-/// path identifies the active backend in nextest reports / JUnit
-/// output:
+/// Under either model-checker backend (`loom`, `shuttle`), expands to
+/// a nested module so the test's binary path identifies the active
+/// backend in nextest reports / JUnit output:
 ///
 /// ```text
 /// // #[concurrency::test] fn some_test() { body }
@@ -124,11 +123,14 @@ pub fn concurrency_mode(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// The same shape applies for `shuttle` / `shuttle_pct` / `shuttle_dfs`,
-/// each writing the function name that names the active backend.
-/// Nextest filters like `-E 'test(/concurrency_model::loom$/)'` then
-/// pick out the loom-backed runs cleanly without having to grep on
-/// binary names.
+/// The same shape applies for `shuttle`, writing the function name
+/// that names the active backend.  Nextest filters like `-E
+/// 'test(/concurrency_model::loom$/)'` then pick out the loom-backed
+/// runs cleanly without having to grep on binary names.  Under
+/// `shuttle` the body runs through `concurrency::stress`, which
+/// internally drives a [`shuttle::PortfolioRunner`] (Random + PCT,
+/// optionally DFS) -- the macro only emits one leaf test per
+/// backend.
 ///
 /// # Example
 ///
@@ -146,13 +148,14 @@ pub fn concurrency_mode(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Limitations
 ///
-/// * **Single-threaded bodies fail under `shuttle_pct`.** Shuttle's PCT
-///   scheduler panics at runtime if the test closure does not exercise
-///   any concurrent atomic / thread operation (no `thread::spawn`, no
-///   contended `Mutex`/`Arc`). The detection is dynamic, so the macro
-///   cannot reject these statically; if you need such a test, gate it
-///   with `#[cfg(not(feature = "shuttle_pct"))]` or use a regular
-///   `#[test]` for the default-only smoke check.
+/// * **Single-threaded bodies fail under `shuttle`.** The shuttle
+///   portfolio runs the PCT scheduler unconditionally, and PCT
+///   panics at runtime if the test closure does not exercise any
+///   concurrent atomic / thread operation on the main thread (no
+///   `thread::spawn`, no contended `Mutex`/`Arc`).  The detection is
+///   dynamic, so the macro cannot reject these statically; if you
+///   need such a test, gate it with `#[cfg(not(feature = "shuttle"))]`
+///   or use a regular `#[test]` for the default-only smoke check.
 /// * **Async bodies and arguments are rejected at parse time** with a
 ///   clear compile error.
 #[proc_macro_attribute]
@@ -215,24 +218,10 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #krate::stress(|| #block);
                 }
 
-                #[cfg(all(feature = "shuttle", not(feature = "shuttle_pct")))]
+                #[cfg(feature = "shuttle")]
                 #[::core::prelude::v1::test]
                 #(#attrs)*
                 fn shuttle() {
-                    #krate::stress(|| #block);
-                }
-
-                #[cfg(all(feature = "shuttle_pct", not(feature = "shuttle_dfs")))]
-                #[::core::prelude::v1::test]
-                #(#attrs)*
-                fn shuttle_pct() {
-                    #krate::stress(|| #block);
-                }
-
-                #[cfg(feature = "shuttle_dfs")]
-                #[::core::prelude::v1::test]
-                #(#attrs)*
-                fn shuttle_dfs() {
                     #krate::stress(|| #block);
                 }
             }

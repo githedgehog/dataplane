@@ -10,8 +10,8 @@
 //!
 //! * default -- runs the body once directly (smoke test)
 //! * `loom` -- exhaustive interleaving exploration via `loom::model`
-//! * `shuttle` / `shuttle_pct` / `shuttle_dfs` -- randomized / PCT /
-//!   DFS schedule exploration
+//! * `shuttle` -- portfolio runs Random + PCT in parallel for each test;
+//!   the additive `shuttle_dfs` feature adds DFS to the same portfolio
 //!
 //! Run under loom (the headline use case) with:
 //!
@@ -83,10 +83,11 @@ fn subscriber_drop_during_publish_is_safe() {
 /// published value, not the initial.  This pins down the
 /// publish-then-snapshot ordering.
 ///
-/// Skipped under `shuttle_pct`: this test is single-threaded by design
-/// and PCT specifically panics on closures that don't exercise
-/// concurrency.  The other backends accept it.
-#[cfg(not(feature = "shuttle_pct"))]
+/// Skipped under `shuttle`: this test is single-threaded by design,
+/// and the shuttle portfolio always runs PCT, which panics on closures
+/// that don't exercise concurrency.  The default and loom backends
+/// accept it.
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn snapshot_after_publish_observes_published() {
     let publisher = channel(0u32);

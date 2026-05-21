@@ -9,28 +9,23 @@ version.workspace = true
 default = ["parking_lot"]
 loom = ["dep:loom", "concurrency-macros/loom"]
 parking_lot = ["dep:parking_lot"]
-# `shuttle*` are three views of one backend, not three backends:
+# `shuttle` enables shuttle's model-checker behind the
+# `concurrency::stress` dispatcher.  The dispatcher builds a
+# `shuttle::PortfolioRunner` that runs the `RandomScheduler` and the
+# `PctScheduler` in parallel: random for broad coverage, PCT to bias
+# toward rare interleavings.  Either scheduler finding a
+# counterexample fails the whole test.
 #
-#   * `shuttle`     -- shuttle with the random scheduler (the default
-#                      for first-time users -- you almost always want
-#                      this one).
-#   * `shuttle_pct` -- shuttle with the PCT scheduler.  Use when you
-#                      want to bias toward rare interleavings.
-#   * `shuttle_dfs` -- shuttle with the DFS scheduler.  Use for
-#                      exhaustive small-state exploration.
-#
-# All three share the same `dep:shuttle` machinery; only the scheduler
-# selected at runtime differs.  See `concurrency::stress` for the
-# dispatch and the `#[concurrency::test]` attribute macro for the
-# write-once-run-everywhere wrapper.
-#
-# The features form a chain (`shuttle_dfs` -> `shuttle_pct` -> `shuttle`)
-# so that any `feature = "shuttle"` cfg check is true under all three
-# variants.  cfg_select-style precedence (most-specific first) still
-# picks the right scheduler.  See `concurrency::stress`.
+# `shuttle_dfs` is an additive opt-in on top of `shuttle`: it also
+# adds the `DfsScheduler` (depth-first exhaustive search up to
+# `ITERATIONS`) to the same portfolio.  Off by default because DFS is
+# only useful for tests with small state spaces; turn it on locally
+# (or in a dedicated CI step) when you want exhaustive exploration on
+# top of the default portfolio.  Future extra schedulers should
+# follow the same pattern -- one additive feature per scheduler,
+# composed into the portfolio in `concurrency::stress`.
 shuttle = ["dep:shuttle", "concurrency-macros/shuttle"]
-shuttle_pct = ["shuttle"]
-shuttle_dfs = ["shuttle_pct"]
+shuttle_dfs = ["shuttle"]
 silence_clippy = ["concurrency-macros/silence_clippy"] # Do not manually enable this feature, let --all-features do it for you
 # Force the Mutex-based slot fallback even without a model checker.
 # Intended for the CI miri job that exercises the fallback slot under

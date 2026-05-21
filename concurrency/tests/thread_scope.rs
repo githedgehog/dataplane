@@ -37,13 +37,14 @@ use concurrency::thread;
 // Several tests below have the spawn-and-wait shape ("main spawns,
 // joins via the implicit auto-join, reads only after scope returns"),
 // which PCT counts as "the main thread did no concurrent work" and
-// panics on. Same approach `quiescent_model.rs` takes for its
-// single-threaded `snapshot_after_publish_observes_published` test.
-// Tests with two or more spawns issuing atomic ops (e.g.
-// `multiple_spawns_all_join_before_return`) are PCT-compatible.
+// panics on.  The shuttle portfolio always runs PCT, so those tests
+// are skipped under `feature = "shuttle"` entirely.  Tests with two
+// or more spawns issuing atomic ops (e.g.
+// `multiple_spawns_all_join_before_return`) are PCT-compatible and
+// stay enabled under shuttle.
 
 /// `scope()` returns the body's value.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn scope_returns_body_value() {
     let v = thread::scope(|_| 42u32);
@@ -52,7 +53,7 @@ fn scope_returns_body_value() {
 
 /// A single spawned thread is joined before `scope()` returns; the
 /// `AtomicUsize` it wrote is visible to the caller (Acquire on join).
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn single_spawn_joins_before_return() {
     let counter = Arc::new(AtomicUsize::new(0));
@@ -83,7 +84,7 @@ fn multiple_spawns_all_join_before_return() {
 }
 
 /// `ScopedJoinHandle::join` returns the spawned thread's value.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn explicit_join_returns_value() {
     thread::scope(|s| {
@@ -96,7 +97,7 @@ fn explicit_join_returns_value() {
 /// Spawned closures may borrow data of any lifetime that outlives the
 /// scope -- the headline `std::thread::scope` guarantee. Under loom
 /// this is the shim's `mem::transmute` doing its job.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn spawn_can_borrow_from_enclosing_scope() {
     let counter = Arc::new(AtomicUsize::new(0));
@@ -180,7 +181,7 @@ fn nested_scoped_spawn_is_joined() {
 /// latest) when the spawned thread is joined -- i.e. before `scope()`
 /// returns. Pinned via an `AtomicUsize` incremented from within the
 /// payload's `Drop` impl.
-#[cfg(not(feature = "shuttle_pct"))]
+#[cfg(not(feature = "shuttle"))]
 #[concurrency::test]
 fn moved_value_drop_runs_before_scope_returns() {
     struct Bump(Arc<AtomicUsize>);
