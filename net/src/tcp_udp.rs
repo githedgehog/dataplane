@@ -121,3 +121,98 @@ impl TcpUdpMut<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    //! Property tests for the [`TcpUdp`] / [`TcpUdpMut`] wrappers.
+    //!
+    //! The wrappers' raison d'etre is to make "this transport is definitely
+    //! port-based" a type-level fact. These tests pin the invariants that
+    //! claim rests on:
+    //!
+    //!  * `try_from` succeeds iff the underlying [`Transport`] is TCP or UDP.
+    //!  * The wrapper's getters agree with what you'd read directly from the
+    //!    underlying [`Transport`] (no value drift).
+    //!  * `TcpUdpMut::set_*_port` round-trips through `*_port` and propagates
+    //!    back to the underlying [`Transport`] (the wrapper is a *view*, not
+    //!    a copy), and setting one direction does not perturb the other.
+    //!
+    //! All four invariants hold across the full domain via
+    //! [`bolero`] generators for [`Transport`] (see
+    //! `net::headers::transport_typegen_smoke`) and [`NonZero<u16>`].
+
+    use super::{TcpUdp, TcpUdpError, TcpUdpMut};
+    use crate::headers::Transport;
+    use std::num::NonZero;
+
+    fn is_port_based(t: &Transport) -> bool {
+        matches!(t, Transport::Tcp(_) | Transport::Udp(_))
+    }
+
+    #[test]
+    fn try_from_succeeds_iff_port_based() {
+        bolero::check!().with_type::<Transport>().for_each(|t| {
+            let mut t_mut = t.clone();
+            let immut_ok = TcpUdp::try_from(t).is_ok();
+            let mut_ok = TcpUdpMut::try_from(&mut t_mut).is_ok();
+            assert_eq!(immut_ok, is_port_based(t));
+            assert_eq!(mut_ok, is_port_based(t));
+            if !is_port_based(t) {
+                assert_eq!(TcpUdp::try_from(t).unwrap_err(), TcpUdpError::NotPortBased,);
+            }
+        });
+    }
+
+    #[test]
+    fn view_reads_agree_with_transport() {
+        bolero::check!().with_type::<Transport>().for_each(|t| {
+            let Ok(tu) = TcpUdp::try_from(t) else {
+                return;
+            };
+            assert_eq!(Some(tu.src_port()), t.src_port());
+            assert_eq!(Some(tu.dst_port()), t.dst_port());
+        });
+    }
+
+    #[test]
+    fn mut_set_get_roundtrips_and_directions_are_independent() {
+        bolero::check!()
+            .with_type::<(Transport, NonZero<u16>, NonZero<u16>)>()
+            .for_each(|(t, src, dst)| {
+                let mut t = t.clone();
+                let Ok(mut tu) = TcpUdpMut::try_from(&mut t) else {
+                    return;
+                };
+                tu.set_src_port(*src);
+                tu.set_dst_port(*dst);
+                // The view sees what we just wrote.
+                assert_eq!(tu.src_port(), *src);
+                assert_eq!(tu.dst_port(), *dst);
+                // Swap order in the second pass to catch any setter that
+                // accidentally touches both ports.
+                tu.set_dst_port(*src);
+                tu.set_src_port(*dst);
+                assert_eq!(tu.src_port(), *dst);
+                assert_eq!(tu.dst_port(), *src);
+            });
+    }
+
+    #[test]
+    fn mut_writes_propagate_to_transport() {
+        bolero::check!()
+            .with_type::<(Transport, NonZero<u16>, NonZero<u16>)>()
+            .for_each(|(t, src, dst)| {
+                let mut t = t.clone();
+                {
+                    let Ok(mut tu) = TcpUdpMut::try_from(&mut t) else {
+                        return;
+                    };
+                    tu.set_src_port(*src);
+                    tu.set_dst_port(*dst);
+                }
+                // After the borrow ends, the underlying Transport reflects the writes.
+                assert_eq!(t.src_port(), Some(*src));
+                assert_eq!(t.dst_port(), Some(*dst));
+            });
+    }
+}
