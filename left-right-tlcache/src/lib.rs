@@ -656,7 +656,7 @@ mod tests {
 
         // build provider and populate it
         const NUM_HANDLES: u64 = cfg_select! {
-            miri => 10,
+            emulated => 10,
             _ => 1000,
         };
         let mut provider = TestProvider::new();

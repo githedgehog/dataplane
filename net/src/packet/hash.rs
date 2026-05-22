@@ -110,7 +110,7 @@ mod tests {
         let start: u64 = 4;
         let end: u64 = 10;
         let num_packets: u64 = cfg_select! {
-            miri => 20,
+            emulated => 20,
             _ => 2000,
         };
         let packets = build_test_packets(num_packets.try_into().unwrap());

@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn test_concurrency_fib() {
         const NUM_PACKETS: u64 = cfg_select! {
-            miri => 50,
+            emulated => 50,
             _ => 100_000,
         };
         const NUM_WORKERS: u16 = 4;
@@ -252,7 +252,7 @@ mod tests {
         // number of threads looking up fibtable
         const NUM_WORKERS: u16 = 6;
         const NUM_PACKETS: u64 = cfg_select! {
-            miri => 30,
+            emulated => 30,
             _ => 100_000,
         };
         const TENTH: u64 = NUM_PACKETS / 10;
@@ -279,7 +279,7 @@ mod tests {
             let handle = Builder::new()
                 .name(format!("WORKER-{n}"))
                 .spawn(move || {
-                    #[cfg(not(miri))]
+                    #[cfg(not(emulated))]
                     println!("Worker-{n} started");
                     let mut rng = rand::rng();
                     let mut packet = test_packet();
@@ -295,7 +295,7 @@ mod tests {
                                 if hit == prefix {
                                     prefix_hits += 1;
                                     if prefix_hits.is_multiple_of(TENTH) {
-                                        #[cfg(not(miri))]
+                                        #[cfg(not(emulated))]
                                         println!(
                                             "Worker {n} is {} % done",
                                             prefix_hits * 100 / NUM_PACKETS
@@ -315,7 +315,7 @@ mod tests {
                             nofibs += 1;
                         }
                     }
-                    #[cfg(not(miri))]
+                    #[cfg(not(emulated))]
                     {
                         println!("=== Worker {n} finished ====");
                         println!("Stats:");
@@ -377,7 +377,7 @@ mod tests {
 
             // stop when all workers are done
             if done.load(Ordering::Relaxed) == NUM_WORKERS {
-                #[cfg(not(miri))]
+                #[cfg(not(emulated))]
                 println!("All workers finished!");
                 if let Some(fib) = fibw.take() {
                     // fib is destroyed here
@@ -392,7 +392,7 @@ mod tests {
         }
 
         let duration = start.elapsed();
-        #[cfg(not(miri))]
+        #[cfg(not(emulated))]
         println!("Test duration: {duration:?}");
     }
 
@@ -476,7 +476,7 @@ mod concurrency_tests {
     fn test_fib_removals() {
         const MAX_ITERATIONS: usize = cfg_select! {
             any(feature = "loom", feature = "shuttle") => 5,
-            miri => 50,
+            emulated => 50,
             _ => 1000,
         };
         const READER_BUDGET: usize = cfg_select! {
@@ -568,7 +568,7 @@ mod concurrency_tests {
         };
         const ITERATIONS: usize = cfg_select! {
             any(feature = "loom", feature = "shuttle") => 2,
-            miri => 50,
+            emulated => 50,
             _ => 5_000,
         };
         const WORKER_BUDGET: usize = cfg_select! {
