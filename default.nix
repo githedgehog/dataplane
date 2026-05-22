@@ -22,6 +22,7 @@ let
     else
       builtins.filter (elm: builtins.isString elm) (builtins.split split-on string);
   lib = (import sources.nixpkgs { }).lib;
+  host-arch = (import sources.nixpkgs { }).stdenv.hostPlatform.parsed.cpu.name;
   platform' = import ./nix/platforms.nix {
     inherit
       lib
@@ -38,6 +39,7 @@ let
       instrumentation
       profile
       cargo-features
+      host-arch
       ;
     inherit (platform') arch;
   };
@@ -50,6 +52,7 @@ let
       instrumentation
       profile
       cargo-features
+      host-arch
       ;
     inherit (platform') arch;
     for-tests = true;

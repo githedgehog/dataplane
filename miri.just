@@ -47,8 +47,10 @@ test *args="":
         if [ "${layout_seed}" = "random" ]; then
           layout_seed="${RANDOM}"
         fi
-        RUSTFLAGS+="-Zrandomize-layout -Zlayout-seed=${layout_seed}"
+        RUSTFLAGS+="-Zrandomize-layout -Zlayout-seed=${layout_seed} "
       fi
+      # Umbrella cfg shared with the qemu-user path in nix/profiles.nix.
+      RUSTFLAGS+="--cfg=emulated"
       declare -rx RUSTFLAGS
       declare -ra cmd=("nice" "-n" "19" "cargo" "miri" "nextest" "run" "--profile=miri" "--target=${target}")
       echo "Running Miri with args: {{ args }}"
