@@ -452,10 +452,6 @@ jobs:
       }}
     name: "${{ matrix.recipe.name }}/${{ matrix.recipe.args }}/${{ matrix.platform }}/${{ matrix.libc }}"
     runs-on: "lab"
-    # Cross is advisory: leg failures show red on the job badge but the
-    # workflow run as a whole still passes.  `needs.cross.result` reports
-    # `success` to dependents regardless of outcome, so don't gate on it.
-    continue-on-error: true
     needs:
       - check_changes
       - check
@@ -489,6 +485,21 @@ jobs:
     steps:
       - *checkout
       - *nix-setup
+      - name: "test"
+        if: >-
+          ${{
+            matrix.recipe.args == 'dataplane'
+            && github.event_name == 'pull_request'
+            && contains(github.event.pull_request.labels.*.name, 'ci:+cross/full')
+          }}
+        uses: *just
+        env:
+          JUST_VARS: >-
+            platform=${{ matrix.platform }}
+            profile=${{ matrix.profile }}
+            libc=${{ matrix.libc }}
+        with:
+          recipe: "test"
       - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}/${{ matrix.recipe.args }}"
         uses: *just
         env:
@@ -644,7 +655,6 @@ jobs:
       - test_each
       - miri
       - wasm
-      - cross
     # Run always so this job can aggregate results even when one of its
     # dependencies failed or was skipped.
     #
