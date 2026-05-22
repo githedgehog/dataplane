@@ -149,9 +149,12 @@ jobs:
           token: "${{ steps.app-token.outputs.token }}"
           branch: "bump/cargo-upgrades"
           title: "bump(cargo)!: :rocket: upgrades available"
+          # ci:+cross/full opts the bump PR into the full cross matrix
+          # (build + qemu-user test on musl) to catch upstream regressions.
           labels: |
             automated
             dependencies
+            ci:+cross/full
           signoff: "true"
           sign-commits: "true"
           body: |
