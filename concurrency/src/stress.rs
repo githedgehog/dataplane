@@ -3,9 +3,6 @@
 
 //! Backend dispatch for model-checking tests.
 //!
-//! [`stress`] runs `body` under whichever concurrency backend the crate
-//! was compiled against:
-//!
 //! * default backend -- direct call, no scheduling exploration.
 //! * `loom` feature -- `loom::model`.
 //! * `shuttle` feature -- a [`shuttle::PortfolioRunner`] that runs
@@ -14,8 +11,8 @@
 //!   `DfsScheduler` to the portfolio.
 
 /// Run `body` under the currently selected concurrency backend.
-#[allow(unused_variables)] // `body` may be unused in arms that don't take a closure.
-#[allow(clippy::expect_used)] // backend spawn / join: panic-on-failure is the right semantic in a test harness.
+#[allow(unused_variables)]
+#[allow(clippy::expect_used)]
 pub fn stress<F>(body: F)
 where
     F: Fn() + Send + Sync + 'static,
@@ -30,7 +27,9 @@ where
 
     cfg_select! {
         feature = "loom" => {
-            let body = std::sync::Arc::new(body);
+            // Keep this Arc outside loom's executor; the facade's loom Arc is
+            // tied to a single model run.
+            let body = std::sync::Arc::new(body); // nosemgrep: rust-no-direct-std-sync-import
             loom::model(move || {
                 let body = body.clone();
                 loom::thread::Builder::new()
