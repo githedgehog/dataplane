@@ -121,8 +121,6 @@ cfg_select! {
         #[repr(transparent)]
         pub struct Slot<T>(ArcSwap<T>);
 
-        pub struct GuardA;
-
         impl<T> Slot<T> {
             #[inline]
             pub fn from_pointee(value: T) -> Self {
