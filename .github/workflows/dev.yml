@@ -655,6 +655,13 @@ jobs:
   summary:
     name: "Summary"
     runs-on: "ubuntu-latest"
+    # `pull-requests: write` is for the "Surface cross failures" step.
+    # `actions: read` lets that same step query the cross matrix's real
+    # job outcomes via the REST API.
+    permissions:
+      actions: "read"
+      contents: "read"
+      pull-requests: "write"
     needs:
       - check
       - sanitize
@@ -713,6 +720,76 @@ jobs:
         run: |
           echo '::error:: Some vlab job(s) failed'
           exit 1
+      # Cross is advisory (continue-on-error: true at the job level),
+      # which makes `needs.cross.result` always report `success` to
+      # dependents -- the very property that keeps leg flakes from
+      # blocking merge also hides genuine failures from this gate.
+      # Read the underlying matrix job outcomes from the REST API
+      # instead, then exit 1 only via the sticky comment path.
+      - name: "Detect cross matrix failures"
+        id: "cross_status"
+        if: >-
+          ${{
+            github.event_name == 'pull_request'
+            && needs.cross.result != 'skipped'
+          }}
+        uses: "actions/github-script@v8"
+        with:
+          script: |
+            // Cross matrix jobs are named
+            // `${recipe.name}/${recipe.args}/${platform}/${libc}`.
+            // `recipe.name` is always "build-container" in the `cross`
+            // job's matrix, so the prefix uniquely identifies them.
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+                per_page: 100,
+              },
+            );
+            const cross = jobs.filter(j => j.name.startsWith('build-container/'));
+            const failed = cross.filter(j => j.conclusion === 'failure');
+            core.setOutput('failed_count', String(failed.length));
+            core.setOutput('failed_names', failed.map(j => j.name).join(', '));
+            const heading = failed.length === 0
+              ? `All ${cross.length} cross matrix entries passed.`
+              : `${failed.length} of ${cross.length} cross matrix entries failed.`;
+            await core.summary.addHeading('Cross build advisory').addRaw(heading).write();
+      # The sticky-comment composite action is a local action; it has
+      # to be on the runner's disk for `uses:` to resolve.  The summary
+      # job has no other reason to check the repo out, so do a sparse
+      # checkout of just the action directory, gated on the same
+      # failure condition as the comment step itself.
+      - name: "Checkout sticky-pr-comment action"
+        if: >-
+          ${{
+            github.event_name == 'pull_request'
+            && steps.cross_status.outputs.failed_count != ''
+            && steps.cross_status.outputs.failed_count != '0'
+          }}
+        uses: "actions/checkout@v6"
+        with:
+          persist-credentials: "false"
+          sparse-checkout: ".github/actions/sticky-pr-comment"
+          sparse-checkout-cone-mode: "false"
+      - name: "Surface cross failures via sticky PR comment"
+        if: >-
+          ${{
+            github.event_name == 'pull_request'
+            && steps.cross_status.outputs.failed_count != ''
+            && steps.cross_status.outputs.failed_count != '0'
+          }}
+        uses: "./.github/actions/sticky-pr-comment"
+        with:
+          marker: "<!-- ci:dev:cross-advisory -->"
+          body: |
+            ## :warning: Cross build advisory: failure detected :warning:
+
+            [Please investigate before merging](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            Failed legs: ${{ steps.cross_status.outputs.failed_names }}
 
   publish:
     runs-on: lab
