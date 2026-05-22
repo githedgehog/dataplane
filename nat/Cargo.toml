@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [features]
+loom = ["concurrency/loom"]
 shuttle = ["concurrency/shuttle", "dep:shuttle"]
 shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
 
