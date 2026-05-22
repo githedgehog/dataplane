@@ -88,7 +88,7 @@
 use core::marker::PhantomData;
 use core::panic::AssertUnwindSafe;
 use loom::sync::Arc;
-use loom::thread::{self, JoinHandle};
+use loom::thread::JoinHandle;
 use std::panic::{catch_unwind, resume_unwind};
 
 use crate::sync::Mutex;
@@ -370,7 +370,7 @@ impl<'scope> Scope<'scope, '_> {
             >(Box::new(wrapped))
         };
 
-        let join_handle = thread::spawn(wrapped);
+        let join_handle = super::spawn(wrapped);
 
         // Shared handle slot: `scope()` and the user's
         // `ScopedJoinHandle` both hold an `Arc` clone of the same

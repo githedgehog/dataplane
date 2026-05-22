@@ -8,6 +8,7 @@ version.workspace = true
 [features]
 default = ["dpdk"]
 dpdk = ["dep:dpdk", "dep:dpdk-sysroot-helper"]
+loom = ["concurrency/loom"]
 
 [dependencies]
 afpacket = { workspace = true, features = ["async-tokio"] }

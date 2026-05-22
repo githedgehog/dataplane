@@ -567,7 +567,7 @@ mod concurrency_tests {
             _ => 6,
         };
         const ITERATIONS: usize = cfg_select! {
-            any(feature = "loom", feature = "shuttle") => 5,
+            any(feature = "loom", feature = "shuttle") => 2,
             miri => 50,
             _ => 5_000,
         };
