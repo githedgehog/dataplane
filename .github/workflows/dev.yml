@@ -489,6 +489,7 @@ jobs:
         if: >-
           ${{
             matrix.recipe.args == 'dataplane'
+            && matrix.libc == 'musl'
             && github.event_name == 'pull_request'
             && contains(github.event.pull_request.labels.*.name, 'ci:+cross/full')
           }}

@@ -151,7 +151,7 @@ mod test {
             .add_stage(flowinfo_creator);
 
         const NUM_PACKETS: u16 = cfg_select! {
-            miri => 10,
+            emulated => 10,
             _ => 1000,
         };
 
