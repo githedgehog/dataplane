@@ -27,11 +27,11 @@ mod tests {
     use concurrency::sync::Arc;
     use concurrency::sync::atomic::AtomicBool;
     use concurrency::sync::atomic::AtomicU16;
+    use concurrency::thread;
+    use concurrency::thread::Builder;
     use rand::RngExt;
     use rand::rngs::ThreadRng;
     use std::str::FromStr;
-    use std::thread;
-    use std::thread::Builder;
     use std::time::{Duration, Instant};
     use std::{collections::HashMap, collections::HashSet, sync::atomic::Ordering};
 

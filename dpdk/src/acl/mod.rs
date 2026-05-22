@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn classify_concurrent_arc_shared() {
         use concurrency::sync::Arc;
-        use std::thread;
+        use concurrency::thread;
 
         let _eal = start_eal();
 
