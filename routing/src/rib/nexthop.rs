@@ -419,7 +419,7 @@ mod tests {
     use std::rc::Rc;
     use tracing_test::traced_test;
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     /// Tests the correct behavior of the next-hop store
     fn test_nhop_store_minimal() {
@@ -445,7 +445,7 @@ mod tests {
         store.dump();
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     /// Tests the correct deletion of next-hops
     fn test_nhop_reuse_and_deletion() {
@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(store.len(), 0);
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     /// Tests the correctness of next-hops reference counts
     fn test_nhop_ref_counts() {
@@ -533,7 +533,7 @@ mod tests {
         store.dump();
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_nhop_store_shared_resolvers() {
         let mut store = NhopStore::new();
@@ -576,7 +576,7 @@ mod tests {
         assert!(store.is_empty());
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     /// Tests flushing of next-hop resolution data
     fn test_nhop_store_flush_resolvers() {
@@ -701,7 +701,7 @@ mod tests {
         store
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_nhop_store_consistency() {
         /* create store */
@@ -811,7 +811,7 @@ mod tests {
         println!("{:#?}", &res);
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_loop_prevention() {
         let mut store = NhopStore::new();
