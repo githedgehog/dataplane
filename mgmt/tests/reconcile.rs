@@ -46,9 +46,9 @@ fn reconcile_fuzz() {
         // parking_lot Mutex behind `concurrency::sync::Mutex` is not,
         // because its inner `UnsafeCell` lacks the explicit
         // `RefUnwindSafe` impl that `std::sync::Mutex` provides.
-        // Reach into std here on purpose. nosemgrep: rust-no-direct-std-sync-import
+        // Reach into std here on purpose.
         #[allow(clippy::disallowed_types)]
-        std::sync::Mutex::new(Arc::new(handle))
+        std::sync::Mutex::new(Arc::new(handle)) // nosemgrep: rust-no-direct-std-sync-import
     });
     bolero::check!()
         .with_type()

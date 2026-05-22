@@ -42,7 +42,11 @@ where
         feature = "loom" => {
             // `loom::model::Builder::check` requires `Fn + Sync + Send + 'static`
             // but the inner spawn takes `body` by `FnOnce`, so wrap in `Arc`.
-            let body = std::sync::Arc::new(body);
+            // This Arc is shared *across* `loom::model` invocations -- it lives
+            // outside loom's executor and must remain `std::sync::Arc`; using
+            // the facade's loom-backend Arc would tie its lifetime to a single
+            // model run.
+            let body = std::sync::Arc::new(body); // nosemgrep: rust-no-direct-std-sync-import
             loom::model(move || {
                 let body = body.clone();
                 loom::thread::Builder::new()

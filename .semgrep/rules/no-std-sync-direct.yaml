@@ -7,18 +7,20 @@
 # matching has no such limit — it sees what was written, not what was
 # resolved.
 #
-# These rules forbid direct `use std::sync::X;` imports for any type
-# the `concurrency::sync` facade exposes. Switching to `concurrency::sync`
-# is the migration that lets future loom/shuttle test builds hook these
-# types via the backend cfg. The lock types (Mutex/RwLock and guards)
-# are also caught by `clippy::disallowed_types` because parking_lot
-# provides a distinct production type; this rule is the only enforcement
-# for Arc/Weak/atomic/LazyLock/OnceLock/Once/Barrier/Condvar imports.
+# These rules forbid both `use std::sync::X;` imports and bare
+# fully-qualified path expressions (`std::sync::X::new(...)`,
+# `std::sync::X<T>`) for any type the `concurrency::sync` facade
+# exposes. Switching to `concurrency::sync` is the migration that lets
+# future loom/shuttle test builds hook these types via the backend
+# cfg. The lock types (Mutex/RwLock and guards) are also caught by
+# `clippy::disallowed_types` because parking_lot provides a distinct
+# production type; this rule is the only enforcement for Arc / Weak /
+# atomic / LazyLock / OnceLock / Once / Barrier / Condvar.
 #
 # The `concurrency` crate itself is exempt (it IS the facade) and so are
 # its tests (which use the facade by design but are flagged by clippy's
 # alias resolution; that allow is per-file). Anywhere else, a hit means
-# "switch the import to `use concurrency::sync::X;`".
+# "switch to `use concurrency::sync::X;` and drop the FQN".
 rules:
   - id: rust-no-direct-std-sync-import
     languages: [rust]
@@ -42,6 +44,7 @@ rules:
         # deliberately; the allow is at the file head.
         - concurrency/tests/
     pattern-either:
+      # Direct imports: `use std::sync::X;`.
       - pattern: use std::sync::Arc;
       - pattern: use std::sync::Weak;
       - pattern: use std::sync::Mutex;
@@ -57,8 +60,21 @@ rules:
       - pattern: use std::sync::atomic;
       - pattern: use std::sync::atomic::$X;
       - pattern: use std::sync::PoisonError;
-      # Grouped imports: `use std::sync::{Arc, Mutex};` and friends.
+      # Grouped imports across one or many lines:
+      # `use std::sync::{Arc, Mutex};` and the multi-line variant.
       # AST-level matching for `use ... :: { ... }` is hit-and-miss
-      # across tree-sitter versions, so the safety net is a regex
-      # that catches any of the forbidden names inside the braces.
-      - pattern-regex: '^\s*use\s+std::sync::\{[^}]*\b(?:Arc|Weak|Mutex|MutexGuard|RwLock|RwLockReadGuard|RwLockWriteGuard|OnceLock|LazyLock|Once|Barrier|Condvar|PoisonError|atomic)\b'
+      # across tree-sitter versions; a regex with `(?s)` (dotall)
+      # spans newlines without anchoring on the import keyword's
+      # column.
+      - pattern-regex: '(?s)use\s+std::sync::\{[^}]*\b(?:Arc|Weak|Mutex|MutexGuard|RwLock|RwLockReadGuard|RwLockWriteGuard|OnceLock|LazyLock|Once|Barrier|Condvar|PoisonError|atomic)\b'
+      # Fully-qualified path expressions / type references that skip
+      # the `use` line entirely (e.g. `static X: std::sync::LazyLock
+      # <T> = std::sync::LazyLock::new(...)`, or inline turbofish
+      # like `std::sync::Arc::<T>::new`).  Bare `pattern: std::sync
+      # ::X` does not fire reliably in opengrep's Rust frontend
+      # across path-vs-type contexts; a regex is the dependable
+      # backstop.  The leading `(?m)^(?!\s*(?://|\*))` skips lines
+      # whose first non-whitespace is a `//` line/doc comment or a
+      # block-comment continuation `*`, so rustdoc intra-doc links
+      # like `/// [std::sync::Arc]` don't false-positive.
+      - pattern-regex: '(?m)^(?!\s*(?://|\*)).*\bstd::sync::(?:Arc|Weak|Mutex|MutexGuard|RwLock|RwLockReadGuard|RwLockWriteGuard|OnceLock|LazyLock|Once|Barrier|Condvar|PoisonError|atomic::[A-Za-z_][A-Za-z0-9_]*)\b'

@@ -7,6 +7,7 @@ use crate::utils::{
     check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, collapse_prefixes,
     merge_contiguous_prefixes, merge_overlapping_prefixes,
 };
+use concurrency::sync::LazyLock;
 use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -68,8 +69,7 @@ impl VpcExposeNat {
 }
 
 fn empty_set() -> &'static PrefixPortsSet {
-    static EMPTY_SET: std::sync::LazyLock<PrefixPortsSet> =
-        std::sync::LazyLock::new(PrefixPortsSet::new);
+    static EMPTY_SET: LazyLock<PrefixPortsSet> = LazyLock::new(PrefixPortsSet::new);
     &EMPTY_SET
 }
 
