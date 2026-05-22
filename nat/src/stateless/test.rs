@@ -837,7 +837,7 @@ fn check_packet_with_ports(
 }
 
 #[test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 fn test_config_with_port_ranges_basic() {
     let expose1 = VpcExpose::empty()
         .make_stateless_nat()
@@ -898,7 +898,7 @@ fn test_config_with_port_ranges_basic() {
 }
 
 #[test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[allow(clippy::too_many_lines)]
 fn test_config_with_port_ranges_complex() {
     let expose1 = VpcExpose::empty()
@@ -1137,7 +1137,7 @@ fn test_config_with_port_ranges_complex() {
 }
 
 #[test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 fn test_config_with_port_ranges_with_default() {
     let expose1 = VpcExpose::empty()
         .make_stateless_nat()

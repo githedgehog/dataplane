@@ -130,7 +130,7 @@ pub mod tests {
     use tokio::sync::RwLock;
     use tracing_test::traced_test;
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     #[cfg_attr(
         emulated,

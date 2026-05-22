@@ -626,7 +626,7 @@ fn test_flow_filter_packet_icmp_filtered() {
     assert_eq!(packet_out.meta().dst_vpcd, None);
 }
 
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_from_overlay() {
     let vni1 = Vni::new_checked(100).unwrap();
@@ -734,7 +734,7 @@ fn test_flow_filter_table_from_overlay() {
     assert_eq!(packet_out.meta().dst_vpcd, None);
 }
 
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_check_send_from_default() {
     let vni1 = Vni::new_checked(100).unwrap();
@@ -775,7 +775,7 @@ fn test_flow_filter_table_check_send_from_default() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
 }
 
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_check_default_to_default() {
     let vni1 = Vni::new_checked(100).unwrap();
@@ -822,7 +822,7 @@ fn test_flow_filter_table_check_default_to_default() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
 }
 
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_check_nat_requirements() {
     let vni1 = Vni::new_checked(100).unwrap();
@@ -951,7 +951,7 @@ fn test_flow_filter_table_check_nat_requirements() {
     assert!(needs_masquerade(&packet_out));
 }
 
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     let vni1 = vni(100);
@@ -1147,7 +1147,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
 }
 
 #[test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 fn test_flow_filter_protocol_aware_port_forwarding() {
     // Test that protocol-specific port forwarding correctly filters by L4 protocol.
     // Setup: TCP-only port forwarding overlapping with stateful NAT.
@@ -1281,7 +1281,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
 }
 
 #[test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 fn test_flow_filter_protocol_any_port_forwarding() {
     // Test that L4Protocol::Any port forwarding works for both TCP and UDP packets.
 
@@ -1359,7 +1359,7 @@ fn test_flow_filter_protocol_any_port_forwarding() {
     assert!(needs_port_forwarding(&packet_out));
 }
 
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap() {
     let vni1 = Vni::new_checked(100).unwrap();
@@ -1578,7 +1578,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
 // forwarding, although the latter is restricted to specific ports. This test validates that
 // prefix splitting occurs correctly for this configuration, and that we find the right
 // destination and NAT requirements.
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap_smaller_masquerade()
  {
@@ -1783,7 +1783,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
     assert!(needs_masquerade(&packet_out));
 }
 
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 #[test]
 fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_overlap_to_default() {
     let vni1 = Vni::new_checked(100).unwrap();

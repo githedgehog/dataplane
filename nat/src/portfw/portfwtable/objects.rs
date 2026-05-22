@@ -533,7 +533,7 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     fn test_port_forwarding_table_removals() {
         let mut fwtable = build_sample_port_forwarding_table();
         let key = PortFwKey {
@@ -571,7 +571,7 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     fn test_port_forwarding_table_updates() {
         let mut fwtable = PortFwTable::new();
         let key = PortFwKey {

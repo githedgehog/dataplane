@@ -218,7 +218,7 @@ mod nf_test {
         (flow_table, pipeline, writer)
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_base() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -270,7 +270,7 @@ mod nf_test {
         );
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_nf_port_forwarding_tcp_filtered() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -318,7 +318,7 @@ mod nf_test {
         );
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_tcp_establishment() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -330,7 +330,7 @@ mod nf_test {
         establish_tcp_connection(&mut pipeline);
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_tcp_close_server() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -368,7 +368,7 @@ mod nf_test {
         assert_eq!(flow_table.len().unwrap(), 2);
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_tcp_close_client() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -404,7 +404,7 @@ mod nf_test {
         assert_eq!(flow_table.len().unwrap(), 2);
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_tcp_half_close_client() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -450,7 +450,7 @@ mod nf_test {
         assert_eq!(flow_table.len().unwrap(), 2);
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_tcp_reset() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -487,7 +487,7 @@ mod nf_test {
         println!("{flow_table}");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_config_removal_interrupts_traffic() {
         let ruleset = build_test_port_forwarding_ruleset();
@@ -609,7 +609,7 @@ mod nf_test {
         state.rule().upgrade().is_some()
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_with_port_ranges() {
         let ruleset = build_test_port_forwarding_table_with_ranges();
@@ -650,7 +650,7 @@ mod nf_test {
         println!("{flow_table}");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_with_prefixes_and_port_ranges() {
         let ruleset = build_test_port_forwarding_table_with_prefixes_and_port_ranges();
@@ -691,7 +691,7 @@ mod nf_test {
         println!("{flow_table}");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_compatible_rule_updates_preserves_flows() {
         // check that, when updating a rule, existing flows remain if the new rule would allow them
@@ -745,7 +745,7 @@ mod nf_test {
         println!("{flow_table}");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[tokio::test]
     async fn test_nf_port_forwarding_incompatible_rule_updates_remove_flows() {
         // check that, when updating a rule, existing flows remain if the new rule would allow them

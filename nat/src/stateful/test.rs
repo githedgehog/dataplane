@@ -615,7 +615,7 @@ fn check_packet_icmp_echo_new(
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn test_icmp_echo_nat() {
     let config = build_gwconfig_from_overlay(build_overlay_2vpcs())
         .validate()
@@ -782,7 +782,7 @@ fn check_packet_icmp_error(
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn test_icmp_error_nat() {
     // build setup: 2 vpcs with masquerading, vni 100 -> vni 200
     let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
@@ -1418,7 +1418,7 @@ fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
 }
 
 #[tokio::test]
-#[cfg_attr(not(miri), traced_test)]
+#[cfg_attr(not(emulated), traced_test)]
 #[allow(clippy::too_many_lines)]
 async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peering() {
     let config =
@@ -1728,7 +1728,7 @@ fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn test_masquerade_tcp_establish() {
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
     let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
@@ -1737,7 +1737,7 @@ async fn test_masquerade_tcp_establish() {
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn test_masquerade_check() {
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
     let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
@@ -1777,7 +1777,7 @@ async fn test_masquerade_check() {
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn test_masquerade_tcp_reset() {
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
     let (flow_table, mut pipeline, _allocw) = test_setup(1, &build_overlay_2vpcs());
@@ -1812,7 +1812,7 @@ async fn test_masquerade_tcp_reset() {
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn test_masquerade_reconfig_keep_flow() {
     let genid = 1;
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
@@ -1848,7 +1848,7 @@ async fn test_masquerade_reconfig_keep_flow() {
 }
 
 #[tokio::test]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn test_masquerade_reconfig_drop_flow() {
     let genid = 1;
     // build setup: 2 vpcs with masquerading (vni 100 -> vni 200)
