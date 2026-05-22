@@ -168,8 +168,8 @@ pub mod tests {
 
     #[test]
     #[cfg_attr(
-        miri,
-        ignore = "reads /proc/net/arp and queries kernel interfaces, neither available under miri"
+        emulated,
+        ignore = "reads /proc/net/arp and queries kernel interfaces, neither available under miri and not reliable under qemu"
     )]
     fn test_adjacency_resolver() {
         let (mut resolver, atabler) = AtResolver::new(true);

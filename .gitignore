@@ -1,5 +1,7 @@
 **.profraw
 **/__fuzz__/**
+# qemu-user core dumps from SIGABRT under emulated tests.
+**/qemu_*.core
 result*
 result*/**
 **/target/**

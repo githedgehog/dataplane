@@ -2,6 +2,7 @@
 # Copyright Open Network Fabric Authors
 {
   arch,
+  host-arch,
   profile,
   sanitizers,
   instrumentation,
@@ -21,6 +22,9 @@ let
   # failing test aborts the runner and leaks state (netns / caps).
   needs-unwind =
     for-tests || builtins.elem "loom" cargo-features || builtins.elem "shuttle" cargo-features;
+  # Test archives are loaded back onto the build host and executed
+  # there; when the target arch differs, that means qemu-user.
+  is-emulated-test = for-tests && (arch != host-arch);
   common.NIX_CFLAGS_COMPILE = [
     "-g3"
     "-gdwarf-5"
@@ -38,6 +42,9 @@ let
   ];
   common.RUSTFLAGS = [
     "--cfg=tokio_unstable"
+    # Register `emulated` so `#[cfg_attr(emulated, ...)]` never trips
+    # `unexpected_cfgs`; only *set* for is-emulated-test and miri.
+    "--check-cfg=cfg(emulated)"
     "-Cdebuginfo=full"
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
@@ -52,6 +59,7 @@ let
         "-Cpanic=abort"
       ]
   )
+  ++ (if is-emulated-test then [ "--cfg=emulated" ] else [ ])
   ++ (map (flag: "-Clink-arg=${flag}") common.NIX_CFLAGS_LINK);
   optimize-for.debug.NIX_CFLAGS_COMPILE = [
     "-fno-inline"

@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn test_bolero_collapse_prefix_lists() {
         let generator = cfg_select! {
-           miri => {
+           emulated => {
                PrefixExcludeAddrsGenerator {
                     prefix_max: 10,
                     exclude_max: 10,

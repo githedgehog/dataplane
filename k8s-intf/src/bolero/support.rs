@@ -290,7 +290,7 @@ mod test {
     #[cfg(miri)]
     const UNIQUE_COUNTS: [u16; 4] = [0, 1, 10, 16];
     const ITERATIONS: usize = cfg_select! {
-        miri => 3,
+        emulated => 3,
         _ => 1000,
     };
 
