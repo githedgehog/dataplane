@@ -30,7 +30,10 @@ where
             use shuttle::PortfolioRunner;
             use shuttle::scheduler::{PctScheduler, RandomScheduler};
 
-            let mut portfolio = PortfolioRunner::new(true, shuttle::Config::default());
+            let mut config = shuttle::Config::default();
+            config.stack_size = 4 * 1024 * 1024;
+
+            let mut portfolio = PortfolioRunner::new(true, config);
             portfolio.add(RandomScheduler::new(ITERATIONS));
             portfolio.add(PctScheduler::new(SCHEDULES, ITERATIONS));
             #[cfg(feature = "shuttle_dfs")]
