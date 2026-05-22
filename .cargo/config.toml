@@ -20,5 +20,17 @@ rustflags = ["--cfg=tokio_unstable"]
 # wasm module instead of being parsed as a wasmtime option.
 runner = "wasmtime run --dir . --"
 
+[target.x86_64-unknown-linux-gnu]
+runner = "scripts/test-runner.sh x86_64"
+
+[target.x86_64-unknown-linux-musl]
+runner = "scripts/test-runner.sh x86_64"
+
+[target.aarch64-unknown-linux-gnu]
+runner = "scripts/test-runner.sh aarch64"
+
+[target.aarch64-unknown-linux-musl]
+runner = "scripts/test-runner.sh aarch64"
+
 [alias]
 nt = "nextest"
