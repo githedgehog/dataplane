@@ -25,14 +25,12 @@ mod tests {
     use lpm::prefix::{IpAddr, Prefix};
 
     use concurrency::sync::Arc;
-    use concurrency::sync::atomic::AtomicBool;
     use concurrency::sync::atomic::AtomicU16;
-    use concurrency::thread;
     use concurrency::thread::Builder;
     use rand::RngExt;
     use rand::rngs::ThreadRng;
     use std::str::FromStr;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     use std::{collections::HashMap, collections::HashSet, sync::atomic::Ordering};
 
     use crate::fib::fibgroupstore::tests::build_fib_entry_egress;
@@ -398,161 +396,6 @@ mod tests {
         println!("Test duration: {duration:?}");
     }
 
-    #[test]
-    fn test_fib_removals() {
-        // create fibtable (empty, without any fib)
-        let (mut fibtw, fibtr) = FibTableWriter::new();
-        let fibtrfactory = fibtr.factory();
-        let vrfid = 1;
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = stop.clone();
-
-        let handle = thread::spawn(move || {
-            let fibtr = fibtrfactory.handle();
-            let mut enters = 0;
-            let packet = test_packet();
-            loop {
-                if let Ok(fib) = fibtr.get_fib_reader(FibKey::Id(vrfid)) {
-                    if let Some(fib) = fib.enter() {
-                        let (_hit, _fibentry) = fib.lpm_entry_prefix(&packet);
-                        enters += 1;
-                    }
-                }
-                if thread_stop.load(Ordering::Relaxed) {
-                    println!("entered: {enters} times");
-                    break;
-                }
-            }
-        });
-
-        let mut iterations = 0;
-        loop {
-            const MAX_ITERATIONS: usize = cfg_select! {
-                miri => 50,
-                _ => 1000,
-            };
-            let fibw = fibtw.add_fib(vrfid, None);
-            thread::sleep(Duration::from_millis(5));
-            fibtw.del_fib(vrfid, None);
-            fibw.destroy();
-            iterations += 1;
-            if iterations == MAX_ITERATIONS {
-                stop.store(true, Ordering::Relaxed);
-                println!("created/deleted fib {iterations} times");
-                break;
-            }
-        }
-        handle.join().unwrap();
-    }
-
-    // Minimal reproducer for the TSAN race reported on `test_concurrency_fibtable`.
-    //
-    // Uses `left_right` directly with a trivial struct that has no interior
-    // allocations and no relationship to `Fib`, `FibTable`, or the
-    // `ReadHandleCache` (no thread-local storage). If this test races under
-    // ThreadSanitizer, the bug lives in `left_right::WriteHandle::drop` (in
-    // `take_inner`: NULL-swap followed by `wait()` on stale `last_epochs`),
-    // *not* in our code.
-    #[test]
-    fn test_leftright_destroy_race_simple() {
-        use concurrency::sync::RwLock;
-        use left_right::{Absorb, ReadHandle, ReadHandleFactory};
-
-        #[derive(Default)]
-        struct Tiny {
-            valid: bool,
-            payload: u64,
-        }
-        enum TinyOp {
-            Invalidate,
-        }
-        impl Absorb<TinyOp> for Tiny {
-            fn absorb_first(&mut self, op: &mut TinyOp, _: &Self) {
-                match op {
-                    TinyOp::Invalidate => self.valid = false,
-                }
-            }
-            fn sync_with(&mut self, first: &Self) {
-                self.valid = first.valid;
-                self.payload = first.payload;
-            }
-        }
-
-        const NUM_WORKERS: u16 = 6;
-        const ITERATIONS: usize = cfg_select! {
-            miri => 50,
-            _ => 5_000,
-        };
-
-        // Shared, lock-protected factory (or None) that writer populates with a new factory
-        // anytime a new write handle is created and which workers use to get fresh handles.
-        // Workers have no cache of read handles here
-        let factory = Arc::new(RwLock::new(None::<ReadHandleFactory<Tiny>>));
-        let stop = Arc::new(AtomicBool::new(false));
-
-        let mut handles = vec![];
-        for n in 1..=NUM_WORKERS {
-            let slot = factory.clone();
-            let stop = stop.clone();
-            let h = Builder::new()
-                .name(format!("TINY-WORKER-{n}"))
-                .spawn(move || {
-                    let mut enters = 0u64;
-                    let mut misses = 0u64;
-                    loop {
-                        let rh: Option<ReadHandle<Tiny>> =
-                            slot.read().as_ref().map(ReadHandleFactory::handle);
-                        if let Some(rh) = rh {
-                            match rh.enter() {
-                                Some(g) => {
-                                    // Read the `valid` byte. TSAN should complain
-                                    // if left-right grants access while dropping the write handle
-                                    // as in `test_concurrency_fibtable` when a worker calls enter(),
-                                    // which internally checks valid.
-                                    if g.valid {
-                                        enters += 1;
-                                    }
-                                }
-                                None => misses += 1,
-                            }
-                        }
-                        if stop.load(Ordering::Relaxed) {
-                            break;
-                        }
-                    }
-                    println!("tiny worker {n}: enters={enters} misses={misses}");
-                })
-                .unwrap();
-            handles.push(h);
-        }
-
-        for _ in 0..ITERATIONS {
-            let (mut w, r) = left_right::new::<Tiny, TinyOp>();
-
-            // Publish the factory so workers can get handles
-            *factory.write() = Some(r.factory());
-            drop(r);
-
-            // Let workers race with the upcoming drop. `yield_now` is enough;
-            thread::yield_now();
-
-            // Invalidate current Tony object and drop the write handle
-            w.append(TinyOp::Invalidate);
-            w.publish();
-            drop(w);
-
-            // Remove the factory so that no further handles can be created.
-            // Workers already holding a read handle should get a None when
-            // attempting to `enter()`.
-            *factory.write() = None;
-        }
-        stop.store(true, Ordering::Relaxed);
-        for h in handles {
-            h.join().unwrap();
-        }
-    }
-
     // Tests fib reader utilities returning guards
     #[test]
     fn test_fib_guards() {
@@ -598,5 +441,208 @@ mod tests {
 
         // Additional queries while holding the guards would cause the writer to block.
         // We can't test this here since there's a single thread and it would block forever.
+    }
+}
+
+// Loom is excluded: left_right's epoch state space is too large for
+// exhaustive search here.
+#[cfg(not(feature = "loom"))]
+mod concurrency_tests {
+    use crate::fib::fibtable::FibTableWriter;
+    use crate::fib::fibtype::FibKey;
+
+    use concurrency::sync::Arc;
+    use concurrency::sync::atomic::{AtomicBool, Ordering};
+    use concurrency::thread;
+
+    use net::buffer::TestBuffer;
+    use net::ip::NextHeader;
+    use net::packet::Packet;
+    use net::packet::test_utils::build_test_ipv4_packet_with_transport;
+
+    use lpm::prefix::IpAddr;
+
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    fn test_packet() -> Packet<TestBuffer> {
+        let mut packet = build_test_ipv4_packet_with_transport(64, Some(NextHeader::UDP)).unwrap();
+        let destination = IpAddr::from_str("192.168.1.1").expect("Bad dst ip address");
+        packet.set_ip_destination(destination).unwrap();
+        packet
+    }
+
+    #[concurrency::test]
+    fn test_fib_removals() {
+        const MAX_ITERATIONS: usize = cfg_select! {
+            any(feature = "loom", feature = "shuttle") => 5,
+            miri => 50,
+            _ => 1000,
+        };
+        const READER_BUDGET: usize = cfg_select! {
+            any(feature = "loom", feature = "shuttle") => MAX_ITERATIONS * 4,
+            _ => usize::MAX,
+        };
+
+        // create fibtable (empty, without any fib)
+        let (mut fibtw, fibtr) = FibTableWriter::new();
+        let fibtrfactory = fibtr.factory();
+        let vrfid = 1;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+
+        let handle = thread::spawn(move || {
+            let fibtr = fibtrfactory.handle();
+            let mut enters = 0;
+            let mut budget = READER_BUDGET;
+            let packet = test_packet();
+            loop {
+                if let Ok(fib) = fibtr.get_fib_reader(FibKey::Id(vrfid)) {
+                    if let Some(fib) = fib.enter() {
+                        let (_hit, _fibentry) = fib.lpm_entry_prefix(&packet);
+                        enters += 1;
+                    }
+                }
+                budget = budget.saturating_sub(1);
+                if budget == 0 || thread_stop.load(Ordering::Relaxed) {
+                    println!("entered: {enters} times");
+                    break;
+                }
+            }
+        });
+
+        let mut iterations = 0;
+        loop {
+            let fibw = fibtw.add_fib(vrfid, None);
+            thread::sleep(Duration::from_millis(5));
+            fibtw.del_fib(vrfid, None);
+            fibw.destroy();
+            iterations += 1;
+            if iterations == MAX_ITERATIONS {
+                stop.store(true, Ordering::Relaxed);
+                println!("created/deleted fib {iterations} times");
+                break;
+            }
+        }
+        handle.join().unwrap();
+    }
+
+    // Minimal reproducer for the TSAN race reported on `test_concurrency_fibtable`.
+    //
+    // Uses `left_right` directly with a trivial struct that has no interior
+    // allocations and no relationship to `Fib`, `FibTable`, or the
+    // `ReadHandleCache` (no thread-local storage). If this test races under
+    // ThreadSanitizer, the bug lives in `left_right::WriteHandle::drop` (in
+    // `take_inner`: NULL-swap followed by `wait()` on stale `last_epochs`),
+    // *not* in our code.
+    #[concurrency::test]
+    fn test_leftright_destroy_race_simple() {
+        use concurrency::sync::RwLock;
+        use concurrency::thread::Builder;
+        use left_right::{Absorb, ReadHandle, ReadHandleFactory};
+
+        #[derive(Default)]
+        struct Tiny {
+            valid: bool,
+            payload: u64,
+        }
+        enum TinyOp {
+            Invalidate,
+        }
+        impl Absorb<TinyOp> for Tiny {
+            fn absorb_first(&mut self, op: &mut TinyOp, _: &Self) {
+                match op {
+                    TinyOp::Invalidate => self.valid = false,
+                }
+            }
+            fn sync_with(&mut self, first: &Self) {
+                self.valid = first.valid;
+                self.payload = first.payload;
+            }
+        }
+
+        const NUM_WORKERS: u16 = cfg_select! {
+            any(feature = "loom", feature = "shuttle") => 2,
+            _ => 6,
+        };
+        const ITERATIONS: usize = cfg_select! {
+            any(feature = "loom", feature = "shuttle") => 5,
+            miri => 50,
+            _ => 5_000,
+        };
+        const WORKER_BUDGET: usize = cfg_select! {
+            any(feature = "loom", feature = "shuttle") => ITERATIONS * 4,
+            _ => usize::MAX,
+        };
+
+        // Shared, lock-protected factory (or None) that writer populates with a new factory
+        // anytime a new write handle is created and which workers use to get fresh handles.
+        // Workers have no cache of read handles here
+        let factory = Arc::new(RwLock::new(None::<ReadHandleFactory<Tiny>>));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let mut handles = vec![];
+        for n in 1..=NUM_WORKERS {
+            let slot = factory.clone();
+            let stop = stop.clone();
+            let h = Builder::new()
+                .name(format!("TINY-WORKER-{n}"))
+                .spawn(move || {
+                    let mut enters = 0u64;
+                    let mut misses = 0u64;
+                    let mut budget = WORKER_BUDGET;
+                    loop {
+                        let rh: Option<ReadHandle<Tiny>> =
+                            slot.read().as_ref().map(ReadHandleFactory::handle);
+                        if let Some(rh) = rh {
+                            match rh.enter() {
+                                Some(g) => {
+                                    // Read the `valid` byte. TSAN should complain
+                                    // if left-right grants access while dropping the write handle
+                                    // as in `test_concurrency_fibtable` when a worker calls enter(),
+                                    // which internally checks valid.
+                                    if g.valid {
+                                        enters += 1;
+                                    }
+                                }
+                                None => misses += 1,
+                            }
+                        }
+                        budget = budget.saturating_sub(1);
+                        if budget == 0 || stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                    }
+                    println!("tiny worker {n}: enters={enters} misses={misses}");
+                })
+                .unwrap();
+            handles.push(h);
+        }
+
+        for _ in 0..ITERATIONS {
+            let (mut w, r) = left_right::new::<Tiny, TinyOp>();
+
+            // Publish the factory so workers can get handles
+            *factory.write() = Some(r.factory());
+            drop(r);
+
+            // Let workers race with the upcoming drop. `yield_now` is enough;
+            thread::yield_now();
+
+            // Invalidate current Tony object and drop the write handle
+            w.append(TinyOp::Invalidate);
+            w.publish();
+            drop(w);
+
+            // Remove the factory so that no further handles can be created.
+            // Workers already holding a read handle should get a None when
+            // attempting to `enter()`.
+            *factory.write() = None;
+        }
+        stop.store(true, Ordering::Relaxed);
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }
