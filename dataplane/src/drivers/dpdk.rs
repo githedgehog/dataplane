@@ -15,7 +15,7 @@ use dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
 use dpdk::{dev, eal, socket};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::CmdArgs;
+use args::CmdArgs;
 use net::buffer::PacketBufferMut;
 use net::packet::Packet;
 use pipeline::sample_nfs::Passthrough;

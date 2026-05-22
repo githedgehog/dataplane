@@ -137,8 +137,7 @@ mod tests {
     use concurrency::thread;
     use net::ip::NextHeader;
 
-    // do not mark as a test
-    #[allow(dead_code)] // used by shuttle tests
+    #[allow(dead_code)]
     pub(super) fn concurrent_allocations() {
         let allocator = build_allocator();
         let allocator_arc = Arc::new(allocator);
@@ -298,8 +297,8 @@ mod std_tests {
         assert!(in_use.front().unwrap().upgrade().is_none()); // But it no longer resolves
     }
 
-    #[test]
     // Allocate an IP for a TCP packet, then for a UDP packet.
+    #[test]
     fn test_tcp_udp() {
         let mut allocator = build_allocator();
         let (bitmap, in_use) = get_ip_allocator_v4(
@@ -380,6 +379,8 @@ mod std_tests {
     }
 }
 
+// Loom's Weak shim keeps allocator liveness entries alive forever.
+#[cfg(not(feature = "loom"))]
 mod concurrency_tests {
     use super::context::*;
     use super::tests;
@@ -412,6 +413,7 @@ mod concurrency_tests {
         tests::concurrent_allocations();
     }
 
+    // One-shot std execution is nondeterministic; model checkers make the race reachable.
     #[cfg(any(feature = "loom", feature = "shuttle"))]
     #[concurrency::test]
     #[should_panic(expected = "assertion `left == right` failed")]

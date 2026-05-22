@@ -78,7 +78,7 @@ _cargo_profile_flag := if profile == "debug" { "" } else { "--profile " + profil
 # emits a `concurrency_model::<backend>` leaf -- the substring matches)
 # or live in a `*_shuttle` module / `*shuttle*` binary by convention.
 # Other workspace tests would fail spuriously without this filter.
-filter := if features =~ "^shuttle" { "shuttle" } else { "" }
+filter := if features =~ "^shuttle" { "shuttle" } else if features =~ "^loom" { "::concurrency_model::loom" } else { "" }
 
 # instrumentation mode (none/coverage)
 instrument := "none"

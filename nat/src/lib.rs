@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+// Required for `self: Arc<Self>` methods under loom's Arc newtype.
+#![cfg_attr(feature = "loom", feature(arbitrary_self_types))]
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 #![allow(clippy::missing_errors_doc)]
