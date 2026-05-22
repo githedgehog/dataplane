@@ -235,12 +235,11 @@ impl FlowTable {
         val.update_status(FlowStatus::Active);
         drop(table);
 
-        #[cfg(not(feature = "shuttle"))]
+        #[cfg(not(any(feature = "shuttle", feature = "loom")))]
         Self::start_timer(self.table.clone(), val.clone());
 
         if let Some(old) = result.as_ref() {
             old.update_status(FlowStatus::Detached);
-            #[cfg(not(feature = "shuttle"))]
             old.token.cancel();
         }
 
@@ -267,7 +266,6 @@ impl FlowTable {
             let stale = status != FlowStatus::Active || v.expires_at() <= now;
             if stale {
                 v.update_status(FlowStatus::Expired);
-                #[cfg(not(feature = "shuttle"))]
                 v.token.cancel();
                 count += 1;
             }
@@ -306,7 +304,6 @@ impl FlowTable {
         let result = table.remove(flow_key);
         if let Some((_key, flow_info)) = result.as_ref() {
             flow_info.update_status(FlowStatus::Detached);
-            #[cfg(not(feature = "shuttle"))]
             flow_info.token.cancel();
         }
         result
@@ -694,56 +691,29 @@ mod tests {
         }
     }
 
-    #[concurrency_mode(shuttle)]
-    mod shuttle_tests {
+    // These tests cover the FlowTable code paths that allocate Arcs / spawn
+    // threads.  Under the default backend `FlowTable::insert` calls
+    // `tokio::task::spawn` to start the flow timer, which would panic without
+    // a running tokio runtime, so the module is gated to model-checker
+    // backends only -- where the `start_timer` call is also bypassed at the
+    // call site.  Tokio-driven coverage of `insert` lives in the `std_tests`
+    // module above.
+    #[cfg(any(feature = "loom", feature = "shuttle"))]
+    mod concurrency_tests {
         use super::*;
         use crate::flow_table::FlowInfo;
         use concurrency::sync::Arc;
         use concurrency::thread;
         use std::time::Instant;
 
-        #[test]
-        fn test_flow_table_timeout() {
-            shuttle::check_random(
-                move || {
-                    let now = Instant::now();
-                    let two_seconds = Duration::from_secs(2);
-
-                    let flow_table = FlowTable::default();
-                    let flow_key = FlowKey::Unidirectional(FlowKeyData::new(
-                        Some(VpcDiscriminant::VNI(Vni::new_checked(42).unwrap())),
-                        "10.0.0.1".parse::<IpAddr>().unwrap(),
-                        "10.0.0.2".parse::<IpAddr>().unwrap(),
-                        IpProtoKey::Tcp(TcpProtoKey {
-                            src_port: TcpPort::new_checked(1234).unwrap(),
-                            dst_port: TcpPort::new_checked(5678).unwrap(),
-                        }),
-                    ));
-
-                    let flow_info = FlowInfo::new(flow_key, now + two_seconds);
-                    flow_table.insert(flow_info).unwrap();
-
-                    // Flow is active; lookup should return Some.
-                    assert!(
-                        flow_table.lookup(&flow_key).is_some(),
-                        "Flow key should be present"
-                    );
-
-                    // Simulate timer expiration by marking the flow directly.
-                    if let Some(fi) = flow_table.lookup(&flow_key) {
-                        fi.update_status(FlowStatus::Expired);
-                    }
-
-                    // Lookup: will find it because we don't expire without tokio nor do lazy removals
-                    let found = flow_table.lookup(&flow_key).unwrap();
-                    assert_eq!(found.status(), FlowStatus::Expired);
-                },
-                100,
-            );
-        }
+        // The single-threaded `test_flow_table_timeout` that used to live
+        // here was redundant with the `#[tokio::test(start_paused = true)]`
+        // version in `std_tests` above, and shuttle's PCT scheduler panics
+        // on bodies that never exercise concurrency.  The std_tests version
+        // is the canonical coverage; we don't need a model-checked copy.
 
         #[allow(clippy::too_many_lines)]
-        #[test]
+        #[concurrency::test]
         #[tracing_test::traced_test]
         fn test_flow_table_concurrent_insert_remove_lookup_expire() {
             const N: usize = 3;
@@ -765,164 +735,154 @@ mod tests {
                 })
                 .collect();
 
-            shuttle::check_random(
-                move || {
-                    let flow_table = Arc::new(FlowTable::default());
+            let flow_table = Arc::new(FlowTable::default());
 
-                    let now = Instant::now();
+            let now = Instant::now();
 
-                    // Insert the first flow
-                    let orig_flow_info = FlowInfo::new(flow_keys[0], now + two_seconds);
-                    flow_table.insert(orig_flow_info).unwrap();
-                    let flow_info = flow_table.lookup(&flow_keys[0]).unwrap();
+            // Insert the first flow
+            let orig_flow_info = FlowInfo::new(flow_keys[0], now + two_seconds);
+            flow_table.insert(orig_flow_info).unwrap();
+            let flow_info = flow_table.lookup(&flow_keys[0]).unwrap();
 
-                    // This holder will retain the Arc until the inserter thread starts
-                    let mut flow_info_holder = Some(flow_info);
+            // This holder will retain the Arc until the inserter thread starts
+            let mut flow_info_holder = Some(flow_info);
 
-                    let mut handles = vec![];
+            let mut handles = vec![];
 
-                    // "expirer" thread — simulates what the tokio timer would do.
-                    handles.push(
-                        thread::Builder::new()
-                            .name("expirer".to_string())
-                            .spawn({
-                                let flow_table = flow_table.clone();
-                                let flow_key = flow_keys[0];
-                                move || {
-                                    for _ in 0..N {
-                                        thread::yield_now();
-                                        if let Some(fi) = flow_table.lookup(&flow_key) {
-                                            fi.update_status(FlowStatus::Expired);
-                                        }
-                                    }
+            // "expirer" thread — simulates what the tokio timer would do.
+            handles.push(
+                thread::Builder::new()
+                    .name("expirer".to_string())
+                    .spawn({
+                        let flow_table = flow_table.clone();
+                        let flow_key = flow_keys[0];
+                        move || {
+                            for _ in 0..N {
+                                thread::yield_now();
+                                if let Some(fi) = flow_table.lookup(&flow_key) {
+                                    fi.update_status(FlowStatus::Expired);
                                 }
-                            })
-                            .unwrap(),
-                    );
-
-                    handles.push(
-                        thread::Builder::new()
-                            .name("inserter".to_string())
-                            .spawn({
-                                let flow_table = flow_table.clone();
-                                let flow_info = flow_info_holder.take();
-                                move || {
-                                    for _ in 0..N {
-                                        if let Some(flow_info) = flow_info.as_ref() {
-                                            flow_table.insert_from_arc(flow_info).unwrap();
-                                        }
-                                        thread::yield_now();
-                                    }
-                                }
-                            })
-                            .unwrap(),
-                    );
-
-                    handles.push(
-                        thread::Builder::new()
-                            .name("remover".to_string())
-                            .spawn({
-                                let flow_table = flow_table.clone();
-                                let flow_key = flow_keys[1];
-                                move || {
-                                    for _ in 0..N {
-                                        thread::yield_now();
-                                        flow_table.remove(&flow_key);
-                                    }
-                                }
-                            })
-                            .unwrap(),
-                    );
-
-                    handles.push(
-                        thread::Builder::new()
-                            .name("lookup_and_lock".to_string())
-                            .spawn({
-                                let flow_table = flow_table.clone();
-                                let flow_key = flow_keys[1];
-                                move || {
-                                    for _ in 0..N {
-                                        thread::yield_now();
-                                        if let Some(flow_info) = flow_table.lookup(&flow_key) {
-                                            let _guard = flow_info.locked.write();
-                                        }
-                                    }
-                                }
-                            })
-                            .unwrap(),
-                    );
-
-                    for handle in handles {
-                        handle.join().unwrap();
-                    }
-
-                    // After all threads, flow[0] should be expired/gone (expirer thread ran).
-                    // Since timers are not started in shuttle tests, the flow should be there
-                    // but appear as Expired or Detached. Re-inserting a flow makes it active again,
-                    // therefore, the only non-feasible status is Cancellled.
-                    let found = flow_table.lookup(&flow_keys[0]).unwrap();
-                    assert_ne!(found.status(), FlowStatus::Cancelled);
-                },
-                100,
+                            }
+                        }
+                    })
+                    .unwrap(),
             );
+
+            handles.push(
+                thread::Builder::new()
+                    .name("inserter".to_string())
+                    .spawn({
+                        let flow_table = flow_table.clone();
+                        let flow_info = flow_info_holder.take();
+                        move || {
+                            for _ in 0..N {
+                                if let Some(flow_info) = flow_info.as_ref() {
+                                    flow_table.insert_from_arc(flow_info).unwrap();
+                                }
+                                thread::yield_now();
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
+
+            handles.push(
+                thread::Builder::new()
+                    .name("remover".to_string())
+                    .spawn({
+                        let flow_table = flow_table.clone();
+                        let flow_key = flow_keys[1];
+                        move || {
+                            for _ in 0..N {
+                                thread::yield_now();
+                                flow_table.remove(&flow_key);
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
+
+            handles.push(
+                thread::Builder::new()
+                    .name("lookup_and_lock".to_string())
+                    .spawn({
+                        let flow_table = flow_table.clone();
+                        let flow_key = flow_keys[1];
+                        move || {
+                            for _ in 0..N {
+                                thread::yield_now();
+                                if let Some(flow_info) = flow_table.lookup(&flow_key) {
+                                    let _guard = flow_info.locked.write();
+                                }
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
+
+            // After all threads, flow[0] should be expired/gone (expirer thread ran).
+            // Since timers are not started in shuttle tests, the flow should be there
+            // but appear as Expired or Detached. Re-inserting a flow makes it active again,
+            // therefore, the only non-feasible status is Cancellled.
+            let found = flow_table.lookup(&flow_keys[0]).unwrap();
+            assert_ne!(found.status(), FlowStatus::Cancelled);
         }
 
-        #[test]
+        #[concurrency::test]
         fn test_flow_table_reshard() {
-            shuttle::check_random(
-                move || {
-                    let flow_table = Arc::new(FlowTable::default());
+            let flow_table = Arc::new(FlowTable::default());
 
-                    let five_seconds_from_now = Instant::now() + Duration::from_secs(5);
-                    let flow_key1 = FlowKey::Unidirectional(FlowKeyData::new(
-                        Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
-                        "1.2.3.4".parse::<IpAddr>().unwrap(),
-                        "4.5.6.7".parse::<IpAddr>().unwrap(),
-                        IpProtoKey::Tcp(TcpProtoKey {
-                            src_port: TcpPort::new_checked(1025).unwrap(),
-                            dst_port: TcpPort::new_checked(2048).unwrap(),
-                        }),
-                    ));
+            let five_seconds_from_now = Instant::now() + Duration::from_secs(5);
+            let flow_key1 = FlowKey::Unidirectional(FlowKeyData::new(
+                Some(VpcDiscriminant::VNI(Vni::new_checked(1).unwrap())),
+                "1.2.3.4".parse::<IpAddr>().unwrap(),
+                "4.5.6.7".parse::<IpAddr>().unwrap(),
+                IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: TcpPort::new_checked(1025).unwrap(),
+                    dst_port: TcpPort::new_checked(2048).unwrap(),
+                }),
+            ));
 
-                    let flow_key2 = FlowKey::Unidirectional(FlowKeyData::new(
-                        Some(VpcDiscriminant::VNI(Vni::new_checked(10).unwrap())),
-                        "10.2.3.4".parse::<IpAddr>().unwrap(),
-                        "40.5.6.7".parse::<IpAddr>().unwrap(),
-                        IpProtoKey::Tcp(TcpProtoKey {
-                            src_port: TcpPort::new_checked(1025).unwrap(),
-                            dst_port: TcpPort::new_checked(2048).unwrap(),
-                        }),
-                    ));
+            let flow_key2 = FlowKey::Unidirectional(FlowKeyData::new(
+                Some(VpcDiscriminant::VNI(Vni::new_checked(10).unwrap())),
+                "10.2.3.4".parse::<IpAddr>().unwrap(),
+                "40.5.6.7".parse::<IpAddr>().unwrap(),
+                IpProtoKey::Tcp(TcpProtoKey {
+                    src_port: TcpPort::new_checked(1025).unwrap(),
+                    dst_port: TcpPort::new_checked(2048).unwrap(),
+                }),
+            ));
 
-                    let flow_table_clone1 = flow_table.clone();
-                    let flow_table_clone2 = flow_table.clone();
-                    let flow_table_clone3 = flow_table.clone();
+            let flow_table_clone1 = flow_table.clone();
+            let flow_table_clone2 = flow_table.clone();
+            let flow_table_clone3 = flow_table.clone();
 
-                    let mut handles = vec![];
+            let mut handles = vec![];
 
-                    handles.push(thread::spawn(move || {
-                        let flow_info = FlowInfo::new(flow_key1, five_seconds_from_now);
-                        flow_table_clone1.insert(flow_info).unwrap();
-                        let result = flow_table_clone1.remove(&flow_key1).unwrap();
-                        assert!(result.0 == flow_key1);
-                    }));
+            handles.push(thread::spawn(move || {
+                let flow_info = FlowInfo::new(flow_key1, five_seconds_from_now);
+                flow_table_clone1.insert(flow_info).unwrap();
+                let result = flow_table_clone1.remove(&flow_key1).unwrap();
+                assert!(result.0 == flow_key1);
+            }));
 
-                    handles.push(thread::spawn(move || {
-                        let flow_info = FlowInfo::new(flow_key2, five_seconds_from_now);
-                        flow_table_clone2.insert(flow_info).unwrap();
-                        let result = flow_table.remove(&flow_key2).unwrap();
-                        assert!(result.0 == flow_key2);
-                    }));
+            handles.push(thread::spawn(move || {
+                let flow_info = FlowInfo::new(flow_key2, five_seconds_from_now);
+                flow_table_clone2.insert(flow_info).unwrap();
+                let result = flow_table.remove(&flow_key2).unwrap();
+                assert!(result.0 == flow_key2);
+            }));
 
-                    handles.push(thread::spawn(move || flow_table_clone3.reshard(128)));
+            handles.push(thread::spawn(move || flow_table_clone3.reshard(128)));
 
-                    let _results: Vec<()> = handles
-                        .into_iter()
-                        .map(|handle| handle.join().unwrap())
-                        .collect();
-                },
-                100,
-            );
+            let _results: Vec<()> = handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect();
         }
     }
 }
