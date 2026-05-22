@@ -90,7 +90,7 @@ where
     T: CliDataProvider,
 {
     fn provide(&self) -> String {
-        self.load_full().provide()
+        self.load().provide()
     }
 }
 

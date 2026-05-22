@@ -8,6 +8,9 @@ version.workspace = true
 [features]
 default = ["dpdk"]
 dpdk = ["dep:dpdk", "dep:dpdk-sysroot-helper"]
+# Bin is gated out under loom (see `src/main.rs`); the feature exists so
+# `--features loom` resolves at workspace level and propagates to libs.
+loom = ["concurrency/loom"]
 
 [dependencies]
 afpacket = { workspace = true, features = ["async-tokio"] }

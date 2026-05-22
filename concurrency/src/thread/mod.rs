@@ -31,7 +31,35 @@ pub use std::thread::*;
 pub use shuttle::thread::*;
 
 #[cfg(all(feature = "loom", not(feature = "silence_clippy")))]
-pub use loom::thread::*;
+pub use loom::thread::{
+    AccessError, Builder, JoinHandle, LocalKey, Thread, ThreadId, current, panicking, park,
+    yield_now,
+};
+
+/// Spawn a loom thread
+///
+/// # Panics
+/// Panics if loom's scheduler refuses the spawn (the underlying
+/// `Builder::spawn` returns `io::Result`; for loom this is effectively
+/// infallible, so the `expect` is a stand-in for `unwrap_unchecked`).
+#[cfg(all(feature = "loom", not(feature = "silence_clippy")))]
+#[allow(clippy::expect_used)]
+pub fn spawn<F, T>(f: F) -> JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(f)
+        .expect("loom thread spawn")
+}
+
+/// Backend-portable `sleep` shim under loom.
+#[cfg(all(feature = "loom", not(feature = "silence_clippy")))]
+pub fn sleep(_: core::time::Duration) {
+    loom::thread::yield_now();
+}
 
 #[cfg(all(feature = "loom", not(feature = "silence_clippy")))]
 mod loom_scope;
@@ -46,28 +74,8 @@ pub use loom_scope::{Scope, ScopedJoinHandle, scope};
 #[cfg(all(feature = "shuttle", feature = "loom", feature = "silence_clippy"))]
 pub use std::thread::*;
 
-// ============================== BuilderExt ===============================
-//
-// `Builder::spawn_scoped` is only inherent on `std::thread::Builder`.
-// `loom::thread::Builder` and `shuttle::thread::Builder` lack it; both
-// backends provide `Scope::spawn` instead. This extension trait closes
-// the gap so call sites can write `builder.spawn_scoped(scope, f)`
-// uniformly across all three backends.
-//
-// Under std the trait impl forwards to the inherent method (Rust's
-// method-resolution prefers the inherent over the trait method when both
-// match, so the trait is never actually called there, but the impl is
-// kept for symmetry and to give consumers a stable trait reference).
-//
-// Under loom and shuttle the trait body wraps `Scope::spawn` and
-// discards the Builder's name/stack_size, which both backends treat as
-// advisory (no OS thread, no real stack to size).
-
-/// Extension trait that adds `Builder::spawn_scoped` for backends that
-/// don't ship it natively.
-///
-/// `use concurrency::thread::BuilderExt;` makes `builder.spawn_scoped(
-/// scope, f)` work under any backend.
+// `Builder::spawn_scoped` is only inherent on `std::thread::Builder`;
+// loom/shuttle provide `Scope::spawn` instead. This trait closes the gap.
 pub trait BuilderExt {
     /// Spawn a thread within `scope`.
     ///

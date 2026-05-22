@@ -6,7 +6,7 @@
 use crate::errors::{ConfigError, ConfigResult};
 use crate::external::{ExternalConfig, GenId, ValidatedExternalConfig};
 use crate::internal::InternalConfig;
-use arc_swap::ArcSwap;
+use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
@@ -64,7 +64,7 @@ impl GwConfigMeta {
 #[derive(Debug)]
 pub struct GwConfig {
     /// Configuration metadata
-    pub meta: ArcSwap<GwConfigMeta>,
+    pub meta: Slot<GwConfigMeta>,
 
     /// Configuration, as received
     pub external: ExternalConfig,
@@ -80,7 +80,7 @@ impl GwConfig {
     #[must_use]
     pub fn new(external: ExternalConfig) -> Self {
         Self {
-            meta: ArcSwap::new(Arc::from(GwConfigMeta::new(external.genid))),
+            meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid))),
             external,
             internal: None,
         }
@@ -146,7 +146,7 @@ impl GwConfig {
 
 #[derive(Debug)]
 pub struct ValidatedGwConfig {
-    meta: ArcSwap<GwConfigMeta>,
+    meta: Slot<GwConfigMeta>,
     external: ValidatedExternalConfig,
     internal: Option<InternalConfig>,
 }
@@ -158,14 +158,14 @@ impl ValidatedGwConfig {
         // A unit test verifies this invariant.
         let external = ValidatedExternalConfig::blank();
         Self {
-            meta: ArcSwap::new(Arc::from(GwConfigMeta::new(external.genid()))),
+            meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid()))),
             external,
             internal: None,
         }
     }
 
     #[must_use]
-    pub fn meta(&self) -> &ArcSwap<GwConfigMeta> {
+    pub fn meta(&self) -> &Slot<GwConfigMeta> {
         &self.meta
     }
 

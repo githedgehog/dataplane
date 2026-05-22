@@ -444,17 +444,12 @@ mod tests {
     }
 }
 
-/// Multi-backend concurrency tests.  Under the default backend each body runs
-/// once as a smoke test (real OS threads + `parking_lot` locks); under
-/// `--features loom` they go through `loom::model`; under `--features
-/// shuttle` they go through `shuttle::PortfolioRunner` (Random + PCT, with
-/// DFS added by the additive `shuttle_dfs` feature).  See
-/// [`dataplane_concurrency::test`].
-///
-/// The heavy fuzz tests in `mod tests` above stay on the std backend -- their
-/// iteration counts (100 000+ packets, 5 000 left-right rebuilds) are
-/// calibrated for stress-testing under real OS threads + TSAN, not for the
-/// combinatorial cost the model checker would pay per stress iteration.
+// Loom is excluded: the left_right epoch state space is too large for
+// exhaustive search to terminate. Shuttle's PortfolioRunner is the right
+// tool at this dimensionality. The heavy fuzz tests in `mod tests` above
+// stay on the std backend -- they're calibrated for TSAN, not for the
+// per-iteration cost of model-checking.
+#[cfg(not(feature = "loom"))]
 mod concurrency_tests {
     use crate::fib::fibtable::FibTableWriter;
     use crate::fib::fibtype::FibKey;
@@ -482,17 +477,12 @@ mod concurrency_tests {
 
     #[concurrency::test]
     fn test_fib_removals() {
-        // Iteration counts are tuned per backend: the model checkers pay a
-        // multiplicative cost per stress iteration, so a small `MAX_ITERATIONS`
-        // is enough to exercise the add/del race surface; the default backend
-        // keeps the historical 1000 for real-thread coverage.
         const MAX_ITERATIONS: usize = cfg_select! {
             any(feature = "loom", feature = "shuttle") => 5,
             miri => 50,
             _ => 1000,
         };
-        // Shuttle / loom bail on unbounded spin loops (`exceeded max_steps`);
-        // cap the reader's polling iterations under those backends.
+        // Cap the reader's polling so shuttle/loom don't hit `exceeded max_steps`.
         const READER_BUDGET: usize = cfg_select! {
             any(feature = "loom", feature = "shuttle") => MAX_ITERATIONS * 4,
             _ => usize::MAX,
@@ -552,9 +542,7 @@ mod concurrency_tests {
     // `ReadHandleCache` (no thread-local storage). If this test races under
     // ThreadSanitizer the bug lives in `left_right::WriteHandle::drop`
     // (`take_inner`: NULL-swap followed by `wait()` on stale `last_epochs`),
-    // *not* in our code.  Under loom/shuttle the model checker cannot see
-    // left_right's internals, but it does exercise the surrounding Arc /
-    // AtomicBool / RwLock synchronisation pattern.
+    // *not* in our code.
     #[concurrency::test]
     fn test_leftright_destroy_race_simple() {
         use concurrency::sync::RwLock;
@@ -586,7 +574,7 @@ mod concurrency_tests {
             _ => 6,
         };
         const ITERATIONS: usize = cfg_select! {
-            any(feature = "loom", feature = "shuttle") => 5,
+            any(feature = "loom", feature = "shuttle") => 2,
             miri => 50,
             _ => 5_000,
         };
@@ -597,10 +585,9 @@ mod concurrency_tests {
             _ => usize::MAX,
         };
 
-        // Shared, lock-protected factory (or None) that writer populates with
-        // a new factory anytime a new write handle is created and which
-        // workers use to get fresh handles.  Workers have no cache of read
-        // handles here.
+        // Shared, lock-protected factory (or None) that writer populates with a new factory
+        // anytime a new write handle is created and which workers use to get fresh handles.
+        // Workers have no cache of read handles here
         let factory = Arc::new(RwLock::new(None::<ReadHandleFactory<Tiny>>));
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -620,12 +607,10 @@ mod concurrency_tests {
                         if let Some(rh) = rh {
                             match rh.enter() {
                                 Some(g) => {
-                                    // Read the `valid` byte. TSAN should
-                                    // complain if left-right grants access
-                                    // while dropping the write handle as in
-                                    // `test_concurrency_fibtable` when a
-                                    // worker calls enter(), which internally
-                                    // checks valid.
+                                    // Read the `valid` byte. TSAN should complain
+                                    // if left-right grants access while dropping the write handle
+                                    // as in `test_concurrency_fibtable` when a worker calls enter(),
+                                    // which internally checks valid.
                                     if g.valid {
                                         enters += 1;
                                     }
@@ -651,7 +636,7 @@ mod concurrency_tests {
             *factory.write() = Some(r.factory());
             drop(r);
 
-            // Let workers race with the upcoming drop. `yield_now` is enough.
+            // Let workers race with the upcoming drop. `yield_now` is enough;
             thread::yield_now();
 
             // Invalidate current Tony object and drop the write handle

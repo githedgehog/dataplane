@@ -161,6 +161,12 @@ impl<I: NatIpWithBitmap> PortAllocator<I> {
         }
     }
 
+    #[concurrency_mode(loom)]
+    fn shuffle_slice<T>(_slice: &mut [T]) {
+        // Loom needs determinism for replay; shuffle is an allocation-order
+        // heuristic, not a correctness property.
+    }
+
     // Iterate over the slice of all blocks, but starting from a given offset (and looping at the
     // end), returning the block and its index from the initial slice.
     //

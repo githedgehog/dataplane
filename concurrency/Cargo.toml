@@ -9,21 +9,8 @@ version.workspace = true
 default = ["parking_lot"]
 loom = ["dep:loom", "concurrency-macros/loom"]
 parking_lot = ["dep:parking_lot"]
-# `shuttle` enables shuttle's model-checker behind the
-# `concurrency::stress` dispatcher.  The dispatcher builds a
-# `shuttle::PortfolioRunner` that runs the `RandomScheduler` and the
-# `PctScheduler` in parallel: random for broad coverage, PCT to bias
-# toward rare interleavings.  Either scheduler finding a
-# counterexample fails the whole test.
-#
-# `shuttle_dfs` is an additive opt-in on top of `shuttle`: it also
-# adds the `DfsScheduler` (depth-first exhaustive search up to
-# `ITERATIONS`) to the same portfolio.  Off by default because DFS is
-# only useful for tests with small state spaces; turn it on locally
-# (or in a dedicated CI step) when you want exhaustive exploration on
-# top of the default portfolio.  Future extra schedulers should
-# follow the same pattern -- one additive feature per scheduler,
-# composed into the portfolio in `concurrency::stress`.
+# `shuttle` drives a `PortfolioRunner` (Random + PCT) via `concurrency::stress`.
+# `shuttle_dfs` additively adds the DFS scheduler to the same portfolio.
 shuttle = ["dep:shuttle", "concurrency-macros/shuttle"]
 shuttle_dfs = ["shuttle"]
 silence_clippy = ["concurrency-macros/silence_clippy"] # Do not manually enable this feature, let --all-features do it for you

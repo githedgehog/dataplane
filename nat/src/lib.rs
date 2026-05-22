@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
+// Loom's backend wraps `Arc<T>` in a local newtype that isn't a blessed
+// self-receiver; needed for the `self: Arc<Self>` methods on
+// `AllocatedIp` / `AllocatedPortBlock`.
+#![cfg_attr(feature = "loom", feature(arbitrary_self_types))]
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
 #![allow(clippy::missing_errors_doc)]

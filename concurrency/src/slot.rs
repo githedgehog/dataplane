@@ -28,8 +28,6 @@
 //!
 //! [`Subscriber::snapshot`]: crate::Subscriber::snapshot
 
-#![allow(clippy::disallowed_types)]
-
 // Strict provenance checks fail with arc-swap since it uses hazard pointers and does not (yet) use the new
 // std features to expose provenance information in their mechanics.
 // As a result, we can still check for provenance violations in this crate, but only with the Mutex based
@@ -48,6 +46,10 @@ cfg_select! {
             #[must_use]
             pub fn new(value: Arc<T>) -> Self {
                 Self(Mutex::new(value))
+            }
+
+            pub fn load(&self) -> Arc<T> {
+                self.load_full()
             }
 
             pub fn load_full(&self) -> Arc<T> {
@@ -86,6 +88,10 @@ cfg_select! {
                 Self(Mutex::new(value))
             }
 
+            pub fn load(&self) -> Option<Arc<T>> {
+                self.load_full()
+            }
+
             pub fn load_full(&self) -> Option<Arc<T>> {
                 let guard = self.0.lock();
                 guard.as_ref().map(Arc::clone)
@@ -115,6 +121,8 @@ cfg_select! {
         #[repr(transparent)]
         pub struct Slot<T>(ArcSwap<T>);
 
+        pub struct GuardA;
+
         impl<T> Slot<T> {
             #[inline]
             pub fn from_pointee(value: T) -> Self {
@@ -125,6 +133,11 @@ cfg_select! {
             #[must_use]
             pub fn new(value: Arc<T>) -> Self {
                 Self(ArcSwap::new(value))
+            }
+
+            #[inline]
+            pub fn load(&self) -> arc_swap::Guard<Arc<T>> {
+                self.0.load()
             }
 
             #[inline]
@@ -165,6 +178,11 @@ cfg_select! {
             #[must_use]
             pub fn new(value: Option<Arc<T>>) -> Self {
                 Self(ArcSwapOption::new(value))
+            }
+
+            #[inline]
+            pub fn load(&self) -> arc_swap::Guard<Option<Arc<T>>> {
+                self.0.load()
             }
 
             #[inline]

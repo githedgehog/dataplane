@@ -380,14 +380,11 @@ mod std_tests {
     }
 }
 
-/// Multi-backend concurrency tests for the NAT allocator.  Each
-/// `#[concurrency::test]` runs once on the default backend (real OS threads
-/// + parking_lot), under `loom::model` on `--features loom`, and through
-/// shuttle's PortfolioRunner (Random + PCT, plus DFS on `--features
-/// shuttle_dfs`) on `--features shuttle`.  `concurrency::stress` configures
-/// a 4 MiB shuttle stack so the allocator's per-block atomic arrays fit
-/// even under shuttle's instrumented primitives (each `AtomicBool` runs
-/// ~100 bytes there).
+// Loom is excluded: its `Weak` shim never upgrades to `None`, so the
+// allocator's `Weak`-as-liveness pattern keeps dropped entries alive
+// forever and trips loom's end-of-execution `Arc leaked` assertion.
+// See `concurrency::sync` for the shim caveat.
+#[cfg(not(feature = "loom"))]
 mod concurrency_tests {
     use super::context::*;
     use super::tests;
@@ -395,8 +392,6 @@ mod concurrency_tests {
     use concurrency::thread;
     use net::ip::NextHeader;
 
-    /// Two threads allocating against distinct source IPs.  Control test:
-    /// the allocator should service independent IPs without interference.
     #[concurrency::test]
     fn test_concurrent_allocations_two_ips() {
         let allocator = build_allocator();
@@ -417,22 +412,13 @@ mod concurrency_tests {
         t2.join().unwrap();
     }
 
-    /// Three threads contending for the same source IP (1.1.0.0).  Heavier
-    /// exercise of the allocator's per-pool locking.  Body lives in the
-    /// sibling `tests::concurrent_allocations` helper so the shape stays
-    /// shared with anything else that wants to drive the same scenario.
     #[concurrency::test]
     fn test_concurrent_allocations_three_workers() {
         tests::concurrent_allocations();
     }
 
-    /// Smoke test that the model checker actually catches a race: the
-    /// spawned thread writes 1 to the mutex, the main thread asserts the
-    /// value is 0.  Under shuttle's Random + PCT portfolio (or loom's
-    /// exhaustive search) the racy interleaving is reachable, so the
-    /// assertion panics and `#[should_panic]` is satisfied.  Under the
-    /// default backend a single one-shot run is non-deterministic, so the
-    /// test is gated to the model-checker backends only.
+    // Default backend's one-shot run is non-deterministic, so this only
+    // runs under a model checker -- where the race is actually reachable.
     #[cfg(any(feature = "loom", feature = "shuttle"))]
     #[concurrency::test]
     #[should_panic(expected = "assertion `left == right` failed")]

@@ -691,26 +691,17 @@ mod tests {
         }
     }
 
-    // These tests cover the FlowTable code paths that allocate Arcs / spawn
-    // threads.  Under the default backend `FlowTable::insert` calls
-    // `tokio::task::spawn` to start the flow timer, which would panic without
-    // a running tokio runtime, so the module is gated to model-checker
-    // backends only -- where the `start_timer` call is also bypassed at the
-    // call site.  Tokio-driven coverage of `insert` lives in the `std_tests`
-    // module above.
-    #[cfg(any(feature = "loom", feature = "shuttle"))]
+    // Shuttle-only: `FlowTable::insert` spawns a tokio task for the timer
+    // and would panic without a running runtime; the `start_timer` call is
+    // bypassed under shuttle. Loom is excluded because FlowTable's DashMap
+    // panics in loom's end-of-execution cleanup.
+    #[cfg(feature = "shuttle")]
     mod concurrency_tests {
         use super::*;
         use crate::flow_table::FlowInfo;
         use concurrency::sync::Arc;
         use concurrency::thread;
         use std::time::Instant;
-
-        // The single-threaded `test_flow_table_timeout` that used to live
-        // here was redundant with the `#[tokio::test(start_paused = true)]`
-        // version in `std_tests` above, and shuttle's PCT scheduler panics
-        // on bodies that never exercise concurrency.  The std_tests version
-        // is the canonical coverage; we don't need a model-checked copy.
 
         #[allow(clippy::too_many_lines)]
         #[concurrency::test]

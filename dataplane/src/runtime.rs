@@ -1,0 +1,288 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+use crate::packet_processor::start_router;
+use crate::statistics::MetricsServer;
+use args::{CmdArgs, Parser};
+
+use crate::drivers::kernel::DriverKernel;
+use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
+
+use nix::unistd::gethostname;
+use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
+use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
+
+use routing::{BmpServerParams, RouterParamsBuilder};
+use tracectl::{custom_target, get_trace_ctl, trace_target};
+
+use tracing::{error, info, level_filters::LevelFilter};
+
+use concurrency::sync::Arc;
+use config::internal::routing::bmp::BmpOptions;
+use config::internal::status::DataplaneStatus;
+use net::tcp::TcpPort;
+use std::time::Duration;
+use tokio::sync::RwLock;
+
+trace_target!("dataplane", LevelFilter::DEBUG, &[]);
+custom_target!("Pyroscope", LevelFilter::INFO, &["third-party"]);
+custom_target!("kube", LevelFilter::WARN, &["third-party"]);
+custom_target!("hyper", LevelFilter::WARN, &["third-party"]);
+custom_target!("tower", LevelFilter::WARN, &["third-party"]);
+
+const PYROSCOPE_APP_NAME: &str = "hedgehog-dataplane";
+
+fn init_name(args: &CmdArgs) -> Result<String, String> {
+    if let Some(name) = args.get_name() {
+        Ok(name.clone())
+    } else {
+        let hostname =
+            gethostname().map_err(|errno| format!("Failed to get hostname: {}", errno.desc()))?;
+        let name = hostname
+            .to_str()
+            .ok_or_else(|| format!("Failed to convert hostname {}", hostname.display()))?;
+        Ok(name.to_string())
+    }
+}
+fn init_logging(gwname: &str) {
+    let tctl = get_trace_ctl();
+    info!(
+        " ━━━━━━ Starting dataplane for gateway '{gwname}' (Version = {}) ━━━━━━",
+        option_env!("VERSION").unwrap_or("dev").to_string()
+    );
+
+    tctl.set_default_level(LevelFilter::DEBUG)
+        .expect("Setting default loglevel failed");
+}
+
+fn process_tracing_cmds(args: &CmdArgs) {
+    if let Some(tracing) = args.tracing()
+        && let Err(e) = get_trace_ctl().setup_from_string(tracing)
+    {
+        error!("Invalid tracing configuration: {e}");
+        panic!("Invalid tracing configuration: {e}");
+    }
+    if args.show_tracing_tags() {
+        let out = get_trace_ctl()
+            .as_string_by_tag()
+            .unwrap_or_else(|e| e.to_string());
+        println!("{out}");
+        std::process::exit(0);
+    }
+    if args.show_tracing_targets() {
+        let out = get_trace_ctl()
+            .as_string()
+            .unwrap_or_else(|e| e.to_string());
+        println!("{out}");
+        std::process::exit(0);
+    }
+    if args.tracing_config_generate() {
+        let out = get_trace_ctl()
+            .as_config_string()
+            .unwrap_or_else(|e| e.to_string());
+        println!("{out}");
+        std::process::exit(0);
+    }
+}
+
+fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptions>) {
+    if args.bmp_enabled() {
+        let bind = args.bmp_address();
+        let interval: Duration = args.bmp_interval();
+
+        info!("BMP: enabled, listening on {bind}, interval={:?}", interval);
+
+        // BMP server (for routing crate)
+        let server = BmpServerParams {
+            bind_addr: bind,
+            stats_interval: interval,
+            min_retry: None,
+            max_retry: None,
+        };
+
+        // BMP options for FRR (for internal config)
+        let host = bind.ip().to_string();
+        let port = TcpPort::try_from(bind.port()).expect("Invalid BMP port");
+        let client = BmpOptions::new("bmp1", host, port)
+            .set_retry(interval, interval.saturating_mul(4u32))
+            .set_stats_interval(interval)
+            .monitor_ipv4(true, true);
+
+        (Some(server), Some(client))
+    } else {
+        info!("BMP: disabled");
+        (None, None)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn main() {
+    let args = CmdArgs::parse();
+    let gwname = match init_name(&args) {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!("Failed to set gateway name: {e}");
+            std::process::exit(1);
+        }
+    };
+    init_logging(&gwname);
+
+    let (bmp_server_params, bmp_client_opts) = parse_bmp_params(&args);
+
+    let dp_status: Arc<RwLock<DataplaneStatus>> = Arc::new(RwLock::new(DataplaneStatus::new()));
+
+    let agent_running = args.pyroscope_url().and_then(|url| {
+        let pyroscope_config = PyroscopeConfig::default();
+        let sample_rate = pyroscope_config.sample_rate;
+
+        match PyroscopeAgentBuilder::new(
+            url.as_str(),
+            PYROSCOPE_APP_NAME,
+            sample_rate,
+            pyroscope_config.spy_name,
+            pyroscope_config.spy_version,
+            pprof_backend(
+                PprofConfig { sample_rate },
+                BackendConfig {
+                    report_thread_name: true,
+                    ..BackendConfig::default()
+                },
+            ),
+        )
+        .build()
+        {
+            Ok(agent) => match agent.start() {
+                Ok(running) => Some(running),
+                Err(e) => {
+                    error!("Pyroscope start failed: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                error!("Pyroscope build failed: {e}");
+                None
+            }
+        }
+    });
+
+    process_tracing_cmds(&args);
+
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let ctrlc_stop_tx = stop_tx.clone();
+    ctrlc::set_handler(move || {
+        ctrlc_stop_tx
+            .send(0)
+            .expect("Error sending shutdown signal");
+    })
+    .expect("failed to set SIGINT handler");
+
+    /* router parameters */
+    let mut binding = RouterParamsBuilder::default();
+    let mut rp_builder = binding
+        .cli_sock_path(args.cli_sock_path())
+        .cpi_sock_path(args.cpi_sock_path())
+        .frr_agent_path(args.frr_agent_path())
+        .dp_status(dp_status.clone());
+
+    // Only set BMP when it's enabled (strip_option setter expects the inner type)
+    if let Some(server) = bmp_server_params {
+        rp_builder = rp_builder.bmp(server);
+    }
+
+    let Ok(router_params) = rp_builder.build() else {
+        error!("Bad router configuration");
+        panic!("Bad router configuration");
+    };
+
+    // start the router; returns control-plane handles and a pipeline factory
+    let setup = start_router(router_params).expect("failed to start router");
+
+    MetricsServer::new(args.metrics_address(), setup.stats);
+
+    // pipeline builder
+    let pipeline_factory = setup.pipeline;
+
+    /* start management: main thread will be blocked until ready or failure */
+    if let Err(e) = start_mgmt(MgmtParams {
+        config_dir: args.config_dir().cloned(),
+        hostname: gwname.clone(),
+        processor_params: ConfigProcessorParams {
+            router_ctl: setup.router.get_ctl_tx(),
+            pipeline_data: pipeline_factory().get_data(),
+            flow_table: setup.flow_table,
+            vpcmapw: setup.vpcmapw,
+            nattablesw: setup.nattablesw,
+            natallocatorw: setup.natallocatorw,
+            flowfilterw: setup.flowfiltertablesw,
+            portfw_w: setup.portfw_w,
+            vpc_stats_store: setup.vpc_stats_store,
+            dp_status_r: dp_status.clone(),
+            bmp_options: bmp_client_opts,
+        },
+    }) {
+        error!("Failed to start mgmt: {e}. Stopping dataplane...");
+        std::process::exit(-1);
+    }
+    info!("Management is running now");
+
+    /* start driver with the provided pipeline builder */
+    let e = match args.driver_name() {
+        "dpdk" => {
+            info!("Using driver DPDK...");
+            todo!();
+        }
+        "kernel" => {
+            info!("Using driver kernel...");
+            DriverKernel::start(
+                stop_tx.clone(),
+                args.kernel_interfaces(),
+                args.kernel_num_workers(),
+                &pipeline_factory,
+            )
+        }
+        other => {
+            error!("Unknown driver '{other}'. Aborting...");
+            panic!("Packet processing pipeline failed to start. Aborting...");
+        }
+    };
+
+    if let Err(e) = e {
+        error!("Failed to start driver: {e}");
+        std::process::exit(-1);
+    }
+
+    let exit_code = stop_rx.recv().expect("failed to receive stop signal");
+    info!("Shutting down dataplane");
+    if let Some(running) = agent_running {
+        match running.stop() {
+            Ok(ready) => ready.shutdown(),
+            Err(e) => error!("Pyroscope stop failed: {e}"),
+        }
+    }
+    std::process::exit(exit_code);
+}
+
+#[cfg(false)] // disabled until dpdk-sys refactor is complete
+#[cfg(test)]
+mod test {
+    use n_vm::in_vm;
+
+    #[test]
+    #[in_vm]
+    fn root_filesystem_in_vm_is_read_only() {
+        let error = std::fs::File::create_new("/some.file").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::ReadOnlyFilesystem);
+    }
+
+    #[test]
+    #[in_vm]
+    fn run_filesystem_in_vm_is_read_write() {
+        std::fs::File::create_new("/run/some.file").unwrap();
+    }
+
+    #[test]
+    #[in_vm]
+    fn tmp_filesystem_in_vm_is_read_write() {
+        std::fs::File::create_new("/tmp/some.file").unwrap();
+    }
+}
