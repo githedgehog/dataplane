@@ -125,7 +125,7 @@ mod test {
     use tracing_test::traced_test;
 
     #[tokio::test]
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[ignore = "test is incorrect and needs reworked"]
     async fn test_kubeless() {
         let path = "/tmp/kubeless-dir";

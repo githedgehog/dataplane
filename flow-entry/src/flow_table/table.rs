@@ -567,7 +567,7 @@ mod tests {
         }
 
         #[tokio::test]
-        #[traced_test]
+        #[cfg_attr(not(emulated), traced_test)]
         // tokio::time::sleep counts wall-clock seconds, so a 4s sleep under miri's slow
         // interpreter elapses many real-world seconds and the "extended" flow's std::Instant
         // deadline gets passed too. Fixing this would require running on tokio's paused
@@ -620,7 +620,7 @@ mod tests {
         }
 
         #[tokio::test]
-        #[traced_test]
+        #[cfg_attr(not(emulated), traced_test)]
         /// Test that invalidating flows causes timer to expire and flows to be removed
         async fn test_flow_table_flow_reinsertion() {
             let flow_table = FlowTable::default();
@@ -702,7 +702,7 @@ mod tests {
 
         #[allow(clippy::too_many_lines)]
         #[concurrency::test]
-        #[tracing_test::traced_test]
+        #[cfg_attr(not(emulated), tracing_test::traced_test)]
         fn test_flow_table_concurrent_insert_remove_lookup_expire() {
             const N: usize = 3;
 

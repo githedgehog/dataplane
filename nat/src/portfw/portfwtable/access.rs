@@ -113,7 +113,7 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     fn test_port_forwarding_access_remove_rules_drops_refs() {
         let mut pfw_table_w = PortFwTableWriter::new();
         let reader = pfw_table_w.reader();
@@ -143,7 +143,7 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     fn test_port_forwarding_access_modify_rules_keeps_refs() {
         let mut pfw_table_w = PortFwTableWriter::new();
         let reader = pfw_table_w.reader();
@@ -182,7 +182,7 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     fn test_port_forwarding_access_replace_ruleset() {
         let mut pfwt_w = PortFwTableWriter::new();
         let reader = pfwt_w.reader();
