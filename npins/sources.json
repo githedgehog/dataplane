@@ -54,9 +54,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "ef3e718651d59fd4da5787a9c05e06a594c0136c",
-      "url": "https://github.com/githedgehog/dplane-plugin/archive/ef3e718651d59fd4da5787a9c05e06a594c0136c.tar.gz",
-      "hash": "sha256-CRsHKk50XnV23uVJxjN9ZtsIFH/BwZYlW27UL4V0D6E="
+      "revision": "f3517e68ef53955f107993b45c64222576e2e42d",
+      "url": "https://github.com/githedgehog/dplane-plugin/archive/f3517e68ef53955f107993b45c64222576e2e42d.tar.gz",
+      "hash": "sha256-C5Hn5L7TVwmh4q4EGKHs5fxx6DX9lTqSGHfQTz6lVuM="
     },
     "dplane-rpc": {
       "type": "Git",
