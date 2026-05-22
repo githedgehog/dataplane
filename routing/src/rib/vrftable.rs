@@ -439,7 +439,7 @@ mod tests {
         vni.try_into().expect("Bad vni")
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn vrf_table_basic() {
         /* create fib table */
@@ -628,7 +628,7 @@ mod tests {
         println!("{vrftable}");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn vrf_table_vnis() {
         debug!("━━━━Test: Create vrf table");
@@ -686,7 +686,7 @@ mod tests {
         }
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn vrf_table_deletions() {
         debug!("━━━━Test: Create testing interface table");
@@ -919,7 +919,7 @@ mod tests {
         test_vrf_fibgroup(build_test_vrf());
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_vrf_fibgroup_2() {
         test_vrf_fibgroup(build_test_vrf_nhops_partially_resolved());

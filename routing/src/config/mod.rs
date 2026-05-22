@@ -335,7 +335,7 @@ mod tests {
         Ok(())
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_config_initial() {
         let mut db = create_routing_database();
@@ -343,7 +343,7 @@ mod tests {
         test_apply_config(&config, &mut db).expect("Should succeed");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_config_invalid() {
         let mut db = create_routing_database();
@@ -361,7 +361,7 @@ mod tests {
         assert!(result.is_err_and(|e| matches!(e, RouterError::InvalidConfig(_))));
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_config_reapply() {
         let mut db = create_routing_database();
@@ -371,7 +371,7 @@ mod tests {
         test_apply_config(&config, &mut db).expect("Should succeed");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_config_reconfig_vrf_name_and_vni() {
         let mut db = create_routing_database();
@@ -389,7 +389,7 @@ mod tests {
         test_apply_config(&config, &mut db).expect("Should succeed");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_config_reconfig_vnis() {
         let mut db = create_routing_database();
@@ -407,7 +407,7 @@ mod tests {
         test_apply_config(&config, &mut db).expect("Should succeed");
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_config_swap_vrf_vnis() {
         let mut db = create_routing_database();
@@ -430,7 +430,7 @@ mod tests {
     }
 
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn test_config_change_interface() {
         let mut db = create_routing_database();

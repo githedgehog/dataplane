@@ -388,7 +388,7 @@ pub mod test {
             .expect("Should succeed")
     }
 
-    #[traced_test]
+    #[cfg_attr(not(emulated), traced_test)]
     #[test]
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */

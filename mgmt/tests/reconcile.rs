@@ -28,7 +28,7 @@ use tracing_test::traced_test;
 #[test]
 #[n_vm::in_vm]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 fn reconcile_fuzz() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -85,7 +85,7 @@ fn reconcile_fuzz() {
 #[allow(clippy::too_many_lines)] // this is an integration test and is expected to be long
 #[tokio::test]
 #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
-#[traced_test]
+#[cfg_attr(not(emulated), traced_test)]
 async fn reconcile_demo() {
     let mut required_interface_map = MultiIndexInterfaceSpecMap::default();
     let interfaces = [
