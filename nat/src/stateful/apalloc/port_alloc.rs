@@ -15,11 +15,11 @@ use crate::stateful::allocation::AllocatorError;
 use concurrency::concurrency_mode;
 use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};
+use concurrency::thread::ThreadId;
 use config::GenId;
 use lpm::prefix::PortRange;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
-use std::thread::ThreadId;
 
 use tracing::debug;
 
@@ -636,13 +636,15 @@ impl ThreadPortMap {
     fn get(&self) -> Option<usize> {
         self.0
             .read()
-            .get(&std::thread::current().id())
+            .get(&concurrency::thread::current().id())
             .copied()
             .unwrap_or(None)
     }
 
     fn set(&self, index: Option<usize>) {
-        self.0.write().insert(std::thread::current().id(), index);
+        self.0
+            .write()
+            .insert(concurrency::thread::current().id(), index);
     }
 }
 
