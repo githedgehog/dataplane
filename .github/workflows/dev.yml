@@ -489,6 +489,24 @@ jobs:
     steps:
       - *checkout
       - *nix-setup
+      - name: "test"
+        if: >-
+          ${{
+            matrix.recipe.args == 'dataplane'
+            && github.event_name == 'pull_request'
+            && (
+              contains(github.event.pull_request.labels.*.name, 'ci:+cross')
+              || contains(github.event.pull_request.labels.*.name, 'ci:+cross/full')
+            )
+          }}
+        uses: *just
+        env:
+          JUST_VARS: >-
+            platform=${{ matrix.platform }}
+            profile=${{ matrix.profile }}
+            libc=${{ matrix.libc }}
+        with:
+          recipe: "test"
       - name: "${{ matrix.platform }}/${{ matrix.libc }}/${{ matrix.profile }}/${{ matrix.recipe.args }}"
         uses: *just
         env:
