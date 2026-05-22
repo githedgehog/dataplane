@@ -188,8 +188,6 @@ mod tests {
 mod std_tests {
     use super::context::*;
     use crate::stateful::apalloc::PoolTableKey;
-    use concurrency::sync::Arc;
-    use concurrency::thread;
     use net::ip::NextHeader;
 
     #[test]
@@ -380,14 +378,27 @@ mod std_tests {
         assert_eq!(bitmap.len(), 2); // 2 free IP addresses left to NAT 1.1.0.0 (UDP)
         assert_eq!(in_use.len(), 1); // 1 allocated, in use
     }
+}
 
-    // This test is NOT a shuttle test. It validates that a basic example with threads works
-    // with or without shuttle components (depending on how we compile), as a control test in
-    // case shuttle tests do not work. For example, it helped understand that memory usage for
-    // Atomics is different in shuttle than in std, and that just testing simple allocations as
-    // we do here was not broken - we just needed to increase stack memory for shuttle's runner.
-    #[test]
-    fn test_concurrent_allocations_without_shuttle() {
+/// Multi-backend concurrency tests for the NAT allocator.  Each
+/// `#[concurrency::test]` runs once on the default backend (real OS threads
+/// + parking_lot), under `loom::model` on `--features loom`, and through
+/// shuttle's PortfolioRunner (Random + PCT, plus DFS on `--features
+/// shuttle_dfs`) on `--features shuttle`.  `concurrency::stress` configures
+/// a 4 MiB shuttle stack so the allocator's per-block atomic arrays fit
+/// even under shuttle's instrumented primitives (each `AtomicBool` runs
+/// ~100 bytes there).
+mod concurrency_tests {
+    use super::context::*;
+    use super::tests;
+    use concurrency::sync::Arc;
+    use concurrency::thread;
+    use net::ip::NextHeader;
+
+    /// Two threads allocating against distinct source IPs.  Control test:
+    /// the allocator should service independent IPs without interference.
+    #[concurrency::test]
+    fn test_concurrent_allocations_two_ips() {
         let allocator = build_allocator();
         let allocator1 = Arc::new(allocator);
         let allocator2 = allocator1.clone();
@@ -405,81 +416,35 @@ mod std_tests {
         t1.join().unwrap();
         t2.join().unwrap();
     }
-}
 
-#[concurrency_mode(shuttle)]
-mod tests_shuttle {
-    use super::context::*;
-    use super::tests;
+    /// Three threads contending for the same source IP (1.1.0.0).  Heavier
+    /// exercise of the allocator's per-pool locking.  Body lives in the
+    /// sibling `tests::concurrent_allocations` helper so the shape stays
+    /// shared with anything else that wants to drive the same scenario.
+    #[concurrency::test]
+    fn test_concurrent_allocations_three_workers() {
+        tests::concurrent_allocations();
+    }
 
-    use concurrency::sync::{Arc, Mutex};
-    use concurrency::thread;
-    use net::ip::NextHeader;
-
+    /// Smoke test that the model checker actually catches a race: the
+    /// spawned thread writes 1 to the mutex, the main thread asserts the
+    /// value is 0.  Under shuttle's Random + PCT portfolio (or loom's
+    /// exhaustive search) the racy interleaving is reachable, so the
+    /// assertion panics and `#[should_panic]` is satisfied.  Under the
+    /// default backend a single one-shot run is non-deterministic, so the
+    /// test is gated to the model-checker backends only.
+    #[cfg(any(feature = "loom", feature = "shuttle"))]
+    #[concurrency::test]
     #[should_panic(expected = "assertion `left == right` failed")]
-    #[test]
     fn test_ensure_shuttle_works() {
-        shuttle::check_random(
-            || {
-                let lock = Arc::new(Mutex::new(0u64));
-                let lock2 = lock.clone();
+        use concurrency::sync::Mutex;
+        let lock = Arc::new(Mutex::new(0u64));
+        let lock2 = lock.clone();
 
-                thread::spawn(move || {
-                    *lock.lock() = 1;
-                });
+        thread::spawn(move || {
+            *lock.lock() = 1;
+        });
 
-                assert_eq!(0, *lock2.lock());
-            },
-            100,
-        );
-    }
-
-    fn shuttle_config() -> shuttle::Config {
-        let mut config = shuttle::Config::new();
-        // Raise the stack size to avoid stack overflow in the coroutine. The default is 32 kB, but
-        // the allocator uses Atomics for all port blocks for each allocated IP address, and in
-        // shuttle an AtomicBool takes over 100 bytes in memory, for example.
-        //
-        // Raise to 1 MB stack.
-        config.stack_size = 1024 * 1024;
-        config
-    }
-
-    fn run_shuttle_random<F>(f: F)
-    where
-        F: Fn() + Sync + Send + 'static,
-    {
-        let config = shuttle_config();
-        // One hundred iterations
-        let runner = shuttle::Runner::new(shuttle::scheduler::RandomScheduler::new(100), config);
-        runner.run(f);
-    }
-
-    fn run_shuttle_pct<F>(f: F)
-    where
-        F: Fn() + Sync + Send + 'static,
-    {
-        let config = shuttle_config();
-        // replay test under 64 different schedules
-        const ITERATIONS: usize = 64;
-        // max of 4 preemption points per schedule
-        const PREEMPTIONS: usize = 4; // this is pretty aggressive, very rarely is larger than 3 useful.
-        let runner = shuttle::Runner::new(
-            shuttle::scheduler::PctScheduler::new(PREEMPTIONS, ITERATIONS),
-            config,
-        );
-        runner.run(f);
-    }
-
-    // Run concurrent allocations for four different tuples (some of them sharing the same source
-    // and destination IP addresses) using shuttle's random scheduler, see if anything breaks.
-    #[test]
-    fn test_concurrent_allocations_shuttle_random() {
-        run_shuttle_random(tests::concurrent_allocations);
-    }
-
-    #[test]
-    fn test_concurrent_allocations_shuttle_pct() {
-        run_shuttle_pct(tests::concurrent_allocations);
+        assert_eq!(0, *lock2.lock());
     }
 }
