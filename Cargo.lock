@@ -1153,8 +1153,6 @@ dependencies = [
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-config",
- "dataplane-dpdk",
- "dataplane-dpdk-sysroot-helper",
  "dataplane-flow-entry",
  "dataplane-flow-filter",
  "dataplane-id",

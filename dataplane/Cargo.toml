@@ -6,8 +6,9 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-default = ["dpdk"]
-dpdk = ["dep:dpdk", "dep:dpdk-sysroot-helper"]
+default = []
+# Bin is gated out under loom (see `src/main.rs`); the feature exists so
+# `--features loom` resolves at workspace level and propagates to libs.
 loom = ["concurrency/loom"]
 
 [dependencies]
@@ -19,7 +20,6 @@ axum-server = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }
-dpdk = { workspace = true, optional = true }
 dyn-iter = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
@@ -62,9 +62,3 @@ n-vm = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[build-dependencies]
-# internal
-dpdk-sysroot-helper = { workspace = true, optional = true }
-
-# external
