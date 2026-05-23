@@ -1009,17 +1009,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctrlc"
-version = "3.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0b1fab2ae45819af2d0731d60f2afe17227ebb1a1538a236da84c93e9a60162"
-dependencies = [
- "dispatch2",
- "nix 0.31.3",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1116,7 +1105,6 @@ dependencies = [
  "arrayvec",
  "axum",
  "axum-server",
- "ctrlc",
  "dataplane-args",
  "dataplane-concurrency",
  "dataplane-config",
@@ -1139,7 +1127,6 @@ dependencies = [
  "linkme",
  "metrics",
  "metrics-exporter-prometheus",
- "mio",
  "n-vm",
  "netdev",
  "nix 0.31.3",
