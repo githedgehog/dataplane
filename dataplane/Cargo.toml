@@ -19,7 +19,6 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 axum-server = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
-ctrlc = { workspace = true, features = ["termination"] }
 dyn-iter = { workspace = true }
 flow-entry = { workspace = true }
 flow-filter = { workspace = true }
@@ -32,7 +31,6 @@ linkme = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 mgmt = { workspace = true }
-mio = { workspace = true, features = ["os-ext", "net"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 nix = { workspace = true, features = ["socket", "hostname"] }

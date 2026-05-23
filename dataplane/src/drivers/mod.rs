@@ -4,7 +4,6 @@
 use thiserror::Error;
 
 pub mod kernel;
-mod tokio_util;
 
 #[derive(Error, Debug)]
 pub enum DriverError {
