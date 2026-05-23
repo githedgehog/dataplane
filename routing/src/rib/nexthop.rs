@@ -755,7 +755,7 @@ mod tests {
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.1", 1)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.5", 2)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.9", 3)));
-        println!("{:#?}", &res);
+        println!("{res:#?}");
     }
 
     #[test]
@@ -774,7 +774,7 @@ mod tests {
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.1", 1)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.5", 2)));
         assert!(res.contains(&NhopKey::with_addr_ifindex("10.0.0.9", 3)));
-        println!("{:#?}", &res);
+        println!("{res:#?}");
     }
 
     #[test]
@@ -808,7 +808,7 @@ mod tests {
         // similar using next-hop store method that looks up the next-hop first
         let res = store.resolve_by_addr(&("7.0.0.1".parse().unwrap()));
         assert!(res.is_some());
-        println!("{:#?}", &res);
+        println!("{res:#?}");
     }
 
     #[cfg_attr(not(emulated), traced_test)]

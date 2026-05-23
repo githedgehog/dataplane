@@ -13,7 +13,7 @@ impl Render for VrfConfig {
         let mut cfg = ConfigBuilder::new();
         if !self.default {
             cfg += MARKER;
-            cfg += format!("vrf {}", &self.name);
+            cfg += format!("vrf {}", self.name);
         }
 
         /* static routes */

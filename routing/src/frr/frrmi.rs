@@ -336,9 +336,9 @@ impl Frrmi {
                 }
                 Ok(_) => {
                     if self.readb.next_read_len() == 0 {
-                        match self.readb.deserialize() {
-                            Ok(response) => return Ok(Some(response)),
-                            Err(e) => return Err(e),
+                        {
+                            let response = self.readb.deserialize()?;
+                            return Ok(Some(response));
                         }
                     }
                     // did not receive the complete message and need to read more

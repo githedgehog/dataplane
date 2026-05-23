@@ -329,7 +329,7 @@ mod tests {
     fn test_apply_config(config: &RouterConfig, db: &mut RoutingDb) -> Result<(), RouterError> {
         config.apply(db)?;
         let iftr = db.iftw.enter().unwrap();
-        println!("\n{}", &db.vrftable);
+        println!("\n{}", db.vrftable);
         println!("\n{}", *iftr);
         println!("\n ████████ SUCCESSFULLY applied and verified config {} ███████\n", config.genid);
         Ok(())
