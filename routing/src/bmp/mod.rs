@@ -9,6 +9,7 @@ pub use server::{BmpServer, BmpServerConfig};
 
 use concurrency::sync::Arc;
 use config::internal::status::DataplaneStatus;
+use lifecycle::Subsystem;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
@@ -16,12 +17,16 @@ use tracing::{error, info};
 use tracectl::trace_target;
 trace_target!("bmp", LevelFilter::INFO, &[]);
 
-/// Spawn BMP server in background
+/// Spawn the BMP server on `handle`, tracked under `mgmt` so it drains
+/// with the rest of mgmt's tasks.
+#[must_use]
 pub fn spawn_background(
+    mgmt: &Subsystem,
+    handle: &tokio::runtime::Handle,
     bind: std::net::SocketAddr,
     dp_status: Arc<RwLock<DataplaneStatus>>,
 ) -> JoinHandle<()> {
-    // The future we want to run
+    let cancel = mgmt.cancel_token();
     let fut = async move {
         info!("starting BMP server on {}", bind);
         let cfg = BmpServerConfig {
@@ -29,19 +34,16 @@ pub fn spawn_background(
             ..Default::default()
         };
         let srv = BmpServer::new(cfg, handler::StatusHandler::new(dp_status));
-        if let Err(e) = srv.run().await {
-            error!("bmp server terminated: {e:#}");
+        tokio::select! {
+            () = cancel.cancelled() => {
+                info!("BMP server shutdown requested");
+            }
+            res = srv.run() => {
+                if let Err(e) = res {
+                    error!("bmp server terminated: {e:#}");
+                }
+            }
         }
     };
-
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(fut)
-    } else {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build Tokio runtime for BMP");
-        let rt_static: &'static tokio::runtime::Runtime = Box::leak(Box::new(rt));
-        rt_static.spawn(fut)
-    }
+    mgmt.spawn_on(fut, handle)
 }

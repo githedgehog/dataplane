@@ -144,6 +144,9 @@ impl Router {
     /// Start a `Router`
     #[allow(clippy::new_without_default)]
     pub fn new(
+        mgmt: &lifecycle::Subsystem,
+        mgmt_handle: &tokio::runtime::Handle,
+        router: &lifecycle::Subsystem,
         params: RouterParams,
         cli_sources: Option<CliSources>,
     ) -> Result<Router, RouterError> {
@@ -163,15 +166,16 @@ impl Router {
         let rioconf = Self::build_rio_config(&params)?;
 
         debug!("{name}: Starting router IO...");
-        let rio_handle = start_rio(&rioconf, fibtw, iftw, atabler, cli_sources)?;
+        let rio_handle = start_rio(router, &rioconf, fibtw, iftw, atabler, cli_sources)?;
 
-        // Start BMP server in background if configured, always with mandatory dp_status
         let bmp_handle = if let Some(bmp_params) = &params.bmp {
             debug!(
                 "{name}: Starting BMP server on {} (interval={:?})",
                 bmp_params.bind_addr, bmp_params.stats_interval
             );
             Some(bmp::spawn_background(
+                mgmt,
+                mgmt_handle,
                 bmp_params.bind_addr,
                 params.dp_status.clone(),
             ))
@@ -200,7 +204,9 @@ impl Router {
         }
         self.resolver.stop();
 
-        // Abort BMP server task if running (Tokio handle).
+        // BMP is also tracked under the mgmt subsystem, which normally
+        // drains it cleanly via `Shutdown::drain_in_order`. This abort is
+        // a safety net for the case where the mgmt drain hit its deadline.
         if let Some(handle) = self.bmp_handle.take() {
             handle.abort();
         }
