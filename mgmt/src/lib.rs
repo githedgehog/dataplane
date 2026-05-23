@@ -7,7 +7,7 @@ mod processor;
 mod tests;
 pub mod vpc_manager;
 
-pub use processor::launch::{MgmtParams, start_mgmt};
+pub use processor::launch::{LaunchError, MgmtParams, run_mgmt};
 pub use processor::proc::ConfigProcessorParams;
 
 use tracectl::trace_target;

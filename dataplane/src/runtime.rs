@@ -2,12 +2,12 @@
 // Copyright Open Network Fabric Authors
 
 use crate::packet_processor::start_router;
-use crate::statistics::MetricsServer;
+use crate::statistics::spawn_metrics;
 use args::{CmdArgs, Parser};
 
 use crate::drivers::kernel::DriverKernel;
 use lifecycle::Shutdown;
-use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
+use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
@@ -216,33 +216,50 @@ pub fn main() {
     )
     .expect("failed to start router");
 
-    MetricsServer::new(args.metrics_address(), setup.stats);
+    spawn_metrics(
+        &shutdown.metrics,
+        &mgmt_handle,
+        args.metrics_address(),
+        setup.stats,
+    );
 
     // pipeline builder
     let pipeline_factory = setup.pipeline;
 
-    /* start management: main thread will be blocked until ready or failure */
-    if let Err(e) = start_mgmt(MgmtParams {
-        config_dir: args.config_dir().cloned(),
-        hostname: gwname.clone(),
-        processor_params: ConfigProcessorParams {
-            router_ctl: setup.router.get_ctl_tx(),
-            pipeline_data: pipeline_factory().get_data(),
-            flow_table: setup.flow_table,
-            vpcmapw: setup.vpcmapw,
-            nattablesw: setup.nattablesw,
-            natallocatorw: setup.natallocatorw,
-            flowfilterw: setup.flowfiltertablesw,
-            portfw_w: setup.portfw_w,
-            vpc_stats_store: setup.vpc_stats_store,
-            dp_status_r: dp_status.clone(),
-            bmp_options: bmp_client_opts,
+    // Tenant mgmt on the multi-thread runtime. Cancelled init returns
+    // LaunchError::Cancelled and must not flip the fatal exit code; other
+    // errors still abort.
+    match run_mgmt(
+        &mgmt_handle,
+        &shutdown.mgmt,
+        MgmtParams {
+            config_dir: args.config_dir().cloned(),
+            hostname: gwname.clone(),
+            processor_params: ConfigProcessorParams {
+                router_ctl: setup.router.get_ctl_tx(),
+                pipeline_data: pipeline_factory().get_data(),
+                flow_table: setup.flow_table,
+                vpcmapw: setup.vpcmapw,
+                nattablesw: setup.nattablesw,
+                natallocatorw: setup.natallocatorw,
+                flowfilterw: setup.flowfiltertablesw,
+                portfw_w: setup.portfw_w,
+                vpc_stats_store: setup.vpc_stats_store,
+                dp_status_r: dp_status.clone(),
+                bmp_options: bmp_client_opts,
+            },
         },
-    }) {
-        error!("Failed to start mgmt: {e}. Stopping dataplane...");
-        std::process::exit(-1);
+    ) {
+        Ok(()) => info!("Management is running now"),
+        Err(LaunchError::Cancelled) => {
+            info!("Mgmt init cancelled; proceeding to shutdown");
+            stop_tx.send(0).expect("failed to send stop signal");
+        }
+        Err(e) => {
+            error!("Failed to start mgmt: {e}. Stopping dataplane...");
+            std::process::exit(-1);
+        }
     }
-    info!("Management is running now");
 
     /* start driver with the provided pipeline builder */
     let e = match args.driver_name() {
