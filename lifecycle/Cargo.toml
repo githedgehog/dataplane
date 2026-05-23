@@ -1,0 +1,26 @@
+[package]
+name = "dataplane-lifecycle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+concurrency = { workspace = true }
+# Base tokio features for cross-platform builds (incl. wasm32-wasip1, which
+# rejects features outside the supported wasm set with a compile_error!).
+# `rt` is required for the runtime/Handle/JoinHandle APIs we use directly
+# (`spawn_signal_handler`, `Subsystem::spawn_on`/`spawn_fatal_on_exit`, the
+# watchdog). Don't rely on transitive unification via tokio-util.
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+
+# spawn_signal_handler is cfg(unix); the "signal" feature is only enabled
+# on unix targets to keep wasm builds of the lifecycle library clean.
+[target.'cfg(unix)'.dependencies]
+tokio = { workspace = true, features = ["signal"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }

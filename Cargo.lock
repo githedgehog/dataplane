@@ -1481,6 +1481,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-lifecycle"
+version = "0.21.0"
+dependencies = [
+ "dataplane-concurrency",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-lpm"
 version = "0.21.0"
 dependencies = [
@@ -5750,6 +5760,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "slab",
  "tokio",
