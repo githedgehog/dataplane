@@ -21,6 +21,7 @@ members = [
     "k8s-intf",
     "k8s-less",
     "left-right-tlcache",
+    "lifecycle",
     "lpm",
     "mgmt",
     "nat",
@@ -78,6 +79,7 @@ interface-manager = { path = "./interface-manager", package = "dataplane-interfa
 k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", default-features = false, features = [] }
 k8s-less = { path = "./k8s-less", package = "dataplane-k8s-less", features = [] }
 left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache", features = [] }
+lifecycle = { path = "./lifecycle", package = "dataplane-lifecycle", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
