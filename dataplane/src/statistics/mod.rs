@@ -2,9 +2,9 @@
 // Copyright Open Network Fabric Authors
 
 use axum::{Router, response::Response, routing::get};
+use lifecycle::Subsystem;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use stats::StatsCollector;
-use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{error, info};
 
@@ -45,60 +45,68 @@ async fn metrics_handler(
         .unwrap()
 }
 
-#[derive(Debug)]
-pub struct MetricsServer {
-    #[allow(unused)] // temporary
-    handle: JoinHandle<()>,
-}
+/// Spawn the `/metrics` endpoint on `addr`, a 30s upkeep ticker, and the
+/// stats collector onto `handle`, tracked under `metrics`. Uses
+/// [`Subsystem::spawn_on`] — a dead metrics endpoint should not take down
+/// the dataplane.
+pub fn spawn_metrics(
+    metrics: &Subsystem,
+    handle: &tokio::runtime::Handle,
+    addr: std::net::SocketAddr,
+    stats: StatsCollector,
+) {
+    let PrometheusHandler {
+        handle: prom_handle,
+    } = PrometheusHandler::new();
 
-impl MetricsServer {
-    // TODO: convert to scoped thread
-    #[tracing::instrument(level = "info", skip(stats))]
-    pub fn new(addr: std::net::SocketAddr, stats: StatsCollector) -> Self {
-        MetricsServer {
-            handle: std::thread::Builder::new()
-                .name("metrics-server".to_string())
-                .spawn(move || {
-                    info!("Starting metrics server thread");
-
-                    // create tokio runtime
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_io()
-                        .enable_time()
-                        .build()
-                        .expect("runtime creation failed for metrics server");
-
-                    // block thread to run metrics HTTP server
-                    rt.block_on(Self::run(addr, stats));
-                })
-                .unwrap(),
-        }
-    }
-
-    #[tracing::instrument(level = "info", skip(stats))]
-    async fn run(addr: std::net::SocketAddr, stats: StatsCollector) {
-        let PrometheusHandler { handle } = PrometheusHandler::new();
-
-        let upkeep_handle = handle.clone();
-        tokio::spawn(async move {
-            // avgerage prometheus scraper is between 15 and 60 secs,
-            // so run upkeep every 30 secs is a reasonable default
+    let upkeep_handle = prom_handle.clone();
+    let upkeep_cancel = metrics.cancel_token();
+    metrics.spawn_on(
+        async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(30));
             loop {
-                ticker.tick().await;
-                // run_upkeep is synchronous; call it periodically.
-                upkeep_handle.run_upkeep();
+                tokio::select! {
+                    () = upkeep_cancel.cancelled() => break,
+                    _ = ticker.tick() => {
+                        upkeep_handle.run_upkeep();
+                    }
+                }
             }
-        });
-        tokio::spawn(stats.run());
-        let app = Router::new()
-            .route("/metrics", get(metrics_handler))
-            .with_state(handle);
+        },
+        handle,
+    );
 
-        info!("metrics server listening on {}", addr);
+    let stats_cancel = metrics.cancel_token();
+    metrics.spawn_on(
+        async move {
+            tokio::select! {
+                () = stats_cancel.cancelled() => {}
+                () = stats.run() => {}
+            }
+        },
+        handle,
+    );
 
-        if let Err(e) = axum_server::bind(addr).serve(app.into_make_service()).await {
-            error!("metrics server error: {}", e);
-        }
-    }
+    let server_cancel = metrics.cancel_token();
+    metrics.spawn_on(
+        async move {
+            let app = Router::new()
+                .route("/metrics", get(metrics_handler))
+                .with_state(prom_handle);
+
+            info!("metrics server listening on {}", addr);
+
+            tokio::select! {
+                () = server_cancel.cancelled() => {
+                    info!("metrics server shutdown requested");
+                }
+                res = axum_server::bind(addr).serve(app.into_make_service()) => {
+                    if let Err(e) = res {
+                        error!("metrics server error: {}", e);
+                    }
+                }
+            }
+        },
+        handle,
+    );
 }

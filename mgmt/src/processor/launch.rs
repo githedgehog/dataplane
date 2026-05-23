@@ -9,6 +9,7 @@ use crate::processor::proc::ConfigProcessor;
 
 use crate::processor::proc::ConfigProcessorParams;
 use concurrency::sync::Arc;
+use lifecycle::{CancellationToken, Subsystem};
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
@@ -16,21 +17,11 @@ pub enum LaunchError {
     #[error("IO error: {0}")]
     IoError(std::io::Error),
     #[error("Error in K8s client task: {0}")]
-    K8sClientError(K8sClientError),
-    #[error("Error starting/waiting for K8s client task: {0}")]
-    K8sClientJoinError(tokio::task::JoinError),
-    #[error("K8s client exited prematurely")]
-    PrematureK8sClientExit,
-    #[error("Config processor exited prematurely")]
-    PrematureProcessorExit,
-
-    #[error("Error in Config Processor task: {0}")]
-    ProcessorError(std::io::Error),
-    #[error("Error starting/waiting for Config Processor task: {0}")]
-    ProcessorJoinError(tokio::task::JoinError),
-
+    K8sClientError(#[from] K8sClientError),
     #[error("Error in k8s-less mode: {0}")]
     K8LessError(#[from] K8sLessError),
+    #[error("Mgmt init cancelled before completion")]
+    Cancelled,
 }
 
 pub struct MgmtParams {
@@ -42,96 +33,262 @@ pub struct MgmtParams {
 use std::time::Duration;
 const K8S_STATUS_UPD: Duration = Duration::from_secs(15);
 const K8S_INIT_RETRY_TIME: Duration = Duration::from_secs(5);
-const K8S_INIT_MAX_ATTEMPTS: u8 = 10;
+const K8S_INIT_MAX_RETRIES: u8 = 10;
 
-async fn k8s_mgmt_init(k8s_client: &K8sClient) -> Result<(), K8sClientError> {
-    let mut retries = K8S_INIT_MAX_ATTEMPTS;
-
-    debug!("Initializing k8s client...");
-    while let Err(e) = k8s_client.init().await {
-        warn!("Could not initialize k8s state. Will retry {retries} more times");
-        tokio::time::sleep(K8S_INIT_RETRY_TIME).await;
-        if retries == 0 {
-            error!("Maximum k8s initialization attempts reached. Giving up...");
-            return Err(e);
+/// Run `init` under `cancel`. Returns [`LaunchError::Cancelled`] on cancel.
+async fn init_cancellable<F, E>(init: F, cancel: &CancellationToken) -> Result<(), LaunchError>
+where
+    F: std::future::Future<Output = Result<(), E>>,
+    LaunchError: From<E>,
+{
+    tokio::select! {
+        r = init => r.map_err(LaunchError::from),
+        () = cancel.cancelled() => {
+            info!("Mgmt init cancelled");
+            Err(LaunchError::Cancelled)
         }
-        retries -= 1;
+    }
+}
+
+/// Retry k8s init up to `K8S_INIT_MAX_RETRIES` times with
+/// `K8S_INIT_RETRY_TIME` backoff. Attempt and backoff both observe `cancel`.
+async fn k8s_mgmt_init(
+    k8s_client: &K8sClient,
+    cancel: &CancellationToken,
+) -> Result<(), LaunchError> {
+    let mut retries = K8S_INIT_MAX_RETRIES;
+    debug!("Initializing k8s client...");
+    loop {
+        match init_cancellable(k8s_client.init(), cancel).await {
+            Ok(()) => break,
+            Err(LaunchError::Cancelled) => return Err(LaunchError::Cancelled),
+            Err(e) if retries == 0 => {
+                error!("Maximum k8s initialization attempts reached. Giving up...");
+                return Err(e);
+            }
+            Err(_) => {
+                warn!("Could not initialize k8s state. Will retry {retries} more times");
+                retries -= 1;
+                tokio::select! {
+                    () = tokio::time::sleep(K8S_INIT_RETRY_TIME) => {}
+                    () = cancel.cancelled() => {
+                        info!("K8s init cancelled during retry backoff");
+                        return Err(LaunchError::Cancelled);
+                    }
+                }
+            }
+        }
     }
     info!("K8s initialization succeeded");
     Ok(())
 }
 
-/// Start the mgmt service. If the k8s interface is not ready, this may take up to
-/// K8S_INIT_RETRY_TIME * K8S_INIT_MAX_ATTEMPTS seconds to complete.
-pub fn start_mgmt(params: MgmtParams) -> Result<std::thread::JoinHandle<()>, LaunchError> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
+/// Init mgmt synchronously on `handle`, then spawn the long-lived tasks
+/// (config processor, status updater, config watcher) tracked under
+/// `mgmt`. Init observes `mgmt.root_token()` so SIGINT during init returns
+/// [`LaunchError::Cancelled`] within cancel latency.
+///
+/// # Errors
+/// Returns [`LaunchError`] on init failure. [`LaunchError::Cancelled`] is
+/// a clean-shutdown signal — callers must not flip the fatal flag for it.
+pub fn run_mgmt(
+    handle: &tokio::runtime::Handle,
+    mgmt: &Subsystem,
+    params: MgmtParams,
+) -> Result<(), LaunchError> {
+    if let Some(config_dir) = &params.config_dir {
+        warn!("Running in k8s-less mode....");
+        handle.block_on(run_k8s_less(
+            handle,
+            mgmt,
+            params.hostname.as_str(),
+            config_dir,
+            params.processor_params,
+        ))
+    } else {
+        debug!("Will start watching k8s for configuration changes");
+        handle.block_on(run_k8s(
+            handle,
+            mgmt,
+            params.hostname.as_str(),
+            params.processor_params,
+        ))
+    }
+}
 
-    let handle = std::thread::Builder::new()
-        .name("mgmt".to_string())
-        .spawn(move || {
-            debug!("Starting dataplane management thread...");
+async fn run_k8s_less(
+    handle: &tokio::runtime::Handle,
+    mgmt: &Subsystem,
+    hostname: &str,
+    config_dir: &str,
+    processor_params: ConfigProcessorParams,
+) -> Result<(), LaunchError> {
+    let (processor, client) = ConfigProcessor::new(processor_params);
+    let k8sless = Arc::new(K8sLess::new(hostname, config_dir, client));
+    let k8sless_for_watch = k8sless.clone();
 
-            /* create tokio runtime */
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .expect("Tokio runtime creation failed");
+    init_cancellable(k8sless.init(), &mgmt.root_token()).await?;
 
-            if let Some(config_dir) = &params.config_dir {
-                warn!("Running in k8s-less mode....");
-                rt.block_on(async {
-                    let (processor, client) = ConfigProcessor::new(params.processor_params);
-                    let k8sless =
-                        Arc::new(K8sLess::new(params.hostname.as_str(), config_dir, client));
-                    let k8sless1 = k8sless.clone();
-
-                    let init_result = k8sless.init().await.map_err(LaunchError::K8LessError);
-                    let init_failed = init_result.is_err();
-                    tx.send(init_result).expect("Main thread gone");
-                    if init_failed {
-                        return;
-                    }
-
-                    tokio::spawn(async { processor.run().await });
-                    tokio::spawn(async move { k8sless.start_status_update(&K8S_STATUS_UPD).await });
-                    let _ = K8sLess::start_config_watch(k8sless1).await;
-                })
-            } else {
-                debug!("Will start watching k8s for configuration changes");
-                rt.block_on(async {
-                    let (processor, client) = ConfigProcessor::new(params.processor_params);
-                    let k8s_client = Arc::new(K8sClient::new(params.hostname.as_str(), client));
-                    let k8s_client1 = k8s_client.clone();
-
-                    let init_result = k8s_mgmt_init(&k8s_client)
-                        .await
-                        .map_err(LaunchError::K8sClientError);
-
-                    let init_failed = init_result.is_err();
-                    tx.send(init_result).expect("Main thread gone");
-                    if init_failed {
-                        return;
-                    }
-
-                    tokio::spawn(async { processor.run().await });
-                    tokio::spawn(async move {
-                        k8s_client1.k8s_start_status_update(&K8S_STATUS_UPD).await
-                    });
-                    let _ =
-                        tokio::spawn(async { K8sClient::k8s_start_config_watch(k8s_client).await })
-                            .await;
-                })
+    mgmt.spawn_fatal_on_exit("k8s-less config processor", processor.run(), handle);
+    let k8sless_for_status = k8sless.clone();
+    mgmt.spawn_fatal_on_exit(
+        "k8s-less status updater",
+        async move {
+            k8sless_for_status
+                .start_status_update(&K8S_STATUS_UPD)
+                .await
+        },
+        handle,
+    );
+    mgmt.spawn_fatal_on_exit(
+        "k8s-less config watcher",
+        async move {
+            match K8sLess::start_config_watch(k8sless_for_watch).await {
+                Ok(()) => warn!("k8s-less config watcher returned Ok unexpectedly"),
+                Err(e) => error!("k8s-less config watcher failed: {e}"),
             }
-            unreachable!()
-        })
-        .map_err(LaunchError::IoError)?;
+        },
+        handle,
+    );
 
-    match rx
-        .blocking_recv()
-        .map_err(|_| LaunchError::PrematureProcessorExit)?
-    {
-        Ok(()) => Ok(handle),
-        Err(e) => Err(e),
+    Ok(())
+}
+
+async fn run_k8s(
+    handle: &tokio::runtime::Handle,
+    mgmt: &Subsystem,
+    hostname: &str,
+    processor_params: ConfigProcessorParams,
+) -> Result<(), LaunchError> {
+    let (processor, client) = ConfigProcessor::new(processor_params);
+    let k8s_client = Arc::new(K8sClient::new(hostname, client));
+    let k8s_client_for_status = k8s_client.clone();
+
+    k8s_mgmt_init(&k8s_client, &mgmt.root_token()).await?;
+
+    mgmt.spawn_fatal_on_exit("k8s config processor", processor.run(), handle);
+    mgmt.spawn_fatal_on_exit(
+        "k8s status updater",
+        async move {
+            k8s_client_for_status
+                .k8s_start_status_update(&K8S_STATUS_UPD)
+                .await
+        },
+        handle,
+    );
+    mgmt.spawn_fatal_on_exit(
+        "k8s config watcher",
+        async move {
+            K8sClient::k8s_start_config_watch(k8s_client).await;
+        },
+        handle,
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processor::k8s_less_client::K8sLessError;
+    use lifecycle::Shutdown;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn init_cancellable_returns_cancelled_on_pre_tripped_token() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result: Result<(), LaunchError> = init_cancellable(
+            async {
+                // Long sleep so a missing cancel arm surfaces as a test timeout.
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok::<(), K8sLessError>(())
+            },
+            &cancel,
+        )
+        .await;
+
+        assert!(matches!(result, Err(LaunchError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn init_cancellable_returns_cancelled_when_tripped_mid_init() {
+        let cancel = CancellationToken::new();
+        let cancel_for_task = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_for_task.cancel();
+        });
+
+        let result: Result<(), LaunchError> = init_cancellable(
+            async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok::<(), K8sLessError>(())
+            },
+            &cancel,
+        )
+        .await;
+
+        assert!(matches!(result, Err(LaunchError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn init_cancellable_returns_ok_when_init_completes_first() {
+        let cancel = CancellationToken::new();
+        let result: Result<(), LaunchError> =
+            init_cancellable(async { Ok::<(), K8sLessError>(()) }, &cancel).await;
+        assert!(result.is_ok());
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn init_cancellable_propagates_init_error() {
+        let cancel = CancellationToken::new();
+        let result: Result<(), LaunchError> = init_cancellable(
+            async { Err::<(), K8sLessError>(K8sLessError::Internal("synthetic".into())) },
+            &cancel,
+        )
+        .await;
+        assert!(matches!(result, Err(LaunchError::K8LessError(_))));
+    }
+
+    /// Locks in the main.rs contract: SIGTERM during k8s init must yield
+    /// exit 0 (else systemd restart-loops the unit). Mirrors the match
+    /// arms in runtime.rs.
+    #[tokio::test]
+    async fn cancelled_launch_error_yields_zero_exit_code_at_call_site() {
+        let shutdown = Shutdown::new();
+        shutdown.root.cancel();
+        let mgmt_result: Result<(), LaunchError> = Err(LaunchError::Cancelled);
+
+        match mgmt_result {
+            Ok(()) => {}
+            Err(LaunchError::Cancelled) => {}
+            Err(_) => {
+                shutdown.fail();
+            }
+        }
+
+        assert!(!shutdown.is_fatal());
+        assert_eq!(i32::from(shutdown.is_fatal()), 0);
+    }
+
+    #[tokio::test]
+    async fn non_cancelled_launch_error_yields_nonzero_exit_code_at_call_site() {
+        let shutdown = Shutdown::new();
+        let mgmt_result: Result<(), LaunchError> =
+            Err(LaunchError::IoError(std::io::Error::other("synthetic")));
+
+        match mgmt_result {
+            Ok(()) => {}
+            Err(LaunchError::Cancelled) => {}
+            Err(_) => {
+                shutdown.fail();
+            }
+        }
+
+        assert!(shutdown.is_fatal());
+        assert_eq!(i32::from(shutdown.is_fatal()), 1);
     }
 }
