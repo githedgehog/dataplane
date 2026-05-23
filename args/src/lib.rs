@@ -1511,4 +1511,10 @@ mod tests {
         // bad discriminant
         assert!(InterfaceArg::from_str("GbEth1.9000=foo@0000:02:01.7").is_err());
     }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn intentional_fail() {
+        panic!("oh no!  A regression on aarch64!  We should reject this commit!")
+    }
 }
