@@ -84,7 +84,7 @@ impl PortRange {
     /// Given a `PortRange` and a port, provide the corresponding port in another `PortRange`,
     /// provided that the port falls within ranges. Both ranges need to be of the same size.
     pub fn map_port_to(self, port: NonZero<u16>, other: Self) -> Option<NonZero<u16>> {
-        debug_assert!(self.len() == other.len());
+        debug_assert_eq!(self.len(), other.len());
         let index = self.indexof(port)?;
         other.get_port_at(index)
     }

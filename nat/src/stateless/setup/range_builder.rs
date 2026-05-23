@@ -336,7 +336,7 @@ fn create_new_ranges(
 
     match ip_addr_diff {
         0 => {
-            debug_assert!(addr_port_cursor.0 == range_end.0);
+            debug_assert_eq!(addr_port_cursor.0, range_end.0);
             // We're only covering a single IP address. Create the relevant port range over this single
             // address and return.
             ranges.push(IpPortRange {

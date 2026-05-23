@@ -479,7 +479,7 @@ fn get_split_prefixes_for_manifest(
             let mut fragments_to_check = vec![*prefix];
             'next_fragment: while let Some(fragment) = fragments_to_check.pop() {
                 // Split the fragment into sub-fragments as long as we find overlapping prefixes
-                for (overlap_prefix, _overlap_data) in overlaps.iter() {
+                for overlap_prefix in overlaps.keys() {
                     if fragment.overlaps(overlap_prefix) && !overlap_prefix.covers(&fragment) {
                         fragments_to_check.extend(split_overlapping(&fragment, overlap_prefix));
                         continue 'next_fragment;

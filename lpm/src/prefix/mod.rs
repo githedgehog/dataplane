@@ -1819,9 +1819,9 @@ mod tests {
 
                 if one == two {
                     // Consitency between PartialEq and PartialOrd
-                    assert!(one.partial_cmp(two) == Some(Ordering::Equal));
+                    assert_eq!(one.partial_cmp(two), Some(Ordering::Equal));
                     // PartialEq is symmetric
-                    assert!(two == one);
+                    assert_eq!(two, one);
                 }
 
                 if let (Ok(one_int), Ok(two_int)) = (u128::try_from(one), u128::try_from(two)) {
