@@ -441,7 +441,7 @@ mod tests {
             Ipv4Addr::new(1, 1, 1, 1),
             Ipv4Addr::new(1, 1, 1, 1),
         );
-        assert!(key1 == key2);
+        assert_eq!(key1, key2);
 
         let key1 = PoolTableKey::new(
             NextHeader::TCP,

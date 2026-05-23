@@ -362,7 +362,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // it may be None if the nf expiration removes it
+        assert_ne!(get_flow_status(&output), Some(FlowStatus::Active)); // it may be None if the nf expiration removes it
         assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
@@ -398,7 +398,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // may be cancelled or none
+        assert_ne!(get_flow_status(&output), Some(FlowStatus::Active)); // may be cancelled or none
         assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);
@@ -444,7 +444,7 @@ mod nf_test {
         packet.try_tcp_mut().unwrap().set_ack(true);
         let output = process_packet(&mut pipeline, packet);
         assert!(output.meta().flow_info.is_some());
-        assert!(get_flow_status(&output) != Some(FlowStatus::Active)); // may be cancelled or none
+        assert_ne!(get_flow_status(&output), Some(FlowStatus::Active)); // may be cancelled or none
         assert_eq!(get_pfw_flow_status(&output), Some(NatFlowStatus::Closed));
         println!("{flow_table}");
         assert_eq!(flow_table.len().unwrap(), 2);

@@ -66,7 +66,7 @@ impl VpcConfigNames for ValidatedVpc {
     fn import_plist_peer(&self, remote_name: &str) -> String {
         format!(
             "{}-FROM-{}",
-            &self.name().to_uppercase(),
+            self.name().to_uppercase(),
             remote_name.to_uppercase()
         )
     }
@@ -77,18 +77,18 @@ impl VpcConfigNames for ValidatedVpc {
     fn adv_plist(&self, remote_name: &str) -> String {
         format!(
             "ADV-TO-{}-FOR-{}",
-            &self.name().to_uppercase(),
+            self.name().to_uppercase(),
             remote_name.to_uppercase()
         )
     }
     fn adv_plist_desc(&self, remote_name: &str) -> String {
         format!(
             "Prefixes advertised to {} for {}",
-            &self.name().to_uppercase(),
+            self.name().to_uppercase(),
             remote_name.to_uppercase()
         )
     }
     fn adv_rmap(&self) -> String {
-        format!("ADV-TO-{}", &self.name().to_uppercase())
+        format!("ADV-TO-{}", self.name().to_uppercase())
     }
 }

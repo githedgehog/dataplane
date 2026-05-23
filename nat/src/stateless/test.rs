@@ -623,7 +623,7 @@ fn test_full_config() {
 
     let nat_tables = build_nat_configuration(config.external().overlay().vpc_table()).unwrap();
     #[cfg(not(miri))]
-    println!("Nat tables: {:#?}", &nat_tables);
+    println!("Nat tables: {nat_tables:#?}");
 
     let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
     tablesw.update_nat_tables(nat_tables.clone());
