@@ -27,6 +27,7 @@ pub struct Egress {
     atabler: AtableReader,
 }
 
+#[allow(dead_code)]
 fn determine_ether_type<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<EthType> {
     // FIXME(fredi): this should consider interface type; e.g. for vlan
     if packet.try_ipv4().is_some() {
@@ -40,8 +41,8 @@ fn determine_ether_type<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<Et
     }
 }
 
+#[allow(dead_code)]
 impl Egress {
-    #[allow(dead_code)]
     pub fn new(name: &str, iftr: IfTableReader, atabler: AtableReader) -> Self {
         let name = name.to_owned();
         Self {

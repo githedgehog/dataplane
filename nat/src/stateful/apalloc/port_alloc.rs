@@ -718,7 +718,7 @@ impl<I: NatIpWithBitmap> AllocatedPortBlockMap<I> {
     fn allocated_port_ranges(&self) -> BTreeSet<PortRange> {
         let blocks = self.0.read();
         let mut ranges = BTreeSet::<PortRange>::new();
-        for (_, block) in blocks.iter() {
+        for block in blocks.values() {
             if let Some(block) = block.upgrade() {
                 merge_ranges(&mut ranges, block.allocated_port_ranges());
             }
