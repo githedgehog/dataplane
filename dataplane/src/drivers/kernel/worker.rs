@@ -15,6 +15,9 @@ use tokio::sync::Mutex;
 
 use concurrency::sync::Arc;
 use concurrency::thread;
+#[allow(unused_imports)] // used under loom/shuttle backends
+use concurrency::thread::BuilderExt;
+use lifecycle::Subsystem;
 use net::buffer::test_buffer::TestBuffer;
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet};
@@ -22,7 +25,6 @@ use pipeline::{DynPipeline, NetworkFunction};
 
 use crate::drivers::kernel::fanout::{PacketFanoutType, set_packet_fanout};
 use crate::drivers::kernel::kif::Kif;
-use crate::drivers::tokio_util::run_in_local_tokio_runtime;
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -126,6 +128,7 @@ pub struct Worker {
     id: WorkerId,
     total_workers: usize,
     setup_pipeline: Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+    subsystem: Subsystem,
 }
 
 impl Worker {
@@ -133,28 +136,69 @@ impl Worker {
         id: WorkerId,
         total_workers: usize,
         setup_pipeline: &Arc<dyn Send + Sync + Fn() -> DynPipeline<TestBuffer>>,
+        subsystem: Subsystem,
     ) -> Self {
         Worker {
             id,
             total_workers,
             setup_pipeline: setup_pipeline.clone(),
+            subsystem,
         }
     }
 
-    pub fn start(
+    #[allow(clippy::too_many_lines)]
+    pub fn start<'scope>(
         &mut self,
+        scope: &'scope thread::Scope<'scope, '_>,
         thread_builder: thread::Builder,
         interfaces: &[Kif],
-    ) -> Result<thread::JoinHandle<Result<(), io::Error>>, io::Error> {
+    ) -> Result<thread::ScopedJoinHandle<'scope, Result<(), io::Error>>, io::Error> {
         let id = self.id;
         let total_workers = self.total_workers;
         let setup = self.setup_pipeline.clone();
-        let interfaces = interfaces.iter().map(Kif::clone).collect::<Vec<_>>();
+        let subsystem = self.subsystem.clone();
+        let cancel = subsystem.cancel_token();
+        let interfaces = interfaces.to_vec();
 
-        let handle_res = thread_builder.spawn(move || {
+        let handle_res = thread_builder.spawn_scoped(scope, move || {
+            // Drop-guard so panic-unwind, early-`?`, and unexpected normal
+            // return all reach report_fatal. Disarmed on the graceful path.
+            struct ExitGuard {
+                subsystem: Subsystem,
+                id: WorkerId,
+                armed: bool,
+            }
+            impl ExitGuard {
+                fn disarm(&mut self) {
+                    self.armed = false;
+                }
+            }
+            impl Drop for ExitGuard {
+                fn drop(&mut self) {
+                    if !self.armed || self.subsystem.is_cancelled() {
+                        return;
+                    }
+                    let reason = if std::thread::panicking() {
+                        format!("worker {} panicked", self.id)
+                    } else {
+                        format!("worker {} exited unexpectedly", self.id)
+                    };
+                    self.subsystem.report_fatal(&reason);
+                }
+            }
+
             info!(worker = id, "Worker started");
+            let mut guard = ExitGuard {
+                subsystem: subsystem.clone(),
+                id,
+                armed: true,
+            };
 
-            run_in_local_tokio_runtime(async || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build_local(tokio::runtime::LocalOptions::default())?;
+
+            let result = rt.block_on(async {
                 let (readers, if_table) =
                     match build_interface_table(id, total_workers, interfaces.as_slice()) {
                         Ok(table) => table,
@@ -166,27 +210,39 @@ impl Worker {
 
                 let setup = setup.clone();
                 let if_table = if_table.clone();
+                let cancel = cancel.clone();
 
                 let mut reader_handles = tokio::task::JoinSet::new();
 
                 for intf in readers {
                     let setup = setup.clone();
                     let if_table = if_table.clone();
+                    let cancel = cancel.clone();
                     reader_handles.spawn_local(async move {
                         let intf = intf;
                         let mut pipeline = setup();
                         loop {
-                            tracing::debug!(worker = id, "awaiting packets");
+                            debug!(worker = id, "awaiting packets");
 
-                            let packets_vec = match read_packets_from_interface(id, &intf).await {
-                                Ok(packets) => packets,
-                                Err(e) => {
-                                    error!(
+                            let packets_vec = tokio::select! {
+                                () = cancel.cancelled() => {
+                                    info!(
                                         worker = id,
                                         rx_intf_name = intf.if_name,
-                                        "Error reading packets from interface: {e}"
+                                        "cancellation observed; exiting reader"
                                     );
-                                    vec![]
+                                    break;
+                                }
+                                result = read_packets_from_interface(id, &intf) => match result {
+                                    Ok(packets) => packets,
+                                    Err(e) => {
+                                        error!(
+                                            worker = id,
+                                            rx_intf_name = intf.if_name,
+                                            "Error reading packets from interface: {e}"
+                                        );
+                                        vec![]
+                                    }
                                 }
                             };
 
@@ -198,7 +254,6 @@ impl Worker {
                                 intf.if_name
                             );
 
-                            // Try to receive everything else that is in the buffer
                             let packets = packets_vec.into_iter();
 
                             let mut count = 0;
@@ -238,8 +293,13 @@ impl Worker {
                 }
 
                 Ok::<(), io::Error>(())
-            })?;
-            info!(worker = id, "Worker exited");
+            });
+
+            if subsystem.is_cancelled() {
+                guard.disarm();
+            }
+            info!(worker = id, "worker exited");
+            result?;
             Ok::<(), io::Error>(())
         })?;
         Ok(handle_res)

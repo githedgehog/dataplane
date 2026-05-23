@@ -6,7 +6,7 @@ use crate::statistics::spawn_metrics;
 use args::{CmdArgs, Parser};
 
 use crate::drivers::kernel::DriverKernel;
-use lifecycle::Shutdown;
+use lifecycle::{Shutdown, default_deadlines, spawn_shutdown_watchdog};
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
 use nix::unistd::gethostname;
@@ -168,26 +168,20 @@ pub fn main() {
 
     process_tracing_cmds(&args);
 
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    let ctrlc_stop_tx = stop_tx.clone();
-    ctrlc::set_handler(move || {
-        ctrlc_stop_tx
-            .send(0)
-            .expect("Error sending shutdown signal");
-    })
-    .expect("failed to set SIGINT handler");
-
-    // Lifecycle wiring for routing: Router::new now takes mgmt + router
-    // Subsystems and a runtime handle for BMP. Other subsystems (mgmt,
-    // metrics, kernel driver) still use the legacy ctrlc + mpsc path; they
-    // are migrated in follow-on commits.
     let shutdown = Shutdown::new();
+
     let mgmt_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("mgmt-rt")
         .build()
         .expect("Failed to build mgmt runtime");
     let mgmt_handle = mgmt_runtime.handle().clone();
+
+    lifecycle::spawn_signal_handler(&mgmt_handle, shutdown.root.clone())
+        .expect("failed to install signal handler");
+
+    spawn_shutdown_watchdog(shutdown.root.clone(), default_deadlines::TOTAL, 124)
+        .expect("failed to spawn shutdown watchdog");
 
     /* router parameters */
     let mut binding = RouterParamsBuilder::default();
@@ -197,7 +191,6 @@ pub fn main() {
         .frr_agent_path(args.frr_agent_path())
         .dp_status(dp_status.clone());
 
-    // Only set BMP when it's enabled (strip_option setter expects the inner type)
     if let Some(server) = bmp_server_params {
         rp_builder = rp_builder.bmp(server);
     }
@@ -207,8 +200,7 @@ pub fn main() {
         panic!("Bad router configuration");
     };
 
-    // start the router; returns control-plane handles and a pipeline factory
-    let setup = start_router(
+    let mut setup = start_router(
         &shutdown.mgmt,
         &mgmt_handle,
         &shutdown.router,
@@ -223,73 +215,86 @@ pub fn main() {
         setup.stats,
     );
 
-    // pipeline builder
     let pipeline_factory = setup.pipeline;
 
-    // Tenant mgmt on the multi-thread runtime. Cancelled init returns
-    // LaunchError::Cancelled and must not flip the fatal exit code; other
-    // errors still abort.
-    match run_mgmt(
-        &mgmt_handle,
-        &shutdown.mgmt,
-        MgmtParams {
-            config_dir: args.config_dir().cloned(),
-            hostname: gwname.clone(),
-            processor_params: ConfigProcessorParams {
-                router_ctl: setup.router.get_ctl_tx(),
-                pipeline_data: pipeline_factory().get_data(),
-                flow_table: setup.flow_table,
-                vpcmapw: setup.vpcmapw,
-                nattablesw: setup.nattablesw,
-                natallocatorw: setup.natallocatorw,
-                flowfilterw: setup.flowfiltertablesw,
-                portfw_w: setup.portfw_w,
-                vpc_stats_store: setup.vpc_stats_store,
-                dp_status_r: dp_status.clone(),
-                bmp_options: bmp_client_opts,
+    concurrency::thread::scope(|scope| {
+        let mgmt_result = run_mgmt(
+            &mgmt_handle,
+            &shutdown.mgmt,
+            MgmtParams {
+                config_dir: args.config_dir().cloned(),
+                hostname: gwname.clone(),
+                processor_params: ConfigProcessorParams {
+                    router_ctl: setup.router.get_ctl_tx(),
+                    pipeline_data: pipeline_factory().get_data(),
+                    flow_table: setup.flow_table,
+                    vpcmapw: setup.vpcmapw,
+                    nattablesw: setup.nattablesw,
+                    natallocatorw: setup.natallocatorw,
+                    flowfilterw: setup.flowfiltertablesw,
+                    portfw_w: setup.portfw_w,
+                    vpc_stats_store: setup.vpc_stats_store,
+                    dp_status_r: dp_status.clone(),
+                    bmp_options: bmp_client_opts,
+                },
             },
-        },
-    ) {
-        Ok(()) => info!("Management is running now"),
-        Err(LaunchError::Cancelled) => {
-            info!("Mgmt init cancelled; proceeding to shutdown");
-            stop_tx.send(0).expect("failed to send stop signal");
-        }
-        Err(e) => {
-            error!("Failed to start mgmt: {e}. Stopping dataplane...");
-            std::process::exit(-1);
-        }
-    }
+        );
 
-    /* start driver with the provided pipeline builder */
-    let e = match args.driver_name() {
-        "dpdk" => {
-            info!("Using driver DPDK...");
-            todo!();
-        }
-        "kernel" => {
-            info!("Using driver kernel...");
-            DriverKernel::start(
-                stop_tx.clone(),
-                args.kernel_interfaces(),
-                args.kernel_num_workers(),
-                &pipeline_factory,
-            )
-        }
-        other => {
-            error!("Unknown driver '{other}'. Aborting...");
-            panic!("Packet processing pipeline failed to start. Aborting...");
-        }
-    };
+        match mgmt_result {
+            Ok(()) => {
+                info!("Management is running now");
 
-    if let Err(e) = e {
-        error!("Failed to start driver: {e}");
-        std::process::exit(-1);
-    }
+                let driver_result = match args.driver_name() {
+                    "dpdk" => {
+                        info!("Using driver DPDK...");
+                        todo!();
+                    }
+                    "kernel" => {
+                        info!("Using driver kernel...");
+                        Some(DriverKernel::start(
+                            scope,
+                            &shutdown.workers,
+                            args.kernel_interfaces(),
+                            args.kernel_num_workers(),
+                            &pipeline_factory,
+                        ))
+                    }
+                    other => {
+                        error!("Unknown driver '{other}'. Stopping dataplane...");
+                        shutdown.fail();
+                        None
+                    }
+                };
 
-    let exit_code = stop_rx.recv().expect("failed to receive stop signal");
-    info!("Shutting down dataplane");
+                if let Some(Err(e)) = driver_result {
+                    error!("Failed to start driver: {e}");
+                    shutdown.fail();
+                }
+            }
+            Err(LaunchError::Cancelled) => {
+                // Don't call shutdown.fail() — that flips the fatal flag
+                // and turns a graceful SIGINT into a non-zero exit, which
+                // systemd would restart-loop.
+                info!("Mgmt init cancelled; proceeding to shutdown");
+            }
+            Err(e) => {
+                error!("Failed to start mgmt: {e}. Stopping dataplane...");
+                shutdown.fail();
+            }
+        }
+
+        mgmt_handle.block_on(shutdown.root.cancelled());
+        info!("Shutting down dataplane");
+        mgmt_handle.block_on(shutdown.drain_in_order());
+    });
+
+    let exit_code = i32::from(shutdown.is_fatal());
+
+    // Router::stop()'s BMP abort needs mgmt_runtime live, so stop router
+    // before shutting the runtime down.
+    setup.router.stop();
     mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
+
     if let Some(running) = agent_running {
         match running.stop() {
             Ok(ready) => ready.shutdown(),
@@ -297,29 +302,4 @@ pub fn main() {
         }
     }
     std::process::exit(exit_code);
-}
-
-#[cfg(false)] // disabled until dpdk-sys refactor is complete
-#[cfg(test)]
-mod test {
-    use n_vm::in_vm;
-
-    #[test]
-    #[in_vm]
-    fn root_filesystem_in_vm_is_read_only() {
-        let error = std::fs::File::create_new("/some.file").unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::ReadOnlyFilesystem);
-    }
-
-    #[test]
-    #[in_vm]
-    fn run_filesystem_in_vm_is_read_write() {
-        std::fs::File::create_new("/run/some.file").unwrap();
-    }
-
-    #[test]
-    #[in_vm]
-    fn tmp_filesystem_in_vm_is_read_write() {
-        std::fs::File::create_new("/tmp/some.file").unwrap();
-    }
 }
