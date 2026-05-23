@@ -26,6 +26,7 @@ id = { workspace = true }
 interface-manager = { workspace = true }
 k8s-intf = { workspace = true, features = ["client"] }
 k8s-less = { workspace = true }
+lifecycle = { workspace = true }
 lpm = { workspace = true }
 nat = { workspace = true }
 net = { workspace = true }

@@ -27,6 +27,7 @@ futures = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 id = { workspace = true }
+lifecycle = { workspace = true }
 linkme = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
@@ -46,7 +47,7 @@ rtnetlink = { workspace = true, features = ["default", "tokio"] }
 serde = { workspace = true, features = ["derive"] }
 stats = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 tracectl = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, default-features = true }
