@@ -20,6 +20,7 @@ config = { workspace = true }
 concurrency = { workspace = true }
 dplane-rpc = { workspace = true }
 left-right-tlcache = { workspace = true }
+lifecycle = { workspace = true }
 lpm = { workspace = true }
 net = { workspace = true }
 tracectl = { workspace = true }

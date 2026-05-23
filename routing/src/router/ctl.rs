@@ -45,7 +45,6 @@ impl Drop for LockGuard {
 }
 
 pub(crate) enum RouterCtlMsg {
-    Finish,
     Lock(RouterCtlReplyTx),
     Unlock(RouterCtlReplyTx),
     GuardedUnlock,
@@ -241,10 +240,6 @@ fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
 /// Handle a request from the control channel
 pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
     match rio.ctl_rx.try_recv() {
-        Ok(RouterCtlMsg::Finish) => {
-            info!("Got request to shutdown. Au revoir ...");
-            rio.run = false;
-        }
         Ok(RouterCtlMsg::Lock(reply_to)) => handle_lock(rio, true, Some(reply_to)),
         Ok(RouterCtlMsg::Unlock(reply_to)) => handle_lock(rio, false, Some(reply_to)),
         Ok(RouterCtlMsg::GuardedUnlock) => handle_lock(rio, false, None),

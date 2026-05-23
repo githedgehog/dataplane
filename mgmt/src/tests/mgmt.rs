@@ -435,7 +435,10 @@ pub mod test {
             .expect("Should succeed due to defaults");
 
         /* start router */
-        let router = Router::new(router_params, None);
+        let test_mgmt = lifecycle::Subsystem::new("mgmt", lifecycle::CancellationToken::new());
+        let test_router = lifecycle::Subsystem::new("router", lifecycle::CancellationToken::new());
+        let handle = tokio::runtime::Handle::current();
+        let router = Router::new(&test_mgmt, &handle, &test_router, router_params, None);
         if let Err(e) = &router {
             error!("New router failed: {e}");
             panic!();

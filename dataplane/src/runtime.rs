@@ -6,6 +6,7 @@ use crate::statistics::MetricsServer;
 use args::{CmdArgs, Parser};
 
 use crate::drivers::kernel::DriverKernel;
+use lifecycle::Shutdown;
 use mgmt::{ConfigProcessorParams, MgmtParams, start_mgmt};
 
 use nix::unistd::gethostname;
@@ -176,6 +177,18 @@ pub fn main() {
     })
     .expect("failed to set SIGINT handler");
 
+    // Lifecycle wiring for routing: Router::new now takes mgmt + router
+    // Subsystems and a runtime handle for BMP. Other subsystems (mgmt,
+    // metrics, kernel driver) still use the legacy ctrlc + mpsc path; they
+    // are migrated in follow-on commits.
+    let shutdown = Shutdown::new();
+    let mgmt_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("mgmt-rt")
+        .build()
+        .expect("Failed to build mgmt runtime");
+    let mgmt_handle = mgmt_runtime.handle().clone();
+
     /* router parameters */
     let mut binding = RouterParamsBuilder::default();
     let mut rp_builder = binding
@@ -195,7 +208,13 @@ pub fn main() {
     };
 
     // start the router; returns control-plane handles and a pipeline factory
-    let setup = start_router(router_params).expect("failed to start router");
+    let setup = start_router(
+        &shutdown.mgmt,
+        &mgmt_handle,
+        &shutdown.router,
+        router_params,
+    )
+    .expect("failed to start router");
 
     MetricsServer::new(args.metrics_address(), setup.stats);
 
@@ -253,6 +272,7 @@ pub fn main() {
 
     let exit_code = stop_rx.recv().expect("failed to receive stop signal");
     info!("Shutting down dataplane");
+    mgmt_runtime.shutdown_timeout(Duration::from_secs(2));
     if let Some(running) = agent_running {
         match running.stop() {
             Ok(ready) => ready.shutdown(),

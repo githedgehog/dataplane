@@ -49,6 +49,9 @@ where
 
 /// Start a router and provide the associated pipeline
 pub(crate) fn start_router<Buf: PacketBufferMut>(
+    mgmt: &lifecycle::Subsystem,
+    mgmt_handle: &tokio::runtime::Handle,
+    router: &lifecycle::Subsystem,
     params: RouterParams,
 ) -> Result<InternalSetup<Buf>, RouterError> {
     let vpcmapw = VpcMapWriter::<VpcMapName>::new();
@@ -83,7 +86,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     };
 
     // create router
-    let router = Router::new(params, Some(cli_sources))?;
+    let router = Router::new(mgmt, mgmt_handle, router, params, Some(cli_sources))?;
     let iftr_factory = router.get_iftabler_factory();
     let fibtr_factory = router.get_fibtr_factory();
     let atabler_factory = router.get_atabler_factory();

@@ -22,17 +22,18 @@ use cli::IoCache;
 use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest};
 use config::{GwConfigMeta, ValidatedGwConfig};
 use dplane_rpc::socks::RpcCachedSock;
+use lifecycle::{CancellationToken, Subsystem};
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 
 use concurrency::sync::Arc;
+use concurrency::thread::{self, JoinHandle};
 use nix::sys::socket::{getsockopt, setsockopt, sockopt::SndBuf};
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
@@ -44,31 +45,28 @@ const CTL_CHANNEL_CAPACITY: usize = 100;
 
 /// An object to control a router IO, [`Rio`]
 pub(crate) struct RioHandle {
+    cancel: CancellationToken,
     ctl: Sender<RouterCtlMsg>,
     handle: Option<JoinHandle<()>>,
 }
 impl RioHandle {
-    /// Terminate the router IO loop / thread
+    /// Trip the router cancel and join the RIO thread. Idempotent — a
+    /// second call after the thread has been joined returns `Ok(())`.
+    /// Worst-case exit latency is one poll timeout (1 second).
     ///
     /// # Errors
-    /// Fails if the channel has been dropped or the thread cannot be joined
+    /// Fails if the thread panicked during join.
     pub(crate) fn finish(&mut self) -> Result<(), RouterError> {
         debug!("Requesting router IO to stop..");
-        self.ctl
-            .try_send(RouterCtlMsg::Finish)
-            .map_err(|_| RouterError::Internal("Error sending over ctl channel"))?;
+        self.cancel.cancel();
 
-        let handle = self.handle.take();
-        if let Some(handle) = handle {
-            debug!("Waiting for the router IO to terminate..");
-            handle
-                .join()
-                .map_err(|_| RouterError::Internal("Error joining thread"))?;
-            debug!("Router IO ended successfully");
-            Ok(())
-        } else {
-            Err(RouterError::Internal("No handle"))
-        }
+        let Some(handle) = self.handle.take() else {
+            return Ok(());
+        };
+        handle
+            .join()
+            .map_err(|_| RouterError::Internal("Error joining thread"))?;
+        Ok(())
     }
     #[must_use]
     pub(crate) fn get_ctl_tx(&self) -> RouterCtlSender {
@@ -113,7 +111,6 @@ pub(crate) const FRRMISOCK: Token = Token(2);
 pub(crate) struct Rio {
     #[allow(unused)]
     pub(crate) name: String,
-    pub(crate) run: bool,
     pub(crate) frozen: bool,
     pub(crate) cp_sock_path: String,
     pub(crate) cli_sock_path: String,
@@ -185,7 +182,6 @@ impl Rio {
 
         Ok(Rio {
             name: conf.name.clone(),
-            run: true,
             frozen: false,
             cp_sock_path,
             cli_sock_path,
@@ -342,6 +338,7 @@ impl Rio {
 
 #[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 pub(crate) fn start_rio(
+    router: &Subsystem,
     conf: &RioConf,
     fibtw: FibTableWriter,
     iftw: IfTableWriter,
@@ -351,9 +348,34 @@ pub(crate) fn start_rio(
     let mut rio = Rio::new(conf)?;
     let ctl_tx = rio.ctl_tx.clone();
     let cli_sources = cli_sources.unwrap_or_default();
+    let cancel = router.cancel_token();
+    let loop_cancel = cancel.clone();
+    let guard_subsystem = router.clone();
 
     /* router IO loop */
     let rio_loop = move || {
+        // Drop-guard so panic-unwind or unexpected loop exit trips
+        // report_fatal.
+        struct ExitGuard {
+            subsystem: Subsystem,
+        }
+        impl Drop for ExitGuard {
+            fn drop(&mut self) {
+                if self.subsystem.is_cancelled() {
+                    return;
+                }
+                let reason = if std::thread::panicking() {
+                    "RIO thread panicked"
+                } else {
+                    "RIO thread exited unexpectedly"
+                };
+                self.subsystem.report_fatal(reason);
+            }
+        }
+        let _guard = ExitGuard {
+            subsystem: guard_subsystem,
+        };
+
         info!("CPI: Listening at {}.", &rio.cp_sock_path);
         info!("CLI: Listening at {}.", &rio.cli_sock_path);
         info!("FRRMI: will connect to {}.", &rio.frrmi.get_remote());
@@ -366,7 +388,9 @@ pub(crate) fn start_rio(
         revent!(RouterEvent::Started);
 
         info!("Entering router IO loop....");
-        while rio.run {
+        // Observe the router subsystem cancellation between poll cycles.
+        // Worst-case exit latency is the poll timeout (1 second).
+        while !loop_cancel.is_cancelled() {
             if let Err(e) = rio.poller.poll(&mut events, Some(Duration::from_secs(1))) {
                 error!("Poller error!: {e}");
                 continue;
@@ -467,6 +491,7 @@ pub(crate) fn start_rio(
         .map_err(|_| RouterError::Internal("Failure spawning thread"))?;
 
     Ok(RioHandle {
+        cancel,
         ctl: ctl_tx,
         handle: Some(handle),
     })
@@ -479,8 +504,13 @@ mod tests {
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
     use crate::router::rio::{RioConf, start_rio};
-    use std::thread;
+    use concurrency::thread;
+    use lifecycle::{CancellationToken, Subsystem};
     use std::time::Duration;
+
+    fn test_router_subsystem() -> Subsystem {
+        Subsystem::new("router", CancellationToken::new())
+    }
 
     #[test]
     #[cfg_attr(emulated, ignore = "binds Unix domain sockets at /tmp/hh_*.sock")]
@@ -508,7 +538,9 @@ mod tests {
         let (_atablew, atabler) = AtableWriter::new();
 
         /* start CPI */
-        let mut cpi = start_rio(&conf, fibtw, iftw, atabler, None).expect("Should succeed");
+        let router = test_router_subsystem();
+        let mut cpi =
+            start_rio(&router, &conf, fibtw, iftw, atabler, None).expect("Should succeed");
         thread::sleep(Duration::from_secs(3));
         assert_eq!(cpi.finish(), Ok(()));
     }
@@ -533,7 +565,8 @@ mod tests {
         let (_atablew, atabler) = AtableWriter::new();
 
         /* start router IO */
-        let rio = start_rio(&conf, fibtw, iftw, atabler, None);
+        let router = test_router_subsystem();
+        let rio = start_rio(&router, &conf, fibtw, iftw, atabler, None);
         assert!(rio.is_err_and(|e| matches!(e, RouterError::InvalidPath(_))));
     }
 }
