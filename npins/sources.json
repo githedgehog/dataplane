@@ -11,10 +11,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.16.47",
-      "revision": "878a61be7743a8ec4ee725b0b5efa810b5167c79",
-      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.16.47",
-      "hash": "sha256-2fFEyXpestIFHNUcijLeXcrfGawpUvAYSxHQuePXCfU="
+      "version": "v0.17.0",
+      "revision": "3dec5495f080cb9d082db36ada2207e7a8c80aaf",
+      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.17.0",
+      "hash": "sha256-CDtvklmAoTWvuA/h9oV3BFiMsLjrPfqyf0ohsK09EcA="
     },
     "crane": {
       "type": "GitRelease",
@@ -162,8 +162,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre998534.d233902339c0/nixexprs.tar.xz",
-      "hash": "sha256-vZOcDniDPc1cS8A4Xi5YE6AGyPIvEpy4GMyayA3SWIM="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre1003183.6dedf69f94d0/nixexprs.tar.xz",
+      "hash": "sha256-N5FzTQ6c0ZFX4b7LeOMqYHccvQZTVMx5RBxrDeLgWYo="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -232,9 +232,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "86dbfb70dc1c2967245d87ed6d07d2c8bda305e3",
-      "url": "https://github.com/oxalica/rust-overlay/archive/86dbfb70dc1c2967245d87ed6d07d2c8bda305e3.tar.gz",
-      "hash": "sha256-DwltBoBl9a7fCzlKi3xnNha1NHbfvawwkNdnTXEyfFQ="
+      "revision": "5b5c521d6cae9ef4aa32f888eb2c0ce595c9be52",
+      "url": "https://github.com/oxalica/rust-overlay/archive/5b5c521d6cae9ef4aa32f888eb2c0ce595c9be52.tar.gz",
+      "hash": "sha256-dMX0PUslUHPajP6o8FEoRdFv9afq/dec4POR0vVfjK4="
     }
   },
   "version": 7
