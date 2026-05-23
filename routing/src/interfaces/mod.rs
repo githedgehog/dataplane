@@ -99,7 +99,7 @@ pub mod tests {
     // create a test interface table and display it
     pub fn build_test_iftable() -> IfTable {
         let iftable = populate_test_iftable();
-        println!("{}", &iftable);
+        println!("{iftable}");
         iftable
     }
 

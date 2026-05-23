@@ -136,92 +136,92 @@ fn bgp_neigh_options(neigh: &BgpNeighbor, prefix: &str) -> ConfigBuilder {
     if neigh.is_peer_group() {
         neigh
             .remote_as
-            .map(|asn| cfg += format!(" {} remote-as {asn}", &prefix));
+            .map(|asn| cfg += format!(" {prefix} remote-as {asn}"));
     }
 
     /* description */
     neigh
         .description
         .as_ref()
-        .map(|d| cfg += format!(" {} description {d}", &prefix));
+        .map(|d| cfg += format!(" {prefix} description {d}"));
 
     /* update source */
     neigh
         .update_source
         .as_ref()
-        .map(|source| cfg += format!(" {} update-source {}", &prefix, source.rendered()));
+        .map(|source| cfg += format!(" {} update-source {}", prefix, source.rendered()));
 
     /* route-map in */
     neigh
         .route_map_in
         .as_ref()
-        .map(|rmap| cfg += format!(" {} route-map {rmap} in", &prefix));
+        .map(|rmap| cfg += format!(" {prefix} route-map {rmap} in"));
 
     /* route-map out */
     neigh
         .route_map_out
         .as_ref()
-        .map(|rmap| cfg += format!(" {} route-map {rmap} out", &prefix));
+        .map(|rmap| cfg += format!(" {prefix} route-map {rmap} out"));
 
     /* weight */
     neigh
         .weight
         .as_ref()
-        .map(|weight| cfg += format!(" {} weight {weight}", &prefix));
+        .map(|weight| cfg += format!(" {prefix} weight {weight}"));
 
     /* send communities */
     neigh
         .send_community
         .as_ref()
-        .map(|com| cfg += format!(" {} send-community {}", &prefix, com.rendered()));
+        .map(|com| cfg += format!(" {} send-community {}", prefix, com.rendered()));
 
     /* ebgp multihop */
     neigh
         .ebgp_multihop
         .as_ref()
-        .map(|max_hops| cfg += format!(" {} ebgp-multihop {max_hops}", &prefix));
+        .map(|max_hops| cfg += format!(" {prefix} ebgp-multihop {max_hops}"));
 
     /* ttl security */
     neigh
         .ttl_sec_hops
         .as_ref()
-        .map(|hops| cfg += format!(" {} ttl-security hops {hops}", &prefix));
+        .map(|hops| cfg += format!(" {prefix} ttl-security hops {hops}"));
 
     /* advertisement interval */
     neigh
         .advertisement_interval
         .as_ref()
-        .map(|interval| cfg += format!(" {} advertisement-interval {interval}", &prefix));
+        .map(|interval| cfg += format!(" {prefix} advertisement-interval {interval}"));
 
     /* connect timer */
     neigh
         .timer_connect
         .as_ref()
-        .map(|timer| cfg += format!(" {} timers connect {timer}", &prefix));
+        .map(|timer| cfg += format!(" {prefix} timers connect {timer}"));
 
     /* delay-open timer */
     neigh
         .timer_delay_open
         .as_ref()
-        .map(|timer| cfg += format!(" {} timers delayopen {timer}", &prefix));
+        .map(|timer| cfg += format!(" {prefix} timers delayopen {timer}"));
 
     /* max prefixes in */
     neigh
         .maximum_prefix
         .as_ref()
-        .map(|num| cfg += format!(" {} maximum-prefix {num}", &prefix));
+        .map(|num| cfg += format!(" {prefix} maximum-prefix {num}"));
 
     /* max prefixes out */
     neigh
         .maximum_prefix_out
         .as_ref()
-        .map(|num| cfg += format!(" {} maximum-prefix-out {num}", &prefix));
+        .map(|num| cfg += format!(" {prefix} maximum-prefix-out {num}"));
 
     /* TCP MSS  */
     neigh
         .tcp_mss
         .as_ref()
-        .map(|mss| cfg += format!(" {} tcp-mss {mss}", &prefix));
+        .map(|mss| cfg += format!(" {prefix} tcp-mss {mss}"));
 
     cfg
 }
