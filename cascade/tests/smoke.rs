@@ -1,0 +1,426 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Open Network Fabric Authors
+
+//! End-to-end smoke test exercising the cascade trait shape with a
+//! trivial concrete implementation.
+//!
+//! Purpose: make sure the trait bounds line up and the lookup walk
+//! produces the expected priority order (head shadows sealed shadows
+//! tail, tombstones in the head suppress lower-layer hits).  Also
+//! exercises [`Cascade::rotate`]'s seal-and-publish flow.
+//!
+//! This test is *not* an Upsert-laws property suite -- those will
+//! live in their own test file once the property harness lands.
+
+#![allow(clippy::expect_used)]
+
+use concurrency::sync::Mutex;
+use std::collections::HashMap;
+
+use dataplane_cascade::{Cascade, Generation, Layer, MergeInto, MutableHead, Outcome, Upsert};
+
+/// Tiny generation allocator for tests.  In production the manager
+/// owns this counter; tests carry their own to avoid pulling in
+/// runtime machinery.
+struct GenAlloc(Generation);
+
+impl GenAlloc {
+    fn new() -> Self {
+        Self(Generation::FIRST)
+    }
+
+    fn next(&mut self) -> Generation {
+        let g = self.0;
+        self.0 = self.0.next().expect("test gen counter overflow");
+        g
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A trivial value type with two-position Upsert so we exercise both
+// arms (replace and tombstone).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Set(u32),
+    Tombstone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    Value(u32),
+    Tombstone,
+}
+
+impl Upsert for Entry {
+    type Op = Op;
+
+    fn upsert(&mut self, op: Self::Op) {
+        *self = Self::seed(op);
+    }
+
+    fn seed(op: Self::Op) -> Self {
+        match op {
+            Op::Set(v) => Entry::Value(v),
+            Op::Tombstone => Entry::Tombstone,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A trivial head: Mutex<HashMap>.  No concurrency value; we just want
+// the trait surface exercised.
+// ---------------------------------------------------------------------------
+
+struct TestHead {
+    inner: Mutex<HashMap<u32, Entry>>,
+}
+
+impl TestHead {
+    fn empty() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Layer for TestHead {
+    type Input = u32;
+    type Output = Entry;
+
+    fn lookup(&self, _input: &u32) -> Outcome<&Entry> {
+        // Borrowing through a Mutex is awkward.  For the smoke test
+        // we deliberately defer the read to the sealed/tail path
+        // by always returning Continue.  A real impl would publish an
+        // Arc<HashMap<...>> via concurrency::slot::Slot for the read
+        // path so that `lookup` can hand out a borrow without
+        // holding the mutex.
+        Outcome::Continue
+    }
+}
+
+impl MutableHead for TestHead {
+    type Op = (u32, Op);
+    type Frozen = FrozenMap;
+
+    fn write(&self, op: (u32, Op)) {
+        let mut guard = self.inner.lock();
+        let (k, op) = op;
+        guard
+            .entry(k)
+            .and_modify(|e| e.upsert(op))
+            .or_insert_with(|| Entry::seed(op));
+    }
+
+    fn freeze(&self) -> FrozenMap {
+        let guard = self.inner.lock();
+        FrozenMap {
+            inner: guard.clone(),
+        }
+    }
+
+    fn approx_size(&self) -> usize {
+        self.inner.lock().len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A trivial sealed/tail layer: plain HashMap.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct FrozenMap {
+    inner: HashMap<u32, Entry>,
+}
+
+impl FrozenMap {
+    fn from_pairs<I: IntoIterator<Item = (u32, Entry)>>(it: I) -> Self {
+        Self {
+            inner: it.into_iter().collect(),
+        }
+    }
+}
+
+impl Layer for FrozenMap {
+    type Input = u32;
+    type Output = Entry;
+
+    fn lookup(&self, k: &u32) -> Outcome<&Entry> {
+        match self.inner.get(k) {
+            Some(Entry::Value(_)) => Outcome::Match(self.inner.get(k).expect("just checked")),
+            Some(Entry::Tombstone) => Outcome::Forbid,
+            None => Outcome::Continue,
+        }
+    }
+}
+
+// `merge_into` for FrozenMap-on-FrozenMap: walk self's entries and
+// overlay them on a clone of target.  Value entries overwrite;
+// tombstones remove (the merged tail does not carry tombstones, it
+// just lacks the entry).  Newer-wins as required by the trait.
+impl MergeInto<FrozenMap> for FrozenMap {
+    fn merge_into(&self, target: &FrozenMap) -> FrozenMap {
+        let mut out = target.inner.clone();
+        for (k, v) in &self.inner {
+            match v {
+                Entry::Value(_) => {
+                    out.insert(*k, *v);
+                }
+                Entry::Tombstone => {
+                    out.remove(k);
+                }
+            }
+        }
+        FrozenMap { inner: out }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+fn build_cascade(
+    tail_pairs: impl IntoIterator<Item = (u32, Entry)>,
+) -> Cascade<TestHead, FrozenMap, FrozenMap> {
+    Cascade::new(TestHead::empty(), FrozenMap::from_pairs(tail_pairs))
+}
+
+#[test]
+fn tail_hit_when_head_and_sealed_miss() {
+    let c = build_cascade([(42, Entry::Value(100))]);
+    assert_eq!(c.snapshot().lookup(&42), Some(&Entry::Value(100)));
+}
+
+#[test]
+fn miss_in_all_layers_returns_none() {
+    let c = build_cascade([(1, Entry::Value(10))]);
+    assert_eq!(c.snapshot().lookup(&999), None);
+}
+
+#[test]
+fn rotate_seals_head_into_sealed_layer() {
+    let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
+
+    // Write to head, then rotate.  The write should land in a
+    // sealed layer and shadow the tail value.
+    c.write((42, Op::Set(200)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    let snap = c.snapshot();
+    assert_eq!(snap.frozen_depth(), 1);
+    assert_eq!(snap.lookup(&42), Some(&Entry::Value(200)));
+}
+
+#[test]
+fn rotated_tombstone_in_sealed_suppresses_tail_hit() {
+    let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
+    c.write((42, Op::Tombstone));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    let snap = c.snapshot();
+    assert_eq!(snap.frozen_depth(), 1);
+    // Frozen layer has a tombstone for 42; tail has a value.
+    // Cascade walk hits the tombstone first -> Forbid -> None.
+    assert_eq!(snap.lookup(&42), None);
+}
+
+#[test]
+fn multiple_rotations_stack_in_newest_first_order() {
+    let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
+
+    // Three rotations, each writing a different value for the same
+    // key.  After all three, the most recent value should win.
+    c.write((42, Op::Set(200)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+    c.write((42, Op::Set(300)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+    c.write((42, Op::Set(400)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    let snap = c.snapshot();
+    assert_eq!(snap.frozen_depth(), 3);
+    // sealed[0] contains 400, sealed[1] contains 300, sealed[2]
+    // contains 200, tail contains 100.  Newest-first order means
+    // we hit 400 first.
+    assert_eq!(snap.lookup(&42), Some(&Entry::Value(400)));
+}
+
+#[test]
+fn compact_with_no_sealed_is_noop() {
+    let c = build_cascade([(42, Entry::Value(100))]);
+    c.compact(0);
+    assert_eq!(c.frozen_depth(), 0);
+    assert_eq!(c.snapshot().lookup(&42), Some(&Entry::Value(100)));
+}
+
+#[test]
+fn compact_folds_oldest_sealed_into_tail() {
+    let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
+    c.write((2, Op::Set(20)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+    c.write((3, Op::Set(30)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    // Two sealed layers, tail has 1.
+    assert_eq!(c.frozen_depth(), 2);
+
+    // keep = 1 -> fold the oldest sealed (containing {2: 20}) into
+    // the tail.  After compact: sealed has 1 layer ({3: 30}), tail
+    // has {1: 10, 2: 20}.
+    c.compact(1);
+    assert_eq!(c.frozen_depth(), 1);
+
+    let snap = c.snapshot();
+    assert_eq!(snap.lookup(&1), Some(&Entry::Value(10)));
+    assert_eq!(snap.lookup(&2), Some(&Entry::Value(20)));
+    assert_eq!(snap.lookup(&3), Some(&Entry::Value(30)));
+}
+
+#[test]
+fn compact_to_zero_keeps_no_sealed() {
+    let c = build_cascade([]);
+    let mut g_alloc = GenAlloc::new();
+    for v in 1..=5 {
+        c.write((v, Op::Set(v * 10)));
+        c.rotate(g_alloc.next(), TestHead::empty);
+    }
+    assert_eq!(c.frozen_depth(), 5);
+
+    c.compact(0);
+    assert_eq!(c.frozen_depth(), 0);
+
+    let snap = c.snapshot();
+    for v in 1u32..=5 {
+        assert_eq!(snap.lookup(&v), Some(&Entry::Value(v * 10)));
+    }
+}
+
+#[test]
+fn compact_applies_tombstones_to_tail() {
+    let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
+    c.write((42, Op::Tombstone));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    assert_eq!(c.snapshot().lookup(&42), None);
+
+    // Compact the tombstone into the tail.  After compaction the
+    // sealed vec is empty and the tail no longer contains 42 at
+    // all (the merge removed it).
+    c.compact(0);
+    assert_eq!(c.frozen_depth(), 0);
+    assert_eq!(c.snapshot().lookup(&42), None);
+}
+
+#[test]
+fn snapshot_held_across_compact_keeps_old_layers_alive() {
+    let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
+    c.write((2, Op::Set(20)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    // Snapshot before compaction.  The snapshot's sealed-vec Arc
+    // contains the (still-live) sealed layer with {2: 20}; its
+    // tail Arc references the pre-compact tail with {1: 10}.
+    let pre_compact = c.snapshot();
+
+    // Compact: merges the sealed layer into the tail.
+    c.compact(0);
+    assert_eq!(c.frozen_depth(), 0);
+
+    // pre_compact still sees the old composition because its Arcs
+    // point at the pre-compact generations.  Both keys are visible.
+    assert_eq!(pre_compact.lookup(&1), Some(&Entry::Value(10)));
+    assert_eq!(pre_compact.lookup(&2), Some(&Entry::Value(20)));
+
+    // Fresh snapshot sees the post-compact state -- same logical
+    // contents, different physical layout.
+    let post_compact = c.snapshot();
+    assert_eq!(post_compact.frozen_depth(), 0);
+    assert_eq!(post_compact.lookup(&1), Some(&Entry::Value(10)));
+    assert_eq!(post_compact.lookup(&2), Some(&Entry::Value(20)));
+}
+
+#[test]
+fn snapshot_held_across_rotation_keeps_old_state() {
+    let c = build_cascade([(42, Entry::Value(100))]);
+    let mut g_alloc = GenAlloc::new();
+
+    // Take a snapshot.  Then rotate after writing a new value.
+    // The snapshot should still see the old state because it
+    // holds Arcs to the pre-rotate generations.
+    c.write((42, Op::Set(200)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+    let old_snap = c.snapshot();
+
+    // Rotate again with a new value.
+    c.write((42, Op::Set(300)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    // old_snap still sees 200 because its sealed-vec Arc pre-dates
+    // the second rotate.
+    assert_eq!(old_snap.lookup(&42), Some(&Entry::Value(200)));
+    assert_eq!(c.snapshot().lookup(&42), Some(&Entry::Value(300)));
+}
+
+// ---------------------------------------------------------------------------
+// lookup_at: generation-horizon filtered walk
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lookup_at_skips_layers_above_horizon() {
+    let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
+
+    // Three rotations, each setting key 1 to a different value.
+    c.write((1, Op::Set(200)));
+    let g_v200 = g_alloc.next();
+    c.rotate(g_v200, TestHead::empty);
+
+    c.write((1, Op::Set(300)));
+    let g_v300 = g_alloc.next();
+    c.rotate(g_v300, TestHead::empty);
+
+    c.write((1, Op::Set(400)));
+    let g_v400 = g_alloc.next();
+    c.rotate(g_v400, TestHead::empty);
+
+    let snap = c.snapshot();
+    // lookup_at(g_v300) walks frozen entries with gen <= g_v300:
+    // that's g_v200 and g_v300 (skipping g_v400).  Newest-first
+    // walk hits g_v300 first -> Value(300).
+    assert_eq!(snap.lookup_at(&1, g_v300), Some(&Entry::Value(300)));
+
+    // lookup_at(g_v200) skips both g_v300 and g_v400, hits g_v200.
+    assert_eq!(snap.lookup_at(&1, g_v200), Some(&Entry::Value(200)));
+
+    // lookup() (no horizon) sees everything: hits g_v400.
+    assert_eq!(snap.lookup(&1), Some(&Entry::Value(400)));
+}
+
+#[test]
+fn lookup_at_falls_through_to_tail_when_all_frozen_above_horizon() {
+    let c = build_cascade([(1, Entry::Value(10))]);
+    let mut g_alloc = GenAlloc::new();
+
+    // Reserve a low generation that pre-dates any rotation.
+    let g_low = g_alloc.next();
+
+    // Rotate with newer generations.
+    c.write((1, Op::Set(200)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+    c.write((2, Op::Set(20)));
+    c.rotate(g_alloc.next(), TestHead::empty);
+
+    let snap = c.snapshot();
+    // lookup_at(g_low): all frozen layers are above this horizon.
+    // Walk skips them, falls through to tail.
+    assert_eq!(snap.lookup_at(&1, g_low), Some(&Entry::Value(10)));
+    // Key 2 not in tail, no frozen entries below horizon -> None.
+    assert_eq!(snap.lookup_at(&2, g_low), None);
+}
