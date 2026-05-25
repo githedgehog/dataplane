@@ -11,10 +11,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.16.47",
-      "revision": "878a61be7743a8ec4ee725b0b5efa810b5167c79",
-      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.16.47",
-      "hash": "sha256-2fFEyXpestIFHNUcijLeXcrfGawpUvAYSxHQuePXCfU="
+      "version": "v0.17.0",
+      "revision": "3dec5495f080cb9d082db36ada2207e7a8c80aaf",
+      "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.17.0",
+      "hash": "sha256-CDtvklmAoTWvuA/h9oV3BFiMsLjrPfqyf0ohsK09EcA="
     },
     "crane": {
       "type": "GitRelease",
@@ -54,9 +54,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "ef3e718651d59fd4da5787a9c05e06a594c0136c",
-      "url": "https://github.com/githedgehog/dplane-plugin/archive/ef3e718651d59fd4da5787a9c05e06a594c0136c.tar.gz",
-      "hash": "sha256-CRsHKk50XnV23uVJxjN9ZtsIFH/BwZYlW27UL4V0D6E="
+      "revision": "f3517e68ef53955f107993b45c64222576e2e42d",
+      "url": "https://github.com/githedgehog/dplane-plugin/archive/f3517e68ef53955f107993b45c64222576e2e42d.tar.gz",
+      "hash": "sha256-C5Hn5L7TVwmh4q4EGKHs5fxx6DX9lTqSGHfQTz6lVuM="
     },
     "dplane-rpc": {
       "type": "Git",
@@ -162,8 +162,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre998534.d233902339c0/nixexprs.tar.xz",
-      "hash": "sha256-vZOcDniDPc1cS8A4Xi5YE6AGyPIvEpy4GMyayA3SWIM="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre1003764.3d8f0f3f72a6/nixexprs.tar.xz",
+      "hash": "sha256-Zc5W2GRfLZtIDsEn0A5kzoN0+yNWq/3MzzoXGu0ytMU="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -232,9 +232,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "86dbfb70dc1c2967245d87ed6d07d2c8bda305e3",
-      "url": "https://github.com/oxalica/rust-overlay/archive/86dbfb70dc1c2967245d87ed6d07d2c8bda305e3.tar.gz",
-      "hash": "sha256-DwltBoBl9a7fCzlKi3xnNha1NHbfvawwkNdnTXEyfFQ="
+      "revision": "47ab6c7b3c6a68beac60067490240efa32ae344c",
+      "url": "https://github.com/oxalica/rust-overlay/archive/47ab6c7b3c6a68beac60067490240efa32ae344c.tar.gz",
+      "hash": "sha256-qSIAAfK66X6waos6alIYxVze1ZU3C/WPp7NlN4ooP54="
     }
   },
   "version": 7
