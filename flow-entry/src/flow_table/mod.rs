@@ -5,6 +5,9 @@ mod display;
 pub mod nf_lookup;
 pub mod table;
 
+#[cfg(test)]
+mod concurrent_fuzz;
+
 pub use nf_lookup::FlowLookup;
 pub use table::{FlowTable, FlowTableReadGuard};
 

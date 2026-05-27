@@ -406,3 +406,44 @@ impl FlowInfo {
         self.status.store(status, Ordering::Relaxed)
     }
 }
+
+#[cfg(any(test, feature = "bolero"))]
+impl FlowInfo {
+    /// Construct a [`FlowInfo`] with an explicit initial [`FlowStatus`].
+    ///
+    /// Test/fuzz-only convenience: production code goes through [`FlowInfo::new`]
+    /// (which seeds `Detached`) and lets the flow table promote to `Active` on
+    /// insert. Used by the bolero-driven concurrent-fuzz tests to seed flows in
+    /// any of the four legal states.
+    #[must_use]
+    pub fn new_with_status(flowkey: FlowKey, expires_at: Instant, status: FlowStatus) -> Self {
+        Self {
+            expires_at: AtomicInstant::new(expires_at),
+            flowkey,
+            genid: AtomicI64::new(0),
+            status: AtomicFlowStatus::from(status),
+            locked: RwLock::new(FlowInfoLocked::default()),
+            related: None,
+            token: CancellationToken::new(),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "bolero"))]
+mod contract {
+    use super::FlowStatus;
+    use bolero::{Driver, TypeGenerator};
+
+    impl TypeGenerator for FlowStatus {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            // Weight Active higher so generated workloads mostly look like real
+            // in-table flows, while still exercising the terminal states.
+            match driver.produce::<u8>()? % 8 {
+                0..=4 => Some(FlowStatus::Active),
+                5 => Some(FlowStatus::Cancelled),
+                6 => Some(FlowStatus::Expired),
+                _ => Some(FlowStatus::Detached),
+            }
+        }
+    }
+}
