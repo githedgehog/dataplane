@@ -7,12 +7,6 @@ version.workspace = true
 
 [features]
 default = []
-# Enables the DPDK `rte_acl` backend for `cascade::Lookup`.  Pulls in
-# the `dpdk` crate (and transitively `dpdk-sys`), so off by default;
-# only the production binary / DPDK-bound consumers turn it on.  The
-# reference backend (always built) carries its own `thiserror`-derived
-# error types, so `thiserror` is unconditional rather than feature-gated
-# under `dpdk`.
 dpdk = ["dep:dpdk"]
 
 [dependencies]
@@ -25,13 +19,20 @@ net = { workspace = true, features = [] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# Differential oracle harness: random rulesets + packets compared
-# between the reference and DPDK backends.
 bolero = { workspace = true, features = ["std"] }
-# Override the regular `dpdk` dep to enable its `test` feature
-# (exposes `dpdk::test_support::start_eal` and `dpdk::with_eal`).
+criterion = { workspace = true, features = ["cargo_bench_support"] }
 dpdk = { workspace = true, features = ["test"] }
-# Override match-action to also enable `bolero` for property-test
-# generators (`FieldHit` / `FieldMiss`).
 match-action = { workspace = true, features = ["derive", "bolero"] }
 net = { workspace = true, features = ["test_buffer", "builder"] }
+
+[[bench]]
+name = "reference_five_tuple"
+harness = false
+
+[[bench]]
+name = "dpdk_five_tuple"
+harness = false
+
+[[bench]]
+name = "table_build"
+harness = false
