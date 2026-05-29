@@ -24,6 +24,7 @@ members = [
     "k8s-less",
     "left-right-tlcache",
     "lifecycle",
+    "lookup",
     "lpm",
     "mgmt",
     "nat",
@@ -84,6 +85,7 @@ k8s-intf = { path = "./k8s-intf", package = "dataplane-k8s-intf", default-featur
 k8s-less = { path = "./k8s-less", package = "dataplane-k8s-less", features = [] }
 left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-right-tlcache", features = [] }
 lifecycle = { path = "./lifecycle", package = "dataplane-lifecycle", features = [] }
+lookup = { path = "./lookup", package = "dataplane-lookup", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
@@ -324,6 +326,11 @@ wasm = false # split
 package = "dataplane-k8s-less"
 miri = true
 wasm = false # split
+
+[workspace.metadata.package.lookup]
+package = "dataplane-lookup"
+miri = true
+wasm = false # split (std collections)
 
 [workspace.metadata.package.mgmt]
 package = "dataplane-mgmt"
