@@ -161,6 +161,11 @@ test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" 
     cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
 
 [script]
+bench: (build "benches")
+    {{ _just_debuggable_ }}
+    for bench in ./results/benches/bin/*; do $bench --bench; done
+
+[script]
 build-each *args: (build "workspace" args)
     {{ _just_debuggable_ }}
 
@@ -415,5 +420,3 @@ shell:
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \
       --argstr tag '{{version}}'
-
-
