@@ -25,7 +25,8 @@ net = { workspace = true, features = [] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# Property-test draws for the shape-fuzz oracle.
+# Differential oracle harness: random rulesets + packets compared
+# between the reference and DPDK backends.
 bolero = { workspace = true, features = ["std"] }
 # Override the regular `dpdk` dep to enable its `test` feature
 # (exposes `dpdk::test_support::start_eal` and `dpdk::with_eal`).
@@ -33,3 +34,4 @@ dpdk = { workspace = true, features = ["test"] }
 # Override match-action to also enable `bolero` for property-test
 # generators (`FieldHit` / `FieldMiss`).
 match-action = { workspace = true, features = ["derive", "bolero"] }
+net = { workspace = true, features = ["test_buffer", "builder"] }
