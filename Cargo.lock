@@ -1148,6 +1148,7 @@ version = "0.21.0"
 dependencies = [
  "arrayvec",
  "dataplane-concurrency",
+ "dataplane-dpdk",
  "dataplane-lookup",
  "dataplane-match-action",
  "dataplane-net",
