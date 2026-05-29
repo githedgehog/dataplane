@@ -7,10 +7,11 @@ version.workspace = true
 
 [dependencies]
 arrayvec = { workspace = true, default-features = true }
+bolero = { workspace = true, optional = true }
 fixed-size = { workspace = true, features = [] }
 match-action-derive = { workspace = true, optional = true }
 
 [features]
 default = ["derive"]
-# Re-export the `MatchKey` derive macro from `dataplane-match-action-derive`.
 derive = ["dep:match-action-derive"]
+bolero = ["dep:bolero", "match-action-derive?/bolero"]
