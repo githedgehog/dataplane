@@ -1287,6 +1287,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-fixed-size"
+version = "0.21.0"
+
+[[package]]
 name = "dataplane-flow-entry"
 version = "0.21.0"
 dependencies = [
@@ -1563,6 +1567,7 @@ dependencies = [
  "bytecheck",
  "dataplane-common",
  "dataplane-concurrency",
+ "dataplane-fixed-size",
  "dataplane-id",
  "derive_builder",
  "downcast-rs",
