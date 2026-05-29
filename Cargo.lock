@@ -1285,6 +1285,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-cascade"
+version = "0.21.0"
+dependencies = [
+ "bolero",
+ "dataplane-cascade",
+ "dataplane-concurrency",
+ "dataplane-lookup",
+ "tokio",
+]
+
+[[package]]
 name = "dataplane-cli"
 version = "0.22.0"
 dependencies = [

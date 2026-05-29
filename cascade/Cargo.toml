@@ -1,0 +1,22 @@
+[package]
+name = "dataplane-cascade"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+default = []
+bolero = ["dep:bolero"]
+subscribe = ["dep:tokio"]
+
+[dependencies]
+concurrency = { workspace = true, features = [] }
+lookup = { workspace = true, features = [] }
+bolero = { workspace = true, optional = true, features = ["std"] }
+tokio = { workspace = true, optional = true, features = ["sync"] }
+
+[dev-dependencies]
+dataplane-cascade = { path = ".", features = ["bolero", "subscribe"] }
+bolero = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
