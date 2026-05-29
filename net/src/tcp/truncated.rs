@@ -22,7 +22,7 @@ pub struct TruncatedTcpHeader {
 }
 
 impl TruncatedTcpHeader {
-    const MIN_HEADER_LEN: usize = 4;
+    pub(crate) const MIN_HEADER_LEN: usize = 4;
 
     fn new(source_port: TcpPort, destination_port: TcpPort, everything_else: Vec<u8>) -> Self {
         Self {

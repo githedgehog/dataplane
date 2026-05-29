@@ -22,7 +22,7 @@ pub struct TruncatedUdpHeader {
 }
 
 impl TruncatedUdpHeader {
-    const MIN_HEADER_LEN: usize = 4;
+    pub(crate) const MIN_HEADER_LEN: usize = 4;
 
     fn new(source_port: UdpPort, destination_port: UdpPort, everything_else: Vec<u8>) -> Self {
         Self {

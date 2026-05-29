@@ -332,23 +332,23 @@ where
 // EmbeddedHeaders accessors used by the step impls
 // ===========================================================================
 //
-// These read-only views are kept as small private accessors here so the
+// These read-only views are kept as small crate-private accessors here so the
 // step impls don't need to reach into the (crate-private) fields of
 // `EmbeddedHeaders` directly.
 
 impl EmbeddedHeaders {
     #[inline(always)]
-    fn net(&self) -> Option<&Net> {
+    pub(crate) fn net(&self) -> Option<&Net> {
         self.net.as_ref()
     }
 
     #[inline(always)]
-    fn net_ext(&self) -> &[NetExt] {
+    pub(crate) fn net_ext(&self) -> &[NetExt] {
         &self.net_ext
     }
 
     #[inline(always)]
-    fn transport(&self) -> Option<&EmbeddedTransport> {
+    pub(crate) fn transport(&self) -> Option<&EmbeddedTransport> {
         self.transport.as_ref()
     }
 }
