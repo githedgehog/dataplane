@@ -1462,6 +1462,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-lookup"
+version = "0.21.0"
+
+[[package]]
 name = "dataplane-lpm"
 version = "0.21.0"
 dependencies = [
