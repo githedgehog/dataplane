@@ -1,0 +1,16 @@
+[package]
+name = "dataplane-match-action"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+arrayvec = { workspace = true, default-features = true }
+fixed-size = { workspace = true, features = [] }
+match-action-derive = { workspace = true, optional = true }
+
+[features]
+default = ["derive"]
+# Re-export the `MatchKey` derive macro from `dataplane-match-action-derive`.
+derive = ["dep:match-action-derive"]
