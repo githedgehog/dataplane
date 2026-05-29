@@ -85,7 +85,7 @@
 //!     NonZero::new(1024).unwrap(),
 //! )?;
 //! let build_cfg = AclBuildConfig::new(1, field_defs, 0)?;
-//! let mut ctx = AclContext::<NUM_FIELDS>::new(params, build_cfg)?;
+//! let mut ctx = AclContext::new(params, build_cfg)?;
 //!
 //! // 2. Add rules -- Rule<5> is enforced by the type system.
 //! let rule = Rule::new(
@@ -169,147 +169,23 @@ pub use error::{
 // Module-level utilities
 pub use context::dump_all_contexts;
 
-/// End-to-end integration tests for the ACL wrapper, exercising real
-/// `rte_acl_*` calls against a live EAL.
-///
-/// # EAL configuration (shared by every test in this module)
-///
-/// All tests initialize EAL via [`start_eal`][self::tests::start_eal], which
-/// passes a fixed set of flags plus two dynamic values:
-///
-/// - `--no-huge --in-memory` -- back EAL with anonymous memory instead of
-///   hugetlbfs.  Keeps the tests runnable on any host without manual hugepage
-///   configuration.
-/// - `--lcores 0@({allowed_cpus})` -- a single logical lcore (the main),
-///   floated across whatever physical CPUs `sched_getaffinity` reports as
-///   available to the process.  No workers means
-///   `rte_eal_mp_remote_launch` has no per-worker readiness flag to read, so
-///   we sidestep a benign-but-flagged data race that ThreadSanitizer reports
-///   against DPDK's lcore startup, and we also avoid spawning unused worker
-///   threads.  Floating (instead of pinning to physical CPU 0) keeps the
-///   tests honest about cgroups, taskset, and container CPU restrictions.
-/// - `--file-prefix <unique-id>` -- a per-init unique identifier so that
-///   concurrent forked test processes do not fight over the EAL runtime
-///   configuration namespace.  Necessary alongside `--in-memory` because EAL
-///   still creates per-process control state in the runtime dir.
-/// - `--no-pci --no-telemetry --no-shconf --no-hpet` -- disable everything we
-///   do not need so the tests start quickly and have no shared-config files
-///   to clean up.
-///
-/// # Running once per process
-///
-/// `eal::init` may only be called once per process.  Every test in this
-/// module funnels through the [`EAL`][self::tests::EAL] `OnceLock`, so
-/// the init happens exactly once regardless of how the harness schedules
-/// tests: nextest's per-test process fork (the workspace default) runs
-/// the lazy init once per fork; a single-process runner (`cargo test
-/// --test-threads=1` or an in-process parallel harness) runs it once for
-/// the lifetime of the process.
-///
-/// # Running locally
-///
-/// ```text
-/// just setup-roots             # rebuild DPDK + wrapper
-/// # re-enter `nix-shell` so DATAPLANE_SYSROOT picks up the new sysroot
-/// cargo nextest run -p dataplane-dpdk acl::tests
-/// ```
 #[cfg(test)]
 mod tests {
     use core::num::NonZero;
 
-    use concurrency::sync::OnceLock;
-
     use crate::acl::*;
-    use crate::eal::Eal;
     use crate::socket::SocketId;
+    use crate::with_eal;
 
-    /// Number of fields used by all lifecycle tests in this module.
     const NUM_FIELDS: usize = 2;
 
-    /// Process-wide EAL initialized on first use, shared by every test.
-    ///
-    /// `eal::init` may only be called once per process.  Nextest's default
-    /// per-test process forking makes a per-test `init` trivially safe
-    /// (each forked process re-initializes EAL exactly once), but a
-    /// single-process test runner -- `cargo test --test-threads=1`, an
-    /// in-process parallel harness, or any future configuration that drops
-    /// the fork -- would call init twice and fail.  Funneling every test
-    /// through this lazy [`OnceLock`] makes the tests correct under both
-    /// modes: per-process forking initializes once per fork (cheap),
-    /// in-process initializes once for the lifetime of the process.
-    ///
-    /// The `Eal` value is intentionally leaked into the static for the
-    /// lifetime of the process; DPDK has no clean teardown path, and the
-    /// `Eal` Drop would (per [`crate::eal::init`]) be unable to free DPDK
-    /// allocations through the system allocator after the allocator swap.
-    static EAL: OnceLock<Eal> = OnceLock::new();
-
-    /// Lazily initialize EAL on first call.
-    ///
-    /// Each test calls this in place of `eal::init`; subsequent calls
-    /// return the shared `&'static Eal` without re-initializing DPDK.
-    fn start_eal() -> &'static Eal {
-        // DPDK pins lcores, but that is generally not what we actually want in a test environment.
-        // Instead, we need to allocate just lcore 0 (main) and pin it to "everything we legally have access to."
-        fn allowed_cpus() -> String {
-            use nix::sched::{CpuSet, sched_getaffinity};
-            use nix::unistd::Pid;
-            let set = sched_getaffinity(Pid::from_raw(0)).expect("sched_getaffinity");
-            (0..CpuSet::count())
-                .filter(|&i| set.is_set(i).unwrap_or(false))
-                .map(|x| x.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        }
-        // concurrent executions of DPDK EAL can fight over allocations and file resources.
-        // You can prevent that with a unique prefix on the hugepage files it allocates (if any).
-        let eal_id = format!("{}", id::Id::<Eal>::new());
-        let core_pinning = format!("0@({})", allowed_cpus());
-        // EAL arguments used the first time EAL is initialized in this process.
-        let args: &[&str] = &[
-            "--no-huge",
-            "--no-pci",
-            "--in-memory",
-            "--no-telemetry",
-            "--no-shconf",
-            "--no-hpet",
-            "--iova-mode=va",
-            "--file-prefix",
-            &eal_id,
-            // Restrict EAL to a single lcore (the main).  Without workers,
-            // rte_eal_mp_remote_launch has no readiness flags to read and there is
-            // no DPDK-internal init race for ThreadSanitizer to flag.  Also avoids
-            // spawning unused worker threads.
-            //
-            // The `0@(<cpu-list>)` form means "logical lcore 0, floated across
-            // the listed physical CPUs": DPDK schedules lcore 0 onto any of
-            // them rather than pinning to a single CPU.  Floating instead of
-            // pinning keeps the tests honest about cgroups, taskset, and
-            // container affinity restrictions.
-            "--lcores",
-            &core_pinning,
-        ];
-
-        EAL.get_or_init(|| super::super::eal::init(args.iter().copied()))
-    }
-
-    /// Standard field layout used by the lifecycle tests.
-    ///
-    /// DPDK ACL requires the first field in the rule definition to be one byte
-    /// long (it is consumed during trie setup).  All subsequent fields must be
-    /// grouped into sets of 4 consecutive bytes via `input_index`.
     fn standard_field_defs() -> [FieldDef; NUM_FIELDS] {
         [
-            // Field 0: 1-byte entry at offset 0 (required by DPDK to be 1 byte).
             FieldDef::new(FieldType::Bitmask, FieldSize::One, 0, 0, 0),
-            // Field 1: 4-byte Mask field at offset 4, input_index 1.
             FieldDef::new(FieldType::Mask, FieldSize::Four, 1, 1, 4),
         ]
     }
 
-    /// Build a rule that exact-matches the given 32-bit value in field 1.
-    ///
-    /// `userdata` becomes the classify result for matching inputs.
     fn exact_match_rule(value: u32, userdata: u32) -> Rule<NUM_FIELDS> {
         Rule::new(
             RuleData {
@@ -317,50 +193,30 @@ mod tests {
                 priority: Priority::new(1).unwrap(),
                 userdata: NonZero::new(userdata).expect("userdata must be non-zero"),
             },
-            [
-                // Wildcard entry byte: field 0 is FieldType::Bitmask
-                // (per standard_field_defs).  mask = 0 makes the
-                // predicate `(input & 0) == 0`, which is trivially true
-                // for any input -- so this field matches any byte at
-                // offset 0.
-                AclField::from_u8(0, 0),
-                // Field 1 is FieldType::Mask; mask_range is interpreted
-                // as a prefix length, so 32 means "compare all 32 bits".
-                AclField::from_u32(value, 32),
-            ],
+            [AclField::from_u8(0, 0), AclField::from_u32(value, 32)],
         )
     }
 
-    /// Build an 8-byte input buffer carrying `value` at offset 4 in network byte
-    /// order, suitable for the field layout returned by [`standard_field_defs`].
     fn input_buffer(value: u32) -> [u8; 8] {
         let mut buf = [0u8; 8];
         buf[4..8].copy_from_slice(&value.to_be_bytes());
         buf
     }
 
-    /// Build the default `AclBuildConfig` used across the lifecycle tests
-    /// (`num_categories = 1`, the standard 2-field layout, no max_size).
     fn standard_build_config() -> AclBuildConfig<NUM_FIELDS> {
         AclBuildConfig::new(1, standard_field_defs(), 0).expect("build config")
     }
 
-    /// End-to-end classify smoke test: build a tiny ACL context, run a real
-    /// `rte_acl_classify` call, and verify the match / no-match outcomes.
-    /// See the [module-level docs](self) for the EAL setup that applies to
-    /// every test here.
+    #[with_eal]
     #[test]
     fn classify_smoke() {
-        let _eal = start_eal();
-
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "test_acl",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
 
         ctx.add_rules(&[exact_match_rule(0xDEAD_BEEF, 1)])
             .expect("add rules");
@@ -381,14 +237,9 @@ mod tests {
         assert_eq!(results[1], 0, "expected no match for 0x00000000");
     }
 
-    /// Reset round-trip: build, classify, reset back to Configuring, swap
-    /// in a new rule, rebuild (no config supplied -- it lives on the
-    /// context), and verify the new rule's userdata wins.  Also asserts
-    /// that the build config survives the reset.
+    #[with_eal]
     #[test]
     fn reset_round_trip() {
-        let _eal = start_eal();
-
         let original_cfg = standard_build_config();
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "reset_round_trip",
@@ -396,10 +247,8 @@ mod tests {
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, original_cfg.clone()).expect("new context");
+        let mut ctx = AclContext::new(params, original_cfg.clone()).expect("new context");
 
-        // First build cycle: match 0xAAAAAAAA -> userdata 1.
         ctx.add_rules(&[exact_match_rule(0xAAAA_AAAA, 1)])
             .expect("add rules (first)");
         let ctx = ctx.build().map_err(|f| f.error).expect("build (first)");
@@ -416,8 +265,6 @@ mod tests {
         unsafe { ctx.classify(&data_ptrs, &mut results, 1) }.expect("classify (first)");
         assert_eq!(results[0], 1, "first build should match 0xAAAAAAAA");
 
-        // Reset back to Configuring (config carries through) and load a
-        // different rule.
         let mut ctx = ctx.reset();
         assert_eq!(
             ctx.build_config(),
@@ -441,25 +288,17 @@ mod tests {
         assert_eq!(results[1], 0, "second build must not retain the first rule");
     }
 
-    /// `add_rules` rejects a rule whose [`FieldType::Mask`] field carries a
-    /// prefix length larger than the field's bit width.  Without this
-    /// wrapper-side check, DPDK's `RTE_ACL_MASKLEN_TO_BITMASK` would
-    /// perform a C shift by an out-of-range amount (UB).
+    #[with_eal]
     #[test]
     fn add_rules_rejects_out_of_range_prefix_length() {
-        let _eal = start_eal();
-
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "prefix_len_validate",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
 
-        // Field 1 in standard_field_defs is a 4-byte Mask field, so the
-        // maximum legal prefix length is 32.  33 is out of range.
         let bad_rule: Rule<NUM_FIELDS> = Rule::new(
             RuleData {
                 category_mask: CategoryMask::new(1).unwrap(),
@@ -490,25 +329,20 @@ mod tests {
         );
     }
 
-    /// `set_default_algorithm` happy path: build, switch to a specific
-    /// algorithm, and classify.  Uses `Default` which is always supported.
+    #[with_eal]
     #[test]
     fn set_default_algorithm_then_classify() {
-        let _eal = start_eal();
-
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "set_algo",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
         ctx.add_rules(&[exact_match_rule(0xCAFE_BABE, 7)])
             .expect("add rules");
         let mut ctx = ctx.build().map_err(|f| f.error).expect("build");
 
-        // `Default` is always available on any CPU DPDK runs on.
         ctx.set_default_algorithm(ClassifyAlgorithm::Default)
             .expect("set_default_algorithm");
 
@@ -520,22 +354,16 @@ mod tests {
         assert_eq!(results[0], 7);
     }
 
-    /// `classify` must reject `categories` values that would overflow DPDK's
-    /// per-thread runtime arrays sized to `RTE_ACL_MAX_CATEGORIES`, even when
-    /// the user's `results` slice is generous enough to satisfy the
-    /// per-element length check.
+    #[with_eal]
     #[test]
     fn classify_categories_validated_before_ffi() {
-        let _eal = start_eal();
-
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "cat_validation",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
         ctx.add_rules(&[exact_match_rule(0xAAAA_AAAA, 1)])
             .expect("add rules");
         let ctx = ctx.build().map_err(|f| f.error).expect("build");
@@ -543,42 +371,31 @@ mod tests {
         let buf = input_buffer(0xAAAA_AAAA);
         let data_ptrs: Vec<*const u8> = vec![buf.as_ptr()];
 
-        // results slice large enough to pass the length check, but categories
-        // out of range -- must still be rejected.
         let mut results = vec![0u32; 64];
 
-        // categories = 0
         // SAFETY: see classify_smoke.
         let r = unsafe { ctx.classify(&data_ptrs, &mut results, 0) };
         assert!(matches!(r, Err(AclClassifyError::InvalidArgs)));
 
-        // categories > MAX_CATEGORIES (= 16)
         // SAFETY: see classify_smoke.
         let r = unsafe { ctx.classify(&data_ptrs, &mut results, MAX_CATEGORIES + 1) };
         assert!(matches!(r, Err(AclClassifyError::InvalidArgs)));
 
-        // categories > 1 but not a multiple of RESULTS_MULTIPLIER (= 4)
         // SAFETY: see classify_smoke.
         let r = unsafe { ctx.classify(&data_ptrs, &mut results, 3) };
         assert!(matches!(r, Err(AclClassifyError::InvalidArgs)));
     }
 
-    /// Creating a second [`AclContext`] with a name already registered in
-    /// DPDK's global ACL list must fail with [`AclCreateError::AlreadyExists`]
-    /// rather than silently aliasing the first context (which would
-    /// double-free on drop).
+    #[with_eal]
     #[test]
     fn duplicate_name_rejected() {
-        let _eal = start_eal();
-
         let params_a = AclCreateParams::<NUM_FIELDS>::new(
             "dup_name",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let _ctx_a =
-            AclContext::<NUM_FIELDS>::new(params_a, standard_build_config()).expect("first new");
+        let _ctx_a = AclContext::new(params_a, standard_build_config()).expect("first new");
 
         let params_b = AclCreateParams::<NUM_FIELDS>::new(
             "dup_name",
@@ -586,7 +403,7 @@ mod tests {
             NonZero::new(16).unwrap(),
         )
         .expect("create params (dup)");
-        let err = AclContext::<NUM_FIELDS>::new(params_b, standard_build_config())
+        let err = AclContext::new(params_b, standard_build_config())
             .expect_err("second new with same name must fail");
         assert!(
             matches!(err, AclCreateError::AlreadyExists { ref name } if name == "dup_name"),
@@ -594,33 +411,20 @@ mod tests {
         );
     }
 
-    /// Recovery after `add_rules` overflows `max_rule_num`: the context must
-    /// remain usable.  We submit one rule successfully, then submit more rules
-    /// than the remaining capacity allows, expect the error, and finally build
-    /// and classify against the first rule.
+    #[with_eal]
     #[test]
     fn add_rules_after_overflow_failure() {
-        let _eal = start_eal();
-
-        // `max_rule_num` of 1: a second add_rules call with any rule will
-        // overflow.
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "overflow_recover",
             SocketId::ANY,
             NonZero::new(1).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
 
         ctx.add_rules(&[exact_match_rule(0x1111_1111, 1)])
             .expect("first add_rules should succeed");
 
-        // Attempting to add another rule must fail: capacity is exhausted.
-        // DPDK signals "no room left in the rule list" with -ENOMEM, which
-        // the wrapper maps to AclAddRulesError::OutOfMemory.  Pin the variant
-        // so a future change in mapping or DPDK's behaviour surfaces as a
-        // test failure rather than silently passing through.
         let extra = exact_match_rule(0x2222_2222, 2);
         let err = ctx
             .add_rules(&[extra])
@@ -630,7 +434,6 @@ mod tests {
             "expected OutOfMemory from capacity exhaustion, got {err:?}",
         );
 
-        // Context must still be usable: build + classify against the first rule.
         let ctx = ctx
             .build()
             .map_err(|f| f.error)
@@ -644,25 +447,17 @@ mod tests {
         assert_eq!(results[0], 1);
     }
 
-    /// Build failure recovery: when `build()` fails, the wrapper returns
-    /// the original `Configuring` context inside `AclBuildFailure`.  The
-    /// caller must be able to keep using it (add rules, retry).  We force
-    /// the failure by calling `build()` with no rules added (DPDK rejects
-    /// `num_rules == 0` with `-EINVAL`).
+    #[with_eal]
     #[test]
     fn build_failure_returns_usable_context() {
-        let _eal = start_eal();
-
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "build_failure_recovery",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let ctx = AclContext::new(params, standard_build_config()).expect("new context");
 
-        // First build with zero rules must fail.
         let failure = ctx.build().expect_err("build() with no rules must fail");
         assert!(
             matches!(failure.error, AclBuildError::InvalidConfig),
@@ -670,7 +465,6 @@ mod tests {
             failure.error,
         );
 
-        // Recover the context, add a rule, build again -- must succeed.
         let mut ctx = failure.context;
         ctx.add_rules(&[exact_match_rule(0xDEAD_BEEF, 1)])
             .expect("add rules after recovery");
@@ -687,24 +481,16 @@ mod tests {
         assert_eq!(results[0], 1);
     }
 
-    /// `add_rules` rejects a rule whose `category_mask` has bits set at
-    /// positions `>= config.num_categories()`.  DPDK would silently mask
-    /// off those bits at build time, narrowing the rule's intended
-    /// category set; we surface this at `add_rules` time instead.
+    #[with_eal]
     #[test]
     fn add_rules_rejects_category_mask_beyond_num_categories() {
-        let _eal = start_eal();
-
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "cat_mask_validate",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        // standard_build_config uses num_categories = 1, so only bit 0 is
-        // legal.  Build a rule with bit 1 also set.
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
 
         let bad_rule: Rule<NUM_FIELDS> = Rule::new(
             RuleData {
@@ -733,20 +519,11 @@ mod tests {
         );
     }
 
-    /// Concurrent classify under `Arc<AclContext<N, Built<N>>>`: spawns
-    /// several worker threads, each calling
-    /// [`AclContext::classify`][crate::acl::AclContext::classify] in a
-    /// tight loop, and verifies every thread sees the correct match.
-    /// Exercises the per-state `Sync` impl on [`Built<N>`] and ensures
-    /// the wrapper's "share across classification threads" claim isn't
-    /// vacuous.  Test runs with N=4 workers and M=1000 iterations each
-    /// to give the OS scheduler a chance to interleave.
+    #[with_eal]
     #[test]
     fn classify_concurrent_arc_shared() {
         use concurrency::sync::Arc;
         use concurrency::thread;
-
-        let _eal = start_eal();
 
         const WORKERS: usize = 4;
         const ITERS_PER_WORKER: usize = 1000;
@@ -757,8 +534,7 @@ mod tests {
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
         ctx.add_rules(&[exact_match_rule(0xDEAD_BEEF, 1)])
             .expect("add rules");
         let ctx: Arc<AclContext<NUM_FIELDS, Built<NUM_FIELDS>>> =
@@ -768,8 +544,6 @@ mod tests {
             .map(|worker| {
                 let ctx = Arc::clone(&ctx);
                 thread::spawn(move || {
-                    // Each worker owns its own buffers; classify is the
-                    // only place we share state across threads.
                     let matching = input_buffer(0xDEAD_BEEF);
                     let non_matching = input_buffer(0);
                     for _ in 0..ITERS_PER_WORKER {
@@ -793,22 +567,16 @@ mod tests {
         }
     }
 
-    /// `classify_with_algorithm` with a non-`Default` algorithm: locks in
-    /// the special-casing in [`AclContext::classify_with_algorithm`] by
-    /// dispatching through the `Scalar` variant (always available on every
-    /// CPU DPDK runs on) and verifying classification still works.
+    #[with_eal]
     #[test]
     fn classify_with_algorithm_scalar() {
-        let _eal = start_eal();
-
         let params = AclCreateParams::<NUM_FIELDS>::new(
             "classify_alg_scalar",
             SocketId::ANY,
             NonZero::new(16).unwrap(),
         )
         .expect("create params");
-        let mut ctx =
-            AclContext::<NUM_FIELDS>::new(params, standard_build_config()).expect("new context");
+        let mut ctx = AclContext::new(params, standard_build_config()).expect("new context");
         ctx.add_rules(&[exact_match_rule(0xFEED_FACE, 9)])
             .expect("add rules");
         let ctx = ctx.build().map_err(|f| f.error).expect("build");
