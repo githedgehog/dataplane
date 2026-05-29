@@ -27,6 +27,7 @@ concurrency = { workspace = true }
 derive_builder = { workspace = true, features = ["alloc"] }
 downcast-rs = { workspace = true, features = ["sync"] }
 etherparse = { workspace = true, features = ["std"] }
+fixed-size = { workspace = true, features = [] }
 id = { workspace = true }
 multi_index_map = { workspace = true, default-features = false, features = ["serde"] }
 rapidhash = { workspace = true }
