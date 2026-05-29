@@ -23,3 +23,8 @@ lookup = { workspace = true, features = [] }
 match-action = { workspace = true, features = ["derive"] }
 net = { workspace = true, features = [] }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# Override the regular `dpdk` dep to enable its `test` feature
+# (exposes `dpdk::test_support::start_eal` and `dpdk::with_eal`).
+dpdk = { workspace = true, features = ["test"] }
