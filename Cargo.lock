@@ -1485,6 +1485,7 @@ name = "dataplane-match-action"
 version = "0.21.0"
 dependencies = [
  "arrayvec",
+ "bolero",
  "dataplane-fixed-size",
  "dataplane-match-action-derive",
 ]
