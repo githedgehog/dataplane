@@ -11,6 +11,7 @@ members = [
     "dpdk",
     "dpdk-sys",
     "dpdk-sysroot-helper",
+    "dpdk-test-macros",
     "errno",
     "flow-entry",
     "flow-filter",
@@ -68,6 +69,7 @@ config = { path = "./config", package = "dataplane-config", features = [] }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk", features = [] }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys", features = [] }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper", features = [] }
+dpdk-test-macros = { path = "./dpdk-test-macros", package = "dataplane-dpdk-test-macros", features = [] }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "pr/daniel-noland/bumps", features = [] }
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
 flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features = [] }
