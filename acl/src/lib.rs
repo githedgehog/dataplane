@@ -14,13 +14,15 @@
 //! Match-action classifier backends for [`match_action::MatchKey`]
 //! tables, behind the [`lookup::Lookup`] interface.
 //!
+//! - [`dpdk`] (`dpdk` feature): production `rte_acl` backend; in this
+//!   PR the static type machinery (layout planner + rule lowering).
+//!   The runtime install / classify path lands next.
 //! - [`reference`](mod@reference): linear-scan software classifier;
 //!   differential oracle and a mutable cascade front.  Always built.
-//!
-//! The production `rte_acl` backend lands behind a follow-up `dpdk`
-//! feature gate.
 //!
 //! [`lookup::Lookup`]: lookup::Lookup
 //! [`match_action::MatchKey`]: match_action::MatchKey
 
+#[cfg(feature = "dpdk")]
+pub mod dpdk;
 pub mod reference;

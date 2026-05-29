@@ -5,9 +5,20 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+default = []
+# Enables the DPDK `rte_acl` backend for `cascade::Lookup`.  Pulls in
+# the `dpdk` crate (and transitively `dpdk-sys`), so off by default;
+# only the production binary / DPDK-bound consumers turn it on.  The
+# reference backend (always built) carries its own `thiserror`-derived
+# error types, so `thiserror` is unconditional rather than feature-gated
+# under `dpdk`.
+dpdk = ["dep:dpdk"]
+
 [dependencies]
 arrayvec = { workspace = true, default-features = true }
 concurrency = { workspace = true, features = [] }
+dpdk = { workspace = true, optional = true }
 lookup = { workspace = true, features = [] }
 match-action = { workspace = true, features = ["derive"] }
 net = { workspace = true, features = [] }
