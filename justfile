@@ -160,6 +160,15 @@ test package="tests.all" *args: (build (if package == "tests.all" { "tests.all" 
     declare -r target="{{ if package == "tests.all" { "tests.all" } else { "tests.pkg." + package } }}"
     cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
 
+# Build and run the criterion benches. The rte_acl benches are gated behind the
+# `dpdk` feature, so run `just features=dpdk bench` to exercise them; a plain
+# `just bench` builds them as empty `main()` and only runs the reference benches.
+[script]
+bench: (build "benches")
+    {{ _just_debuggable_ }}
+    shopt -s nullglob
+    for bench in ./results/benches/bin/*; do "$bench" --bench; done
+
 [script]
 build-each *args: (build "workspace" args)
     {{ _just_debuggable_ }}
@@ -415,5 +424,3 @@ shell:
       --argstr profile '{{ profile }}' \
       --argstr sanitize '{{ sanitize }}' \
       --argstr tag '{{version}}'
-
-
