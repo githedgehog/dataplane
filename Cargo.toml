@@ -26,6 +26,8 @@ members = [
     "lifecycle",
     "lookup",
     "lpm",
+    "match-action",
+    "match-action-derive",
     "mgmt",
     "nat",
     "net",
@@ -87,6 +89,8 @@ left-right-tlcache = { path = "./left-right-tlcache", package = "dataplane-left-
 lifecycle = { path = "./lifecycle", package = "dataplane-lifecycle", features = [] }
 lookup = { path = "./lookup", package = "dataplane-lookup", features = [] }
 lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
+match-action = { path = "./match-action", package = "dataplane-match-action", features = [] }
+match-action-derive = { path = "./match-action-derive", package = "dataplane-match-action-derive", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
@@ -331,6 +335,18 @@ wasm = false # split
 package = "dataplane-lookup"
 miri = true
 wasm = false # split (std collections)
+
+[workspace.metadata.package.match-action]
+package = "dataplane-match-action"
+miri = true
+wasm = true
+
+[workspace.metadata.package.match-action-derive]
+package = "dataplane-match-action-derive"
+# Proc-macro crate: runs at the host toolchain, not the miri target.
+# Excluded from miri to keep the target dep graph clean.
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
 
 [workspace.metadata.package.mgmt]
 package = "dataplane-mgmt"

@@ -1,0 +1,18 @@
+[package]
+name = "dataplane-match-action-derive"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+# The derive emits paths relative to the consumer's `dataplane-match-action`
+# import.  `proc-macro-crate` resolves whatever alias the consumer
+# chose (typical workspace alias is `match-action` / `match_action`).
+proc-macro-crate = { workspace = true, default-features = true }
+proc-macro2 = { workspace = true, default-features = true }
+quote = { workspace = true, default-features = true }
+syn = { workspace = true, default-features = true, features = ["full"] }
