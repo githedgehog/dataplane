@@ -13,6 +13,7 @@ members = [
     "dpdk-sysroot-helper",
     "dpdk-test-macros",
     "errno",
+    "fixed-size",
     "flow-entry",
     "flow-filter",
     "hardware",
@@ -72,6 +73,7 @@ dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpd
 dpdk-test-macros = { path = "./dpdk-test-macros", package = "dataplane-dpdk-test-macros", features = [] }
 dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "pr/daniel-noland/bumps", features = [] }
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
+fixed-size = { path = "./fixed-size", package = "dataplane-fixed-size", features = [] }
 flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features = [] }
 flow-filter = { path = "./flow-filter", package = "dataplane-flow-filter", features = [] }
 hardware = { path = "./hardware", package = "dataplane-hardware", features = [] }
@@ -282,6 +284,11 @@ wasm = false # hopeless + pointless
 package = "dataplane-dpdk-sys"
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
+
+[workspace.metadata.package.fixed-size]
+package = "dataplane-fixed-size"
+miri = true
+wasm = true
 
 [workspace.metadata.package.flow-entry]
 package = "dataplane-flow-entry"

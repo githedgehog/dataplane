@@ -19,6 +19,8 @@ pub mod addr_parse_error;
 pub mod buffer;
 pub mod checksum;
 pub mod eth;
+/// `FixedSize` impls bridging `net` field types into match-action keys.
+mod fixed_size;
 #[cfg(unix)]
 pub mod flows;
 pub mod headers;
