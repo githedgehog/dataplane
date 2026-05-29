@@ -33,6 +33,10 @@ impl TruncatedIcmp4Header {
         }
     }
 
+    pub(crate) fn icmp_type(&self) -> u8 {
+        self.icmp_type
+    }
+
     /// Get the length of the truncated header
     #[must_use]
     pub fn header_len(&self) -> NonZero<usize> {

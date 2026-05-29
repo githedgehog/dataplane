@@ -4,13 +4,13 @@
 //! Display of Packets
 
 use crate::eth::Eth;
-use crate::headers::{Headers, Net, Transport};
-use crate::icmp4::Icmp4;
-use crate::icmp6::Icmp6;
+use crate::headers::{EmbeddedHeaders, EmbeddedTransport, Headers, Net, Transport};
+use crate::icmp4::{Icmp4, TruncatedIcmp4, TruncatedIcmp4Header};
+use crate::icmp6::{Icmp6, TruncatedIcmp6, TruncatedIcmp6Header};
 use crate::ipv4::Ipv4;
 use crate::ipv6::Ipv6;
-use crate::tcp::Tcp;
-use crate::udp::{Udp, UdpEncap};
+use crate::tcp::{Tcp, TruncatedTcp, TruncatedTcpHeader};
+use crate::udp::{TruncatedUdp, TruncatedUdpHeader, Udp, UdpEncap};
 use crate::vlan::Vlan;
 
 use crate::buffer::PacketBufferMut;
@@ -113,8 +113,14 @@ impl Display for Icmp4 {
     }
 }
 impl Display for Icmp6 {
-    fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
-        /* Todo */
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "  ICMPv6:")?;
+        writeln!(f, "        icmp-type: {:?}", self.icmp_type())?;
+        writeln!(
+            f,
+            "        checksum: {}",
+            self.checksum().unwrap_or_else(|| unreachable!())
+        )?;
         Ok(())
     }
 }
@@ -202,6 +208,105 @@ impl Display for UdpEncap {
     }
 }
 
+/* ============= Embedded headers ======= */
+
+impl Display for TruncatedIcmp4Header {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "  ICMP:")?;
+        writeln!(f, "        icmp-type: {:?} (truncated)", self.icmp_type())
+    }
+}
+
+impl Display for TruncatedIcmp4 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TruncatedIcmp4::FullHeader(icmp) => write!(f, "{icmp}"),
+            TruncatedIcmp4::PartialHeader(icmp) => write!(f, "{icmp}"),
+        }
+    }
+}
+
+impl Display for TruncatedIcmp6Header {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "  ICMPv6:")?;
+        writeln!(f, "        icmp-type: {:?} (truncated)", self.icmp_type())
+    }
+}
+
+impl Display for TruncatedIcmp6 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TruncatedIcmp6::FullHeader(icmp) => write!(f, "{icmp}"),
+            TruncatedIcmp6::PartialHeader(icmp) => write!(f, "{icmp}"),
+        }
+    }
+}
+
+impl Display for TruncatedUdpHeader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "  UDP : {} -> {} (truncated, remaining bytes: {})",
+            self.source().as_u16(),
+            self.destination().as_u16(),
+            self.header_len().get() - Self::MIN_HEADER_LEN
+        )
+    }
+}
+
+impl Display for TruncatedUdp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TruncatedUdp::FullHeader(udp) => write!(f, "{udp}"),
+            TruncatedUdp::PartialHeader(udp) => write!(f, "{udp}"),
+        }
+    }
+}
+
+impl Display for TruncatedTcpHeader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "  TCP : {} -> {} (truncated, remaining bytes: {})",
+            self.source().as_u16(),
+            self.destination().as_u16(),
+            self.header_len().get() - Self::MIN_HEADER_LEN
+        )
+    }
+}
+
+impl Display for TruncatedTcp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TruncatedTcp::FullHeader(tcp) => write!(f, "{tcp}"),
+            TruncatedTcp::PartialHeader(tcp) => write!(f, "{tcp}"),
+        }
+    }
+}
+
+impl Display for EmbeddedTransport {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EmbeddedTransport::Tcp(tcp) => write!(f, "{tcp}"),
+            EmbeddedTransport::Udp(udp) => write!(f, "{udp}"),
+            EmbeddedTransport::Icmp4(icmp) => write!(f, "{icmp}"),
+            EmbeddedTransport::Icmp6(icmp) => write!(f, "{icmp}"),
+        }
+    }
+}
+
+impl Display for EmbeddedHeaders {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(net) = self.net() {
+            write!(f, "{net}")?;
+        }
+        if let Some(transport) = self.transport() {
+            write!(f, "{transport}")?;
+        }
+        Ok(())
+    }
+}
+
 /* ============= All headers ============ */
 impl Display for Headers {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -220,6 +325,9 @@ impl Display for Headers {
         }
         if let Some(udp_encap) = &self.udp_encap {
             write!(f, "{udp_encap}")?;
+        }
+        if let Some(embedded) = &self.embedded_ip {
+            write!(f, "{embedded}")?;
         }
         Ok(())
     }
@@ -346,7 +454,7 @@ fn fmt_packet_buf<Buf: PacketBufferMut>(f: &mut Formatter<'_>, payload: &Buf) ->
     )
 }
 
-/* ============= Packet ================ */
+/* ============= Packet ================= */
 impl<Buf: PacketBufferMut> Display for Packet<Buf> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         fmt_packet_buf(f, self.payload())?;
