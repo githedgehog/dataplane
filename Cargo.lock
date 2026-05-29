@@ -1481,6 +1481,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-match-action"
+version = "0.21.0"
+dependencies = [
+ "arrayvec",
+ "dataplane-fixed-size",
+ "dataplane-match-action-derive",
+]
+
+[[package]]
+name = "dataplane-match-action-derive"
+version = "0.21.0"
+dependencies = [
+ "proc-macro-crate 3.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "dataplane-mgmt"
 version = "0.21.0"
 dependencies = [
