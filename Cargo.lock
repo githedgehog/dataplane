@@ -1164,6 +1164,7 @@ name = "dataplane-acl"
 version = "0.22.0"
 dependencies = [
  "arrayvec",
+ "bolero",
  "dataplane-concurrency",
  "dataplane-dpdk",
  "dataplane-lookup",
