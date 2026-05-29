@@ -1143,6 +1143,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-acl"
+version = "0.21.0"
+dependencies = [
+ "arrayvec",
+ "dataplane-concurrency",
+ "dataplane-lookup",
+ "dataplane-match-action",
+ "dataplane-net",
+ "thiserror",
+]
+
+[[package]]
 name = "dataplane-args"
 version = "0.21.0"
 dependencies = [

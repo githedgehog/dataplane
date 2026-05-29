@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "acl",
     "args",
     "cli",
     "common",
@@ -64,6 +65,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 # justifying why it is workspace-wide.
 
 # Internal
+acl = { path = "./acl", package = "dataplane-acl", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
@@ -260,6 +262,15 @@ overflow-checks = true
 #        modified to use conditional compilation to work in wasm/miri.
 # miss: packages that are not logically hopeless, or pointless in wasm/miri, but which currently just happen to contain
 #       logic which can and should eventually be factored out or abstracted into something suitable for wasm/miri.
+[workspace.metadata.package.acl]
+package = "dataplane-acl"
+# Default features enable the DPDK `rte_acl` backend, which pulls in
+# `dpdk-sys` (bindgen against the system DPDK headers).  miri can't
+# build that path on the cross target, and the reference backend's
+# unit tests run fine outside the miri profile.
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
 [workspace.metadata.package.args]
 package = "dataplane-args"
 miri = true
