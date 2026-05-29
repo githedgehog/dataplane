@@ -1243,8 +1243,10 @@ version = "0.21.0"
 dependencies = [
  "bolero",
  "dataplane-concurrency",
+ "dataplane-dpdk",
  "dataplane-dpdk-sys",
  "dataplane-dpdk-sysroot-helper",
+ "dataplane-dpdk-test-macros",
  "dataplane-errno",
  "dataplane-id",
  "dataplane-net",
@@ -1266,6 +1268,16 @@ dependencies = [
 [[package]]
 name = "dataplane-dpdk-sysroot-helper"
 version = "0.21.0"
+
+[[package]]
+name = "dataplane-dpdk-test-macros"
+version = "0.21.0"
+dependencies = [
+ "proc-macro-crate 3.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "dataplane-errno"

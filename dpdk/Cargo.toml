@@ -8,13 +8,17 @@ version.workspace = true
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
+test = ["dep:id", "dep:nix", "dep:dpdk-test-macros"]
 
 [dependencies]
 
 concurrency = { workspace = true }
 dpdk-sys = { workspace = true }
+dpdk-test-macros = { workspace = true, optional = true }
 errno = { workspace = true }
+id = { workspace = true, optional = true }
 net = { workspace = true }
+nix = { workspace = true, optional = true, features = ["sched"] }
 
 serde = { workspace = true, optional = true, features = ["std"] }
 thiserror = { workspace = true }
@@ -24,7 +28,5 @@ tracing = { workspace = true, features = ["attributes"] }
 dpdk-sysroot-helper = { workspace = true }
 
 [dev-dependencies]
-id = { workspace = true }
-
 bolero = { workspace = true, default-features = false, features = ["std"] }
-nix = { workspace = true, features = ["sched"] }
+dataplane-dpdk = { path = ".", features = ["test"] }
