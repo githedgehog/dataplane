@@ -169,7 +169,7 @@ pyroscope = { version = "2.0.6", default-features = false, features = [] }
 quote = { version = "1.0.45", default-features = false, features = [] }
 rand = { version = "0.10.1", default-features = false, features = [] }
 rapidhash = { version = "4.4.1", default-features = false, features = [] }
-reedline = { version = "0.47.0", default-features = false, features = [] }
+reedline = { version = "0.48.0", default-features = false, features = [] }
 rkyv = { version = "0.8.16", default-features = false, features = [] }
 roaring = { version = "0.11.4", default-features = false, features = [] }
 rtnetlink = { git = "https://github.com/githedgehog/rtnetlink.git", branch = "hh/tc-actions3", default-features = false, features = [] }
