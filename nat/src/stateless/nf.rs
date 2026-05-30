@@ -37,8 +37,6 @@ enum StatelessNatError {
     MissingTable(Vni),
     #[error("Failed to translate ICMP inner packet: {0}")]
     IcmpErrorMsg(IcmpErrorMsgError),
-    #[error("No mapping found")]
-    NoMappingFound,
 }
 
 /// A NAT processor, implementing the [`NetworkFunction`] trait. [`StatelessNat`] processes packets
@@ -142,7 +140,7 @@ impl StatelessNat {
         // We're sending the inner packet back without swapping source and destination in the
         // header, so we need to swap the ranges we get from the tables lookup.
         let Some((src_addr, src_port)) = table.find_dst_mapping(&addr, port) else {
-            return Err(StatelessNatError::NoMappingFound);
+            return Ok(false);
         };
         let src_port = src_port.map(NatPort::new_port);
         nat_translate_icmp_inner_src::<Buf>(packet, src_addr, src_port)
@@ -166,7 +164,7 @@ impl StatelessNat {
         // We're sending the inner packet back without swapping source and destination in the
         // header, so we need to swap the ranges we get from the tables lookup.
         let Some((dst_addr, dst_port)) = table.find_src_mapping(&addr, port, dst_vni) else {
-            return Err(StatelessNatError::NoMappingFound);
+            return Ok(false);
         };
         let dst_port = dst_port.map(NatPort::new_port);
         nat_translate_icmp_inner_dst::<Buf>(packet, dst_addr.inner(), dst_port)
@@ -350,8 +348,7 @@ fn translate_error(error: &StatelessNatError) -> DoneReason {
             IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoTranslationPossible,
         ) => DoneReason::InternalFailure,
 
-        StatelessNatError::NoMappingFound
-        | StatelessNatError::IcmpErrorMsg(
+        StatelessNatError::IcmpErrorMsg(
             IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_),
         ) => DoneReason::InvalidChecksum,
 
