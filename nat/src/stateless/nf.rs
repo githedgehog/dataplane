@@ -292,12 +292,17 @@ impl StatelessNat {
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
     /// function that we pass to [`StatelessNat::process`] to iterate over packets.
-    fn process_packet<Buf: PacketBufferMut>(
-        &self,
-        nat_tables: &NatTables,
-        packet: &mut Packet<Buf>,
-    ) {
+    fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         let nfi = self.name();
+
+        // FIXME: Ideally, we'd `enter` once in process() for the whole batch. However, this
+        // requires boxing the closures, which may be worse than calling `enter` per packet? ... if
+        // not uglier (same thing for StatefulNat)
+        let Some(nat_tables) = &self.tablesr.enter() else {
+            error!("{nfi}: failed to read nat tables");
+            packet.done(DoneReason::InternalFailure);
+            return;
+        };
 
         /* get source VNI annotation */
         let Some(VpcDiscriminant::VNI(src_vni)) = packet.meta().src_vpcd else {
@@ -371,16 +376,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
             {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
                 debug_assert!(packet.meta().is_overlay());
-
-                // FIXME: Ideally, we'd `enter` once for the whole batch. However, this requires
-                // boxing the closures, which may be worse than calling `enter` per packet? ... if
-                // not uglier (same thing for StatefulNat)
-                if let Some(tablesr) = &self.tablesr.enter() {
-                    self.process_packet(tablesr, &mut packet);
-                } else {
-                    error!("{}: failed to read nat tables", self.name);
-                    packet.done(DoneReason::InternalFailure);
-                }
+                self.process_packet(&mut packet);
             }
             packet.enforce()
         })
