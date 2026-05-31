@@ -8,8 +8,10 @@ mod bench {
     use core::net::{Ipv4Addr, Ipv6Addr};
     use core::num::NonZero;
 
+    use std::hint::black_box;
+
     use criterion::measurement::WallTime;
-    use criterion::{BenchmarkGroup, BenchmarkId, Criterion, Throughput, black_box};
+    use criterion::{BenchmarkGroup, BenchmarkId, Criterion, Throughput};
 
     use dataplane_acl::dpdk::install::install_table;
     use dataplane_acl::dpdk::lookup::DpdkAclLookup;

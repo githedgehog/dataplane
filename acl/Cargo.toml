@@ -20,7 +20,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 bolero = { workspace = true, features = ["std"] }
-criterion = { workspace = true }
+criterion = { workspace = true, features = ["cargo_bench_support"] }
 dpdk = { workspace = true, features = ["test"] }
 match-action = { workspace = true, features = ["derive", "bolero"] }
 net = { workspace = true, features = ["test_buffer", "builder"] }

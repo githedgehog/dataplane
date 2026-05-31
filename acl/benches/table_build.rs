@@ -5,11 +5,13 @@
 
 #[cfg(feature = "dpdk")]
 mod bench {
+    use std::hint::black_box;
+
     use concurrency::sync::atomic::{AtomicU32, Ordering};
     use core::net::{Ipv4Addr, Ipv6Addr};
     use core::num::NonZero;
 
-    use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, black_box};
+    use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 
     use dataplane_acl::dpdk::install::install_table;
     use dataplane_acl::dpdk::rule::{Dpdk, RuleSpec};
