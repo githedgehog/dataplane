@@ -106,6 +106,13 @@ fn pack_chunks(bytes: &[u8], chunk_size: AclSize) -> Vec<u32> {
     }
 }
 pub trait DynClassifier: Send + Sync {
+    /// Classify a single packed key, returning the matching rule's userdata (`0` on no match).
+    ///
+    /// # Safety
+    ///
+    /// `key` must be at least [`min_input_size`](DynClassifier::min_input_size) bytes long.
+    /// `rte_acl` reads that many bytes from the key pointer regardless of `key.len()`, so a
+    /// shorter slice is an out-of-bounds read.
     unsafe fn classify_one(&self, key: &[u8]) -> Result<u32, dpdk::acl::AclClassifyError>;
 
     fn min_input_size(&self) -> usize;
@@ -187,6 +194,10 @@ pub enum DynInstallError {
     AclCreate(#[from] AclCreateError),
     #[error("failed to add rules: {0}")]
     AclAddRules(#[from] AclAddRulesError),
+    // String deviation (see development/code/error-handling.md): the underlying
+    // `AclBuildFailure<N>` is generic over the const field count `N`, which cannot be
+    // stored in this non-generic enum without erasing it. We capture its `Debug` rendering
+    // for diagnostics; build failure is terminal here and is not matched on.
     #[error("ACL build failed: {0}")]
     AclBuild(String),
     #[error("layout stride {stride} < context min_input_size {required}")]
@@ -308,6 +319,18 @@ impl<A> DynDpdkLookup<A> {
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
     }
+    /// Classify a key already packed in user-field order.
+    ///
+    /// `None` means "no rule matched" -- a table miss, not an error. A wrong-length key is a
+    /// caller contract violation, not a miss, so it panics rather than silently returning
+    /// `None` (conflating the two would violate "Option is not a good error"; see
+    /// development/code/error-handling.md). This mirrors the reference backend's
+    /// `DynReferenceTable::lookup_bytes`. The typed [`Lookup`](lookup::Lookup) path builds
+    /// the key from `K` and so cannot reach this panic.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key.len()` differs from [`user_key_size`](DynDpdkLookup::user_key_size).
     #[must_use]
     pub fn lookup_bytes(&self, key: &[u8]) -> Option<&A> {
         let expected = self.user_key_size();
