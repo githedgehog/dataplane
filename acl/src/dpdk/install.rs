@@ -92,6 +92,10 @@ pub enum InstallError {
     AclCreate(#[from] AclCreateError),
     #[error("failed to add rules: {0}")]
     AclAddRules(#[from] AclAddRulesError),
+    // String deviation (see development/code/error-handling.md): the underlying
+    // `AclBuildFailure<N>` is generic over the const field count `N`, which cannot be
+    // stored in this non-generic enum without erasing it. We capture its `Debug` rendering
+    // for diagnostics; build failure is terminal here and is not matched on.
     #[error("ACL build failed: {0}")]
     AclBuild(String),
     #[error(transparent)]

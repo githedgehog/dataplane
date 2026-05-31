@@ -110,14 +110,11 @@ where
                 limit: MAX_BATCH,
             })?;
         }
-        let mut ptrs: ArrayVec<*const u8, MAX_BATCH> = ArrayVec::new();
-        for buf in &bufs {
-            let _ = ptrs.try_push(buf.as_ptr());
-        }
-        let mut results: ArrayVec<u32, MAX_BATCH> = ArrayVec::new();
-        for _ in 0..keys.len() {
-            let _ = results.try_push(0);
-        }
+        // `bufs.len() == keys.len() <= MAX_BATCH` (guarded above), so neither collect can
+        // overflow the ArrayVec capacity; on overflow `collect` panics loudly rather than
+        // silently producing a short pointer list.
+        let ptrs: ArrayVec<*const u8, MAX_BATCH> = bufs.iter().map(|buf| buf.as_ptr()).collect();
+        let mut results: ArrayVec<u32, MAX_BATCH> = bufs.iter().map(|_| 0u32).collect();
         unsafe {
             self.ctx
                 .classify(&ptrs, &mut results, 1)

@@ -12,6 +12,18 @@
 #![allow(missing_docs)]
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
+//! Match-action classifier backends for [`match_action::MatchKey`]
+//! tables, behind the [`lookup::Lookup`] interface.
+//!
+//! - `dpdk` module (`dpdk` feature): production `rte_acl` backend --
+//!   layout planner, rule lowering, install, and the single-shot /
+//!   batched classify path.
+//! - [`reference`](mod@reference): linear-scan software classifier;
+//!   differential oracle for the `dpdk` backend.  Always built.
+//!
+//! [`lookup::Lookup`]: lookup::Lookup
+//! [`match_action::MatchKey`]: match_action::MatchKey
+
 #[cfg(feature = "dpdk")]
 pub mod dpdk;
 pub mod reference;
