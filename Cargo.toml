@@ -67,7 +67,7 @@ config = { path = "./config", package = "dataplane-config", features = [] }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk", features = [] }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys", features = [] }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper", features = [] }
-dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", rev = "e8fc33db10e1d00785f2a2b90cbadcad7900f200", features = [] }
+dplane-rpc = { git = "https://github.com/githedgehog/dplane-rpc.git", branch = "pr/daniel-noland/bumps", features = [] }
 errno = { path = "./errno", package = "dataplane-errno", features = [] }
 flow-entry = { path = "./flow-entry", package = "dataplane-flow-entry", features = [] }
 flow-filter = { path = "./flow-filter", package = "dataplane-flow-filter", features = [] }
@@ -138,7 +138,7 @@ kube = { version = "3.1.0", default-features = false, features = [] }
 kube-core = { version = "3.1.0", default-features = false, features = [] }
 #left-right = { version = "0.11.7", default-features = false, features = [] }
 left-right = { git = "https://github.com/githedgehog/left-right.git", branch = "fredi/fix-writehandle-drop", default-features = false, features = [] }
-libc = { version = "1.0.0-alpha.3", default-features = false, features = [] }
+libc = { version = "0.2.186", default-features = false, features = [] }
 linkme = { version = "0.3.36", default-features = false, features = [] }
 log = { version = "0.4.30", default-features = false, features = [] } # TODO: try to remove this
 loom = { version = "0.7.2", default-features = false, features = [] }
