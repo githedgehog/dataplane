@@ -867,7 +867,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2018,7 +2018,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc 0.2.186",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2101,7 +2101,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3668,10 +3668,11 @@ dependencies = [
 
 [[package]]
 name = "netlink-packet-route"
-version = "0.25.1"
-source = "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing4#09b8ffdf9b4e9bbc8780a3efb4ec3494ee7ee3fd"
+version = "0.24.0"
+source = "git+https://github.com/githedgehog/netlink-packet-route.git?branch=pr%2Fdaniel-noland%2Fswing5#2923deb6e463c17b28b27b15e70a85612e598a15"
 dependencies = [
  "bitflags 2.11.1",
+ "byteorder",
  "libc 0.2.186",
  "log",
  "netlink-packet-core",
@@ -4766,17 +4767,18 @@ checksum = "1dedc5658c6ecb3bdb5ef5f3295bb9253f42dcf3fd1402c03f6b1f7659c3c4a9"
 
 [[package]]
 name = "rtnetlink"
-version = "0.18.1"
-source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-actions3#acbd0329323d05240da8855c64e490ea725531e0"
+version = "0.21.0"
+source = "git+https://github.com/githedgehog/rtnetlink.git?branch=hh%2Ftc-actions4#8a39f5c665ff6288a9e357e8d443490d5c6925c9"
 dependencies = [
- "futures",
+ "futures-channel",
+ "futures-util",
  "log",
  "netlink-packet-core",
- "netlink-packet-route 0.25.1",
+ "netlink-packet-route 0.24.0",
  "netlink-packet-utils",
  "netlink-proto",
  "netlink-sys",
- "nix 0.30.1",
+ "nix 0.31.3",
  "thiserror",
  "tokio",
 ]
@@ -4812,7 +4814,7 @@ dependencies = [
  "errno",
  "libc 0.2.186",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4900,15 +4902,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e27a8b19b835f7aea908818e871f5cc3a5a186550c30773be987e155e8163d8f"
 
 [[package]]
-name = "scc"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46e6f046b7fef48e2660c57ed794263155d713de679057f2d0c169bfc6e756cc"
-dependencies = [
- "sdd",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4965,12 +4958,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "sdd"
-version = "3.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "secrecy"
@@ -5153,21 +5140,20 @@ dependencies = [
 
 [[package]]
 name = "serial_test"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "911bd979bf1070a3f3aa7b691a3b3e9968f339ceeec89e08c280a8a22207a32f"
+checksum = "699f4197115b8a7e7ff19c9a315a4bd6fffec26cc4626ef45ecaea389e081c6d"
 dependencies = [
  "once_cell",
  "parking_lot",
- "scc",
  "serial_test_derive",
 ]
 
 [[package]]
 name = "serial_test_derive"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a7d91949b85b0d2fb687445e448b40d322b6b3e4af6b44a29b21d9a5f33e6d9"
+checksum = "94e153fc76e1c6a068703d6d29c508a0b15c061c4b7e43da59cc097bc342673c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5515,10 +5501,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.4.1",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
