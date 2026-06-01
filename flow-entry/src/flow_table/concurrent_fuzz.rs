@@ -220,12 +220,14 @@ mod sanitizer_fuzz {
 mod shuttle_fuzz {
     use crate::flow_table::FlowTable;
     use concurrency::sync::Arc;
+    use concurrency::sync::atomic::{AtomicU8, Ordering};
     use concurrency::thread;
-    use net::flows::{FlowInfo, FlowStatus};
+    use net::flows::{ExtractRef, FlowInfo, FlowStatus};
     use net::packet::VpcDiscriminant;
     use net::tcp::TcpPort;
     use net::vxlan::Vni;
     use net::{FlowKey, FlowKeyData, IpProtoKey, TcpProtoKey};
+    use std::fmt;
     use std::net::IpAddr;
     use std::time::{Duration, Instant};
 
@@ -345,6 +347,152 @@ mod shuttle_fuzz {
                 table.for_each_flow(|_k, v| {
                     let _ = v.status();
                 });
+            },
+            100,
+        );
+    }
+
+    /// Mimics `nat::common::AtomicNatFlowStatus`: an `Arc<AtomicU8>` stuffed
+    /// into `FlowInfoLocked.nat_state` and *shared* between a forward+reverse
+    /// pair of flows. Production constructs these in `MasqueradeState::new_pair`
+    /// (nat/src/stateful/state.rs); packets on either flow advance the shared
+    /// state machine via `status.store(next)`.
+    #[derive(Debug)]
+    struct SharedStatus(Arc<AtomicU8>);
+
+    impl fmt::Display for SharedStatus {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "ss({})", self.0.load(Ordering::Relaxed))
+        }
+    }
+
+    // Mirrors NatFlowStatus 0..=9. NatFlowStatus::from(u8) calls
+    // unreachable!() outside this range, so a torn write surfaces as a panic.
+    const STATE_COUNT: u8 = 10;
+
+    /// Two related flows share one `Arc<AtomicU8>` in their `nat_state`.
+    /// Forward and reverse writers race transitions on that one atomic
+    /// through two different `FlowInfo`s — the exact production race in
+    /// `MasqueradeState::new_pair`. A reader thread asserts the observed
+    /// byte stays in range mid-flight.
+    #[test]
+    fn test_flow_table_shared_status_transition_shuttle() {
+        const N: usize = 4;
+        let keys = make_keys();
+
+        shuttle::check_random(
+            move || {
+                let table = Arc::new(FlowTable::default());
+
+                // Build the pair sharing one Arc<AtomicU8>, then insert both.
+                let shared = Arc::new(AtomicU8::new(0));
+                let now = Instant::now();
+                for k in keys.iter().take(2) {
+                    let fi = FlowInfo::new(*k, now + Duration::from_secs(60));
+                    fi.locked.write().nat_state =
+                        Some(Box::new(SharedStatus(shared.clone())));
+                    table.insert(fi).unwrap();
+                }
+
+                let mut handles = vec![];
+
+                // Forward direction: bump status by +1.
+                handles.push(
+                    thread::Builder::new()
+                        .name("forward".to_string())
+                        .spawn({
+                            let table = table.clone();
+                            let key = keys[0];
+                            move || {
+                                for _ in 0..N {
+                                    if let Some(fi) = table.lookup(&key) {
+                                        let g = fi.locked.read();
+                                        if let Some(ss) =
+                                            g.nat_state.as_ref().extract_ref::<SharedStatus>()
+                                        {
+                                            let cur = ss.0.load(Ordering::Relaxed);
+                                            ss.0.store(
+                                                (cur + 1) % STATE_COUNT,
+                                                Ordering::Relaxed,
+                                            );
+                                        }
+                                    }
+                                    thread::yield_now();
+                                }
+                            }
+                        })
+                        .unwrap(),
+                );
+
+                // Reverse direction: bump status by +2 — different stride so
+                // shuttle has more reason to interleave non-trivially.
+                handles.push(
+                    thread::Builder::new()
+                        .name("reverse".to_string())
+                        .spawn({
+                            let table = table.clone();
+                            let key = keys[1];
+                            move || {
+                                for _ in 0..N {
+                                    if let Some(fi) = table.lookup(&key) {
+                                        let g = fi.locked.read();
+                                        if let Some(ss) =
+                                            g.nat_state.as_ref().extract_ref::<SharedStatus>()
+                                        {
+                                            let cur = ss.0.load(Ordering::Relaxed);
+                                            ss.0.store(
+                                                (cur + 2) % STATE_COUNT,
+                                                Ordering::Relaxed,
+                                            );
+                                        }
+                                    }
+                                    thread::yield_now();
+                                }
+                            }
+                        })
+                        .unwrap(),
+                );
+
+                // Reader: walks both flows and asserts the byte stays legal
+                // mid-flight. Catches a torn or out-of-range value before the
+                // post-join check below sees only the final state.
+                handles.push(
+                    thread::Builder::new()
+                        .name("reader".to_string())
+                        .spawn({
+                            let table = table.clone();
+                            let keys = keys.clone();
+                            move || {
+                                for _ in 0..N {
+                                    for k in keys.iter().take(2) {
+                                        if let Some(fi) = table.lookup(k) {
+                                            let g = fi.locked.read();
+                                            if let Some(ss) = g
+                                                .nat_state
+                                                .as_ref()
+                                                .extract_ref::<SharedStatus>()
+                                            {
+                                                let v = ss.0.load(Ordering::Relaxed);
+                                                assert!(
+                                                    v < STATE_COUNT,
+                                                    "torn status: {v}"
+                                                );
+                                            }
+                                        }
+                                        thread::yield_now();
+                                    }
+                                }
+                            }
+                        })
+                        .unwrap(),
+                );
+
+                for h in handles {
+                    h.join().unwrap();
+                }
+
+                let v = shared.load(Ordering::Relaxed);
+                assert!(v < STATE_COUNT, "final shared status {v} out of range");
             },
             100,
         );
