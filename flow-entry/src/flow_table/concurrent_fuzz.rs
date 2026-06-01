@@ -27,7 +27,7 @@ use concurrency::concurrency_mode;
 mod sanitizer_fuzz {
     use crate::flow_table::FlowTable;
     use net::FlowKey;
-    use net::flows::{ExtractRef, FlowInfo};
+    use net::flows::{ExtractRef, FlowInfo, FlowStatus};
     use std::fmt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
@@ -66,7 +66,13 @@ mod sanitizer_fuzz {
         FlipStubStatus,
     }
 
-    fn drive(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op: Op) {
+    fn drive(
+        table: &FlowTable,
+        keys: &[FlowKey],
+        stub_status: &Arc<AtomicU8>,
+        seed_status: FlowStatus,
+        op: Op,
+    ) {
         const OPS_PER_KEY: usize = 8;
         for k in keys {
             for i in 0..OPS_PER_KEY {
@@ -75,9 +81,16 @@ mod sanitizer_fuzz {
                         // Far-future expiry so the per-flow timer never fires
                         // inside the test window — we race the insert path,
                         // not the expiry path.
-                        let fi = Arc::new(FlowInfo::new(
+                        //
+                        // Seed the flow with the bolero-generated `seed_status`
+                        // (rather than the implicit `Detached` of `FlowInfo::new`)
+                        // so the brief in-DashMap-but-not-yet-Active window inside
+                        // `insert_common` exposes a varied status to concurrent
+                        // readers/drainers.
+                        let fi = Arc::new(FlowInfo::new_with_status(
                             *k,
                             Instant::now() + Duration::from_secs(3600),
+                            seed_status,
                         ));
                         // Stuff a stub item into the locked state so readers
                         // and flippers have something to race on.
@@ -88,6 +101,13 @@ mod sanitizer_fuzz {
                             }));
                         }
                         let _ = table.insert_from_arc(&fi);
+                        // `insert_common` unconditionally promotes to Active, so
+                        // re-apply the generated status here to land the table
+                        // entry in a non-Active terminal state when generated.
+                        // This feeds `drain_stale`'s stale predicate
+                        // (status != Active) and the lookup/for_each_flow paths
+                        // with flows the inserter itself parked as stale.
+                        let _ = fi.update_status(seed_status);
                     }
                     Op::Lookup => {
                         let _ = table.lookup(k);
@@ -162,9 +182,10 @@ mod sanitizer_fuzz {
         let handle = rt.handle().clone();
 
         bolero::check!()
-            .with_type::<FlowKey>()
+            .with_type::<(FlowKey, FlowStatus)>()
             .with_test_time(std::time::Duration::from_secs(5))
-            .for_each(|base| {
+            .for_each(|(base, seed_status)| {
+                let seed_status = *seed_status;
                 let keys: Arc<Vec<FlowKey>> = Arc::new(key_set(*base));
                 let table = Arc::new(FlowTable::default());
                 // One atomic per iteration, cloned into every inserted stub.
@@ -191,7 +212,7 @@ mod sanitizer_fuzz {
                         let handle = handle.clone();
                         std::thread::spawn(move || {
                             let _guard = handle.enter();
-                            drive(&table, &keys, &stub_status, op);
+                            drive(&table, &keys, &stub_status, seed_status, op);
                         })
                     })
                     .collect();
