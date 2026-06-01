@@ -190,9 +190,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "c94e53866e28f8f66779c5656222109cd314997a",
-      "url": "https://github.com/linux-rdma/perftest/archive/c94e53866e28f8f66779c5656222109cd314997a.tar.gz",
-      "hash": "sha256-vimuYq7TFFFSmk17/yX15lBc48tcE3+PM/Gmrs8ecxo="
+      "revision": "720b61082454e189b1f21835ec175536a944afc3",
+      "url": "https://github.com/linux-rdma/perftest/archive/720b61082454e189b1f21835ec175536a944afc3.tar.gz",
+      "hash": "sha256-oNvzQubmslZ4JUNww/wvWd54JDsDLamCDlorHWlNtaY="
     },
     "rdma-core": {
       "type": "Git",
@@ -232,9 +232,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "85570ef134d92a8702de6afd1f6f0209c863fa91",
-      "url": "https://github.com/oxalica/rust-overlay/archive/85570ef134d92a8702de6afd1f6f0209c863fa91.tar.gz",
-      "hash": "sha256-6QBThUi7SuK+dgA+DCaEkQGZN4kYx6DpXmK45+MG9zI="
+      "revision": "51390d0bfca0a68a8c337d215a4bbeddc2ca616e",
+      "url": "https://github.com/oxalica/rust-overlay/archive/51390d0bfca0a68a8c337d215a4bbeddc2ca616e.tar.gz",
+      "hash": "sha256-y2wR4Mk6D/N1ID4FZa2oUMStCUxyIoRzmgOOpLzoWmo="
     }
   },
   "version": 7
