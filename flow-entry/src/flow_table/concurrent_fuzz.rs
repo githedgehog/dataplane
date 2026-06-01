@@ -26,11 +26,11 @@ use concurrency::concurrency_mode;
 #[concurrency_mode(std)]
 mod sanitizer_fuzz {
     use crate::flow_table::FlowTable;
+    use concurrency::sync::Arc;
+    use concurrency::sync::atomic::{AtomicU8, Ordering};
     use net::FlowKey;
     use net::flows::{ExtractRef, FlowInfo, FlowStatus};
     use std::fmt;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU8, Ordering};
     use std::time::{Duration, Instant};
 
     /// Stub [`FlowInfoItem`] payload: a single `Arc<AtomicU8>` that all flows
@@ -89,7 +89,7 @@ mod sanitizer_fuzz {
                         // readers/drainers.
                         let fi = Arc::new(FlowInfo::new_with_status(
                             *k,
-                            Instant::now() + Duration::from_secs(3600),
+                            Instant::now() + Duration::from_hours(1),
                             seed_status,
                         ));
                         // Stuff a stub item into the locked state so readers
@@ -119,7 +119,7 @@ mod sanitizer_fuzz {
                     }
                     Op::ExtendExpiry => {
                         if let Some(fi) = table.lookup(k) {
-                            let _ = fi.extend_expiry(Duration::from_secs(60));
+                            let _ = fi.extend_expiry(Duration::from_mins(1));
                         }
                     }
                     Op::DrainStale => {
@@ -133,9 +133,7 @@ mod sanitizer_fuzz {
                     Op::ReadStubStatus => {
                         if let Some(fi) = table.lookup(k) {
                             let guard = fi.locked.read();
-                            if let Some(stub) =
-                                guard.nat_state.as_ref().extract_ref::<StubItem>()
-                            {
+                            if let Some(stub) = guard.nat_state.as_ref().extract_ref::<StubItem>() {
                                 let _ = stub.status.load(Ordering::Relaxed);
                             }
                         }
@@ -143,9 +141,7 @@ mod sanitizer_fuzz {
                     Op::FlipStubStatus => {
                         if let Some(fi) = table.lookup(k) {
                             let guard = fi.locked.read();
-                            if let Some(stub) =
-                                guard.nat_state.as_ref().extract_ref::<StubItem>()
-                            {
+                            if let Some(stub) = guard.nat_state.as_ref().extract_ref::<StubItem>() {
                                 // Value is arbitrary; we only care that the store
                                 // races with concurrent loads on the same atomic.
                                 stub.status.store(0xA5, Ordering::Relaxed);
@@ -159,15 +155,32 @@ mod sanitizer_fuzz {
 
     /// Build a small key set out of one bolero-generated [`FlowKey`]: the
     /// base key and its reverse. Two distinct keys is enough to expose both
-    /// same-key contention (workers racing on the same FlowKey, i.e. one
-    /// DashMap shard) and cross-key races (different shards).
+    /// same-key contention (workers racing on the same `FlowKey`, i.e. one
+    /// `DashMap` shard) and cross-key races (different shards).
     fn key_set(base: FlowKey) -> Vec<FlowKey> {
         let rev = base.reverse(None);
-        if rev == base { vec![base] } else { vec![base, rev] }
+        if rev == base {
+            vec![base]
+        } else {
+            vec![base, rev]
+        }
     }
 
     #[test]
     fn test_flow_table_concurrent_fuzz_sanitizer() {
+        // Each bolero case spawns one OS thread per `Op` (7 threads), so a
+        // *time*-based budget makes the total thread count vary with machine
+        // speed — unpredictable CI cost. Bound it to a fixed iteration count
+        // instead (deterministic: 7 threads x ITERATIONS). The default stays
+        // low enough to keep the thread-sanitizer run (which builds native, so
+        // it takes the `_` arm) bounded; QEMU emulation shrinks further. We
+        // can't gate on `cfg(sanitize)` here — it needs the unstable
+        // `cfg_sanitize` feature — so the default covers the sanitizer too.
+        const ITERATIONS: usize = cfg_select! {
+            emulated => 16,
+            _ => 128,
+        };
+
         // FlowTable::insert calls tokio::task::spawn to schedule the
         // per-flow expiry timer; that call panics if invoked outside a
         // runtime context. We never need the timer task to actually run —
@@ -183,7 +196,7 @@ mod sanitizer_fuzz {
 
         bolero::check!()
             .with_type::<(FlowKey, FlowStatus)>()
-            .with_test_time(std::time::Duration::from_secs(5))
+            .with_iterations(ITERATIONS)
             .for_each(|(base, seed_status)| {
                 let seed_status = *seed_status;
                 let keys: Arc<Vec<FlowKey>> = Arc::new(key_set(*base));
@@ -276,7 +289,7 @@ mod shuttle_fuzz {
     /// No drainer thread: `FlowTable::drain_stale` has no production
     /// callers — it's only used in these fuzz tests — so exercising it
     /// under shuttle isn't worth the scheduling-space blowup (it
-    /// write-locks every DashMap shard and touches every flow's atomics).
+    /// write-locks every `DashMap` shard and touches every flow's atomics).
     #[test]
     fn test_flow_table_concurrent_fuzz_shuttle() {
         const N: usize = 4;
@@ -298,7 +311,7 @@ mod shuttle_fuzz {
                                     for k in &keys {
                                         let fi = FlowInfo::new(
                                             *k,
-                                            Instant::now() + Duration::from_secs(60),
+                                            Instant::now() + Duration::from_mins(1),
                                         );
                                         let _ = table.insert(fi);
                                         thread::yield_now();
@@ -409,9 +422,8 @@ mod shuttle_fuzz {
                 let shared = Arc::new(AtomicU8::new(0));
                 let now = Instant::now();
                 for k in keys.iter().take(2) {
-                    let fi = FlowInfo::new(*k, now + Duration::from_secs(60));
-                    fi.locked.write().nat_state =
-                        Some(Box::new(SharedStatus(shared.clone())));
+                    let fi = FlowInfo::new(*k, now + Duration::from_mins(1));
+                    fi.locked.write().nat_state = Some(Box::new(SharedStatus(shared.clone())));
                     table.insert(fi).unwrap();
                 }
 
@@ -432,10 +444,7 @@ mod shuttle_fuzz {
                                             g.nat_state.as_ref().extract_ref::<SharedStatus>()
                                         {
                                             let cur = ss.0.load(Ordering::Relaxed);
-                                            ss.0.store(
-                                                (cur + 1) % STATE_COUNT,
-                                                Ordering::Relaxed,
-                                            );
+                                            ss.0.store((cur + 1) % STATE_COUNT, Ordering::Relaxed);
                                         }
                                     }
                                     thread::yield_now();
@@ -461,10 +470,7 @@ mod shuttle_fuzz {
                                             g.nat_state.as_ref().extract_ref::<SharedStatus>()
                                         {
                                             let cur = ss.0.load(Ordering::Relaxed);
-                                            ss.0.store(
-                                                (cur + 2) % STATE_COUNT,
-                                                Ordering::Relaxed,
-                                            );
+                                            ss.0.store((cur + 2) % STATE_COUNT, Ordering::Relaxed);
                                         }
                                     }
                                     thread::yield_now();
@@ -488,16 +494,11 @@ mod shuttle_fuzz {
                                     for k in keys.iter().take(2) {
                                         if let Some(fi) = table.lookup(k) {
                                             let g = fi.locked.read();
-                                            if let Some(ss) = g
-                                                .nat_state
-                                                .as_ref()
-                                                .extract_ref::<SharedStatus>()
+                                            if let Some(ss) =
+                                                g.nat_state.as_ref().extract_ref::<SharedStatus>()
                                             {
                                                 let v = ss.0.load(Ordering::Relaxed);
-                                                assert!(
-                                                    v < STATE_COUNT,
-                                                    "torn status: {v}"
-                                                );
+                                                assert!(v < STATE_COUNT, "torn status: {v}");
                                             }
                                         }
                                         thread::yield_now();
