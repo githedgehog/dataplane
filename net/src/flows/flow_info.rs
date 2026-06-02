@@ -418,13 +418,8 @@ impl FlowInfo {
     #[must_use]
     pub fn new_with_status(flowkey: FlowKey, expires_at: Instant, status: FlowStatus) -> Self {
         Self {
-            expires_at: AtomicInstant::new(expires_at),
-            flowkey,
-            genid: AtomicI64::new(0),
             status: AtomicFlowStatus::from(status),
-            locked: RwLock::new(FlowInfoLocked::default()),
-            related: None,
-            token: CancellationToken::new(),
+            ..Self::new(flowkey, expires_at)
         }
     }
 }
@@ -442,7 +437,8 @@ mod contract {
                 0..=4 => Some(FlowStatus::Active),
                 5 => Some(FlowStatus::Cancelled),
                 6 => Some(FlowStatus::Expired),
-                _ => Some(FlowStatus::Detached),
+                7 => Some(FlowStatus::Detached),
+                _ => unreachable!(),
             }
         }
     }
