@@ -254,26 +254,6 @@ impl FlowTable {
         Ok(Some(ret))
     }
 
-    /// Drain all stale (Expired / Cancelled / deadline-passed Active) entries from the table.
-    ///
-    /// Returns the number of entries removed.
-    pub fn drain_stale(&self) -> usize {
-        let table = self.table.read();
-        let now = std::time::Instant::now();
-        let mut count = 0usize;
-        table.retain(|_, v| {
-            let status = v.status();
-            let stale = status != FlowStatus::Active || v.expires_at() <= now;
-            if stale {
-                v.update_status(FlowStatus::Expired);
-                v.token.cancel();
-                count += 1;
-            }
-            !stale
-        });
-        count
-    }
-
     /// Lookup a flow in the table.
     ///
     /// # Panics
@@ -855,14 +835,14 @@ mod tests {
                 let flow_info = FlowInfo::new(flow_key1, five_seconds_from_now);
                 flow_table_clone1.insert(flow_info).unwrap();
                 let result = flow_table_clone1.remove(&flow_key1).unwrap();
-                assert!(result.0 == flow_key1);
+                assert_eq!(result.0, flow_key1);
             }));
 
             handles.push(thread::spawn(move || {
                 let flow_info = FlowInfo::new(flow_key2, five_seconds_from_now);
                 flow_table_clone2.insert(flow_info).unwrap();
                 let result = flow_table.remove(&flow_key2).unwrap();
-                assert!(result.0 == flow_key2);
+                assert_eq!(result.0, flow_key2);
             }));
 
             handles.push(thread::spawn(move || flow_table_clone3.reshard(128)));
