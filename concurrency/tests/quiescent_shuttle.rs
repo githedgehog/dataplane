@@ -168,7 +168,13 @@ fn fuzz_test<Arg: Clone + TypeGenerator + RefUnwindSafe + std::fmt::Debug>(
 #[test]
 #[cfg(feature = "shuttle")]
 fn protocol_under_shuttle() {
-    fuzz_test(|plan: Plan| shuttle::check_random(move || run_plan(&plan), 1));
+    fuzz_test(|plan: Plan| {
+        let runner = shuttle::Runner::new(
+            shuttle::scheduler::RandomScheduler::new(1),
+            dataplane_concurrency::shuttle_config(),
+        );
+        runner.run(move || run_plan(&plan));
+    });
 }
 
 #[test]
@@ -191,7 +197,11 @@ fn protocol_under_shuttle_pct() {
         {
             return;
         }
-        shuttle::check_pct(move || run_plan(&plan), 16, 3);
+        let runner = shuttle::Runner::new(
+            shuttle::scheduler::PctScheduler::new(3, 16),
+            dataplane_concurrency::shuttle_config(),
+        );
+        runner.run(move || run_plan(&plan));
     });
 }
 
