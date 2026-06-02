@@ -75,12 +75,18 @@ mod stress;
 pub mod sync;
 pub mod thread;
 
-// `stress` is `pub` so the expansion of `#[concurrency::test]` in
-// downstream crates can name it. It is not part of the recommended
-// public surface; the macro is. `#[doc(hidden)]` keeps the symbol
-// off rustdoc, leaving users to land on `#[concurrency::test]`.
-#[doc(hidden)]
+// `stress` runs a body under the active backend's model checker (the
+// full shuttle portfolio / `loom::model` / a single std call). It backs
+// the `#[concurrency::test]` expansion, and is *also* a supported entry
+// point in its own right: a bolero x shuttle suite can call it once per
+// generated shape to explore that shape under the standard portfolio.
+// See `stress` and `concurrency/tests/quiescent_shuttle.rs`.
 pub use stress::stress;
+
+// The standard shuttle `Config` (4 MiB stacks). Exposed for suites that
+// build their own `Runner` rather than going through `stress`.
+#[cfg(all(not(feature = "loom"), feature = "shuttle"))]
+pub use stress::shuttle_config;
 
 #[cfg(all(miri, any(feature = "shuttle", feature = "loom")))]
 compile_error!("miri does not meaningfully support 'loom' or 'shuttle'");
