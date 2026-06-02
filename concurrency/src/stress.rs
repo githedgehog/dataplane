@@ -10,7 +10,37 @@
 //! * `shuttle_dfs` (additive on top of `shuttle`) -- also adds
 //!   `DfsScheduler` to the portfolio.
 
+/// The workspace-standard shuttle [`Config`](shuttle::Config).
+///
+/// The only departure from shuttle's default is a 4 MiB stack (shuttle
+/// defaults to ~60 KiB, which is too small for the deep call stacks the
+/// dataplane primitives reach under the model checker). [`stress`] uses
+/// this for its `PortfolioRunner`; bolero x shuttle suites that drive a
+/// single schedule per generated shape should build their `Runner` with
+/// it too, so every shuttle run shares one stack-size story.
+#[cfg(all(not(feature = "loom"), feature = "shuttle"))]
+#[must_use]
+pub fn shuttle_config() -> shuttle::Config {
+    let mut config = shuttle::Config::default();
+    config.stack_size = 4 * 1024 * 1024;
+    config
+}
+
 /// Run `body` under the currently selected concurrency backend.
+///
+/// * default backend -- one direct call, no scheduling exploration.
+/// * `loom` -- `loom::model`.
+/// * `shuttle` -- the [`shuttle_config`]-configured `PortfolioRunner`
+///   (`RandomScheduler` + `PctScheduler`, plus `DfsScheduler` under
+///   `shuttle_dfs`).
+///
+/// Backs the `#[concurrency::test]` expansion, but is equally usable on
+/// its own. In particular a bolero x shuttle suite can call `stress`
+/// once per generated shape to explore that shape under the full
+/// portfolio -- the same config `#[concurrency::test]` uses -- instead of
+/// hand-wiring a `Runner`. Note that the shuttle portfolio includes PCT,
+/// which panics on a body that does not exercise real concurrency, so the
+/// caller must ensure every shape keeps at least two threads runnable.
 #[allow(unused_variables)]
 #[allow(clippy::expect_used)]
 pub fn stress<F>(body: F)
@@ -44,10 +74,7 @@ where
             use shuttle::PortfolioRunner;
             use shuttle::scheduler::{PctScheduler, RandomScheduler};
 
-            let mut config = shuttle::Config::default();
-            config.stack_size = 4 * 1024 * 1024;
-
-            let mut portfolio = PortfolioRunner::new(true, config);
+            let mut portfolio = PortfolioRunner::new(true, shuttle_config());
             portfolio.add(RandomScheduler::new(ITERATIONS));
             portfolio.add(PctScheduler::new(SCHEDULES, ITERATIONS));
             #[cfg(feature = "shuttle_dfs")]
