@@ -526,6 +526,44 @@ let
     ) package-list;
   };
 
+  # Build criterion bench binaries without running them.
+  bench-builder =
+    {
+      package ? null,
+      cargoArtifacts ? null,
+    }:
+    let
+      pname = if package != null then package else "all";
+    in
+    pkgs.callPackage invoke {
+      builder = craneLib.mkCargoDerivation;
+      profile = profile-tests';
+      args = {
+        inherit pname cargoArtifacts;
+        buildPhaseCargoCommand =
+          (builtins.concatStringsSep " " (
+            [
+              "mkdir -p $out/bin;"
+              "cargoBenchLog=$(mktemp cargoBenchLogXXXX.json);"
+              "cargo"
+              "bench"
+              "--no-run"
+              "--profile=${cargo-profile}"
+            ]
+            ++ (if package != null then [ "--package=${pname}" ] else [ ])
+            ++ cargo-cmd-prefix-tests
+            ++ [ "--message-format=json-render-diagnostics > $cargoBenchLog;" ]
+          ))
+          + ''
+            for exe in $(grep -E '"kind":\["bench"\]' "$cargoBenchLog" | grep -oE '"executable":"[^"]+"' | sed -E 's/"executable":"//; s/"$//'); do
+              cp "$exe" "$out/bin/$(basename "$exe" | sed -E 's/-[0-9a-f]{16}$//')"
+            done
+          '';
+      };
+    };
+
+  benches = bench-builder { };
+
   clippy-builder =
     {
       pname ? null,
@@ -963,6 +1001,7 @@ let
 in
 {
   inherit
+    benches
     check
     clippy
     containers
