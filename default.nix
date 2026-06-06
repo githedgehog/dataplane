@@ -184,6 +184,40 @@ let
       yq
     ]);
   };
+  # Minimal derivation containing only the kernel bzImage.
+  #
+  # The full linux-fancy output includes modules, headers, etc. that are
+  # not needed inside the test container — we extract just the bootable
+  # image so that symlinkJoin produces a top-level `bzImage` entry in
+  # testroot without pulling in the rest of the kernel tree.
+  kernel-image = pkgs.runCommand "kernel-image" { } ''
+    mkdir -p $out
+    cp ${pkgs.pkgsBuildHost.linux-fancy}/bzImage $out/bzImage
+  '';
+
+  # Container-tier tools for the scratch-container test infrastructure.
+  #
+  # This derivation provides the binaries needed inside the Docker
+  # container that launches the test VM: the hypervisor(s), virtiofsd,
+  # and a Linux kernel image (bzImage built from config fragments by
+  # the linux-fancy derivation in nix/overlays/dataplane-dev.nix).
+  #
+  # When used with a scratch container, subdirectories of this derivation
+  # (e.g. bin/, lib/) are volume-mounted at their standard container
+  # paths, and top-level files (e.g. bzImage) are bind-mounted at the
+  # container root.  The container also mounts /nix/store from the host
+  # so that the symlinks created by symlinkJoin resolve to the actual
+  # binaries and their transitive library dependencies.
+  #
+  # See development/ideam.md for the design rationale.
+  testroot = pkgs.symlinkJoin {
+    name = "dataplane-test-root";
+    paths = with pkgs.pkgsBuildHost; [
+      cloud-hypervisor
+      virtiofsd
+      qemu_kvm
+    ] ++ [ kernel-image ];
+  };
   devenv = pkgs.mkShell {
     name = "dataplane-dev-shell";
     packages = [ devroot ];
@@ -453,6 +487,92 @@ let
       inherit pname;
     }
   ) package-list;
+
+  # VM guest root filesystem for the scratch-container test infrastructure.
+  #
+  # This derivation is shared into the VM via virtiofsd and becomes the
+  # guest's root filesystem (mounted as virtiofs with tag "root").
+  #
+  # It contains:
+  # - The n-it init system binary (runs as PID 1 in the VM).
+  # - glibc and libgcc shared libraries (so dynamically linked test
+  #   binaries can run inside the VM).
+  #
+  # The test binary directory is bind-mounted by container.rs at
+  # /vm.root/test-bin (see VM_TEST_BIN_DIR in n-vm-protocol), so it
+  # appears at /test-bin in the VM guest.  The /test-bin directory is
+  # pre-created here so Docker can create the bind mount without needing
+  # to mkdir on the read-only nix store path.
+  #
+  # See development/ideam.md for the design rationale.
+  vmroot = pkgs.runCommand "dataplane-vm-root" { } ''
+    mkdir -p $out/bin $out/lib $out/test-bin
+
+    # Essential guest directories.
+    #
+    # The VM root filesystem is mounted read-only via virtiofs, so the
+    # kernel cannot create directories on demand.  These empty mount
+    # points must exist so that:
+    #
+    #   /dev   — kernel auto-mounts devtmpfs (provides /dev/console,
+    #            /dev/null, etc. needed by init and test processes)
+    #   /proc  — n-it mounts procfs (needed for /proc/cmdline parsing
+    #            and general process introspection)
+    #   /sys   — n-it mounts sysfs
+    #   /tmp   — n-it mounts tmpfs (writable scratch space)
+    #   /run   — n-it mounts tmpfs (runtime state)
+    #   /etc   — some libc/nss functions expect this to exist
+    #
+    # Without /dev in particular, the kernel logs
+    # "devtmpfs: error mounting -2" and init may fail with ENOEXEC (-8)
+    # because /dev/console cannot be opened.
+    mkdir -p $out/dev $out/proc $out/sys $out/tmp $out/run $out/etc $out/var
+
+    # /var/run → /run symlink.
+    #
+    # Many daemons (including DPDK) default to writing runtime state
+    # under /var/run.  On a conventional Linux system /var/run is
+    # either a symlink to /run or a tmpfs in its own right.  Since our
+    # root filesystem is read-only via virtiofs, we bake the symlink
+    # into the image so that /var/run/dpdk (and friends) resolve to
+    # the writable /run tmpfs mounted by n-it.
+    #
+    # This mirrors what the dataplane container image already does
+    # (see the `dataplane.tar` buildPhase above).
+    ln -s /run $out/var/run
+
+    # n-it init system binary.
+    # The cargo package is "dataplane-n-it" but the VM expects the
+    # binary at /bin/n-it (see INIT_BINARY_PATH in n-vm-protocol).
+    ln -s ${workspace."n-it"}/bin/dataplane-n-it $out/bin/n-it
+
+    # glibc runtime libraries -- needed by dynamically linked test
+    # binaries running inside the VM.
+    for f in ${pkgs.pkgsHostHost.libc.out}/lib/*.so*; do
+      [ -e "$f" ] || continue
+      ln -s "$f" "$out/lib/$(basename "$f")"
+    done
+
+    # libgcc runtime libraries (libgcc_s.so, etc.)
+    for f in ${pkgs.pkgsHostHost.glibc.libgcc}/lib/*.so*; do
+      [ -e "$f" ] || continue
+      ln -s "$f" "$out/lib/$(basename "$f")"
+    done
+
+    # Create a real /nix/store directory (empty mount point).
+    #
+    # The container tier bind-mounts the host's /nix/store here so that
+    # virtiofsd serves it as a real directory to the VM guest.  This
+    # replaces the previous /nix -> /nix absolute symlink, which caused
+    # ELOOP (error -40) inside the guest: the FUSE protocol returns
+    # symlinks to the guest kernel for resolution, and /nix -> /nix is
+    # self-referential from the guest's VFS perspective.
+    #
+    # Nix-built test binaries have rpaths like
+    # /nix/store/{hash}-glibc-X.Y/lib; with /nix/store bind-mounted
+    # through virtiofsd, those paths resolve correctly inside the VM.
+    mkdir -p $out/nix/store
+  '';
 
   workspace-check =
     {
@@ -1013,7 +1133,9 @@ in
     pkgs
     sources
     sysroot
+    testroot
     tests
+    vmroot
     workspace
     ;
   profile = profile';

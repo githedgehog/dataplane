@@ -1,0 +1,20 @@
+[package]
+name = "dataplane-n-it"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+
+# internal
+n-vm-protocol = { workspace = true }
+
+# external
+nix = { workspace = true, default-features = false, features = ["signal", "mount", "reboot", "fs"] }
+thiserror = { workspace = true, default-features = false, features = ["std"] }
+tokio = { workspace = true, default-features = false, features = ["rt", "process", "signal", "time", "macros", "fs", "sync", "net", "io-util"] }
+tokio-vsock = { workspace = true, default-features = false, features = [] }
+tracing = { workspace = true, default-features = false, features = ["attributes"] }
+tracing-subscriber = { workspace = true, default-features = false, features = ["fmt"] }
+vsock = { workspace = true, default-features = false, features = [] }

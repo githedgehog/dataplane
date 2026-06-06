@@ -31,6 +31,10 @@ members = [
     "match-action",
     "match-action-derive",
     "mgmt",
+    "n-it",
+    "n-vm",
+    "n-vm-macros",
+    "n-vm-protocol",
     "nat",
     "net",
     "pipeline",
@@ -96,6 +100,10 @@ lpm = { path = "./lpm", package = "dataplane-lpm", features = [] }
 match-action = { path = "./match-action", package = "dataplane-match-action", features = [] }
 match-action-derive = { path = "./match-action-derive", package = "dataplane-match-action-derive", features = [] }
 mgmt = { path = "./mgmt", package = "dataplane-mgmt", features = [] }
+n-it = { path = "./n-it", package = "dataplane-n-it", features = [] }
+n-vm = { path = "./n-vm", package = "dataplane-n-vm", features = [] }
+n-vm-macros = { path = "./n-vm-macros", package = "dataplane-n-vm-macros", features = [] }
+n-vm-protocol = { path = "./n-vm-protocol", package = "dataplane-n-vm-protocol", features = [] }
 nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
@@ -109,6 +117,7 @@ validator = { path = "./validator", package = "dataplane-validator", features = 
 vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 
 # External
+
 afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { version = "0.8.12", default-features = false, features = [] }
 anyhow = { version = "1.0.102", default-features = false, features = [] }
@@ -122,13 +131,17 @@ bindgen = { version = "0.72.1", default-features = false, features = [] }
 bitflags = { version = "2.11.1", default-features = false, features = [] }
 bnum = { version = "0.14.4", default-features = false, features = [] }
 bolero = { version = "0.13.4", default-features = false, features = [] }
+bollard = { version = "0.20.2", default-features = false, features = [] }
 bytecheck = { version = "0.8.2", default-features = false, features = [] }
 bytes = { version = "1.11.1", default-features = false, features = [] }
+capctl = { version = "0.2.4", default-features = false, features = [] }
 caps = { version = "0.5.6", default-features = false, features = [] }
 chrono = { version = "0.4.44", default-features = false, features = [] }
 clap = { version = "4.6.1", default-features = true, features = [] }
+cloud-hypervisor-client = { version = "0.3.3", default-features = false, features = [] }
 color-eyre = { version = "0.6.5", default-features = false, features = [] }
 colored = { version = "3.1.1", default-features = false, features = [] }
+command-fds = { version = "0.3.2", default-features = false, features = [] }
 criterion = { version = "0.8.2", default-features = false, features = [] }
 crossbeam-utils = { version = "0.8.21", default-features = false, features = [] }
 dashmap = { version = "6.2.1", default-features = false, features = [] }
@@ -164,7 +177,6 @@ metrics-exporter-prometheus = { version = "0.18.3", default-features = false, fe
 miette = { version = "7.6.0", default-features = false, features = [] }
 mio = { version = "1.2.1", default-features = false, features = [] }
 multi_index_map = { version = "0.15.1", default-features = false, features = [] }
-n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.10", default-features = false, features = [], package = "n-vm" }
 netdev = { version = "0.43.0", default-features = false, features = [] }
 netgauze-bgp-pkt = { version = "0.12.1", features = [] }
 netgauze-bmp-pkt = { version = "0.12.1", features = [] }
@@ -182,6 +194,8 @@ proc-macro-crate = { version = "3.5.0", default-features = false, features = [] 
 proc-macro2 = { version = "1.0.106", default-features = false, features = [] }
 procfs = { version = "0.18.0", default-features = false, features = [] }
 pyroscope = { version = "2.0.6", default-features = false, features = [] }
+qapi-qmp = { version = "0.15.0", default-features = false, features = [] }
+qapi-spec = { version = "0.3.2", default-features = false, features = [] }
 quote = { version = "1.0.45", default-features = false, features = [] }
 rand = { version = "0.10.1", default-features = false, features = [] }
 rapidhash = { version = "4.4.1", default-features = false, features = [] }
@@ -211,16 +225,20 @@ thread_local = { version = "1.1.9", default-features = false, features = [] }
 # per-crate would buy is divergent runtime behaviour between test binaries
 # and the real dataplane.  Keep it global.
 tokio = { version = "1.52.3", default-features = false, features = ["parking_lot"] }
+tokio-stream = { version = "0.1.18", default-features = false, features = [] }
 tokio-util = { version = "0.7.18", default-features = false, features = [] }
+tokio-vsock = { version = "0.7.2", default-features = false, features = [] }
 tonic = { version = "0.14.6", default-features = false, features = [] }
 tracing = { version = "0.1.44", default-features = false, features = ["release_max_level_debug"] }
 tracing-error = { version = "0.2.1", default-features = false, features = [] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [] }
 tracing-test = { version = "0.2.6", default-features = false, features = [] }
 tracing-throttle = { version = "0.4.2", default-features = false, features = [] }
+trybuild = { version = "1.0.116", default-features = false, features = [] }
 ureq = { version = "3.3.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
 uuid = { version = "1.23.2", default-features = false, features = [] }
+vsock = { version = "0.5.4", default-features = false, features = [] }
 
 # NOTE: panic strategy is intentionally left unset here.
 #

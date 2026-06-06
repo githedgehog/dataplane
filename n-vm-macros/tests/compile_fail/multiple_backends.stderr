@@ -1,0 +1,5 @@
+error: only one backend identifier is allowed in #[in_vm]; VM options have moved to companion attributes (#[hypervisor(…)], #[guest(…)], #[network(…)])
+ --> tests/compile_fail/multiple_backends.rs:4:33
+  |
+4 | #[n_vm::in_vm(cloud_hypervisor, qemu)]
+  |                                 ^^^^

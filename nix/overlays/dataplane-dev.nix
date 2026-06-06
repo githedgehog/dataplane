@@ -54,4 +54,40 @@ in
       "--disable-source-highlight" # breaks static compile
     ];
   });
+
+  linux-fancy =
+    let
+      version = "6.18.20";
+      stdenv = final.llvmPackages'.stdenv;
+      src = fetchTarball {
+        url = "https://cdn.kernel.org/pub/linux/kernel/v${final.lib.versions.major version}.x/linux-${version}.tar.xz";
+        sha256 = "sha256:1sbidvi0zi1a8nlzrdjmk3yq50gdc5qjvcf4n4ah70pis25912ba";
+      };
+      # Fragments are merged left-to-right; later entries override earlier ones.
+      # Place broad settings first and targeted overrides (especially disables) last.
+      fragments = map (f: ../pkgs/linux/fragments + "/${f}") [
+        "base.config"
+        "serial-console.config"
+        "kvm-guest.config"
+        "virtio.config"
+        "hugepages.config"
+        "cgroups-ns.config"
+        "filesystems.config"
+        "crypto.config"
+        "net-core.config"
+        "net-tc-qos.config"
+        "net-virt-devices.config"
+        "intel-e1000.config"
+        "mlx5-sriov.config"
+        # "debug-fuzz.config"
+        "disable.config"
+      ];
+      configfile = final.callPackage ../pkgs/linux/merge-config.nix {
+        inherit src version fragments stdenv;
+        llvmPackages = final.llvmPackages';
+      };
+    in
+    final.linuxManualConfig {
+      inherit version src configfile stdenv;
+    };
 }
