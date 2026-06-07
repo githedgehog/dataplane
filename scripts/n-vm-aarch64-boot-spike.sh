@@ -66,6 +66,8 @@ cat > "${workdir}/init.rs" <<RUST
 use std::io::Write;
 use std::os::raw::{c_int, c_uint, c_ushort};
 
+use std::os::raw::{c_char, c_ulong, c_void};
+
 #[repr(C)]
 struct SockaddrVm { svm_family: c_ushort, svm_reserved1: c_ushort,
     svm_port: c_uint, svm_cid: c_uint, svm_zero: [u8; 4] }
@@ -75,6 +77,8 @@ unsafe extern "C" {
     fn connect(fd: c_int, a: *const SockaddrVm, l: c_uint) -> c_int;
     fn write(fd: c_int, buf: *const u8, n: usize) -> isize;
     fn reboot(cmd: c_int) -> c_int;
+    fn mount(src: *const c_char, tgt: *const c_char, fst: *const c_char,
+        flags: c_ulong, data: *const c_void) -> c_int;
 }
 const AF_VSOCK: c_int = 40;
 const SOCK_STREAM: c_int = 1;
@@ -83,6 +87,36 @@ const RB_POWER_OFF: c_int = 0x4321_fedc_u32 as c_int;
 
 fn console(msg: &str) { let _ = std::io::stdout().write_all(msg.as_bytes());
     let _ = std::io::stdout().flush(); }
+
+// Mount sysfs and report the driver bound to each non-loopback NIC.
+// This confirms each emulated device enumerated on PCI *and* the kernel
+// driver claimed it (creating the netdev) -- i.e. the NIC model works.
+fn report_nics() {
+    let r = unsafe {
+        mount(
+            b"sysfs\0".as_ptr() as *const c_char,
+            b"/sys\0".as_ptr() as *const c_char,
+            b"sysfs\0".as_ptr() as *const c_char,
+            0,
+            core::ptr::null(),
+        )
+    };
+    if r != 0 { console("N-VM-SPIKE: sysfs mount FAILED\n"); return; }
+    let dir = match std::fs::read_dir("/sys/class/net") {
+        Ok(d) => d,
+        Err(e) => { console(&format!("N-VM-SPIKE: read /sys/class/net failed: {e}\n")); return; }
+    };
+    for entry in dir.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "lo" { continue; }
+        let drv = std::fs::read_link(format!("/sys/class/net/{name}/device/driver"))
+            .ok()
+            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "<unbound>".into());
+        console(&format!("NIC-DRIVER: iface={name} driver={drv}\n"));
+    }
+}
 
 fn main() {
     console("${BOOT_MARKER}\n");
@@ -101,6 +135,7 @@ fn main() {
     } else {
         console("N-VM-SPIKE: AF_VSOCK socket() FAILED\n");
     }
+    report_nics();
     // PID 1 must not return; power off cleanly via PSCI.
     unsafe { reboot(RB_POWER_OFF); }
     loop { std::hint::spin_loop(); }
@@ -117,7 +152,7 @@ rustc -O --target aarch64-unknown-linux-musl \
 # don't depend on any RD_<compressor> config (the guest kernel here has no
 # gzip/zstd initramfs support -- the real n-vm path boots via virtiofs, not
 # an initrd, so that's fine).
-( cd "${workdir}" && mkdir -p iroot && cp init iroot/init && \
+( cd "${workdir}" && mkdir -p iroot/sys && cp init iroot/init && \
   ( cd iroot && find . | cpio -o -H newc 2>/dev/null ) > initramfs.cpio )
 
 # ── 3. Host-side AF_VSOCK listener ───────────────────────────────────────
@@ -153,6 +188,9 @@ timeout "${BOOT_TIMEOUT}" "${QEMU}" \
   -initrd "${workdir}/initramfs.cpio" \
   -append "console=ttyAMA0 earlycon rdinit=/init panic=1" \
   -device vhost-vsock-pci,guest-cid=${GUEST_CID} \
+  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+  -netdev user,id=n1 -device e1000,netdev=n1 \
+  -netdev user,id=n2 -device e1000e,netdev=n2 \
   -nographic -no-reboot \
   > "${workdir}/console.out" 2>&1 &
 qemu_pid=$!
@@ -171,7 +209,21 @@ boot_ok=1; vsock_ok=1
 grep -q "${BOOT_MARKER}" "${workdir}/console.out" && boot_ok=0
 grep -q "${VSOCK_MARKER}" "${workdir}/listener.out" && vsock_ok=0
 
+# Each NIC model passes iff the guest bound its kernel driver to the
+# emulated device (i.e. the netdev appeared with the expected driver).
+declare -A nic_driver=( [virtio-net]=virtio_net [e1000]=e1000 [e1000e]=e1000e )
+nic_fail=0
+for model in virtio-net e1000 e1000e; do
+  drv="${nic_driver[$model]}"
+  if grep -qE "NIC-DRIVER: iface=\S+ driver=${drv}\b" "${workdir}/console.out"; then
+    nic_status="PASS"
+  else
+    nic_status="FAIL"; nic_fail=1
+  fi
+  printf 'NIC %-10s (driver %-10s binds in guest): %s\n' "${model}" "${drv}" "${nic_status}"
+done
+
 printf 'BOOT (ttyAMA0 console reached init): %s\n' "$([[ ${boot_ok} -eq 0 ]] && echo PASS || echo FAIL)"
 printf 'VSOCK (guest->host vhost-vsock under TCG): %s\n' "$([[ ${vsock_ok} -eq 0 ]] && echo PASS || echo FAIL)"
 
-[[ ${boot_ok} -eq 0 && ${vsock_ok} -eq 0 ]]
+[[ ${boot_ok} -eq 0 && ${vsock_ok} -eq 0 && ${nic_fail} -eq 0 ]]

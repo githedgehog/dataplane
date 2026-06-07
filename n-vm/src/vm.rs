@@ -171,6 +171,10 @@ pub struct TestVmParams<'a> {
     pub test_name: &'a str,
     /// VM configuration controlling memory, hugepages, IOMMU, and NICs.
     pub vm_config: config::VmConfig,
+    /// Guest CPU architecture (= the test binary's target arch).  Threaded
+    /// explicitly so the arg lowering is a pure function of (config, arch,
+    /// accel) and testable for every ISA on any build host.
+    pub arch: config::Arch,
     /// Acceleration mode (KVM for same-arch, TCG for a cross-arch guest).
     pub accel: config::Accel,
     /// Dynamically-allocated vsock resources for this VM instance.
@@ -293,13 +297,15 @@ impl<B: HypervisorBackend> TestVm<B> {
             .validate_memory_alignment()
             .unwrap_or_else(|msg| panic!("VM configuration error: {msg}"));
 
-        // The virtual-IOMMU configuration is x86-only for now (Intel IOMMU);
-        // aarch64 SMMUv3 wiring is a follow-up.  Fail loudly rather than
-        // emitting a config that silently lacks the requested IOMMU.
-        let arch = config::Arch::current();
-        assert!(
-            !params.vm_config.iommu || arch.supports_virtual_iommu(),
-            "VM configuration error: virtual IOMMU (iommu = true) is not supported on {arch:?} yet",
+        // Unsupported capability/ISA combinations (e.g. vIOMMU on aarch64)
+        // are resolved to a graceful skip in the host tier before we ever
+        // reach launch -- see `run_test_in_vm`.  A debug assert documents
+        // the invariant without re-introducing a hard runtime failure.
+        debug_assert!(
+            !params.vm_config.iommu || params.arch.supports_virtual_iommu(),
+            "vIOMMU requested on {:?}, which has no vIOMMU lowering; the host \
+             tier should have skipped this test",
+            params.arch,
         );
 
         let mut virtiofsd = Self::launch_virtiofsd(VM_ROOT_SHARE_PATH).await?;
@@ -514,6 +520,8 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
         bin_name,
         test_name,
         vm_config,
+        // The guest arch is this binary's target arch.
+        arch: config::Arch::current(),
         accel,
         vsock,
     };

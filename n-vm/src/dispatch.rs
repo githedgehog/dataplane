@@ -138,15 +138,17 @@ fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
 /// Host-tier dispatch: launch a Docker container and re-run the test inside it.
 ///
 /// `requested` is the backend the test asked for via `#[in_vm]`.  It is
-/// resolved against the Docker daemon's architecture: a cross-arch guest
-/// runs under QEMU/TCG, and a test that *explicitly* requires
-/// cloud-hypervisor on a cross-arch host is skipped.
+/// resolved against the Docker daemon's architecture and the requested
+/// capabilities: a cross-arch guest runs under QEMU/TCG, a test that
+/// *explicitly* requires cloud-hypervisor on a cross-arch host is skipped,
+/// and a test requesting a capability the guest ISA can't provide (e.g.
+/// a virtual IOMMU on aarch64) is skipped.
 ///
 /// Skips are reported by returning normally with a `SKIPPED:` log line --
 /// libtest/nextest have no runtime "ignored" state, so a skipped test
 /// counts as passed.  This keeps cross-arch runs honest by minimising
-/// skips: only tests that pinned cloud-hypervisor are affected; everything
-/// else runs under emulation.
+/// skips: only the unsupported combinations are affected; everything else
+/// runs under emulation.
 ///
 /// # Panics
 ///
@@ -154,10 +156,10 @@ fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
 /// - The Docker container infrastructure returns an error.
 /// - The container exits with a non-zero code.
 /// - The container does not report an exit code at all.
-pub fn run_host_tier<F: FnOnce()>(test_fn: F, requested: RequestedBackend) {
+pub fn run_host_tier<F: FnOnce()>(test_fn: F, requested: RequestedBackend, vm_config: VmConfig) {
     eprintln!("===== BEGIN NESTED TEST ENVIRONMENT =====");
 
-    let outcome = crate::run_test_in_vm(test_fn, requested).unwrap_or_else(|err| {
+    let outcome = crate::run_test_in_vm(test_fn, requested, vm_config).unwrap_or_else(|err| {
         panic!(
             "test container infrastructure error:\n{:?}",
             miette::Report::new(err)

@@ -319,6 +319,22 @@ pub enum ContainerError {
     #[diagnostic(code(n_vm::container::docker_arch_unknown))]
     DockerArchUnknown,
 
+    /// The user-mode QEMU interpreter needed to run a cross-architecture
+    /// test binary inside the container could not be found on `$PATH`.
+    #[error("user-mode QEMU interpreter `{name}` not found on PATH")]
+    #[diagnostic(
+        code(n_vm::container::qemu_user_not_found),
+        help(
+            "cross-arch in-VM tests run the foreign test binary under \
+             user-mode QEMU in the container; ensure `{name}` is on PATH \
+             (it is provided by the dev shell)"
+        )
+    )]
+    QemuUserNotFound {
+        /// The interpreter name searched for (e.g. `qemu-aarch64`).
+        name: String,
+    },
+
     /// Docker refused to create the container.
     #[error("failed to create Docker container")]
     #[diagnostic(code(n_vm::container::container_create))]

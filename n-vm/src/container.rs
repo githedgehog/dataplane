@@ -209,10 +209,15 @@ impl ContainerParams {
     /// `backend` and `accel` are the host-tier-resolved choices, passed to
     /// the container tier via [`ENV_BACKEND`] / [`ENV_ACCEL`] so it can
     /// dispatch to the right hypervisor without a compile-time pick.
-    fn build_config(&self, backend: EffectiveBackend, accel: Accel) -> ContainerCreateBody {
+    fn build_config(
+        &self,
+        backend: EffectiveBackend,
+        accel: Accel,
+        qemu_user: Option<&str>,
+    ) -> ContainerCreateBody {
         ContainerCreateBody {
             entrypoint: None,
-            cmd: Some(self.build_test_command()),
+            cmd: Some(self.build_test_command(qemu_user)),
             image: Some(self.container_image().to_owned()),
             network_disabled: Some(true),
             env: Some(vec![
@@ -268,14 +273,26 @@ impl ContainerParams {
     }
 
     /// Builds the test binary command line for the container entrypoint.
-    fn build_test_command(&self) -> Vec<String> {
-        vec![
+    ///
+    /// When `qemu_user` is `Some`, the binary is a foreign architecture
+    /// relative to the container, so it is run under that user-mode QEMU
+    /// interpreter -- mirroring how `scripts/test-runner.sh` wraps the
+    /// host-tier invocation (`qemu-<arch> <bin> ...`).  The interpreter is
+    /// an absolute `/nix/store` path, available in the container via the
+    /// bind-mounted store, so no host `binfmt_misc` registration is needed.
+    fn build_test_command(&self, qemu_user: Option<&str>) -> Vec<String> {
+        let mut cmd = Vec::new();
+        if let Some(interp) = qemu_user {
+            cmd.push(interp.to_owned());
+        }
+        cmd.extend([
             self.bin_path_str().to_owned(),
             self.test_name.clone(),
             "--exact".into(),
             "--no-capture".into(),
             "--format=terse".into(),
-        ]
+        ]);
+        cmd
     }
 
     /// Builds the bind mounts for the test binary directory.
@@ -775,6 +792,7 @@ impl Drop for ContainerGuard<'_> {
 pub fn run_test_in_vm<F: FnOnce()>(
     _test_fn: F,
     requested: RequestedBackend,
+    vm_config: crate::config::VmConfig,
 ) -> Result<ContainerOutcome, ContainerError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -799,11 +817,38 @@ pub fn run_test_in_vm<F: FnOnce()>(
                 return Ok(ContainerOutcome::Skipped { reason });
             }
         };
+
+        // Skip a test that requests a capability the guest ISA can't
+        // provide (rather than panicking deep in launch).  The guest ISA is
+        // this binary's target arch.  Currently the only such capability is
+        // the virtual IOMMU (no aarch64 SMMUv3 lowering yet); as more ISA-
+        // divergent capabilities are added, their support checks belong
+        // here alongside it.
+        let guest_arch = crate::config::Arch::current();
+        if vm_config.iommu && !guest_arch.supports_virtual_iommu() {
+            return Ok(ContainerOutcome::Skipped {
+                reason: format!("virtual IOMMU (iommu = true) is not supported on {guest_arch:?}"),
+            });
+        }
+
+        // For a cross-arch guest, the container (daemon arch) cannot exec
+        // the foreign test binary directly, so run it under user-mode QEMU
+        // -- the same `qemu-<arch>` interpreter `scripts/test-runner.sh`
+        // uses for the host tier.  Resolved to an absolute /nix/store path
+        // (reachable in the container via the bind-mounted store), which
+        // avoids any host binfmt_misc dependency.
+        let qemu_user = if cross {
+            let name = format!("qemu-{}", std::env::consts::ARCH);
+            Some(find_on_path(&name).ok_or(ContainerError::QemuUserNotFound { name })?)
+        } else {
+            None
+        };
         tracing::info!(
             daemon_arch = %daemon_arch,
             target_arch = std::env::consts::ARCH,
             ?backend,
             ?accel,
+            qemu_user = ?qemu_user,
             "resolved hypervisor backend for this host",
         );
 
@@ -811,7 +856,7 @@ pub fn run_test_in_vm<F: FnOnce()>(
         // container config (which references it by tag).
         ensure_scratch_image(&client).await?;
 
-        let config = params.build_config(backend, accel);
+        let config = params.build_config(backend, accel, qemu_user.as_deref());
 
         // The guard is armed at creation -- if anything between here and
         // the explicit cleanup panics or returns early, the CleanupThread
@@ -860,6 +905,19 @@ async fn query_daemon_arch(client: &bollard::Docker) -> Result<String, Container
         .ok_or(ContainerError::DockerArchUnknown)
 }
 
+/// Resolves an executable to its absolute path by searching `$PATH`.
+///
+/// Used to find the `qemu-<arch>` user-mode interpreter for cross-arch
+/// tests; the resolved `/nix/store` path is reachable inside the container
+/// via the bind-mounted store.
+fn find_on_path(program: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -886,13 +944,35 @@ mod tests {
 
     #[test]
     fn config_uses_scratch_image() {
-        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config =
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         assert_eq!(config.image.as_deref(), Some(SCRATCH_IMAGE_TAG));
     }
 
     #[test]
+    fn test_command_wraps_with_qemu_when_cross() {
+        let p = sample_params();
+        let native = p.build_test_command(None);
+        assert_eq!(
+            native[0],
+            p.bin_path_str(),
+            "native runs the binary directly"
+        );
+
+        let interp = "/nix/store/x-qemu-user/bin/qemu-aarch64";
+        let cross = p.build_test_command(Some(interp));
+        assert_eq!(
+            cross[0], interp,
+            "cross prepends the user-mode QEMU interpreter"
+        );
+        assert_eq!(cross[1], p.bin_path_str(), "binary follows the interpreter");
+        // The remaining args (test name, --exact, ...) are identical.
+        assert_eq!(cross[2..], native[1..]);
+    }
+
+    #[test]
     fn config_propagates_backend_and_accel_env() {
-        let config = sample_params().build_config(EffectiveBackend::Qemu, Accel::Tcg);
+        let config = sample_params().build_config(EffectiveBackend::Qemu, Accel::Tcg, None);
         let env = config.env.as_ref().expect("env");
         assert!(
             env.iter().any(|e| e == "N_VM_BACKEND=qemu"),
@@ -906,7 +986,8 @@ mod tests {
 
     #[test]
     fn config_disables_networking() {
-        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config =
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         assert_eq!(config.network_disabled, Some(true));
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.network_mode.as_deref(), Some("none"));
@@ -914,7 +995,8 @@ mod tests {
 
     #[test]
     fn config_sets_environment_variables() {
-        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config =
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         let env = config.env.as_ref().expect("env should be set");
         let expected = format!("{ENV_IN_TEST_CONTAINER}={ENV_MARKER_VALUE}");
         assert!(
@@ -929,7 +1011,8 @@ mod tests {
 
     #[test]
     fn config_runs_as_root() {
-        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config =
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         // The container runs as root so that capabilities in the
         // bounding set are effective without ambient-cap gymnastics.
         assert_eq!(config.user.as_deref(), Some("0:0"));
@@ -938,7 +1021,7 @@ mod tests {
     #[test]
     fn config_passes_device_groups() {
         let params = sample_params();
-        let config = params.build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config = params.build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         let host = config.host_config.as_ref().expect("host_config");
         let groups = host.group_add.as_ref().expect("group_add");
         // The sample_params use GIDs 36 and 108.
@@ -948,7 +1031,8 @@ mod tests {
 
     #[test]
     fn config_is_unprivileged_with_minimal_caps() {
-        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config =
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.privileged, Some(false));
 
@@ -984,14 +1068,16 @@ mod tests {
 
     #[test]
     fn config_has_readonly_rootfs() {
-        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config =
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.readonly_rootfs, Some(true));
     }
 
     #[test]
     fn config_does_not_auto_remove_and_never_restarts() {
-        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
+        let config =
+            sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm, None);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.auto_remove, Some(false));
         let restart = host.restart_policy.as_ref().expect("restart_policy");
@@ -1027,14 +1113,14 @@ mod tests {
     #[test]
     fn test_command_starts_with_binary_path() {
         let params = sample_params();
-        let cmd = params.build_test_command();
+        let cmd = params.build_test_command(None);
         assert_eq!(cmd[0], "/target/debug/deps/my_test-abc123");
     }
 
     #[test]
     fn test_command_passes_test_name_with_exact() {
         let params = sample_params();
-        let cmd = params.build_test_command();
+        let cmd = params.build_test_command(None);
         assert_eq!(cmd[1], "tests::my_test");
         assert!(cmd.contains(&"--exact".to_string()));
         assert!(cmd.contains(&"--no-capture".to_string()));

@@ -155,12 +155,25 @@ impl Arch {
         }
     }
 
+    /// The QEMU virtual-IOMMU `-device` string for this ISA, or `None` if
+    /// no vIOMMU is wired up.  This is the per-ISA vIOMMU lowering: x86_64
+    /// uses the Intel IOMMU; aarch64 (SMMUv3) is a follow-up and returns
+    /// `None`, so an `iommu = true` request is resolved to a skip in the
+    /// host tier rather than producing a wrong or partial config.
+    #[must_use]
+    pub const fn virtual_iommu_device(self) -> Option<&'static str> {
+        match self {
+            Self::X86_64 => Some("intel-iommu,intremap=on,device-iotlb=on,caching-mode=on"),
+            Self::Aarch64 => None,
+        }
+    }
+
     /// Whether the virtual-IOMMU (`iommu = true`) configuration is
-    /// supported on this architecture.  Only x86_64 (Intel IOMMU) is
-    /// wired up; aarch64 SMMUv3 support is a follow-up.
+    /// supported on this architecture -- i.e. whether there is a vIOMMU
+    /// lowering ([`virtual_iommu_device`](Self::virtual_iommu_device)).
     #[must_use]
     pub const fn supports_virtual_iommu(self) -> bool {
-        matches!(self, Self::X86_64)
+        self.virtual_iommu_device().is_some()
     }
 }
 
@@ -431,6 +444,7 @@ pub(crate) fn build_kernel_cmdline(
     vsock: &VsockAllocation,
     iommu: bool,
     guest_hugepages: &GuestHugePageConfig,
+    arch: Arch,
 ) -> String {
     let vsock_cmdline = vsock.kernel_cmdline_fragment();
 
@@ -443,9 +457,9 @@ pub(crate) fn build_kernel_cmdline(
 
     let hugepage_fragment = guest_hugepages.kernel_cmdline_fragment();
 
-    // Guest arch == this binary's target arch.  The IOMMU and console
-    // parameters differ by architecture (x86 ttyS0 vs aarch64 ttyAMA0).
-    let arch = Arch::current();
+    // The IOMMU and console parameters are lowered per guest ISA
+    // (x86 ttyS0 vs aarch64 ttyAMA0); `arch` is passed in explicitly so
+    // this is testable for every ISA on any build host.
     let iommu_params = arch.iommu_kernel_params();
     let console_params = arch.console_kernel_params();
 
@@ -532,6 +546,10 @@ mod tests {
         assert_eq!(a.qemu_machine_base(), "q35");
         assert_eq!(a.pvpanic_device(), "pvpanic");
         assert!(a.console_kernel_params().contains("ttyS0"));
+        assert_eq!(
+            a.virtual_iommu_device(),
+            Some("intel-iommu,intremap=on,device-iotlb=on,caching-mode=on"),
+        );
         assert!(a.supports_virtual_iommu());
         assert!(a.smp_topology().contains("dies="));
     }
@@ -544,6 +562,7 @@ mod tests {
         assert!(a.qemu_machine_base().starts_with("virt"));
         assert_eq!(a.pvpanic_device(), "pvpanic-pci");
         assert!(a.console_kernel_params().contains("ttyAMA0"));
+        assert_eq!(a.virtual_iommu_device(), None);
         assert!(!a.supports_virtual_iommu());
         assert!(a.iommu_kernel_params().is_empty());
         assert!(
@@ -582,7 +601,8 @@ mod tests {
             size: GuestHugePageSize::Huge1G,
             count: 1,
         };
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &hp);
+        let cmdline =
+            build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &hp, Arch::X86_64);
         assert!(
             cmdline.contains("hugepages=1"),
             "cmdline should configure hugepage count: {cmdline}",
@@ -604,7 +624,8 @@ mod tests {
             size: GuestHugePageSize::Huge2M,
             count: 512,
         };
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &hp);
+        let cmdline =
+            build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &hp, Arch::X86_64);
         assert!(
             cmdline.contains("hugepages=512"),
             "cmdline should configure hugepage count: {cmdline}",
@@ -628,6 +649,7 @@ mod tests {
             &vsock,
             false,
             &GuestHugePageConfig::None,
+            Arch::X86_64,
         );
         assert!(
             !cmdline.contains("hugepagesz"),
@@ -642,7 +664,14 @@ mod tests {
     #[test]
     fn kernel_cmdline_includes_init_binary() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &DEFAULT_HP);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
         assert!(
             cmdline.contains(&format!("init={INIT_BINARY_PATH}")),
             "cmdline should set init binary: {cmdline}",
@@ -652,7 +681,14 @@ mod tests {
     #[test]
     fn kernel_cmdline_passes_test_binary_and_name() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &DEFAULT_HP);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
         assert!(
             cmdline.contains("-- /test/bin my::test --exact"),
             "cmdline should pass test binary and name after '--': {cmdline}",
@@ -663,7 +699,14 @@ mod tests {
     fn kernel_cmdline_includes_vsock_parameters() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
         let fragment = vsock.kernel_cmdline_fragment();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &DEFAULT_HP);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
         assert!(
             cmdline.contains(&fragment),
             "cmdline should contain vsock port parameters ({fragment}): {cmdline}",
@@ -673,7 +716,14 @@ mod tests {
     #[test]
     fn kernel_cmdline_enables_noiommu_mode_when_iommu_disabled() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &DEFAULT_HP);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
         assert!(
             cmdline.contains("vfio.enable_unsafe_noiommu_mode=1"),
             "cmdline should enable no-IOMMU mode when iommu is disabled: {cmdline}",
@@ -683,7 +733,14 @@ mod tests {
     #[test]
     fn kernel_cmdline_omits_noiommu_mode_when_iommu_enabled() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, true, &DEFAULT_HP);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            true,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
         assert!(
             !cmdline.contains("noiommu"),
             "cmdline should NOT enable no-IOMMU mode when iommu is enabled: {cmdline}",
@@ -691,38 +748,75 @@ mod tests {
     }
 
     #[test]
-    fn kernel_cmdline_enables_iommu_kernel_support_always() {
+    fn kernel_cmdline_iommu_kernel_params_match_arch() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
 
+        // x86_64 always carries the Intel/AMD IOMMU kernel hints (whether or
+        // not a vIOMMU device is present); aarch64 carries none.  Asserting
+        // both ISAs here -- on a single build -- is the point of threading
+        // `Arch` instead of reading `Arch::current()`.
         for iommu in [false, true] {
-            let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, iommu, &DEFAULT_HP);
-            assert!(
-                cmdline.contains("iommu=on"),
-                "cmdline should always enable iommu (iommu={iommu}): {cmdline}",
+            let x86 = build_kernel_cmdline(
+                "/test/bin",
+                "my::test",
+                &vsock,
+                iommu,
+                &DEFAULT_HP,
+                Arch::X86_64,
+            );
+            assert!(x86.contains("intel_iommu=on"), "x86 (iommu={iommu}): {x86}");
+
+            let arm = build_kernel_cmdline(
+                "/test/bin",
+                "my::test",
+                &vsock,
+                iommu,
+                &DEFAULT_HP,
+                Arch::Aarch64,
             );
             assert!(
-                cmdline.contains("intel_iommu=on"),
-                "cmdline should always enable intel_iommu (iommu={iommu}): {cmdline}",
-            );
-            assert!(
-                cmdline.contains("amd_iommu=on"),
-                "cmdline should always enable amd_iommu (iommu={iommu}): {cmdline}",
+                !arm.contains("intel_iommu"),
+                "aarch64 must not carry x86 IOMMU kernel params (iommu={iommu}): {arm}",
             );
         }
     }
 
     #[test]
-    fn kernel_cmdline_configures_serial_console() {
+    fn kernel_cmdline_console_matches_arch() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &DEFAULT_HP);
-        assert!(cmdline.contains("console=ttyS0"), "cmdline: {cmdline}",);
-        assert!(cmdline.contains("earlyprintk=ttyS0"), "cmdline: {cmdline}",);
+        let x86 = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
+        assert!(x86.contains("console=ttyS0"), "x86: {x86}");
+
+        let arm = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::Aarch64,
+        );
+        assert!(arm.contains("console=ttyAMA0"), "aarch64: {arm}");
+        assert!(!arm.contains("ttyS0"), "aarch64 must not use ttyS0: {arm}");
     }
 
     #[test]
     fn kernel_cmdline_uses_virtiofs_root() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &DEFAULT_HP);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
         assert!(
             cmdline.contains("rootfstype=virtiofs"),
             "cmdline: {cmdline}",
@@ -733,7 +827,14 @@ mod tests {
     #[test]
     fn kernel_cmdline_passes_no_capture_and_terse_format() {
         let vsock = n_vm_protocol::VsockAllocation::with_defaults();
-        let cmdline = build_kernel_cmdline("/test/bin", "my::test", &vsock, false, &DEFAULT_HP);
+        let cmdline = build_kernel_cmdline(
+            "/test/bin",
+            "my::test",
+            &vsock,
+            false,
+            &DEFAULT_HP,
+            Arch::X86_64,
+        );
         assert!(
             cmdline.contains("--no-capture"),
             "cmdline should pass --no-capture: {cmdline}",

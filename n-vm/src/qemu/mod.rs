@@ -429,7 +429,7 @@ async fn spawn_qemu_process(
 
     let args = build_qemu_args(params);
 
-    let qemu_binary = config::Arch::current().qemu_system_binary();
+    let qemu_binary = params.arch.qemu_system_binary();
     debug!("spawning QEMU: {qemu_binary} {}", args.join(" "));
 
     let mut child = tokio::process::Command::new(qemu_binary)
@@ -471,11 +471,12 @@ async fn spawn_qemu_process(
 /// Builds the complete QEMU argument vector for a test run.
 fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
     let iommu = params.vm_config.iommu;
+    let arch = params.arch;
     let mut args = Vec::with_capacity(64);
-    push_machine_args(&mut args, iommu, params.accel);
-    push_cpu_args(&mut args);
+    push_machine_args(&mut args, iommu, params.accel, arch);
+    push_cpu_args(&mut args, arch);
     push_memory_args(&mut args, params.vm_config.host_page_size);
-    push_iommu_args(&mut args, iommu);
+    push_iommu_args(&mut args, iommu, arch);
     push_kernel_args(&mut args, params);
     push_fs_args(&mut args);
     push_vsock_args(&mut args, &params.vsock, iommu);
@@ -483,7 +484,7 @@ fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
     push_serial_args(&mut args);
     push_qmp_args(&mut args);
     push_platform_args(&mut args, params);
-    push_misc_args(&mut args);
+    push_misc_args(&mut args, arch);
     args
 }
 
@@ -498,11 +499,15 @@ fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
 /// and `-cpu host`.  Under [`Accel::Tcg`] (cross-arch guest) it uses
 /// `accel=tcg` with `-cpu max` and omits `-enable-kvm`.
 ///
-/// Note: the `q35` machine type and Intel-IOMMU interrupt-remapping
-/// assumptions here are still x86_64-specific; an aarch64 guest needs the
-/// `virt` machine and a different IOMMU/irqchip story (a follow-up).
-fn push_machine_args(args: &mut Vec<String>, iommu: bool, accel: config::Accel) {
-    let arch = config::Arch::current();
+/// The machine type, IOMMU irqchip mode, and CPU model are lowered per
+/// guest ISA via `arch`, which is passed in explicitly (not read from
+/// `Arch::current()`) so this is testable for every ISA on any build host.
+fn push_machine_args(
+    args: &mut Vec<String>,
+    iommu: bool,
+    accel: config::Accel,
+    arch: config::Arch,
+) {
     let accel_opt = match accel {
         config::Accel::Kvm => "accel=kvm",
         config::Accel::Tcg => "accel=tcg",
@@ -531,10 +536,10 @@ fn push_machine_args(args: &mut Vec<String>, iommu: bool, accel: config::Accel) 
 ///
 /// Matches the cloud-hypervisor backend: 6 vCPUs arranged as
 /// 1 socket × 3 dies × 1 core × 2 threads.
-fn push_cpu_args(args: &mut Vec<String>) {
+fn push_cpu_args(args: &mut Vec<String>, arch: config::Arch) {
     // The `-smp dies=` level is x86-specific; `smp_topology` omits it on
     // aarch64 while preserving the total vCPU count.
-    args.extend(["-smp".into(), config::Arch::current().smp_topology()]);
+    args.extend(["-smp".into(), arch.smp_topology()]);
 }
 
 /// Memory configuration with hugepage backing and sharing.
@@ -601,12 +606,14 @@ fn push_memory_args(args: &mut Vec<String>, host_page_size: config::HostPageSize
 /// `iommu_platform`; vhost-user devices perform DMA from a separate
 /// userspace process rather than through QEMU's emulated IOMMU data
 /// path.  `caching-mode=on` on the Intel IOMMU handles this case.
-fn push_iommu_args(args: &mut Vec<String>, iommu: bool) {
-    if iommu {
-        args.extend([
-            "-device".into(),
-            "intel-iommu,intremap=on,device-iotlb=on,caching-mode=on".into(),
-        ]);
+fn push_iommu_args(args: &mut Vec<String>, iommu: bool, arch: config::Arch) {
+    // The vIOMMU device is part of the per-ISA lowering on `Arch`
+    // (x86 -> intel-iommu; aarch64 -> None until SMMUv3 is wired up).  An
+    // `iommu = true` request on an ISA with no lowering is resolved to a
+    // skip in the host tier, so reaching here with `None` should not
+    // happen -- emit nothing rather than a wrong device if it does.
+    if let Some(device) = arch.virtual_iommu_device().filter(|_| iommu) {
+        args.extend(["-device".into(), device.into()]);
     }
 }
 
@@ -627,11 +634,12 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
         &params.vsock,
         params.vm_config.iommu,
         &params.vm_config.guest_hugepages,
+        params.arch,
     );
 
     args.extend([
         "-kernel".into(),
-        config::Arch::current().kernel_image_path().into(),
+        params.arch.kernel_image_path().into(),
         "-append".into(),
         cmdline,
     ]);
@@ -836,14 +844,14 @@ fn push_platform_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
 /// - `-device pvpanic` -- enable guest panic detection via the pvpanic
 ///   PCI device.  When the guest kernel panics, QEMU emits a
 ///   `GUEST_PANICKED` QMP event.
-fn push_misc_args(args: &mut Vec<String>) {
+fn push_misc_args(args: &mut Vec<String>, arch: config::Arch) {
     args.extend([
         "-display".into(),
         "none".into(),
         "-no-reboot".into(),
         "-no-shutdown".into(),
         "-device".into(),
-        config::Arch::current().pvpanic_device().into(),
+        arch.pvpanic_device().into(),
     ]);
 }
 
@@ -868,6 +876,7 @@ mod tests {
             bin_name: "my_test-abc123",
             test_name: "module::test_name",
             vm_config: config::VmConfig::default(),
+            arch: config::Arch::X86_64,
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }
@@ -878,7 +887,7 @@ mod tests {
     #[test]
     fn machine_args_enable_kvm_with_q35() {
         let mut args = Vec::new();
-        push_machine_args(&mut args, false, config::Accel::Kvm);
+        push_machine_args(&mut args, false, config::Accel::Kvm, config::Arch::X86_64);
         assert!(args.contains(&"-enable-kvm".to_string()));
         assert!(args.contains(&"q35,accel=kvm".to_string()));
         assert!(args.contains(&"host".to_string()));
@@ -887,7 +896,7 @@ mod tests {
     #[test]
     fn machine_args_use_tcg_without_kvm() {
         let mut args = Vec::new();
-        push_machine_args(&mut args, false, config::Accel::Tcg);
+        push_machine_args(&mut args, false, config::Accel::Tcg, config::Arch::X86_64);
         assert!(
             !args.contains(&"-enable-kvm".to_string()),
             "TCG must not pass -enable-kvm: {args:?}",
@@ -904,9 +913,48 @@ mod tests {
     }
 
     #[test]
+    fn machine_and_iommu_args_lower_per_arch() {
+        // The builders are pure functions of (config, accel, arch), so both
+        // ISAs' lowering is asserted here on a single build host -- this is
+        // the property that decouples these tests from the build target.
+
+        // aarch64: `virt` machine, no x86 kernel-irqchip, no vIOMMU device.
+        let mut machine = Vec::new();
+        push_machine_args(
+            &mut machine,
+            true,
+            config::Accel::Tcg,
+            config::Arch::Aarch64,
+        );
+        assert!(
+            machine.iter().any(|a| a.starts_with("virt")),
+            "aarch64 uses the virt machine: {machine:?}",
+        );
+        assert!(
+            !machine.iter().any(|a| a.contains("kernel-irqchip")),
+            "aarch64 has no x86 split-irqchip: {machine:?}",
+        );
+
+        let mut arm_iommu = Vec::new();
+        push_iommu_args(&mut arm_iommu, true, config::Arch::Aarch64);
+        assert!(
+            arm_iommu.is_empty(),
+            "aarch64 has no vIOMMU device lowering: {arm_iommu:?}",
+        );
+
+        // x86: the intel-iommu device is present.
+        let mut x86_iommu = Vec::new();
+        push_iommu_args(&mut x86_iommu, true, config::Arch::X86_64);
+        assert!(
+            x86_iommu.iter().any(|a| a.starts_with("intel-iommu")),
+            "x86 emits the intel-iommu device: {x86_iommu:?}",
+        );
+    }
+
+    #[test]
     fn cpu_args_have_six_vcpus() {
         let mut args = Vec::new();
-        push_cpu_args(&mut args);
+        push_cpu_args(&mut args, config::Arch::X86_64);
         let smp = &args[1];
         assert!(smp.starts_with("6,"), "expected 6 vCPUs: {smp}");
     }
@@ -914,7 +962,7 @@ mod tests {
     #[test]
     fn cpu_topology_matches_cloud_hypervisor() {
         let mut args = Vec::new();
-        push_cpu_args(&mut args);
+        push_cpu_args(&mut args, config::Arch::X86_64);
         let smp = &args[1];
         assert!(smp.contains("sockets=1"), "{smp}");
         assert!(smp.contains("dies=3"), "{smp}");
@@ -988,7 +1036,7 @@ mod tests {
         let mut args = Vec::new();
         push_kernel_args(&mut args, &sample_params());
         let idx = args.iter().position(|a| a == "-kernel").unwrap();
-        assert_eq!(args[idx + 1], config::Arch::current().kernel_image_path());
+        assert_eq!(args[idx + 1], config::Arch::X86_64.kernel_image_path());
     }
 
     #[test]
@@ -1198,14 +1246,14 @@ mod tests {
     #[test]
     fn misc_args_disable_display() {
         let mut args = Vec::new();
-        push_misc_args(&mut args);
+        push_misc_args(&mut args, config::Arch::X86_64);
         assert!(args.contains(&"none".to_string()));
     }
 
     #[test]
     fn misc_args_enable_no_reboot_and_no_shutdown() {
         let mut args = Vec::new();
-        push_misc_args(&mut args);
+        push_misc_args(&mut args, config::Arch::X86_64);
         assert!(args.contains(&"-no-reboot".to_string()));
         assert!(args.contains(&"-no-shutdown".to_string()));
     }
@@ -1213,7 +1261,7 @@ mod tests {
     #[test]
     fn misc_args_enable_pvpanic() {
         let mut args = Vec::new();
-        push_misc_args(&mut args);
+        push_misc_args(&mut args, config::Arch::X86_64);
         assert!(args.contains(&"pvpanic".to_string()));
     }
 
@@ -1237,7 +1285,7 @@ mod tests {
     #[test]
     fn machine_args_use_irqchip_split_when_iommu_enabled() {
         let mut args = Vec::new();
-        push_machine_args(&mut args, true, config::Accel::Kvm);
+        push_machine_args(&mut args, true, config::Accel::Kvm, config::Arch::X86_64);
         assert!(
             args.contains(&"q35,accel=kvm,kernel-irqchip=split".to_string()),
             "iommu requires kernel-irqchip=split: {args:?}",
@@ -1247,7 +1295,7 @@ mod tests {
     #[test]
     fn machine_args_omit_irqchip_split_when_iommu_disabled() {
         let mut args = Vec::new();
-        push_machine_args(&mut args, false, config::Accel::Kvm);
+        push_machine_args(&mut args, false, config::Accel::Kvm, config::Arch::X86_64);
         assert!(
             args.contains(&"q35,accel=kvm".to_string()),
             "no kernel-irqchip=split without iommu: {args:?}",
@@ -1261,7 +1309,7 @@ mod tests {
     #[test]
     fn iommu_args_present_when_enabled() {
         let mut args = Vec::new();
-        push_iommu_args(&mut args, true);
+        push_iommu_args(&mut args, true, config::Arch::X86_64);
         let device = args
             .iter()
             .find(|a| a.starts_with("intel-iommu"))
@@ -1274,7 +1322,7 @@ mod tests {
     #[test]
     fn iommu_args_absent_when_disabled() {
         let mut args = Vec::new();
-        push_iommu_args(&mut args, false);
+        push_iommu_args(&mut args, false, config::Arch::X86_64);
         assert!(args.is_empty(), "no IOMMU args when disabled");
     }
 

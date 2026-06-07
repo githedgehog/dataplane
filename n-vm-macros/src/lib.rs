@@ -653,24 +653,26 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
                 return;
             }
 
+            // Build once; both tiers need it (VmConfig is Copy).  Tier 1
+            // uses it to resolve capability/ISA skips; tier 2 to configure
+            // the VM.
+            let __n_vm_config = ::n_vm::VmConfig {
+                iommu: #iommu,
+                host_page_size: #host_page_size,
+                guest_hugepages: #guest_hugepages,
+                nic_model: #nic_model,
+            };
+
             // Tier 2: Docker container -> VM.  The backend and acceleration
             // mode were resolved by tier 1 and passed via the environment.
             if ::n_vm::is_in_test_container() {
-                ::n_vm::run_container_tier(
-                    #ident,
-                    ::n_vm::VmConfig {
-                        iommu: #iommu,
-                        host_page_size: #host_page_size,
-                        guest_hugepages: #guest_hugepages,
-                        nic_model: #nic_model,
-                    },
-                );
+                ::n_vm::run_container_tier(#ident, __n_vm_config);
                 return;
             }
 
             // Tier 1: Host -> Docker container.  Resolves the requested
-            // backend against the Docker daemon's architecture.
-            ::n_vm::run_host_tier(#ident, #requested_backend);
+            // backend + capabilities against the host arch / Docker daemon.
+            ::n_vm::run_host_tier(#ident, #requested_backend, __n_vm_config);
         }
     }
     .into()

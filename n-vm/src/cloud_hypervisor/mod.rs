@@ -306,13 +306,14 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
 fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
     PayloadConfig {
         firmware: None,
-        kernel: Some(config::Arch::current().kernel_image_path().into()),
+        kernel: Some(params.arch.kernel_image_path().into()),
         cmdline: Some(config::build_kernel_cmdline(
             &params.vm_bin_path,
             params.test_name,
             &params.vsock,
             params.vm_config.iommu,
             &params.vm_config.guest_hugepages,
+            params.arch,
         )),
         ..Default::default()
     }
@@ -347,9 +348,11 @@ fn build_cpu_config() -> CpusConfig {
 /// `MAP_SHARED` memory to access the guest address space from a
 /// separate process.
 ///
-/// THP (transparent huge pages) is always off.  Cloud-hypervisor's THP
-/// hint only applies to private anonymous memory (`shared=off`), so it
-/// has no effect when `shared=on`.
+/// THP (transparent huge pages) and KSM merging (`mergeable`) are always
+/// off.  Both only apply to private anonymous memory (`shared=off`), so
+/// they have no effect when `shared=on` -- and current cloud-hypervisor
+/// *rejects* `mergeable=on` together with `shared=on` ("Invalid to set
+/// both 'mergeable' and 'shared' for memory").
 fn build_memory_config(host_page_size: config::HostPageSize) -> MemoryConfig {
     let (hugepages, hugepage_size) = if host_page_size.requires_hugepages() {
         (Some(true), Some(host_page_size.bytes()))
@@ -358,7 +361,7 @@ fn build_memory_config(host_page_size: config::HostPageSize) -> MemoryConfig {
     };
     MemoryConfig {
         size: config::VM_MEMORY_BYTES,
-        mergeable: Some(true),
+        mergeable: Some(false),
         shared: Some(true),
         hugepages,
         hugepage_size,
@@ -493,6 +496,7 @@ mod tests {
             bin_name: "my_test-abc123",
             test_name: "tests::my_test",
             vm_config: config::VmConfig::default(),
+            arch: config::Arch::X86_64,
             accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }
@@ -506,7 +510,7 @@ mod tests {
         let payload = build_payload_config(&params);
         assert_eq!(
             payload.kernel.as_deref(),
-            Some(config::Arch::current().kernel_image_path()),
+            Some(config::Arch::X86_64.kernel_image_path()),
         );
     }
 
@@ -633,7 +637,11 @@ mod tests {
             Some(true),
             "shared memory is required for virtiofs"
         );
-        assert_eq!(mem.mergeable, Some(true));
+        assert_eq!(
+            mem.mergeable,
+            Some(false),
+            "mergeable must be off: cloud-hypervisor rejects mergeable+shared",
+        );
         assert_eq!(mem.thp, Some(false));
     }
 
