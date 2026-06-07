@@ -48,6 +48,27 @@ impl Accel {
     }
 }
 
+/// The per-ISA realization of a virtual IOMMU.
+///
+/// One object capturing every piece of "how a vIOMMU is wired up on this
+/// architecture", so the pieces can't drift apart or be half-applied.
+/// Returned by [`Arch::virtual_iommu`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VIommuLowering {
+    /// QEMU `-device` string for the vIOMMU.  Emitted only when a test
+    /// requests `iommu = true`.
+    pub device: &'static str,
+    /// Extra `-machine` options the vIOMMU requires (e.g. the x86 Intel
+    /// IOMMU needs `kernel-irqchip=split` for interrupt remapping).
+    /// Applied alongside the device; empty if none.
+    pub machine_opts: &'static str,
+    /// Guest kernel command-line parameters enabling IOMMU support.  These
+    /// are emitted whenever the ISA *has* a vIOMMU (harmless without a
+    /// device present), so one kernel serves both iommu and non-iommu
+    /// tests.
+    pub kernel_params: &'static str,
+}
+
 /// Guest CPU architecture.
 ///
 /// Equal to the test binary's compile-time `target_arch` (the binary *is*
@@ -145,35 +166,36 @@ impl Arch {
         }
     }
 
-    /// Architecture-specific IOMMU kernel parameters (empty on aarch64,
-    /// which has no virtual-IOMMU support here yet).
+    /// The complete virtual-IOMMU lowering for this ISA, or `None` if no
+    /// vIOMMU is wired up.
+    ///
+    /// This is the single source of truth for "how a virtual IOMMU is
+    /// realized on this architecture" -- the QEMU device, the extra
+    /// `-machine` options it needs, and the guest kernel parameters, as one
+    /// object.  Adding a new ISA's vIOMMU (e.g. aarch64 SMMUv3) means
+    /// filling in one [`VIommuLowering`] rather than touching several
+    /// scattered methods.  `None` (currently aarch64) means an
+    /// `iommu = true` request is resolved to a skip in the host tier rather
+    /// than producing a wrong or partial config.
     #[must_use]
-    pub const fn iommu_kernel_params(self) -> &'static str {
+    pub const fn virtual_iommu(self) -> Option<VIommuLowering> {
         match self {
-            Self::X86_64 => "iommu=on intel_iommu=on amd_iommu=on",
-            Self::Aarch64 => "",
-        }
-    }
-
-    /// The QEMU virtual-IOMMU `-device` string for this ISA, or `None` if
-    /// no vIOMMU is wired up.  This is the per-ISA vIOMMU lowering: x86_64
-    /// uses the Intel IOMMU; aarch64 (SMMUv3) is a follow-up and returns
-    /// `None`, so an `iommu = true` request is resolved to a skip in the
-    /// host tier rather than producing a wrong or partial config.
-    #[must_use]
-    pub const fn virtual_iommu_device(self) -> Option<&'static str> {
-        match self {
-            Self::X86_64 => Some("intel-iommu,intremap=on,device-iotlb=on,caching-mode=on"),
+            Self::X86_64 => Some(VIommuLowering {
+                device: "intel-iommu,intremap=on,device-iotlb=on,caching-mode=on",
+                // Intel IOMMU interrupt remapping requires split irqchip.
+                machine_opts: "kernel-irqchip=split",
+                kernel_params: "iommu=on intel_iommu=on amd_iommu=on",
+            }),
             Self::Aarch64 => None,
         }
     }
 
     /// Whether the virtual-IOMMU (`iommu = true`) configuration is
-    /// supported on this architecture -- i.e. whether there is a vIOMMU
-    /// lowering ([`virtual_iommu_device`](Self::virtual_iommu_device)).
+    /// supported on this architecture -- i.e. whether there is a
+    /// [`virtual_iommu`](Self::virtual_iommu) lowering.
     #[must_use]
     pub const fn supports_virtual_iommu(self) -> bool {
-        self.virtual_iommu_device().is_some()
+        self.virtual_iommu().is_some()
     }
 }
 
@@ -459,8 +481,10 @@ pub(crate) fn build_kernel_cmdline(
 
     // The IOMMU and console parameters are lowered per guest ISA
     // (x86 ttyS0 vs aarch64 ttyAMA0); `arch` is passed in explicitly so
-    // this is testable for every ISA on any build host.
-    let iommu_params = arch.iommu_kernel_params();
+    // this is testable for every ISA on any build host.  The IOMMU kernel
+    // params come from the vIOMMU lowering and are present whenever the
+    // ISA has one (empty otherwise) -- independent of the per-test flag.
+    let iommu_params = arch.virtual_iommu().map_or("", |l| l.kernel_params);
     let console_params = arch.console_kernel_params();
 
     format!(
@@ -539,6 +563,29 @@ mod tests {
     // ── Arch profiles (both arches exercised on a single host) ───────
 
     #[test]
+    fn virtual_iommu_lowering_is_coherent_per_arch() {
+        // The point of folding the vIOMMU into one object: an ISA either
+        // has a complete lowering (device + kernel params) or none -- the
+        // pieces can't drift apart or be half-applied.
+        for arch in [Arch::X86_64, Arch::Aarch64] {
+            match arch.virtual_iommu() {
+                Some(l) => {
+                    assert!(
+                        !l.device.is_empty(),
+                        "{arch:?}: lowering must name a device"
+                    );
+                    assert!(
+                        !l.kernel_params.is_empty(),
+                        "{arch:?}: lowering must enable IOMMU in the guest kernel",
+                    );
+                    assert!(arch.supports_virtual_iommu());
+                }
+                None => assert!(!arch.supports_virtual_iommu()),
+            }
+        }
+    }
+
+    #[test]
     fn arch_x86_64_profile() {
         let a = Arch::X86_64;
         assert_eq!(a.qemu_system_binary(), "/bin/qemu-system-x86_64");
@@ -546,10 +593,10 @@ mod tests {
         assert_eq!(a.qemu_machine_base(), "q35");
         assert_eq!(a.pvpanic_device(), "pvpanic");
         assert!(a.console_kernel_params().contains("ttyS0"));
-        assert_eq!(
-            a.virtual_iommu_device(),
-            Some("intel-iommu,intremap=on,device-iotlb=on,caching-mode=on"),
-        );
+        let viommu = a.virtual_iommu().expect("x86 has a vIOMMU lowering");
+        assert!(viommu.device.starts_with("intel-iommu"));
+        assert_eq!(viommu.machine_opts, "kernel-irqchip=split");
+        assert!(viommu.kernel_params.contains("intel_iommu=on"));
         assert!(a.supports_virtual_iommu());
         assert!(a.smp_topology().contains("dies="));
     }
@@ -562,9 +609,8 @@ mod tests {
         assert!(a.qemu_machine_base().starts_with("virt"));
         assert_eq!(a.pvpanic_device(), "pvpanic-pci");
         assert!(a.console_kernel_params().contains("ttyAMA0"));
-        assert_eq!(a.virtual_iommu_device(), None);
+        assert_eq!(a.virtual_iommu(), None);
         assert!(!a.supports_virtual_iommu());
-        assert!(a.iommu_kernel_params().is_empty());
         assert!(
             !a.smp_topology().contains("dies="),
             "aarch64 -smp must not use the x86-only dies= level: {}",

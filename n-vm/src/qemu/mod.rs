@@ -513,9 +513,15 @@ fn push_machine_args(
         config::Accel::Tcg => "accel=tcg",
     };
     let mut machine = format!("{base},{accel_opt}", base = arch.qemu_machine_base());
-    // Intel IOMMU interrupt remapping requires split irqchip (x86 only).
-    if iommu && arch.supports_virtual_iommu() {
-        machine.push_str(",kernel-irqchip=split");
+    // The vIOMMU may require extra machine options (e.g. the x86 Intel
+    // IOMMU needs kernel-irqchip=split); applied only when a vIOMMU is
+    // requested and the ISA has a lowering for it.
+    let machine_opts = arch
+        .virtual_iommu()
+        .filter(|_| iommu)
+        .map_or("", |l| l.machine_opts);
+    if !machine_opts.is_empty() {
+        machine = format!("{machine},{machine_opts}");
     }
     if accel == config::Accel::Kvm {
         args.push("-enable-kvm".into());
@@ -612,8 +618,8 @@ fn push_iommu_args(args: &mut Vec<String>, iommu: bool, arch: config::Arch) {
     // `iommu = true` request on an ISA with no lowering is resolved to a
     // skip in the host tier, so reaching here with `None` should not
     // happen -- emit nothing rather than a wrong device if it does.
-    if let Some(device) = arch.virtual_iommu_device().filter(|_| iommu) {
-        args.extend(["-device".into(), device.into()]);
+    if let Some(lowering) = arch.virtual_iommu().filter(|_| iommu) {
+        args.extend(["-device".into(), lowering.device.into()]);
     }
 }
 
