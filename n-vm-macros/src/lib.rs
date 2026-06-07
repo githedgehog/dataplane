@@ -526,6 +526,29 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut func = parse_macro_input!(input as syn::ItemFn);
 
+    // `#[should_panic]` cannot compose with `#[in_vm]`: the test body runs
+    // in a separate VM-guest process, and the generated function is run by
+    // libtest at all three dispatch tiers (host, container, guest).  A
+    // panic is absorbed at whichever tier produces it, so `should_panic`
+    // semantics are incoherent across tiers (and depend on whether the
+    // guest panic unwinds cleanly).  Reject it with a clear message rather
+    // than miscompile.
+    if let Some(attr) = func
+        .attrs
+        .iter()
+        .find(|a| a.path().is_ident("should_panic"))
+    {
+        return syn::Error::new_spanned(
+            attr,
+            "#[should_panic] is not supported with #[in_vm]: the test body runs \
+             in a separate VM-guest process across three dispatch tiers, so panic \
+             semantics do not compose.  Assert the failure condition inside the \
+             test body instead (e.g. `assert!(result.is_err())`).",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let is_async = func.sig.asyncness.is_some();
 
     let tokio_config = if let Some(idx) = func.attrs.iter().position(is_tokio_test_attr) {

@@ -16,14 +16,14 @@ fn test_which_runs_in_vm() {
     assert_eq!(2 + 2, 4);
 }
 
-#[in_vm]
-#[should_panic]
-#[test]
-#[allow(unreachable_code)]
-fn test_which_runs_in_vm_control() {
-    assert_eq!(2 + 2, 4);
-    panic!("deliberate panic");
-}
+// NOTE: there is deliberately no `#[in_vm] #[should_panic]` negative
+// control here.  `#[should_panic]` does not compose with `#[in_vm]` (the
+// body runs in a separate VM-guest process across three dispatch tiers, so
+// the panic is absorbed inconsistently) and the macro now rejects it.  The
+// "does the harness actually detect failures" property is covered at the
+// unit level by the verdict-decoding tests (`cloud_hypervisor::events`,
+// `n_vm_protocol::TestResult` parse tests: an absent/failed verdict ->
+// failure), not by a panicking end-to-end test.
 
 #[in_vm]
 #[test]
