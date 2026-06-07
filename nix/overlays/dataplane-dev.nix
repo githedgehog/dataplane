@@ -58,7 +58,19 @@ in
   linux-fancy =
     let
       version = "6.18.20";
-      stdenv = final.llvmPackages'.stdenv;
+      # True only when the kernel's target arch differs from the builder.
+      isCross = final.stdenv.hostPlatform.system != final.stdenv.buildPlatform.system;
+      # Cross stdenv: builds the (possibly aarch64) kernel itself.
+      crossStdenv = final.llvmPackages'.stdenv;
+      # Stdenv/toolchain that runs the .config codegen, which must execute
+      # on the builder.  For a native build keep the original (so the
+      # output is byte-identical); for a cross build switch to the
+      # build-platform toolchain so the setup tools actually run.
+      buildStdenv = if isCross then final.pkgsBuildHost.llvmPackages'.stdenv else crossStdenv;
+      buildLlvm = if isCross then final.pkgsBuildHost.llvmPackages' else final.llvmPackages';
+      # Target kernel ARCH, only set when cross-compiling (null leaves a
+      # native build's config output byte-identical).
+      kernelArch = if isCross then final.stdenv.hostPlatform.linuxArch else null;
       src = fetchTarball {
         url = "https://cdn.kernel.org/pub/linux/kernel/v${final.lib.versions.major version}.x/linux-${version}.tar.xz";
         sha256 = "sha256:1sbidvi0zi1a8nlzrdjmk3yq50gdc5qjvcf4n4ah70pis25912ba";
@@ -94,11 +106,13 @@ in
       ];
       fragments = map (f: ../pkgs/linux/fragments + "/${f}") (sharedFragments ++ archFragments);
       configfile = final.callPackage ../pkgs/linux/merge-config.nix {
-        inherit src version fragments stdenv;
-        llvmPackages = final.llvmPackages';
+        inherit src version fragments kernelArch;
+        stdenv = buildStdenv;
+        llvmPackages = buildLlvm;
       };
     in
     final.linuxManualConfig {
-      inherit version src configfile stdenv;
+      inherit version src configfile;
+      stdenv = crossStdenv;
     };
 }

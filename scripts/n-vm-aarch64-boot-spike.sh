@@ -113,8 +113,12 @@ rustc -O --target aarch64-unknown-linux-musl \
   "${workdir}/init.rs" -o "${workdir}/init"
 
 # Wrap the init in a minimal initramfs (single static binary as /init).
+# Uncompressed cpio: the kernel always supports the raw newc format, so we
+# don't depend on any RD_<compressor> config (the guest kernel here has no
+# gzip/zstd initramfs support -- the real n-vm path boots via virtiofs, not
+# an initrd, so that's fine).
 ( cd "${workdir}" && mkdir -p iroot && cp init iroot/init && \
-  ( cd iroot && find . | cpio -o -H newc 2>/dev/null ) | gzip > initramfs.cpio.gz )
+  ( cd iroot && find . | cpio -o -H newc 2>/dev/null ) > initramfs.cpio )
 
 # ── 3. Host-side AF_VSOCK listener ───────────────────────────────────────
 # Confirms the guest's vhost-vsock connection actually reached the host.
@@ -146,7 +150,7 @@ timeout "${BOOT_TIMEOUT}" "${QEMU}" \
   -machine virt,gic-version=max -cpu max -accel tcg \
   -smp 4 -m 1024 \
   -kernel "${KERNEL}" \
-  -initrd "${workdir}/initramfs.cpio.gz" \
+  -initrd "${workdir}/initramfs.cpio" \
   -append "console=ttyAMA0 earlycon rdinit=/init panic=1" \
   -device vhost-vsock-pci,guest-cid=${GUEST_CID} \
   -nographic -no-reboot \

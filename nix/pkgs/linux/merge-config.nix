@@ -30,12 +30,23 @@
   perl,
   python3,
   llvmPackages ? null,
+  # Target kernel architecture (`make ARCH=`), e.g. "arm64".  Leave null
+  # to let the kernel default to the build host's arch -- correct for a
+  # native build, but a cross build MUST set it so kconfig reads the
+  # target arch's Kconfig (and the merged .config has the right symbols).
+  #
+  # IMPORTANT: this derivation generates the .config on the *build* host,
+  # so `stdenv` must be a build-platform stdenv (its coreutils etc. must
+  # execute on the builder), even though the kernel it configures is
+  # cross-compiled.  Passing a host(target)-platform stdenv fails with
+  # "Exec format error" in the setup phase.
+  kernelArch ? null,
 }:
 
 assert lib.assertMsg (fragments != [ ]) "merge-config: at least one config fragment is required";
 assert lib.assertMsg (builtins.isList fragments) "merge-config: fragments must be a list of paths";
 
-stdenv.mkDerivation {
+stdenv.mkDerivation ({
   pname = "linux-merged-config";
   inherit version src;
 
@@ -51,7 +62,11 @@ stdenv.mkDerivation {
   # and LLVM=1 sets LD=ld.lld).  The stdenv's cc.bintools is GNU ld — we need
   # the LLVM bintools wrapper which ships ld.lld.
   ++ lib.optionals stdenv.cc.isClang
-    [ (assert llvmPackages != null; llvmPackages.bintools) ];
+    [ (assert llvmPackages != null; llvmPackages.bintools) ]
+  # On a cross build the bintools wrapper does not expose an *unprefixed*
+  # `ld.lld` (which LLVM=1 probes for), so add the raw lld package.  Gated
+  # on kernelArch so a native build's derivation stays byte-identical.
+  ++ lib.optionals (kernelArch != null && stdenv.cc.isClang) [ llvmPackages.lld ];
 
   # We only generate a config file — skip build and fixup entirely.
   dontBuild = true;
@@ -97,3 +112,7 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 }
+# Set the target kernel ARCH as a build env var (so the kconfig `make`
+# invocations read the right arch/<ARCH>/Kconfig).  Added only when cross-
+# compiling, so a native build's derivation is byte-identical.
+// lib.optionalAttrs (kernelArch != null) { ARCH = kernelArch; })
