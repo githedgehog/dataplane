@@ -308,6 +308,17 @@ pub enum ContainerError {
     )]
     DockerConnect(#[source] bollard::errors::Error),
 
+    /// The Docker daemon `info` query failed.
+    #[error("failed to query Docker daemon info")]
+    #[diagnostic(code(n_vm::container::docker_info))]
+    DockerInfo(#[source] bollard::errors::Error),
+
+    /// The Docker daemon did not report its architecture, so the host
+    /// architecture cannot be compared against the test's target arch.
+    #[error("Docker daemon did not report its architecture")]
+    #[diagnostic(code(n_vm::container::docker_arch_unknown))]
+    DockerArchUnknown,
+
     /// Docker refused to create the container.
     #[error("failed to create Docker container")]
     #[diagnostic(code(n_vm::container::container_create))]

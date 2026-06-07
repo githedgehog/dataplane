@@ -184,16 +184,44 @@ let
       yq
     ]);
   };
-  # Minimal derivation containing only the kernel bzImage.
+  # Whether the guest architecture (= the test binary's target arch, i.e.
+  # the nix host platform) differs from the build machine's arch.  When it
+  # does, the test VM is software-emulated (TCG) rather than KVM-accelerated.
+  is-cross-guest = platform'.arch != host-arch;
+
+  # The bootable kernel image filename for the guest architecture.
+  # x86_64 produces a `bzImage`; aarch64 produces a raw `Image`.  These
+  # match the paths in `n_vm::Arch::kernel_image_path`.
+  kernel-image-name = if platform'.arch == "aarch64" then "Image" else "bzImage";
+
+  # Minimal derivation containing only the bootable kernel image.
   #
   # The full linux-fancy output includes modules, headers, etc. that are
   # not needed inside the test container — we extract just the bootable
-  # image so that symlinkJoin produces a top-level `bzImage` entry in
-  # testroot without pulling in the rest of the kernel tree.
+  # image so that symlinkJoin produces a top-level image entry in testroot
+  # without pulling in the rest of the kernel tree.
+  #
+  # IMPORTANT: this is `pkgs.linux-fancy` (the *host*-platform kernel), not
+  # `pkgs.pkgsBuildHost.linux-fancy` (the *build*-platform kernel).  The
+  # guest kernel must match the guest (= test binary) architecture.  For a
+  # native build the two package sets coincide, so this is a no-op for
+  # x86_64; for a cross build it selects the aarch64 kernel.
   kernel-image = pkgs.runCommand "kernel-image" { } ''
     mkdir -p $out
-    cp ${pkgs.pkgsBuildHost.linux-fancy}/bzImage $out/bzImage
+    cp ${pkgs.linux-fancy}/${kernel-image-name} $out/${kernel-image-name}
   '';
+
+  # The QEMU system emulator for the test VM, always a build-native (host
+  # CI arch) binary that runs in the Docker container.
+  #
+  # - Native guest: `qemu_kvm` (KVM-accelerated, host system target only).
+  # - Cross guest: the full `qemu` (includes the guest's `*-softmmu` target
+  #   for TCG emulation, e.g. `qemu-system-aarch64`).
+  #
+  # Both provide `bin/qemu-system-<arch>`, matching
+  # `n_vm::Arch::qemu_system_binary`.
+  qemu-system =
+    if is-cross-guest then pkgs.pkgsBuildHost.qemu else pkgs.pkgsBuildHost.qemu_kvm;
 
   # Container-tier tools for the scratch-container test infrastructure.
   #
@@ -210,13 +238,17 @@ let
   # binaries and their transitive library dependencies.
   #
   # See development/ideam.md for the design rationale.
+  # NOTE: cloud-hypervisor and virtiofsd stay on `pkgsBuildHost` (they run
+  # on the x86 container host).  Only the kernel is host-arch; the qemu
+  # choice is arch-aware (see `qemu-system`).
   testroot = pkgs.symlinkJoin {
     name = "dataplane-test-root";
-    paths = with pkgs.pkgsBuildHost; [
-      cloud-hypervisor
-      virtiofsd
-      qemu_kvm
-    ] ++ [ kernel-image ];
+    paths = [
+      pkgs.pkgsBuildHost.cloud-hypervisor
+      pkgs.pkgsBuildHost.virtiofsd
+      qemu-system
+      kernel-image
+    ];
   };
   devenv = pkgs.mkShell {
     name = "dataplane-dev-shell";

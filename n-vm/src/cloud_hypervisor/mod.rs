@@ -41,8 +41,7 @@ use cloud_hypervisor_client::models::{
 use command_fds::{CommandFdExt, FdMapping};
 use n_vm_protocol::{
     CLOUD_HYPERVISOR_BINARY_PATH, HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH,
-    KERNEL_IMAGE_PATH, VHOST_VSOCK_SOCKET_PATH, VIRTIOFS_ROOT_TAG, VIRTIOFSD_SOCKET_PATH,
-    VsockChannel,
+    VHOST_VSOCK_SOCKET_PATH, VIRTIOFS_ROOT_TAG, VIRTIOFSD_SOCKET_PATH, VsockChannel,
 };
 use tracing::{debug, error};
 
@@ -115,6 +114,7 @@ impl From<CloudHypervisorError> for VmError {
 
 impl HypervisorBackend for CloudHypervisor {
     const NAME: &str = "cloud-hypervisor";
+    const CAN_EMULATE: bool = false;
 
     type EventLog = CloudHypervisorEventLog;
     type Controller = CloudHypervisorController;
@@ -306,7 +306,7 @@ fn build_vm_config(params: &TestVmParams<'_>) -> VmConfig {
 fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
     PayloadConfig {
         firmware: None,
-        kernel: Some(KERNEL_IMAGE_PATH.into()),
+        kernel: Some(config::Arch::current().kernel_image_path().into()),
         cmdline: Some(config::build_kernel_cmdline(
             &params.vm_bin_path,
             params.test_name,
@@ -493,6 +493,7 @@ mod tests {
             bin_name: "my_test-abc123",
             test_name: "tests::my_test",
             vm_config: config::VmConfig::default(),
+            accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }
     }
@@ -503,7 +504,10 @@ mod tests {
     fn payload_config_uses_kernel_image_path() {
         let params = sample_params();
         let payload = build_payload_config(&params);
-        assert_eq!(payload.kernel.as_deref(), Some(KERNEL_IMAGE_PATH));
+        assert_eq!(
+            payload.kernel.as_deref(),
+            Some(config::Arch::current().kernel_image_path()),
+        );
     }
 
     #[test]

@@ -41,8 +41,6 @@ const KNOWN_BACKENDS: &[(&str, &str)] = &[
     ("qemu", "::n_vm::Qemu"),
 ];
 
-const DEFAULT_BACKEND_PATH: &str = "::n_vm::CloudHypervisor";
-
 const DEFAULT_BACKEND_NAME: &str = "cloud_hypervisor";
 
 const MIGRATED_OPTIONS: &[(&str, &str)] = &[("iommu", "#[hypervisor(iommu)]")];
@@ -73,17 +71,19 @@ fn migration_hint(ident: &str) -> Option<&'static str> {
 }
 
 struct BackendInfo {
-    path: proc_macro2::TokenStream,
+    /// The backend identifier (`cloud_hypervisor` or `qemu`).
     name: &'static str,
+    /// Whether the test named a backend explicitly.  When `false` the
+    /// backend was defaulted, which means it may fall back to QEMU under
+    /// emulation rather than being skipped.
+    explicit: bool,
 }
 
 fn parse_in_vm_backend(attr: TokenStream) -> syn::Result<BackendInfo> {
     if attr.is_empty() {
         return Ok(BackendInfo {
-            path: DEFAULT_BACKEND_PATH
-                .parse()
-                .expect("DEFAULT_BACKEND_PATH is a valid token stream"),
             name: DEFAULT_BACKEND_NAME,
+            explicit: false,
         });
     }
 
@@ -124,12 +124,10 @@ fn parse_in_vm_backend(attr: TokenStream) -> syn::Result<BackendInfo> {
         ));
     }
 
-    if let Some((name, path)) = resolve_backend(&ident_str) {
+    if let Some((name, _path)) = resolve_backend(&ident_str) {
         Ok(BackendInfo {
-            path: path
-                .parse()
-                .expect("KNOWN_BACKENDS paths are valid token streams"),
             name,
+            explicit: true,
         })
     } else {
         Err(syn::Error::new_spanned(
@@ -605,7 +603,17 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut sig = func.sig.clone();
     sig.asyncness = None;
 
-    let backend_path = &backend.path;
+    // The requested backend is resolved against the host architecture at
+    // run time by the host tier (see `n_vm::RequestedBackend::resolve`):
+    // a defaulted backend falls back to QEMU/TCG for a cross-arch guest,
+    // while an explicitly-pinned cloud-hypervisor test is skipped there.
+    let requested_backend = if !backend.explicit {
+        quote! { ::n_vm::RequestedBackend::Default }
+    } else if backend.name == "qemu" {
+        quote! { ::n_vm::RequestedBackend::Qemu }
+    } else {
+        quote! { ::n_vm::RequestedBackend::CloudHypervisor }
+    };
     let iommu = hypervisor_args.iommu;
     let host_page_size = &hypervisor_args.host_page_size;
     let guest_hugepages = &guest_args.guest_hugepages;
@@ -645,9 +653,10 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
                 return;
             }
 
-            // Tier 2: Docker container -> VM
+            // Tier 2: Docker container -> VM.  The backend and acceleration
+            // mode were resolved by tier 1 and passed via the environment.
             if ::n_vm::is_in_test_container() {
-                ::n_vm::run_container_tier::<#backend_path, _>(
+                ::n_vm::run_container_tier(
                     #ident,
                     ::n_vm::VmConfig {
                         iommu: #iommu,
@@ -659,8 +668,9 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
                 return;
             }
 
-            // Tier 1: Host -> Docker container
-            ::n_vm::run_host_tier(#ident);
+            // Tier 1: Host -> Docker container.  Resolves the requested
+            // backend against the Docker daemon's architecture.
+            ::n_vm::run_host_tier(#ident, #requested_backend);
         }
     }
     .into()

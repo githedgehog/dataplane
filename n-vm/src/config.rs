@@ -10,6 +10,160 @@ use n_vm_protocol::{INIT_BINARY_PATH, VsockAllocation};
 use tokio::io::AsyncReadExt;
 use tracing::{error, warn};
 
+/// VM acceleration mode.
+///
+/// Chosen at run time by the host tier: [`Kvm`](Self::Kvm) when the host
+/// and guest architectures match, [`Tcg`](Self::Tcg) (software emulation)
+/// for a cross-architecture guest.  Only the QEMU backend honours
+/// [`Tcg`](Self::Tcg); cloud-hypervisor is KVM-only and is never selected
+/// for a cross-arch guest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Accel {
+    /// Hardware-accelerated via KVM (host arch == guest arch).
+    #[default]
+    Kvm,
+    /// Software emulation via TCG (cross-arch guest).
+    Tcg,
+}
+
+impl Accel {
+    /// The wire value used in the [`ENV_ACCEL`](n_vm_protocol::ENV_ACCEL)
+    /// environment variable.
+    #[must_use]
+    pub const fn as_env(self) -> &'static str {
+        match self {
+            Self::Kvm => "kvm",
+            Self::Tcg => "tcg",
+        }
+    }
+
+    /// Parses an [`ENV_ACCEL`](n_vm_protocol::ENV_ACCEL) value, defaulting
+    /// to [`Kvm`](Self::Kvm) for an absent or unrecognised value.
+    #[must_use]
+    pub fn from_env(value: Option<&str>) -> Self {
+        match value {
+            Some("tcg") => Self::Tcg,
+            _ => Self::Kvm,
+        }
+    }
+}
+
+/// Guest CPU architecture.
+///
+/// Equal to the test binary's compile-time `target_arch` (the binary *is*
+/// the guest payload, so its architecture is the guest's).  Selected at
+/// run time via [`Arch::current`] so the arg builders can be unit-tested
+/// for both architectures on a single host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    /// x86_64 (`q35` machine, `ttyS0` console, ISA pvpanic).
+    X86_64,
+    /// aarch64 (`virt` machine, `ttyAMA0` console, PCI pvpanic).
+    Aarch64,
+}
+
+impl Arch {
+    /// The architecture of the running test binary, i.e. the guest arch.
+    ///
+    /// Unrecognised architectures fall back to [`X86_64`](Self::X86_64);
+    /// only x86_64 and aarch64 guests are supported.
+    #[must_use]
+    pub fn current() -> Self {
+        match std::env::consts::ARCH {
+            "aarch64" => Self::Aarch64,
+            _ => Self::X86_64,
+        }
+    }
+
+    /// Path to the `qemu-system-<arch>` binary inside the container.
+    ///
+    /// For a cross-arch guest this is a build-native (host-arch) emulator
+    /// that the nix `testroot`/`vmroot` derivations install (step 4).
+    #[must_use]
+    pub const fn qemu_system_binary(self) -> &'static str {
+        match self {
+            Self::X86_64 => "/bin/qemu-system-x86_64",
+            Self::Aarch64 => "/bin/qemu-system-aarch64",
+        }
+    }
+
+    /// Path to the guest kernel image inside the container.
+    ///
+    /// x86_64 boots a `bzImage`; aarch64 boots a raw `Image`.
+    #[must_use]
+    pub const fn kernel_image_path(self) -> &'static str {
+        match self {
+            Self::X86_64 => "/bzImage",
+            Self::Aarch64 => "/Image",
+        }
+    }
+
+    /// The QEMU `-machine` base type (before accel / IOMMU options).
+    #[must_use]
+    pub const fn qemu_machine_base(self) -> &'static str {
+        match self {
+            Self::X86_64 => "q35",
+            // `gic-version=max` selects the best interrupt controller the
+            // accelerator supports (GICv3 under TCG).
+            Self::Aarch64 => "virt,gic-version=max",
+        }
+    }
+
+    /// QEMU `-smp` topology string preserving [`VM_VCPUS`] total vCPUs.
+    ///
+    /// The `dies=` level is x86-only; on aarch64 it is folded into `cores`.
+    #[must_use]
+    pub fn smp_topology(self) -> String {
+        match self {
+            Self::X86_64 => format!(
+                "{VM_VCPUS},sockets={VM_SOCKETS},dies={VM_DIES_PER_PACKAGE},\
+                 cores={VM_CORES_PER_DIE},threads={VM_THREADS_PER_CORE}",
+            ),
+            Self::Aarch64 => format!(
+                "{VM_VCPUS},sockets={VM_SOCKETS},cores={cores},threads={VM_THREADS_PER_CORE}",
+                cores = VM_DIES_PER_PACKAGE * VM_CORES_PER_DIE,
+            ),
+        }
+    }
+
+    /// QEMU guest-panic device for this architecture.
+    #[must_use]
+    pub const fn pvpanic_device(self) -> &'static str {
+        match self {
+            Self::X86_64 => "pvpanic",
+            Self::Aarch64 => "pvpanic-pci",
+        }
+    }
+
+    /// Kernel command-line console parameters for this architecture's
+    /// default serial port.
+    #[must_use]
+    pub const fn console_kernel_params(self) -> &'static str {
+        match self {
+            Self::X86_64 => "earlyprintk=ttyS0 console=ttyS0",
+            Self::Aarch64 => "earlycon console=ttyAMA0",
+        }
+    }
+
+    /// Architecture-specific IOMMU kernel parameters (empty on aarch64,
+    /// which has no virtual-IOMMU support here yet).
+    #[must_use]
+    pub const fn iommu_kernel_params(self) -> &'static str {
+        match self {
+            Self::X86_64 => "iommu=on intel_iommu=on amd_iommu=on",
+            Self::Aarch64 => "",
+        }
+    }
+
+    /// Whether the virtual-IOMMU (`iommu = true`) configuration is
+    /// supported on this architecture.  Only x86_64 (Intel IOMMU) is
+    /// wired up; aarch64 SMMUv3 support is a follow-up.
+    #[must_use]
+    pub const fn supports_virtual_iommu(self) -> bool {
+        matches!(self, Self::X86_64)
+    }
+}
+
 /// Network interface card model presented to the VM guest.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NicModel {
@@ -289,13 +443,16 @@ pub(crate) fn build_kernel_cmdline(
 
     let hugepage_fragment = guest_hugepages.kernel_cmdline_fragment();
 
+    // Guest arch == this binary's target arch.  The IOMMU and console
+    // parameters differ by architecture (x86 ttyS0 vs aarch64 ttyAMA0).
+    let arch = Arch::current();
+    let iommu_params = arch.iommu_kernel_params();
+    let console_params = arch.console_kernel_params();
+
     format!(
-        "iommu=on \
-         intel_iommu=on \
-         amd_iommu=on \
+        "{iommu_params} \
          {noiommu_fragment}\
-         earlyprintk=ttyS0 \
-         console=ttyS0 \
+         {console_params} \
          ro \
          rootfstype=virtiofs \
          root=root \
@@ -364,6 +521,59 @@ mod tests {
         size: GuestHugePageSize::Huge1G,
         count: 1,
     };
+
+    // ── Arch profiles (both arches exercised on a single host) ───────
+
+    #[test]
+    fn arch_x86_64_profile() {
+        let a = Arch::X86_64;
+        assert_eq!(a.qemu_system_binary(), "/bin/qemu-system-x86_64");
+        assert_eq!(a.kernel_image_path(), "/bzImage");
+        assert_eq!(a.qemu_machine_base(), "q35");
+        assert_eq!(a.pvpanic_device(), "pvpanic");
+        assert!(a.console_kernel_params().contains("ttyS0"));
+        assert!(a.supports_virtual_iommu());
+        assert!(a.smp_topology().contains("dies="));
+    }
+
+    #[test]
+    fn arch_aarch64_profile() {
+        let a = Arch::Aarch64;
+        assert_eq!(a.qemu_system_binary(), "/bin/qemu-system-aarch64");
+        assert_eq!(a.kernel_image_path(), "/Image");
+        assert!(a.qemu_machine_base().starts_with("virt"));
+        assert_eq!(a.pvpanic_device(), "pvpanic-pci");
+        assert!(a.console_kernel_params().contains("ttyAMA0"));
+        assert!(!a.supports_virtual_iommu());
+        assert!(a.iommu_kernel_params().is_empty());
+        assert!(
+            !a.smp_topology().contains("dies="),
+            "aarch64 -smp must not use the x86-only dies= level: {}",
+            a.smp_topology(),
+        );
+    }
+
+    #[test]
+    fn smp_topology_preserves_vcpu_count_on_both_arches() {
+        for arch in [Arch::X86_64, Arch::Aarch64] {
+            let smp = arch.smp_topology();
+            assert!(
+                smp.starts_with(&format!("{VM_VCPUS},")),
+                "{arch:?} -smp must declare {VM_VCPUS} vCPUs: {smp}",
+            );
+            // sockets * (dies) * cores * threads == VM_VCPUS
+            let product: u32 = smp
+                .split(',')
+                .skip(1)
+                .filter_map(|kv| kv.split('=').nth(1))
+                .filter_map(|v| v.parse::<u32>().ok())
+                .product();
+            assert_eq!(
+                product, VM_VCPUS,
+                "{arch:?} topology must multiply to {VM_VCPUS}: {smp}"
+            );
+        }
+    }
 
     #[test]
     fn kernel_cmdline_includes_hugepage_reservation_for_1g() {

@@ -65,7 +65,13 @@ in
       };
       # Fragments are merged left-to-right; later entries override earlier ones.
       # Place broad settings first and targeted overrides (especially disables) last.
-      fragments = map (f: ../pkgs/linux/fragments + "/${f}") [
+      #
+      # The shared list is arch-neutral in intent: x86-only symbols
+      # (CONFIG_X86_*, 8250, x86 PARAVIRT) that don't exist on arm64 are
+      # warned-and-dropped by merge_config.sh, harmlessly.  The aarch64
+      # `virt`-machine essentials (GIC, PL011, PSCI, arch timer, generic
+      # PCI host) are appended via an arch-specific fragment.
+      sharedFragments = [
         "base.config"
         "serial-console.config"
         "kvm-guest.config"
@@ -82,6 +88,11 @@ in
         # "debug-fuzz.config"
         "disable.config"
       ];
+      # Appended last so its enables win over earlier fragments/disables.
+      archFragments = final.lib.optionals final.stdenv.hostPlatform.isAarch64 [
+        "aarch64-virt.config"
+      ];
+      fragments = map (f: ../pkgs/linux/fragments + "/${f}") (sharedFragments ++ archFragments);
       configfile = final.callPackage ../pkgs/linux/merge-config.nix {
         inherit src version fragments stdenv;
         llvmPackages = final.llvmPackages';

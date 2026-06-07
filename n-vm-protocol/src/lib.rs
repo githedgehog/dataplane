@@ -131,6 +131,23 @@ pub const ENV_IN_TEST_CONTAINER: &str = "IN_TEST_CONTAINER";
 /// as active.
 pub const ENV_MARKER_VALUE: &str = "YES";
 
+/// Environment variable carrying the effective hypervisor backend the
+/// container tier should boot (`"qemu"` or `"cloud_hypervisor"`).
+///
+/// Set by the host tier once it has resolved the backend against the
+/// Docker daemon's architecture (see the host-tier dispatch in `n-vm`);
+/// read by the container tier so it can dispatch to the right backend
+/// without baking the choice in at compile time.
+pub const ENV_BACKEND: &str = "N_VM_BACKEND";
+
+/// Environment variable carrying the effective acceleration mode for the
+/// container tier (`"kvm"` or `"tcg"`).
+///
+/// `kvm` when the Docker daemon architecture matches the test binary's
+/// target architecture; `tcg` (software emulation) for a cross-arch
+/// guest.  Set by the host tier, read by the QEMU backend.
+pub const ENV_ACCEL: &str = "N_VM_ACCEL";
+
 /// A vsock port number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VsockPort(u32);
@@ -504,10 +521,10 @@ pub const VM_TEST_BIN_DIR: &str = "test-bin";
 
 // == Binary paths (inside the container) ==
 
-/// Path to the Linux kernel image used to boot the VM.
-///
-/// This is a minimal `bzImage` bundled in the test container image.
-pub const KERNEL_IMAGE_PATH: &str = "/bzImage";
+// NOTE: the guest kernel image and `qemu-system-<arch>` binary paths are
+// architecture-specific and live on `n_vm::Arch` (`kernel_image_path` /
+// `qemu_system_binary`), not here, so the aarch64 path can never silently
+// resolve to an x86 default.
 
 /// Path to the `n-it` init system binary inside the container.
 ///
@@ -526,12 +543,6 @@ pub const VIRTIOFSD_BINARY_PATH: &str = "/bin/virtiofsd";
 /// [`CloudHypervisor`](../n_vm/cloud_hypervisor/struct.CloudHypervisor.html)
 /// backend.
 pub const CLOUD_HYPERVISOR_BINARY_PATH: &str = "/bin/cloud-hypervisor";
-
-/// Path to the QEMU system emulator binary inside the container.
-///
-/// **Backend-specific**: used only by the
-/// [`Qemu`](../n_vm/qemu/struct.Qemu.html) backend.
-pub const QEMU_BINARY_PATH: &str = "/bin/qemu-system-x86_64";
 
 // ── Tests ────────────────────────────────────────────────────────────
 

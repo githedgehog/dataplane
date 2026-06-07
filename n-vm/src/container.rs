@@ -11,13 +11,15 @@ use bollard::query_parameters::{
     RemoveContainerOptionsBuilder, StartContainerOptions,
 };
 use n_vm_protocol::{
-    CONTAINER_PLATFORM, ENV_IN_TEST_CONTAINER, ENV_MARKER_VALUE, ScratchRoots, VM_ROOT_SHARE_PATH,
-    VM_RUN_DIR, VM_TEST_BIN_DIR,
+    CONTAINER_PLATFORM, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_MARKER_VALUE,
+    ScratchRoots, VM_ROOT_SHARE_PATH, VM_RUN_DIR, VM_TEST_BIN_DIR,
 };
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tracing::warn;
 
+use crate::backend::{BackendResolution, EffectiveBackend, RequestedBackend, is_cross_arch};
+use crate::config::Accel;
 use crate::error::ContainerError;
 
 /// Docker image tag for the locally-created empty container image.
@@ -59,6 +61,20 @@ const REQUIRED_DEVICES: [&str; 4] = [
 pub struct ContainerTestResult {
     /// The exit code of the container's main process, if available.
     pub exit_code: Option<i64>,
+}
+
+/// The outcome of the host tier: the test ran in a container, or it was
+/// skipped because the requested backend cannot run on this host.
+#[derive(Debug)]
+pub enum ContainerOutcome {
+    /// The test ran; carries the container's exit status.
+    Ran(ContainerTestResult),
+    /// The test was skipped (e.g. cloud-hypervisor requested for a
+    /// cross-architecture guest).  `reason` is shown to the developer.
+    Skipped {
+        /// Human-readable explanation for the skip.
+        reason: String,
+    },
 }
 
 /// Parameters that vary per test invocation.
@@ -189,7 +205,11 @@ impl ContainerParams {
     }
 
     /// Builds the [`ContainerCreateBody`] for this test invocation.
-    fn build_config(&self) -> ContainerCreateBody {
+    ///
+    /// `backend` and `accel` are the host-tier-resolved choices, passed to
+    /// the container tier via [`ENV_BACKEND`] / [`ENV_ACCEL`] so it can
+    /// dispatch to the right hypervisor without a compile-time pick.
+    fn build_config(&self, backend: EffectiveBackend, accel: Accel) -> ContainerCreateBody {
         ContainerCreateBody {
             entrypoint: None,
             cmd: Some(self.build_test_command()),
@@ -197,6 +217,8 @@ impl ContainerParams {
             network_disabled: Some(true),
             env: Some(vec![
                 format!("{ENV_IN_TEST_CONTAINER}={ENV_MARKER_VALUE}"),
+                format!("{ENV_BACKEND}={}", backend.as_env()),
+                format!("{ENV_ACCEL}={}", accel.as_env()),
                 "RUST_BACKTRACE=1".into(),
             ]),
             user: Some("0:0".into()),
@@ -750,7 +772,10 @@ impl Drop for ContainerGuard<'_> {
 /// Returns [`ContainerError`] if any part of the container lifecycle fails
 /// (Docker connection, container creation/start, log streaming, inspection,
 /// or cleanup).
-pub fn run_test_in_vm<F: FnOnce()>(_test_fn: F) -> Result<ContainerTestResult, ContainerError> {
+pub fn run_test_in_vm<F: FnOnce()>(
+    _test_fn: F,
+    requested: RequestedBackend,
+) -> Result<ContainerOutcome, ContainerError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -762,11 +787,31 @@ pub fn run_test_in_vm<F: FnOnce()>(_test_fn: F) -> Result<ContainerTestResult, C
         let client =
             bollard::Docker::connect_with_unix_defaults().map_err(ContainerError::DockerConnect)?;
 
+        // Resolve the backend and acceleration mode against the Docker
+        // daemon's real architecture.  qemu-user fakes `uname`, so the
+        // daemon's self-reported arch -- not the in-process `uname` -- is
+        // the reliable host signal.
+        let daemon_arch = query_daemon_arch(&client).await?;
+        let cross = is_cross_arch(&daemon_arch, std::env::consts::ARCH);
+        let (backend, accel) = match requested.resolve(cross) {
+            BackendResolution::Run { backend, accel } => (backend, accel),
+            BackendResolution::Skip { reason } => {
+                return Ok(ContainerOutcome::Skipped { reason });
+            }
+        };
+        tracing::info!(
+            daemon_arch = %daemon_arch,
+            target_arch = std::env::consts::ARCH,
+            ?backend,
+            ?accel,
+            "resolved hypervisor backend for this host",
+        );
+
         // Ensure the empty Docker image exists before building the
         // container config (which references it by tag).
         ensure_scratch_image(&client).await?;
 
-        let config = params.build_config();
+        let config = params.build_config(backend, accel);
 
         // The guard is armed at creation -- if anything between here and
         // the explicit cleanup panics or returns early, the CleanupThread
@@ -792,8 +837,27 @@ pub fn run_test_in_vm<F: FnOnce()>(_test_fn: F) -> Result<ContainerTestResult, C
             );
         }
         log_result?;
-        cleanup_result
+        cleanup_result.map(ContainerOutcome::Ran)
     })
+}
+
+/// Queries the Docker daemon's architecture (e.g. `"x86_64"`, `"aarch64"`).
+///
+/// The daemon runs natively on the host, so this is reliable even when the
+/// caller is an emulated (qemu-user) foreign-arch binary.
+///
+/// # Errors
+///
+/// Returns [`ContainerError::DockerInfo`] if the query fails, or
+/// [`ContainerError::DockerArchUnknown`] if the daemon does not report an
+/// architecture.
+async fn query_daemon_arch(client: &bollard::Docker) -> Result<String, ContainerError> {
+    client
+        .info()
+        .await
+        .map_err(ContainerError::DockerInfo)?
+        .architecture
+        .ok_or(ContainerError::DockerArchUnknown)
 }
 
 #[cfg(test)]
@@ -822,13 +886,27 @@ mod tests {
 
     #[test]
     fn config_uses_scratch_image() {
-        let config = sample_params().build_config();
+        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         assert_eq!(config.image.as_deref(), Some(SCRATCH_IMAGE_TAG));
     }
 
     #[test]
+    fn config_propagates_backend_and_accel_env() {
+        let config = sample_params().build_config(EffectiveBackend::Qemu, Accel::Tcg);
+        let env = config.env.as_ref().expect("env");
+        assert!(
+            env.iter().any(|e| e == "N_VM_BACKEND=qemu"),
+            "expected N_VM_BACKEND=qemu in {env:?}",
+        );
+        assert!(
+            env.iter().any(|e| e == "N_VM_ACCEL=tcg"),
+            "expected N_VM_ACCEL=tcg in {env:?}",
+        );
+    }
+
+    #[test]
     fn config_disables_networking() {
-        let config = sample_params().build_config();
+        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         assert_eq!(config.network_disabled, Some(true));
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.network_mode.as_deref(), Some("none"));
@@ -836,7 +914,7 @@ mod tests {
 
     #[test]
     fn config_sets_environment_variables() {
-        let config = sample_params().build_config();
+        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         let env = config.env.as_ref().expect("env should be set");
         let expected = format!("{ENV_IN_TEST_CONTAINER}={ENV_MARKER_VALUE}");
         assert!(
@@ -851,7 +929,7 @@ mod tests {
 
     #[test]
     fn config_runs_as_root() {
-        let config = sample_params().build_config();
+        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         // The container runs as root so that capabilities in the
         // bounding set are effective without ambient-cap gymnastics.
         assert_eq!(config.user.as_deref(), Some("0:0"));
@@ -860,7 +938,7 @@ mod tests {
     #[test]
     fn config_passes_device_groups() {
         let params = sample_params();
-        let config = params.build_config();
+        let config = params.build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         let host = config.host_config.as_ref().expect("host_config");
         let groups = host.group_add.as_ref().expect("group_add");
         // The sample_params use GIDs 36 and 108.
@@ -870,7 +948,7 @@ mod tests {
 
     #[test]
     fn config_is_unprivileged_with_minimal_caps() {
-        let config = sample_params().build_config();
+        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.privileged, Some(false));
 
@@ -906,14 +984,14 @@ mod tests {
 
     #[test]
     fn config_has_readonly_rootfs() {
-        let config = sample_params().build_config();
+        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.readonly_rootfs, Some(true));
     }
 
     #[test]
     fn config_does_not_auto_remove_and_never_restarts() {
-        let config = sample_params().build_config();
+        let config = sample_params().build_config(EffectiveBackend::CloudHypervisor, Accel::Kvm);
         let host = config.host_config.as_ref().expect("host_config");
         assert_eq!(host.auto_remove, Some(false));
         let restart = host.restart_policy.as_ref().expect("restart_policy");

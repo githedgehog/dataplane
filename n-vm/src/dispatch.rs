@@ -8,9 +8,10 @@
 
 use std::future::Future;
 
-use crate::backend::HypervisorBackend;
-use crate::config::VmConfig;
-use n_vm_protocol::{ENV_IN_TEST_CONTAINER, ENV_IN_VM, ENV_MARKER_VALUE};
+use crate::backend::{EffectiveBackend, HypervisorBackend, RequestedBackend};
+use crate::config::{Accel, VmConfig};
+use crate::container::ContainerOutcome;
+use n_vm_protocol::{ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_IN_VM, ENV_MARKER_VALUE};
 
 /// Returns `true` when running inside the VM guest.
 #[inline]
@@ -68,13 +69,47 @@ pub fn block_on_in_guest_multi_thread<F: Future<Output = ()>>(worker_threads: Op
 
 /// Container-tier dispatch: boot a VM and re-execute the test inside it.
 ///
+/// The backend and acceleration mode were resolved by the host tier and
+/// passed in via [`ENV_BACKEND`] / [`ENV_ACCEL`]; this reads them and
+/// dispatches to the right backend so the choice is not baked in at
+/// compile time.  An absent/unrecognised backend defaults to
+/// cloud-hypervisor (the historical default).
+///
 /// # Panics
 ///
 /// Panics if:
 /// - The tokio runtime cannot be created.
 /// - The VM infrastructure returns an error.
 /// - The test running inside the VM reports failure.
-pub fn run_container_tier<B: HypervisorBackend, F: FnOnce()>(test_fn: F, vm_config: VmConfig) {
+pub fn run_container_tier<F: FnOnce()>(test_fn: F, vm_config: VmConfig) {
+    let backend = EffectiveBackend::from_env(std::env::var(ENV_BACKEND).ok().as_deref());
+    let accel = Accel::from_env(std::env::var(ENV_ACCEL).ok().as_deref());
+
+    match backend {
+        EffectiveBackend::Qemu => {
+            run_container_tier_for::<crate::Qemu, _>(test_fn, vm_config, accel);
+        }
+        EffectiveBackend::CloudHypervisor => {
+            run_container_tier_for::<crate::CloudHypervisor, _>(test_fn, vm_config, accel);
+        }
+    }
+}
+
+/// Monomorphised container-tier body for a single backend.
+fn run_container_tier_for<B: HypervisorBackend, F: FnOnce()>(
+    test_fn: F,
+    vm_config: VmConfig,
+    accel: Accel,
+) {
+    // Invariant: a TCG (cross-arch) run must use an emulation-capable
+    // backend.  The host tier never selects a non-emulating backend for
+    // TCG, but assert it here so a future regression surfaces loudly.
+    debug_assert!(
+        B::CAN_EMULATE || accel == Accel::Kvm,
+        "backend `{}` cannot emulate, but TCG acceleration was selected",
+        B::NAME,
+    );
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -89,7 +124,7 @@ pub fn run_container_tier<B: HypervisorBackend, F: FnOnce()>(test_fn: F, vm_conf
         let init_span = tracing::span!(tracing::Level::INFO, "hypervisor");
         let _guard = init_span.enter();
 
-        let output = crate::run_in_vm::<B, _>(test_fn, vm_config)
+        let output = crate::run_in_vm::<B, _>(test_fn, vm_config, accel)
             .await
             .unwrap_or_else(|err| {
                 panic!("VM infrastructure error:\n{:?}", miette::Report::new(err))
@@ -102,16 +137,27 @@ pub fn run_container_tier<B: HypervisorBackend, F: FnOnce()>(test_fn: F, vm_conf
 
 /// Host-tier dispatch: launch a Docker container and re-run the test inside it.
 ///
+/// `requested` is the backend the test asked for via `#[in_vm]`.  It is
+/// resolved against the Docker daemon's architecture: a cross-arch guest
+/// runs under QEMU/TCG, and a test that *explicitly* requires
+/// cloud-hypervisor on a cross-arch host is skipped.
+///
+/// Skips are reported by returning normally with a `SKIPPED:` log line --
+/// libtest/nextest have no runtime "ignored" state, so a skipped test
+/// counts as passed.  This keeps cross-arch runs honest by minimising
+/// skips: only tests that pinned cloud-hypervisor are affected; everything
+/// else runs under emulation.
+///
 /// # Panics
 ///
 /// Panics if:
 /// - The Docker container infrastructure returns an error.
 /// - The container exits with a non-zero code.
 /// - The container does not report an exit code at all.
-pub fn run_host_tier<F: FnOnce()>(test_fn: F) {
+pub fn run_host_tier<F: FnOnce()>(test_fn: F, requested: RequestedBackend) {
     eprintln!("===== BEGIN NESTED TEST ENVIRONMENT =====");
 
-    let container_state = crate::run_test_in_vm(test_fn).unwrap_or_else(|err| {
+    let outcome = crate::run_test_in_vm(test_fn, requested).unwrap_or_else(|err| {
         panic!(
             "test container infrastructure error:\n{:?}",
             miette::Report::new(err)
@@ -120,13 +166,18 @@ pub fn run_host_tier<F: FnOnce()>(test_fn: F) {
 
     eprintln!("=====  END NESTED TEST ENVIRONMENT  =====");
 
-    match container_state.exit_code {
-        Some(0) => {}
-        Some(code) => {
-            panic!("test container exited with code {code}");
+    match outcome {
+        ContainerOutcome::Skipped { reason } => {
+            eprintln!("SKIPPED: {reason}");
         }
-        None => {
-            panic!("test container did not return an exit code");
-        }
+        ContainerOutcome::Ran(state) => match state.exit_code {
+            Some(0) => {}
+            Some(code) => {
+                panic!("test container exited with code {code}");
+            }
+            None => {
+                panic!("test container did not return an exit code");
+            }
+        },
     }
 }

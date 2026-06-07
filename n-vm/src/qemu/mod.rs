@@ -57,8 +57,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use n_vm_protocol::{
-    HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH, KERNEL_IMAGE_PATH, QEMU_BINARY_PATH,
-    VIRTIOFS_ROOT_TAG, VIRTIOFSD_SOCKET_PATH, VsockAllocation, VsockChannel,
+    HYPERVISOR_API_SOCKET_PATH, KERNEL_CONSOLE_SOCKET_PATH, VIRTIOFS_ROOT_TAG,
+    VIRTIOFSD_SOCKET_PATH, VsockAllocation, VsockChannel,
 };
 use tracing::{debug, error, warn};
 
@@ -123,6 +123,7 @@ impl From<QemuError> for VmError {
 
 impl HypervisorBackend for Qemu {
     const NAME: &str = "qemu";
+    const CAN_EMULATE: bool = true;
 
     type EventLog = QemuEventLog;
     type Controller = QemuController;
@@ -419,14 +420,19 @@ async fn configure_host_taps() -> Result<(), QemuError> {
 async fn spawn_qemu_process(
     params: &TestVmParams<'_>,
 ) -> Result<(tokio::process::Child, QmpConnection), VmError> {
-    check_kvm_accessible().await?;
+    // KVM is only needed under hardware acceleration; a TCG (cross-arch)
+    // guest does not touch /dev/kvm.
+    if params.accel == config::Accel::Kvm {
+        check_kvm_accessible().await?;
+    }
     check_hugepages_accessible(params.vm_config.host_page_size).await?;
 
     let args = build_qemu_args(params);
 
-    debug!("spawning QEMU: {} {}", QEMU_BINARY_PATH, args.join(" "));
+    let qemu_binary = config::Arch::current().qemu_system_binary();
+    debug!("spawning QEMU: {qemu_binary} {}", args.join(" "));
 
-    let mut child = tokio::process::Command::new(QEMU_BINARY_PATH)
+    let mut child = tokio::process::Command::new(qemu_binary)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -466,7 +472,7 @@ async fn spawn_qemu_process(
 fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
     let iommu = params.vm_config.iommu;
     let mut args = Vec::with_capacity(64);
-    push_machine_args(&mut args, iommu);
+    push_machine_args(&mut args, iommu, params.accel);
     push_cpu_args(&mut args);
     push_memory_args(&mut args, params.vm_config.host_page_size);
     push_iommu_args(&mut args, iommu);
@@ -487,18 +493,37 @@ fn build_qemu_args(params: &TestVmParams<'_>) -> Vec<String> {
 /// options.  This is required for the Intel IOMMU's interrupt remapping
 /// to function: in split irqchip mode the in-kernel PIC/IOAPIC is
 /// disabled so that interrupt routing goes through the emulated IOMMU.
-fn push_machine_args(args: &mut Vec<String>, iommu: bool) {
-    let machine = if iommu {
-        "q35,accel=kvm,kernel-irqchip=split"
-    } else {
-        "q35,accel=kvm"
+///
+/// Under [`Accel::Kvm`] the machine uses `accel=kvm` with `-enable-kvm`
+/// and `-cpu host`.  Under [`Accel::Tcg`] (cross-arch guest) it uses
+/// `accel=tcg` with `-cpu max` and omits `-enable-kvm`.
+///
+/// Note: the `q35` machine type and Intel-IOMMU interrupt-remapping
+/// assumptions here are still x86_64-specific; an aarch64 guest needs the
+/// `virt` machine and a different IOMMU/irqchip story (a follow-up).
+fn push_machine_args(args: &mut Vec<String>, iommu: bool, accel: config::Accel) {
+    let arch = config::Arch::current();
+    let accel_opt = match accel {
+        config::Accel::Kvm => "accel=kvm",
+        config::Accel::Tcg => "accel=tcg",
     };
+    let mut machine = format!("{base},{accel_opt}", base = arch.qemu_machine_base());
+    // Intel IOMMU interrupt remapping requires split irqchip (x86 only).
+    if iommu && arch.supports_virtual_iommu() {
+        machine.push_str(",kernel-irqchip=split");
+    }
+    if accel == config::Accel::Kvm {
+        args.push("-enable-kvm".into());
+    }
     args.extend([
-        "-enable-kvm".into(),
         "-machine".into(),
-        machine.into(),
+        machine,
         "-cpu".into(),
-        "host".into(),
+        // `host` requires KVM; `max` is the richest TCG-emulable CPU model.
+        match accel {
+            config::Accel::Kvm => "host".into(),
+            config::Accel::Tcg => "max".into(),
+        },
     ]);
 }
 
@@ -507,18 +532,9 @@ fn push_machine_args(args: &mut Vec<String>, iommu: bool) {
 /// Matches the cloud-hypervisor backend: 6 vCPUs arranged as
 /// 1 socket × 3 dies × 1 core × 2 threads.
 fn push_cpu_args(args: &mut Vec<String>) {
-    args.extend([
-        "-smp".into(),
-        format!(
-            "{vcpus},sockets={sockets},dies={dies},\
-             cores={cores},threads={threads}",
-            vcpus = config::VM_VCPUS,
-            sockets = config::VM_SOCKETS,
-            dies = config::VM_DIES_PER_PACKAGE,
-            cores = config::VM_CORES_PER_DIE,
-            threads = config::VM_THREADS_PER_CORE,
-        ),
-    ]);
+    // The `-smp dies=` level is x86-specific; `smp_topology` omits it on
+    // aarch64 while preserving the total vCPU count.
+    args.extend(["-smp".into(), config::Arch::current().smp_topology()]);
 }
 
 /// Memory configuration with hugepage backing and sharing.
@@ -615,7 +631,7 @@ fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
 
     args.extend([
         "-kernel".into(),
-        KERNEL_IMAGE_PATH.into(),
+        config::Arch::current().kernel_image_path().into(),
         "-append".into(),
         cmdline,
     ]);
@@ -827,7 +843,7 @@ fn push_misc_args(args: &mut Vec<String>) {
         "-no-reboot".into(),
         "-no-shutdown".into(),
         "-device".into(),
-        "pvpanic".into(),
+        config::Arch::current().pvpanic_device().into(),
     ]);
 }
 
@@ -852,6 +868,7 @@ mod tests {
             bin_name: "my_test-abc123",
             test_name: "module::test_name",
             vm_config: config::VmConfig::default(),
+            accel: config::Accel::Kvm,
             vsock: n_vm_protocol::VsockAllocation::with_defaults(),
         }
     }
@@ -861,10 +878,29 @@ mod tests {
     #[test]
     fn machine_args_enable_kvm_with_q35() {
         let mut args = Vec::new();
-        push_machine_args(&mut args, false);
+        push_machine_args(&mut args, false, config::Accel::Kvm);
         assert!(args.contains(&"-enable-kvm".to_string()));
         assert!(args.contains(&"q35,accel=kvm".to_string()));
         assert!(args.contains(&"host".to_string()));
+    }
+
+    #[test]
+    fn machine_args_use_tcg_without_kvm() {
+        let mut args = Vec::new();
+        push_machine_args(&mut args, false, config::Accel::Tcg);
+        assert!(
+            !args.contains(&"-enable-kvm".to_string()),
+            "TCG must not pass -enable-kvm: {args:?}",
+        );
+        assert!(args.contains(&"q35,accel=tcg".to_string()), "{args:?}");
+        assert!(
+            args.contains(&"max".to_string()),
+            "TCG should use -cpu max, not host: {args:?}",
+        );
+        assert!(
+            !args.contains(&"host".to_string()),
+            "TCG must not use -cpu host: {args:?}",
+        );
     }
 
     #[test]
@@ -952,7 +988,7 @@ mod tests {
         let mut args = Vec::new();
         push_kernel_args(&mut args, &sample_params());
         let idx = args.iter().position(|a| a == "-kernel").unwrap();
-        assert_eq!(args[idx + 1], KERNEL_IMAGE_PATH);
+        assert_eq!(args[idx + 1], config::Arch::current().kernel_image_path());
     }
 
     #[test]
@@ -1201,7 +1237,7 @@ mod tests {
     #[test]
     fn machine_args_use_irqchip_split_when_iommu_enabled() {
         let mut args = Vec::new();
-        push_machine_args(&mut args, true);
+        push_machine_args(&mut args, true, config::Accel::Kvm);
         assert!(
             args.contains(&"q35,accel=kvm,kernel-irqchip=split".to_string()),
             "iommu requires kernel-irqchip=split: {args:?}",
@@ -1211,7 +1247,7 @@ mod tests {
     #[test]
     fn machine_args_omit_irqchip_split_when_iommu_disabled() {
         let mut args = Vec::new();
-        push_machine_args(&mut args, false);
+        push_machine_args(&mut args, false, config::Accel::Kvm);
         assert!(
             args.contains(&"q35,accel=kvm".to_string()),
             "no kernel-irqchip=split without iommu: {args:?}",

@@ -27,8 +27,22 @@ const SOCKET_POLL_MAX_ATTEMPTS: u32 = 100;
 /// Interval between socket existence checks.
 const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Maximum time a VM test is allowed to run before forced shutdown.
-const VM_TEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Maximum time a KVM-accelerated VM test is allowed to run before forced
+/// shutdown.
+const VM_TEST_TIMEOUT_KVM: Duration = Duration::from_secs(60);
+
+/// Maximum time a TCG (software-emulated, cross-arch) VM test is allowed to
+/// run before forced shutdown.  TCG is far slower than KVM -- a guest
+/// kernel boot alone can take tens of seconds -- so this is much larger.
+const VM_TEST_TIMEOUT_TCG: Duration = Duration::from_secs(300);
+
+/// The test timeout for the given acceleration mode.
+fn vm_test_timeout(accel: config::Accel) -> Duration {
+    match accel {
+        config::Accel::Kvm => VM_TEST_TIMEOUT_KVM,
+        config::Accel::Tcg => VM_TEST_TIMEOUT_TCG,
+    }
+}
 
 /// Polls the filesystem until `path` exists, returning an error on timeout
 /// or I/O failure.
@@ -157,6 +171,8 @@ pub struct TestVmParams<'a> {
     pub test_name: &'a str,
     /// VM configuration controlling memory, hugepages, IOMMU, and NICs.
     pub vm_config: config::VmConfig,
+    /// Acceleration mode (KVM for same-arch, TCG for a cross-arch guest).
+    pub accel: config::Accel,
     /// Dynamically-allocated vsock resources for this VM instance.
     pub vsock: VsockAllocation,
 }
@@ -215,6 +231,8 @@ pub struct TestVm<B: HypervisorBackend> {
     test_result: AbortOnDrop<String>,
     /// Background task collecting kernel serial console output.
     kernel_log: AbortOnDrop<String>,
+    /// Acceleration mode, used to scale the test timeout (TCG is slower).
+    accel: config::Accel,
 }
 
 impl<B: HypervisorBackend> TestVm<B> {
@@ -275,6 +293,15 @@ impl<B: HypervisorBackend> TestVm<B> {
             .validate_memory_alignment()
             .unwrap_or_else(|msg| panic!("VM configuration error: {msg}"));
 
+        // The virtual-IOMMU configuration is x86-only for now (Intel IOMMU);
+        // aarch64 SMMUv3 wiring is a follow-up.  Fail loudly rather than
+        // emitting a config that silently lacks the requested IOMMU.
+        let arch = config::Arch::current();
+        assert!(
+            !params.vm_config.iommu || arch.supports_virtual_iommu(),
+            "VM configuration error: virtual IOMMU (iommu = true) is not supported on {arch:?} yet",
+        );
+
         let mut virtiofsd = Self::launch_virtiofsd(VM_ROOT_SHARE_PATH).await?;
 
         // virtiofsd creates its socket asynchronously after process start.
@@ -303,6 +330,7 @@ impl<B: HypervisorBackend> TestVm<B> {
             test_stderr,
             test_result,
             kernel_log,
+            accel: params.accel,
         })
     }
 
@@ -318,6 +346,7 @@ impl<B: HypervisorBackend> TestVm<B> {
             test_stderr,
             test_result,
             kernel_log,
+            accel,
         } = self;
 
         let event_watcher = event_watcher.into_inner();
@@ -327,7 +356,10 @@ impl<B: HypervisorBackend> TestVm<B> {
         let test_result = test_result.into_inner();
         let kernel_log = kernel_log.into_inner();
 
-        // Wait for a terminal event, or force shutdown on timeout.
+        // Wait for a terminal event, or force shutdown on timeout.  The
+        // timeout is scaled to the acceleration mode: TCG (cross-arch
+        // emulation) is much slower than KVM.
+        let timeout = vm_test_timeout(accel);
         let (hypervisor_events, hypervisor_verdict) = tokio::select! {
             biased;
             result = event_watcher => {
@@ -339,9 +371,9 @@ impl<B: HypervisorBackend> TestVm<B> {
                     }
                 }
             }
-            _ = tokio::time::sleep(VM_TEST_TIMEOUT) => {
+            _ = tokio::time::sleep(timeout) => {
                 warn!(
-                    "VM test did not complete within {VM_TEST_TIMEOUT:?}; \
+                    "VM test did not complete within {timeout:?} ({accel:?}); \
                      forcing hypervisor shutdown to collect diagnostics"
                 );
                 (B::EventLog::default(), HypervisorVerdict::Failure)
@@ -458,6 +490,7 @@ fn allocate_vsock_resources() -> VsockAllocation {
 pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
     _: F,
     vm_config: config::VmConfig,
+    accel: config::Accel,
 ) -> Result<VmTestOutput<B>, VmError> {
     let identity = crate::test_identity::TestIdentity::resolve::<F>();
     let test_name = identity.test_name;
@@ -481,6 +514,7 @@ pub async fn run_in_vm<B: HypervisorBackend, F: FnOnce()>(
         bin_name,
         test_name,
         vm_config,
+        accel,
         vsock,
     };
 
