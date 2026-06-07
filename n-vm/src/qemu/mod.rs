@@ -618,8 +618,15 @@ fn push_iommu_args(args: &mut Vec<String>, iommu: bool, arch: config::Arch) {
     // `iommu = true` request on an ISA with no lowering is resolved to a
     // skip in the host tier, so reaching here with `None` should not
     // happen -- emit nothing rather than a wrong device if it does.
-    if let Some(lowering) = arch.virtual_iommu().filter(|_| iommu) {
-        args.extend(["-device".into(), lowering.device.into()]);
+    // The vIOMMU may be realized as a device (x86 intel-iommu) or purely
+    // as a machine option (aarch64 iommu=smmuv3, handled in
+    // `push_machine_args`); only emit a device when the lowering has one.
+    if let Some(device) = arch
+        .virtual_iommu()
+        .filter(|_| iommu)
+        .and_then(|l| l.device)
+    {
+        args.extend(["-device".into(), device.into()]);
     }
 }
 
@@ -939,6 +946,11 @@ mod tests {
         assert!(
             !machine.iter().any(|a| a.contains("kernel-irqchip")),
             "aarch64 has no x86 split-irqchip: {machine:?}",
+        );
+        // aarch64's vIOMMU is the SMMUv3 machine option, not a device.
+        assert!(
+            machine.iter().any(|a| a.contains("iommu=smmuv3")),
+            "aarch64 iommu lowers to the smmuv3 machine option: {machine:?}",
         );
 
         let mut arm_iommu = Vec::new();
