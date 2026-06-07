@@ -164,7 +164,10 @@ test package="tests.all" *args: (setup-roots) (build (if package == "tests.all" 
         export N_VM_TEST_ROOT="$(pwd)/testroot"
         export N_VM_VM_ROOT="$(pwd)/vmroot"
     fi
-    cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) {{ filter }}
+    # `--no-tests pass`: a single-package archive whose only test(s) are
+    # `#[cfg_attr(emulated, ignore)]` (e.g. n-vm-macros' trybuild test under
+    # cross) runs zero tests; treat that as success, matching `test-each`.
+    cargo nextest run --archive-file results/${target}/*.tar.zst --workspace-remap $(pwd) --no-tests pass {{ filter }}
 
 # Build and run the criterion benches. The rte_acl benches are gated behind the
 # `dpdk` feature, so run `just features=dpdk bench` to exercise them; a plain
