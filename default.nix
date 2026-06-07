@@ -214,14 +214,38 @@ let
   # The QEMU system emulator for the test VM, always a build-native (host
   # CI arch) binary that runs in the Docker container.
   #
-  # - Native guest: `qemu_kvm` (KVM-accelerated, host system target only).
-  # - Cross guest: the full `qemu` (includes the guest's `*-softmmu` target
-  #   for TCG emulation, e.g. `qemu-system-aarch64`).
+  # The test VMs always run headless (`-nographic`), so QEMU's GUI display
+  # backends (gtk/sdl/vnc/spice/...) are dead weight.  Left enabled they
+  # drag gtk4/gtk3/cairo/pango/vte/libepoxy/SDL into every test/dev root.
+  # `nixosTestRunner = true` is nixpkgs' headless "boot a VM" profile: it
+  # disables exactly those backends and its only other effect is a 9p
+  # uid0 patch we never exercise (we mount via vhost-user-fs, not -virtfs).
+  #
+  # - Native guest: `qemu_test` (= `qemu_kvm` + `nixosTestRunner`): the
+  #   prebuilt, cache-hit, host-cpu-only emulator (`qemu-system-<host>`
+  #   with KVM).  Headless, so no gtk in the common (native) devroot.
+  # - Cross guest: the base `qemu`, headless and restricted to just the
+  #   targets we need: the guest `*-softmmu` we actually emulate under TCG
+  #   (e.g. `aarch64-softmmu`) plus the build-host `*-softmmu` (so QEMU's
+  #   `qemu-kvm` compat symlink -> `qemu-system-<host>` resolves; omitting
+  #   it trips the `noBrokenSymlinks` install check).  A genuine-cross
+  #   `pkgsBuildHost` qemu is not in the binary cache regardless (Hydra
+  #   never builds that derivation), so trimming targets + dropping the GUI
+  #   keeps that unavoidable build small.
   #
   # Both provide `bin/qemu-system-<arch>`, matching
   # `n_vm::Arch::qemu_system_binary`.
   qemu-system =
-    if is-cross-guest then pkgs.pkgsBuildHost.qemu else pkgs.pkgsBuildHost.qemu_kvm;
+    if is-cross-guest then
+      pkgs.pkgsBuildHost.qemu.override {
+        nixosTestRunner = true;
+        hostCpuTargets = [
+          "${host-arch}-softmmu"
+          "${platform'.arch}-softmmu"
+        ];
+      }
+    else
+      pkgs.pkgsBuildHost.qemu_test;
 
   # Container-tier tools for the scratch-container test infrastructure.
   #
