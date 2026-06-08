@@ -160,7 +160,7 @@ miette = { version = "7.6.0", default-features = false, features = [] }
 mio = { version = "1.2.1", default-features = false, features = [] }
 multi_index_map = { version = "0.15.1", default-features = false, features = [] }
 n-vm = { git = "https://github.com/githedgehog/testn.git", tag = "v0.0.10", default-features = false, features = [], package = "n-vm" }
-netdev = { version = "0.43.0", default-features = false, features = [] }
+netdev = { version = "0.44.0", default-features = false, features = [] }
 netgauze-bgp-pkt = { version = "0.12.1", features = [] }
 netgauze-bmp-pkt = { version = "0.12.1", features = [] }
 nix = { version = "0.31.3", default-features = false, features = [] }
