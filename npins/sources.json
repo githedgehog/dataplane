@@ -97,9 +97,9 @@
       },
       "branch": "stable/10.5",
       "submodules": false,
-      "revision": "59bdd5980437bd7461b502be6f2a39450ca9f7d2",
-      "url": "https://github.com/FRRouting/frr/archive/59bdd5980437bd7461b502be6f2a39450ca9f7d2.tar.gz",
-      "hash": "sha256-nVpG1IkuCzN5QIQAThhUmjgcoGBki7M+kAkQ4V7C0ns="
+      "revision": "45523c44fe498fe5f2e74550b2e2be0ff108c1e8",
+      "url": "https://github.com/FRRouting/frr/archive/45523c44fe498fe5f2e74550b2e2be0ff108c1e8.tar.gz",
+      "hash": "sha256-LuqMHgfV6+lguVALph6NChNCno5iHPlQG9cK9gEcYT4="
     },
     "frr-agent": {
       "type": "Git",
@@ -162,8 +162,8 @@
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1006943.e9a7635a5759/nixexprs.tar.xz",
-      "hash": "sha256-j1JL8PtaAVdH84cV+Scicmrck1tX0CM60F31md5C/MM="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1011620.cbb5cf358f50/nixexprs.tar.xz",
+      "hash": "sha256-d86UGSjwACWRttincQzeiAEZYVPtP3kODhr9hYZD4e8="
     },
     "opengrep": {
       "type": "GitRelease",
@@ -232,9 +232,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "51390d0bfca0a68a8c337d215a4bbeddc2ca616e",
-      "url": "https://github.com/oxalica/rust-overlay/archive/51390d0bfca0a68a8c337d215a4bbeddc2ca616e.tar.gz",
-      "hash": "sha256-y2wR4Mk6D/N1ID4FZa2oUMStCUxyIoRzmgOOpLzoWmo="
+      "revision": "7d5f8d75fc195a236b46633d7679139698aeb35f",
+      "url": "https://github.com/oxalica/rust-overlay/archive/7d5f8d75fc195a236b46633d7679139698aeb35f.tar.gz",
+      "hash": "sha256-MUQPFiskEENaJ2N82TRIqpKlHXGXJJkPfKH6W788oQo="
     }
   },
   "version": 7
