@@ -205,6 +205,13 @@ impl IcmpErrorHandler {
         } else {
             debug!("Will not invalidate flows (reason={reason} flow-status={status})");
         }
+
+        // We may also need to apply static NAT to the packet, if static NAT is used on the other
+        // end of the peering. We first need to update the checksums after the previous NAT changes,
+        // or the static NAT processor will fail to validate checksums and won't proceed.
+        packet.update_checksums();
+        packet.meta_mut().set_static_nat_src(true);
+        packet.meta_mut().set_static_nat_dst(true);
     }
 }
 
