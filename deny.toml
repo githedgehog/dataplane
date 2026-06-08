@@ -23,6 +23,8 @@ feature-depth = 1
 ignore = [
     # paste is unmaintained but is needed by netlink-packet-core.  We should submit a patch when possible.
     "RUSTSEC-2024-0436",
+    # proc-macro-error2 is unmaintained but is needed by multi_index_map_derive, and our own fixin; ignore until both dependencies have migrated away from it.
+    "RUSTSEC-2026-0173",
 ]
 
 [licenses]
