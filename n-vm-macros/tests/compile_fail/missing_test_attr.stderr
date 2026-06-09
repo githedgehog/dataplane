@@ -1,0 +1,7 @@
+error: #[in_vm] requires a test attribute: add #[test] (or #[tokio::test]); without one the generated function is never collected by libtest and the test silently never runs
+ --> tests/compile_fail/missing_test_attr.rs:4:1
+  |
+4 | #[n_vm::in_vm]
+  | ^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `n_vm::in_vm` (in Nightly builds, run with -Z macro-backtrace for more info)

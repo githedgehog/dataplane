@@ -1,4 +1,4 @@
-error: `iommu` has moved out of #[in_vm(…)] — use #[hypervisor(iommu)] instead
+error: `iommu` has moved out of #[in_vm(...)] -- use #[hypervisor(iommu)] instead
  --> tests/compile_fail/migrated_option.rs:4:15
   |
 4 | #[n_vm::in_vm(iommu)]

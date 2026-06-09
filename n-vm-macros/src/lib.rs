@@ -107,7 +107,7 @@ fn parse_in_vm_backend(attr: TokenStream) -> syn::Result<BackendInfo> {
             &idents[1],
             "only one backend identifier is allowed in #[in_vm]; \
              VM options have moved to companion attributes \
-             (#[hypervisor(…)], #[guest(…)], #[network(…)])",
+             (#[hypervisor(...)], #[guest(...)], #[network(...)])",
         ));
     }
 
@@ -118,7 +118,7 @@ fn parse_in_vm_backend(attr: TokenStream) -> syn::Result<BackendInfo> {
         return Err(syn::Error::new_spanned(
             ident,
             format!(
-                "`{ident_str}` has moved out of #[in_vm(…)] — \
+                "`{ident_str}` has moved out of #[in_vm(...)] -- \
                  use {hint} instead",
             ),
         ));
@@ -613,6 +613,22 @@ pub fn in_vm(attr: TokenStream, input: TokenStream) -> TokenStream {
                  emulated NIC models like e1000 or e1000e",
                 backend = backend.name,
             ),
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // A bare `#[in_vm]` with neither `#[test]` nor `#[tokio::test]` compiles
+    // to an ordinary function that libtest never collects, so the test
+    // silently never runs -- the worst failure mode for a test harness.
+    // Require an explicit test attribute so the mistake is a clear error.
+    // Checked last so the more specific diagnostics above take precedence.
+    if tokio_config.is_none() && !func.attrs.iter().any(|a| a.path().is_ident("test")) {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[in_vm] requires a test attribute: add #[test] (or #[tokio::test]); \
+             without one the generated function is never collected by libtest and \
+             the test silently never runs",
         )
         .to_compile_error()
         .into();
