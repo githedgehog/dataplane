@@ -161,6 +161,7 @@ let
       cargo-edit
       cargo-llvm-cov
       cargo-nextest
+      ckb
       direnv
       gateway-crd
       gettext

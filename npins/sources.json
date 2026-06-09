@@ -16,6 +16,22 @@
       "url": "https://api.github.com/repos/KaTeX/KaTeX/tarball/refs/tags/v0.17.0",
       "hash": "sha256-CDtvklmAoTWvuA/h9oV3BFiMsLjrPfqyf0ohsK09EcA="
     },
+    "ckb": {
+      "type": "GitRelease",
+      "repository": {
+        "type": "GitHub",
+        "owner": "SimplyLiz",
+        "repo": "CodeMCP"
+      },
+      "pre_releases": false,
+      "version_upper_bound": null,
+      "release_prefix": null,
+      "submodules": false,
+      "version": "v9.2.0",
+      "revision": "1f4f31d43c8fcadb0990024a1c3777b399e8e068",
+      "url": "https://api.github.com/repos/SimplyLiz/CodeMCP/tarball/refs/tags/v9.2.0",
+      "hash": "sha256-BN2TYqyKsLUzfFklxnqfXRa6Vrk941sGpKxBy2euNS8="
+    },
     "crane": {
       "type": "GitRelease",
       "repository": {

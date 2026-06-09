@@ -21,6 +21,9 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
+  ckb = final.callPackage ../pkgs/ckb {
+    src = sources.ckb;
+  };
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
