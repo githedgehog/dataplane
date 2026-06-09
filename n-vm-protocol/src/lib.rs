@@ -338,10 +338,14 @@ impl TestResult {
     /// means the guest never reported success.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
-        let body = raw
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(Self::WIRE_PREFIX))?
-            .trim_start();
+        let body = raw.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix(Self::WIRE_PREFIX)?;
+            // The prefix must be followed by whitespace separating it from
+            // the tag.  Without this boundary a line like `n-it-resultpass`
+            // would falsely strip to a `pass` verdict; a spurious pass is
+            // the dangerous direction for a verdict parser.
+            rest.strip_prefix(char::is_whitespace).map(str::trim_start)
+        })?;
         let (tag, detail) = match body.split_once(char::is_whitespace) {
             Some((tag, detail)) => (tag, detail.trim()),
             None => (body, ""),
@@ -544,13 +548,13 @@ pub const VIRTIOFSD_BINARY_PATH: &str = "/bin/virtiofsd";
 /// backend.
 pub const CLOUD_HYPERVISOR_BINARY_PATH: &str = "/bin/cloud-hypervisor";
 
-// ── Tests ────────────────────────────────────────────────────────────
+// -- Tests ------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── VsockCid range constants ─────────────────────────────────────
+    // -- VsockCid range constants -------------------------------------
 
     #[test]
     fn guest_min_cid_is_three() {
@@ -562,7 +566,7 @@ mod tests {
         assert_eq!(VsockCid::GUEST_MAX.as_raw(), u32::MAX as u64 - 1);
     }
 
-    // ── VsockPort range constants ────────────────────────────────────
+    // -- VsockPort range constants ------------------------------------
 
     #[test]
     fn dynamic_port_min_is_1024() {
@@ -574,7 +578,7 @@ mod tests {
         assert_eq!(VsockPort::DYNAMIC_MAX.as_raw(), u32::MAX - 1);
     }
 
-    // ── VsockAllocation round-trip ───────────────────────────────────
+    // -- VsockAllocation round-trip -----------------------------------
 
     #[test]
     fn kernel_cmdline_round_trip() {
@@ -680,7 +684,7 @@ mod tests {
         );
     }
 
-    // ── TestResult wire format ───────────────────────────────────────
+    // -- TestResult wire format ---------------------------------------
 
     #[test]
     fn test_result_round_trip_pass() {
@@ -721,6 +725,17 @@ mod tests {
     fn test_result_parse_unknown_tag_is_none() {
         let raw = format!("{} maybe whatever\n", TestResult::WIRE_PREFIX);
         assert!(TestResult::parse(&raw).is_none());
+    }
+
+    #[test]
+    fn test_result_parse_requires_prefix_boundary() {
+        // The prefix immediately followed by a tag (no separating
+        // whitespace) must NOT be mistaken for a verdict.
+        let raw = format!("{}pass extra\n", TestResult::WIRE_PREFIX);
+        assert!(
+            TestResult::parse(&raw).is_none(),
+            "a prefix without a trailing boundary must not parse as a pass",
+        );
     }
 
     #[test]
