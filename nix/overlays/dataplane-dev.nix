@@ -21,6 +21,9 @@ in
   opengrep = final.callPackage ../pkgs/opengrep {
     src = sources.opengrep;
   };
+  ckb = final.callPackage ../pkgs/ckb {
+    src = sources.ckb;
+  };
   cargo-bolero = prev.cargo-bolero.override { inherit (override-packages) rustPlatform; };
   cargo-deny = prev.cargo-deny.override { inherit (override-packages) rustPlatform; };
   cargo-edit = prev.cargo-edit.override { inherit (override-packages) rustPlatform; };
@@ -54,4 +57,65 @@ in
       "--disable-source-highlight" # breaks static compile
     ];
   });
+
+  linux-fancy =
+    let
+      version = "6.18.20";
+      # True only when the kernel's target arch differs from the builder.
+      isCross = final.stdenv.hostPlatform.system != final.stdenv.buildPlatform.system;
+      # Cross stdenv: builds the (possibly aarch64) kernel itself.
+      crossStdenv = final.llvmPackages'.stdenv;
+      # Stdenv/toolchain that runs the .config codegen, which must execute
+      # on the builder.  For a native build keep the original (so the
+      # output is byte-identical); for a cross build switch to the
+      # build-platform toolchain so the setup tools actually run.
+      buildStdenv = if isCross then final.pkgsBuildHost.llvmPackages'.stdenv else crossStdenv;
+      buildLlvm = if isCross then final.pkgsBuildHost.llvmPackages' else final.llvmPackages';
+      # Target kernel ARCH, only set when cross-compiling (null leaves a
+      # native build's config output byte-identical).
+      kernelArch = if isCross then final.stdenv.hostPlatform.linuxArch else null;
+      src = fetchTarball {
+        url = "https://cdn.kernel.org/pub/linux/kernel/v${final.lib.versions.major version}.x/linux-${version}.tar.xz";
+        sha256 = "sha256:1sbidvi0zi1a8nlzrdjmk3yq50gdc5qjvcf4n4ah70pis25912ba";
+      };
+      # Fragments are merged left-to-right; later entries override earlier ones.
+      # Place broad settings first and targeted overrides (especially disables) last.
+      #
+      # The shared list is arch-neutral in intent: x86-only symbols
+      # (CONFIG_X86_*, 8250, x86 PARAVIRT) that don't exist on arm64 are
+      # warned-and-dropped by merge_config.sh, harmlessly.  The aarch64
+      # `virt`-machine essentials (GIC, PL011, PSCI, arch timer, generic
+      # PCI host) are appended via an arch-specific fragment.
+      sharedFragments = [
+        "base.config"
+        "serial-console.config"
+        "kvm-guest.config"
+        "virtio.config"
+        "hugepages.config"
+        "cgroups-ns.config"
+        "filesystems.config"
+        "crypto.config"
+        "net-core.config"
+        "net-tc-qos.config"
+        "net-virt-devices.config"
+        "intel-e1000.config"
+        "mlx5-sriov.config"
+        # "debug-fuzz.config"
+        "disable.config"
+      ];
+      # Appended last so its enables win over earlier fragments/disables.
+      archFragments = final.lib.optionals final.stdenv.hostPlatform.isAarch64 [
+        "aarch64-virt.config"
+      ];
+      fragments = map (f: ../pkgs/linux/fragments + "/${f}") (sharedFragments ++ archFragments);
+      configfile = final.callPackage ../pkgs/linux/merge-config.nix {
+        inherit src version fragments kernelArch;
+        stdenv = buildStdenv;
+        llvmPackages = buildLlvm;
+      };
+    in
+    final.linuxManualConfig {
+      inherit version src configfile;
+      stdenv = crossStdenv;
+    };
 }

@@ -17,3 +17,6 @@ result*/**
 /bin
 sysroot
 devroot
+testroot
+vmroot
+index.scip
