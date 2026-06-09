@@ -719,9 +719,15 @@ impl<'a> ContainerGuard<'a> {
     /// without doing anything) and marks the guard so that its [`Drop`]
     /// impl is a no-op.  Returns the container's exit status on success.
     async fn into_result(mut self) -> Result<ContainerTestResult, ContainerError> {
+        let result = self.collect_and_cleanup().await?;
+        // Disarm the safety nets only after the container is actually
+        // removed.  If `collect_and_cleanup` returned early (inspect
+        // failure or missing state) the `?` above propagates while
+        // `defused` is still false, so `Drop` triggers emergency removal
+        // rather than leaking the container.
         self.defused = true;
         self.cleanup.defuse();
-        self.collect_and_cleanup().await
+        Ok(result)
     }
 
     /// Inspects the container's exit status and removes it.
