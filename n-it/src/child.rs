@@ -171,6 +171,12 @@ pub fn reap() -> ReapOutcome {
                 clean = false;
                 continue;
             }
+            Err(Errno::ECHILD) => {
+                // No children remain to reap.  `waitpid` reports this as
+                // ECHILD rather than `StillAlive`, and it is the normal
+                // terminal condition on every shutdown round, not an error.
+                break;
+            }
             Err(e) => {
                 warn!("unexpected errno from waitpid in init: {e}");
                 break;
