@@ -51,7 +51,7 @@ use crate::config;
 use crate::error::VmError;
 use crate::vm::{TestVmParams, check_hugepages_accessible, check_kvm_accessible, wait_for_socket};
 
-// ── Constants ────────────────────────────────────────────────────────
+// -- Constants --------------------------------------------------------
 
 /// The fd number used for the cloud-hypervisor event monitor pipe.
 ///
@@ -59,7 +59,7 @@ use crate::vm::{TestVmParams, check_hugepages_accessible, check_kvm_accessible, 
 /// It must match the `--event-monitor fd=N` argument.
 const EVENT_MONITOR_FD: RawFd = 3;
 
-// ── Public types ─────────────────────────────────────────────────────
+// -- Public types -----------------------------------------------------
 
 /// Cloud-hypervisor [`HypervisorBackend`] implementation.
 ///
@@ -102,7 +102,7 @@ impl std::fmt::Display for CloudHypervisorEventLog {
     }
 }
 
-// ── Error conversion ─────────────────────────────────────────────────
+// -- Error conversion -------------------------------------------------
 
 impl From<CloudHypervisorError> for VmError {
     fn from(err: CloudHypervisorError) -> Self {
@@ -110,7 +110,7 @@ impl From<CloudHypervisorError> for VmError {
     }
 }
 
-// ── HypervisorBackend ────────────────────────────────────────────────
+// -- HypervisorBackend ------------------------------------------------
 
 impl HypervisorBackend for CloudHypervisor {
     const NAME: &str = "cloud-hypervisor";
@@ -195,7 +195,7 @@ impl HypervisorBackend for CloudHypervisor {
     }
 }
 
-// ── Process spawning ─────────────────────────────────────────────────
+// -- Process spawning -------------------------------------------------
 
 /// Creates the event-monitor pipe, verifies `/dev/kvm`, spawns the
 /// cloud-hypervisor binary, and waits for the API socket to appear.
@@ -245,7 +245,7 @@ async fn spawn_hypervisor_process(
     Ok((hypervisor, event_receiver))
 }
 
-// ── VM configuration builders ────────────────────────────────────────
+// -- VM configuration builders ----------------------------------------
 //
 // Each builder is a focused function responsible for a single aspect of
 // the cloud-hypervisor `VmConfig`.  They can be tested and evolved
@@ -319,7 +319,7 @@ fn build_payload_config(params: &TestVmParams<'_>) -> PayloadConfig {
     }
 }
 
-/// Builds the CPU topology: 6 vCPUs arranged as 3 dies × 1 core × 2
+/// Builds the CPU topology: 6 vCPUs arranged as 3 dies x 1 core x 2
 /// threads.
 fn build_cpu_config() -> CpusConfig {
     CpusConfig {
@@ -474,7 +474,7 @@ fn build_platform_config(params: &TestVmParams<'_>) -> PlatformConfig {
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// -- Tests ------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -502,7 +502,7 @@ mod tests {
         }
     }
 
-    // ── Payload config ───────────────────────────────────────────────
+    // -- Payload config -----------------------------------------------
 
     #[test]
     fn payload_config_uses_kernel_image_path() {
@@ -590,7 +590,7 @@ mod tests {
         );
     }
 
-    // ── CPU config ───────────────────────────────────────────────────
+    // -- CPU config ---------------------------------------------------
 
     #[test]
     fn cpu_config_has_six_vcpus() {
@@ -619,7 +619,7 @@ mod tests {
         );
     }
 
-    // ── Memory config ────────────────────────────────────────────────
+    // -- Memory config ------------------------------------------------
 
     #[test]
     fn memory_config_has_expected_size() {
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(mem.thp, Some(false));
     }
 
-    // ── Network config ───────────────────────────────────────────────
+    // -- Network config -----------------------------------------------
 
     #[test]
     fn network_config_has_three_interfaces() {
@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(taps.len(), deduped.len(), "all tap names should be unique");
     }
 
-    // ── Filesystem config ────────────────────────────────────────────
+    // -- Filesystem config --------------------------------------------
 
     #[test]
     fn fs_config_uses_virtiofs_root_tag_and_socket() {
@@ -746,7 +746,7 @@ mod tests {
         assert_eq!(entry.queue_size, VIRTIOFS_QUEUE_SIZE);
     }
 
-    // ── Platform config ──────────────────────────────────────────────
+    // -- Platform config ----------------------------------------------
 
     #[test]
     fn platform_config_embeds_binary_and_test_name_in_oem_strings() {
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(platform.num_pci_segments, Some(2));
     }
 
-    // ── Composed VmConfig ────────────────────────────────────────────
+    // -- Composed VmConfig --------------------------------------------
 
     #[test]
     fn vm_config_disables_virtio_console() {
@@ -811,7 +811,7 @@ mod tests {
         );
     }
 
-    // ── vIOMMU configuration ─────────────────────────────────────────
+    // -- vIOMMU configuration -----------------------------------------
 
     /// Helper that returns [`TestVmParams`] with vIOMMU enabled.
     fn sample_params_iommu() -> TestVmParams<'static> {
@@ -913,7 +913,7 @@ mod tests {
         assert_eq!(config.landlock_enable, Some(false));
     }
 
-    // ── Event log display ────────────────────────────────────────────
+    // -- Event log display --------------------------------------------
 
     #[test]
     fn empty_event_log_displays_nothing() {

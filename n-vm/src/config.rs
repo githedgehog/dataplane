@@ -372,7 +372,7 @@ impl VmConfig {
             let required = size.bytes() * i64::from(count);
             if required > VM_MEMORY_BYTES {
                 return Err(format!(
-                    "guest hugepage reservation ({count} × {} = {required} bytes) \
+                    "guest hugepage reservation ({count} x {} = {required} bytes) \
                      exceeds VM memory ({VM_MEMORY_BYTES} bytes)",
                     size.bytes(),
                 ));
@@ -389,7 +389,7 @@ pub(crate) const VM_MEMORY_MIB: u32 = 1024;
 pub(crate) const VM_MEMORY_BYTES: i64 = (VM_MEMORY_MIB as i64) * 1024 * 1024;
 
 // The topology must satisfy:
-//   VM_SOCKETS × VM_DIES_PER_PACKAGE × VM_CORES_PER_DIE × VM_THREADS_PER_CORE == VM_VCPUS
+//   VM_SOCKETS x VM_DIES_PER_PACKAGE x VM_CORES_PER_DIE x VM_THREADS_PER_CORE == VM_VCPUS
 
 /// Number of vCPUs.
 pub(crate) const VM_VCPUS: u32 = 6;
@@ -572,7 +572,7 @@ mod tests {
         count: 1,
     };
 
-    // ── Arch profiles (both arches exercised on a single host) ───────
+    // -- Arch profiles (both arches exercised on a single host) -------
 
     #[test]
     fn virtual_iommu_lowering_is_coherent_per_arch() {
@@ -959,8 +959,8 @@ mod tests {
         let total = VM_SOCKETS * VM_DIES_PER_PACKAGE * VM_CORES_PER_DIE * VM_THREADS_PER_CORE;
         assert_eq!(
             total, VM_VCPUS,
-            "topology ({VM_SOCKETS}S × {VM_DIES_PER_PACKAGE}D × \
-             {VM_CORES_PER_DIE}C × {VM_THREADS_PER_CORE}T = {total}) \
+            "topology ({VM_SOCKETS}S x {VM_DIES_PER_PACKAGE}D x \
+             {VM_CORES_PER_DIE}C x {VM_THREADS_PER_CORE}T = {total}) \
              must equal VM_VCPUS ({VM_VCPUS})",
         );
     }
@@ -1000,7 +1000,7 @@ mod tests {
         };
         assert!(
             config.validate_memory_alignment().is_err(),
-            "100 × 1G hugepages should exceed VM memory",
+            "100 x 1G hugepages should exceed VM memory",
         );
     }
 

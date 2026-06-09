@@ -70,7 +70,7 @@ use crate::vm::{TestVmParams, check_hugepages_accessible, check_kvm_accessible, 
 
 use self::qmp::{EventDisplay, QmpCommandName, QmpConnection, QmpEventStream, QmpWriter};
 
-// ── Public types ─────────────────────────────────────────────────────
+// -- Public types -----------------------------------------------------
 
 /// QEMU [`HypervisorBackend`] implementation.
 ///
@@ -111,7 +111,7 @@ impl std::fmt::Display for QemuEventLog {
     }
 }
 
-// ── Error conversion ─────────────────────────────────────────────────
+// -- Error conversion -------------------------------------------------
 
 impl From<QemuError> for VmError {
     fn from(err: QemuError) -> Self {
@@ -119,7 +119,7 @@ impl From<QemuError> for VmError {
     }
 }
 
-// ── HypervisorBackend ────────────────────────────────────────────────
+// -- HypervisorBackend ------------------------------------------------
 
 impl HypervisorBackend for Qemu {
     const NAME: &str = "qemu";
@@ -199,7 +199,7 @@ impl HypervisorBackend for Qemu {
     }
 }
 
-// ── Event monitoring ─────────────────────────────────────────────────
+// -- Event monitoring -------------------------------------------------
 
 /// Consumes the QMP event stream and returns the collected events along
 /// with a [`HypervisorVerdict`].
@@ -307,7 +307,7 @@ pub fn compute_verdict(events: &[qapi_qmp::Event], had_stream_errors: bool) -> H
     HypervisorVerdict::Failure
 }
 
-// ── Host-side TAP configuration ───────────────────────────────────────
+// -- Host-side TAP configuration ---------------------------------------
 
 /// Prefix length for the IPv6 link-local addresses assigned to TAPs.
 const TAP_IPV6_PREFIX_LEN: u8 = config::TAP_IPV6_PREFIX_LEN;
@@ -316,7 +316,7 @@ const TAP_IPV6_PREFIX_LEN: u8 = config::TAP_IPV6_PREFIX_LEN;
 ///
 /// Cloud-hypervisor performs this automatically via `NetConfig.ip` /
 /// `NetConfig.mask`, but QEMU's `-netdev tap` only creates the TAP
-/// device — it does not assign addresses or bring the link up.
+/// device -- it does not assign addresses or bring the link up.
 ///
 /// This function uses rtnetlink to:
 ///
@@ -326,7 +326,7 @@ const TAP_IPV6_PREFIX_LEN: u8 = config::TAP_IPV6_PREFIX_LEN;
 ///
 /// These addresses generate NDP traffic (Neighbor Solicitation /
 /// Neighbor Advertisement) on the TAPs, which is essential for Phase 1
-/// rx validation tests — without traffic on the host side, the DPDK
+/// rx validation tests -- without traffic on the host side, the DPDK
 /// guest has nothing to receive.
 async fn configure_host_taps() -> Result<(), QemuError> {
     let (connection, handle, _) = rtnetlink::new_connection().map_err(|e| QemuError::TapSetup {
@@ -402,7 +402,7 @@ async fn configure_host_taps() -> Result<(), QemuError> {
     Ok(())
 }
 
-// ── Process spawning ─────────────────────────────────────────────────
+// -- Process spawning -------------------------------------------------
 
 /// Verifies KVM and hugepage accessibility, spawns the QEMU process,
 /// waits for the QMP socket, and establishes the QMP connection.
@@ -459,7 +459,7 @@ async fn spawn_qemu_process(
     }
 }
 
-// ── CLI argument builders ────────────────────────────────────────────
+// -- CLI argument builders --------------------------------------------
 //
 // Each builder is a focused function responsible for a single aspect of
 // the QEMU command line.  They can be tested and evolved independently;
@@ -541,7 +541,7 @@ fn push_machine_args(
 /// CPU count and topology.
 ///
 /// Matches the cloud-hypervisor backend: 6 vCPUs arranged as
-/// 1 socket × 3 dies × 1 core × 2 threads.
+/// 1 socket x 3 dies x 1 core x 2 threads.
 fn push_cpu_args(args: &mut Vec<String>, arch: config::Arch) {
     // The `-smp dies=` level is x86-specific; `smp_topology` omits it on
     // aarch64 while preserving the total vCPU count.
@@ -638,7 +638,7 @@ fn push_iommu_args(args: &mut Vec<String>, iommu: bool, arch: config::Arch) {
 ///
 /// When `params.vm_config.iommu` is `true`, the VFIO no-IOMMU escape
 /// hatch is omitted so that VFIO is forced to use the virtual IOMMU
-/// for DMA remapping — which is the purpose of the vIOMMU test
+/// for DMA remapping -- which is the purpose of the vIOMMU test
 /// configuration.
 fn push_kernel_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
     let cmdline = config::build_kernel_cmdline(
@@ -868,7 +868,7 @@ fn push_misc_args(args: &mut Vec<String>, arch: config::Arch) {
     ]);
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// -- Tests ------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -895,7 +895,7 @@ mod tests {
         }
     }
 
-    // ── Machine and CPU ──────────────────────────────────────────────
+    // -- Machine and CPU ----------------------------------------------
 
     #[test]
     fn machine_args_enable_kvm_with_q35() {
@@ -988,7 +988,7 @@ mod tests {
         assert!(smp.contains("threads=2"), "{smp}");
     }
 
-    // ── Memory ───────────────────────────────────────────────────────
+    // -- Memory -------------------------------------------------------
 
     #[test]
     fn memory_args_set_ram_size() {
@@ -1047,7 +1047,7 @@ mod tests {
         assert!(args.contains(&"node,memdev=mem0".to_string()));
     }
 
-    // ── Kernel ───────────────────────────────────────────────────────
+    // -- Kernel -------------------------------------------------------
 
     #[test]
     fn kernel_args_use_kernel_image_path() {
@@ -1119,7 +1119,7 @@ mod tests {
         );
     }
 
-    // ── Filesystem ───────────────────────────────────────────────────
+    // -- Filesystem ---------------------------------------------------
 
     #[test]
     fn fs_args_use_virtiofs_tag_and_socket() {
@@ -1141,7 +1141,7 @@ mod tests {
         );
     }
 
-    // ── vsock ────────────────────────────────────────────────────────
+    // -- vsock --------------------------------------------------------
 
     #[test]
     fn vsock_args_use_guest_cid() {
@@ -1158,7 +1158,7 @@ mod tests {
         );
     }
 
-    // ── Network ──────────────────────────────────────────────────────
+    // -- Network ------------------------------------------------------
 
     #[test]
     fn network_args_have_three_interfaces() {
@@ -1211,7 +1211,7 @@ mod tests {
         assert_eq!(unique.len(), 3, "TAP names must be unique: {taps:?}");
     }
 
-    // ── Serial ───────────────────────────────────────────────────────
+    // -- Serial -------------------------------------------------------
 
     #[test]
     fn serial_args_use_socket_mode() {
@@ -1223,7 +1223,7 @@ mod tests {
         assert!(serial.contains("wait=off"), "{serial}");
     }
 
-    // ── QMP ──────────────────────────────────────────────────────────
+    // -- QMP ----------------------------------------------------------
 
     #[test]
     fn qmp_args_create_control_socket() {
@@ -1239,7 +1239,7 @@ mod tests {
         assert!(args.contains(&"chardev=qmp0,mode=control".to_string()));
     }
 
-    // ── Platform / SMBIOS ────────────────────────────────────────────
+    // -- Platform / SMBIOS --------------------------------------------
 
     #[test]
     fn platform_args_embed_binary_and_test_name() {
@@ -1259,7 +1259,7 @@ mod tests {
         assert!(sys.contains("uuid="), "{sys}");
     }
 
-    // ── Misc ─────────────────────────────────────────────────────────
+    // -- Misc ---------------------------------------------------------
 
     #[test]
     fn misc_args_disable_display() {
@@ -1283,7 +1283,7 @@ mod tests {
         assert!(args.contains(&"pvpanic".to_string()));
     }
 
-    // ── Full arg vector ──────────────────────────────────────────────
+    // -- Full arg vector ----------------------------------------------
 
     #[test]
     fn build_qemu_args_is_nonempty() {
@@ -1291,7 +1291,7 @@ mod tests {
         assert!(!args.is_empty());
     }
 
-    // ── vIOMMU configuration ─────────────────────────────────────────
+    // -- vIOMMU configuration -----------------------------------------
 
     /// Helper that returns [`TestVmParams`] with vIOMMU enabled.
     fn sample_params_iommu() -> TestVmParams<'static> {
@@ -1374,7 +1374,7 @@ mod tests {
         }
     }
 
-    // ── e1000 NIC model ──────────────────────────────────────────────
+    // -- e1000 NIC model ----------------------------------------------
 
     #[test]
     fn e1000_default_devices_as_virtio() {
@@ -1452,7 +1452,7 @@ mod tests {
         );
     }
 
-    // ── e1000e NIC model ─────────────────────────────────────────────
+    // -- e1000e NIC model ---------------------------------------------
 
     #[test]
     fn e1000e_default_devices_as_virtio() {
@@ -1592,7 +1592,7 @@ mod tests {
         );
     }
 
-    // ── Event log display ────────────────────────────────────────────
+    // -- Event log display --------------------------------------------
 
     #[test]
     fn empty_event_log_displays_nothing() {
@@ -1622,7 +1622,7 @@ mod tests {
         assert!(lines[1].contains("STOP"), "{}", lines[1]);
     }
 
-    // ── Verdict computation ──────────────────────────────────────────
+    // -- Verdict computation ------------------------------------------
 
     /// A zero-valued timestamp for use in test events.
     fn ts() -> qapi_spec::Timestamp {

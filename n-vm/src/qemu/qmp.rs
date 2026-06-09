@@ -81,7 +81,7 @@ use tracing::{debug, trace, warn};
 
 use super::error::QemuError;
 
-// ── Event display ────────────────────────────────────────────────────
+// -- Event display ----------------------------------------------------
 
 /// Wrapper for human-readable [`Display`](std::fmt::Display) of a
 /// [`qapi_qmp::Event`].
@@ -125,7 +125,7 @@ impl std::fmt::Display for EventDisplay<'_> {
     }
 }
 
-// ── QMP command (outbound) ───────────────────────────────────────────
+// -- QMP command (outbound) -------------------------------------------
 
 /// Enumerates the QMP commands used by this backend.
 ///
@@ -167,7 +167,7 @@ struct QmpCommand {
     execute: QmpCommandName,
 }
 
-// ── QMP connection ───────────────────────────────────────────────────
+// -- QMP connection ---------------------------------------------------
 
 /// An established QMP connection that has completed capability
 /// negotiation and is ready for command mode.
@@ -204,7 +204,7 @@ impl QmpConnection {
         let mut reader = BufReader::new(read_half);
         let mut writer = write_half;
 
-        // ── Phase 1: read the QMP greeting ───────────────────────────
+        // -- Phase 1: read the QMP greeting ---------------------------
         let greeting = read_line_json::<qapi_qmp::QapiCapabilities>(&mut reader).await?;
 
         let v = &greeting.QMP.version;
@@ -213,7 +213,7 @@ impl QmpConnection {
             v.qemu.major, v.qemu.minor, v.qemu.micro, v.package,
         );
 
-        // ── Phase 2: negotiate capabilities ──────────────────────────
+        // -- Phase 2: negotiate capabilities --------------------------
         send_command(&mut writer, QmpCommandName::QmpCapabilities).await?;
 
         let msg = read_line_json::<qapi_qmp::QmpMessageAny>(&mut reader).await?;
@@ -265,7 +265,7 @@ impl QmpConnection {
     }
 }
 
-// ── QmpWriter ────────────────────────────────────────────────────────
+// -- QmpWriter --------------------------------------------------------
 
 /// Write half of a QMP connection, used for sending lifecycle commands.
 ///
@@ -298,7 +298,7 @@ impl QmpWriter {
     }
 }
 
-// ── QmpEventStream ───────────────────────────────────────────────────
+// -- QmpEventStream ---------------------------------------------------
 
 /// Read half of a QMP connection, used for consuming events in a
 /// background task.
@@ -369,7 +369,7 @@ impl QmpEventStream {
     }
 }
 
-// ── Internal helpers ─────────────────────────────────────────────────
+// -- Internal helpers -------------------------------------------------
 
 /// Reads a single newline-delimited JSON message from the buffered
 /// reader and deserializes it into `T`.
@@ -412,13 +412,13 @@ async fn send_command(
     Ok(())
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// -- Tests ------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── Greeting deserialization ─────────────────────────────────────
+    // -- Greeting deserialization -------------------------------------
 
     #[test]
     fn deserialize_greeting() {
@@ -437,7 +437,7 @@ mod tests {
         assert!(greeting.QMP.capabilities.is_empty());
     }
 
-    // ── Response deserialization ─────────────────────────────────────
+    // -- Response deserialization -------------------------------------
 
     #[test]
     fn deserialize_return_response() {
@@ -479,7 +479,7 @@ mod tests {
         }
     }
 
-    // ── Event deserialization ────────────────────────────────────────
+    // -- Event deserialization ----------------------------------------
 
     #[test]
     fn deserialize_shutdown_event() {
@@ -516,7 +516,7 @@ mod tests {
         );
     }
 
-    // ── Event display ────────────────────────────────────────────────
+    // -- Event display ------------------------------------------------
 
     #[test]
     fn event_display_with_data() {
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(format!("{}", EventDisplay(&event)), "STOP");
     }
 
-    // ── Message disambiguation ───────────────────────────────────────
+    // -- Message disambiguation ---------------------------------------
 
     #[test]
     fn messages_deserialize_unambiguously() {
