@@ -198,7 +198,7 @@ let
   # Minimal derivation containing only the bootable kernel image.
   #
   # The full linux-fancy output includes modules, headers, etc. that are
-  # not needed inside the test container — we extract just the bootable
+  # not needed inside the test container -- we extract just the bootable
   # image so that symlinkJoin produces a top-level image entry in testroot
   # without pulling in the rest of the kernel tree.
   #
@@ -571,21 +571,21 @@ let
     # kernel cannot create directories on demand.  These empty mount
     # points must exist so that:
     #
-    #   /dev   — kernel auto-mounts devtmpfs (provides /dev/console,
+    #   /dev   -- kernel auto-mounts devtmpfs (provides /dev/console,
     #            /dev/null, etc. needed by init and test processes)
-    #   /proc  — n-it mounts procfs (needed for /proc/cmdline parsing
+    #   /proc  -- n-it mounts procfs (needed for /proc/cmdline parsing
     #            and general process introspection)
-    #   /sys   — n-it mounts sysfs
-    #   /tmp   — n-it mounts tmpfs (writable scratch space)
-    #   /run   — n-it mounts tmpfs (runtime state)
-    #   /etc   — some libc/nss functions expect this to exist
+    #   /sys   -- n-it mounts sysfs
+    #   /tmp   -- n-it mounts tmpfs (writable scratch space)
+    #   /run   -- n-it mounts tmpfs (runtime state)
+    #   /etc   -- some libc/nss functions expect this to exist
     #
     # Without /dev in particular, the kernel logs
     # "devtmpfs: error mounting -2" and init may fail with ENOEXEC (-8)
     # because /dev/console cannot be opened.
     mkdir -p $out/dev $out/proc $out/sys $out/tmp $out/run $out/etc $out/var
 
-    # /var/run → /run symlink.
+    # /var/run -> /run symlink.
     #
     # Many daemons (including DPDK) default to writing runtime state
     # under /var/run.  On a conventional Linux system /var/run is

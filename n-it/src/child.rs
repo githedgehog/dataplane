@@ -284,14 +284,16 @@ pub async fn terminate_remaining_processes() -> TerminateOutcome {
     let mut sigs: u8 = 0;
     warn!("sending SIGTERM to all remaining processes");
     loop {
-        if sigs > MAX_SIGTERM_ATTEMPTS {
+        if sigs >= MAX_SIGTERM_ATTEMPTS {
             break;
         }
 
         match send_signal_to_all_processes(Signal::SIGTERM) {
             Ok(BroadcastSignalOutcome::NoProcesses) => {
+                // Children were found at entry but are all gone now:
+                // termination succeeded, this is not the give-up path.
                 debug!("no more processes to signal");
-                break;
+                return TerminateOutcome::Terminated;
             }
             Ok(BroadcastSignalOutcome::Delivered) => {}
             Err(e) => {
@@ -352,12 +354,18 @@ pub async fn list_child_processes() -> Result<Vec<Pid>, ListChildrenError> {
             trace!("could not read /proc/{pid}/stat (process likely exited)");
             continue;
         };
-        let Some(ppid_str) = stat.split_whitespace().nth(3) else {
-            trace!("/proc/{pid}/stat has unexpected format (missing field 3)");
+        // The second field (comm) may contain spaces and parentheses, so
+        // field counting only becomes reliable after the *last* ')'.
+        // The PPID is the second field after the comm.
+        let Some(ppid_str) = stat
+            .rfind(')')
+            .and_then(|idx| stat[idx + 1..].split_whitespace().nth(1))
+        else {
+            trace!("/proc/{pid}/stat has unexpected format (missing ppid field)");
             continue;
         };
         let Ok(ppid) = ppid_str.parse::<u32>() else {
-            trace!("/proc/{pid}/stat field 3 is not a valid u32: {ppid_str:?}");
+            trace!("/proc/{pid}/stat ppid field is not a valid u32: {ppid_str:?}");
             continue;
         };
         if ppid == INIT_PID {

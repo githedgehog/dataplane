@@ -7,8 +7,8 @@ use bollard::models::{
     RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
-    CreateContainerOptions, InspectContainerOptions, RemoveContainerOptions,
-    RemoveContainerOptionsBuilder, StartContainerOptions,
+    CreateContainerOptions, InspectContainerOptions, RemoveContainerOptionsBuilder,
+    StartContainerOptions,
 };
 use n_vm_protocol::{
     CONTAINER_PLATFORM, ENV_ACCEL, ENV_BACKEND, ENV_IN_TEST_CONTAINER, ENV_MARKER_VALUE,
@@ -444,7 +444,11 @@ async fn ensure_scratch_image(client: &bollard::Docker) -> Result<(), ContainerE
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(&[0u8; 1024]).await;
+        if let Err(e) = stdin.write_all(&[0u8; 1024]).await {
+            // Keep going: the exit-status check below still catches the
+            // failure; this just preserves the underlying I/O cause.
+            tracing::warn!("failed to write empty tar to `docker import` stdin: {e}");
+        }
         // Dropping stdin closes the pipe, signaling EOF to `docker import`.
     }
 
@@ -629,9 +633,10 @@ impl<'a> ContainerGuard<'a> {
     /// Creates a Docker container from the given configuration, starts it,
     /// and returns an armed guard.
     ///
-    /// This combines container creation, starting, and guard construction
-    /// into a single step so that the container is _never_ running without
-    /// a guard to clean it up.
+    /// This combines container creation, guard construction, and starting
+    /// into a single step so that the container _never_ exists without a
+    /// guard to clean it up -- even if the start request fails after the
+    /// container was created.
     ///
     /// A [`CleanupThread`] is spawned that will stand by to force-remove
     /// the container if this guard is dropped without calling
@@ -657,18 +662,25 @@ impl<'a> ContainerGuard<'a> {
             .await
             .map_err(ContainerError::ContainerCreate)?;
 
-        client
-            .start_container(&container.id, None::<StartContainerOptions>)
-            .await
-            .map_err(ContainerError::ContainerStart)?;
-
+        // Arm the guard as soon as the container exists.  If the start
+        // below fails, the guard drops with `defused == false` and the
+        // cleanup thread force-removes the created-but-never-started
+        // container instead of leaking it.
         let cleanup = CleanupThread::spawn(client.clone());
-        Ok(Self {
+        let guard = Self {
             client,
             container_id: container.id,
             cleanup,
             defused: false,
-        })
+        };
+
+        guard
+            .client
+            .start_container(&guard.container_id, None::<StartContainerOptions>)
+            .await
+            .map_err(ContainerError::ContainerStart)?;
+
+        Ok(guard)
     }
 
     /// Streams container stdout/stderr to the host's stdout/stderr until
@@ -746,8 +758,14 @@ impl<'a> ContainerGuard<'a> {
             .state
             .ok_or(ContainerError::MissingState)?;
 
+        // Force removal: if we got here with the container still running
+        // (e.g. the log stream died before the container exited), a plain
+        // remove would fail with HTTP 409 and obscure the real error.
         self.client
-            .remove_container(&self.container_id, None::<RemoveContainerOptions>)
+            .remove_container(
+                &self.container_id,
+                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+            )
             .await
             .map_err(ContainerError::ContainerRemove)?;
 

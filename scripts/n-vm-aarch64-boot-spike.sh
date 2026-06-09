@@ -40,7 +40,7 @@ trap 'rm -rf "${workdir}"; [[ -n "${qemu_pid:-}" ]] && kill "${qemu_pid}" 2>/dev
 
 log() { printf '>>> %s\n' "$*" >&2; }
 
-# ── 1. Resolve the kernel image and emulator ─────────────────────────────
+# -- 1. Resolve the kernel image and emulator -----------------------------
 if [[ -z "${KERNEL:-}" ]]; then
   log "building aarch64 guest kernel (nix) ..."
   kdir="$(nix build -f default.nix pkgs.linux-fancy \
@@ -59,7 +59,7 @@ fi
 [[ -x "${QEMU}" ]] || { log "qemu-system-aarch64 not found: ${QEMU}"; exit 1; }
 log "qemu: ${QEMU}"
 
-# ── 2. Build a tiny static aarch64 init (PID 1) ──────────────────────────
+# -- 2. Build a tiny static aarch64 init (PID 1) --------------------------
 # Prints a boot marker to the console, connects AF_VSOCK to the host
 # (CID 2) on VSOCK_PORT, writes a marker, then powers off via PSCI.
 cat > "${workdir}/init.rs" <<RUST
@@ -155,7 +155,7 @@ rustc -O --target aarch64-unknown-linux-musl \
 ( cd "${workdir}" && mkdir -p iroot/sys && cp init iroot/init && \
   ( cd iroot && find . | cpio -o -H newc 2>/dev/null ) > initramfs.cpio )
 
-# ── 3. Host-side AF_VSOCK listener ───────────────────────────────────────
+# -- 3. Host-side AF_VSOCK listener ---------------------------------------
 # Confirms the guest's vhost-vsock connection actually reached the host.
 cat > "${workdir}/listen.py" <<PY
 import socket, sys
@@ -178,7 +178,7 @@ python3 "${workdir}/listen.py" > "${workdir}/listener.out" 2>&1 &
 listener_pid=$!
 sleep 1
 
-# ── 4. Boot the guest (args mirror the aarch64 QEMU backend) ─────────────
+# -- 4. Boot the guest (args mirror the aarch64 QEMU backend) -------------
 log "booting guest (TCG, virt) ... [${BOOT_TIMEOUT}s timeout]"
 set +e
 timeout "${BOOT_TIMEOUT}" "${QEMU}" \
@@ -200,7 +200,7 @@ wait "${qemu_pid}" || true
 wait "${listener_pid}" || true
 set -e
 
-# ── 5. Verdict ───────────────────────────────────────────────────────────
+# -- 5. Verdict -----------------------------------------------------------
 echo "================= console ================="; cat "${workdir}/console.out" || true
 echo "================ listener ================="; cat "${workdir}/listener.out" || true
 echo "==========================================="

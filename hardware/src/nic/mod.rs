@@ -76,7 +76,7 @@ impl GetDriver for PciNic {
         let driver_path = match device_path.relative("driver") {
             Ok(p) => p,
             Err(SysfsErr::IoError(e)) if e.kind() == ErrorKind::NotFound => {
-                // The `driver` symlink does not exist — no kernel driver
+                // The `driver` symlink does not exist -- no kernel driver
                 // is currently bound to this device.  This is normal for
                 // NIC types whose kernel driver was not loaded or was
                 // already unbound.
@@ -110,10 +110,10 @@ impl std::fmt::Display for PciNic {
 /// Enum describing supported PCI drivers.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr)]
 pub enum PciDriver {
-    /// Intel's e1000 driver (82540EM — QEMU `e1000` device).
+    /// Intel's e1000 driver (82540EM -- QEMU `e1000` device).
     #[strum(serialize = "e1000")]
     E1000,
-    /// Intel's e1000e driver (82574L — QEMU `e1000e` device).
+    /// Intel's e1000e driver (82574L -- QEMU `e1000e` device).
     #[strum(serialize = "e1000e")]
     E1000E,
     /// Intel's i40e driver.

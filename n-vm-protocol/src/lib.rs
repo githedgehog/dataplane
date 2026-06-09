@@ -326,7 +326,10 @@ impl TestResult {
     #[must_use]
     pub fn to_wire(&self) -> String {
         let tag = if self.passed { "pass" } else { "fail" };
+        // Trim so the detail round-trips through `parse`, which trims the
+        // reconstructed detail.
         let detail = self.detail.replace(['\n', '\r'], " ");
+        let detail = detail.trim();
         format!("{prefix} {tag} {detail}\n", prefix = Self::WIRE_PREFIX)
     }
 
@@ -339,11 +342,14 @@ impl TestResult {
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         let body = raw.lines().find_map(|line| {
-            let rest = line.trim().strip_prefix(Self::WIRE_PREFIX)?;
-            // The prefix must be followed by whitespace separating it from
-            // the tag.  Without this boundary a line like `n-it-resultpass`
-            // would falsely strip to a `pass` verdict; a spurious pass is
-            // the dangerous direction for a verdict parser.
+            // The prefix must start the line (no leading whitespace) and be
+            // followed by whitespace separating it from the tag.  Without
+            // these boundaries a line like `n-it-resultpass` -- or an
+            // indented echo of a result line inside other output -- could
+            // falsely strip to a `pass` verdict; a spurious pass is the
+            // dangerous direction for a verdict parser.  A trailing `\r`
+            // (CRLF console transport) is tolerated via the closing trim.
+            let rest = line.strip_prefix(Self::WIRE_PREFIX)?;
             rest.strip_prefix(char::is_whitespace).map(str::trim_start)
         })?;
         let (tag, detail) = match body.split_once(char::is_whitespace) {
@@ -742,5 +748,27 @@ mod tests {
     fn test_result_detail_is_single_line() {
         let wire = TestResult::new(false, "line one\nline two").to_wire();
         assert_eq!(wire.matches('\n').count(), 1, "wire form: {wire:?}");
+    }
+
+    #[test]
+    fn test_result_parse_rejects_indented_prefix() {
+        // A result line must start the line; an indented echo of a result
+        // line inside other output must not be mistaken for a verdict.
+        let raw = format!("  {} pass forged\n", TestResult::WIRE_PREFIX);
+        assert!(
+            TestResult::parse(&raw).is_none(),
+            "an indented prefix must not parse as a verdict",
+        );
+    }
+
+    #[test]
+    fn test_result_padded_detail_round_trips() {
+        let result = TestResult::new(true, "  exit status: 0  ");
+        let parsed = TestResult::parse(&result.to_wire()).expect("should parse");
+        assert_eq!(parsed.detail, "exit status: 0");
+        assert_eq!(
+            parsed,
+            TestResult::parse(&parsed.to_wire()).expect("idempotent")
+        );
     }
 }

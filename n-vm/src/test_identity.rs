@@ -17,17 +17,17 @@ pub(crate) struct TestIdentity {
 impl TestIdentity {
     /// Resolves the test identity from a function type parameter.
     ///
-    /// # Panics
-    ///
-    /// Panics (via `unreachable!`) if `type_name::<F>()` does not contain
-    /// `::`.  This would indicate a change in the compiler's `type_name`
-    /// format that breaks the invariant that function item type names are
-    /// always fully qualified.
+    /// Function item type names are expected to be fully qualified
+    /// (`crate::module::test_fn`); the leading crate segment is stripped
+    /// to produce the `--exact` test name.  `type_name` is documented as
+    /// best-effort with no format guarantee, so a name without `::` is
+    /// used as-is rather than treated as unreachable -- a wrong-but-
+    /// diagnosable test name beats a panic in the harness.
     pub fn resolve<F>() -> Self {
         let full_type_name = std::any::type_name::<F>().trim_start_matches('&');
-        let (_, test_name) = full_type_name.split_once("::").unwrap_or_else(|| {
-            unreachable!("std::any::type_name::<F>() did not contain '::': {full_type_name:?}")
-        });
+        let test_name = full_type_name
+            .split_once("::")
+            .map_or(full_type_name, |(_, rest)| rest);
         Self {
             full_type_name,
             test_name,

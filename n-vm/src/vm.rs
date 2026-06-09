@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use n_vm_protocol::{
     KERNEL_CONSOLE_SOCKET_PATH, TestResult, VIRTIOFS_ROOT_TAG, VIRTIOFSD_BINARY_PATH,
-    VIRTIOFSD_SOCKET_PATH, VM_ROOT_SHARE_PATH, VsockAllocation, VsockChannel, VsockCid, VsockPort,
+    VIRTIOFSD_SOCKET_PATH, VM_GUEST_CID, VM_ROOT_SHARE_PATH, VsockAllocation, VsockChannel,
+    VsockCid, VsockPort,
 };
 use rand::RngExt;
 use tokio::io::AsyncReadExt;
@@ -295,7 +296,7 @@ impl<B: HypervisorBackend> TestVm<B> {
         params
             .vm_config
             .validate_memory_alignment()
-            .unwrap_or_else(|msg| panic!("VM configuration error: {msg}"));
+            .map_err(|reason| VmError::InvalidConfig { reason })?;
 
         // Unsupported capability/ISA combinations (e.g. vIOMMU on aarch64)
         // are resolved to a graceful skip in the host tier before we ever
@@ -459,7 +460,11 @@ async fn drain_or_fallback(handle: JoinHandle<String>, label: &str, timeout: Dur
 fn allocate_vsock_resources() -> VsockAllocation {
     let mut rng = rand::rng();
 
-    let cid = rng.random_range(VsockCid::GUEST_MIN.as_raw()..=VsockCid::GUEST_MAX.as_raw());
+    // CIDs are host-global; skip VM_GUEST_CID (== GUEST_MIN) so dynamic
+    // allocations never collide with the legacy static CID used by
+    // `VsockAllocation::with_defaults()`.
+    let cid_min = VM_GUEST_CID.as_raw() + 1;
+    let cid = rng.random_range(cid_min..=VsockCid::GUEST_MAX.as_raw());
 
     // Reserve trace, stdout, stderr, and result.
     let port_max = VsockPort::DYNAMIC_MAX.as_raw() - 3;

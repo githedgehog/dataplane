@@ -213,12 +213,21 @@ impl HypervisorBackend for Qemu {
 /// The verdict is computed by [`compute_verdict`] from the collected
 /// events and a flag tracking whether any stream-level errors occurred.
 async fn watch_events(mut stream: QmpEventStream) -> (Vec<qapi_qmp::Event>, HypervisorVerdict) {
+    /// Bail out after this many consecutive stream errors.
+    ///
+    /// A persistent error stream (e.g. a QEMU whose event schema
+    /// `qapi_qmp` cannot deserialize) would otherwise keep the watcher
+    /// alive -- and the verdict unresolved -- until the socket closes.
+    const MAX_CONSECUTIVE_ERRORS: u32 = 32;
+
     let mut log = Vec::with_capacity(16);
     let mut had_errors = false;
+    let mut consecutive_errors = 0u32;
 
     loop {
         match stream.next_event().await {
             Ok(Some(event)) => {
+                consecutive_errors = 0;
                 let is_shutdown = matches!(event, qapi_qmp::Event::SHUTDOWN { .. });
                 let is_panic = matches!(event, qapi_qmp::Event::GUEST_PANICKED { .. });
                 log.push(event);
@@ -237,6 +246,14 @@ async fn watch_events(mut stream: QmpEventStream) -> (Vec<qapi_qmp::Event>, Hype
             Err(err) => {
                 warn!("QMP event stream error (marking as failure): {err:#?}");
                 had_errors = true;
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    warn!(
+                        "{MAX_CONSECUTIVE_ERRORS} consecutive QMP event stream errors; \
+                         giving up on the event stream",
+                    );
+                    break;
+                }
             }
         }
     }
@@ -834,15 +851,16 @@ fn push_qmp_args(args: &mut Vec<String>) {
 /// `PlatformConfig.oem_strings`.  Also sets a serial number and UUID
 /// in the system information table (type 1).
 fn push_platform_args(args: &mut Vec<String>, params: &TestVmParams<'_>) {
+    // QEMU's option parser splits on commas; a literal comma in a value is
+    // escaped by doubling it.  Test and binary names normally contain no
+    // commas, but a stray one must not corrupt the argument parse.
+    let bin_name = params.bin_name.replace(',', ",,");
+    let test_name = params.test_name.replace(',', ",,");
     args.extend([
         "-smbios".into(),
         "type=1,serial=dataplane-test,uuid=dff9c8dd-492d-4148-a007-7931f94db852".into(),
         "-smbios".into(),
-        format!(
-            "type=11,value=exe={bin_name},value=test={test_name}",
-            bin_name = params.bin_name,
-            test_name = params.test_name,
-        ),
+        format!("type=11,value=exe={bin_name},value=test={test_name}"),
     ]);
 }
 

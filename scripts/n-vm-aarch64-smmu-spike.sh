@@ -31,7 +31,7 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "${workdir}"; [[ -n "${qemu_pid:-}" ]] && kill "${qemu_pid}" 2>/dev/null || true' EXIT
 log() { printf '>>> %s\n' "$*" >&2; }
 
-# ── Resolve kernel + emulator ────────────────────────────────────────────
+# -- Resolve kernel + emulator --------------------------------------------
 if [[ -z "${KERNEL:-}" ]]; then
   log "building aarch64 guest kernel (must have CONFIG_ARM_SMMU_V3) ..."
   kdir="$(nix build -f default.nix pkgs.linux-fancy \
@@ -47,7 +47,7 @@ fi
 [[ -x "${QEMU}" ]] || { log "qemu-system-aarch64 not found: ${QEMU}"; exit 1; }
 log "kernel: ${KERNEL}"; log "qemu: ${QEMU}"
 
-# ── Tiny init: report SMMU / IOMMU-group / NIC-binding state ─────────────
+# -- Tiny init: report SMMU / IOMMU-group / NIC-binding state -------------
 cat > "${workdir}/init.rs" <<'RUST'
 use std::io::Write;
 use std::os::raw::{c_char, c_int, c_ulong, c_void};
@@ -110,7 +110,7 @@ rustc -O --target aarch64-unknown-linux-musl \
 ( cd "${workdir}" && mkdir -p iroot/sys && cp init iroot/init && \
   ( cd iroot && find . | cpio -o -H newc 2>/dev/null ) > initramfs.cpio )
 
-# ── Boot with the SMMUv3 and an iommu_platform virtio NIC ────────────────
+# -- Boot with the SMMUv3 and an iommu_platform virtio NIC ----------------
 log "booting guest (virt,iommu=smmuv3, TCG) ... [${BOOT_TIMEOUT}s timeout]"
 set +e
 timeout "${BOOT_TIMEOUT}" "${QEMU}" \
@@ -129,7 +129,7 @@ set -e
 echo "================= console ================="; cat "${workdir}/console.out" || true
 echo "==========================================="
 
-# ── Verdict ──────────────────────────────────────────────────────────────
+# -- Verdict --------------------------------------------------------------
 boot_ok=1; smmu_probe=1; smmu_dev=1; groups=1; pci_grouped=1
 grep -q "${BOOT_MARKER}" "${workdir}/console.out" && boot_ok=0
 grep -qiE "arm-smmu-v3" "${workdir}/console.out" && smmu_probe=0
@@ -145,4 +145,4 @@ printf 'SMMU registered (/sys/class/iommu):           %s\n' "$(p ${smmu_dev})"
 printf 'IOMMU groups populated:                       %s\n' "$(p ${groups})"
 printf 'PCI device(s) behind SMMU (vfio-able):        %s\n' "$(p ${pci_grouped})"
 
-[[ ${boot_ok} -eq 0 && ${smmu_dev} -eq 0 && ${groups} -eq 0 && ${pci_grouped} -eq 0 ]]
+[[ ${boot_ok} -eq 0 && ${smmu_probe} -eq 0 && ${smmu_dev} -eq 0 && ${groups} -eq 0 && ${pci_grouped} -eq 0 ]]

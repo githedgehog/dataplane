@@ -55,6 +55,21 @@ use std::time::Duration;
 /// [`run_in_vm`](crate::run_in_vm).
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum VmError {
+    /// The [`VmConfig`](crate::config::VmConfig) failed validation before
+    /// launch (e.g. guest memory not aligned to the hugepage size).
+    #[error("invalid VM configuration: {reason}")]
+    #[diagnostic(
+        code(n_vm::invalid_config),
+        help(
+            "check the #[hypervisor]/#[guest] attribute arguments on the test; \
+              guest memory must be a multiple of the configured hugepage size"
+        )
+    )]
+    InvalidConfig {
+        /// Why the configuration was rejected.
+        reason: String,
+    },
+
     /// `argv[0]` was not available, so the test binary path could not be
     /// determined.
     ///

@@ -8,7 +8,7 @@
 # allnoconfig base, then resolves Kconfig dependencies to produce a fully
 # consistent configuration.
 #
-# The allnoconfig base means every option starts as "n" — only values
+# The allnoconfig base means every option starts as "n" -- only values
 # explicitly requested by the fragments (and options pulled in via Kconfig
 # `select` statements) will be enabled.  This keeps the resulting kernel
 # minimal, but it also means fragments must specify the full `depends on`
@@ -59,7 +59,7 @@ stdenv.mkDerivation ({
   ]
   # When building with the LLVM stdenv, ld.lld must be on PATH for the
   # kernel's Kconfig probing (scripts/Kconfig.include checks for $(LD) by name,
-  # and LLVM=1 sets LD=ld.lld).  The stdenv's cc.bintools is GNU ld — we need
+  # and LLVM=1 sets LD=ld.lld).  The stdenv's cc.bintools is GNU ld -- we need
   # the LLVM bintools wrapper which ships ld.lld.
   ++ lib.optionals stdenv.cc.isClang
     [ (assert llvmPackages != null; llvmPackages.bintools) ]
@@ -68,7 +68,7 @@ stdenv.mkDerivation ({
   # on kernelArch so a native build's derivation stays byte-identical.
   ++ lib.optionals (kernelArch != null && stdenv.cc.isClang) [ llvmPackages.lld ];
 
-  # We only generate a config file — skip build and fixup entirely.
+  # We only generate a config file -- skip build and fixup entirely.
   dontBuild = true;
   dontFixup = true;
 
@@ -99,7 +99,7 @@ stdenv.mkDerivation ({
       chmod u+w fragments/*
 
       echo "Merging ${toString (builtins.length fragments)} config fragment(s) (allnoconfig base)..."
-      # -n: use allnoconfig instead of alldefconfig — every option starts as
+      # -n: use allnoconfig instead of alldefconfig -- every option starts as
       #     "n" so the kernel contains only what fragments explicitly request.
       bash scripts/kconfig/merge_config.sh -n $(ls -v fragments/*)
 

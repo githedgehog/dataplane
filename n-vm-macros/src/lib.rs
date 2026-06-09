@@ -29,6 +29,12 @@
 //! `#[tokio::test]` is accepted on async tests; the macro rewrites it to
 //! `#[test]` and uses its `flavor` / `worker_threads` values when
 //! constructing the guest-tier runtime.
+//!
+//! An `async fn` carrying a plain `#[test]` (which bare rustc would
+//! reject) is also accepted: the macro strips `async` and runs the body
+//! on a current-thread runtime in the guest.  Tests that need tokio's
+//! multi-thread scheduler must say so explicitly via
+//! `#[tokio::test(flavor = "multi_thread")]`.
 
 extern crate proc_macro;
 

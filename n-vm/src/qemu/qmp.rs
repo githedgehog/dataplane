@@ -205,7 +205,11 @@ impl QmpConnection {
         let mut writer = write_half;
 
         // -- Phase 1: read the QMP greeting ---------------------------
-        let greeting = read_line_json::<qapi_qmp::QapiCapabilities>(&mut reader).await?;
+        let greeting =
+            read_line_json::<qapi_qmp::QapiCapabilities>(&mut reader, || QemuError::QmpGreeting {
+                reason: "connection closed before greeting received".into(),
+            })
+            .await?;
 
         let v = &greeting.QMP.version;
         debug!(
@@ -216,7 +220,11 @@ impl QmpConnection {
         // -- Phase 2: negotiate capabilities --------------------------
         send_command(&mut writer, QmpCommandName::QmpCapabilities).await?;
 
-        let msg = read_line_json::<qapi_qmp::QmpMessageAny>(&mut reader).await?;
+        let msg =
+            read_line_json::<qapi_qmp::QmpMessageAny>(&mut reader, || QemuError::QmpNegotiate {
+                reason: "connection closed before capabilities response received".into(),
+            })
+            .await?;
         match msg {
             QmpMessage::Response(resp) => match resp.result() {
                 Ok(_) => {
@@ -373,8 +381,13 @@ impl QmpEventStream {
 
 /// Reads a single newline-delimited JSON message from the buffered
 /// reader and deserializes it into `T`.
+///
+/// `on_eof` supplies the error for a connection closed before a full
+/// message arrived, so each negotiation phase reports an error naming
+/// the phase that actually failed.
 async fn read_line_json<T: serde::de::DeserializeOwned>(
     reader: &mut BufReader<OwnedReadHalf>,
+    on_eof: impl FnOnce() -> QemuError,
 ) -> Result<T, QemuError> {
     let mut line = String::new();
     let bytes_read = reader
@@ -382,9 +395,7 @@ async fn read_line_json<T: serde::de::DeserializeOwned>(
         .await
         .map_err(QemuError::QmpIo)?;
     if bytes_read == 0 {
-        return Err(QemuError::QmpGreeting {
-            reason: "connection closed before message received".into(),
-        });
+        return Err(on_eof());
     }
     let trimmed = line.trim();
     trace!("QMP recv: {trimmed}");

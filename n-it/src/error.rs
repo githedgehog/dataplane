@@ -166,7 +166,11 @@ pub enum BroadcastSignalError {
 pub enum TerminateOutcome {
     /// No child processes were remaining at the time of the call.
     NoneRemaining,
-    /// Child processes were found and all terminated successfully.
+    /// Leaked child processes were found and all of them were cleaned up.
+    ///
+    /// Cleanup itself succeeded, but the test still left processes behind,
+    /// so this outcome is **not** [`is_clean`](Self::is_clean): the test
+    /// result is downgraded to a failure.
     Terminated,
     /// SIGTERM was sent [`MAX_SIGTERM_ATTEMPTS`](crate::child::MAX_SIGTERM_ATTEMPTS)
     /// times but some processes still did not exit.
@@ -174,7 +178,11 @@ pub enum TerminateOutcome {
 }
 
 impl TerminateOutcome {
-    /// Returns `true` if no child processes were remaining (the happy path).
+    /// Returns `true` if the test leaked no child processes (the happy
+    /// path).
+    ///
+    /// [`Terminated`](Self::Terminated) is deliberately *not* clean: even
+    /// though cleanup succeeded, the leak itself is a test failure.
     #[must_use]
     pub fn is_clean(self) -> bool {
         matches!(self, Self::NoneRemaining)
