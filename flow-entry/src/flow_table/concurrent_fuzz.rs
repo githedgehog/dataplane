@@ -24,6 +24,12 @@
 //! that never has two threads simultaneously runnable — always sees real
 //! concurrency, without skipping any shape.
 //!
+//! The per-scenario stub status doubles as a model of `nat`'s shared NAT
+//! pair status (`AtomicNatFlowStatus`, shared between a forward/reverse flow
+//! pair in `MasqueradeState::new_pair`): `Op::AdvanceStatus` advances a
+//! bounded `0..STATE_COUNT` state machine that multiple workers race on, and
+//! every read asserts the byte never escapes that range.
+//!
 //! # No loom
 //!
 //! The whole module is `#[cfg(not(feature = "loom"))]`. [`FlowTable`] is
@@ -60,6 +66,11 @@ use std::time::{Duration, Instant};
 /// `concurrency::sync` atomic, so it is the one piece of state a model
 /// checker definitely sees regardless of which flow a worker hits — it
 /// concentrates the race signal.
+///
+/// It also models `nat`'s [`AtomicNatFlowStatus`]: one status byte shared
+/// between a forward/reverse flow pair (`MasqueradeState::new_pair`),
+/// advanced as a bounded `0..STATE_COUNT` state machine by `Op::AdvanceStatus`.
+/// Concurrent advances race exactly as the two directions of a NAT pair do.
 #[derive(Debug)]
 struct StubItem {
     status: Arc<AtomicU8>,
@@ -69,6 +80,8 @@ impl fmt::Display for StubItem {
         write!(f, "stub({})", self.status.load(Ordering::Relaxed))
     }
 }
+
+const STATE_COUNT: u8 = 10;
 
 /// A single table operation. bolero generates op *streams*, so the
 /// interleaving of ops across worker threads is the source of
@@ -80,7 +93,7 @@ enum Op {
     Invalidate,
     ExtendExpiry,
     ReadStubStatus,
-    FlipStubStatus,
+    AdvanceStatus,
 }
 
 /// One bolero-generated test shape: a key seed plus an op stream for
@@ -189,10 +202,14 @@ fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op
                         .as_ref()
                         .extract_ref::<StubItem>()
                 {
-                    let _ = stub.status.load(Ordering::Relaxed);
+                    // The shared status is only ever advanced within
+                    // 0..STATE_COUNT; an out-of-range byte means a torn write
+                    // or corrupted nat_state.
+                    let v = stub.status.load(Ordering::Relaxed);
+                    assert!(v < STATE_COUNT, "stub status out of range: {v}");
                 }
             }
-            Op::FlipStubStatus => {
+            Op::AdvanceStatus => {
                 if let Some(fi) = table.lookup(k)
                     && let Some(stub) = fi
                         .locked
@@ -201,9 +218,11 @@ fn apply_op(table: &FlowTable, keys: &[FlowKey], stub_status: &Arc<AtomicU8>, op
                         .as_ref()
                         .extract_ref::<StubItem>()
                 {
-                    // Value is arbitrary; we only care that the store
-                    // races with concurrent loads on the same atomic.
-                    stub.status.store(0xA5, Ordering::Relaxed);
+                    // Advance the shared status one step, modelling a packet
+                    // driving the NAT state machine via this flow.
+                    let cur = stub.status.load(Ordering::Relaxed);
+                    stub.status
+                        .store((cur + 1) % STATE_COUNT, Ordering::Relaxed);
                 }
             }
         }
@@ -267,7 +286,8 @@ impl Scenario {
             let _ = v.status();
             let guard = v.locked.read();
             if let Some(stub) = guard.nat_state.as_ref().extract_ref::<StubItem>() {
-                let _ = stub.status.load(Ordering::Relaxed);
+                let s = stub.status.load(Ordering::Relaxed);
+                assert!(s < STATE_COUNT, "stub status out of range: {s}");
             }
         });
     }
