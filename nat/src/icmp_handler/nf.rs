@@ -6,10 +6,9 @@
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
-use net::checksum::Checksum;
 use net::flow_key::flowkey_embedded_in_icmp_error;
-use net::headers::{TryEmbeddedHeaders, TryIcmpAny, TryInnerIpv4, TryIp};
-use net::icmp_any::{IcmpAny, IcmpAnyChecksumPayload};
+use net::headers::TryIcmpAny;
+use net::icmp_any::IcmpAny;
 use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
 use net::icmp6::Icmp6Type;
 use net::packet::{DoneReason, Packet};
@@ -20,6 +19,7 @@ use strum::EnumMessage;
 use tracectl::trace_target;
 use tracing::{debug, warn};
 
+use super::icmp_error_msg::validate_checksums_icmp;
 use crate::common::NatFlowStatus;
 use crate::masquerade::icmp_handling::handle_icmp_error_masquerading;
 use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
@@ -36,52 +36,6 @@ impl IcmpErrorHandler {
     pub fn new(flow_table: Arc<FlowTable>) -> Self {
         Self { flow_table }
     }
-}
-
-/// Validate the checksums for an ICMP packet.
-///
-/// From REQ-3 from RFC 5508, "NAT Behavioral Requirements for ICMP".
-/// NAT should silently discard packet if:
-///    - ICMP checksum fails to validate
-///    - ICMP checksum for embedded packet fails to validate
-///
-/// This function is a variant of `validate_checksums_icmp` that marks packets to be dropped in place.
-/// This function is valid for any ICMP packet, whether it embeds a packet fragment or not, but we only
-/// use it for packets containing ICMP errors and assume that those packets must always include a fragment
-/// of the offending packet.
-/// FIXME(fredi): unify the two functions
-fn icmp_checksums_ok<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> bool {
-    debug_assert!(packet.is_icmp());
-    let icmp = packet.try_icmp_any().unwrap_or_else(|| unreachable!());
-
-    let embedded = packet.embedded_headers();
-    let payload = packet.payload().as_ref();
-    let icmp_payload = icmp.get_payload_for_checksum(embedded, payload);
-
-    let net = packet.try_ip().unwrap_or_else(|| unreachable!());
-    let checksum_payload = IcmpAnyChecksumPayload::from_net(net, icmp_payload.as_ref());
-    if icmp.validate_checksum(&checksum_payload).is_err() {
-        debug!("Checksum failed for ICMP message");
-        packet.done(net::packet::DoneReason::InvalidChecksum);
-        return false;
-    }
-
-    // validate inner packet for icmp error messages
-    if icmp.is_error_message() {
-        let Some(embedded_ip) = packet.embedded_headers() else {
-            debug!("Dropping ICMP error packet: embedded packet missing");
-            packet.done(net::packet::DoneReason::IcmpErrorIncomplete);
-            return false;
-        };
-        if let Some(inner_ipv4) = embedded_ip.try_inner_ipv4()
-            && inner_ipv4.validate_checksum(&()).is_err()
-        {
-            debug!("Dropping ICMP error packet: embedded packet checksum failed");
-            packet.done(net::packet::DoneReason::InvalidChecksum);
-            return false;
-        }
-    }
-    true
 }
 
 /// Tell if the given ICMP error packet is "unrecoverable" in the sense that any flow related to it *may*
@@ -117,7 +71,9 @@ impl IcmpErrorHandler {
         debug!("Processing ICMP error packet from {src_vpcd}");
 
         // drop packet if icmp checksums are not correct
-        if !icmp_checksums_ok(packet) {
+        if let Err(e) = validate_checksums_icmp(packet) {
+            debug!("Checksum validation failed for ICMP packet: {e}");
+            packet.done((&e).into());
             return;
         }
 
@@ -207,9 +163,7 @@ impl IcmpErrorHandler {
         }
 
         // We may also need to apply static NAT to the packet, if static NAT is used on the other
-        // end of the peering. We first need to update the checksums after the previous NAT changes,
-        // or the static NAT processor will fail to validate checksums and won't proceed.
-        packet.update_checksums();
+        // end of the peering.
         packet.meta_mut().set_static_nat_src(true);
         packet.meta_mut().set_static_nat_dst(true);
     }
