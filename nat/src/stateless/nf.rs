@@ -192,7 +192,6 @@ impl StatelessNat {
 
         // ICMP Error messages
         if icmp_err {
-            validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
             modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
         }
 
@@ -267,6 +266,16 @@ impl StatelessNat {
         };
 
         let icmp_err = packet.is_icmp_error_with_embedded_packet();
+
+        // Before NAT-ing ICMP Error packets, we should validate the following checksums:
+        //
+        // - The outer IP header checksum, in the case of IPv4
+        // - The ICMP header checksum
+        // - The inner IPv4 header checksum, if any
+        //
+        // We don't do it here because we checked the outer IPv4 checksum when receiving the packet,
+        // and we assume the packet has gone through the ICMP Error handler pipeline stage where the
+        // ICMP checksum and inner IPv4 checksum have been validated already.
 
         if packet.meta().requires_static_nat_src() && !packet.meta().is_src_natted() {
             modified |= self.source_nat(table, packet, icmp_err, dst_vni)?;
