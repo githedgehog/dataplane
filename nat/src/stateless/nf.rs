@@ -7,14 +7,10 @@ use super::setup::tables::{NatTables, PerVniTable};
 use crate::NatPort;
 use crate::icmp_handler::icmp_error_msg::{
     IcmpErrorMsgError, nat_translate_icmp_inner_dst, nat_translate_icmp_inner_src,
-    validate_checksums_icmp,
 };
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
-use net::headers::{
-    Net, NetError, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp, TryIp,
-    TryIpMut, TryTcpUdpMut,
-};
+use net::headers::{Net, NetError, TryEmbeddedTransport, TryInnerIp, TryIpMut, TryTcpUdpMut};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp_udp::TcpUdpMut;
@@ -112,19 +108,6 @@ impl StatelessNat {
         transport.set_dst_port(new_port);
     }
 
-    // Is this an ICMP error packet that contains an embedded IP packet?
-    fn is_icmp_inner_translation_candidate<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-        // If no network layer, no translation needed
-        packet.try_ip().is_some()
-        // If not ICMPv4 or ICMPv6, no translation needed
-        && packet.try_icmp_any().is_some_and(|icmp| {
-            // If not an ICMP error message, no translation needed
-            icmp.is_error_message()
-        })
-        // If no embedded IP packet, no translation needed
-        && packet.embedded_headers().is_some()
-    }
-
     fn translate_icmp_inner_packet_src_if_any<Buf: PacketBufferMut>(
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
@@ -176,6 +159,7 @@ impl StatelessNat {
         &self,
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
+        icmp_err: bool,
         dst_vni: Vni,
     ) -> Result<bool, StatelessNatError> {
         let nfi = self.name();
@@ -207,7 +191,7 @@ impl StatelessNat {
         }
 
         // ICMP Error messages
-        if Self::is_icmp_inner_translation_candidate(packet) {
+        if icmp_err {
             validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
             modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
         }
@@ -222,6 +206,7 @@ impl StatelessNat {
         &self,
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
+        icmp_err: bool,
     ) -> Result<bool, StatelessNatError> {
         let nfi = self.name();
         let mut modified = false;
@@ -252,7 +237,7 @@ impl StatelessNat {
         }
 
         // ICMP Error messages
-        if Self::is_icmp_inner_translation_candidate(packet) {
+        if icmp_err {
             modified |= Self::translate_icmp_inner_packet_src_if_any(table, packet)?;
         }
 
@@ -281,11 +266,13 @@ impl StatelessNat {
             return Err(StatelessNatError::MissingTable(src_vni));
         };
 
+        let icmp_err = packet.is_icmp_error_with_embedded_packet();
+
         if packet.meta().requires_static_nat_src() && !packet.meta().is_src_natted() {
-            modified |= self.source_nat(table, packet, dst_vni)?;
+            modified |= self.source_nat(table, packet, icmp_err, dst_vni)?;
         }
         if packet.meta().requires_static_nat_dst() && !packet.meta().is_dst_natted() {
-            modified |= self.destination_nat(table, packet)?;
+            modified |= self.destination_nat(table, packet, icmp_err)?;
         }
         Ok(modified)
     }
