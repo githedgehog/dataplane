@@ -23,6 +23,8 @@ use std::num::NonZero;
 pub enum IcmpErrorMsgError {
     #[error("failure to get IP header")]
     NoIpHeader,
+    #[error("not an ICMP packet")]
+    NotIcmp,
     #[error("failure to get embedded headers")]
     NoEmbeddedHeaders,
     #[error("failure to get inner IP header")]
@@ -37,33 +39,43 @@ pub enum IcmpErrorMsgError {
     InvalidIpVersion,
     #[error("IP address {0} is not unicast")]
     NotUnicast(IpAddr),
-    #[error("no translation possible")]
-    NoTranslationPossible,
 }
 
 impl From<&IcmpErrorMsgError> for DoneReason {
     fn from(error: &IcmpErrorMsgError) -> Self {
         match error {
             IcmpErrorMsgError::NoIpHeader => DoneReason::NotIp,
-            IcmpErrorMsgError::InvalidPort(_) => DoneReason::Malformed,
-            IcmpErrorMsgError::NotUnicast(_) => DoneReason::NatFailure,
-            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NoTranslationPossible => {
+            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NotIcmp => {
                 DoneReason::InternalFailure
             }
+            IcmpErrorMsgError::InvalidPort(_) => DoneReason::Malformed,
+            IcmpErrorMsgError::NotUnicast(_) => DoneReason::NatFailure,
             IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_) => {
                 DoneReason::InvalidChecksum
             }
             IcmpErrorMsgError::NoEmbeddedHeaders | IcmpErrorMsgError::NoInnerIpHeader => {
-                DoneReason::Filtered
+                DoneReason::IcmpErrorIncomplete
             }
         }
     }
 }
 
-// # Return
-//
-// * `Ok(())` if checksums are valid and we can translate the inner packet
-// * An error if we fail to validate relevant checksums and packet should be dropped
+impl From<IcmpErrorMsgError> for DoneReason {
+    fn from(error: IcmpErrorMsgError) -> Self {
+        (&error).into()
+    }
+}
+
+/// Validate the checksums for an ICMP packet.
+///
+/// From REQ-3 from RFC 5508, "NAT Behavioral Requirements for ICMP".
+/// NAT should silently discard packet if:
+///
+///    - ICMP checksum fails to validate
+///    - ICMP checksum for embedded packet fails to validate
+///
+/// This function is valid for any ICMP packet, whether it embeds a packet fragment or not. However,
+/// we expect ICMP Error messages to always include a fragment of the offending packet.
 pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
     packet: &Packet<Buf>,
 ) -> Result<(), IcmpErrorMsgError> {
@@ -71,34 +83,26 @@ pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
         return Err(IcmpErrorMsgError::NoIpHeader);
     };
     let Some(icmp) = packet.try_icmp_any() else {
-        return Err(IcmpErrorMsgError::NoTranslationPossible);
+        return Err(IcmpErrorMsgError::NotIcmp);
     };
-    if !icmp.is_error_message() {
-        return Err(IcmpErrorMsgError::NoTranslationPossible);
-    }
 
-    let icmp_payload =
-        icmp.get_payload_for_checksum(packet.embedded_headers(), packet.payload().as_ref());
+    let embedded = packet.embedded_headers();
+    let payload = packet.payload().as_ref();
+    let icmp_payload = icmp.get_payload_for_checksum(embedded, payload);
     let checksum_payload = IcmpAnyChecksumPayload::from_net(net, icmp_payload.as_ref());
 
-    // From REQ-3 from RFC 5508, "NAT Behavioral Requirements for ICMP":
-    //
-    //    When an ICMP Error packet is received, if the ICMP checksum fails to validate, the NAT
-    //    SHOULD silently drop the ICMP Error packet.
-    icmp.validate_checksum(&checksum_payload)
-        .map_err(|e| IcmpErrorMsgError::BadChecksumIcmp(e.into()))?;
+    if let Err(e) = icmp.validate_checksum(&checksum_payload) {
+        return Err(IcmpErrorMsgError::BadChecksumIcmp(e.into()));
+    }
 
+    if !icmp.is_error_message() {
+        return Ok(());
+    }
+
+    // Validate inner packet for ICMP Error messages
     let Some(embedded_ip) = packet.embedded_headers() else {
-        // No embedded IP packet to translate
-        return Err(IcmpErrorMsgError::NoTranslationPossible);
+        return Err(IcmpErrorMsgError::NoEmbeddedHeaders);
     };
-
-    // From REQ-3 a) from RFC 5508, "NAT Behavioral Requirements for ICMP":
-    //
-    //    If the IP checksum of the embedded packet fails to validate, the NAT SHOULD silently
-    //    drop the Error packet
-    //
-    // Note: IPv6 headers have no checksum so we only do IPv4
     if let Some(inner_ipv4) = embedded_ip.try_inner_ipv4() {
         inner_ipv4
             .validate_checksum(&())
@@ -330,7 +334,7 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
+        assert_eq!(result, Err(IcmpErrorMsgError::NotIcmp));
     }
 
     #[test]
@@ -357,7 +361,23 @@ mod tests {
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
+        assert_eq!(result, Err(IcmpErrorMsgError::NotIcmp));
+    }
+
+    fn get_buffer_for_checksum_test(headers: &net::headers::Headers) -> TestBuffer {
+        // Fill the buffer with zeroes.
+        //
+        // This is for tests that build an ICMP Error message with no embedded packet fragment, and
+        // validate its checksum. To do so, we prepare a packet by building the headers, setting the
+        // checksum, then deparsing to a buffer. The checksum for ICMP is computed on the header and
+        // the data, and when we set it (icmp.update_checksum(&[])), we pass a pointer to the data.
+        // In such tests, there is no embedded packet fragment, so the data is null (&[]). When we
+        // deparse the packet, we write the headers to a buffer: If we create the buffer with
+        // TestBuffer::new(), it's not filled with zeroes, but with some data simulating some random
+        // payload. Instead, create a buffer filled with zeroes, so that any trailing data does not
+        // mess up with checksum computation.
+        let data = vec![0u8; headers.size().get() as usize];
+        TestBuffer::from_raw_data(&data)
     }
 
     #[test]
@@ -369,19 +389,20 @@ mod tests {
         ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
         ipv4.set_next_header(NextHeader::ICMP);
 
-        let icmp = Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 1, seq: 1 }));
+        let mut icmp = Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 1, seq: 1 }));
+        icmp.update_checksum(&[]).unwrap();
 
         headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         headers.net(Some(Net::Ipv4(ipv4)));
         headers.transport(Some(Transport::Icmp4(icmp)));
 
         let headers = headers.build().unwrap();
-        let mut buffer = TestBuffer::new();
+        let mut buffer = get_buffer_for_checksum_test(&headers);
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
+        assert_eq!(result, Ok(()));
     }
 
     #[test]
@@ -401,26 +422,12 @@ mod tests {
         headers.transport(Some(Transport::Icmp4(icmp)));
 
         let headers = headers.build().unwrap();
-
-        // Fill the buffer with zeroes.
-        //
-        // The test builds an ICMP Error message with no embedded packet fragment, and validates its
-        // checksum. To do so, we prepare a packet by building the headers, setting the checksum,
-        // then deparsing to a buffer. The checksum for ICMP is computed on the header and the data,
-        // and when we set it (icmp.update_checksum(&[])), we pass a pointer to the data. In this
-        // test, there is no embedded packet fragment, so the data is null (&[]). When we deparse
-        // the packet, we write the headers to a buffer: If we create the buffer with
-        // TestBuffer::new(), it's not filled with zeroes, but with some data simulating some random
-        // payload. Instead, create a buffer filled with zeroes, so that any trailing data does not
-        // mess up with checksum computation.
-        let data = vec![0u8; headers.size().get() as usize];
-        let mut buffer = TestBuffer::from_raw_data(&data);
-
+        let mut buffer = get_buffer_for_checksum_test(&headers);
         headers.deparse(buffer.as_mut()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NoTranslationPossible));
+        assert_eq!(result, Err(IcmpErrorMsgError::NoEmbeddedHeaders));
     }
 }
 
