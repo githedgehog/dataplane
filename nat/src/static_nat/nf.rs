@@ -361,7 +361,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StaticNat {
                 // Skip if the packet was already NAT-ed; although, in the case of ICMP Error
                 // messages, we may have to apply static NAT in addition to masquerade or port
                 // forwarding applied by the ICMP Error messages handler.
-                && (!packet.meta().is_natted() || packet.is_icmp_error())
+                && (!packet.meta().is_natted() || packet.is_icmp_error_with_embedded_packet())
             {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
                 debug_assert!(packet.meta().is_overlay());
