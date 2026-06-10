@@ -215,7 +215,7 @@ tracing-test = { version = "0.2.6", default-features = false, features = [] }
 tracing-throttle = { version = "0.4.2", default-features = false, features = [] }
 ureq = { version = "3.3.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
-uuid = { version = "1.23.2", default-features = false, features = [] }
+uuid = { version = "1.23.3", default-features = false, features = [] }
 
 # NOTE: panic strategy is intentionally left unset here.
 #
