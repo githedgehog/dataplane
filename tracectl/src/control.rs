@@ -26,10 +26,19 @@ use crate::targets::{TRACING_TAG_ALL, TRACING_TARGETS};
 use crate::trace_target;
 trace_target!("tracectl", LevelFilter::INFO, &[]);
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TracingRateLimitConfig {
     pub burst: u32,
     pub replenish_per_second: u32,
+}
+
+impl Default for TracingRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            burst: 50,
+            replenish_per_second: 5,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Error, PartialEq)]
@@ -309,7 +318,10 @@ impl AtomicEnvFilter {
     }
 
     fn reload(&self, new: EnvFilter) {
-        self.inner.store(std::sync::Arc::new(new)); // nosemgrep: rust-no-direct-std-sync-import
+        // The concurrency facade `Arc` is std-backed under tracectl's
+        // (non-model-checker) backend, which is exactly what `ArcSwap::store`
+        // accepts — so we go through the facade rather than importing directly.
+        self.inner.store(Arc::new(new));
         callsite::rebuild_interest_cache();
     }
 }
@@ -385,13 +397,20 @@ where
 /// `Arc<ArcSwap<Option<TracingRateLimitLayer>>>`.
 ///
 /// `None` means "no throttling": every event passes. [`reload`](Self::reload)
-/// builds a brand-new layer (with fresh token buckets) from the new config and
-/// swaps it in atomically, or stores `None` to disable throttling entirely.
-/// A `Some(config)` that fails to build falls back to `None` (unthrottled),
-/// mirroring the init-time behavior of [`TracingControl::build_rate_limit_layer`].
+/// swaps in a brand-new layer (with fresh token buckets) *when the config
+/// changes*, or stores `None` to disable throttling entirely; an unchanged
+/// config is a no-op, so live bucket state survives repeated applies of the
+/// same config. A `Some(config)` that fails to build falls back to `None`
+/// (unthrottled), mirroring the init-time behavior of
+/// [`TracingControl::build_rate_limit_layer`].
 #[derive(Clone)]
 struct AtomicThrottle {
     inner: Arc<ArcSwap<Option<TracingRateLimitLayer>>>,
+    /// The config the current layer was built from. `reload` compares against
+    /// it so an unchanged config is a no-op: rebuilding would reset the token
+    /// buckets and hand out a fresh burst on every management re-apply of the
+    /// same config, which would weaken throttling.
+    current: Arc<Mutex<Option<TracingRateLimitConfig>>>,
 }
 
 impl AtomicThrottle {
@@ -400,16 +419,24 @@ impl AtomicThrottle {
             inner: Arc::new(ArcSwap::from_pointee(
                 TracingControl::build_rate_limit_layer(config),
             )),
+            current: Arc::new(Mutex::new(config)),
         }
     }
 
-    /// Swap the active throttle. `Some(config)` installs a freshly-built
-    /// token-bucket layer; `None` removes throttling. Infallible: a config
-    /// that fails to build degrades to unthrottled.
+    /// Swap the active throttle when the config changes. `Some(config)`
+    /// installs a freshly-built token-bucket layer; `None` removes throttling.
+    /// Idempotent: an unchanged config is a no-op, preserving live bucket
+    /// state. Infallible: a config that fails to build degrades to unthrottled.
     fn reload(&self, config: Option<TracingRateLimitConfig>) {
-        self.inner.store(std::sync::Arc::new(
-            TracingControl::build_rate_limit_layer(config),
-        )); // nosemgrep: rust-no-direct-std-sync-import
+        let mut current = self.current.lock();
+        if *current == config {
+            return;
+        }
+        // See `AtomicEnvFilter::reload`: the facade `Arc` is what
+        // `ArcSwap::store` accepts here, so no direct import is needed.
+        self.inner
+            .store(Arc::new(TracingControl::build_rate_limit_layer(config)));
+        *current = config;
         callsite::rebuild_interest_cache();
     }
 }
@@ -654,8 +681,10 @@ impl TracingControl {
 
     /// Reload (or disable) the tracing rate limiter at runtime.
     ///
-    /// `Some(config)` swaps in a freshly-built token-bucket layer (with fresh
-    /// buckets — a reload grants a new burst allowance); `None` removes
+    /// `Some(config)` swaps in a freshly-built token-bucket layer when the
+    /// config differs from the active one (a changed config resets buckets to a
+    /// fresh burst); an unchanged config is a no-op, so repeatedly re-applying
+    /// the same config does not keep resetting buckets. `None` removes
     /// throttling so every event passes. Infallible: like init, a config that
     /// fails to build degrades to unthrottled. This is the hook a config/CRD
     /// handler calls when the rate-limit parameters change, analogous to
@@ -1182,13 +1211,39 @@ mod tests {
             }
 
             // Phase 2 — install a small-burst throttle and reload the layer.
-            throttle.reload(Some(TracingRateLimitConfig {
+            let cfg = TracingRateLimitConfig {
                 burst: BURST,
                 replenish_per_second: 1,
-            }));
-            for _ in 0..EMITTED {
-                tracing::info!("{P2_ON}");
-            }
+            };
+            throttle.reload(Some(cfg));
+            // Emit through a single callsite so the two bursts below share one
+            // token bucket (the throttle keys buckets by callsite + fields); a
+            // fresh callsite would get its own bucket and hide the bug.
+            let emit_p2 = || {
+                for _ in 0..EMITTED {
+                    tracing::info!("{P2_ON}");
+                }
+            };
+            let p2_passed = || {
+                String::from_utf8(buf.lock().unwrap().clone())
+                    .unwrap()
+                    .matches(P2_ON)
+                    .count()
+            };
+            emit_p2();
+            let p2_first = p2_passed();
+
+            // Phase 2b — reload with the *identical* config. This must be a
+            // no-op (idempotent): the bucket is not refilled, so a second burst
+            // through the same callsite stays throttled rather than receiving a
+            // fresh BURST allowance.
+            throttle.reload(Some(cfg));
+            emit_p2();
+            let p2_second = p2_passed() - p2_first;
+            assert!(
+                p2_second < BURST as usize,
+                "idempotent reload granted a fresh burst: 2nd burst passed {p2_second}, expected < BURST ({BURST})"
+            );
 
             // Phase 3 — remove the throttle again: every INFO event must pass.
             throttle.reload(None);
