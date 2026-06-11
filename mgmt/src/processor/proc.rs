@@ -35,7 +35,7 @@ use crate::processor::mgmt_client::{
 
 use crate::vpc_manager::{RequiredInformationBase, VpcManager};
 use rekon::{Observe, Reconcile};
-use tracectl::get_trace_ctl;
+use tracectl::{TracingRateLimitConfig, get_trace_ctl};
 use tracing::{debug, error, info, warn};
 
 use net::interface::display::MultiIndexInterfaceMapView;
@@ -557,6 +557,10 @@ fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
             .iter()
             .map(|(tag, level)| (tag.as_str(), *level)),
     )?;
+    get_trace_ctl().reload_rate_limit(Some(TracingRateLimitConfig {
+        burst: tracing.rate_limit.burst,
+        replenish_per_second: tracing.rate_limit.replenish_per_second,
+    }));
     debug!("Successfully reconfigured tracing");
     Ok(())
 }

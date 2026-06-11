@@ -50,12 +50,13 @@ fn init_name(args: &CmdArgs) -> Result<String, String> {
     }
 }
 fn init_logging(args: &CmdArgs, gwname: &str) {
-    TracingControl::init_with_rate_limit(args.tracing_rate_limit().map(|rate_limit| {
-        TracingRateLimitConfig {
+    TracingControl::init_with_rate_limit(Some(args.tracing_rate_limit().map_or_else(
+        TracingRateLimitConfig::default,
+        |rate_limit| TracingRateLimitConfig {
             burst: rate_limit.burst,
             replenish_per_second: rate_limit.replenish_per_second,
-        }
-    }));
+        },
+    )));
 
     let tctl = get_trace_ctl();
     info!(
