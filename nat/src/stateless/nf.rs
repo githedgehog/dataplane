@@ -7,14 +7,10 @@ use super::setup::tables::{NatTables, PerVniTable};
 use crate::NatPort;
 use crate::icmp_handler::icmp_error_msg::{
     IcmpErrorMsgError, nat_translate_icmp_inner_dst, nat_translate_icmp_inner_src,
-    validate_checksums_icmp,
 };
 pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
-use net::headers::{
-    Net, NetError, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp, TryIp,
-    TryIpMut, TryTcpUdpMut,
-};
+use net::headers::{Net, NetError, TryEmbeddedTransport, TryInnerIp, TryIpMut, TryTcpUdpMut};
 use net::ip::UnicastIpAddr;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::tcp_udp::TcpUdpMut;
@@ -112,19 +108,6 @@ impl StatelessNat {
         transport.set_dst_port(new_port);
     }
 
-    // Is this an ICMP error packet that contains an embedded IP packet?
-    fn is_icmp_inner_translation_candidate<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-        // If no network layer, no translation needed
-        packet.try_ip().is_some()
-        // If not ICMPv4 or ICMPv6, no translation needed
-        && packet.try_icmp_any().is_some_and(|icmp| {
-            // If not an ICMP error message, no translation needed
-            icmp.is_error_message()
-        })
-        // If no embedded IP packet, no translation needed
-        && packet.embedded_headers().is_some()
-    }
-
     fn translate_icmp_inner_packet_src_if_any<Buf: PacketBufferMut>(
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
@@ -176,6 +159,7 @@ impl StatelessNat {
         &self,
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
+        icmp_err: bool,
         dst_vni: Vni,
     ) -> Result<bool, StatelessNatError> {
         let nfi = self.name();
@@ -207,8 +191,7 @@ impl StatelessNat {
         }
 
         // ICMP Error messages
-        if Self::is_icmp_inner_translation_candidate(packet) {
-            validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
+        if icmp_err {
             modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
         }
 
@@ -222,6 +205,7 @@ impl StatelessNat {
         &self,
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
+        icmp_err: bool,
     ) -> Result<bool, StatelessNatError> {
         let nfi = self.name();
         let mut modified = false;
@@ -252,7 +236,7 @@ impl StatelessNat {
         }
 
         // ICMP Error messages
-        if Self::is_icmp_inner_translation_candidate(packet) {
+        if icmp_err {
             modified |= Self::translate_icmp_inner_packet_src_if_any(table, packet)?;
         }
 
@@ -281,11 +265,23 @@ impl StatelessNat {
             return Err(StatelessNatError::MissingTable(src_vni));
         };
 
+        let icmp_err = packet.is_icmp_error_with_embedded_packet();
+
+        // Before NAT-ing ICMP Error packets, we should validate the following checksums:
+        //
+        // - The outer IP header checksum, in the case of IPv4
+        // - The ICMP header checksum
+        // - The inner IPv4 header checksum, if any
+        //
+        // We don't do it here because we checked the outer IPv4 checksum when receiving the packet,
+        // and we assume the packet has gone through the ICMP Error handler pipeline stage where the
+        // ICMP checksum and inner IPv4 checksum have been validated already.
+
         if packet.meta().requires_static_nat_src() && !packet.meta().is_src_natted() {
-            modified |= self.source_nat(table, packet, dst_vni)?;
+            modified |= self.source_nat(table, packet, icmp_err, dst_vni)?;
         }
         if packet.meta().requires_static_nat_dst() && !packet.meta().is_dst_natted() {
-            modified |= self.destination_nat(table, packet)?;
+            modified |= self.destination_nat(table, packet, icmp_err)?;
         }
         Ok(modified)
     }
@@ -361,7 +357,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
                 // Skip if the packet was already NAT-ed; although, in the case of ICMP Error
                 // messages, we may have to apply static NAT in addition to masquerade or port
                 // forwarding applied by the ICMP Error messages handler.
-                && (!packet.meta().is_natted() || packet.is_icmp_error())
+                && (!packet.meta().is_natted() || packet.is_icmp_error_with_embedded_packet())
             {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
                 debug_assert!(packet.meta().is_overlay());
