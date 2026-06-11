@@ -32,6 +32,15 @@ pub struct TracingRateLimitConfig {
     pub replenish_per_second: u32,
 }
 
+impl Default for TracingRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            burst: 50,
+            replenish_per_second: 5,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TraceCtlError {
     #[error("Unknown tag {0}")]
@@ -407,9 +416,10 @@ impl AtomicThrottle {
     /// token-bucket layer; `None` removes throttling. Infallible: a config
     /// that fails to build degrades to unthrottled.
     fn reload(&self, config: Option<TracingRateLimitConfig>) {
-        self.inner.store(std::sync::Arc::new(
-            TracingControl::build_rate_limit_layer(config),
-        )); // nosemgrep: rust-no-direct-std-sync-import
+        self.inner
+            .store(std::sync::Arc::new(TracingControl::build_rate_limit_layer(
+                config,
+            ))); // nosemgrep: rust-no-direct-std-sync-import
         callsite::rebuild_interest_cache();
     }
 }
