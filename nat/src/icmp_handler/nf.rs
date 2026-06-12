@@ -6,11 +6,11 @@
 
 use flow_entry::flow_table::FlowTable;
 use net::buffer::PacketBufferMut;
-use net::flow_key::flowkey_embedded_in_icmp_error;
 use net::headers::TryIcmpAny;
 use net::icmp_any::IcmpAny;
 use net::icmp4::{Icmp4DestUnreachable, Icmp4Type};
 use net::icmp6::Icmp6Type;
+use net::packet::icmp_err::IcmpErrorPacket;
 use net::packet::{DoneReason, Packet};
 
 use concurrency::sync::Arc;
@@ -19,7 +19,6 @@ use strum::EnumMessage;
 use tracectl::trace_target;
 use tracing::{debug, warn};
 
-use super::icmp_error_msg::validate_checksums_icmp;
 use crate::common::NatFlowStatus;
 use crate::masquerade::icmp_handling::handle_icmp_error_masquerading;
 use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
@@ -62,6 +61,12 @@ fn is_icmp_unrecoverable<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) -> (boo
 
 impl IcmpErrorHandler {
     fn handle_icmp_error_msg<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
+        let Some(icmp_error_packet) = IcmpErrorPacket::new(packet) else {
+            debug!("Dropping ICMP error packet: could not parse it as ICMP error");
+            packet.done(DoneReason::IcmpErrorIncomplete);
+            return;
+        };
+
         // check origin of icmp error packet
         let Some(src_vpcd) = packet.meta().src_vpcd else {
             debug!("Dropping ICMP error packet: no src vpc discriminant");
@@ -70,10 +75,16 @@ impl IcmpErrorHandler {
         };
         debug!("Processing ICMP error packet from {src_vpcd}");
 
-        // drop packet if icmp checksums are not correct
-        if let Err(e) = validate_checksums_icmp(packet) {
+        // From REQ-3 from RFC 5508, "NAT Behavioral Requirements for ICMP".
+        // NAT should silently discard packet if:
+        //
+        //    - ICMP checksum fails to validate
+        //    - ICMP checksum for embedded packet fails to validate
+        //
+        // Drop packet if ICMP checksums are not correct
+        if let Err(e) = icmp_error_packet.validate_checksums() {
             debug!("Checksum validation failed for ICMP packet: {e}");
-            packet.done((&e).into());
+            packet.done(DoneReason::InvalidChecksum);
             return;
         }
 
@@ -88,7 +99,7 @@ impl IcmpErrorHandler {
         //    1) build a flow key for the offending packet and REVERSE it
         //    2) look up the flow table for a flow in the reverse path of the offending packet.
 
-        let flow_key = match flowkey_embedded_in_icmp_error(packet) {
+        let flow_key = match icmp_error_packet.embedded_flowkey() {
             Ok(flow_key) => flow_key,
             Err(e) => {
                 debug!("Could not build flow key for ICMP-error inner packet: {e}");
