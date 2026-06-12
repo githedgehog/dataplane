@@ -193,6 +193,19 @@ impl PrefixPortsSet {
             .map(PrefixWithOptionalPorts::size)
             .sum::<PrefixWithPortsSize>()
     }
+
+    /// Returns true if all prefixes in the set have the same IP version (all IPv4 or all IPv6).
+    #[must_use]
+    pub fn has_consistent_ip_version(&self) -> bool {
+        let mut prefixes_iter = self.0.iter().map(PrefixWithOptionalPorts::prefix);
+        match prefixes_iter.next() {
+            None => true,
+            Some(first) => {
+                let is_ipv4 = first.is_ipv4();
+                prefixes_iter.all(|x| x.is_ipv4() == is_ipv4)
+            }
+        }
+    }
 }
 
 impl IntoIterator for PrefixPortsSet {
