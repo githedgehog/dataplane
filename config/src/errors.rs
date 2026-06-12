@@ -76,6 +76,8 @@ pub enum ConfigError {
     OverlappingPrefixes(PrefixWithOptionalPorts, PrefixWithOptionalPorts),
     #[error("Inconsistent IP version in VpcExpose: {0}")]
     InconsistentIpVersion(Box<VpcExpose>),
+    #[error("Invalid ACL configuration: {0}")]
+    InvalidAcl(String),
     // NAT-specific
     #[error("Mismatched prefixes sizes for static NAT: {0:?} and {1:?}")]
     MismatchedPrefixSizes(PrefixWithPortsSize, PrefixWithPortsSize),
