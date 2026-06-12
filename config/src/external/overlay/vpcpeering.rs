@@ -611,7 +611,7 @@ impl VpcManifest {
 
     #[must_use]
     pub fn default_expose(&self) -> Option<&VpcExpose> {
-        self.exposes.iter().find(|expose| expose.default)
+        self.exposes.iter().find(|expose| expose.is_default())
     }
 
     /// FOR TESTS ONLY. Fake validation for the manifest.
@@ -643,6 +643,11 @@ impl VpcManifest {
     #[must_use]
     pub fn valexp(&self) -> &[VpcExpose] {
         &self.exposes
+    }
+
+    #[must_use]
+    pub fn has_default_expose(&self) -> bool {
+        self.valexp().iter().any(VpcExpose::is_default)
     }
 
     fn filter_exposes<F>(&self, predicate: F) -> impl Iterator<Item = &VpcExpose>
@@ -741,6 +746,24 @@ impl VpcManifest {
             }
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn all_ips(&self) -> PrefixPortsSet {
+        self.valexp()
+            .iter()
+            .fold(PrefixPortsSet::new(), |acc, valexp| {
+                acc.union_prefixes_and_ports(valexp.ips())
+            })
+    }
+
+    #[must_use]
+    pub fn all_public_ips(&self) -> PrefixPortsSet {
+        self.valexp()
+            .iter()
+            .fold(PrefixPortsSet::new(), |acc, valexp| {
+                acc.union_prefixes_and_ports(valexp.public_ips())
+            })
     }
 }
 
