@@ -231,6 +231,18 @@ impl DeParse for TruncatedUdp {
     }
 }
 
+impl From<Udp> for TruncatedUdp {
+    fn from(udp: Udp) -> Self {
+        TruncatedUdp::FullHeader(udp)
+    }
+}
+
+impl From<TruncatedUdpHeader> for TruncatedUdp {
+    fn from(header: TruncatedUdpHeader) -> Self {
+        TruncatedUdp::PartialHeader(header)
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::{TruncatedUdp, TruncatedUdpHeader, Udp};

@@ -669,6 +669,34 @@ impl DeParse for EmbeddedTransport {
     }
 }
 
+#[cfg(test)]
+use crate::icmp4::{Icmp4, TruncatedIcmp4Header};
+#[cfg(test)]
+use crate::icmp6::{Icmp6, TruncatedIcmp6Header};
+#[cfg(test)]
+use crate::tcp::{Tcp, TruncatedTcpHeader};
+#[cfg(test)]
+use crate::udp::TruncatedUdpHeader;
+
+macro_rules! impl_from_for_variant {
+    ($src:ty, $variant:ident, $inner:ty) => {
+        #[cfg(test)]
+        impl From<$src> for EmbeddedTransport {
+            fn from(val: $src) -> Self {
+                EmbeddedTransport::$variant(<$inner>::from(val))
+            }
+        }
+    };
+}
+impl_from_for_variant!(Tcp, Tcp, TruncatedTcp);
+impl_from_for_variant!(TruncatedTcpHeader, Tcp, TruncatedTcp);
+impl_from_for_variant!(Udp, Udp, TruncatedUdp);
+impl_from_for_variant!(TruncatedUdpHeader, Udp, TruncatedUdp);
+impl_from_for_variant!(Icmp4, Icmp4, TruncatedIcmp4);
+impl_from_for_variant!(TruncatedIcmp4Header, Icmp4, TruncatedIcmp4);
+impl_from_for_variant!(Icmp6, Icmp6, TruncatedIcmp6);
+impl_from_for_variant!(TruncatedIcmp6Header, Icmp6, TruncatedIcmp6);
+
 // ---------------------------------------------------------------------------
 // Try* accessor traits -- definitions + concrete impls on EmbeddedHeaders
 // ---------------------------------------------------------------------------
