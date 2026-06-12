@@ -182,6 +182,16 @@ impl PrefixPortsSet {
         result
     }
 
+    /// Given two [`PrefixPortsSet`] objects, returns the set containing the union of prefixes with
+    /// their associated ports.
+    #[must_use]
+    pub fn union_prefixes_and_ports(&self, other: &PrefixPortsSet) -> PrefixPortsSet {
+        self.iter()
+            .copied()
+            .chain(other.iter().copied())
+            .collect::<PrefixPortsSet>()
+    }
+
     /// Return the total "size" of all prefixes in the set.
     ///
     /// The "size" is the number of IP addresses in the IP prefix, multiplied by the number of ports
@@ -192,6 +202,15 @@ impl PrefixPortsSet {
             .iter()
             .map(PrefixWithOptionalPorts::size)
             .sum::<PrefixWithPortsSize>()
+    }
+
+    /// Returns true if at least one of the prefixes in the set has an associated port range that is
+    /// not the full range (not covering all ports).
+    #[must_use]
+    pub fn uses_ports(&self) -> bool {
+        self.0
+            .iter()
+            .any(|p| p.ports().is_some_and(|ports| !ports.is_max_range()))
     }
 
     /// Returns true if all prefixes in the set have the same IP version (all IPv4 or all IPv6).

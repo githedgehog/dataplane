@@ -674,6 +674,11 @@ impl ValidatedManifest {
     }
 
     #[must_use]
+    pub fn has_default_expose(&self) -> bool {
+        self.valexp().iter().any(ValidatedExpose::is_default)
+    }
+
+    #[must_use]
     pub fn default_expose(&self) -> Option<&ValidatedExpose> {
         self.valexp().iter().find(|expose| expose.is_default())
     }
@@ -774,6 +779,24 @@ impl ValidatedManifest {
             }
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn all_ips(&self) -> PrefixPortsSet {
+        self.valexp
+            .iter()
+            .fold(PrefixPortsSet::new(), |acc, valexp| {
+                acc.union_prefixes_and_ports(valexp.ips())
+            })
+    }
+
+    #[must_use]
+    pub fn all_public_ips(&self) -> PrefixPortsSet {
+        self.valexp
+            .iter()
+            .fold(PrefixPortsSet::new(), |acc, valexp| {
+                acc.union_prefixes_and_ports(valexp.public_ips())
+            })
     }
 }
 
