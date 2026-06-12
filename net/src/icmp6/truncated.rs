@@ -238,6 +238,18 @@ impl DeParse for TruncatedIcmp6 {
     }
 }
 
+impl From<Icmp6> for TruncatedIcmp6 {
+    fn from(icmp: Icmp6) -> Self {
+        TruncatedIcmp6::FullHeader(icmp)
+    }
+}
+
+impl From<TruncatedIcmp6Header> for TruncatedIcmp6 {
+    fn from(header: TruncatedIcmp6Header) -> Self {
+        TruncatedIcmp6::PartialHeader(header)
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::TruncatedIcmp6;
