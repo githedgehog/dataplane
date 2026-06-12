@@ -11,6 +11,8 @@ mod meta;
 mod stats;
 mod stats_display;
 
+pub mod icmp_err;
+
 pub use stats::PacketStats;
 
 #[cfg(any(test, feature = "bolero"))]

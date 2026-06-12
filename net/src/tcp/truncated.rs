@@ -231,6 +231,18 @@ impl DeParse for TruncatedTcp {
     }
 }
 
+impl From<Tcp> for TruncatedTcp {
+    fn from(tcp: Tcp) -> Self {
+        TruncatedTcp::FullHeader(tcp)
+    }
+}
+
+impl From<TruncatedTcpHeader> for TruncatedTcp {
+    fn from(header: TruncatedTcpHeader) -> Self {
+        TruncatedTcp::PartialHeader(header)
+    }
+}
+
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
     use super::{Tcp, TruncatedTcp, TruncatedTcpHeader};

@@ -7,32 +7,21 @@
 use crate::NatPort;
 use crate::NatTranslationData;
 use net::buffer::PacketBufferMut;
-use net::checksum::{Checksum, ChecksumError};
+use net::checksum::Checksum;
 use net::headers::{
-    EmbeddedTransport, TryEmbeddedHeaders, TryEmbeddedHeadersMut, TryEmbeddedTransportMut,
-    TryIcmpAny, TryInnerIpMut, TryInnerIpv4, TryIp,
+    EmbeddedTransport, TryEmbeddedHeadersMut, TryEmbeddedTransportMut, TryInnerIpMut,
 };
 use net::icmp_any::TruncatedIcmpAny;
-use net::icmp_any::{IcmpAnyChecksumErrorPlaceholder, IcmpAnyChecksumPayload};
-use net::ipv4::Ipv4;
 use net::packet::{DoneReason, Packet};
 use std::net::IpAddr;
 use std::num::NonZero;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IcmpErrorMsgError {
-    #[error("failure to get IP header")]
-    NoIpHeader,
-    #[error("not an ICMP packet")]
-    NotIcmp,
     #[error("failure to get embedded headers")]
     NoEmbeddedHeaders,
     #[error("failure to get inner IP header")]
     NoInnerIpHeader,
-    #[error("failed to validate ICMP checksum")]
-    BadChecksumIcmp(ChecksumError<IcmpAnyChecksumErrorPlaceholder>),
-    #[error("failed to validate ICMP inner IP checksum")]
-    BadChecksumInnerIpv4(ChecksumError<Ipv4>),
     #[error("invalid transport-layer port {0}")]
     InvalidPort(u16),
     #[error("invalid IP version")]
@@ -44,15 +33,9 @@ pub enum IcmpErrorMsgError {
 impl From<&IcmpErrorMsgError> for DoneReason {
     fn from(error: &IcmpErrorMsgError) -> Self {
         match error {
-            IcmpErrorMsgError::NoIpHeader => DoneReason::NotIp,
-            IcmpErrorMsgError::InvalidIpVersion | IcmpErrorMsgError::NotIcmp => {
-                DoneReason::InternalFailure
-            }
+            IcmpErrorMsgError::InvalidIpVersion => DoneReason::InternalFailure,
             IcmpErrorMsgError::InvalidPort(_) => DoneReason::Malformed,
             IcmpErrorMsgError::NotUnicast(_) => DoneReason::NatFailure,
-            IcmpErrorMsgError::BadChecksumIcmp(_) | IcmpErrorMsgError::BadChecksumInnerIpv4(_) => {
-                DoneReason::InvalidChecksum
-            }
             IcmpErrorMsgError::NoEmbeddedHeaders | IcmpErrorMsgError::NoInnerIpHeader => {
                 DoneReason::IcmpErrorIncomplete
             }
@@ -64,51 +47,6 @@ impl From<IcmpErrorMsgError> for DoneReason {
     fn from(error: IcmpErrorMsgError) -> Self {
         (&error).into()
     }
-}
-
-/// Validate the checksums for an ICMP packet.
-///
-/// From REQ-3 from RFC 5508, "NAT Behavioral Requirements for ICMP".
-/// NAT should silently discard packet if:
-///
-///    - ICMP checksum fails to validate
-///    - ICMP checksum for embedded packet fails to validate
-///
-/// This function is valid for any ICMP packet, whether it embeds a packet fragment or not. However,
-/// we expect ICMP Error messages to always include a fragment of the offending packet.
-pub(crate) fn validate_checksums_icmp<Buf: PacketBufferMut>(
-    packet: &Packet<Buf>,
-) -> Result<(), IcmpErrorMsgError> {
-    let Some(net) = packet.try_ip() else {
-        return Err(IcmpErrorMsgError::NoIpHeader);
-    };
-    let Some(icmp) = packet.try_icmp_any() else {
-        return Err(IcmpErrorMsgError::NotIcmp);
-    };
-
-    let embedded = packet.embedded_headers();
-    let payload = packet.payload().as_ref();
-    let icmp_payload = icmp.get_payload_for_checksum(embedded, payload);
-    let checksum_payload = IcmpAnyChecksumPayload::from_net(net, icmp_payload.as_ref());
-
-    if let Err(e) = icmp.validate_checksum(&checksum_payload) {
-        return Err(IcmpErrorMsgError::BadChecksumIcmp(e.into()));
-    }
-
-    if !icmp.is_error_message() {
-        return Ok(());
-    }
-
-    // Validate inner packet for ICMP Error messages
-    let Some(embedded_ip) = packet.embedded_headers() else {
-        return Err(IcmpErrorMsgError::NoEmbeddedHeaders);
-    };
-    if let Some(inner_ipv4) = embedded_ip.try_inner_ipv4() {
-        inner_ipv4
-            .validate_checksum(&())
-            .map_err(IcmpErrorMsgError::BadChecksumInnerIpv4)?;
-    }
-    Ok(())
 }
 
 pub(crate) fn nat_translate_icmp_inner<Buf: PacketBufferMut>(
@@ -290,162 +228,23 @@ fn translate_inner_tcp_udp_dst(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use net::buffer::TestBuffer;
-    use net::eth::ethtype::EthType;
-    use net::headers::{HeadersBuilder, Net, Transport};
-    use net::icmp4::Icmp4;
-    use net::icmp4::{Icmp4DestUnreachable, Icmp4EchoRequest, Icmp4Type};
-    use net::ip::NextHeader;
-    use net::ipv4::Ipv4;
-    use net::packet::Packet;
-    use net::packet::test_utils::make_default_for_eth;
-    use net::parse::DeParse;
-    use std::net::Ipv4Addr;
-
-    #[test]
-    fn test_validate_checksums_icmp_no_network_layer() {
-        // Build a packet without IP header
-        let mut headers = HeadersBuilder::default();
-        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-        let headers = headers.build().unwrap();
-        let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
-        let packet = Packet::new(buffer).unwrap();
-
-        let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NoIpHeader));
-    }
-
-    #[test]
-    fn test_validate_checksums_icmp_no_transport_layer() {
-        // Build a packet with IP but no transport
-        let mut headers = HeadersBuilder::default();
-        let mut ipv4 = Ipv4::default();
-        ipv4.set_source(Ipv4Addr::new(1, 2, 3, 4).try_into().unwrap());
-        ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
-        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-        headers.net(Some(Net::Ipv4(ipv4)));
-
-        let headers = headers.build().unwrap();
-        let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
-        let packet = Packet::new(buffer).unwrap();
-
-        let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NotIcmp));
-    }
-
-    #[test]
-    fn test_validate_checksums_icmp_not_icmp() {
-        // Build a TCP packet
-        let mut headers = HeadersBuilder::default();
-        let mut ipv4 = Ipv4::default();
-        ipv4.set_source(Ipv4Addr::new(1, 2, 3, 4).try_into().unwrap());
-        ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
-        ipv4.set_next_header(NextHeader::TCP);
-
-        let tcp = net::tcp::Tcp::new(
-            net::tcp::TcpPort::new_checked(1).unwrap(),
-            net::tcp::TcpPort::new_checked(2).unwrap(),
-        );
-
-        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-        headers.net(Some(Net::Ipv4(ipv4)));
-        headers.transport(Some(Transport::Tcp(tcp)));
-
-        let headers = headers.build().unwrap();
-        let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
-        let packet = Packet::new(buffer).unwrap();
-
-        let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NotIcmp));
-    }
-
-    fn get_buffer_for_checksum_test(headers: &net::headers::Headers) -> TestBuffer {
-        // Fill the buffer with zeroes.
-        //
-        // This is for tests that build an ICMP Error message with no embedded packet fragment, and
-        // validate its checksum. To do so, we prepare a packet by building the headers, setting the
-        // checksum, then deparsing to a buffer. The checksum for ICMP is computed on the header and
-        // the data, and when we set it (icmp.update_checksum(&[])), we pass a pointer to the data.
-        // In such tests, there is no embedded packet fragment, so the data is null (&[]). When we
-        // deparse the packet, we write the headers to a buffer: If we create the buffer with
-        // TestBuffer::new(), it's not filled with zeroes, but with some data simulating some random
-        // payload. Instead, create a buffer filled with zeroes, so that any trailing data does not
-        // mess up with checksum computation.
-        let data = vec![0u8; headers.size().get() as usize];
-        TestBuffer::from_raw_data(&data)
-    }
-
-    #[test]
-    fn test_validate_checksums_icmp_query_message() {
-        // Build an ICMP Echo Request (query message)
-        let mut headers = HeadersBuilder::default();
-        let mut ipv4 = Ipv4::default();
-        ipv4.set_source(Ipv4Addr::new(1, 2, 3, 4).try_into().unwrap());
-        ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
-        ipv4.set_next_header(NextHeader::ICMP);
-
-        let mut icmp = Icmp4::with_type(Icmp4Type::EchoRequest(Icmp4EchoRequest { id: 1, seq: 1 }));
-        icmp.update_checksum(&[]).unwrap();
-
-        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-        headers.net(Some(Net::Ipv4(ipv4)));
-        headers.transport(Some(Transport::Icmp4(icmp)));
-
-        let headers = headers.build().unwrap();
-        let mut buffer = get_buffer_for_checksum_test(&headers);
-        headers.deparse(buffer.as_mut()).unwrap();
-        let packet = Packet::new(buffer).unwrap();
-
-        let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Ok(()));
-    }
-
-    #[test]
-    fn test_validate_checksums_icmp_error_no_embedded_headers() {
-        // Build an ICMP error message without embedded headers
-        let mut headers = HeadersBuilder::default();
-        let mut ipv4 = Ipv4::default();
-        ipv4.set_source(Ipv4Addr::new(1, 2, 3, 4).try_into().unwrap());
-        ipv4.set_destination(Ipv4Addr::new(5, 6, 7, 8));
-        ipv4.set_next_header(NextHeader::ICMP);
-
-        let mut icmp = Icmp4::with_type(Icmp4Type::DestUnreachable(Icmp4DestUnreachable::Network));
-        icmp.update_checksum(&[]).unwrap();
-
-        headers.eth(Some(make_default_for_eth(EthType::IPV4)));
-        headers.net(Some(Net::Ipv4(ipv4)));
-        headers.transport(Some(Transport::Icmp4(icmp)));
-
-        let headers = headers.build().unwrap();
-        let mut buffer = get_buffer_for_checksum_test(&headers);
-        headers.deparse(buffer.as_mut()).unwrap();
-        let packet = Packet::new(buffer).unwrap();
-
-        let result = validate_checksums_icmp(&packet);
-        assert_eq!(result, Err(IcmpErrorMsgError::NoEmbeddedHeaders));
-    }
-}
-
-#[cfg(test)]
 mod bolero_tests {
     use super::*;
     use crate::NatPort;
     use net::buffer::TestBuffer;
+    use net::checksum::ChecksumError;
     use net::headers::TryHeaders;
     use net::headers::{
-        Net, TryEmbeddedTransport, TryIcmpAnyMut, TryInnerIp, TryInnerIpv4Mut, TryIpv4,
+        Net, TryEmbeddedTransport, TryIcmpAnyMut, TryInnerIp, TryInnerIpv4Mut, TryIp, TryIpv4,
     };
     use net::icmp_any::IcmpAnyChecksum;
     use net::ipv4::{Ipv4Checksum, UnicastIpv4Addr};
     use net::ipv6::UnicastIpv6Addr;
     use net::packet::IcmpErrorMsg;
+    use net::packet::icmp_err::{IcmpErrorPacket, IcmpErrorPacketError};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    #[derive(Debug, Clone, Copy)]
     enum TransportFields {
         Ports(u16, u16),
         Identifier(u16),
@@ -468,6 +267,11 @@ mod bolero_tests {
         bolero::check!()
             .with_generator(generator)
             .for_each(|icmp_error_msg| {
+                if IcmpErrorPacket::new(icmp_error_msg).is_none() {
+                    // No embedded transport, that's fine, we just skip this input
+                    return;
+                }
+
                 let mut icmp_error_msg_clone = icmp_error_msg.clone();
                 // First check that checksum is incorrect. There's a super-high chance that it fails
                 // with non-initialised checksums in all relevant haders, but 1) there may be only
@@ -475,11 +279,14 @@ mod bolero_tests {
                 // and 2) sometimes Bolero reuses headers in which we set the correct checksums.
                 // So we first "erase" all checksums by setting them to 0xffff.
                 erase_checksums(&mut icmp_error_msg_clone);
+
                 // Validate checksum is incorrect
-                let res = validate_checksums_icmp::<TestBuffer>(&icmp_error_msg_clone);
+                let res = IcmpErrorPacket::new(&icmp_error_msg_clone)
+                    .unwrap()
+                    .validate_checksums();
                 assert!(matches!(
                     res,
-                    Err(IcmpErrorMsgError::BadChecksumIcmp(
+                    Err(IcmpErrorPacketError::BadChecksumIcmp(
                         ChecksumError::Mismatch { .. }
                     ))
                 ));
@@ -488,7 +295,9 @@ mod bolero_tests {
                 icmp_error_msg_clone.update_checksums();
 
                 // Now, ICMP and inner IP headers checksums should be valid
-                let res = validate_checksums_icmp::<TestBuffer>(&icmp_error_msg_clone);
+                let res = IcmpErrorPacket::new(&icmp_error_msg_clone)
+                    .unwrap()
+                    .validate_checksums();
                 assert!(res.is_ok(), "Checksum validation failed: {res:?}");
 
                 // Also check outer IP header checksum, since we're at it
@@ -630,10 +439,15 @@ mod bolero_tests {
                         _ => unreachable!(),
                     }
 
-                    // Update and validate checksums for inner IP header, ICMP header, and outer IP header
-                    icmp_error_msg_clone.update_checksums();
-                    let res = validate_checksums_icmp::<TestBuffer>(&icmp_error_msg_clone);
-                    assert!(res.is_ok(), "Checksum validation failed: {res:?}");
+                    if new_ports.is_some() {
+                        // Update and validate checksums for inner IP header, ICMP header, and outer
+                        // IP header. We only check this when we have an inner transport header.
+                        icmp_error_msg_clone.update_checksums();
+                        let res = IcmpErrorPacket::new(&icmp_error_msg_clone)
+                            .unwrap()
+                            .validate_checksums();
+                        assert!(res.is_ok(), "Checksum validation failed: {res:?}");
+                    }
                 },
             );
     }
