@@ -295,23 +295,13 @@ impl VpcExpose {
         // TODO: We can loosen this restriction in the future. When we do, some additional
         //       considerations might be required to validate independently the IPv4 and the IPv6
         //       prefixes and exclusion prefixes in the rest of this function.
-        let mut is_ipv4_opt = None;
-        for prefixes in [
+        if !PrefixPortsSet::have_consistent_ip_version(&[
             &self.ips,
             &self.nots,
             self.as_range_or_empty(),
             self.not_as_or_empty(),
-        ] {
-            if prefixes.iter().any(|p| {
-                if let Some(is_ipv4) = is_ipv4_opt {
-                    p.prefix().is_ipv4() != is_ipv4
-                } else {
-                    is_ipv4_opt = Some(p.prefix().is_ipv4());
-                    false
-                }
-            }) {
-                return Err(ConfigError::InconsistentIpVersion(Box::new(self.clone())));
-            }
+        ]) {
+            return Err(ConfigError::InconsistentIpVersion(Box::new(self.clone())));
         }
 
         // Port 0 is not allowed in the exposed ranges. We do not check the excluded ranges here,
