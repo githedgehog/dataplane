@@ -22,13 +22,8 @@ use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
-/// Defaults for the RX queue
-pub(crate) mod rx_queue_defaults {
-    /// Default MTU of an RX queue
-    pub(crate) const RX_MTU: u32 = 1514;
-    /// Default max LRO packet size for RX queue
-    pub(crate) const MAX_LRO: u32 = 8192;
-}
+/// Default Ethernet MTU, clamped to the device limits when configured.
+pub const DEFAULT_MTU: u16 = 1500;
 
 /// A DPDK Ethernet port index.
 ///
@@ -219,6 +214,9 @@ pub struct DevConfig {
     pub tx_offloads: Option<TxOffloadConfig>,
     // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
     pub rx_offloads: Option<RxOffload>,
+    /// Requested MTU. `None` uses [`DEFAULT_MTU`] clamped to device limits;
+    /// an explicit value outside those limits returns [`DevConfigError::MtuOutOfRange`].
+    pub mtu: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -226,12 +224,43 @@ pub struct DevConfig {
 pub enum DevConfigError {
     /// A driver-specific error occurred when configuring the ethernet device.
     DriverSpecificError(&'static str),
+    /// The requested MTU is outside the device's advertised `[min, max]` range.
+    MtuOutOfRange {
+        /// The MTU that was requested.
+        requested: u16,
+        /// The device's minimum supported MTU.
+        min: u16,
+        /// The device's maximum supported MTU.
+        max: u16,
+    },
 }
 
 impl DevConfig {
+    /// Clamp the default MTU or validate an explicit request.
+    /// A zero `max_mtu` leaves validation to the driver.
+    fn resolve_mtu(&self, dev: &DevInfo) -> Result<u16, DevConfigError> {
+        let min = dev.inner.min_mtu;
+        let max = dev.inner.max_mtu;
+        if max == 0 || min > max {
+            return Ok(self.mtu.unwrap_or(DEFAULT_MTU));
+        }
+        match self.mtu {
+            Some(requested) if requested < min || requested > max => {
+                Err(DevConfigError::MtuOutOfRange {
+                    requested,
+                    min,
+                    max,
+                })
+            }
+            Some(requested) => Ok(requested),
+            None => Ok(DEFAULT_MTU.clamp(min, max)),
+        }
+    }
+
     /// Apply the configuration to the device.
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
+        let mtu = self.resolve_mtu(&dev)?;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
@@ -245,9 +274,10 @@ impl DevConfig {
                 ..Default::default()
             },
             rxmode: rte_eth_rxmode {
-                mtu: rx_queue_defaults::RX_MTU,
+                mtu: u32::from(mtu),
                 mq_mode: RTE_ETH_MQ_RX_RSS,
-                max_lro_pkt_size: rx_queue_defaults::MAX_LRO,
+                // Used only when TCP LRO is enabled; zero requests the driver default.
+                max_lro_pkt_size: dev.inner.max_lro_pkt_size,
                 offloads: {
                     let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
                     let supported = dev.rx_offload_caps();
