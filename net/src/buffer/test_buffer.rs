@@ -10,7 +10,7 @@ pub use contract::*;
 
 use crate::buffer::{
     Append, DeepCopy, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom,
-    NotWritable, Prepend, Tailroom, TrimFromEnd, TrimFromStart, TryAsMut,
+    NotWritable, PacketLength, Prepend, Tailroom, TrimFromEnd, TrimFromStart, TryAsMut,
 };
 use core::convert::Infallible;
 use tracing::trace;
@@ -126,6 +126,14 @@ impl TryAsMut for TestBuffer {
         // buffer becomes a refcounted segment chain (multi-seg rework) this will consult the
         // refcount the same way `Mbuf` does.
         Ok(self.data_mut())
+    }
+}
+
+impl PacketLength for TestBuffer {
+    fn packet_len(&self) -> usize {
+        // A `TestBuffer` is single-segment today, so the whole packet is its contiguous in-use
+        // region.  When it becomes a segment chain this will sum the segments.
+        self.as_ref().len()
     }
 }
 
