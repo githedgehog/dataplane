@@ -107,15 +107,33 @@ impl RxQueue {
     pub(crate) fn setup(dev: &dev::Dev, config: RxQueueConfig) -> Result<Self, ConfigFailure> {
         let socket_id = SocketId::try_from(config.socket_preference)
             .map_err(|_| ConfigFailure::InvalidSocket(Errno(errno::NEG_EINVAL)))?;
+
+        // Clamp the requested ring size to the driver's min/max/alignment limits rather than
+        // passing a possibly-illegal raw value.  DPDK adjusts both the rx and tx counts in a single
+        // call; we only consume the rx result here (`nb_tx_desc` is required by the API but unused).
+        let mut nb_rx_desc = config.num_descriptors;
+        let mut nb_tx_desc = config.num_descriptors;
+        if let Some(err) = ConfigFailure::check(unsafe {
+            dpdk_sys::rte_eth_dev_adjust_nb_rx_tx_desc(
+                dev.info.index().as_u16(),
+                &mut nb_rx_desc,
+                &mut nb_tx_desc,
+            )
+        }) {
+            return Err(err);
+        }
+
         let rx_conf = dpdk_sys::rte_eth_rxconf {
             offloads: config.offloads.into(),
+            // The remaining fields (threshold registers, `rx_free_thresh`, `rx_drop_en`) are left
+            // zeroed on purpose: DPDK reads zero here as "use the PMD's per-driver defaults".
             ..Default::default()
         };
         match ConfigFailure::check(unsafe {
             dpdk_sys::rte_eth_rx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
-                config.num_descriptors,
+                nb_rx_desc,
                 socket_id.as_c_uint(),
                 &rx_conf,
                 config.pool.inner().as_mut_ptr(),

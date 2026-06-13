@@ -81,15 +81,35 @@ impl TxQueue {
             .try_into()
             .map_err(ConfigFailure::InvalidSocket)?;
 
+        // Clamp the requested ring size to the driver's min/max/alignment limits rather than
+        // passing a possibly-illegal raw value.  DPDK adjusts both the rx and tx counts in a single
+        // call; we only consume the tx result here (`nb_rx_desc` is required by the API but unused).
+        let mut nb_rx_desc = config.num_descriptors;
+        let mut nb_tx_desc = config.num_descriptors;
+        let adjust = unsafe {
+            dpdk_sys::rte_eth_dev_adjust_nb_rx_tx_desc(
+                dev.info.index().as_u16(),
+                &mut nb_rx_desc,
+                &mut nb_tx_desc,
+            )
+        };
+        match adjust {
+            errno::SUCCESS => {}
+            errno::NEG_ENOMEM => return Err(ConfigFailure::NoMemory(ErrorCode::parse(adjust))),
+            _ => return Err(ConfigFailure::Unexpected(ErrorCode::parse(adjust))),
+        }
+
         let tx_conf = dpdk_sys::rte_eth_txconf {
             offloads: dev.info.inner.tx_queue_offload_capa,
+            // The remaining fields (threshold registers, `tx_free_thresh`, `tx_rs_thresh`) are left
+            // zeroed on purpose: DPDK reads zero here as "use the PMD's per-driver defaults".
             ..Default::default()
         };
         let ret = unsafe {
             dpdk_sys::rte_eth_tx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
-                config.num_descriptors,
+                nb_tx_desc,
                 socket_id.as_c_uint(),
                 &tx_conf,
             )
