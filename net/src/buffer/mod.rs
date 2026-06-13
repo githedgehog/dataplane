@@ -19,19 +19,36 @@ impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + Debug + 'static {}
 
 /// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
 pub trait PacketBufferMut:
-    PacketBuffer + AsMut<[u8]> + Prepend + Send + TrimFromStart + TrimFromEnd + Headroom + Tailroom
+    PacketBuffer + TryAsMut + Prepend + Send + TrimFromStart + TrimFromEnd + Headroom + Tailroom
 {
 }
 impl<T> PacketBufferMut for T where
-    T: PacketBuffer
-        + AsMut<[u8]>
-        + Prepend
-        + Send
-        + TrimFromStart
-        + TrimFromEnd
-        + Headroom
-        + Tailroom
+    T: PacketBuffer + TryAsMut + Prepend + Send + TrimFromStart + TrimFromEnd + Headroom + Tailroom
 {
+}
+
+/// Error indicating that a packet buffer cannot be mutated because it is not exclusively owned.
+///
+/// A buffer is shared when it is a reference-counted or indirect DPDK mbuf with more than one
+/// holder; writing through it would corrupt the others.  No sharing is created yet, so this does
+/// not occur in practice today, but keeping mutable access fallible stops call sites from assuming
+/// the exclusive ownership that a future shared/cloned buffer would not have.
+#[derive(Debug, thiserror::Error)]
+#[error("packet buffer is not exclusively owned and cannot be mutated")]
+pub struct NotWritable;
+
+/// Trait for fallibly obtaining mutable access to a packet buffer's bytes.
+///
+/// This replaces an infallible `AsMut<[u8]>`: an `Mbuf`-backed buffer cannot promise exclusive
+/// ownership, so handing out `&mut [u8]` must be allowed to fail.  Reading (via [`AsRef`]) is
+/// always permitted.
+pub trait TryAsMut {
+    /// Get mutable access to the buffer's bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotWritable`] if the buffer is shared and therefore cannot be mutated in place.
+    fn try_as_mut(&mut self) -> Result<&mut [u8], NotWritable>;
 }
 
 /// Trait for producing an independent (deep) copy of a packet buffer.

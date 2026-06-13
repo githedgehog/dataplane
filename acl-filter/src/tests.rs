@@ -20,7 +20,7 @@ use config::external::overlay::{Overlay, ValidatedOverlay};
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
 use net::FlowKey;
-use net::buffer::TestBuffer;
+use net::buffer::{TestBuffer, TryAsMut};
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::headers::Headers;
 use net::headers::builder::HeaderStack;
@@ -285,7 +285,7 @@ fn packet(
     headers: Headers,
 ) -> Packet<TestBuffer> {
     let mut buffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     let mut packet = Packet::new(buffer).unwrap();
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().src_vpcd = Some(src_vpcd);

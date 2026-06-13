@@ -17,7 +17,7 @@ use crate::{FlowFilter, LookupResult, NatRequirement};
 use concurrency::sync::Arc;
 use lpm::prefix::L4Protocol;
 use net::FlowKey;
-use net::buffer::TestBuffer;
+use net::buffer::{TestBuffer, TryAsMut};
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::headers::Headers;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 // source VPC (the pipeline only processes overlay packets that still lack a destination VPC).
 fn packet(src_vpcd: Option<VpcDiscriminant>, headers: Headers) -> Packet<TestBuffer> {
     let mut buffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     let mut packet = Packet::new(buffer).unwrap();
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().src_vpcd = src_vpcd;
@@ -1636,7 +1636,7 @@ mod adversarial_headers {
     use concurrency::sync::LazyLock;
     use concurrency::sync::atomic::{AtomicU64, Ordering};
     use config::external::overlay::ValidatedOverlay;
-    use net::buffer::TestBuffer;
+    use net::buffer::{TestBuffer, TryAsMut};
     use net::headers::Headers;
     use net::headers::builder::ChainBase;
     use net::ip::NextHeader;
@@ -1832,7 +1832,7 @@ mod adversarial_headers {
     /// Serialize and parse a generated overlay packet.
     fn wire_packet(headers: &Headers) -> Option<Packet<TestBuffer>> {
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).ok()?;
+        headers.deparse(buffer.try_as_mut().unwrap()).ok()?;
         let mut packet = Packet::new(buffer).ok()?;
         packet.meta_mut().set_overlay(true);
         packet.meta_mut().src_vpcd = Some(src_vpcd());
