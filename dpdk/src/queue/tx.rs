@@ -4,9 +4,10 @@
 //! Transmit queue configuration and management.
 
 use crate::dev::DevIndex;
-use crate::mem::Mbuf;
+use crate::mem::{MBUF_BURST, MbufArray};
 use crate::socket::SocketId;
 use crate::{dev, socket};
+use core::ptr::null_mut;
 use errno::ErrorCode;
 use std::cmp::min;
 use tracing::trace;
@@ -140,14 +141,30 @@ impl TxQueue {
 
     pub(crate) const PKT_BURST_SIZE: usize = 64;
 
+    /// Transmit a batch of packets on this queue, returning the packets that could not be sent.
+    ///
+    /// Ownership of every successfully transmitted mbuf passes to the PMD, which frees it once the
+    /// transmit descriptor is reclaimed, so those mbufs must *not* be freed by us.  Any packets the
+    /// queue would not accept (because it is full, paused, or the link is down) are returned in the
+    /// resulting [`MbufArray`]; the caller may retry them or drop the array to discard them.  This
+    /// also bounds the work: the burst loop stops as soon as the queue stops making progress rather
+    /// than spinning forever.
+    #[must_use = "the returned MbufArray holds packets that were NOT transmitted; retry or drop it"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&self, packets: impl IntoIterator<Item = Mbuf>) {
-        let mut packets: Vec<_> = packets.into_iter().collect();
-        let mut offset = 0;
-        if packets.is_empty() {
-            return;
+    pub fn transmit(&self, packets: MbufArray) -> MbufArray {
+        let len = packets.len();
+        if len == 0 {
+            return MbufArray::new_empty();
         }
-        while offset < packets.len() {
+        // Copy the mbufs out as raw pointers into an inline array (no heap).  `Mbuf::into_raw`
+        // suppresses the per-mbuf `Drop`, so from here on ownership is tracked purely by index:
+        // nothing is freed implicitly.  `len <= MBUF_BURST` since that is the input's capacity.
+        let mut raw = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
+        for (slot, mbuf) in raw.iter_mut().zip(packets) {
+            *slot = mbuf.into_raw();
+        }
+        let mut offset = 0;
+        while offset < len {
             trace!(
                 "Transmitting packets to tx queue {queue} on dev {dev}",
                 queue = self.config.queue_index.as_u16(),
@@ -157,17 +174,29 @@ impl TxQueue {
                 dpdk_sys::rte_eth_tx_burst(
                     self.dev.as_u16(),
                     self.config.queue_index.as_u16(),
-                    packets.as_mut_ptr().add(offset) as *mut _,
-                    min(Self::PKT_BURST_SIZE, packets.len() - offset) as u16,
+                    raw.as_mut_ptr().add(offset),
+                    min(Self::PKT_BURST_SIZE, len - offset) as u16,
                 )
-            };
-            offset += nb_tx as usize;
+            } as usize;
             trace!(
                 "Transmitted {nb_tx} packets from tx queue {queue} on dev {dev}",
                 queue = self.config.queue_index.as_u16(),
                 dev = self.dev.as_u16()
             );
+            if nb_tx == 0 {
+                // The queue is not accepting packets right now.  Stop rather than spin; the
+                // unsent tail is returned to the caller below.
+                break;
+            }
+            offset += nb_tx;
         }
+        // `[0, offset)` were accepted and are now owned by the PMD (their raw pointers are simply
+        // dropped here).  `[offset, len)` are still ours; re-wrap them so the returned `MbufArray`
+        // frees them exactly once if the caller drops it.
+        //
+        // SAFETY: each tail pointer came from a live `Mbuf` via `into_raw` and was not handed to
+        // the PMD, so it is still a valid, singly-owned mbuf; `len - offset <= MBUF_BURST`.
+        unsafe { MbufArray::from_raw_ptrs(&raw[offset..len]) }
     }
 }
 
