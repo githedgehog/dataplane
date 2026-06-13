@@ -260,10 +260,10 @@ impl TapDevice {
                 "unexpected EOF on tap device",
             ));
         };
-        let orig_len = match u16::try_from(buf.as_ref().len()) {
+        let orig_len = match u16::try_from(buf.packet_len()) {
             Ok(orig_len) => orig_len,
             Err(err) => {
-                error!("nonsense sized buffer: {}", buf.as_ref().len());
+                error!("nonsense sized buffer: {}", buf.packet_len());
                 return Err(tokio::io::Error::other(err));
             }
         };

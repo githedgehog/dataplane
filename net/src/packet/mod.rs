@@ -136,7 +136,7 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
     #[allow(clippy::cast_possible_truncation)] // checked in ctor
     #[must_use]
     pub fn payload_len(&self) -> u16 {
-        self.payload.as_ref().len() as u16
+        self.payload.packet_len() as u16
     }
 
     /// Get the length of the packet's current headers.
@@ -313,8 +313,8 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
             .deparse(buf)
             .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
 
-        let len = self.payload.as_ref().len()
-            + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
+        let len =
+            self.payload.packet_len() + (Udp::MIN_LENGTH.get() + Vxlan::MIN_LENGTH.get()) as usize;
         assert!(
             u16::try_from(len).is_ok(),
             "encap would result in frame larger than 2^16 bytes"
