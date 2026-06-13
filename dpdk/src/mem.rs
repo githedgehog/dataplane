@@ -3,15 +3,15 @@
 
 //! DPDK memory management wrappers.
 
-use crate::eal::EalErrno;
 use crate::socket::SocketId;
 use alloc::format;
 use alloc::string::String;
+use arrayvec::ArrayVec;
 use core::ffi::c_uint;
 use core::ffi::{CStr, c_int};
 use core::fmt::{Debug, Display};
 use core::marker::PhantomData;
-use core::mem::transmute;
+use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::ptr::null_mut;
 use core::slice::from_raw_parts_mut;
@@ -138,22 +138,57 @@ impl Pool {
         &self.0.config
     }
 
-    #[must_use]
-    pub fn alloc_bulk(&self, num: usize) -> Vec<Mbuf> {
-        // SAFETY: we should never have any null ptrs come back if ret passes check
-        let mut mbufs: Vec<Mbuf> = (0..num)
-            .map(|_| unsafe { transmute(null_mut::<dpdk_sys::rte_mbuf>()) })
-            .collect();
+    /// Allocate `num` mbufs from this pool as a single [`MbufArray`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MbufAllocError::TooMany`] if `num` exceeds the [`MbufArray`] capacity
+    /// ([`MBUF_BURST`]), or [`MbufAllocError::Exhausted`] if the pool does not currently have `num`
+    /// free mbufs.  The DPDK bulk allocator is all-or-nothing: on failure no mbufs are allocated.
+    pub fn alloc_bulk(&self, num: usize) -> Result<MbufArray, MbufAllocError> {
+        if num > MBUF_BURST {
+            return Err(MbufAllocError::TooMany {
+                requested: num,
+                capacity: MBUF_BURST,
+            });
+        }
+        // Fill a raw, inline pointer array first and only wrap the pointers in `Mbuf`s once the
+        // allocation has succeeded.  An `Mbuf` holds a `NonNull`, so materializing one from a
+        // null placeholder (as the previous implementation did via `transmute`) is instant
+        // undefined behavior; building from the post-success pointers avoids that entirely.
+        let mut raw = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
         let ret = unsafe {
-            dpdk_sys::rte_pktmbuf_alloc_bulk(
-                self.0.as_mut_ptr(),
-                transmute::<*mut Mbuf, *mut *mut dpdk_sys::rte_mbuf>(mbufs.as_mut_ptr()),
-                num as c_uint,
-            )
+            dpdk_sys::rte_pktmbuf_alloc_bulk(self.0.as_mut_ptr(), raw.as_mut_ptr(), num as c_uint)
         };
-        EalErrno::assert(ret);
-        mbufs
+        if ret != 0 {
+            // Per the DPDK contract this is `-ENOENT` with no mbufs retrieved; `raw` is still all
+            // null and never becomes an `Mbuf`.
+            return Err(MbufAllocError::Exhausted { requested: num });
+        }
+        // SAFETY: on success the first `num` entries are valid, non-null mbuf pointers owned by us,
+        // and `num <= MBUF_BURST` is the array capacity.
+        Ok(unsafe { MbufArray::from_raw_ptrs(&raw[..num]) })
     }
+}
+
+/// Failure to bulk-allocate mbufs from a [`Pool`].
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum MbufAllocError {
+    /// The pool did not currently have enough free mbufs to satisfy the request.
+    #[error("the pool could not supply {requested} mbufs (exhausted)")]
+    Exhausted {
+        /// The number of mbufs that were requested.
+        requested: usize,
+    },
+    /// More mbufs were requested than an [`MbufArray`] can hold.
+    #[error("requested {requested} mbufs but an MbufArray holds at most {capacity}")]
+    TooMany {
+        /// The number of mbufs that were requested.
+        requested: usize,
+        /// The maximum an [`MbufArray`] can hold ([`MBUF_BURST`]).
+        capacity: usize,
+    },
 }
 
 /// This value is RAII-managed and must never implement `Copy` and can likely never implement
@@ -494,6 +529,20 @@ impl Mbuf {
         }
     }
 
+    /// Consume the [`Mbuf`], returning the raw [`dpdk_sys::rte_mbuf`] pointer and suppressing the
+    /// [`Drop`] that would otherwise free it.
+    ///
+    /// The caller takes over responsibility for the mbuf.
+    /// This is the correct way to hand an mbuf to a `dpdk_sys` function that assumes ownership
+    /// (for example [`dpdk_sys::rte_eth_tx_burst`], where the PMD frees transmitted mbufs): keeping
+    /// the [`Mbuf`] around would let its [`Drop`] free the same pointer a second time.
+    #[must_use]
+    pub(crate) fn into_raw(self) -> *mut dpdk_sys::rte_mbuf {
+        let raw = self.raw.as_ptr();
+        core::mem::forget(self);
+        raw
+    }
+
     /// Get an immutable ref to the raw data of an Mbuf
     ///
     /// TODO: deal with multi segment packets
@@ -581,4 +630,161 @@ pub enum MbufManipulationError {
     NotLongEnough,
     #[error("Undocumented DPDK error: {0}")]
     Unknown(c_int),
+}
+
+/// The default (and maximum) number of mbufs in an [`MbufArray`].
+///
+/// This is the burst size: packets are received, processed, and transmitted in batches of at most
+/// this many.  It is the capacity of a default [`MbufArray`] and the chunk size used when bursting
+/// to a transmit queue.
+pub const MBUF_BURST: usize = 64;
+
+/// An owning, bulk-freed, fixed-capacity array of [`Mbuf`]s.
+///
+/// This is the unit of allocation, receive, and transmit for these bindings: [`Pool::alloc_bulk`]
+/// produces one, [`crate::queue::rx::RxQueue::receive`] returns one, and
+/// [`crate::queue::tx::TxQueue::transmit`] consumes one (returning the packets it could not send).
+///
+/// # Why a dedicated, inline type
+///
+/// Packet processing is entirely batch-oriented, so the array is backed by an inline
+/// [`ArrayVec`] of `N` slots (default [`MBUF_BURST`]) rather than a heap `Vec`: a burst never
+/// allocates.  `N` is fixed at compile time; the array does not grow, so a batch larger than `N`
+/// must be processed in `N`-sized chunks.
+///
+/// Rust's [`Drop`] runs per value, so dropping an array of `Mbuf` would otherwise free each mbuf
+/// with its own `rte_pktmbuf_free` call.  An `MbufArray` instead releases everything it still owns
+/// in a single [`rte_pktmbuf_free_bulk`](dpdk_sys::rte_pktmbuf_free_bulk) call on drop, which is
+/// both faster and the only way to batch the release.  Making the batch the ownership unit also
+/// removes whole classes of leaks and double-frees from the receive and transmit paths.
+///
+/// The contained [`Mbuf`]s are reachable as a slice via [`Deref`], and can be moved out by value
+/// with [`IntoIterator`]; an `Mbuf` taken out individually is freed on its own when dropped.
+#[derive(Debug)]
+pub struct MbufArray<const N: usize = MBUF_BURST> {
+    bufs: ArrayVec<Mbuf, N>,
+}
+
+impl<const N: usize> MbufArray<N> {
+    /// The capacity of the array: the maximum number of mbufs it can hold.
+    pub const CAPACITY: usize = N;
+
+    /// Create an empty [`MbufArray`].
+    #[must_use]
+    pub fn new_empty() -> MbufArray<N> {
+        MbufArray {
+            bufs: ArrayVec::new(),
+        }
+    }
+
+    /// The number of mbufs in the array.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.bufs.len()
+    }
+
+    /// Returns `true` if the array contains no mbufs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bufs.is_empty()
+    }
+
+    /// Append an mbuf to the array.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mbuf back (so its ownership is not lost) if the array is already at capacity.
+    pub fn try_push(&mut self, mbuf: Mbuf) -> Result<(), Mbuf> {
+        self.bufs.try_push(mbuf).map_err(|err| err.element())
+    }
+
+    /// Build an array from raw mbuf pointers.
+    ///
+    /// # Safety
+    ///
+    /// Every pointer in `ptrs` must be a live, non-null mbuf that is solely owned by the caller,
+    /// and `ptrs.len()` must not exceed `N`.
+    pub(crate) unsafe fn from_raw_ptrs(ptrs: &[*mut dpdk_sys::rte_mbuf]) -> MbufArray<N> {
+        debug_assert!(ptrs.len() <= N, "more mbufs than the array can hold");
+        let mut bufs = ArrayVec::new();
+        for &raw in ptrs {
+            // SAFETY: the caller guarantees each pointer is a valid, singly-owned mbuf and that
+            // there are at most `N` of them, so the push cannot exceed capacity.
+            unsafe {
+                bufs.push_unchecked(Mbuf::new_from_raw_unchecked(raw));
+            }
+        }
+        MbufArray { bufs }
+    }
+}
+
+impl<const N: usize> Default for MbufArray<N> {
+    fn default() -> MbufArray<N> {
+        MbufArray::new_empty()
+    }
+}
+
+impl<const N: usize> Deref for MbufArray<N> {
+    type Target = [Mbuf];
+
+    fn deref(&self) -> &[Mbuf] {
+        &self.bufs
+    }
+}
+
+impl<const N: usize> DerefMut for MbufArray<N> {
+    fn deref_mut(&mut self) -> &mut [Mbuf] {
+        &mut self.bufs
+    }
+}
+
+impl<const N: usize> IntoIterator for MbufArray<N> {
+    type Item = Mbuf;
+    type IntoIter = arrayvec::IntoIter<Mbuf, N>;
+
+    fn into_iter(mut self) -> Self::IntoIter {
+        // Move the mbufs out, leaving an empty array behind.  When `self` then drops, the bulk
+        // free below sees an empty array and does nothing; ownership of each `Mbuf` has passed to
+        // the iterator, so they are freed individually if dropped.
+        core::mem::take(&mut self.bufs).into_iter()
+    }
+}
+
+impl<'a, const N: usize> IntoIterator for &'a MbufArray<N> {
+    type Item = &'a Mbuf;
+    type IntoIter = core::slice::Iter<'a, Mbuf>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.bufs.iter()
+    }
+}
+
+impl<'a, const N: usize> IntoIterator for &'a mut MbufArray<N> {
+    type Item = &'a mut Mbuf;
+    type IntoIter = core::slice::IterMut<'a, Mbuf>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.bufs.iter_mut()
+    }
+}
+
+impl<const N: usize> Drop for MbufArray<N> {
+    fn drop(&mut self) {
+        if self.bufs.is_empty() {
+            return;
+        }
+        let count = self.bufs.len();
+        // SAFETY: `Mbuf` is `#[repr(transparent)]` over `NonNull<rte_mbuf>`, so the `ArrayVec<Mbuf>`
+        // backing storage is layout-identical to an array of `*mut rte_mbuf`.  Every element is a
+        // live, singly-owned mbuf, so freeing the whole run in bulk frees each exactly once.
+        unsafe {
+            dpdk_sys::rte_pktmbuf_free_bulk(
+                self.bufs.as_mut_ptr().cast::<*mut dpdk_sys::rte_mbuf>(),
+                count as c_uint,
+            );
+            // The mbufs are freed; drop the wrappers without running `Mbuf::drop` (which would
+            // free them a second time).
+            self.bufs.set_len(0);
+        }
+    }
 }
