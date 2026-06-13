@@ -2203,7 +2203,7 @@ mod tests {
 
     // -- Property-based tests (bolero) ----------------------------------------
 
-    use crate::buffer::TestBuffer;
+    use crate::buffer::{TestBuffer, TryAsMut};
     use crate::parse::Parse;
 
     /// Replace a `Blank` value with a bolero-generated one.
@@ -2249,7 +2249,7 @@ mod tests {
                 );
 
                 let mut test_buffer = TestBuffer::new();
-                headers.deparse(test_buffer.as_mut()).unwrap();
+                headers.deparse(test_buffer.try_as_mut().unwrap()).unwrap();
                 let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
                 assert_eq!(consumed.get() as usize, headers.size().get() as usize);
                 assert_eq!(headers, headers2, "round trip failed after using builder");
@@ -2300,7 +2300,7 @@ mod tests {
                 );
 
                 let mut test_buffer = TestBuffer::new();
-                headers.deparse(test_buffer.as_mut()).unwrap();
+                headers.deparse(test_buffer.try_as_mut().unwrap()).unwrap();
                 let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
                 assert_eq!(consumed.get() as usize, headers.size().get() as usize);
                 assert_eq!(headers, headers2, "round trip failed after using builder");
@@ -2406,7 +2406,7 @@ mod tests {
             .with_generator(generator)
             .for_each(|headers| {
                 let mut test_buffer = TestBuffer::new();
-                headers.deparse(test_buffer.as_mut()).unwrap();
+                headers.deparse(test_buffer.try_as_mut().unwrap()).unwrap();
                 let (headers2, consumed) = Headers::parse(test_buffer.as_ref()).unwrap();
                 assert_eq!(consumed.get() as usize, headers.size().get() as usize);
                 assert_eq!(headers, &headers2, "fuzz round-trip failed");

@@ -26,7 +26,7 @@ use nat::portfw::{PortForwarder, PortFwTableReaderFactory, PortFwTableWriter};
 use nat::static_nat::setup::build_nat_configuration;
 use nat::static_nat::{NatTablesReaderFactory, NatTablesWriter};
 use nat::{IcmpErrorHandler, Masquerade, StaticNat};
-use net::buffer::{PacketBufferMut, TestBuffer};
+use net::buffer::{PacketBufferMut, TestBuffer, TryAsMut};
 use net::eth::mac::{Mac, SourceMac};
 use net::interface::InterfaceIndex;
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
@@ -1501,7 +1501,7 @@ mod shapes {
 
     pub(super) fn wire(headers: &Headers) -> Option<Packet<TestBuffer>> {
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).ok()?;
+        headers.deparse(buffer.try_as_mut().ok()?).ok()?;
         Packet::new(buffer).ok()
     }
 
@@ -1702,7 +1702,7 @@ mod round_trip {
             _ => return None,
         };
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).ok()?;
+        headers.deparse(buffer.try_as_mut().ok()?).ok()?;
         Packet::new(buffer).ok()
     }
 
@@ -1961,7 +1961,7 @@ mod acl {
         let mut headers = headers.clone();
         aim(&mut headers, src, dst, spec.host);
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).ok()?;
+        headers.deparse(buffer.try_as_mut().ok()?).ok()?;
         Packet::new(buffer).ok()
     }
 

@@ -11,7 +11,7 @@
 #![allow(clippy::double_must_use)]
 #![allow(missing_docs)]
 
-use crate::buffer::TestBuffer;
+use crate::buffer::{TestBuffer, TryAsMut};
 use crate::checksum::Checksum;
 use crate::eth::Eth;
 use crate::eth::ethtype::EthType;
@@ -117,7 +117,7 @@ pub fn build_test_ipv4_packet_with_transport(
     headers.transport(transport);
     let headers = headers.build().unwrap();
     let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     Packet::new(buffer)
 }
 
@@ -244,7 +244,7 @@ pub fn build_test_ipv6_packet(ttl: u8) -> Result<Packet<TestBuffer>, InvalidPack
 
     let headers = headers.build().unwrap();
     let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     Packet::new(buffer)
 }
 
@@ -288,7 +288,7 @@ pub fn build_test_ipv6_packet_with_transport(
 
     let headers = headers.build().unwrap();
     let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     Packet::new(buffer)
 }
 
@@ -452,7 +452,7 @@ pub fn build_test_icmp4_destination_unreachable_packet_with_code(
     // Packet
     let data = vec![0u8; headers.size().get() as usize];
     let mut buffer = TestBuffer::from_raw_data(&data);
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     Packet::new(buffer)
 }
 
@@ -514,7 +514,7 @@ pub fn build_test_icmp4_echo(
 
     // Create packet
     let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     Packet::new(buffer)
 }
 
@@ -743,7 +743,7 @@ pub fn build_test_icmp6_error_packet(
 
     let data = vec![0u8; headers.size().get() as usize];
     let mut buffer = TestBuffer::from_raw_data(&data);
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     Packet::new(buffer)
 }
 
@@ -782,6 +782,6 @@ pub fn build_test_icmp6_echo(
     let headers = headers.build().unwrap();
 
     let mut buffer: TestBuffer = TestBuffer::new();
-    headers.deparse(buffer.as_mut()).unwrap();
+    headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
     Packet::new(buffer)
 }

@@ -423,7 +423,7 @@ mod race {
     use crate::static_nat::probe::build;
     use config::external::overlay::vpcpeering::VpcExpose;
     use lpm::prefix::{L4Protocol, PortRange, PrefixWithOptionalPorts};
-    use net::buffer::TestBuffer;
+    use net::buffer::{TestBuffer, TryAsMut};
     use pipeline::NetworkFunction;
     use std::net::IpAddr;
 
@@ -483,7 +483,11 @@ mod race {
 
         let mut buffer: TestBuffer = TestBuffer::new();
         headers
-            .deparse(buffer.as_mut())
+            .deparse(
+                buffer
+                    .try_as_mut()
+                    .unwrap_or_else(|e| unreachable!("{e:?}")),
+            )
             .unwrap_or_else(|e| unreachable!("{e:?}"));
         Packet::new(buffer).unwrap_or_else(|_| unreachable!("the fixture parses"))
     }
