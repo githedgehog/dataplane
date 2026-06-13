@@ -345,7 +345,7 @@ mod req3_properties {
     fn only_the_icmp_and_embedded_ip_checksums_decide_an_icmp_error() {
         bolero::check!().with_generator(IcmpErrorMsg {}).for_each(
             |generated: &Packet<TestBuffer>| {
-                let mut good = generated.clone();
+                let mut good = generated.deep_copy().unwrap();
                 good.update_checksums();
                 if IcmpErrorPacket::new(&good).is_none() {
                     return;
@@ -358,7 +358,7 @@ mod req3_properties {
                     "a packet with every checksum set does not validate"
                 );
 
-                let mut transport_broken = good.clone();
+                let mut transport_broken = good.deep_copy().unwrap();
                 let quoted = match transport_broken.try_inner_ip() {
                     None => unreachable!(),
                     Some(Net::Ipv4(_)) => EmbeddedIpVersion::Ipv4,
@@ -380,7 +380,7 @@ mod req3_properties {
                     }
                 }
 
-                let mut icmp_broken = good.clone();
+                let mut icmp_broken = good.deep_copy().unwrap();
                 let current = u16::from(
                     icmp_broken
                         .try_icmp_any()
@@ -402,7 +402,7 @@ mod req3_properties {
                     "a wrong ICMP checksum was accepted"
                 );
 
-                let mut inner_broken = good.clone();
+                let mut inner_broken = good.deep_copy().unwrap();
                 if let Some(inner) = inner_broken.try_inner_ipv4_mut()
                     && let Some(current) = inner.checksum().map(u16::from)
                 {
