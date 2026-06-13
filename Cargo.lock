@@ -1383,6 +1383,7 @@ dependencies = [
 name = "dataplane-dpdk"
 version = "0.27.0"
 dependencies = [
+ "arrayvec",
  "bolero",
  "dataplane-concurrency",
  "dataplane-dpdk",
