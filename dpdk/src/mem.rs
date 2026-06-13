@@ -22,7 +22,10 @@ use dpdk_sys::{
     rte_pktmbuf_adj, rte_pktmbuf_append, rte_pktmbuf_headroom, rte_pktmbuf_prepend,
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
-use net::buffer::{Append, DeepCopy, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
+use net::buffer::{
+    Append, DeepCopy, Headroom, NotWritable, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+    TryAsMut,
+};
 use std::ffi::CString;
 
 /// DPDK memory manager
@@ -463,9 +466,25 @@ impl AsRef<[u8]> for Mbuf {
     }
 }
 
-impl AsMut<[u8]> for Mbuf {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.raw_data_mut()
+impl TryAsMut for Mbuf {
+    fn try_as_mut(&mut self) -> Result<&mut [u8], NotWritable> {
+        if self.is_writable() {
+            Ok(self.raw_data_mut())
+        } else {
+            Err(NotWritable)
+        }
+    }
+}
+
+impl Mbuf {
+    /// Whether the mbuf is direct, internally backed, and uniquely owned.
+    #[must_use]
+    fn is_writable(&self) -> bool {
+        // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
+        let attached = unsafe { self.raw.as_ref() }.ol_flags
+            & (dpdk_sys::RTE_MBUF_F_INDIRECT | dpdk_sys::RTE_MBUF_F_EXTERNAL)
+            != 0;
+        !attached && unsafe { dpdk_sys::rte_mbuf_refcnt_read(self.raw.as_ptr()) } == 1
     }
 }
 

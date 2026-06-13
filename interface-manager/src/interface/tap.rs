@@ -245,7 +245,8 @@ impl TapDevice {
         &mut self,
         buf: &mut Buf,
     ) -> Result<NonZero<u16>, tokio::io::Error> {
-        let bytes_read = self.file.read(buf.as_mut()).await?;
+        let buf_bytes = buf.try_as_mut().map_err(tokio::io::Error::other)?;
+        let bytes_read = self.file.read(buf_bytes).await?;
         let bytes_read = match u16::try_from(bytes_read) {
             Ok(bytes_read) => bytes_read,
             Err(err) => {
