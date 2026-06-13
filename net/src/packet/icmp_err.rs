@@ -103,7 +103,7 @@ impl<'a> IcmpErrorPacket<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::TestBuffer;
+    use crate::buffer::{TestBuffer, TryAsMut};
     use crate::eth::ethtype::EthType;
     use crate::headers::{EmbeddedHeadersBuilder, Headers, HeadersBuilder, Net, Transport};
     use crate::icmp4::{Icmp4, Icmp4DestUnreachable, Icmp4EchoRequest, Icmp4Type};
@@ -122,7 +122,7 @@ mod tests {
         headers.eth(Some(make_default_for_eth(EthType::IPV4)));
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
+        headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet);
@@ -141,7 +141,7 @@ mod tests {
 
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
+        headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet);
@@ -168,7 +168,7 @@ mod tests {
 
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
+        headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet);
@@ -191,7 +191,7 @@ mod tests {
 
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
+        headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet);
@@ -214,7 +214,7 @@ mod tests {
 
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
+        headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet);
@@ -247,7 +247,7 @@ mod tests {
 
         let headers = headers.build().unwrap();
         let mut buffer = TestBuffer::new();
-        headers.deparse(buffer.as_mut()).unwrap();
+        headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet);
@@ -306,7 +306,7 @@ mod tests {
 
         let headers = headers.build().unwrap();
         let mut buffer = get_buffer_for_checksum_test(&headers);
-        headers.deparse(buffer.as_mut()).unwrap();
+        headers.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let packet = Packet::new(buffer).unwrap();
 
         let icmp_error_packet = IcmpErrorPacket::new(&packet).unwrap();
