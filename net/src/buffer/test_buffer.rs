@@ -10,7 +10,7 @@ pub use contract::*;
 
 use crate::buffer::{
     Append, DeepCopy, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom,
-    Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+    PacketLength, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
 };
 use core::convert::Infallible;
 use tracing::trace;
@@ -112,6 +112,14 @@ impl AsMut<[u8]> for TestBuffer {
         let start = self.headroom as usize;
         let end = self.buffer.len() - self.tailroom as usize;
         &mut self.buffer.as_mut_slice()[start..end]
+    }
+}
+
+impl PacketLength for TestBuffer {
+    fn packet_len(&self) -> usize {
+        // A `TestBuffer` is single-segment today, so the whole packet is its contiguous in-use
+        // region.  When it becomes a segment chain this will sum the segments.
+        self.as_ref().len()
     }
 }
 

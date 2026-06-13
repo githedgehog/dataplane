@@ -22,7 +22,9 @@ use dpdk_sys::{
     rte_pktmbuf_adj, rte_pktmbuf_append, rte_pktmbuf_headroom, rte_pktmbuf_prepend,
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
-use net::buffer::{Append, DeepCopy, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
+use net::buffer::{
+    Append, DeepCopy, Headroom, PacketLength, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+};
 use std::ffi::CString;
 
 #[cfg(test)]
@@ -472,6 +474,14 @@ impl AsRef<[u8]> for Mbuf {
 impl AsMut<[u8]> for Mbuf {
     fn as_mut(&mut self) -> &mut [u8] {
         self.raw_data_mut()
+    }
+}
+
+impl PacketLength for Mbuf {
+    fn packet_len(&self) -> usize {
+        // SAFETY: `self.raw` is live and `pkt_len` is valid for packet mbufs.
+        // It includes all segments; `data_len` covers only the head.
+        unsafe { self.raw.as_ref().annon2.annon1.pkt_len as usize }
     }
 }
 
