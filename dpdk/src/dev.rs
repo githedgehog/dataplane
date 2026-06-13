@@ -7,6 +7,8 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
+use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
@@ -329,6 +331,7 @@ impl DevConfig {
             rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
             tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
             hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            state: PhantomData,
         })
     }
 }
@@ -771,9 +774,50 @@ impl DevInfo {
     }
 }
 
+/// Sealed marker trait for the valid [`Dev`] lifecycle typestates: [`Stopped`] and [`Started`].
+///
+/// This mirrors the typestate approach already used by the ACL context in this crate: operations
+/// that are illegal in a given state are simply absent from that state's `impl` block, so
+/// configuring a queue on a running device -- or receiving on a stopped one -- is a compile error
+/// rather than a runtime check.
+pub trait DevState: dev_state::Sealed {
+    /// Whether a device in this state is running, and therefore must be stopped when it is dropped.
+    ///
+    /// `Drop` cannot be specialized per typestate, so the single `impl<S: DevState> Drop` consults
+    /// this compile-time constant instead.
+    const RUNNING: bool;
+}
+
+mod dev_state {
+    /// Sealed-trait support for [`super::DevState`]; external crates cannot add new typestates.
+    pub trait Sealed {}
+    impl Sealed for super::Stopped {}
+    impl Sealed for super::Started {}
+}
+
+/// Typestate marker: the device is configured but not running.  Its queues may be (re)configured;
+/// it cannot receive or transmit.
 #[derive(Debug)]
-/// A DPDK ethernet device.
-pub struct Dev {
+pub struct Stopped;
+
+/// Typestate marker: the device is running.  It can receive and transmit; its queue set is fixed.
+#[derive(Debug)]
+pub struct Started;
+
+impl DevState for Stopped {
+    const RUNNING: bool = false;
+}
+impl DevState for Started {
+    const RUNNING: bool = true;
+}
+
+#[derive(Debug)]
+/// A DPDK ethernet device, parameterized by its lifecycle [`DevState`].
+///
+/// A freshly [`applied`][DevConfig::apply] device is [`Stopped`] (the default); call
+/// [`start`][Dev::<Stopped>::start] to transition it to [`Started`] and back with
+/// [`stop`][Dev::<Started>::stop].
+pub struct Dev<S: DevState = Stopped> {
     /// The device info
     pub info: DevInfo,
     /// The configuration of the device.
@@ -781,9 +825,34 @@ pub struct Dev {
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
     pub(crate) hairpin_queues: Vec<HairpinQueue>,
+    state: PhantomData<S>,
 }
 
-impl Dev {
+impl<S: DevState> Dev<S> {
+    /// Move all owned device state into a `Dev` of a different typestate.
+    ///
+    /// [`Dev<Started>`] has a [`Drop`] that stops the device, so this uses [`ManuallyDrop`] to keep
+    /// that drop from firing mid-transition (which would stop a device we are about to keep
+    /// running, or double-stop one we just stopped).
+    fn transition<T: DevState>(self) -> Dev<T> {
+        let this = ManuallyDrop::new(self);
+        // SAFETY: `this` is wrapped in `ManuallyDrop`, so the source's `Drop` never runs.  Each
+        // field is moved out exactly once via `ptr::read`, leaving the returned `Dev` the sole
+        // owner of every field.
+        unsafe {
+            Dev {
+                info: core::ptr::read(&this.info),
+                config: core::ptr::read(&this.config),
+                rx_queues: core::ptr::read(&this.rx_queues),
+                tx_queues: core::ptr::read(&this.tx_queues),
+                hairpin_queues: core::ptr::read(&this.hairpin_queues),
+                state: PhantomData,
+            }
+        }
+    }
+}
+
+impl Dev<Stopped> {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
     pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
@@ -814,31 +883,59 @@ impl Dev {
         Ok(())
     }
 
-    /// Start the device.
-    pub fn start(&mut self) -> Result<(), ErrorCode> {
+    /// Start the device, transitioning it to the [`Started`] state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DevStartFailure`] -- which hands the still-[`Stopped`] device back so it can be
+    /// retried or dropped -- if the device could not be started.
+    // The error intentionally carries the device back for retry; the `Ok` variant carries the same
+    // (large) device anyway, so the `Result` is large by design, and this is a cold, once-per-device
+    // path.
+    #[allow(clippy::result_large_err)]
+    pub fn start(self) -> Result<Dev<Started>, DevStartFailure> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to start port {port}, error code: {ret}",
+                port = self.info.index(),
+            );
+            return Err(DevStartFailure {
+                error: ErrorCode::parse_i32(ret),
+                dev: self,
+            });
+        }
+        info!("Device {port} started", port = self.info.index());
+        Ok(self.transition())
+    }
+}
 
-        match ret {
-            errno::NEG_EAGAIN => {
-                error!("Device is not ready to start");
-                // TODO:
-                return Err(ErrorCode::parse_i32(errno::NEG_EAGAIN));
-            }
-            0 => {
-                info!("Device {0} started", self.info.index());
-            }
-            _ => {
-                error!(
-                    "Failed to start port {port}, error code: {code}",
-                    port = self.info.index(),
-                    code = ret
-                );
-                return Err(ErrorCode::parse_i32(ret));
-            }
-        };
-        Ok(())
+impl Dev<Started> {
+    /// Stop the device, transitioning it back to the [`Stopped`] state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DevStopFailure`] -- which hands the still-[`Started`] device back -- if the
+    /// device could not be stopped.
+    // See the note on `start`: the `Result` is large by design and this is a cold path.
+    #[allow(clippy::result_large_err)]
+    pub fn stop(self) -> Result<Dev<Stopped>, DevStopFailure> {
+        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to stop port {port}, error code: {ret}",
+                port = self.info.index(),
+            );
+            return Err(DevStopFailure {
+                error: ErrorCode::parse_i32(ret),
+                dev: self,
+            });
+        }
+        info!("Device {port} stopped", port = self.info.index());
+        Ok(self.transition())
     }
 
+    /// Find a configured receive queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
         self.rx_queues
@@ -846,6 +943,7 @@ impl Dev {
             .find(|x| x.config.queue_index == index)
     }
 
+    /// Find a configured transmit queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
         self.tx_queues
@@ -854,74 +952,52 @@ impl Dev {
     }
 }
 
-pub struct StartedDev {
-    /// The device info
-    pub info: DevInfo,
-    /// The configuration of the device.
-    pub config: DevConfig,
-    pub rx_queues: Vec<RxQueue>,
-    pub tx_queues: Vec<TxQueue>,
-    pub hairpin_queues: Vec<HairpinQueue>,
+/// Returned when [`Dev::<Stopped>::start`] fails.
+///
+/// Carries the error and the device, returned in its [`Stopped`] state so the caller can retry or
+/// drop it.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to start device {}: {error}", self.dev.info.index())]
+pub struct DevStartFailure {
+    /// The error that caused the start to fail.
+    #[source]
+    pub error: ErrorCode,
+    /// The device, still in its [`Stopped`] state.
+    pub dev: Dev<Stopped>,
 }
 
-impl Dev {
-    pub fn stop(&mut self) -> Result<(), ErrorCode> {
-        info!("Stopping device {port}", port = self.info.index());
-        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
-
-        match ret {
-            0 => {
-                info!("Device {port} stopped", port = self.info.index());
-                Ok(())
-            }
-            errno::NEG_EBUSY => {
-                // TODO, implement retry?
-                error!(
-                    "Cannot stop device {port}, port is busy",
-                    port = self.info.index()
-                );
-                Err(ErrorCode::parse_i32(errno::NEG_EBUSY))
-            }
-            _ => {
-                error!(
-                    "Failed to stop port {port}, error code: {code}",
-                    port = self.info.index(),
-                    code = ret
-                );
-                Err(ErrorCode::parse_i32(ret))
-            }
-        }
-    }
+/// Returned when [`Dev::<Started>::stop`] fails.
+///
+/// Carries the error and the device, returned in its [`Started`] state so the caller can retry or
+/// drop it.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to stop device {}: {error}", self.dev.info.index())]
+pub struct DevStopFailure {
+    /// The error that caused the stop to fail.
+    #[source]
+    pub error: ErrorCode,
+    /// The device, still in its [`Started`] state.
+    pub dev: Dev<Started>,
 }
 
-/// The state of a [`Dev`]
-#[derive(Debug, PartialEq)]
-pub enum State {
-    /// A device in the [`Stopped`][State::Stopped] state is not usable for packet processing but
-    /// can be re-configured in ways that a [`Started`][State::Started] device generally cannot.
-    Stopped,
-    /// A device in the [`Started`][State::Started] state is usable for packet processing but can
-    /// generally not be re-configured while [`Started`][State::Started].
-    Started,
-}
-
-impl Drop for Dev {
+impl<S: DevState> Drop for Dev<S> {
+    /// Stop the device when it is dropped, but only if it is running ([`Started`]); a [`Stopped`]
+    /// device has nothing to stop.  (`Drop` cannot be written for just one typestate, so this is
+    /// generic and gated on [`DevState::RUNNING`].)
     fn drop(&mut self) {
+        if !S::RUNNING {
+            return;
+        }
         info!(
             "Closing DPDK ethernet device {port}",
             port = self.info.index()
         );
-        match self.stop() {
-            Ok(()) => {
-                info!("Device {port} stopped", port = self.info.index());
-            }
-            Err(err) => {
-                error!(
-                    "Failed to stop device {port}: {err}",
-                    port = self.info.index(),
-                    err = err
-                );
-            }
+        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to stop device {port} on drop, error code: {ret}",
+                port = self.info.index(),
+            );
         }
     }
 }
