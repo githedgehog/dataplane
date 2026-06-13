@@ -20,7 +20,7 @@ use config::external::overlay::{Overlay, ValidatedOverlay};
 use lpm::prefix::{Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 
 use net::FlowKey;
-use net::buffer::TestBuffer;
+use net::buffer::{DeepCopy, TestBuffer};
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
 use net::headers::Headers;
 use net::headers::builder::HeaderStack;
@@ -1348,7 +1348,7 @@ fn a_chain_past_the_parser_limit_is_dropped_rather_than_guessed() {
     bytes.extend_from_slice(&tcp);
 
     let mut buffer = TestBuffer::from_raw_data(&bytes);
-    let mut over_limit = Packet::new(buffer.clone()).unwrap();
+    let mut over_limit = Packet::new(buffer.deep_copy().unwrap()).unwrap();
     assert_eq!(
         over_limit.upper_layer_proto(),
         None,

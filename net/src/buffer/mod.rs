@@ -34,6 +34,25 @@ impl<T> PacketBufferMut for T where
 {
 }
 
+/// Trait for producing an independent (deep) copy of a packet buffer.
+///
+/// This is deliberately **not** [`Clone`].  Duplicating a real DPDK mbuf allocates a fresh buffer
+/// from a memory pool (which can be exhausted) and copies the bytes; it is fallible and never a
+/// trivial bitwise copy.  Keeping duplication explicit and off [`Clone`] stops test buffers from
+/// silently expressing a duplication that production `Mbuf`-backed packets cannot.
+pub trait DeepCopy: Sized {
+    /// Error returned when the copy cannot be produced (for example, the backing pool is
+    /// exhausted).
+    type Error: Debug;
+
+    /// Produce an independent deep copy of this buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the copy could not be produced.
+    fn deep_copy(&self) -> Result<Self, Self::Error>;
+}
+
 /// Trait representing the ability to get the unused headroom in a packet buffer.
 pub trait Headroom {
     /// Get the (unused) headroom in a packet buffer.

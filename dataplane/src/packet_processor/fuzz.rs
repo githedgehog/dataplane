@@ -1286,11 +1286,12 @@ mod smoke {
             let mut seen = Vec::new();
             let packets = scenario();
             let (singly, burst) = packets.split_at(packets.len() - 8);
-            for packet in singly.iter().cloned() {
+            for packet in singly.iter().map(|p| p.deep_copy().unwrap()) {
                 let out = fabric.send(packet);
                 seen.push(describe(&out));
             }
-            for out in fabric.send_batch(burst.to_vec()) {
+            let burst: Vec<_> = burst.iter().map(|p| p.deep_copy().unwrap()).collect();
+            for out in fabric.send_batch(burst) {
                 seen.push(describe(&out));
             }
             seen
@@ -3778,7 +3779,8 @@ mod routed {
 
     pub(super) fn tunnelled_from(from: Vni, inner: &Packet<TestBuffer>) -> Packet<TestBuffer> {
         let bytes = inner
-            .clone()
+            .deep_copy()
+            .unwrap()
             .serialize()
             .expect("the inner frame serializes");
         let mut packet = build_test_vxlan_ipv4_packet_carrying_vni(
@@ -3801,7 +3803,7 @@ mod routed {
     }
 
     pub(super) fn inside(delivered: &Packet<TestBuffer>) -> Option<Packet<TestBuffer>> {
-        let mut copy = delivered.clone();
+        let mut copy = delivered.deep_copy().unwrap();
         matches!(copy.vxlan_decap(), Some(Ok(_))).then_some(copy)
     }
 
@@ -4147,7 +4149,7 @@ mod routed {
             match self.state {
                 State::Opening => {
                     let request = udp(self.src, self.dst, self.sport, self.dport)?;
-                    self.sent = Some(request.clone());
+                    self.sent = Some(request.deep_copy().unwrap());
                     self.state = State::AwaitingRequest;
                     Some(tunnelled_from(self.path.from, &request))
                 }
@@ -4480,7 +4482,8 @@ mod routed {
 
     fn payload_of(packet: &Packet<TestBuffer>) -> Vec<u8> {
         let bytes = packet
-            .clone()
+            .deep_copy()
+            .unwrap()
             .serialize()
             .expect("a packet in hand serializes");
         let headers = packet.headers().size().get() as usize;
