@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 use crate::eal::{Eal, EalErrno};
-use crate::mem::RteAllocator;
 use core::ffi::{c_int, c_uint, c_void};
 use core::fmt::Debug;
 use tracing::{info, warn};
@@ -141,10 +140,8 @@ pub struct WorkerThread {
 impl WorkerThread {
     #[allow(clippy::expect_used)] // this is only called at system launch where crash is still ok
     pub fn launch<T: Send + FnOnce()>(lcore: LCoreId, f: T) {
-        RteAllocator::assert_initialized();
         #[inline]
         unsafe extern "C" fn _launch<Task: Send + FnOnce()>(arg: *mut c_void) -> c_int {
-            RteAllocator::assert_initialized();
             let task = unsafe {
                 Box::from_raw(
                     arg.as_mut().expect("null argument in worker setup") as *mut _ as *mut Task,
