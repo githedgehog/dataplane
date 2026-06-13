@@ -2,7 +2,6 @@
 // Copyright Open Network Fabric Authors
 
 //! DPDK Environment Abstraction Layer (EAL)
-use crate::mem::RteAllocator;
 use crate::{dev, lcore, mem, socket};
 use alloc::ffi::CString;
 use alloc::format;
@@ -158,89 +157,71 @@ pub fn main_lcore_arg() -> String {
 /// 4. The EAL has already been initialized.
 #[cold]
 pub fn init(args: impl IntoIterator<Item = impl AsRef<str>>) -> Eal {
-    // NOTE: We need to be careful about freeing memory here!
-    // After _init is called, we swap to another memory allocator (the dpdk allocator).
-    // We can't free memory from the system allocator using the DPDK allocator.
-    // The easiest way around this issue is
-    // to make sure the memory used for initialization is completely freed
-    // before swapping allocators.
-    // The easiest way I know how to do that is by bundling the pre-shift logic into its own scope.
-    // The system memory will be free by the time this scope closes.
-    let eal = {
-        let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
-            Eal::fatal_error(e.to_string());
-        });
-        // EAL treats argv[0] as the program name and ignores it; this
-        // slot would otherwise eat the first real flag.  We sidestep
-        // this by prepending a placeholder program name as the first
-        // owned CString.
-        args.0.insert(0, c"dataplane".to_owned());
+    let mut args = ValidatedEalArgs::new(args).unwrap_or_else(|e| {
+        Eal::fatal_error(e.to_string());
+    });
+    // EAL treats argv[0] as the program name and ignores it; this
+    // slot would otherwise eat the first real flag.  We sidestep
+    // this by prepending a placeholder program name as the first
+    // owned CString.
+    args.0.insert(0, c"dataplane".to_owned());
 
-        // Move every CString into a raw `*mut c_char` via
-        // `CString::into_raw`.  This is the only safe way to obtain a
-        // pointer with full mutable provenance for FFI: `as_ptr()` on
-        // a `CString` (or `&CString` reborrowed from `&mut CString`)
-        // carries SharedReadOnly provenance under Stacked / Tree
-        // Borrows, and any write through `as_ptr().cast_mut()` would
-        // be UB even though the allocation is writable.
-        //
-        // The pinned DPDK source (`rte_eal_init` + its getopt-based
-        // option parser) only permutes the argv **pointer array** --
-        // it does not modify the bytes of any individual argv string
-        // and does not change any string's NUL-terminated length.
-        // The `CString::from_raw` cleanup below depends on that:
-        // `from_raw` is only sound if the string length is unchanged
-        // from what `into_raw` produced.
-        //
-        // We still use `into_raw` (rather than `as_ptr().cast_mut()`)
-        // because `rte_eal_init`'s public contract permits the EAL or
-        // any argument parser it calls to modify argv strings in
-        // place (`setproctitle`-style program-name manipulation,
-        // `getopt_long`-style `optarg` rewrites).  Our pinned DPDK
-        // does not exercise that allowance, but `into_raw` gives us
-        // mut-clean pointer provenance regardless.  If a future DPDK
-        // upgrade ever started rewriting argv strings in place, the
-        // round-trip here is still pointer-provenance-sound but the
-        // reclamation path would need to switch to a non-length-
-        // dependent strategy (e.g. `libc::free` on the original
-        // pointers, then `mem::forget` the CStrings).
-        //
-        // Reclamation note: `rte_eal_init` does getopt-style permutation
-        // on the argv array, so the order in `c_args` after the FFI
-        // call is **not** the order on entry.  We snapshot the
-        // pre-init pointer list in `original_ptrs` to reclaim each
-        // CString exactly once with `CString::from_raw`, regardless
-        // of how DPDK reorders `c_args`.  The `_reclaimed` Vec must
-        // drop **before** the scope exits (and therefore before the
-        // `RteAllocator::mark_initialized` allocator swap below) so
-        // the system allocator that produced each CString is the one
-        // that frees it.
-        let mut c_args: Vec<*mut core::ffi::c_char> =
-            args.0.drain(..).map(CString::into_raw).collect();
-        let original_ptrs: Vec<*mut core::ffi::c_char> = c_args.clone();
-        let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
-        // SAFETY: each pointer in `original_ptrs` came from
-        // `CString::into_raw` above; we have not transferred ownership
-        // elsewhere (DPDK does not retain pointers from argv after
-        // `rte_eal_init` returns).  Using the pre-init snapshot avoids
-        // aliasing if DPDK permuted `c_args`.
-        let _reclaimed: Vec<CString> = original_ptrs
-            .into_iter()
-            .map(|p| unsafe { CString::from_raw(p) })
-            .collect();
-        if ret < 0 {
-            EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
-        }
-        Eal {
-            mem: mem::Manager::init(),
-            dev: dev::Manager::init(),
-            socket: socket::Manager::init(),
-            lcore: lcore::Manager::init(),
-        }
-    };
-    // Shift to the DPDK allocator
-    RteAllocator::mark_initialized();
-    eal
+    // Move every CString into a raw `*mut c_char` via
+    // `CString::into_raw`.  This is the only safe way to obtain a
+    // pointer with full mutable provenance for FFI: `as_ptr()` on
+    // a `CString` (or `&CString` reborrowed from `&mut CString`)
+    // carries SharedReadOnly provenance under Stacked / Tree
+    // Borrows, and any write through `as_ptr().cast_mut()` would
+    // be UB even though the allocation is writable.
+    //
+    // The pinned DPDK source (`rte_eal_init` + its getopt-based
+    // option parser) only permutes the argv **pointer array** --
+    // it does not modify the bytes of any individual argv string
+    // and does not change any string's NUL-terminated length.
+    // The `CString::from_raw` cleanup below depends on that:
+    // `from_raw` is only sound if the string length is unchanged
+    // from what `into_raw` produced.
+    //
+    // We still use `into_raw` (rather than `as_ptr().cast_mut()`)
+    // because `rte_eal_init`'s public contract permits the EAL or
+    // any argument parser it calls to modify argv strings in
+    // place (`setproctitle`-style program-name manipulation,
+    // `getopt_long`-style `optarg` rewrites).  Our pinned DPDK
+    // does not exercise that allowance, but `into_raw` gives us
+    // mut-clean pointer provenance regardless.  If a future DPDK
+    // upgrade ever started rewriting argv strings in place, the
+    // round-trip here is still pointer-provenance-sound but the
+    // reclamation path would need to switch to a non-length-
+    // dependent strategy (e.g. `libc::free` on the original
+    // pointers, then `mem::forget` the CStrings).
+    //
+    // Reclamation note: `rte_eal_init` does getopt-style permutation
+    // on the argv array, so the order in `c_args` after the FFI
+    // call is **not** the order on entry.  We snapshot the
+    // pre-init pointer list in `original_ptrs` to reclaim each
+    // CString exactly once with `CString::from_raw`, regardless
+    // of how DPDK reorders `c_args`.
+    let mut c_args: Vec<*mut core::ffi::c_char> = args.0.drain(..).map(CString::into_raw).collect();
+    let original_ptrs: Vec<*mut core::ffi::c_char> = c_args.clone();
+    let ret = unsafe { dpdk_sys::rte_eal_init(c_args.len() as _, c_args.as_mut_ptr() as _) };
+    // SAFETY: each pointer in `original_ptrs` came from
+    // `CString::into_raw` above; we have not transferred ownership
+    // elsewhere (DPDK does not retain pointers from argv after
+    // `rte_eal_init` returns).  Using the pre-init snapshot avoids
+    // aliasing if DPDK permuted `c_args`.
+    let _reclaimed: Vec<CString> = original_ptrs
+        .into_iter()
+        .map(|p| unsafe { CString::from_raw(p) })
+        .collect();
+    if ret < 0 {
+        EalErrno::assert(unsafe { dpdk_sys::rte_errno_get() });
+    }
+    Eal {
+        mem: mem::Manager::init(),
+        dev: dev::Manager::init(),
+        socket: socket::Manager::init(),
+        lcore: lcore::Manager::init(),
+    }
 }
 
 impl Eal {
