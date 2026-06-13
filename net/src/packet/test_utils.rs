@@ -896,7 +896,7 @@ pub fn assert_checksum_current_or_refresh_requested(packet: &Packet<TestBuffer>)
     if packet.meta().checksum_refresh() {
         return;
     }
-    let mut recomputed = packet.clone();
+    let mut recomputed = packet.deep_copy().expect("copy test packet");
     recomputed.update_checksums();
     assert_eq!(
         transport_checksum(packet),
