@@ -7,6 +7,8 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
 use core::fmt::{Debug, Display, Formatter};
+use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use tracing::{debug, error, info};
 
@@ -316,6 +318,7 @@ impl DevConfig {
             rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
             tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
             hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
+            state: PhantomData,
         })
     }
 }
@@ -758,9 +761,40 @@ impl DevInfo {
     }
 }
 
+/// Sealed device states: [`Configured`] and [`Started`].
+pub trait DevState: dev_state::Sealed {
+    /// Whether Drop must stop the device.
+    const RUNNING: bool;
+}
+
+mod dev_state {
+    /// Restricts [`super::DevState`] to this module's states.
+    pub trait Sealed {}
+    impl Sealed for super::Configured {}
+    impl Sealed for super::Started {}
+}
+
+/// A stopped, configured device whose queues can be set up.
 #[derive(Debug)]
-/// A DPDK ethernet device.
-pub struct Dev {
+pub struct Configured;
+
+/// A running device whose queues can receive and transmit.
+#[derive(Debug)]
+pub struct Started;
+
+impl DevState for Configured {
+    const RUNNING: bool = false;
+}
+impl DevState for Started {
+    const RUNNING: bool = true;
+}
+
+#[derive(Debug)]
+/// A DPDK Ethernet device with a lifecycle [`DevState`].
+///
+/// [`DevConfig::apply`] produces a [`Configured`] device. [`start`](Dev::<Configured>::start)
+/// moves it to [`Started`]; [`stop`](Dev::<Started>::stop) moves it back.
+pub struct Dev<S: DevState = Configured> {
     /// The device info
     pub info: DevInfo,
     /// The configuration of the device.
@@ -768,9 +802,28 @@ pub struct Dev {
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
     pub(crate) hairpin_queues: Vec<HairpinQueue>,
+    state: PhantomData<S>,
 }
 
-impl Dev {
+impl<S: DevState> Dev<S> {
+    /// Move device state without running Drop on the source.
+    fn transition<T: DevState>(self) -> Dev<T> {
+        let this = ManuallyDrop::new(self);
+        // SAFETY: ManuallyDrop prevents teardown; each field is moved exactly once.
+        unsafe {
+            Dev {
+                info: core::ptr::read(&this.info),
+                config: core::ptr::read(&this.config),
+                rx_queues: core::ptr::read(&this.rx_queues),
+                tx_queues: core::ptr::read(&this.tx_queues),
+                hairpin_queues: core::ptr::read(&this.hairpin_queues),
+                state: PhantomData,
+            }
+        }
+    }
+}
+
+impl Dev<Configured> {
     // TODO: return type should provide a handle back to the queue
     /// Configure a new [`RxQueue`]
     pub fn new_rx_queue(&mut self, config: RxQueueConfig) -> Result<(), rx::ConfigFailure> {
@@ -802,30 +855,52 @@ impl Dev {
     }
 
     /// Start the device.
-    pub fn start(&mut self) -> Result<(), ErrorCode> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DevStartFailure`] with the configured device for retry or disposal.
+    #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
+    pub fn start(self) -> Result<Dev<Started>, DevStartFailure> {
         let ret = unsafe { rte_eth_dev_start(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to start port {port}, error code: {ret}",
+                port = self.info.index(),
+            );
+            return Err(DevStartFailure {
+                error: ErrorCode::parse_i32(ret),
+                dev: self,
+            });
+        }
+        info!("Device {port} started", port = self.info.index());
+        Ok(self.transition())
+    }
+}
 
-        match ret {
-            errno::NEG_EAGAIN => {
-                error!("Device is not ready to start");
-                // TODO:
-                return Err(ErrorCode::parse_i32(errno::NEG_EAGAIN));
-            }
-            0 => {
-                info!("Device {0} started", self.info.index());
-            }
-            _ => {
-                error!(
-                    "Failed to start port {port}, error code: {code}",
-                    port = self.info.index(),
-                    code = ret
-                );
-                return Err(ErrorCode::parse_i32(ret));
-            }
-        };
-        Ok(())
+impl Dev<Started> {
+    /// Stop the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DevStopFailure`] with the still-running device.
+    #[allow(clippy::result_large_err)] // Preserve device ownership on failure.
+    pub fn stop(self) -> Result<Dev<Configured>, DevStopFailure> {
+        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to stop port {port}, error code: {ret}",
+                port = self.info.index(),
+            );
+            return Err(DevStopFailure {
+                error: ErrorCode::parse_i32(ret),
+                dev: self,
+            });
+        }
+        info!("Device {port} stopped", port = self.info.index());
+        Ok(self.transition())
     }
 
+    /// Find a configured receive queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn rx_queue(&self, index: RxQueueIndex) -> Option<&RxQueue> {
         self.rx_queues
@@ -833,6 +908,7 @@ impl Dev {
             .find(|x| x.config.queue_index == index)
     }
 
+    /// Find a configured transmit queue by index.
     #[tracing::instrument(level = "trace")]
     pub fn tx_queue(&self, index: TxQueueIndex) -> Option<&TxQueue> {
         self.tx_queues
@@ -841,74 +917,44 @@ impl Dev {
     }
 }
 
-pub struct StartedDev {
-    /// The device info
-    pub info: DevInfo,
-    /// The configuration of the device.
-    pub config: DevConfig,
-    pub rx_queues: Vec<RxQueue>,
-    pub tx_queues: Vec<TxQueue>,
-    pub hairpin_queues: Vec<HairpinQueue>,
+/// A start error and the still-configured device.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to start device {}: {error}", self.dev.info.index())]
+pub struct DevStartFailure {
+    /// The error that caused the start to fail.
+    #[source]
+    pub error: ErrorCode,
+    /// The device, still in its [`Configured`] state.
+    pub dev: Dev<Configured>,
 }
 
-impl Dev {
-    pub fn stop(&mut self) -> Result<(), ErrorCode> {
-        info!("Stopping device {port}", port = self.info.index());
-        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
-
-        match ret {
-            0 => {
-                info!("Device {port} stopped", port = self.info.index());
-                Ok(())
-            }
-            errno::NEG_EBUSY => {
-                // TODO, implement retry?
-                error!(
-                    "Cannot stop device {port}, port is busy",
-                    port = self.info.index()
-                );
-                Err(ErrorCode::parse_i32(errno::NEG_EBUSY))
-            }
-            _ => {
-                error!(
-                    "Failed to stop port {port}, error code: {code}",
-                    port = self.info.index(),
-                    code = ret
-                );
-                Err(ErrorCode::parse_i32(ret))
-            }
-        }
-    }
+/// A stop error and the still-running device.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to stop device {}: {error}", self.dev.info.index())]
+pub struct DevStopFailure {
+    /// The error that caused the stop to fail.
+    #[source]
+    pub error: ErrorCode,
+    /// The device, still in its [`Started`] state.
+    pub dev: Dev<Started>,
 }
 
-/// The state of a [`Dev`]
-#[derive(Debug, PartialEq)]
-pub enum State {
-    /// A device in the [`Stopped`][State::Stopped] state is not usable for packet processing but
-    /// can be re-configured in ways that a [`Started`][State::Started] device generally cannot.
-    Stopped,
-    /// A device in the [`Started`][State::Started] state is usable for packet processing but can
-    /// generally not be re-configured while [`Started`][State::Started].
-    Started,
-}
-
-impl Drop for Dev {
+impl<S: DevState> Drop for Dev<S> {
+    /// Stop the device if it is running.
     fn drop(&mut self) {
+        if !S::RUNNING {
+            return;
+        }
         info!(
             "Closing DPDK ethernet device {port}",
             port = self.info.index()
         );
-        match self.stop() {
-            Ok(()) => {
-                info!("Device {port} stopped", port = self.info.index());
-            }
-            Err(err) => {
-                error!(
-                    "Failed to stop device {port}: {err}",
-                    port = self.info.index(),
-                    err = err
-                );
-            }
+        let ret = unsafe { rte_eth_dev_stop(self.info.index().as_u16()) };
+        if ret != 0 {
+            error!(
+                "Failed to stop device {port} on drop, error code: {ret}",
+                port = self.info.index(),
+            );
         }
     }
 }
