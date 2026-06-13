@@ -22,7 +22,7 @@ use dpdk_sys::{
     rte_pktmbuf_adj, rte_pktmbuf_append, rte_pktmbuf_headroom, rte_pktmbuf_prepend,
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
-use net::buffer::{Append, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
+use net::buffer::{Append, DeepCopy, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
 use std::ffi::CString;
 
 /// DPDK memory manager
@@ -429,6 +429,33 @@ pub struct Mbuf {
 
 // dpdk_sys::rte_mbuf is Send but not Sync since it is a plain C pointer
 unsafe impl Send for Mbuf {}
+
+/// Failure to deep-copy an [`Mbuf`] (the destination pool could not supply a fresh mbuf).
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Debug, thiserror::Error)]
+#[error("failed to deep-copy mbuf: source pool exhausted")]
+pub struct MbufCopyError;
+
+impl DeepCopy for Mbuf {
+    type Error = MbufCopyError;
+
+    /// Produce an independent deep copy of this mbuf (and its whole segment chain), allocated from
+    /// the same pool the original came from.
+    ///
+    /// Unlike a shared/indirect clone, the copy aliases none of the original's data.
+    fn deep_copy(&self) -> Result<Mbuf, MbufCopyError> {
+        // SAFETY: `self.raw` is a live mbuf; reading its originating `pool` pointer is sound.
+        let pool = unsafe { self.raw.as_ref().pool };
+        // A length of `u32::MAX` copies from offset 0 through the end of the packet.
+        let copy = unsafe { dpdk_sys::rte_pktmbuf_copy(self.raw.as_ptr(), pool, 0, u32::MAX) };
+        match NonNull::new(copy) {
+            // SAFETY: `rte_pktmbuf_copy` returned a freshly allocated mbuf chain that we now own.
+            Some(_) => Ok(unsafe { Mbuf::new_from_raw_unchecked(copy) }),
+            None => Err(MbufCopyError),
+        }
+    }
+}
 
 /// TODO: this is possibly poor optimization, we should try bulk dealloc if this slows us down
 /// TODO: we need to ensure that we don't call drop on Mbuf when they have been transmitted.
