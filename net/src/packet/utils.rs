@@ -505,7 +505,7 @@ mod tests {
         check!()
             .with_generator(CommonPacketAndPorts)
             .for_each(|(packet, src_port, dst_port)| {
-                let mut packet = packet.clone();
+                let mut packet = packet.deep_copy().unwrap();
                 match packet.try_transport() {
                     Some(Transport::Udp(_)) => {
                         let src = UdpPort::new_checked(src_port.get()).unwrap();
@@ -602,7 +602,7 @@ mod tests {
         check!()
             .with_generator(CommonPacketAndIps)
             .for_each(|(packet, src_ip, dst_ip)| {
-                let mut packet = packet.clone();
+                let mut packet = packet.deep_copy().unwrap();
                 assert!(packet.set_ip_source(*src_ip).is_ok());
                 assert!(packet.set_ip_destination(*dst_ip).is_ok());
                 assert_eq!(packet.ip_source(), Some(src_ip.inner()));

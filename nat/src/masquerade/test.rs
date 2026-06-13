@@ -1269,7 +1269,7 @@ fn check_packet_with_vpcd_lookup(
             .collect()
     } else {
         // Simple flow lookup, without attaching the destination VPC discriminant to the packet.
-        flow_lookup(nat.sessions(), &mut packet.clone());
+        flow_lookup(nat.sessions(), &mut packet.deep_copy().unwrap());
         vec![packet]
     };
 
@@ -1614,7 +1614,7 @@ fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
     let src_port = packet.transport_src_port().unwrap();
     let dst_port = packet.transport_dst_port().unwrap();
 
-    let mut reply = packet.clone();
+    let mut reply = packet.deep_copy().unwrap();
     reply.meta_reset();
     reply.meta_mut().src_vpcd = dst_vpcd;
     reply.meta_mut().set_masquerade(true);
@@ -1645,7 +1645,7 @@ fn process_packet(
     let output: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
     let output = output.first().unwrap();
     println!("OUTPUT:{output}");
-    output.clone()
+    output.deep_copy().unwrap()
 }
 
 fn establish_tcp_connection(pipeline: &mut DynPipeline<TestBuffer>) {

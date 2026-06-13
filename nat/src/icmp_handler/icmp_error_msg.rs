@@ -266,7 +266,7 @@ mod bolero_tests {
                     return;
                 }
 
-                let mut icmp_error_msg_clone = icmp_error_msg.clone();
+                let mut icmp_error_msg_clone = icmp_error_msg.deep_copy().unwrap();
                 // First check that checksum is incorrect. There's a super-high chance that it fails
                 // with non-initialised checksums in all relevant haders, but 1) there may be only
                 // one checksum to validate (for IPv6 packets, inner IP headers have no checksums)
@@ -367,7 +367,7 @@ mod bolero_tests {
                     };
 
                     // Translate inner IP addresses, and possibly inner ports
-                    let mut icmp_error_msg_clone = icmp_error_msg.clone();
+                    let mut icmp_error_msg_clone = icmp_error_msg.deep_copy().unwrap();
                     let inner_translation_result =
                         nat_translate_icmp_inner(&mut icmp_error_msg_clone, &tr_data);
                     if (*src_port == Some(NatPort::Identifier(0))
