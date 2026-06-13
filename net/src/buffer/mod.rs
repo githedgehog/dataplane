@@ -13,9 +13,20 @@ use std::error::Error;
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub use test_buffer::*;
 
+/// Trait for the total length of a packet, summed across all of its segments.
+///
+/// This is distinct from the length of the contiguous head view returned by
+/// [`AsRef<[u8]>`](AsRef): for a multi-segment buffer the packet is longer than its head segment,
+/// while for a single-segment buffer the two are equal.  Length fields (IP total length, UDP
+/// length, ...) and any whole-packet sizing must use this rather than `as_ref().len()`.
+pub trait PacketLength {
+    /// The total length of the packet in bytes (the sum of every segment's data length).
+    fn packet_len(&self) -> usize;
+}
+
 /// Super trait representing the abstract operations which may be performed on a packet buffer.
-pub trait PacketBuffer: AsRef<[u8]> + Headroom + Debug + 'static {}
-impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + Debug + 'static {}
+pub trait PacketBuffer: AsRef<[u8]> + Headroom + PacketLength + Debug + 'static {}
+impl<T> PacketBuffer for T where T: AsRef<[u8]> + Headroom + PacketLength + Debug + 'static {}
 
 /// Super trait representing the abstract operations which may be performed on mutable a packet buffer.
 pub trait PacketBufferMut:
