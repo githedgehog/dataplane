@@ -277,7 +277,8 @@ impl Default for PoolParams {
             size: (1 << 15) - 1,
             cache_size: 256,
             private_size: 256,
-            data_size: 2048,
+            // Fixed room for jumbo frames; MTU changes do not resize existing pools.
+            data_size: 12_188,
             socket_id: SocketId::current(),
         }
     }
