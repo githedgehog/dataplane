@@ -23,8 +23,8 @@ use dpdk_sys::{
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
 use net::buffer::{
-    Append, DeepCopy, Headroom, NotWritable, Prepend, Tailroom, TrimFromEnd, TrimFromStart,
-    TryAsMut,
+    Append, DeepCopy, Headroom, NotWritable, PacketLength, Prepend, Tailroom, TrimFromEnd,
+    TrimFromStart, TryAsMut,
 };
 use std::ffi::CString;
 
@@ -463,6 +463,14 @@ impl Drop for Mbuf {
 impl AsRef<[u8]> for Mbuf {
     fn as_ref(&self) -> &[u8] {
         self.raw_data()
+    }
+}
+
+impl PacketLength for Mbuf {
+    fn packet_len(&self) -> usize {
+        // SAFETY: `self.raw` is live and `pkt_len` is valid for packet mbufs.
+        // It includes all segments; `data_len` covers only the head.
+        unsafe { self.raw.as_ref().annon2.annon1.pkt_len as usize }
     }
 }
 
