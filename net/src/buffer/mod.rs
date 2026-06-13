@@ -34,6 +34,19 @@ impl<T> PacketBufferMut for T where
 {
 }
 
+/// An independent buffer copy, which may fail to allocate.
+pub trait DeepCopy: Sized {
+    /// Copy failure, such as an exhausted memory pool.
+    type Error: Debug;
+
+    /// Produce an independent deep copy of this buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the copy could not be produced.
+    fn deep_copy(&self) -> Result<Self, Self::Error>;
+}
+
 /// Trait representing the ability to get the unused headroom in a packet buffer.
 pub trait Headroom {
     /// Get the (unused) headroom in a packet buffer.
