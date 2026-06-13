@@ -10,7 +10,7 @@ pub use contract::*;
 
 use crate::buffer::{
     Append, DeepCopy, Headroom, MemoryBufferNotLongEnough, NotEnoughHeadRoom, NotEnoughTailRoom,
-    Prepend, Tailroom, TrimFromEnd, TrimFromStart,
+    NotWritable, Prepend, Tailroom, TrimFromEnd, TrimFromStart, TryAsMut,
 };
 use core::convert::Infallible;
 use tracing::trace;
@@ -111,11 +111,21 @@ impl AsRef<[u8]> for TestBuffer {
     }
 }
 
-impl AsMut<[u8]> for TestBuffer {
-    fn as_mut(&mut self) -> &mut [u8] {
+impl TestBuffer {
+    /// Mutable view of the in-use bytes (between the headroom and tailroom).
+    fn data_mut(&mut self) -> &mut [u8] {
         let start = self.headroom as usize;
         let end = self.buffer.len() - self.tailroom as usize;
         &mut self.buffer.as_mut_slice()[start..end]
+    }
+}
+
+impl TryAsMut for TestBuffer {
+    fn try_as_mut(&mut self) -> Result<&mut [u8], NotWritable> {
+        // A `Vec`-backed `TestBuffer` is always exclusively owned, so this never fails.  Once the
+        // buffer becomes a refcounted segment chain (multi-seg rework) this will consult the
+        // refcount the same way `Mbuf` does.
+        Ok(self.data_mut())
     }
 }
 
@@ -138,7 +148,7 @@ impl Prepend for TestBuffer {
             return Err(NotEnoughHeadRoom);
         }
         self.headroom -= len;
-        Ok(self.as_mut())
+        Ok(self.data_mut())
     }
 }
 
@@ -149,7 +159,7 @@ impl Append for TestBuffer {
             return Err(NotEnoughTailRoom);
         }
         self.tailroom -= len;
-        Ok(self.as_mut())
+        Ok(self.data_mut())
     }
 }
 
@@ -165,7 +175,7 @@ impl TrimFromStart for TestBuffer {
             return Err(MemoryBufferNotLongEnough);
         }
         self.headroom += len;
-        Ok(self.as_mut())
+        Ok(self.data_mut())
     }
 }
 
@@ -181,7 +191,7 @@ impl TrimFromEnd for TestBuffer {
             return Err(MemoryBufferNotLongEnough);
         }
         self.tailroom += len;
-        Ok(self.as_mut())
+        Ok(self.data_mut())
     }
 }
 

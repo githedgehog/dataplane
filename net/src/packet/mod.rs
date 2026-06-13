@@ -820,6 +820,7 @@ pub mod contract {
 
 #[cfg(test)]
 mod qos_roundtrip_tests {
+    use crate::buffer::TryAsMut;
     use crate::headers::{Headers, Net};
     use crate::ip::dscp::Dscp;
     use crate::ip::ecn::Ecn;
@@ -900,7 +901,7 @@ mod qos_roundtrip_tests {
             .build_headers()
             .unwrap();
         let mut buffer = TestBuffer::new();
-        tagged.deparse(buffer.as_mut()).unwrap();
+        tagged.deparse(buffer.try_as_mut().unwrap()).unwrap();
         let inner = Packet::new(buffer).unwrap();
         let inner_buf = inner.serialize().unwrap();
 
