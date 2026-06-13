@@ -81,15 +81,32 @@ impl TxQueue {
             .try_into()
             .map_err(ConfigFailure::InvalidSocket)?;
 
+        // Adjust descriptor counts to the driver limits; use the tx result.
+        let mut nb_rx_desc = config.num_descriptors;
+        let mut nb_tx_desc = config.num_descriptors;
+        let adjust = unsafe {
+            dpdk_sys::rte_eth_dev_adjust_nb_rx_tx_desc(
+                dev.info.index().as_u16(),
+                &mut nb_rx_desc,
+                &mut nb_tx_desc,
+            )
+        };
+        match adjust {
+            errno::SUCCESS => {}
+            errno::NEG_ENOMEM => return Err(ConfigFailure::NoMemory(ErrorCode::parse(adjust))),
+            _ => return Err(ConfigFailure::Unexpected(ErrorCode::parse(adjust))),
+        }
+
         let tx_conf = dpdk_sys::rte_eth_txconf {
             offloads: dev.info.inner.tx_queue_offload_capa,
+            // Zero thresholds select the PMD defaults.
             ..Default::default()
         };
         let ret = unsafe {
             dpdk_sys::rte_eth_tx_queue_setup(
                 dev.info.index().as_u16(),
                 config.queue_index.as_u16(),
-                config.num_descriptors,
+                nb_tx_desc,
                 socket_id.as_c_uint(),
                 &tx_conf,
             )
