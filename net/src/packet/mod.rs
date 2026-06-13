@@ -21,7 +21,7 @@ pub use contract::*;
 #[cfg(any(doc, test, feature = "test_buffer"))]
 pub mod test_utils;
 
-use crate::buffer::{Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
+use crate::buffer::{DeepCopy, Headroom, PacketBufferMut, Prepend, Tailroom, TrimFromStart};
 use crate::eth::Eth;
 use crate::eth::EthError;
 use crate::flows::{FlowInfo, FlowStatus};
@@ -44,13 +44,28 @@ use std::num::NonZero;
 
 pub mod utils;
 
-/// A parsed (see [`Parse`]) ethernet packet.
-#[derive(Debug, Clone)]
+/// A parsed Ethernet packet. Use [`Packet::deep_copy`] to copy its buffer.
+#[derive(Debug)]
 pub struct Packet<Buf: PacketBufferMut> {
     headers: Headers,
     payload: Buf,
     /// packet metadata added by stages to drive other stages down the pipeline
     pub(crate) meta: PacketMeta,
+}
+
+impl<Buf: PacketBufferMut + DeepCopy> Packet<Buf> {
+    /// Clone the headers and metadata and deep-copy the payload buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeepCopy::Error`] if the buffer cannot be copied.
+    pub fn deep_copy(&self) -> Result<Packet<Buf>, <Buf as DeepCopy>::Error> {
+        Ok(Packet {
+            headers: self.headers.clone(),
+            payload: self.payload.deep_copy()?,
+            meta: self.meta.clone(),
+        })
+    }
 }
 
 /// Errors which may occur when failing to produce a [`Packet`]

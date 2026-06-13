@@ -22,11 +22,14 @@ use dpdk_sys::{
     rte_pktmbuf_adj, rte_pktmbuf_append, rte_pktmbuf_headroom, rte_pktmbuf_prepend,
     rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
-use net::buffer::{Append, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
+use net::buffer::{Append, DeepCopy, Headroom, Prepend, Tailroom, TrimFromEnd, TrimFromStart};
 use std::ffi::CString;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod copy_tests;
 
 /// DPDK memory manager
 #[repr(transparent)]
@@ -430,6 +433,95 @@ pub struct Mbuf {
 
 // dpdk_sys::rte_mbuf is Send but not Sync since it is a plain C pointer
 unsafe impl Send for Mbuf {}
+
+/// Failure to allocate an independent [`Mbuf`] with the source layout.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum MbufCopyError {
+    #[error("failed to deep-copy mbuf: source pool exhausted")]
+    Exhausted,
+    #[error("source buffer has {source_size} bytes; pool buffers have {pool_size}")]
+    IncompatibleLayout { source_size: u16, pool_size: u16 },
+}
+
+impl DeepCopy for Mbuf {
+    type Error = MbufCopyError;
+
+    /// Copy each segment from its own pool, preserving headroom, tailroom, and boundaries.
+    fn deep_copy(&self) -> Result<Mbuf, MbufCopyError> {
+        // SAFETY: `self` owns a live chain. Copies are independently owned, and each
+        // segment is linked once. The head owns the partial chain if allocation fails.
+        unsafe {
+            let mut source = self.raw.as_ref();
+            let mut copy = Self::copy_segment(source)?;
+            let mut tail = copy.raw;
+            while let Some(next) = source.next.as_ref() {
+                source = next;
+                let segment = Self::copy_segment(source)?;
+                let raw = segment.raw;
+                tail.as_mut().next = segment.into_raw();
+                tail = raw;
+                copy.raw.as_mut().annon1.annon1.nb_segs += 1;
+                copy.raw.as_mut().annon2.annon1.pkt_len += u32::from(source.annon2.annon1.data_len);
+            }
+            Ok(copy)
+        }
+    }
+}
+
+impl Mbuf {
+    /// Copy a single segment without its successors.
+    ///
+    /// # Safety
+    ///
+    /// `source`, its data, and its pool must be live and valid throughout the copy.
+    unsafe fn copy_segment(source: &dpdk_sys::rte_mbuf) -> Result<Mbuf, MbufCopyError> {
+        // SAFETY: the caller guarantees a live source and pool. Allocation gives us
+        // independent storage; the size check below keeps the byte copy in bounds.
+        unsafe {
+            let raw = NonNull::new(dpdk_sys::rte_pktmbuf_alloc(source.pool))
+                .ok_or(MbufCopyError::Exhausted)?;
+            let mut copy = Mbuf {
+                raw,
+                marker: PhantomData,
+            };
+            let dest = copy.raw.as_mut();
+            let source_size = source.annon2.annon1.buf_len;
+            let pool_size = dest.annon2.annon1.buf_len;
+            // Indirect or external buffers may differ from their pool's data room.
+            // Changing buf_len would persist when the mbuf returns to the pool.
+            if source_size != pool_size {
+                return Err(MbufCopyError::IncompatibleLayout {
+                    source_size,
+                    pool_size,
+                });
+            }
+
+            let offset = source.annon1.annon1.data_off;
+            let len = source.annon2.annon1.data_len;
+            dest.annon1.annon1.data_off = offset;
+            dest.annon2.annon1.data_len = len;
+            dest.annon2.annon1.pkt_len = u32::from(len);
+            core::ptr::copy_nonoverlapping(
+                source.buf_addr.cast::<u8>().add(usize::from(offset)),
+                dest.buf_addr.cast::<u8>().add(usize::from(offset)),
+                usize::from(len),
+            );
+
+            // Copy packet metadata as rte_pktmbuf_copy does, retaining the new buffer's ownership.
+            dest.annon1.annon1.port = source.annon1.annon1.port;
+            dest.annon2.annon1.annon1 = source.annon2.annon1.annon1;
+            dest.annon2.annon1.vlan_tci = source.annon2.annon1.vlan_tci;
+            dest.annon2.annon1.vlan_tci_outer = source.annon2.annon1.vlan_tci_outer;
+            dest.annon2.annon1.annon2 = source.annon2.annon1.annon2;
+            dest.annon3.tx_offload = source.annon3.tx_offload;
+            dpdk_sys::rte_mbuf_dynfield_copy(dest, source);
+            dest.ol_flags |=
+                source.ol_flags & !(dpdk_sys::RTE_MBUF_F_INDIRECT | dpdk_sys::RTE_MBUF_F_EXTERNAL);
+            Ok(copy)
+        }
+    }
+}
 
 impl Drop for Mbuf {
     fn drop(&mut self) {

@@ -30,6 +30,11 @@ pub fn start_eal() -> &'static Eal {
 
 #[cfg(test)]
 pub(crate) fn packet_pool(size: u32) -> crate::mem::Pool {
+    packet_pool_with_data_size(size, 2048)
+}
+
+#[cfg(test)]
+pub(crate) fn packet_pool_with_data_size(size: u32, data_size: u16) -> crate::mem::Pool {
     use crate::mem::{Pool, PoolConfig, PoolParams};
     use crate::socket::SocketId;
     use concurrency::process_global::atomic::{AtomicU32, Ordering};
@@ -41,7 +46,7 @@ pub(crate) fn packet_pool(size: u32) -> crate::mem::Pool {
         size,
         cache_size: 0,
         private_size: 0,
-        data_size: 2048,
+        data_size,
         socket_id: SocketId::ANY,
     };
     Pool::new_pkt_pool(PoolConfig::new(name, params).unwrap()).unwrap()
