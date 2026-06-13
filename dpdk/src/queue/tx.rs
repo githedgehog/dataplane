@@ -4,9 +4,10 @@
 //! Transmit queue configuration and management.
 
 use crate::dev::DevIndex;
-use crate::mem::Mbuf;
+use crate::mem::{MBUF_BURST, MbufArray};
 use crate::socket::SocketId;
 use crate::{dev, socket};
+use core::ptr::null_mut;
 use errno::ErrorCode;
 use std::cmp::min;
 use tracing::trace;
@@ -140,14 +141,23 @@ impl TxQueue {
 
     pub(crate) const PKT_BURST_SIZE: usize = 64;
 
+    /// Transmit a batch, returning unsent packets for retry or disposal.
+    ///
+    /// The PMD owns accepted packets. Stop when the queue makes no progress.
+    #[must_use = "retry or drop the unsent packets"]
     #[tracing::instrument(level = "trace", skip(packets))]
-    pub fn transmit(&self, packets: impl IntoIterator<Item = Mbuf>) {
-        let mut packets: Vec<_> = packets.into_iter().collect();
-        let mut offset = 0;
-        if packets.is_empty() {
-            return;
+    pub fn transmit(&self, packets: MbufArray) -> MbufArray {
+        let len = packets.len();
+        if len == 0 {
+            return MbufArray::new_empty();
         }
-        while offset < packets.len() {
+        // The batch fits in `raw`; `into_raw` transfers ownership without freeing.
+        let mut raw = [null_mut::<dpdk_sys::rte_mbuf>(); MBUF_BURST];
+        for (slot, mbuf) in raw.iter_mut().zip(packets) {
+            *slot = mbuf.into_raw();
+        }
+        let mut offset = 0;
+        while offset < len {
             trace!(
                 "Transmitting packets to tx queue {queue} on dev {dev}",
                 queue = self.config.queue_index.as_u16(),
@@ -157,17 +167,23 @@ impl TxQueue {
                 dpdk_sys::rte_eth_tx_burst(
                     self.dev.as_u16(),
                     self.config.queue_index.as_u16(),
-                    packets.as_mut_ptr().add(offset) as *mut _,
-                    min(Self::PKT_BURST_SIZE, packets.len() - offset) as u16,
+                    raw.as_mut_ptr().add(offset),
+                    min(Self::PKT_BURST_SIZE, len - offset) as u16,
                 )
-            };
-            offset += nb_tx as usize;
+            } as usize;
             trace!(
                 "Transmitted {nb_tx} packets from tx queue {queue} on dev {dev}",
                 queue = self.config.queue_index.as_u16(),
                 dev = self.dev.as_u16()
             );
+            if nb_tx == 0 {
+                break;
+            }
+            offset += nb_tx;
         }
+        // SAFETY: the PMD owns [0, offset). The tail remains live and exclusively
+        // ours, and its length is at most MBUF_BURST.
+        unsafe { MbufArray::from_raw_ptrs(&raw[offset..len]) }
     }
 }
 
