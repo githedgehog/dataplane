@@ -22,13 +22,10 @@ use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
 
-/// Defaults for the RX queue
-pub(crate) mod rx_queue_defaults {
-    /// Default MTU of an RX queue
-    pub(crate) const RX_MTU: u32 = 1514;
-    /// Default max LRO packet size for RX queue
-    pub(crate) const MAX_LRO: u32 = 8192;
-}
+/// The MTU applied when [`DevConfig::mtu`] is `None`: the standard Ethernet MTU
+/// ([`dpdk_sys::RTE_ETHER_MTU`], 1500).  It is clamped into the device's advertised
+/// `[min_mtu, max_mtu]` range at configuration time.
+pub const DEFAULT_MTU: u16 = 1500;
 
 /// A DPDK Ethernet port index.
 ///
@@ -219,6 +216,13 @@ pub struct DevConfig {
     pub tx_offloads: Option<TxOffloadConfig>,
     // TODO: more reasonable type for [`RxOffload`] here (similar to [`TxOffloadConfig`])
     pub rx_offloads: Option<RxOffload>,
+    /// The MTU to request on the device.
+    ///
+    /// If `None`, the standard Ethernet MTU ([`DEFAULT_MTU`]) is used, clamped into the device's
+    /// advertised range.  If `Some`, the value is validated against the device's
+    /// `[min_mtu, max_mtu]` range and rejected with [`DevConfigError::MtuOutOfRange`] when the
+    /// device does not support it.
+    pub mtu: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -226,12 +230,49 @@ pub struct DevConfig {
 pub enum DevConfigError {
     /// A driver-specific error occurred when configuring the ethernet device.
     DriverSpecificError(&'static str),
+    /// The requested MTU is outside the device's advertised `[min, max]` range.
+    MtuOutOfRange {
+        /// The MTU that was requested.
+        requested: u16,
+        /// The device's minimum supported MTU.
+        min: u16,
+        /// The device's maximum supported MTU.
+        max: u16,
+    },
 }
 
 impl DevConfig {
+    /// Resolve the configured MTU against the device's advertised `[min_mtu, max_mtu]` range.
+    ///
+    /// A `None` request uses [`DEFAULT_MTU`] clamped into the supported range.  An explicit request
+    /// outside the range is rejected (rather than silently clamped) so that misconfiguration is
+    /// visible.  Devices that leave their range unset (`max_mtu == 0`) fall back to the
+    /// requested-or-default value and let device start reject it if it is genuinely unsupported.
+    fn resolve_mtu(&self, dev: &DevInfo) -> Result<u16, DevConfigError> {
+        let min = dev.inner.min_mtu;
+        let max = dev.inner.max_mtu;
+        if max == 0 || min > max {
+            return Ok(self.mtu.unwrap_or(DEFAULT_MTU));
+        }
+        match self.mtu {
+            Some(requested) if requested < min || requested > max => {
+                Err(DevConfigError::MtuOutOfRange {
+                    requested,
+                    min,
+                    max,
+                })
+            }
+            Some(requested) => Ok(requested),
+            None => Ok(DEFAULT_MTU.clamp(min, max)),
+        }
+    }
+
     /// Apply the configuration to the device.
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
+        // Resolve and validate the MTU against what the device actually supports before building
+        // the configuration.
+        let mtu = self.resolve_mtu(&dev)?;
         let eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
@@ -245,9 +286,11 @@ impl DevConfig {
                 ..Default::default()
             },
             rxmode: rte_eth_rxmode {
-                mtu: rx_queue_defaults::RX_MTU,
+                mtu: u32::from(mtu),
                 mq_mode: RTE_ETH_MQ_RX_RSS,
-                max_lro_pkt_size: rx_queue_defaults::MAX_LRO,
+                // The device's advertised maximum LRO size.  DPDK ignores this unless the TCP LRO
+                // offload is enabled, and `0` (no LRO support) requests the driver's default.
+                max_lro_pkt_size: dev.inner.max_lro_pkt_size,
                 offloads: {
                     let requested = self.rx_offloads.unwrap_or(RxOffload(ANY_SUPPORTED));
                     let supported = dev.rx_offload_caps();
