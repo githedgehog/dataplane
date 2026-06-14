@@ -195,6 +195,20 @@ impl From<DevIndex> for u16 {
     }
 }
 
+/// RSS hashing parameters applied at device-configure time.
+///
+/// RSS must be configured before the receive queues are set up so the PMD builds each queue's RSS
+/// context with hash delivery enabled; a runtime `rte_eth_dev_rss_hash_update` after queue setup
+/// does not retrofit this on mlx5.  Carrying it on [`DevConfig`] threads it into the single
+/// `rte_eth_dev_configure` call.
+#[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
+pub struct RssConf {
+    /// The Toeplitz RSS key.  mlx5 expects exactly 40 bytes (its `hash_key_size`).
+    pub key: [u8; 40],
+    /// The set of `RTE_ETH_RSS_*` hash types to hash over (e.g. `RTE_ETH_RSS_IPV4`).
+    pub hf: u64,
+}
+
 #[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
 /// TODO: add `rx_offloads` support
 pub struct DevConfig {
@@ -225,6 +239,9 @@ pub struct DevConfig {
     /// `[min_mtu, max_mtu]` range and rejected with [`DevConfigError::MtuOutOfRange`] when the
     /// device does not support it.
     pub mtu: Option<u16>,
+    /// RSS hashing configuration applied at configure time.  `None` leaves RSS hashing off
+    /// (`rss_hf = 0`), so the NIC computes no hash and reports none in the mbuf.
+    pub rss: Option<RssConf>,
 }
 
 #[derive(Debug)]
@@ -275,7 +292,9 @@ impl DevConfig {
         // Resolve and validate the MTU against what the device actually supports before building
         // the configuration.
         let mtu = self.resolve_mtu(&dev)?;
-        let eth_conf = rte_eth_conf {
+        // The RSS key must outlive the `rte_eth_dev_configure` call below (the PMD copies it).
+        let mut rss_key_buf = [0u8; 40];
+        let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
@@ -302,6 +321,18 @@ impl DevConfig {
             },
             ..Default::default()
         };
+
+        // Configure RSS here, at device-configure time, so the PMD builds each rx queue's RSS
+        // context with hash delivery enabled.  A runtime `rss_hash_update` after queue setup does
+        // not retrofit this on mlx5.  `None` leaves `rss_hf = 0` (no hashing, the prior behavior).
+        if let Some(rss) = self.rss {
+            rss_key_buf = rss.key;
+            let mut rss_conf: rte_eth_rss_conf = unsafe { core::mem::zeroed() };
+            rss_conf.rss_key = rss_key_buf.as_mut_ptr();
+            rss_conf.rss_key_len = rss_key_buf.len() as u8;
+            rss_conf.rss_hf = rss.hf;
+            eth_conf.rx_adv_conf.rss_conf = rss_conf;
+        }
 
         let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
