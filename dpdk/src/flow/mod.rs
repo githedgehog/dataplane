@@ -6,6 +6,7 @@
 //! Choose a domain with [`Flow`], add matches and actions, then call
 //! [`FlowBuilder::create`]. [`FlowRule`] borrows the device and destroys the rule on drop.
 //! Device support is checked by the PMD during validation or creation.
+//! Pattern order follows [`Within`](net::headers::Within).
 //! This synchronous rule lifecycle is thread-bound; async rules need queue-managed destruction.
 
 mod builder;
@@ -81,17 +82,17 @@ pub struct Flow;
 
 impl Flow {
     /// Begin an ingress (NIC-domain) flow rule.
-    pub fn ingress(dev: &Dev<Started>) -> FlowBuilder<'_, Ingress> {
+    pub fn ingress(dev: &Dev<Started>) -> FlowBuilder<'_, Ingress, ()> {
         FlowBuilder::start(dev)
     }
 
     /// Begin an egress (NIC-domain) flow rule.
-    pub fn egress(dev: &Dev<Started>) -> FlowBuilder<'_, Egress> {
+    pub fn egress(dev: &Dev<Started>) -> FlowBuilder<'_, Egress, ()> {
         FlowBuilder::start(dev)
     }
 
     /// Begin a transfer (embedded-switch / FDB) flow rule.
-    pub fn transfer(dev: &Dev<Started>) -> FlowBuilder<'_, Transfer> {
+    pub fn transfer(dev: &Dev<Started>) -> FlowBuilder<'_, Transfer, ()> {
         FlowBuilder::start(dev)
     }
 }
