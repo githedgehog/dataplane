@@ -3,6 +3,7 @@
 
 //! Ethernet device management.
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_uint};
@@ -18,11 +19,14 @@ use crate::queue::hairpin::{HairpinConfigFailure, HairpinQueue};
 use crate::queue::rx::{RxQueue, RxQueueConfig, RxQueueIndex};
 use crate::queue::tx::{TxQueue, TxQueueConfig, TxQueueIndex};
 use crate::socket::SocketId;
-use dpdk_sys::rte_eth_rx_mq_mode::RTE_ETH_MQ_RX_RSS;
+use dpdk_sys::rte_eth_rx_mq_mode::{RTE_ETH_MQ_RX_NONE, RTE_ETH_MQ_RX_RSS};
 use dpdk_sys::rte_eth_tx_mq_mode::RTE_ETH_MQ_TX_NONE;
 use dpdk_sys::*;
 use errno::{Errno, ErrorCode, StandardErrno};
 use queue::{rx, tx};
+
+#[cfg(test)]
+mod rss_tests;
 
 /// Default Ethernet MTU, clamped to the device limits when configured.
 pub const DEFAULT_MTU: u16 = 1500;
@@ -193,8 +197,18 @@ impl From<DevIndex> for u16 {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
-/// TODO: add `rx_offloads` support
+/// RSS parameters applied during device configuration, before RX queue setup.
+#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Hash)]
+pub struct RssConf {
+    /// Toeplitz key, or `None` for the driver default. A supplied key must contain
+    /// exactly the device's `hash_key_size` bytes.
+    pub key: Option<Box<[u8]>>,
+    /// Requested `RTE_ETH_RSS_*` hash types.
+    pub hf: u64,
+}
+
+/// Device queue counts, offloads, MTU, and RSS.
+#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Hash)]
 pub struct DevConfig {
     // /// Information about the device.
     // pub info: DevInfo<'info>,
@@ -219,6 +233,8 @@ pub struct DevConfig {
     /// Requested MTU. `None` uses [`DEFAULT_MTU`] clamped to device limits;
     /// an explicit value outside those limits returns [`DevConfigError::MtuOutOfRange`].
     pub mtu: Option<u16>,
+    /// RSS parameters. `None` requests no hash types (`rss_hf = 0`).
+    pub rss: Option<RssConf>,
 }
 
 #[derive(Debug)]
@@ -234,6 +250,15 @@ pub enum DevConfigError {
         min: u16,
         /// The device's maximum supported MTU.
         max: u16,
+    },
+    /// RSS hashing was requested but the device advertises no RSS hash functions.
+    RssUnsupported,
+    /// The supplied RSS key does not match the device's required length.
+    RssKeyLength {
+        /// The supplied key length.
+        actual: usize,
+        /// The key length advertised by the device.
+        expected: u8,
     },
 }
 
@@ -263,7 +288,10 @@ impl DevConfig {
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let mtu = self.resolve_mtu(&dev)?;
-        let eth_conf = rte_eth_conf {
+        // DPDK retains the key pointer, including across stop/start cycles.
+        let mut config = self.clone();
+        let rss_conf = config.prepare_rss(&dev)?;
+        let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
@@ -277,7 +305,12 @@ impl DevConfig {
             },
             rxmode: rte_eth_rxmode {
                 mtu: u32::from(mtu),
-                mq_mode: RTE_ETH_MQ_RX_RSS,
+                // Devices without RSS support reject RTE_ETH_MQ_RX_RSS.
+                mq_mode: if dev.supports_rss() {
+                    RTE_ETH_MQ_RX_RSS
+                } else {
+                    RTE_ETH_MQ_RX_NONE
+                },
                 // Used only when TCP LRO is enabled; zero requests the driver default.
                 max_lro_pkt_size: dev.inner.max_lro_pkt_size,
                 offloads: {
@@ -289,6 +322,8 @@ impl DevConfig {
             },
             ..Default::default()
         };
+
+        eth_conf.rx_adv_conf.rss_conf = rss_conf;
 
         let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
@@ -314,12 +349,38 @@ impl DevConfig {
         }
         Ok(Dev {
             info: dev,
-            config: *self,
+            config,
             rx_queues: Vec::with_capacity(self.num_rx_queues as usize),
             tx_queues: Vec::with_capacity(self.num_tx_queues as usize),
             hairpin_queues: Vec::with_capacity(self.num_hairpin_queues as usize),
             state: PhantomData,
         })
+    }
+
+    // The returned key pointer borrows this config; keep it alive and unchanged while in use.
+    fn prepare_rss(&mut self, dev: &DevInfo) -> Result<rte_eth_rss_conf, DevConfigError> {
+        let Some(rss) = &mut self.rss else {
+            return Ok(rte_eth_rss_conf::default());
+        };
+        if !dev.supports_rss() {
+            return Err(DevConfigError::RssUnsupported);
+        }
+        let mut conf = rte_eth_rss_conf {
+            rss_hf: rss.hf,
+            ..Default::default()
+        };
+        if let Some(key) = &mut rss.key {
+            let expected = dev.inner.hash_key_size;
+            if key.len() != usize::from(expected) {
+                return Err(DevConfigError::RssKeyLength {
+                    actual: key.len(),
+                    expected,
+                });
+            }
+            conf.rss_key = key.as_mut_ptr();
+            conf.rss_key_len = expected;
+        }
+        Ok(conf)
     }
 }
 
@@ -767,6 +828,12 @@ impl DevInfo {
     pub fn rx_offload_caps(&self) -> RxOffload {
         self.inner.rx_offload_capa.into()
     }
+
+    /// Whether the device advertises RSS support.
+    #[must_use]
+    pub fn supports_rss(&self) -> bool {
+        self.inner.flow_type_rss_offloads != 0
+    }
 }
 
 /// Sealed device states: [`Configured`] and [`Started`].
@@ -805,8 +872,8 @@ impl DevState for Started {
 pub struct Dev<S: DevState = Configured> {
     /// The device info
     pub info: DevInfo,
-    /// The configuration of the device.
-    pub config: DevConfig,
+    // Owns the RSS key whose address DPDK retains.
+    config: DevConfig,
     pub(crate) rx_queues: Vec<RxQueue>,
     pub(crate) tx_queues: Vec<TxQueue>,
     pub(crate) hairpin_queues: Vec<HairpinQueue>,
@@ -814,6 +881,11 @@ pub struct Dev<S: DevState = Configured> {
 }
 
 impl<S: DevState> Dev<S> {
+    /// The applied configuration. Its RSS key stays owned by this device.
+    pub fn config(&self) -> &DevConfig {
+        &self.config
+    }
+
     /// Move device state without running Drop on the source.
     fn transition<T: DevState>(self) -> Dev<T> {
         let this = ManuallyDrop::new(self);
