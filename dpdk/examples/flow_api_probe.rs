@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use dataplane_dpdk::dev::{DevConfig, RxOffload};
 use dataplane_dpdk::eal;
-use dataplane_dpdk::flow::{Flow, FlowGroup, Mark};
+use dataplane_dpdk::flow::{Flow, FlowGroup, Ipv4Match, Mark};
 use dataplane_dpdk::mem::{Pool, PoolConfig, PoolParams};
 use dataplane_dpdk::queue::rx::{RxQueueConfig, RxQueueIndex};
 use dataplane_dpdk::queue::tx::{TxQueueConfig, TxQueueIndex};
@@ -90,7 +90,7 @@ fn main() -> Result<(), Err> {
     let _mark = Flow::ingress(&dev)
         .group(FlowGroup(1))
         .match_eth()
-        .match_ipv4()
+        .match_ipv4(Ipv4Match::default())
         .mark(Mark(mark_id))
         .queue(RxQueueIndex(0))
         .create()?;
