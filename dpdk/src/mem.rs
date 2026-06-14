@@ -496,6 +496,37 @@ impl Mbuf {
     }
 }
 
+impl Mbuf {
+    /// Receive offload flags (`RTE_MBUF_F_RX_*`) reported by the PMD.
+    #[must_use]
+    pub fn ol_flags(&self) -> u64 {
+        // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
+        unsafe { self.raw.as_ref() }.ol_flags
+    }
+
+    /// The NIC-reported RSS hash, or `None` when `RTE_MBUF_F_RX_RSS_HASH` is clear.
+    #[must_use]
+    pub fn rss_hash(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_RSS_HASH) == 0 {
+            return None;
+        }
+        // SAFETY: the flag above certifies `hash.rss` is the active union member; `self.raw` is a
+        // live mbuf for the lifetime of `&self`.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.rss })
+    }
+
+    /// The flow `MARK` value, or `None` when `RTE_MBUF_F_RX_FDIR_ID` is clear.
+    #[must_use]
+    pub fn rx_mark(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_FDIR_ID) == 0 {
+            return None;
+        }
+        // SAFETY: the flag above certifies the FDIR id (`hash.fdir.hi`) is valid; `self.raw` is a
+        // live mbuf for the lifetime of `&self`.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.fdir.hi })
+    }
+}
+
 impl Headroom for Mbuf {
     fn headroom(&self) -> u16 {
         unsafe { rte_pktmbuf_headroom(self.raw.as_ptr()) }
