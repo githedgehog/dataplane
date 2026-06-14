@@ -753,7 +753,9 @@ impl RxOffload {
     pub const NONE: RxOffload = RxOffload(0);
 
     /// Report the NIC's RSS hash in each mbuf's `hash.rss` field. Requires [`DevConfig::rss`].
-    /// MARK or FDIR actions can overwrite the union containing the hash.
+    /// Read it with [`Mbuf::rss_hash`](crate::mem::Mbuf::rss_hash).
+    /// MARK uses a separate slot and can coexist with RSS. The packet's RSS validity flag
+    /// remains authoritative; steering alone does not guarantee hash delivery.
     pub const RSS_HASH: RxOffload = RxOffload(RTE_ETH_RX_OFFLOAD_RSS_HASH as u64);
 }
 
