@@ -6,6 +6,7 @@
 //! Choose a domain with [`Flow`], add matches and actions, then call
 //! [`FlowBuilder::create`]. [`FlowRule`] borrows the device and destroys the rule on drop.
 //! Device support is checked by the PMD during validation or creation.
+//! This synchronous rule lifecycle is thread-bound; async rules need queue-managed destruction.
 
 mod builder;
 mod error;
