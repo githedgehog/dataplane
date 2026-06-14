@@ -293,7 +293,9 @@ impl DevConfig {
         // the configuration.
         let mtu = self.resolve_mtu(&dev)?;
         // The RSS key must outlive the `rte_eth_dev_configure` call below (the PMD copies it).
-        let mut rss_key_buf = [0u8; 40];
+        // Left uninitialized: it is written and used only on the `self.rss.is_some()` path, so a
+        // dummy initializer would be a dead store.
+        let mut rss_key_buf: [u8; 40];
         let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
