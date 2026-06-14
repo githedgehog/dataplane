@@ -52,10 +52,12 @@
 
 mod builder;
 mod error;
+mod pattern;
 mod rule;
 
 pub use builder::FlowBuilder;
 pub use error::FlowError;
+pub use pattern::{Ipv4Match, Ipv4Prefix, TcpMatch, UdpMatch};
 pub use rule::FlowRule;
 
 use crate::dev::{Dev, Started};
