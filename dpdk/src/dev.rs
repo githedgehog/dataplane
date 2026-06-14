@@ -193,6 +193,16 @@ impl From<DevIndex> for u16 {
     }
 }
 
+/// RSS parameters applied before receive queues are created.
+/// mlx5 requires this order to deliver RSS hashes in mbufs.
+#[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
+pub struct RssConf {
+    /// The Toeplitz RSS key.  mlx5 expects exactly 40 bytes (its `hash_key_size`).
+    pub key: [u8; 40],
+    /// The set of `RTE_ETH_RSS_*` hash types to hash over (e.g. `RTE_ETH_RSS_IPV4`).
+    pub hf: u64,
+}
+
 #[derive(Debug, PartialEq, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
 /// TODO: add `rx_offloads` support
 pub struct DevConfig {
@@ -219,6 +229,9 @@ pub struct DevConfig {
     /// Requested MTU. `None` uses [`DEFAULT_MTU`] clamped to device limits;
     /// an explicit value outside those limits returns [`DevConfigError::MtuOutOfRange`].
     pub mtu: Option<u16>,
+    /// RSS hashing configuration applied at configure time.  `None` leaves RSS hashing off
+    /// (`rss_hf = 0`), so the NIC computes no hash and reports none in the mbuf.
+    pub rss: Option<RssConf>,
 }
 
 #[derive(Debug)]
@@ -263,7 +276,9 @@ impl DevConfig {
     pub fn apply(&self, dev: DevInfo) -> Result<Dev, DevConfigError> {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let mtu = self.resolve_mtu(&dev)?;
-        let eth_conf = rte_eth_conf {
+        // Keep the RSS key alive until rte_eth_dev_configure copies it.
+        let mut rss_key_buf = [0u8; 40];
+        let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
                 offloads: {
@@ -289,6 +304,15 @@ impl DevConfig {
             },
             ..Default::default()
         };
+
+        if let Some(rss) = self.rss {
+            rss_key_buf = rss.key;
+            let mut rss_conf: rte_eth_rss_conf = unsafe { core::mem::zeroed() };
+            rss_conf.rss_key = rss_key_buf.as_mut_ptr();
+            rss_conf.rss_key_len = rss_key_buf.len() as u8;
+            rss_conf.rss_hf = rss.hf;
+            eth_conf.rx_adv_conf.rss_conf = rss_conf;
+        }
 
         let nb_rx_queues = self.num_rx_queues + self.num_hairpin_queues;
         let nb_tx_queues = self.num_tx_queues + self.num_hairpin_queues;
