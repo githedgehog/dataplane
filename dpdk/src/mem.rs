@@ -511,6 +511,47 @@ impl Mbuf {
     }
 }
 
+impl Mbuf {
+    /// The mbuf's receive offload flags (`ol_flags`): the bitset of `RTE_MBUF_F_RX_*` markers the
+    /// PMD set on this packet (RSS-hash-valid, FDIR-id-valid, checksum status, VLAN-stripped, ...).
+    #[must_use]
+    pub fn ol_flags(&self) -> u64 {
+        // SAFETY: `self.raw` is a live mbuf for the lifetime of `&self`.
+        unsafe { self.raw.as_ref() }.ol_flags
+    }
+
+    /// The RSS hash the NIC computed for this packet, or `None` if the NIC did not report one
+    /// (`RTE_MBUF_F_RX_RSS_HASH` clear).
+    ///
+    /// This is the value the receive-side-scaling redirection table is indexed by, so reading it is
+    /// how software reproduces (and audits) the NIC's queue choice.
+    #[must_use]
+    pub fn rss_hash(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_RSS_HASH) == 0 {
+            return None;
+        }
+        // SAFETY: the flag above certifies `hash.rss` is the active union member; `self.raw` is a
+        // live mbuf for the lifetime of `&self`.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.rss })
+    }
+
+    /// The flow-director / `MARK`-action identifier the NIC attached to this packet, or `None` if
+    /// the NIC did not set one (`RTE_MBUF_F_RX_FDIR_ID` clear).
+    ///
+    /// A flow rule's `MARK` action surfaces here, so this is the channel by which a packet trapped
+    /// to software can carry hardware-stamped context (for example a pipeline epoch) up from the
+    /// datapath.
+    #[must_use]
+    pub fn rx_mark(&self) -> Option<u32> {
+        if self.ol_flags() & u64::from(dpdk_sys::RTE_MBUF_F_RX_FDIR_ID) == 0 {
+            return None;
+        }
+        // SAFETY: the flag above certifies the FDIR id (`hash.fdir.hi`) is valid; `self.raw` is a
+        // live mbuf for the lifetime of `&self`.
+        Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.fdir.hi })
+    }
+}
+
 impl Headroom for Mbuf {
     fn headroom(&self) -> u16 {
         unsafe { rte_pktmbuf_headroom(self.raw.as_ptr()) }
