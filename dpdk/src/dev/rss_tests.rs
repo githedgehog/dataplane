@@ -77,6 +77,7 @@ fn rss_key_survives_source_drop_and_device_transitions() {
             stage: Stage::Configured,
             config: applied,
             owner: &owner,
+            live_rules: AtomicUsize::new(0),
         },
         info,
         queues: Mutex::new(Some(QueueStore::new(0, 0))),
