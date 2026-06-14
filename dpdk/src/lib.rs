@@ -8,7 +8,7 @@
 //! This crate strives to provide a more rust-idiomatic interface,
 //! making use of features like RAII (drop traits).
 //!
-//! Where possible, prefer using this crate over `dpdk-sys`.
+//! Only this crate should depend on `dpdk-sys`; downstream code uses these safe wrappers.
 //!
 //! # Safety
 //!
