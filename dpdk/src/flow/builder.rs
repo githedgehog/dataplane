@@ -21,6 +21,12 @@ use dpdk_sys::{
     rte_flow_item_type as it, rte_flow_item_udp, rte_flow_validate,
 };
 
+use net::eth::Eth;
+use net::headers::Within;
+use net::ipv4::Ipv4;
+use net::tcp::Tcp;
+use net::udp::Udp;
+
 use crate::dev::{Dev, Started};
 use crate::flow::error::FlowError;
 use crate::flow::pattern::{Ipv4Match, TcpMatch, UdpMatch};
@@ -124,20 +130,31 @@ fn set_tp(port: u16) -> rte_flow_action_set_tp {
 /// Builds one flow rule and installs (or validates) it.
 ///
 /// Construct via [`Flow::ingress`](crate::flow::Flow::ingress) /
-/// [`egress`](crate::flow::Flow::egress) / [`transfer`](crate::flow::Flow::transfer). The domain
-/// `D` fixes the `ingress`/`egress`/`transfer` attribute (which are mutually exclusive in the API).
+/// [`egress`](crate::flow::Flow::egress) / [`transfer`](crate::flow::Flow::transfer). Two typestates
+/// constrain construction:
+///
+/// - `D` fixes the `ingress`/`egress`/`transfer` attribute (which are mutually exclusive in the
+///   API).
+/// - `Pos` is the type-level "current layer" of the match pattern, exactly as in
+///   [`Headers::pat`](net::headers::Headers::pat). Each `match_*` method requires the next layer to
+///   satisfy [`Within<Pos>`], reusing `net`'s header-adjacency graph -- so an out-of-order pattern
+///   (`match_udp` with no preceding IP layer, a second `match_eth`, an L3 match before `match_eth`)
+///   is a compile error rather than a runtime rejection from the PMD. A fresh builder starts at
+///   `Pos = ()`, where only [`match_eth`](Self::match_eth) (the sole `Within<()>` layer) is
+///   available.
 #[must_use = "a FlowBuilder does nothing until create() or validate() is called"]
-pub struct FlowBuilder<'dev, D: Domain> {
+pub struct FlowBuilder<'dev, D: Domain, Pos> {
     dev: &'dev Dev<Started>,
     group: u32,
     priority: u32,
     items: Vec<MatchItem>,
     actions: Vec<Action>,
     domain: PhantomData<D>,
+    position: PhantomData<Pos>,
 }
 
-impl<'dev, D: Domain> FlowBuilder<'dev, D> {
-    pub(crate) fn start(dev: &'dev Dev<Started>) -> FlowBuilder<'dev, D> {
+impl<'dev, D: Domain> FlowBuilder<'dev, D, ()> {
+    pub(crate) fn start(dev: &'dev Dev<Started>) -> FlowBuilder<'dev, D, ()> {
         FlowBuilder {
             dev,
             group: 0,
@@ -145,6 +162,24 @@ impl<'dev, D: Domain> FlowBuilder<'dev, D> {
             items: Vec::new(),
             actions: Vec::new(),
             domain: PhantomData,
+            position: PhantomData,
+        }
+    }
+}
+
+impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
+    /// Move the accumulated builder to a new pattern position, preserving everything else.
+    ///
+    /// The owned `items`/`actions` carry over by move; only the type-level `Pos` changes.
+    fn retype<NewPos>(self) -> FlowBuilder<'dev, D, NewPos> {
+        FlowBuilder {
+            dev: self.dev,
+            group: self.group,
+            priority: self.priority,
+            items: self.items,
+            actions: self.actions,
+            domain: PhantomData,
+            position: PhantomData,
         }
     }
 
@@ -162,30 +197,50 @@ impl<'dev, D: Domain> FlowBuilder<'dev, D> {
     }
 
     /// Match the presence of an Ethernet header.
-    pub fn match_eth(mut self) -> Self {
+    ///
+    /// Only available at the start of a pattern (`Eth` is the sole layer `Within<()>`).
+    pub fn match_eth(mut self) -> FlowBuilder<'dev, D, Eth>
+    where
+        Eth: Within<Pos>,
+    {
         self.items.push(MatchItem::Eth);
-        self
+        self.retype()
     }
 
     /// Match an IPv4 header against `criteria` ([`Ipv4Match::default`] matches any IPv4 packet).
-    pub fn match_ipv4(mut self, criteria: Ipv4Match) -> Self {
+    ///
+    /// Available only after a layer IPv4 may follow (Ethernet, or a VLAN once supported).
+    pub fn match_ipv4(mut self, criteria: Ipv4Match) -> FlowBuilder<'dev, D, Ipv4>
+    where
+        Ipv4: Within<Pos>,
+    {
         let (spec, mask) = criteria.lower();
         self.items.push(MatchItem::Ipv4(spec, mask));
-        self
+        self.retype()
     }
 
     /// Match a UDP header against `criteria` ([`UdpMatch::default`] matches any UDP packet).
-    pub fn match_udp(mut self, criteria: UdpMatch) -> Self {
+    ///
+    /// Available only after a network layer (an IP header).
+    pub fn match_udp(mut self, criteria: UdpMatch) -> FlowBuilder<'dev, D, Udp>
+    where
+        Udp: Within<Pos>,
+    {
         let (spec, mask) = criteria.lower();
         self.items.push(MatchItem::Udp(spec, mask));
-        self
+        self.retype()
     }
 
     /// Match a TCP header against `criteria` ([`TcpMatch::default`] matches any TCP packet).
-    pub fn match_tcp(mut self, criteria: TcpMatch) -> Self {
+    ///
+    /// Available only after a network layer (an IP header).
+    pub fn match_tcp(mut self, criteria: TcpMatch) -> FlowBuilder<'dev, D, Tcp>
+    where
+        Tcp: Within<Pos>,
+    {
         let (spec, mask) = criteria.lower();
         self.items.push(MatchItem::Tcp(spec, mask));
-        self
+        self.retype()
     }
 
     /// Redirect matching packets to another group (a JUMP action).
