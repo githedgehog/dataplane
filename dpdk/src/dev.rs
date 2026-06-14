@@ -277,7 +277,7 @@ impl DevConfig {
         const ANY_SUPPORTED: u64 = u64::MAX;
         let mtu = self.resolve_mtu(&dev)?;
         // Keep the RSS key alive until rte_eth_dev_configure copies it.
-        let mut rss_key_buf = [0u8; 40];
+        let mut rss_key_buf: [u8; 40];
         let mut eth_conf = rte_eth_conf {
             txmode: rte_eth_txmode {
                 mq_mode: RTE_ETH_MQ_TX_NONE,
