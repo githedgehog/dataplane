@@ -15,14 +15,20 @@
 //! ```ignore
 //! // group 0 only accepts a jump on this NIC; the real work lives in group 1.
 //! let _jump = Flow::ingress(&dev).group(FlowGroup(0)).match_eth().jump(FlowGroup(1)).create()?;
-//! let _mark = Flow::ingress(&dev)
+//! let _nat = Flow::ingress(&dev)
 //!     .group(FlowGroup(1))
 //!     .match_eth()
-//!     .match_ipv4()
-//!     .mark(Mark(0x4242))
+//!     .match_ipv4(Ipv4Match::default().dst(Ipv4Prefix::host(dst)))
+//!     .match_udp(UdpMatch::default().dst(1000))
+//!     .set_ipv4_dst(new_dst)
 //!     .queue(RxQueueIndex(0))
 //!     .create()?;
 //! ```
+//!
+//! Pattern ordering is checked at compile time: each `match_*` step requires the next header to be
+//! [`Within`](net::headers::Within) the current one, reusing the same adjacency graph as
+//! [`Headers::pat`](net::headers::Headers::pat). An out-of-order chain (an L3 match before
+//! `match_eth`, `match_udp` with no IP layer) does not compile.
 //!
 //! # Design
 //!
@@ -46,9 +52,10 @@
 //!   by their (thread-bound) flow queue rather than auto-destroyed by a `Drop` that could fire on any
 //!   thread. Do not assume Drop-RAII is the universal rule lifecycle.
 //!
-//! This first iteration matches header *presence* and supports the jump/mark/queue/drop actions --
-//! enough to install the kind of rule the offload bench validated. Per-field spec/mask matching and
-//! the wider action set build on this.
+//! Matching covers Ethernet presence plus per-field IPv4/UDP/TCP criteria, with the pattern order
+//! enforced in the type system (see below); actions cover jump/mark/queue/drop and the
+//! `SET_IPV4_*`/`SET_TP_*` rewrites the NAT bench validated. The wider action set (VLAN push/set,
+//! meter, ...) and more match layers build on this.
 
 mod builder;
 mod error;
@@ -133,17 +140,17 @@ pub struct Flow;
 
 impl Flow {
     /// Begin an ingress (NIC-domain) flow rule.
-    pub fn ingress(dev: &Dev<Started>) -> FlowBuilder<'_, Ingress> {
+    pub fn ingress(dev: &Dev<Started>) -> FlowBuilder<'_, Ingress, ()> {
         FlowBuilder::start(dev)
     }
 
     /// Begin an egress (NIC-domain) flow rule.
-    pub fn egress(dev: &Dev<Started>) -> FlowBuilder<'_, Egress> {
+    pub fn egress(dev: &Dev<Started>) -> FlowBuilder<'_, Egress, ()> {
         FlowBuilder::start(dev)
     }
 
     /// Begin a transfer (embedded-switch / FDB) flow rule.
-    pub fn transfer(dev: &Dev<Started>) -> FlowBuilder<'_, Transfer> {
+    pub fn transfer(dev: &Dev<Started>) -> FlowBuilder<'_, Transfer, ()> {
         FlowBuilder::start(dev)
     }
 }
