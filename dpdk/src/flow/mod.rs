@@ -37,7 +37,14 @@
 //! - Match items and actions are expressed over `net` types, never re-implemented here.
 //! - The classic synchronous `rte_flow_create` path is built first (it bridges to hardware steering
 //!   on mlx5); the template/async (HWS-native) engine is a future seam, revisited only if rule
-//!   insertion-rate work demands it.
+//!   insertion-rate work demands it. The *content* (pattern items, actions, attributes) is identical
+//!   across the two engines and is built engine-agnostically; only the create/destroy *lifecycle*
+//!   forks. The RAII [`FlowRule`] here is the classic model and assumes single-threaded flow
+//!   management (it is `!Send`, so it drops on its creating thread). It deliberately does **not**
+//!   generalize to the async engine: there, destruction is enqueued on a per-core flow queue and
+//!   reaped via `rte_flow_pull`, and those queues are not thread-safe -- so async rules will be owned
+//!   by their (thread-bound) flow queue rather than auto-destroyed by a `Drop` that could fire on any
+//!   thread. Do not assume Drop-RAII is the universal rule lifecycle.
 //!
 //! This first iteration matches header *presence* and supports the jump/mark/queue/drop actions --
 //! enough to install the kind of rule the offload bench validated. Per-field spec/mask matching and
