@@ -86,6 +86,7 @@ stdenv.mkDerivation {
       ];
       enabledLibs = [
         "acl"
+        "cmdline" # required by the testpmd app (flow/offload validation tool)
         "cryptodev" # required for vhost
         "dmadev" # required by vhost
         "ethdev"
@@ -286,7 +287,10 @@ stdenv.mkDerivation {
       ''-Ddisable_drivers=${lib.concatStringsSep "," disabledDrivers}''
       ''-Denable_drivers=${lib.concatStringsSep "," enabledDrivers}''
       ''-Denable_libs=${lib.concatStringsSep "," enabledLibs}''
-      ''-Ddisable_apps=*''
+      # Build only testpmd (the rte_flow / offload validation tool); all other apps stay off.
+      # NB: `enable_apps` and `disable_apps=*` are mutually exclusive -- `*` would also disable
+      # testpmd -- so enable the one app we want instead of disabling all.
+      ''-Denable_apps=test-pmd''
       ''-Ddisable_libs=${lib.concatStringsSep "," disabledLibs}''
     ]
     ++ (if isCrossCompile then [ "--cross-file=${cross-file}" ] else [ ]);
