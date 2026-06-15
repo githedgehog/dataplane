@@ -15,21 +15,27 @@ use core::net::Ipv4Addr;
 use core::ptr::{NonNull, from_ref, null};
 
 use dpdk_sys::{
-    rte_flow_action, rte_flow_action_jump, rte_flow_action_mark, rte_flow_action_queue,
+    rte_flow_action, rte_flow_action_jump, rte_flow_action_mark, rte_flow_action_of_push_vlan,
+    rte_flow_action_of_set_vlan_pcp, rte_flow_action_of_set_vlan_vid, rte_flow_action_queue,
     rte_flow_action_set_ipv4, rte_flow_action_set_tp, rte_flow_action_type as at, rte_flow_attr,
-    rte_flow_create, rte_flow_error, rte_flow_item, rte_flow_item_ipv4, rte_flow_item_tcp,
-    rte_flow_item_type as it, rte_flow_item_udp, rte_flow_validate,
+    rte_flow_create, rte_flow_error, rte_flow_item, rte_flow_item_ipv4, rte_flow_item_ipv6,
+    rte_flow_item_tcp, rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vlan,
+    rte_flow_item_vxlan, rte_flow_validate,
 };
 
 use net::eth::Eth;
+use net::eth::ethtype::EthType;
 use net::headers::Within;
 use net::ipv4::Ipv4;
+use net::ipv6::Ipv6;
 use net::tcp::Tcp;
 use net::udp::Udp;
+use net::vlan::{Pcp, Vid, Vlan};
+use net::vxlan::Vxlan;
 
 use crate::dev::{Dev, Started};
 use crate::flow::error::FlowError;
-use crate::flow::pattern::{Ipv4Match, TcpMatch, UdpMatch};
+use crate::flow::pattern::{Ipv4Match, Ipv6Match, TcpMatch, UdpMatch, VlanMatch, VxlanMatch};
 use crate::flow::rule::FlowRule;
 use crate::flow::{Direction, Domain, FlowGroup, Mark, Priority};
 use crate::queue::rx::RxQueueIndex;
@@ -41,18 +47,24 @@ use crate::queue::rx::RxQueueIndex;
 /// deferred -- `rte_flow_item_eth` carries the fields behind an anonymous union).
 enum MatchItem {
     Eth,
+    Vlan(rte_flow_item_vlan, rte_flow_item_vlan),
     Ipv4(rte_flow_item_ipv4, rte_flow_item_ipv4),
+    Ipv6(rte_flow_item_ipv6, rte_flow_item_ipv6),
     Udp(rte_flow_item_udp, rte_flow_item_udp),
     Tcp(rte_flow_item_tcp, rte_flow_item_tcp),
+    Vxlan(rte_flow_item_vxlan, rte_flow_item_vxlan),
 }
 
 impl MatchItem {
     fn type_(&self) -> it::Type {
         match self {
             MatchItem::Eth => it::RTE_FLOW_ITEM_TYPE_ETH,
+            MatchItem::Vlan(..) => it::RTE_FLOW_ITEM_TYPE_VLAN,
             MatchItem::Ipv4(..) => it::RTE_FLOW_ITEM_TYPE_IPV4,
+            MatchItem::Ipv6(..) => it::RTE_FLOW_ITEM_TYPE_IPV6,
             MatchItem::Udp(..) => it::RTE_FLOW_ITEM_TYPE_UDP,
             MatchItem::Tcp(..) => it::RTE_FLOW_ITEM_TYPE_TCP,
+            MatchItem::Vxlan(..) => it::RTE_FLOW_ITEM_TYPE_VXLAN,
         }
     }
 
@@ -60,9 +72,12 @@ impl MatchItem {
     fn spec(&self) -> *const c_void {
         match self {
             MatchItem::Eth => null(),
+            MatchItem::Vlan(spec, _) => from_ref(spec).cast(),
             MatchItem::Ipv4(spec, _) => from_ref(spec).cast(),
+            MatchItem::Ipv6(spec, _) => from_ref(spec).cast(),
             MatchItem::Udp(spec, _) => from_ref(spec).cast(),
             MatchItem::Tcp(spec, _) => from_ref(spec).cast(),
+            MatchItem::Vxlan(spec, _) => from_ref(spec).cast(),
         }
     }
 
@@ -70,9 +85,12 @@ impl MatchItem {
     fn mask(&self) -> *const c_void {
         match self {
             MatchItem::Eth => null(),
+            MatchItem::Vlan(_, mask) => from_ref(mask).cast(),
             MatchItem::Ipv4(_, mask) => from_ref(mask).cast(),
+            MatchItem::Ipv6(_, mask) => from_ref(mask).cast(),
             MatchItem::Udp(_, mask) => from_ref(mask).cast(),
             MatchItem::Tcp(_, mask) => from_ref(mask).cast(),
+            MatchItem::Vxlan(_, mask) => from_ref(mask).cast(),
         }
     }
 }
@@ -87,6 +105,10 @@ enum Action {
     SetIpv4Dst(rte_flow_action_set_ipv4),
     SetTpSrc(rte_flow_action_set_tp),
     SetTpDst(rte_flow_action_set_tp),
+    OfPushVlan(rte_flow_action_of_push_vlan),
+    OfPopVlan,
+    OfSetVlanVid(rte_flow_action_of_set_vlan_vid),
+    OfSetVlanPcp(rte_flow_action_of_set_vlan_pcp),
 }
 
 impl Action {
@@ -100,6 +122,35 @@ impl Action {
             Action::SetIpv4Dst(_) => at::RTE_FLOW_ACTION_TYPE_SET_IPV4_DST,
             Action::SetTpSrc(_) => at::RTE_FLOW_ACTION_TYPE_SET_TP_SRC,
             Action::SetTpDst(_) => at::RTE_FLOW_ACTION_TYPE_SET_TP_DST,
+            Action::OfPushVlan(_) => at::RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN,
+            Action::OfPopVlan => at::RTE_FLOW_ACTION_TYPE_OF_POP_VLAN,
+            Action::OfSetVlanVid(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
+            Action::OfSetVlanPcp(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP,
+        }
+    }
+
+    /// Position in the mlx5 fixed action pipeline. The hardware steering engine processes actions in
+    /// a fixed order and rejects an out-of-order actions list (mlx5 HWS: "Invalid action_type
+    /// sequence: MODIFY_HDR, TAG, TIR"). Validated on a BlueField-3 (`hws_combo_probe`): `MARK` before
+    /// a `SET_*` rewrite is accepted, the reverse is rejected; the full `MARK -> SET_* -> QUEUE` chain
+    /// is accepted. Distinct action types are semantically order-independent, so [`lower`] sorts by
+    /// this rank (stably) regardless of the order the caller added them -- the builder produces a
+    /// HW-valid ordering rather than rejecting or trusting the call order.
+    ///
+    /// Order: header removal (pop/decap) -> `TAG`/`MARK` -> `MODIFY_HDR` (field rewrites) -> header
+    /// push (encap) -> terminal forward (queue/drop/jump).
+    fn rank(&self) -> u8 {
+        match self {
+            Action::OfPopVlan => 0,
+            Action::Mark(_) => 1,
+            Action::SetIpv4Src(_)
+            | Action::SetIpv4Dst(_)
+            | Action::SetTpSrc(_)
+            | Action::SetTpDst(_)
+            | Action::OfSetVlanVid(_)
+            | Action::OfSetVlanPcp(_) => 2,
+            Action::OfPushVlan(_) => 3,
+            Action::Jump(_) | Action::Queue(_) | Action::Drop => 4,
         }
     }
 
@@ -113,6 +164,10 @@ impl Action {
             Action::Drop => null(),
             Action::SetIpv4Src(a) | Action::SetIpv4Dst(a) => from_ref(a).cast(),
             Action::SetTpSrc(a) | Action::SetTpDst(a) => from_ref(a).cast(),
+            Action::OfPushVlan(a) => from_ref(a).cast(),
+            Action::OfPopVlan => null(),
+            Action::OfSetVlanVid(a) => from_ref(a).cast(),
+            Action::OfSetVlanPcp(a) => from_ref(a).cast(),
         }
     }
 }
@@ -207,15 +262,39 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self.retype()
     }
 
+    /// Match a VLAN (802.1Q) tag against `criteria` ([`VlanMatch::default`] matches any VLAN tag).
+    ///
+    /// Available after Ethernet (or after another VLAN, for QinQ).
+    pub fn match_vlan(mut self, criteria: VlanMatch) -> FlowBuilder<'dev, D, Vlan>
+    where
+        Vlan: Within<Pos>,
+    {
+        let (spec, mask) = criteria.lower();
+        self.items.push(MatchItem::Vlan(spec, mask));
+        self.retype()
+    }
+
     /// Match an IPv4 header against `criteria` ([`Ipv4Match::default`] matches any IPv4 packet).
     ///
-    /// Available only after a layer IPv4 may follow (Ethernet, or a VLAN once supported).
+    /// Available only after a layer IPv4 may follow (Ethernet, or a VLAN).
     pub fn match_ipv4(mut self, criteria: Ipv4Match) -> FlowBuilder<'dev, D, Ipv4>
     where
         Ipv4: Within<Pos>,
     {
         let (spec, mask) = criteria.lower();
         self.items.push(MatchItem::Ipv4(spec, mask));
+        self.retype()
+    }
+
+    /// Match an IPv6 header against `criteria` ([`Ipv6Match::default`] matches any IPv6 packet).
+    ///
+    /// Available only after a layer IPv6 may follow (Ethernet, or a VLAN).
+    pub fn match_ipv6(mut self, criteria: Ipv6Match) -> FlowBuilder<'dev, D, Ipv6>
+    where
+        Ipv6: Within<Pos>,
+    {
+        let (spec, mask) = criteria.lower();
+        self.items.push(MatchItem::Ipv6(spec, mask));
         self.retype()
     }
 
@@ -240,6 +319,19 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
     {
         let (spec, mask) = criteria.lower();
         self.items.push(MatchItem::Tcp(spec, mask));
+        self.retype()
+    }
+
+    /// Match a VXLAN header against `criteria` ([`VxlanMatch::default`] matches any VXLAN packet).
+    ///
+    /// Available only after UDP (VXLAN is UDP-encapsulated). Inner (decapsulated) headers can then be
+    /// matched as the pattern continues, since the `net` lattice resumes at the tunnel's inner start.
+    pub fn match_vxlan(mut self, criteria: VxlanMatch) -> FlowBuilder<'dev, D, Vxlan>
+    where
+        Vxlan: Within<Pos>,
+    {
+        let (spec, mask) = criteria.lower();
+        self.items.push(MatchItem::Vxlan(spec, mask));
         self.retype()
     }
 
@@ -296,6 +388,50 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self
     }
 
+    /// Push a new VLAN tag (`OF_PUSH_VLAN`) with the given TPID (typically
+    /// [`EthType::VLAN`](net::eth::ethtype::EthType::VLAN) for 802.1Q). The pushed tag's VID/PCP are
+    /// zero until set.
+    ///
+    /// Setting the VID/PCP of a freshly pushed tag cannot be done in the same rule: the VLAN field
+    /// does not exist until the push takes effect, so the set must happen in a later group reached
+    /// via [`jump`](Self::jump) (push in group N, [`of_set_vlan_vid`](Self::of_set_vlan_vid) /
+    /// [`of_set_vlan_pcp`](Self::of_set_vlan_pcp) in group N+1). Validated on a BlueField-3.
+    pub fn of_push_vlan(mut self, tpid: EthType) -> Self {
+        self.actions
+            .push(Action::OfPushVlan(rte_flow_action_of_push_vlan {
+                ethertype: tpid.as_u16().to_be(),
+            }));
+        self
+    }
+
+    /// Pop the outer VLAN tag (`OF_POP_VLAN`). The rule's pattern must match the VLAN being stripped
+    /// (i.e. include a VLAN item).
+    pub fn of_pop_vlan(mut self) -> Self {
+        self.actions.push(Action::OfPopVlan);
+        self
+    }
+
+    /// Set the VID of the packet's existing outer VLAN tag (`OF_SET_VLAN_VID`). The tag must already
+    /// be present -- either matched in the pattern or pushed in an earlier group (see
+    /// [`of_push_vlan`](Self::of_push_vlan)).
+    pub fn of_set_vlan_vid(mut self, vid: Vid) -> Self {
+        self.actions
+            .push(Action::OfSetVlanVid(rte_flow_action_of_set_vlan_vid {
+                vlan_vid: vid.as_u16().to_be(),
+            }));
+        self
+    }
+
+    /// Set the PCP of the packet's existing outer VLAN tag (`OF_SET_VLAN_PCP`). Same tag-presence
+    /// requirement as [`of_set_vlan_vid`](Self::of_set_vlan_vid).
+    pub fn of_set_vlan_pcp(mut self, pcp: Pcp) -> Self {
+        self.actions
+            .push(Action::OfSetVlanPcp(rte_flow_action_of_set_vlan_pcp {
+                vlan_pcp: pcp.to_u8(),
+            }));
+        self
+    }
+
     /// Lower the accumulated attributes, pattern, and actions into the `rte_flow` C arrays.
     ///
     /// The returned `items`/`actions` `Vec`s carry pointers into `self`, so `self` must outlive
@@ -327,8 +463,12 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
             mask: null(),
         });
 
-        let mut actions: Vec<rte_flow_action> = Vec::with_capacity(self.actions.len() + 1);
-        for action in &self.actions {
+        // Emit actions in the mlx5 fixed pipeline order (see `Action::rank`), not call order. A stable
+        // sort keeps the relative order of same-rank actions (e.g. two field rewrites).
+        let mut ordered: Vec<&Action> = self.actions.iter().collect();
+        ordered.sort_by_key(|a| a.rank());
+        let mut actions: Vec<rte_flow_action> = Vec::with_capacity(ordered.len() + 1);
+        for action in ordered {
             actions.push(rte_flow_action {
                 type_: action.type_(),
                 conf: action.conf(),
@@ -393,5 +533,48 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
 
     fn port(&self) -> u16 {
         self.dev.info.index().as_u16()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The validated mlx5 pipeline order: pop -> MARK -> MODIFY_HDR -> push -> terminal.
+    #[test]
+    fn action_rank_orders_pipeline() {
+        let pop = Action::OfPopVlan;
+        let mark = Action::Mark(rte_flow_action_mark { id: 0 });
+        let modify = Action::SetIpv4Dst(set_ipv4(Ipv4Addr::UNSPECIFIED));
+        let push = Action::OfPushVlan(rte_flow_action_of_push_vlan { ethertype: 0 });
+        let queue = Action::Queue(rte_flow_action_queue { index: 0 });
+        assert!(pop.rank() < mark.rank());
+        assert!(
+            mark.rank() < modify.rank(),
+            "MARK must precede MODIFY_HDR (hardware-validated)"
+        );
+        assert!(modify.rank() < push.rank());
+        assert!(push.rank() < queue.rank());
+    }
+
+    /// Actions added in a HW-invalid order are canonicalized by the same stable sort `lower` uses.
+    #[test]
+    fn scrambled_actions_canonicalize() {
+        let scrambled = [
+            Action::SetIpv4Dst(set_ipv4(Ipv4Addr::UNSPECIFIED)), // MODIFY_HDR added first...
+            Action::Mark(rte_flow_action_mark { id: 7 }), // ...MARK after (would be rejected)
+            Action::Queue(rte_flow_action_queue { index: 0 }),
+        ];
+        let mut ordered: Vec<&Action> = scrambled.iter().collect();
+        ordered.sort_by_key(|a| a.rank());
+        let types: Vec<at::Type> = ordered.iter().map(|a| a.type_()).collect();
+        assert_eq!(
+            types,
+            [
+                at::RTE_FLOW_ACTION_TYPE_MARK,
+                at::RTE_FLOW_ACTION_TYPE_SET_IPV4_DST,
+                at::RTE_FLOW_ACTION_TYPE_QUEUE,
+            ]
+        );
     }
 }
