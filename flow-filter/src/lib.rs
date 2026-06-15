@@ -143,29 +143,6 @@ impl FlowFilter {
         true
     }
 
-    /// Attempt to determine destination VPC from packet's flow-info.
-    fn check_packet_flow_info<Buf: PacketBufferMut>(
-        &self,
-        packet: &mut Packet<Buf>,
-    ) -> Result<Option<VpcDiscriminant>, DoneReason> {
-        let nfi = &self.name;
-
-        let Some(flow_info) = packet.active_flow_info() else {
-            debug!("Packet does not contain any active flow-info");
-            return Ok(None);
-        };
-
-        let vpcd = flow_info.get_dst_vpcd();
-
-        let Some(dst_vpcd) = vpcd else {
-            debug!("{nfi}: No VPC discriminant found, dropping packet");
-            return Err(DoneReason::Unroutable);
-        };
-
-        debug!("{nfi}: dst_vpcd discriminant is {dst_vpcd} (from active flow-info entry)");
-        Ok(Some(dst_vpcd))
-    }
-
     /// Handle destination VPC retrieval and NAT requirements setting when multiple matches were
     /// found, with no accompanying flow-info for the packet.
     fn deal_with_multiple_matches<Buf: PacketBufferMut>(
@@ -436,31 +413,9 @@ impl FlowFilter {
             }
             Some(VpcdLookupResult::MultipleMatches(data_set)) => {
                 debug!(
-                    "{nfi}: Found multiple matches for destination VPC for flow {tuple}. Checking for a flow table entry..."
+                    "{nfi}: Found multiple matches for destination VPC for flow {tuple}, trying to figure out destination VPC"
                 );
-
-                match self.check_packet_flow_info(packet) {
-                    Ok(Some(dst_vpcd)) => {
-                        if Self::set_nat_requirements_from_flow_info(packet).is_ok() {
-                            Some(dst_vpcd)
-                        } else {
-                            debug!("{nfi}: Failed to set NAT requirements from flow info");
-                            None
-                        }
-                    }
-                    Ok(None) => {
-                        debug!(
-                            "{nfi}: No flow table entry found for flow {tuple}, trying to figure out destination VPC anyway"
-                        );
-                        self.deal_with_multiple_matches(packet, &data_set, &tuple)
-                    }
-                    Err(reason) => {
-                        debug!("Will drop packet. Reason: {reason}");
-                        packet.invalidate_flows();
-                        packet.done(reason);
-                        return;
-                    }
-                }
+                self.deal_with_multiple_matches(packet, &data_set, &tuple)
             }
         };
 
