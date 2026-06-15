@@ -64,7 +64,9 @@ mod rule;
 
 pub use builder::FlowBuilder;
 pub use error::FlowError;
-pub use pattern::{Ipv4Match, Ipv4Prefix, TcpMatch, UdpMatch};
+pub use pattern::{
+    Ipv4Match, Ipv4Prefix, Ipv6Match, Ipv6Prefix, TcpMatch, UdpMatch, VlanMatch, VxlanMatch,
+};
 pub use rule::FlowRule;
 
 use crate::dev::{Dev, Started};
