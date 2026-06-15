@@ -550,6 +550,35 @@ impl Mbuf {
         // live mbuf for the lifetime of `&self`.
         Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.fdir.hi })
     }
+
+    /// The flow `META` value a `SET_META` action attached to this packet, or `None` if absent.
+    ///
+    /// This is a second hardware-to-software channel alongside [`rx_mark`](Self::rx_mark): it is
+    /// carried in a registered mbuf dynamic field rather than the flow-director id, so a trapped
+    /// packet can convey more stamped context than the single `MARK` field allows. Requires
+    /// [`rte_flow_dynf_metadata_register`](dpdk_sys::rte_flow_dynf_metadata_register) to have
+    /// succeeded (it installs the dynfield offset/mask read here); returns `None` until then.
+    #[must_use]
+    pub fn rx_meta(&self) -> Option<u32> {
+        // SAFETY: reading the value of these globals (set by rte_flow_dynf_metadata_register) is a
+        // plain copy; no reference into the static is taken.
+        let mask = unsafe { dpdk_sys::rte_flow_dynf_metadata_mask };
+        if mask == 0 || self.ol_flags() & mask == 0 {
+            return None;
+        }
+        let offs = unsafe { dpdk_sys::rte_flow_dynf_metadata_offs };
+        // SAFETY: `offs` is the byte offset of the registered metadata dynfield within the mbuf
+        // (the contract of rte_flow_dynf_metadata_register); the flag check above certifies the
+        // field is populated; `self.raw` is a live mbuf for the lifetime of `&self`.
+        let ptr = unsafe {
+            self.raw
+                .as_ptr()
+                .cast::<u8>()
+                .add(offs as usize)
+                .cast::<u32>()
+        };
+        Some(unsafe { ptr.read_unaligned() })
+    }
 }
 
 impl Headroom for Mbuf {
