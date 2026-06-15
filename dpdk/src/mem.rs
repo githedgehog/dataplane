@@ -525,6 +525,30 @@ impl Mbuf {
         // live mbuf for the lifetime of `&self`.
         Some(unsafe { self.raw.as_ref().annon2.annon1.annon2.hash.fdir.hi })
     }
+
+    /// The flow `META` value, or `None` if absent.
+    ///
+    /// Requires [`rte_flow_dynf_metadata_register`](dpdk_sys::rte_flow_dynf_metadata_register);
+    /// returns `None` until registration succeeds.
+    #[must_use]
+    pub fn rx_meta(&self) -> Option<u32> {
+        // SAFETY: copy the registered mask without creating a reference to the static.
+        let mask = unsafe { dpdk_sys::rte_flow_dynf_metadata_mask };
+        if mask == 0 || self.ol_flags() & mask == 0 {
+            return None;
+        }
+        let offs = unsafe { dpdk_sys::rte_flow_dynf_metadata_offs };
+        // SAFETY: registration provides the field offset; the flag confirms the
+        // field is populated, and `self.raw` remains live for this read.
+        let ptr = unsafe {
+            self.raw
+                .as_ptr()
+                .cast::<u8>()
+                .add(offs as usize)
+                .cast::<u32>()
+        };
+        Some(unsafe { ptr.read_unaligned() })
+    }
 }
 
 impl Headroom for Mbuf {
