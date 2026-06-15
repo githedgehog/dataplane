@@ -11,16 +11,17 @@
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::marker::PhantomData;
-use core::net::Ipv4Addr;
+use core::net::{Ipv4Addr, Ipv6Addr};
 use core::ptr::{NonNull, from_ref, null};
 
 use dpdk_sys::{
-    rte_flow_action, rte_flow_action_jump, rte_flow_action_mark, rte_flow_action_of_push_vlan,
-    rte_flow_action_of_set_vlan_pcp, rte_flow_action_of_set_vlan_vid, rte_flow_action_queue,
-    rte_flow_action_set_ipv4, rte_flow_action_set_tp, rte_flow_action_type as at, rte_flow_attr,
-    rte_flow_create, rte_flow_error, rte_flow_item, rte_flow_item_ipv4, rte_flow_item_ipv6,
-    rte_flow_item_tcp, rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vlan,
-    rte_flow_item_vxlan, rte_flow_validate,
+    rte_flow_action, rte_flow_action_jump, rte_flow_action_mark, rte_flow_action_modify_field,
+    rte_flow_action_of_push_vlan, rte_flow_action_of_set_vlan_pcp, rte_flow_action_of_set_vlan_vid,
+    rte_flow_action_queue, rte_flow_action_set_ipv4, rte_flow_action_set_tp,
+    rte_flow_action_type as at, rte_flow_attr, rte_flow_create, rte_flow_error, rte_flow_field_id,
+    rte_flow_item, rte_flow_item_ipv4, rte_flow_item_ipv6, rte_flow_item_tcp,
+    rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vlan, rte_flow_item_vxlan,
+    rte_flow_modify_op, rte_flow_validate,
 };
 
 use net::eth::Eth;
@@ -109,6 +110,7 @@ enum Action {
     OfPopVlan,
     OfSetVlanVid(rte_flow_action_of_set_vlan_vid),
     OfSetVlanPcp(rte_flow_action_of_set_vlan_pcp),
+    ModifyField(rte_flow_action_modify_field),
 }
 
 impl Action {
@@ -126,6 +128,7 @@ impl Action {
             Action::OfPopVlan => at::RTE_FLOW_ACTION_TYPE_OF_POP_VLAN,
             Action::OfSetVlanVid(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
             Action::OfSetVlanPcp(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP,
+            Action::ModifyField(_) => at::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD,
         }
     }
 
@@ -148,7 +151,8 @@ impl Action {
             | Action::SetTpSrc(_)
             | Action::SetTpDst(_)
             | Action::OfSetVlanVid(_)
-            | Action::OfSetVlanPcp(_) => 2,
+            | Action::OfSetVlanPcp(_)
+            | Action::ModifyField(_) => 2,
             Action::OfPushVlan(_) => 3,
             Action::Jump(_) | Action::Queue(_) | Action::Drop => 4,
         }
@@ -168,6 +172,7 @@ impl Action {
             Action::OfPopVlan => null(),
             Action::OfSetVlanVid(a) => from_ref(a).cast(),
             Action::OfSetVlanPcp(a) => from_ref(a).cast(),
+            Action::ModifyField(m) => from_ref(m).cast(),
         }
     }
 }
@@ -180,6 +185,28 @@ fn set_ipv4(addr: Ipv4Addr) -> rte_flow_action_set_ipv4 {
 
 fn set_tp(port: u16) -> rte_flow_action_set_tp {
     rte_flow_action_set_tp { port: port.to_be() }
+}
+
+/// A `MODIFY_FIELD` that sets `dst` to an immediate value. `value` holds the low `width` bits in the
+/// same byte order and length as the corresponding `rte_flow_item_*` field (e.g. network-order for
+/// header fields), left-aligned; per the `rte_flow` contract the destination's bit offset is
+/// inherited by the immediate source.
+fn modify_set(
+    dst: rte_flow_field_id::Type,
+    width: u32,
+    value: &[u8],
+) -> rte_flow_action_modify_field {
+    // SAFETY: `rte_flow_action_modify_field` is plain data; all-zero is a valid empty value
+    // (operation SET, level/offset 0, empty immediate).
+    let mut mf: rte_flow_action_modify_field = unsafe { core::mem::zeroed() };
+    mf.operation = rte_flow_modify_op::RTE_FLOW_MODIFY_SET;
+    mf.dst.field = dst;
+    mf.src.field = rte_flow_field_id::RTE_FLOW_FIELD_VALUE;
+    let mut buf = [0u8; 16];
+    buf[..value.len()].copy_from_slice(value);
+    mf.src.annon1.value = buf; // union write (safe)
+    mf.width = width;
+    mf
 }
 
 /// Builds one flow rule and installs (or validates) it.
@@ -385,6 +412,62 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
     /// Rewrite the L4 (TCP/UDP) destination port. The NIC fixes the affected checksum.
     pub fn set_tp_dst(mut self, port: u16) -> Self {
         self.actions.push(Action::SetTpDst(set_tp(port)));
+        self
+    }
+
+    /// Rewrite the IPv6 source address (`MODIFY_FIELD` on `IPV6_SRC`).
+    pub fn set_ipv6_src(mut self, addr: Ipv6Addr) -> Self {
+        self.actions.push(Action::ModifyField(modify_set(
+            rte_flow_field_id::RTE_FLOW_FIELD_IPV6_SRC,
+            128,
+            &addr.octets(),
+        )));
+        self
+    }
+
+    /// Rewrite the IPv6 destination address (`MODIFY_FIELD` on `IPV6_DST`).
+    pub fn set_ipv6_dst(mut self, addr: Ipv6Addr) -> Self {
+        self.actions.push(Action::ModifyField(modify_set(
+            rte_flow_field_id::RTE_FLOW_FIELD_IPV6_DST,
+            128,
+            &addr.octets(),
+        )));
+        self
+    }
+
+    /// Rewrite the IPv4 TTL (`MODIFY_FIELD` on `IPV4_TTL`). The NIC fixes the IPv4 checksum.
+    pub fn set_ipv4_ttl(mut self, ttl: u8) -> Self {
+        self.actions.push(Action::ModifyField(modify_set(
+            rte_flow_field_id::RTE_FLOW_FIELD_IPV4_TTL,
+            8,
+            &[ttl],
+        )));
+        self
+    }
+
+    /// Rewrite the IPv6 hop limit (`MODIFY_FIELD` on `IPV6_HOPLIMIT`).
+    pub fn set_ipv6_hop_limit(mut self, hop_limit: u8) -> Self {
+        self.actions.push(Action::ModifyField(modify_set(
+            rte_flow_field_id::RTE_FLOW_FIELD_IPV6_HOPLIMIT,
+            8,
+            &[hop_limit],
+        )));
+        self
+    }
+
+    /// Set the 32-bit `META` channel to an immediate value, delivered to software in the mbuf
+    /// ([`Mbuf::rx_meta`](crate::mem::Mbuf::rx_meta)).
+    ///
+    /// In a per-VNI match rule this is how the matched VNI reaches software: mlx5 rejects a generic
+    /// `MODIFY_FIELD` that reads or writes `VXLAN_VNI` ("modifications of the VXLAN Network Identifier
+    /// is not supported"), so there is no single global "copy any VNI to META" rule -- instead each
+    /// per-VNI rule carries that VNI as an immediate.
+    pub fn set_meta(mut self, value: u32) -> Self {
+        self.actions.push(Action::ModifyField(modify_set(
+            rte_flow_field_id::RTE_FLOW_FIELD_META,
+            32,
+            &value.to_le_bytes(),
+        )));
         self
     }
 
