@@ -333,3 +333,461 @@ impl ValidatedAcl {
         })
     }
 }
+
+// =================================================================================================
+// ACL validation tests
+//
+// These tests cover the expected semantics and restrictions for ACL rules attached to a VPC peering
+// (the from/to directions, protocol/port consistency, IP version consistency, and coverage of the
+// rule patterns against the peering manifests).
+// =================================================================================================
+#[cfg(test)]
+mod validation_tests {
+    use super::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule};
+    use crate::ConfigError;
+    use crate::external::overlay::vpcpeering::{ValidatedManifest, VpcExpose, VpcManifest};
+
+    use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
+
+    // Helper: build a validated manifest, exposing the given (no-NAT) prefixes
+    fn manifest(name: &str, ips: &[&str]) -> ValidatedManifest {
+        let mut expose = VpcExpose::empty();
+        for ip in ips {
+            expose = expose.ip((*ip).into());
+        }
+        VpcManifest::with_exposes(name, vec![expose])
+            .validate()
+            .unwrap()
+    }
+
+    // Helper: the standard two-side peering used by most tests
+    // VPC-1 owns 10.0.0.0/16, VPC-2 owns 10.1.0.0/16
+    fn manifests() -> (ValidatedManifest, ValidatedManifest) {
+        (
+            manifest("VPC-1", &["10.0.0.0/16"]),
+            manifest("VPC-2", &["10.1.0.0/16"]),
+        )
+    }
+
+    // Helper: build a PrefixPortsSet from a list of CIDR strings (no port restriction)
+    fn prefixes(entries: &[&str]) -> PrefixPortsSet {
+        entries
+            .iter()
+            .map(|p| PrefixWithOptionalPorts::new(Prefix::from(*p), None))
+            .collect()
+    }
+
+    // Helper: a single prefix with a port range
+    fn prefix_with_ports(prefix_str: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
+        PrefixWithOptionalPorts::new(
+            Prefix::from(prefix_str),
+            Some(PortRange::new(start, end).unwrap()),
+        )
+    }
+
+    // Helper: assemble an AclPattern
+    fn pattern(src: PrefixPortsSet, dst: PrefixPortsSet, proto: AclProtoMatch) -> AclPattern {
+        AclPattern { src, dst, proto }
+    }
+
+    // Helper: assemble an AclRule
+    fn rule(name: &str, from: &str, to: &str, action: AclAction, pattern: AclPattern) -> AclRule {
+        AclRule {
+            name: name.to_owned(),
+            from: from.to_owned(),
+            to: to.to_owned(),
+            action,
+            pattern,
+            log: false,
+        }
+    }
+
+    // Helper: validate a single rule against the standard peering, returning the (possibly
+    // completed/restricted) rule on success
+    fn validate_rule(mut rule: AclRule) -> Result<AclRule, ConfigError> {
+        let (left, right) = manifests();
+        rule.validate(&left, &right).map(|()| rule)
+    }
+
+    // Helper: a pattern matching all traffic in the rule's direction (empty src/dst, any proto)
+    fn match_all() -> AclPattern {
+        pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::Any,
+        )
+    }
+
+    // =============================================================================================
+    // from/to direction validation
+    // =============================================================================================
+
+    // Explicit from/to naming the two peering sides passes
+    #[test]
+    fn test_acl_from_to_explicit_passes() {
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, match_all());
+        assert!(validate_rule(rule).is_ok());
+    }
+
+    // Explicit from/to with the sides swapped passes
+    #[test]
+    fn test_acl_from_to_swapped_passes() {
+        let rule = rule("r", "VPC-2", "VPC-1", AclAction::Allow, match_all());
+        assert!(validate_rule(rule).is_ok());
+    }
+
+    // "from" set to the left VPC, "to" omitted: the right VPC is implied
+    #[test]
+    fn test_acl_from_left_only_completes_to() {
+        let rule = rule("r", "VPC-1", "", AclAction::Allow, match_all());
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.to, "VPC-2");
+    }
+
+    // "from" set to the right VPC, "to" omitted: the left VPC is implied
+    #[test]
+    fn test_acl_from_right_only_completes_to() {
+        let rule = rule("r", "VPC-2", "", AclAction::Allow, match_all());
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.to, "VPC-1");
+    }
+
+    // "to" set to the right VPC, "from" omitted: the left VPC is implied
+    #[test]
+    fn test_acl_to_right_only_completes_from() {
+        let rule = rule("r", "", "VPC-2", AclAction::Allow, match_all());
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.from, "VPC-1");
+    }
+
+    // "to" set to the left VPC, "from" omitted: the right VPC is implied
+    #[test]
+    fn test_acl_to_left_only_completes_from() {
+        let rule = rule("r", "", "VPC-1", AclAction::Allow, match_all());
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.from, "VPC-2");
+    }
+
+    // Omitting both "from" and "to" is rejected
+    #[test]
+    fn test_acl_both_from_and_to_empty_rejected() {
+        let rule = rule("r", "", "", AclAction::Allow, match_all());
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // A "from" value that is not one of the peering's two VPCs is rejected
+    #[test]
+    fn test_acl_unknown_from_rejected() {
+        let rule = rule("r", "VPC-X", "VPC-2", AclAction::Allow, match_all());
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // A "to" value that is not one of the peering's two VPCs is rejected
+    #[test]
+    fn test_acl_unknown_to_rejected() {
+        let rule = rule("r", "VPC-1", "VPC-X", AclAction::Allow, match_all());
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // Using identical "to" and "from" values is rejected
+    #[test]
+    fn test_acl_to_from_equal_rejected() {
+        let rule = rule("r", "VPC-1", "VPC-1", AclAction::Allow, match_all());
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // =============================================================================================
+    // Rule name validation (at the ACL level)
+    // =============================================================================================
+
+    // Duplicate rule names within an ACL are rejected
+    #[test]
+    fn test_acl_duplicate_rule_names_rejected() {
+        let (left, right) = manifests();
+        let mut acl = Acl {
+            default: AclAction::Deny,
+            rules: vec![
+                rule("dup", "VPC-1", "VPC-2", AclAction::Allow, match_all()),
+                rule("dup", "VPC-2", "VPC-1", AclAction::Allow, match_all()),
+            ],
+        };
+        let result = acl.validate(&left, &right);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // Distinct rule names within an ACL pass
+    #[test]
+    fn test_acl_distinct_rule_names_passes() {
+        let (left, right) = manifests();
+        let mut acl = Acl {
+            default: AclAction::Deny,
+            rules: vec![
+                rule("forward1", "VPC-1", "VPC-2", AclAction::Allow, match_all()),
+                rule("forward2", "VPC-1", "VPC-2", AclAction::Allow, match_all()),
+                rule("reverse", "VPC-2", "VPC-1", AclAction::Allow, match_all()),
+            ],
+        };
+        assert!(acl.validate(&left, &right).is_ok());
+    }
+
+    // =============================================================================================
+    // Protocol / port consistency validation
+    // =============================================================================================
+
+    // TCP with port matching passes
+    #[test]
+    fn test_acl_tcp_with_ports_passes() {
+        let p = pattern(
+            [prefix_with_ports("10.0.0.0/24", 1024, 2048)].into(),
+            [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
+            AclProtoMatch::Tcp,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(rule).is_ok());
+    }
+
+    // UDP with port matching passes
+    #[test]
+    fn test_acl_udp_with_ports_passes() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            [prefix_with_ports("10.1.0.0/24", 53, 53)].into(),
+            AclProtoMatch::Udp,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(rule).is_ok());
+    }
+
+    // ICMP with port matching is rejected (ICMP has no ports)
+    #[test]
+    fn test_acl_icmp_with_ports_rejected() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
+            AclProtoMatch::Icmp,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // A numeric protocol with port matching is rejected
+    #[test]
+    fn test_acl_other_proto_with_ports_rejected() {
+        let p = pattern(
+            [prefix_with_ports("10.0.0.0/24", 80, 80)].into(),
+            prefixes(&["10.1.0.0/24"]),
+            AclProtoMatch::Other(47),
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // "Any" protocol with port matching is rejected (ports are only meaningful per-protocol)
+    #[test]
+    fn test_acl_any_proto_with_ports_rejected() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
+            AclProtoMatch::Any,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // ICMP without ports passes
+    #[test]
+    fn test_acl_icmp_without_ports_passes() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            prefixes(&["10.1.0.0/24"]),
+            AclProtoMatch::Icmp,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(rule).is_ok());
+    }
+
+    // Unknown protocol without ports passes
+    #[test]
+    fn test_acl_other_proto_without_ports_passes() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            prefixes(&["10.1.0.0/24"]),
+            AclProtoMatch::Other(47),
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        assert!(validate_rule(rule).is_ok());
+    }
+
+    // =============================================================================================
+    // IP version consistency validation
+    // =============================================================================================
+
+    // Mixed IPv4/IPv6 within the `src` set is rejected
+    #[test]
+    fn test_acl_mixed_src_ip_versions_rejected() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24", "2001:db8::/64"]),
+            prefixes(&["10.1.0.0/24"]),
+            AclProtoMatch::Any,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // Mixed IPv4/IPv6 within the `dst` set is rejected
+    #[test]
+    fn test_acl_mixed_dst_ip_versions_rejected() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            prefixes(&["10.1.0.0/24", "2001:db8::/64"]),
+            AclProtoMatch::Any,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // =============================================================================================
+    // Pattern coverage validation (src vs from-side, dst vs to-side)
+    // =============================================================================================
+
+    // An empty src/dst (the blanket "match all in this direction" rule) is accepted, and the
+    // empty sets are filled in with the manifests' prefixes
+    #[test]
+    fn test_acl_empty_match_covers_manifest() {
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, match_all());
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/16"]));
+        assert_eq!(validated.pattern.dst, prefixes(&["10.1.0.0/16"]));
+    }
+
+    // A src that does not intersect the from-side's addresses is rejected (can never match)
+    #[test]
+    fn test_acl_src_outside_from_manifest_rejected() {
+        let p = pattern(
+            prefixes(&["192.168.0.0/24"]),
+            prefixes(&["10.1.0.0/24"]),
+            AclProtoMatch::Any,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // A dst that does not intersect the to-side's advertised addresses is rejected
+    #[test]
+    fn test_acl_dst_outside_to_manifest_rejected() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            prefixes(&["192.168.0.0/24"]),
+            AclProtoMatch::Any,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // A src broader than the from-side's addresses is accepted, but restricted (clamped) to the
+    // intersection with the manifest
+    #[test]
+    fn test_acl_src_broader_than_manifest_is_restricted() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/8"]),
+            prefixes(&["10.1.0.0/24"]),
+            AclProtoMatch::Any,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let validated = validate_rule(rule).expect("should validate");
+        // 10.0.0.0/8 is clamped to VPC-1's 10.0.0.0/16
+        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/16"]));
+    }
+
+    // A fully-specified, in-range rule passes unchanged
+    #[test]
+    fn test_acl_full_valid_match_passes() {
+        let p = pattern(
+            prefixes(&["10.0.0.0/24"]),
+            prefixes(&["10.1.0.0/24"]),
+            AclProtoMatch::Tcp,
+        );
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/24"]));
+        assert_eq!(validated.pattern.dst, prefixes(&["10.1.0.0/24"]));
+    }
+
+    // =============================================================================================
+    // ACL-level smoke test
+    // =============================================================================================
+
+    // A complete ACL with a default action and several valid rules validates, and the accessors
+    // report what was configured
+    #[test]
+    fn test_acl_multiple_rules_passes() {
+        let (left, right) = manifests();
+        let mut acl = Acl {
+            default: AclAction::Deny,
+            rules: vec![
+                rule(
+                    "web",
+                    "VPC-1",
+                    "VPC-2",
+                    AclAction::Allow,
+                    pattern(
+                        prefixes(&["10.0.0.0/24"]),
+                        [prefix_with_ports("10.1.0.0/24", 443, 443)].into(),
+                        AclProtoMatch::Tcp,
+                    ),
+                ),
+                rule("return", "VPC-2", "VPC-1", AclAction::Allow, match_all()),
+            ],
+        };
+        assert!(acl.validate(&left, &right).is_ok());
+        assert_eq!(acl.default_action(), AclAction::Deny);
+        assert_eq!(acl.rules().len(), 2);
+    }
+}
