@@ -3,8 +3,8 @@
 
 use crate::NatPort;
 use crate::common::NatAction;
-use crate::stateful::apalloc::NatAllocator;
-use crate::stateful::state::MasqueradeState;
+use crate::masquerade::apalloc::NatAllocator;
+use crate::masquerade::state::MasqueradeState;
 
 use config::GenId;
 use flow_entry::flow_table::{FlowTable, FlowTableReadGuard};

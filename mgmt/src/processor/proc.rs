@@ -23,9 +23,9 @@ use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig, Vali
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
+use nat::masquerade::{NatAllocatorWriter, StatefulNatConfig};
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
-use nat::stateful::{NatAllocatorWriter, StatefulNatConfig};
 use nat::static_nat::NatTablesWriter;
 use nat::static_nat::setup::build_nat_configuration;
 use pipeline::PipelineData;

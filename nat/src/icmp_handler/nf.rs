@@ -21,8 +21,8 @@ use tracectl::trace_target;
 use tracing::{debug, warn};
 
 use crate::common::NatFlowStatus;
+use crate::masquerade::icmp_handling::handle_icmp_error_masquerading;
 use crate::portfw::icmp_handling::handle_icmp_error_port_forwarding;
-use crate::stateful::icmp_handling::handle_icmp_error_masquerading;
 
 trace_target!("icmp-errors", LevelFilter::INFO, &["nat", "pipeline"]);
 

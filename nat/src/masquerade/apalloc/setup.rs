@@ -5,7 +5,7 @@ use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatAllocator, PoolTable, PoolTableKey};
 use crate::ranges::IpRange;
-use crate::stateful::natip::NatIp;
+use crate::masquerade::natip::NatIp;
 use config::external::overlay::vpc::ValidatedPeering;
 use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;

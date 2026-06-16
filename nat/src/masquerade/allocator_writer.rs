@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-use crate::stateful::apalloc::NatAllocator;
+use crate::masquerade::apalloc::NatAllocator;
 use concurrency::slot::SlotOption;
 use concurrency::sync::Arc;
 use config::GenId;
@@ -11,9 +11,9 @@ use flow_entry::flow_table::FlowTable;
 use net::packet::VpcDiscriminant;
 use tracing::debug;
 
-use crate::stateful::flows::check_masquerading_flows;
-use crate::stateful::flows::invalidate_all_masquerading_flows;
-use crate::stateful::flows::upgrade_all_masquerading_flows;
+use crate::masquerade::flows::check_masquerading_flows;
+use crate::masquerade::flows::invalidate_all_masquerading_flows;
+use crate::masquerade::flows::upgrade_all_masquerading_flows;
 
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) struct StatefulNatPeering {
