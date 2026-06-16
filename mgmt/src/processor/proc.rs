@@ -23,7 +23,7 @@ use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig, Vali
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
 use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
-use nat::masquerade::{NatAllocatorWriter, StatefulNatConfig};
+use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
 use nat::static_nat::NatTablesWriter;
@@ -91,7 +91,7 @@ pub struct ConfigProcessorParams {
     // writer for static NAT tables
     pub nattablesw: NatTablesWriter,
 
-    // writer for stateful NAT allocator
+    // writer for masquerade allocator
     pub natallocatorw: NatAllocatorWriter,
 
     // writer for flow filter table
@@ -504,17 +504,17 @@ fn apply_static_nat_config(
     Ok(())
 }
 
-/// Update the config for stateful NAT.
+/// Update the config for masquerade.
 /// This is now infallible. Validation should ensure it is.
-fn apply_stateful_nat_config(
+fn apply_masquerade_config(
     vpc_table: &ValidatedVpcTable,
     flow_table: &FlowTable,
     natallocatorw: &mut NatAllocatorWriter,
     genid: GenId,
 ) {
-    let nat_config = StatefulNatConfig::new(vpc_table, genid).set_randomize(true);
+    let nat_config = MasqueradeConfig::new(vpc_table, genid).set_randomize(true);
     natallocatorw.update_nat_allocator(nat_config, flow_table);
-    debug!("Updated stateful NAT allocator");
+    debug!("Updated masquerade NAT allocator");
 }
 
 fn apply_flow_filtering_config(
@@ -612,8 +612,8 @@ impl ConfigProcessor {
         /* apply static NAT config */
         apply_static_nat_config(config.external().overlay().vpc_table(), nattablesw)?;
 
-        /* apply stateful NAT config */
-        apply_stateful_nat_config(
+        /* apply masquerade config */
+        apply_masquerade_config(
             config.external().overlay().vpc_table(),
             flow_table.as_ref(),
             natallocatorw,

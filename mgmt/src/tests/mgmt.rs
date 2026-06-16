@@ -454,7 +454,7 @@ pub mod test {
         /* create NatTables for static nat */
         let nattablesw = NatTablesWriter::new();
 
-        /* create NatAllocator for stateful nat */
+        /* create NatAllocator for masquerade */
         let natallocatorw = NatAllocatorWriter::new();
 
         /* create FlowFilterTable for flow filtering */

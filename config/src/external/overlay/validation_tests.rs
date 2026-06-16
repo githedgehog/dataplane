@@ -94,7 +94,7 @@ mod test {
     #[test]
     fn test_empty_as_range_with_nonempty_not_as_rejected() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not_as("2.0.1.0/24".into())
@@ -195,7 +195,7 @@ mod test {
     #[test]
     fn test_root_v4_in_as_range_passes() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/8".into())
             .as_range("0.0.0.0/0".into())
@@ -221,7 +221,7 @@ mod test {
     #[test]
     fn test_root_v4_in_not_as_rejected() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/8".into())
             .as_range("2.0.0.0/8".into())
@@ -255,7 +255,7 @@ mod test {
     #[test]
     fn test_mixed_ip_versions_across_ips_and_as_range_rejected() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/16".into())
             .as_range("1::/112".into())
@@ -284,7 +284,7 @@ mod test {
     #[ignore = "TODO: Currently not allowed"]
     fn test_overlapping_prefixes_within_as_range_passes() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("1.0.0.0/16".into())
             .as_range("10.0.0.0/16".into())
@@ -311,7 +311,7 @@ mod test {
     #[ignore = "TODO: Currently not allowed"]
     fn test_overlapping_prefixes_within_not_as_passes() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("1.0.0.0/8".into())
             .as_range("10.0.0.0/8".into())
@@ -356,7 +356,7 @@ mod test {
     #[test]
     fn test_out_of_range_exclusion_prefix_within_as_range_passes() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("1.0.0.0/16".into())
             .as_range("10.0.0.0/16".into())
@@ -415,7 +415,7 @@ mod test {
     fn test_exclusion_prefix_partial_overlap_within_as_range_passes() {
         // 10.0.0.0/8 is larger than 10.0.0.0/16 and thus not contained within it
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("1.0.0.0/16".into())
             .as_range("20.0.0.0/16".into())
@@ -433,7 +433,7 @@ mod test {
     #[ignore = "TODO: Currently not allowed"]
     fn test_exclusion_prefix_with_port_ranges_partial_overlap_within_as_range_passes() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("1.0.0.0/16".into())
             .as_range(PrefixWithOptionalPorts::new(
@@ -468,7 +468,7 @@ mod test {
     #[test]
     fn test_excluding_all_prefixes_in_as_range_rejected() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("1.0.0.0/16".into())
             .as_range("10.0.0.0/16".into())
@@ -559,11 +559,11 @@ mod test {
         );
     }
 
-    // Stateful NAT: port ranges rejected
+    // Masquerade: port ranges rejected
     #[test]
-    fn test_stateful_nat_port_ranges_rejected() {
+    fn test_masquerade_port_ranges_rejected() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip(prefix_with_ports("10.0.0.0/24", 80, 80))
             .as_range("2.0.0.0/24".into())
@@ -584,7 +584,7 @@ mod test {
 
         let expose = VpcExpose::empty()
             .set_default()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .as_range("10.0.0.0/16".into())
             .unwrap();
@@ -597,7 +597,7 @@ mod test {
 
         let expose = VpcExpose::empty()
             .set_default()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .not_as("10.0.0.0/16".into())
             .unwrap();
@@ -695,14 +695,14 @@ mod test {
         );
     }
 
-    // Stateful + no-NAT private prefixes overlap rejected
+    // Masquerade + no-NAT private prefixes overlap rejected
     #[test]
-    fn test_stateful_plus_no_nat_private_prefixes_overlap_rejected() {
+    fn test_masquerade_plus_no_nat_private_prefixes_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/16".into()));
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -715,14 +715,14 @@ mod test {
         );
     }
 
-    // Stateful + no-NAT public prefixes overlap rejected
+    // Masquerade + no-NAT public prefixes overlap rejected
     #[test]
-    fn test_stateful_plus_no_nat_public_prefixes_overlap_rejected() {
+    fn test_masquerade_plus_no_nat_public_prefixes_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("2.0.0.0/16".into()));
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -852,9 +852,9 @@ mod test {
         );
     }
 
-    // Static NAT + stateful NAT ips overlap rejected
+    // Static NAT + masquerade ips overlap rejected
     #[test]
-    fn test_static_nat_plus_stateful_ips_overlap_rejected() {
+    fn test_static_nat_plus_masquerade_ips_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
@@ -866,7 +866,7 @@ mod test {
         );
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("3.0.0.0/16".into())
@@ -879,9 +879,9 @@ mod test {
         );
     }
 
-    // Static NAT + stateful NAT as_range overlap rejected
+    // Static NAT + masquerade as_range overlap rejected
     #[test]
-    fn test_static_nat_plus_stateful_as_range_overlap_rejected() {
+    fn test_static_nat_plus_masquerade_as_range_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
@@ -893,7 +893,7 @@ mod test {
         );
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.1.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -960,13 +960,13 @@ mod test {
         );
     }
 
-    // Two stateful NAT exposes with overlapping ips rejected
+    // Two masquerade exposes with overlapping ips rejected
     #[test]
-    fn test_stateful_nat_overlapping_ips_rejected() {
+    fn test_masquerade_overlapping_ips_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/24".into())
@@ -974,7 +974,7 @@ mod test {
         );
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("3.0.0.0/24".into())
@@ -987,13 +987,13 @@ mod test {
         );
     }
 
-    // Two stateful NAT exposes with overlapping as_range rejected
+    // Two masquerade exposes with overlapping as_range rejected
     #[test]
-    fn test_stateful_nat_overlapping_as_range_rejected() {
+    fn test_masquerade_overlapping_as_range_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -1001,7 +1001,7 @@ mod test {
         );
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.1.0.0/16".into())
                 .as_range("2.0.1.0/24".into())
@@ -1091,14 +1091,14 @@ mod test {
         assert!(manifest.validate().is_ok());
     }
 
-    // Stateful + port forwarding overlap where stateful NAT contains port forwarding passes
+    // Masquerade + port forwarding overlap where masquerade contains port forwarding passes
     #[test]
-    fn test_stateful_plus_port_forwarding_left_contains_right_passes() {
+    fn test_masquerade_plus_port_forwarding_left_contains_right_passes() {
         let mut manifest = VpcManifest::new("VPC-1");
-        // Stateful NAT covers the broader range
+        // Masquerade covers the broader range
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/24".into())
                 .as_range("2.0.0.0/24".into())
@@ -1116,14 +1116,14 @@ mod test {
         assert!(manifest.validate().is_ok());
     }
 
-    // Stateful + port forwarding partial overlap passes
+    // Masquerade + port forwarding partial overlap passes
     #[test]
-    fn test_stateful_plus_port_forwarding_partial_overlap_passes() {
+    fn test_masquerade_plus_port_forwarding_partial_overlap_passes() {
         let mut manifest = VpcManifest::new("VPC-1");
-        // Stateful NAT has a narrow range (10.0.0.0/25 = .0-.127)
+        // Masquerade has a narrow range (10.0.0.0/25 = .0-.127)
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateful_nat(None)
+                .make_masquerade(None)
                 .unwrap()
                 .ip("10.0.0.0/25".into())
                 .as_range("2.0.0.0/25".into())
@@ -1159,7 +1159,7 @@ mod test {
     // No NAT + any NAT on remote passes
     #[test]
     fn test_no_nat_plus_any_nat_on_remote_passes() {
-        // No NAT on left, stateful NAT on right
+        // No NAT on left, masquerade on right
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("10.0.0.0/16".into())]),
@@ -1167,7 +1167,7 @@ mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
                         .as_range("2.0.0.0/8".into())
@@ -1209,16 +1209,16 @@ mod test {
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
-    // Static + stateful passes
+    // Static + masquerade passes
     #[test]
-    fn test_static_plus_stateful_rejected() {
+    fn test_static_plus_masquerade_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
                 "VPC-1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
                         .as_range("2.0.0.0/8".into())
@@ -1271,16 +1271,16 @@ mod test {
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
-    // Stateful + stateful rejected (across peering sides)
+    // Masquerade + masquerade rejected (across peering sides)
     #[test]
-    fn test_stateful_plus_stateful_rejected() {
+    fn test_masquerade_plus_masquerade_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
                 "VPC-1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
                         .as_range("2.0.0.0/8".into())
@@ -1291,7 +1291,7 @@ mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("3.0.0.0/8".into())
                         .as_range("4.0.0.0/8".into())
@@ -1307,16 +1307,16 @@ mod test {
         );
     }
 
-    // Stateful + port forwarding rejected (across peering sides)
+    // Masquerade + port forwarding rejected (across peering sides)
     #[test]
-    fn test_stateful_plus_port_forwarding_rejected() {
+    fn test_masquerade_plus_port_forwarding_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
                 "VPC-1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
                         .as_range("2.0.0.0/8".into())
@@ -1436,9 +1436,9 @@ mod test {
         );
     }
 
-    // Cross-peering overlapping public prefixes with both stateful NAT passes
+    // Cross-peering overlapping public prefixes with both masquerade passes
     #[test]
-    fn test_cross_peering_overlapping_both_stateful_nat_passes() {
+    fn test_cross_peering_overlapping_both_masquerade_passes() {
         let peering1 = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes("VPC-1", vec![VpcExpose::empty().ip("8.0.0.0/16".into())]),
@@ -1446,7 +1446,7 @@ mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("10.0.0.0/16".into())
                         .as_range("1.0.0.0/16".into())
@@ -1461,7 +1461,7 @@ mod test {
                 "VPC-3",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("20.0.0.0/16".into())
                         .as_range("1.0.0.0/16".into())

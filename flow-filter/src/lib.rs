@@ -89,7 +89,7 @@ impl FlowFilter {
             return true;
         }
         drop(locked_info);
-        if !packet.meta().requires_port_forwarding() && !packet.meta().requires_stateful_nat() {
+        if !packet.meta().requires_port_forwarding() && !packet.meta().requires_masquerade() {
             debug!("Flow {flowkey} no longer requires state. Will invalidate...");
             return true;
         }
@@ -97,7 +97,7 @@ impl FlowFilter {
             debug!("Flow {flowkey} requires port-forwarding, but flow-info lacks such a state");
             return true;
         }
-        if packet.meta().requires_stateful_nat() && !flow_masquerade {
+        if packet.meta().requires_masquerade() && !flow_masquerade {
             debug!("Flow {flowkey} requires masquerading, but flow-info lacks such a state");
             return true;
         }
@@ -211,9 +211,9 @@ impl FlowFilter {
             return None;
         }
 
-        // Can we do something sensible from the NAT requirements? At the moment we allow prefix overlap
-        // only when port forwarding is used in conjunction with stateful NAT, so if we reach this case
-        // this is what we should have.
+        // Can we do something sensible from the NAT requirements? At the moment we allow prefix
+        // overlap only when port forwarding is used in conjunction with masquerade, so if we reach
+        // this case this is what we should have.
 
         // Note: if data_set.len() == 1 we can trivially figure out the destination VPC and NAT
         // requirement.
@@ -237,10 +237,10 @@ impl FlowFilter {
         }
 
         // If we have masquerading and port forwarding on the source side, given that we haven't
-        // found a valid NAT entry, stateful NAT should take precedence so the packet can come out.
+        // found a valid NAT entry, masquerade should take precedence so the packet can come out.
         if let Some(dst_data) = data_set
             .iter()
-            .find(|d| d.src_nat_req == Some(NatRequirement::Stateful))
+            .find(|d| d.src_nat_req == Some(NatRequirement::Masquerade))
             && data_set.iter().any(|d| {
                 let Some(NatRequirement::PortForwarding(requirement_proto)) = d.src_nat_req else {
                     return false;
@@ -260,7 +260,7 @@ impl FlowFilter {
             req_proto.intersection(&packet_proto).is_some()
         }) && data_set
             .iter()
-            .any(|d| d.dst_nat_req == Some(NatRequirement::Stateful))
+            .any(|d| d.dst_nat_req == Some(NatRequirement::Masquerade))
         {
             Self::set_nat_requirements(packet, dst_data);
             return Some(first_vpcd);
@@ -285,7 +285,7 @@ impl FlowFilter {
         // We have no valid flow table entry for the packet: in this case, some NAT requirements are
         // not supported.
         let nfi = &self.name;
-        if matches!(dst_data.dst_nat_req, Some(NatRequirement::Stateful)) {
+        if matches!(dst_data.dst_nat_req, Some(NatRequirement::Masquerade)) {
             debug!(
                 "{nfi}: Packet requires destination NAT with masquerade, but packet does not contain flow-info"
             );
@@ -305,8 +305,8 @@ impl FlowFilter {
 
     /// Set NAT requirements on the packet based on the remote data object.
     fn set_nat_requirements<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, data: &RemoteData) {
-        if data.requires_stateful_nat() {
-            packet.meta_mut().set_stateful_nat(true);
+        if data.requires_masquerade() {
+            packet.meta_mut().set_masquerade(true);
         }
         if data.requires_static_nat_src() {
             packet.meta_mut().set_static_nat_src(true);
@@ -328,13 +328,13 @@ impl FlowFilter {
         let needs_static_nat_dst = flow_info.get_flags().requires_static_nat_dst();
 
         let locked_info = flow_info.locked.read();
-        let needs_stateful_nat = locked_info.nat_state.is_some();
+        let needs_masquerade = locked_info.nat_state.is_some();
         let needs_port_forwarding = locked_info.port_fw_state.is_some();
         drop(locked_info);
 
-        match (needs_stateful_nat, needs_port_forwarding) {
+        match (needs_masquerade, needs_port_forwarding) {
             (true, false) => {
-                packet.meta_mut().set_stateful_nat(true);
+                packet.meta_mut().set_masquerade(true);
             }
             (false, true) => {
                 packet.meta_mut().set_port_forwarding(true);
@@ -363,7 +363,7 @@ impl FlowFilter {
         }
 
         // Only attach the flow key when using {port forwarding, masquerading} + static NAT
-        if !((packet.meta().requires_port_forwarding() || packet.meta().requires_stateful_nat())
+        if !((packet.meta().requires_port_forwarding() || packet.meta().requires_masquerade())
             && packet.meta().requires_static_nat())
         {
             return;

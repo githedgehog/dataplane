@@ -14,9 +14,9 @@ mod state;
 mod test;
 
 // re exports
+pub use allocator_writer::MasqueradeConfig;
 pub use allocator_writer::NatAllocatorWriter;
-pub use allocator_writer::StatefulNatConfig;
-pub use nf::StatefulNat;
+pub use nf::Masquerade;
 
 use tracectl::trace_target;
-trace_target!("stateful-nat", LevelFilter::INFO, &["nat", "pipeline"]);
+trace_target!("masquerade", LevelFilter::INFO, &["nat", "pipeline"]);

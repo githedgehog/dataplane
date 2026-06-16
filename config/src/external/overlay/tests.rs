@@ -165,7 +165,7 @@ pub mod test {
 
         // Out-of-range exclusion prefix
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not("8.0.0.0/24".into())
@@ -339,14 +339,14 @@ pub mod test {
         vpc_table.add(vpc1).unwrap();
         vpc_table.add(vpc2).unwrap();
 
-        // Build peering with stateful NAT on both sides
+        // Build peering with masquerade on both sides
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
                 "VPC-1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
                         .as_range("2.0.0.0/8".into())
@@ -357,7 +357,7 @@ pub mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("3.0.0.0/8".into())
                         .as_range("4.0.0.0/8".into())
@@ -379,7 +379,7 @@ pub mod test {
     }
 
     #[test]
-    fn test_peering_nat_stateful_plus_static() {
+    fn test_peering_nat_masquerade_plus_static() {
         // Build VPCs and VPC table
         let vpc1 = Vpc::new("VPC-1", "VPC01", 1).unwrap();
         let vpc2 = Vpc::new("VPC-2", "VPC02", 2).unwrap();
@@ -387,14 +387,14 @@ pub mod test {
         vpc_table.add(vpc1).unwrap();
         vpc_table.add(vpc2).unwrap();
 
-        // Build peering with stateful NAT on one side and static NAT on the other side
+        // Build peering with masquerade on one side and static NAT on the other side
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
                 "VPC-1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/8".into())
                         .as_range("2.0.0.0/8".into())
@@ -934,9 +934,9 @@ pub mod test {
             ))
         );
 
-        // Incorrect: stateful NAT ips() with ports
+        // Incorrect: masquerade ips() with ports
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
@@ -947,13 +947,13 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::Forbidden(
-                "Port ranges are not supported with stateful NAT",
+                "Port ranges are not supported with masquerade",
             ))
         );
 
-        // Incorrect: stateful NAT as_range() with ports
+        // Incorrect: masquerade as_range() with ports
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip(PrefixWithOptionalPorts::new("10.0.0.0/16".into(), None))
             .as_range(PrefixWithOptionalPorts::new(
@@ -964,7 +964,7 @@ pub mod test {
         assert_eq!(
             expose.validate(),
             Err(ConfigError::Forbidden(
-                "Port ranges are not supported with stateful NAT",
+                "Port ranges are not supported with masquerade",
             ))
         );
     }

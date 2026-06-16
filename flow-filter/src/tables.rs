@@ -465,14 +465,14 @@ impl PortRangeMap<DstConnectionData> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NatRequirement {
     Static,
-    Stateful,
+    Masquerade,
     PortForwarding(L4Protocol),
 }
 
 impl NatRequirement {
     pub(crate) fn from_nat(nat: &VpcExposeNat) -> NatRequirement {
         match (&nat.config, nat.proto) {
-            (VpcExposeNatConfig::Stateful(_), _) => NatRequirement::Stateful,
+            (VpcExposeNatConfig::Masquerade(_), _) => NatRequirement::Masquerade,
             (VpcExposeNatConfig::Static(_), _) => NatRequirement::Static,
             (VpcExposeNatConfig::PortForwarding(_), proto) => NatRequirement::PortForwarding(proto),
         }
@@ -499,9 +499,9 @@ impl RemoteData {
         }
     }
 
-    pub(crate) fn requires_stateful_nat(&self) -> bool {
-        self.src_nat_req == Some(NatRequirement::Stateful)
-            || self.dst_nat_req == Some(NatRequirement::Stateful)
+    pub(crate) fn requires_masquerade(&self) -> bool {
+        self.src_nat_req == Some(NatRequirement::Masquerade)
+            || self.dst_nat_req == Some(NatRequirement::Masquerade)
     }
 
     pub(crate) fn requires_static_nat_src(&self) -> bool {
@@ -718,7 +718,7 @@ mod tests {
         let dst_vpcd = vpcd(200);
         let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd,
-            Some(NatRequirement::Stateful),
+            Some(NatRequirement::Masquerade),
             None,
         ));
 
@@ -821,7 +821,7 @@ mod tests {
         let dst_vpcd = vpcd(200);
         let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd,
-            Some(NatRequirement::Stateful),
+            Some(NatRequirement::Masquerade),
             None,
         ));
 
@@ -880,7 +880,7 @@ mod tests {
         let dst_vpcd = vpcd(200);
         let dst_data_result = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd,
-            Some(NatRequirement::Stateful),
+            Some(NatRequirement::Masquerade),
             None,
         ));
 
@@ -917,7 +917,7 @@ mod tests {
         ));
         let dst_data_result2 = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd2,
-            Some(NatRequirement::Stateful),
+            Some(NatRequirement::Masquerade),
             None,
         ));
 

@@ -6,7 +6,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::masquerade::{NatAllocatorWriter, StatefulNatConfig};
+use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use crate::portfw::{PortForwarder, PortFwTableWriter};
 use crate::static_nat::NatTablesWriter;
 use crate::static_nat::setup::build_nat_configuration;
@@ -116,8 +116,8 @@ fn setup_masq_pipeline(
 
     // Masquerade
     let mut allocator = NatAllocatorWriter::new();
-    let masquerade = StatefulNat::new("masquerade", flow_table.clone(), allocator.get_reader());
-    let masquerade_config = StatefulNatConfig::new(overlay.vpc_table(), 1);
+    let masquerade = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
+    let masquerade_config = MasqueradeConfig::new(overlay.vpc_table(), 1);
     allocator.update_nat_allocator(masquerade_config, &flow_table);
     if let Some(state) = allocator.get_reader().get() {
         println!("{state}");
@@ -164,7 +164,7 @@ async fn test_nat_combination_static_masquerade() {
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None) // Masquerade
+                        .make_masquerade(None) // Masquerade
                         .unwrap()
                         .ip("1.2.3.0/24".into())
                         .as_range("5.5.5.5/32".into())
@@ -395,7 +395,7 @@ async fn test_nat_combination_static_masq_icmp_error() {
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None) // Masquerade
+                        .make_masquerade(None) // Masquerade
                         .unwrap()
                         .ip("1.2.3.0/24".into())
                         .as_range("5.5.5.5/32".into())

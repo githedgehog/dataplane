@@ -4,8 +4,8 @@
 use super::NatIpWithBitmap;
 use super::alloc::{IpAllocator, NatPool, PoolBitmap};
 use super::{NatAllocator, PoolTable, PoolTableKey};
-use crate::ranges::IpRange;
 use crate::masquerade::natip::NatIp;
+use crate::ranges::IpRange;
 use config::external::overlay::vpc::ValidatedPeering;
 use config::external::overlay::vpcpeering::{ValidatedExpose, ValidatedManifest};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
@@ -29,7 +29,7 @@ impl NatAllocator {
         build_nat_pool_generic(
             peering.local(),
             dst_vpc_id,
-            ValidatedManifest::stateful_nat_exposes_44,
+            ValidatedManifest::masquerade_exposes_44,
             ValidatedManifest::port_forwarding_exposes_44,
             &mut self.pools_src44,
             NextHeader::ICMP,
@@ -39,7 +39,7 @@ impl NatAllocator {
         build_nat_pool_generic(
             peering.local(),
             dst_vpc_id,
-            ValidatedManifest::stateful_nat_exposes_66,
+            ValidatedManifest::masquerade_exposes_66,
             ValidatedManifest::port_forwarding_exposes_66,
             &mut self.pools_src66,
             NextHeader::ICMP6,
@@ -52,7 +52,7 @@ impl NatAllocator {
 fn build_nat_pool_generic<'a, I: NatIpWithBitmap, J: NatIpWithBitmap, F, FIter, P, PIter>(
     manifest: &'a ValidatedManifest,
     dst_vpc_id: VpcDiscriminant,
-    // A filter to select relevant exposes: those with stateful NAT, for the relevant IP version
+    // A filter to select relevant exposes: those with masquerade, for the relevant IP version
     exposes_filter: F,
     // A filter to select other exposes with port forwarding, for the relevant IP version
     port_forwarding_exposes_filter: P,
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn find_masquerade_portfw_overlap_multiple_pf_exposes() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/16".into())
             .ip("172.16.0.0/16".into())
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn find_masquerade_portfw_overlap_with_ports() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/24".into())
             .as_range("192.168.0.0/24".into())
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn find_masquerade_portfw_overlap_with_ports_tcp() {
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/24".into())
             .as_range("192.168.0.0/24".into())
@@ -406,7 +406,7 @@ mod tests {
     fn find_masquerade_portfw_overlap_duplicates_collapsed() {
         // Two port-forwarding exposes with the same prefix should produce one entry
         let expose = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("10.0.0.0/16".into())
             .as_range("192.168.0.0/24".into())

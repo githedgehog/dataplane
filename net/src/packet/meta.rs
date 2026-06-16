@@ -125,10 +125,10 @@ bitflags! {
         const REFR_CHKSUM = 0b0001_0000; /* if true, an indication that packet checksums need to be refreshed */
         const KEEP        = 0b0010_0000; /* Keep the Packet even if it should be dropped */
         const IS_OVERLAY  = 0b0100_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
-        const REQ_STATEFUL_NAT  = 0b1000_0000;      /* Packet requires stateful NAT (source and/or destination) */
+        const REQ_MASQUERADE      = 0b1000_0000;      /* Packet requires masquerade (source and/or destination) */
         const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
-        const REQ_STATIC_NAT_SRC = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
-        const REQ_STATIC_NAT_DST = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
+        const REQ_STATIC_NAT_SRC  = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST  = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
     }
 }
 
@@ -189,11 +189,11 @@ impl PacketMeta {
     }
 
     #[must_use]
-    pub fn requires_stateful_nat(&self) -> bool {
-        self.flags.contains(MetaFlags::REQ_STATEFUL_NAT)
+    pub fn requires_masquerade(&self) -> bool {
+        self.flags.contains(MetaFlags::REQ_MASQUERADE)
     }
-    pub fn set_stateful_nat(&mut self, value: bool) {
-        self.set_flag(MetaFlags::REQ_STATEFUL_NAT, value);
+    pub fn set_masquerade(&mut self, value: bool) {
+        self.set_flag(MetaFlags::REQ_MASQUERADE, value);
     }
     #[must_use]
     pub fn requires_port_forwarding(&self) -> bool {

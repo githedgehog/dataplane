@@ -31,8 +31,7 @@ pub enum NatTablesError {
 }
 
 /// An object containing the rules for the NAT pipeline stage, not in terms of states for the
-/// different connections established, but instead holding the base rules for stateful or static
-/// NAT.
+/// different connections established, but instead holding the base rules for static NAT.
 #[derive(Debug, Clone)]
 pub struct NatTables(HashMap<u32, PerVniTable, RandomState>);
 

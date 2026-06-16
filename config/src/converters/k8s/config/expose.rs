@@ -133,7 +133,7 @@ fn process_nat_block(
         (Some(masquerade), None, None) => {
             let idle_timeout = masquerade.idle_timeout.map(std::time::Duration::from);
             vpc_expose
-                .make_stateful_nat(idle_timeout)
+                .make_masquerade(idle_timeout)
                 .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
         }
         (None, Some(port_forward), None) => {
@@ -627,9 +627,9 @@ mod test {
                     (None, Some(_)) => {
                         panic!("K8s has NAT configured, but dataplane config does not")
                     }
-                    (Some(VpcExposeNatConfig::Stateful(config)), Some(k8s_nat)) => {
+                    (Some(VpcExposeNatConfig::Masquerade(config)), Some(k8s_nat)) => {
                         let Some(k8s_masquerade) = k8s_nat.masquerade.as_ref() else {
-                            panic!("Stateful NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
+                            panic!("Masquerade configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
                         };
                         if let Some(k8s_idle_timeout) = k8s_masquerade.idle_timeout {
                             assert_eq!(config.idle_timeout, Some(k8s_idle_timeout.into()));

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Apalloc: Address and port allocator for stateful NAT
+//! Apalloc: Address and port allocator for masquerade.
 //!
 //! The allocator is safe to access concurrently between threads.
 //!
@@ -65,7 +65,7 @@
 
 use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
-use crate::masquerade::StatefulNatConfig;
+use crate::masquerade::MasqueradeConfig;
 pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
 use crate::masquerade::natip::NatIp;
 use config::GenId;
@@ -77,7 +77,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, error};
 
 use tracectl::trace_target;
-trace_target!("nat-allocation", LevelFilter::ERROR, &["stateful-nat"]);
+trace_target!("nat-allocation", LevelFilter::ERROR, &["masquerade"]);
 
 mod alloc;
 mod display;
@@ -209,14 +209,14 @@ impl Display for Allocation {
     }
 }
 
-/// [`NatAllocator`] is the IP addresses and ports allocator for stateful NAT.
+/// [`NatAllocator`] is the IP addresses and ports allocator for masquerade.
 ///
 /// Internally, it contains various bitmap-based IP pools, and each IP address allocated from these
 /// pools contains a port allocator.
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
 pub struct NatAllocator {
-    config: StatefulNatConfig,
+    config: MasqueradeConfig,
     pools_src44: PoolTable<Ipv4Addr, Ipv4Addr>,
     pools_src66: PoolTable<Ipv6Addr, Ipv6Addr>,
     randomize: bool,
@@ -224,10 +224,10 @@ pub struct NatAllocator {
 
 impl NatAllocator {
     #[must_use]
-    pub(crate) fn new(config: StatefulNatConfig) -> Self {
+    pub(crate) fn new(config: MasqueradeConfig) -> Self {
         debug!("Building NAT allocator for genid {}", config.genid());
         let mut allocator = Self {
-            config: StatefulNatConfig::default(),
+            config: MasqueradeConfig::default(),
             pools_src44: PoolTable::new(),
             pools_src66: PoolTable::new(),
             randomize: config.randomize(),
@@ -239,7 +239,7 @@ impl NatAllocator {
         allocator
     }
 
-    pub(crate) fn config(&self) -> &StatefulNatConfig {
+    pub(crate) fn config(&self) -> &MasqueradeConfig {
         &self.config
     }
 

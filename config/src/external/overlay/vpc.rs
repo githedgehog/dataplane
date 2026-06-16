@@ -126,7 +126,7 @@ impl ValidatedPeering {
         let mut local_has_port_forwarding = false;
         for expose in self.local.valexp() {
             match expose.nat_config() {
-                Some(VpcExposeNatConfig::Stateful { .. }) => {
+                Some(VpcExposeNatConfig::Masquerade { .. }) => {
                     local_has_masquerading = true;
                 }
                 Some(VpcExposeNatConfig::PortForwarding { .. }) => {
@@ -152,7 +152,7 @@ impl ValidatedPeering {
         // - masquerading ------ port forwarding
         // - port forwarding --- port forwarding
         for remote_expose in self.remote.valexp() {
-            if remote_expose.has_stateful_nat() || remote_expose.has_port_forwarding() {
+            if remote_expose.has_masquerade() || remote_expose.has_port_forwarding() {
                 return Err(ConfigError::IncompatibleNatModes(self.name.clone()));
             }
         }
@@ -365,7 +365,7 @@ impl ValidatedVpc {
             p.local()
                 .valexp()
                 .iter()
-                .any(|e| e.has_port_forwarding() || e.has_stateful_nat())
+                .any(|e| e.has_port_forwarding() || e.has_masquerade())
         })
     }
 
@@ -373,7 +373,7 @@ impl ValidatedVpc {
     ///
     /// - overlap is allowed between a prefix and a default expose (it overlaps by design)
     /// - overlap is allowed between prefixes from different exposes if both their exposes use
-    ///   stateful NAT (we can fall back to the flow table to disambiguate the destination VPC)
+    ///   masquerade (we can fall back to the flow table to disambiguate the destination VPC)
     ///
     /// Also check that at most one default expose is exposed to the VPC.
     fn check_overlap_and_default(&self) -> ConfigResult {
@@ -383,8 +383,8 @@ impl ValidatedVpc {
             for other_peering in &self.peerings()[i + 1..] {
                 for current_expose in current_peering.remote().valexp() {
                     for other_expose in other_peering.remote().valexp() {
-                        if current_expose.has_stateful_nat() && other_expose.has_stateful_nat() {
-                            // Overlap is allowed if both expose blocks use stateful NAT
+                        if current_expose.has_masquerade() && other_expose.has_masquerade() {
+                            // Overlap is allowed if both expose blocks use masquerade
                             continue;
                         }
                         match (current_expose.is_default(), other_expose.is_default()) {

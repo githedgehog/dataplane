@@ -42,25 +42,25 @@ fn vpcd(id: u32) -> VpcDiscriminant {
 }
 
 fn needs_masquerade<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-    packet.meta().requires_stateful_nat()
+    packet.meta().requires_masquerade()
         && !packet.meta().requires_static_nat()
         && !packet.meta().requires_port_forwarding()
 }
 
 fn needs_static_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
     packet.meta().requires_static_nat()
-        && !packet.meta().requires_stateful_nat()
+        && !packet.meta().requires_masquerade()
         && !packet.meta().requires_port_forwarding()
 }
 
 fn needs_port_forwarding<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
     packet.meta().requires_port_forwarding()
-        && !packet.meta().requires_stateful_nat()
+        && !packet.meta().requires_masquerade()
         && !packet.meta().requires_static_nat()
 }
 
 fn needs_no_nat<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> bool {
-    !packet.meta().requires_stateful_nat()
+    !packet.meta().requires_masquerade()
         && !packet.meta().requires_static_nat()
         && !packet.meta().requires_port_forwarding()
 }
@@ -255,7 +255,7 @@ fn test_flow_filter_packet_filtered() {
     // Setup table
     let mut table = FlowFilterTable::new();
     let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Stateful), None);
+    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Masquerade), None);
 
     table
         .insert(
@@ -562,7 +562,7 @@ fn test_flow_filter_packet_icmp_allowed() {
     // Setup table
     let mut table = FlowFilterTable::new();
     let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Stateful), None);
+    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Masquerade), None);
 
     table
         .insert(
@@ -850,10 +850,10 @@ fn test_flow_filter_table_check_nat_requirements() {
                         .as_range("20.0.0.0/24".into()) // Static NAT
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("3.0.0.0/24".into())
-                        .as_range("30.0.0.0/24".into()) // Stateful NAT
+                        .as_range("30.0.0.0/24".into()) // Masquerade
                         .unwrap(),
                     VpcExpose::empty().set_default(), // Default (no NAT)
                 ],
@@ -869,10 +869,10 @@ fn test_flow_filter_table_check_nat_requirements() {
                         .as_range("60.0.0.0/24".into()) // Static NAT
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("7.0.0.0/24".into())
-                        .as_range("70.0.0.0/24".into()) // Stateful NAT
+                        .as_range("70.0.0.0/24".into()) // Masquerade
                         .unwrap(),
                     VpcExpose::empty().set_default(), // Default (no NAT)
                 ],
@@ -916,7 +916,7 @@ fn test_flow_filter_table_check_nat_requirements() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
     assert!(needs_static_nat(&packet_out));
 
-    // src: stateful NAT, dst: no NAT
+    // src: masquerade, dst: no NAT
     let packet = create_test_packet(
         Some(vni1.into()),
         "3.0.0.5".parse().unwrap(),
@@ -927,7 +927,7 @@ fn test_flow_filter_table_check_nat_requirements() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
     assert!(needs_masquerade(&packet_out));
 
-    // src: no NAT, dst: stateful NAT
+    // src: no NAT, dst: masquerade
     let packet = create_test_packet(
         Some(vni1.into()),
         "1.0.0.5".parse().unwrap(),
@@ -938,7 +938,7 @@ fn test_flow_filter_table_check_nat_requirements() {
     // an expose using masquerading, and here there is no flow info attached to packet.
     assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
 
-    // src: stateful NAT, dst: default (no NAT)
+    // src: masquerade, dst: default (no NAT)
     let packet = create_test_packet(
         Some(vni1.into()),
         "3.0.0.5".parse().unwrap(),
@@ -952,7 +952,7 @@ fn test_flow_filter_table_check_nat_requirements() {
 
 #[cfg_attr(not(emulated), traced_test)]
 #[test]
-fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
+fn test_flow_filter_table_check_masquerade_plus_port_forwarding() {
     let vni1 = vni(100);
     let vni2 = vni(200);
 
@@ -972,10 +972,10 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/24".into())
-                        .as_range("100.0.0.0/24".into()) // Stateful NAT
+                        .as_range("100.0.0.0/24".into()) // Masquerade
                         .unwrap(),
                     VpcExpose::empty()
                         .make_port_forwarding(None, None)
@@ -1007,7 +1007,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
 
     // Test with packets
 
-    // VPC 1 to VPC 2, outside of port forwarding IP range: stateful NAT
+    // VPC 1 to VPC 2, outside of port forwarding IP range: masquerade
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni1.into()),
         "1.0.0.4".parse().unwrap(),
@@ -1020,7 +1020,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
     assert!(needs_masquerade(&packet_out));
 
-    // VPC 1 to VPC 2, outside of port forwarding port range: stateful NAT
+    // VPC 1 to VPC 2, outside of port forwarding port range: masquerade
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni1.into()),
         "1.0.0.27".parse().unwrap(),
@@ -1033,7 +1033,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
     assert!(needs_masquerade(&packet_out));
 
-    // VPC 1 to VPC 2, inside of port forwarding range: still stateful NAT (no existing port
+    // VPC 1 to VPC 2, inside of port forwarding range: still masquerade (no existing port
     // forwarding entry in the flow table)
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni1.into()),
@@ -1047,7 +1047,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
     assert!(needs_masquerade(&packet_out));
 
-    // VPC 2 to VPC 1, outside of port forwarding IP range: reverse stateful NAT
+    // VPC 2 to VPC 1, outside of port forwarding IP range: reverse masquerade
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni2.into()),
         "5.0.0.10".parse().unwrap(),
@@ -1057,10 +1057,10 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     );
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
     // We don't have a flow-info for the packet, and cannot initiate the connection towards an
-    // expose using stateful NAT.
+    // expose using masquerading.
     assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
 
-    // VPC 2 to VPC 1, outside of port forwarding port range: reverse stateful NAT
+    // VPC 2 to VPC 1, outside of port forwarding port range: reverse masquerade
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni2.into()),
         "5.0.0.10".parse().unwrap(),
@@ -1070,7 +1070,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     );
     let packet_out = flow_filter.process([packet].into_iter()).next().unwrap();
     // We don't have a flow-info for the packet, and cannot initiate the connection towards an
-    // expose using stateful NAT.
+    // expose using masquerading.
     assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
 
     // VPC 2 to VPC 1, inside of port forwarding range: port forwarding
@@ -1087,7 +1087,7 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     assert!(needs_port_forwarding(&packet_out));
 
     // Back to VPC 1 to VPC 2, inside of port forwarding range, with flow_info attached for
-    // stateful NAT: stateful NAT
+    // masquerade: masquerade
     let mut packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni1.into()),
         "1.0.0.27".parse().unwrap(),
@@ -1116,7 +1116,8 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni2.into()));
     assert!(needs_port_forwarding(&packet_out));
 
-    // VPC 2 to VPC 1, outside of port forwarding port range, with flow_info attached for stateful NAT: reverse stateful NAT
+    // VPC 2 to VPC 1, outside of port forwarding port range, with flow_info attached for
+    // masquerade: reverse masquerade
     let mut packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni2.into()),
         "5.0.0.10".parse().unwrap(),
@@ -1130,7 +1131,8 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vni1.into()));
     assert!(needs_masquerade(&packet_out));
 
-    // VPC 2 to VPC 1, outside of port forwarding IP range, with flow_info attached for stateful NAT: reverse stateful NAT
+    // VPC 2 to VPC 1, outside of port forwarding IP range, with flow_info attached for masquerade:
+    // reverse masquerade
     let mut packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni2.into()),
         "5.0.0.10".parse().unwrap(),
@@ -1149,11 +1151,11 @@ fn test_flow_filter_table_check_stateful_nat_plus_peer_forwarding() {
 #[cfg_attr(not(emulated), traced_test)]
 fn test_flow_filter_protocol_aware_port_forwarding() {
     // Test that protocol-specific port forwarding correctly filters by L4 protocol.
-    // Setup: TCP-only port forwarding overlapping with stateful NAT.
-    // - A TCP packet in the port forwarding range should get port forwarding (dst side)
-    //   or stateful NAT (src side, no existing flow).
-    // - A UDP packet in the same range should fall back to stateful NAT (the TCP-only
-    //   port forwarding entry is filtered out by applies_to()).
+    // Setup: TCP-only port forwarding overlapping with masquerade.
+    // - A TCP packet in the port forwarding range should get port forwarding (dst side) or
+    //   masquerade (src side, no existing flow).
+    // - A UDP packet in the same range should fall back to masquerade (the TCP-only port forwarding
+    //   entry is filtered out by applies_to()).
 
     let vni1 = vni(100);
     let vni2 = vni(200);
@@ -1174,7 +1176,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None) // Stateful NAT
+                        .make_masquerade(None) // Masquerade
                         .unwrap()
                         .ip("1.0.0.0/24".into())
                         .as_range("100.0.0.0/24".into())
@@ -1208,7 +1210,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
 
     // Source side: VPC 1 -> VPC 2
 
-    // TCP packet inside port forwarding range: stateful NAT takes precedence on source side
+    // TCP packet inside port forwarding range: masquerade takes precedence on source side
     // (no existing port forwarding flow)
     let packet = create_test_ipv4_tcp_packet_with_ports(
         Some(vni1.into()),
@@ -1223,7 +1225,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
     assert!(needs_masquerade(&packet_out));
 
     // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
-    // only stateful NAT remains -> stateful NAT
+    // only masquerade remains -> masquerade
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni1.into()),
         "1.0.0.27".parse().unwrap(),
@@ -1252,7 +1254,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
     assert!(needs_port_forwarding(&packet_out));
 
     // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
-    // only stateful NAT remains (destination NAT), with no flow table entry -> drop packet
+    // only masquerade remains (destination NAT), with no flow table entry -> drop packet
     let packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni2.into()),
         "5.0.0.10".parse().unwrap(),
@@ -1264,7 +1266,7 @@ fn test_flow_filter_protocol_aware_port_forwarding() {
     assert_eq!(packet_out.get_done(), Some(DoneReason::Filtered));
 
     // UDP packet inside port forwarding range: TCP-only port forwarding is filtered out,
-    // only stateful NAT remains, with flow table entry -> stateful NAT (not dropped!)
+    // only masquerade remains, with flow table entry -> masquerade (not dropped!)
     let mut packet = create_test_ipv4_udp_packet_with_ports(
         Some(vni2.into()),
         "5.0.0.10".parse().unwrap(),
@@ -1304,7 +1306,7 @@ fn test_flow_filter_protocol_any_port_forwarding() {
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/24".into())
                         .as_range("100.0.0.0/24".into())
@@ -1469,7 +1471,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 "vpc2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("192.168.90.0/24".into()) // Contains 192.168.90.100 used privately for VPC02
                         .as_range("20.30.90.0/24".into())
@@ -1648,7 +1650,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         ))
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("192.168.90.0/24".into())
                         .not("192.168.90.0/27".into())
@@ -1696,7 +1698,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 "vpc2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("192.168.90.0/24".into())
                         .as_range("20.30.90.30/32".into())
@@ -1817,7 +1819,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                         ))
                         .unwrap(),
                     VpcExpose::empty()
-                        .make_stateful_nat(None)
+                        .make_masquerade(None)
                         .unwrap()
                         .ip("1.0.0.0/24".into())
                         .as_range("10.0.0.0/24".into())
@@ -1903,7 +1905,7 @@ fn test_flow_filter_batch_processing() {
     // Setup table
     let mut table = FlowFilterTable::new();
     let src_vpcd = vpcd(100);
-    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Stateful), None);
+    let dst_data = RemoteData::new(vpcd(200), Some(NatRequirement::Masquerade), None);
 
     table
         .insert(

@@ -10,18 +10,14 @@
 //! Network Address Translation (NAT) for the dataplane
 //!
 //! This package implements a [`pipeline::NetworkFunction`] that provides Network Address
-//! Translation (NAT) functionality, either source or destination.
+//! Translation (NAT) functionality, source or destination.
 //!
 //! # Limitations
 //!
 //! The package is subject to the following limitations:
 //!
 //! - Only NAT44 is supported (no NAT46, NAT64, or NAT66)
-//! - Either source or destination NAT is supported, only one at a time, by a given [`StaticNat`] or
-//!   [`StatefulNat`] object.
 //! - "Expose" objects mixing IPv4 and IPv6 endpoints or list of exposed IPs are not supported
-//! - The total number of available (not excluded) private addresses used in an "Expose" object must
-//!   be equal to the total number of publicly exposed addresses in this object.
 
 mod common;
 mod icmp_handler;
@@ -34,7 +30,7 @@ pub mod static_nat;
 mod test;
 
 pub use icmp_handler::nf::IcmpErrorHandler;
-pub use masquerade::StatefulNat;
+pub use masquerade::Masquerade;
 pub use port::NatPort;
 pub use static_nat::StaticNat;
 use std::net::IpAddr;

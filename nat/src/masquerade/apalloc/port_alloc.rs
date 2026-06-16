@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Port allocation components for the default allocator for stateful NAT
+//! Port allocation components for the default allocator for masquerade.
 //!
 //! This submodule is the logical continuation of the `alloc` submodule, focusing on allocating
 //! ports for a given IP address. The entry point is the [`PortAllocator`] struct.
@@ -10,8 +10,8 @@
 
 use super::NatIpWithBitmap;
 use super::alloc::AllocatedIp;
-use crate::port::NatPort;
 use crate::masquerade::allocation::AllocatorError;
+use crate::port::NatPort;
 use concurrency::concurrency_mode;
 use concurrency::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use concurrency::sync::{Arc, Mutex, RwLock, Weak};

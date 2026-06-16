@@ -16,31 +16,31 @@ use crate::masquerade::flows::invalidate_all_masquerading_flows;
 use crate::masquerade::flows::upgrade_all_masquerading_flows;
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) struct StatefulNatPeering {
+pub(crate) struct MasqueradePeering {
     pub(crate) src_vpcd: VpcDiscriminant,
     pub(crate) dst_vpcd: VpcDiscriminant,
     pub(crate) peering: ValidatedPeering,
 }
 #[derive(Debug, Default, Clone)]
-pub struct StatefulNatConfig {
+pub struct MasqueradeConfig {
     genid: GenId,
-    peerings: Vec<StatefulNatPeering>,
+    peerings: Vec<MasqueradePeering>,
     randomize: bool,
 }
-impl PartialEq for StatefulNatConfig {
+impl PartialEq for MasqueradeConfig {
     fn eq(&self, other: &Self) -> bool {
         // we exclude genid from comparison
         self.peerings == other.peerings && self.randomize == other.randomize
     }
 }
 
-impl StatefulNatConfig {
+impl MasqueradeConfig {
     #[must_use]
     pub fn new(vpc_table: &ValidatedVpcTable, genid: GenId) -> Self {
         let mut peerings = Vec::new();
         for vpc in vpc_table.values() {
             for peering in vpc.local_stateful_nat_peerings() {
-                peerings.push(StatefulNatPeering {
+                peerings.push(MasqueradePeering {
                     src_vpcd: VpcDiscriminant::from_vni(vpc.vni()),
                     dst_vpcd: VpcDiscriminant::from_vni(vpc_table.get_remote_vni(peering)),
                     peering: peering.clone(),
@@ -70,7 +70,7 @@ impl StatefulNatConfig {
         self.randomize
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &StatefulNatPeering> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &MasqueradePeering> {
         self.peerings.iter()
     }
 
@@ -79,7 +79,7 @@ impl StatefulNatConfig {
             p.local()
                 .valexp()
                 .iter()
-                .any(ValidatedExpose::has_stateful_nat)
+                .any(ValidatedExpose::has_masquerade)
         })
     }
 
@@ -87,7 +87,7 @@ impl StatefulNatConfig {
         &self,
         src_vpcd: VpcDiscriminant,
         dst_vpcd: VpcDiscriminant,
-    ) -> Option<&StatefulNatPeering> {
+    ) -> Option<&MasqueradePeering> {
         self.peerings
             .iter()
             .find(|p| p.src_vpcd == src_vpcd && p.dst_vpcd == dst_vpcd)
@@ -119,7 +119,7 @@ impl NatAllocatorWriter {
     /// masquerading config is provided, a new allocator will be installed and the flows using the
     /// previous one be either invalidated or adapted to use the new allocator: their ports/ips
     /// will be transferred (reserved) in the new allocator.
-    pub fn update_nat_allocator(&mut self, nat_config: StatefulNatConfig, flow_table: &FlowTable) {
+    pub fn update_nat_allocator(&mut self, nat_config: MasqueradeConfig, flow_table: &FlowTable) {
         let genid = nat_config.genid();
         let curr_allocator = self.0.load_full();
 
@@ -135,7 +135,7 @@ impl NatAllocatorWriter {
         // if we transition to a config without masquerading, flush allocator and remove all flows
         if !nat_config.has_masquerading_peerings() {
             if curr_allocator.is_some() {
-                debug!("No stateful NAT is required anymore: will invalidate flows");
+                debug!("No masquerade is required anymore: will invalidate flows");
                 self.0.store(None);
                 invalidate_all_masquerading_flows(flow_table);
             }
@@ -145,12 +145,12 @@ impl NatAllocatorWriter {
         let mut allocator = NatAllocator::new(nat_config);
         if curr_allocator.is_some() {
             let guard = check_masquerading_flows(flow_table, &mut allocator);
-            debug!("Replacing stateful NAT allocator...");
+            debug!("Replacing masquerade NAT allocator...");
             self.0.store(Some(Arc::new(allocator)));
             debug!("NAT allocator has been replaced");
             drop(guard);
         } else {
-            debug!("Installing new stateful NAT allocator...");
+            debug!("Installing new masquerade NAT allocator...");
             self.0.store(Some(Arc::new(allocator)));
             debug!("NAT allocator is installed");
         }

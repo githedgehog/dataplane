@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! IP allocation components for the default allocator for stateful NAT.
+//! IP allocation components for the default allocator for masquerade.
 //!
 //! This submodule focuses on allocating IP addresses, and it gets an address, calls the methods
 //! from its port allocator to allocate ports for this IP address. The [`IpAllocator`] is the main
@@ -10,10 +10,10 @@
 //! See also the architecture diagram at the top of mod.rs.
 
 use super::{NatIpWithBitmap, port_alloc};
-use crate::port::NatPort;
-use crate::ranges::IpRange;
 use crate::masquerade::allocation::AllocatorError;
 use crate::masquerade::natip::NatIp;
+use crate::port::NatPort;
+use crate::ranges::IpRange;
 use concurrency::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 use lpm::prefix::range_map::DisjointRangesBTreeMap;
 use lpm::prefix::{IpPrefix, PortRange, Prefix};

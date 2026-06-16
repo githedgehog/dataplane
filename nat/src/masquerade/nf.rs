@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 #[derive(Debug, thiserror::Error)]
-enum StatefulNatError {
+enum MasqueradeError {
     #[error("Unexpected failure: {0}")]
     Bug(&'static str),
     #[error("failure to get transport header")]
@@ -58,23 +58,23 @@ enum StatefulNatError {
     NatError(#[from] NatPacketError),
 }
 
-/// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`StatefulNat`] processes
+/// A stateful NAT processor, implementing the [`NetworkFunction`] trait. [`Masquerade`] processes
 /// packets to run source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
-pub struct StatefulNat {
+pub struct Masquerade {
     name: String,
     flow_table: Arc<FlowTable>,
     allocator: NatAllocatorReader,
     pipeline_data: Arc<PipelineData>,
 }
 
-impl StatefulNat {
+impl Masquerade {
     // Internal flow timeouts for masquerading
     pub const MASQUERADE_ONEWAY_TIMEOUT: Duration = Duration::from_secs(5);
     pub const MASQUERADE_TWOWAY_TIMEOUT: Duration = Duration::from_secs(3);
     pub const MASQUERADE_CLOSING_TIMEOUT: Duration = Duration::from_secs(2);
 
-    /// Creates a new [`StatefulNat`] processor from provided parameters.
+    /// Creates a new [`Masquerade`] processor from provided parameters.
     #[must_use]
     pub fn new(name: &str, flow_table: Arc<FlowTable>, allocator: NatAllocatorReader) -> Self {
         Self {
@@ -85,7 +85,7 @@ impl StatefulNat {
         }
     }
 
-    /// Creates a new [`StatefulNat`] processor with empty allocator and session table, returning a
+    /// Creates a new [`Masquerade`] processor with empty allocator and session table, returning a
     /// [`NatAllocatorWriter`] object.
     #[must_use]
     pub fn new_with_defaults() -> (Self, NatAllocatorWriter) {
@@ -93,7 +93,7 @@ impl StatefulNat {
         let allocator_reader = allocator_writer.get_reader();
         (
             Self::new(
-                "stateful-nat",
+                "masquerade",
                 Arc::new(FlowTable::default()),
                 allocator_reader,
             ),
@@ -218,7 +218,7 @@ impl StatefulNat {
         write_guard.dst_vpcd = Some(dst_vpcd);
     }
 
-    fn get_reverse_mapping(flow_key: &FlowKey) -> Result<(IpAddr, NatPort), StatefulNatError> {
+    fn get_reverse_mapping(flow_key: &FlowKey) -> Result<(IpAddr, NatPort), MasqueradeError> {
         let src_ip = *flow_key.src_ip();
         let src_port = match flow_key.proto_key_info() {
             IpProtoKey::Tcp(tcp) => tcp.src_port.into(),
@@ -228,11 +228,11 @@ impl StatefulNat {
         Ok((src_ip, src_port))
     }
 
-    fn get_icmp_query_id(key: &IcmpProtoKey) -> Result<u16, StatefulNatError> {
+    fn get_icmp_query_id(key: &IcmpProtoKey) -> Result<u16, MasqueradeError> {
         match key {
             IcmpProtoKey::QueryMsgData(id) => Ok(*id),
-            IcmpProtoKey::ErrorMsgData(_) => Err(StatefulNatError::IcmpError),
-            IcmpProtoKey::Unsupported => Err(StatefulNatError::IcmpUnsupportedCategory),
+            IcmpProtoKey::ErrorMsgData(_) => Err(MasqueradeError::IcmpError),
+            IcmpProtoKey::Unsupported => Err(MasqueradeError::IcmpUnsupportedCategory),
         }
     }
 
@@ -242,7 +242,7 @@ impl StatefulNat {
         initial_flow_key: &FlowKey,
         current_flow_key: &FlowKey,
         alloc: AllocationResult<Allocation>,
-    ) -> Result<(), StatefulNatError> {
+    ) -> Result<(), MasqueradeError> {
         let idle_timeout = alloc.idle_timeout;
         let genid = alloc.allocation.genid();
 
@@ -284,7 +284,7 @@ impl StatefulNat {
         self.flow_table
             .insert_from_arc(&forward)
             .map_err(|e| match e {
-                FlowTableError::CapacityExceeded => StatefulNatError::CapacityExceeded,
+                FlowTableError::CapacityExceeded => MasqueradeError::CapacityExceeded,
             })?;
 
         // The reverse insert is expected to always succeed: capacity enforcement
@@ -294,7 +294,7 @@ impl StatefulNat {
         if let Err(e) = self.flow_table.insert_from_arc(&reverse) {
             forward.invalidate();
             debug_assert!(false, "reverse flow insert failed: {e:?}");
-            return Err(StatefulNatError::CapacityExceeded);
+            return Err(MasqueradeError::CapacityExceeded);
         }
         Ok(())
     }
@@ -303,7 +303,7 @@ impl StatefulNat {
         flow_key: &FlowKey,
         alloc: &AllocationResult<Allocation>,
         dst_vpc_id: VpcDiscriminant,
-    ) -> Result<FlowKey, StatefulNatError> {
+    ) -> Result<FlowKey, MasqueradeError> {
         // Forward session:
         //   f.init:(src: a, dst: B) -> f.nated:(src: A, dst: b)
         //
@@ -325,17 +325,17 @@ impl StatefulNat {
                     .try_set_dst_port(
                         dst_port
                             .try_into()
-                            .map_err(|_| StatefulNatError::InvalidPort(dst_port.as_u16()))?,
+                            .map_err(|_| MasqueradeError::InvalidPort(dst_port.as_u16()))?,
                     )
-                    .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                    .map_err(|_| MasqueradeError::BadTransportHeader)?;
             }
             IpProtoKey::Icmp(IcmpProtoKey::QueryMsgData(_)) => {
                 reverse_proto_key
                     .try_set_identifier(dst_port.as_u16())
-                    .map_err(|_| StatefulNatError::BadTransportHeader)?;
+                    .map_err(|_| MasqueradeError::BadTransportHeader)?;
             }
             IpProtoKey::Icmp(_) => {
-                return Err(StatefulNatError::UnexpectedKeyVariant);
+                return Err(MasqueradeError::UnexpectedKeyVariant);
             }
         }
 
@@ -351,7 +351,7 @@ impl StatefulNat {
     fn masquerade_packet<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
-    ) -> Result<(), StatefulNatError> {
+    ) -> Result<(), MasqueradeError> {
         let nfi = self.name();
 
         // Hot path: if we have a session with masquerade state, translate the packet
@@ -361,21 +361,21 @@ impl StatefulNat {
 
         // If no allocator has been configured, drop the packet
         let Some(allocator) = self.allocator.get() else {
-            return Err(StatefulNatError::NoAllocator);
+            return Err(MasqueradeError::NoAllocator);
         };
 
         // if packet contains TCP, do not create flows nor translate state unless it is a first segment
         if let Some(tcp) = packet.try_tcp()
             && !tcp.is_first_segment()
         {
-            return Err(StatefulNatError::IntendedDrop("TCP without SYN"));
+            return Err(MasqueradeError::IntendedDrop("TCP without SYN"));
         }
 
         let dst_vpcd = packet.meta().dst_vpcd.unwrap_or_else(|| unreachable!());
 
         // Extract flow key for the current packet
         let current_flow_key =
-            FlowKey::try_from(&*packet).map_err(|_| StatefulNatError::FlowKeyError)?;
+            FlowKey::try_from(&*packet).map_err(|_| MasqueradeError::FlowKeyError)?;
 
         // Retrieve initial flow key for the current packet (before any other NAT translation); if
         // we don't have the information, we didn't populate it because we don't need it and fall
@@ -391,12 +391,12 @@ impl StatefulNat {
         let src_ip = *initial_flow_key.src_ip();
         let alloc = allocator
             .allocate(dst_vpcd, src_ip, initial_flow_key.proto())
-            .map_err(StatefulNatError::AllocationFailure)?;
+            .map_err(MasqueradeError::AllocationFailure)?;
 
         // Forbid addresses we won't know how to translate. This is a work around of a larger change
         if let Err(addr) = UnicastIpAddr::try_from(alloc.allocation.ip()) {
             error!("Allocated address {addr} won't be usable: not unicast");
-            return Err(StatefulNatError::Bug("allocated unusable ip"));
+            return Err(MasqueradeError::Bug("allocated unusable ip"));
         }
 
         debug!("{nfi}: Allocated: {alloc}");
@@ -408,7 +408,7 @@ impl StatefulNat {
         let installed = self
             .flow_table
             .lookup(&initial_flow_key)
-            .ok_or(StatefulNatError::Bug("Unexpected flow lookup failure"))?;
+            .ok_or(MasqueradeError::Bug("Unexpected flow lookup failure"))?;
 
         // check that the masquerade state is readable
         let translate = installed
@@ -416,7 +416,7 @@ impl StatefulNat {
             .read()
             .nat_state
             .extract_ref::<MasqueradeState>()
-            .ok_or(StatefulNatError::Bug("Unexpected masquerade state miss"))?
+            .ok_or(MasqueradeError::Bug("Unexpected masquerade state miss"))?
             .as_translate();
 
         // translate the packet
@@ -436,7 +436,7 @@ impl StatefulNat {
             None => {
                 // allocator got removed. Get rid of the flows and drop the packet.
                 installed.invalidate_pair();
-                Err(StatefulNatError::IntendedDrop("allocator was removed"))
+                Err(MasqueradeError::IntendedDrop("allocator was removed"))
             }
             Some(allocator) => {
                 check_masquerading_flow(
@@ -448,14 +448,14 @@ impl StatefulNat {
                     Ok(())
                 } else {
                     // we invalidated the flow. Signal that packet should be dropped
-                    Err(StatefulNatError::IntendedDrop("Config changed"))
+                    Err(MasqueradeError::IntendedDrop("Config changed"))
                 }
             }
         }
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
-    /// function that we pass to [`StatefulNat::process`] to iterate over packets.
+    /// function that we pass to [`Masquerade::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         // In order to NAT a packet for which a session does not exist, we
         // need (and expect) the packet to be annotated with both src & dst discriminants.
@@ -492,33 +492,32 @@ impl StatefulNat {
     }
 }
 
-impl From<&StatefulNatError> for DoneReason {
-    fn from(error: &StatefulNatError) -> Self {
+impl From<&MasqueradeError> for DoneReason {
+    fn from(error: &MasqueradeError) -> Self {
         match error {
-            StatefulNatError::BadTransportHeader => DoneReason::NatUnsupportedProto,
-            StatefulNatError::FlowKeyError | StatefulNatError::InvalidPort(_) => {
+            MasqueradeError::BadTransportHeader => DoneReason::NatUnsupportedProto,
+            MasqueradeError::FlowKeyError | MasqueradeError::InvalidPort(_) => {
                 DoneReason::Malformed
             }
-            StatefulNatError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
-            StatefulNatError::NoAllocator
-            | StatefulNatError::UnexpectedKeyVariant
-            | StatefulNatError::IcmpUnsupportedCategory
-            | StatefulNatError::IcmpError
-            | StatefulNatError::NatError(_) => DoneReason::NatFailure,
-            StatefulNatError::Bug(_) | StatefulNatError::IntendedDrop(_) => DoneReason::Filtered,
-            StatefulNatError::AllocationFailure(inner) => inner.into(),
+            MasqueradeError::CapacityExceeded => DoneReason::FlowCapacityExceeded,
+            MasqueradeError::NoAllocator
+            | MasqueradeError::UnexpectedKeyVariant
+            | MasqueradeError::IcmpUnsupportedCategory
+            | MasqueradeError::IcmpError
+            | MasqueradeError::NatError(_) => DoneReason::NatFailure,
+            MasqueradeError::Bug(_) | MasqueradeError::IntendedDrop(_) => DoneReason::Filtered,
+            MasqueradeError::AllocationFailure(inner) => inner.into(),
         }
     }
 }
 
-impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatefulNat {
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Masquerade {
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,
         input: Input,
     ) -> impl Iterator<Item = Packet<Buf>> + 'a {
         input.filter_map(|mut packet| {
-            if !packet.is_done() && packet.meta().requires_stateful_nat() && !packet.is_icmp_error()
-            {
+            if !packet.is_done() && packet.meta().requires_masquerade() && !packet.is_icmp_error() {
                 // Packet should never be marked for NAT and reach this point if it is not overlay
                 debug_assert!(packet.meta().is_overlay());
                 // Packet should never go through both masquerading and port forwarding

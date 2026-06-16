@@ -297,7 +297,7 @@ impl StaticNat {
 
         // FIXME: Ideally, we'd `enter` once in process() for the whole batch. However, this
         // requires boxing the closures, which may be worse than calling `enter` per packet? ... if
-        // not uglier (same thing for StatefulNat)
+        // not uglier (same thing for Masquerade objects)
         let Some(nat_tables) = &self.tablesr.enter() else {
             error!("{nfi}: failed to read nat tables");
             packet.done(DoneReason::InternalFailure);
