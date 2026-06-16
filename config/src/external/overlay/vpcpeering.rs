@@ -17,7 +17,7 @@ use tracing::warn;
 pub struct VpcExposeStaticNat;
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct VpcExposeStatefulNat {
+pub struct VpcExposeMasquerade {
     pub idle_timeout: Option<Duration>,
 }
 
@@ -28,7 +28,7 @@ pub struct VpcExposePortForwarding {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum VpcExposeNatConfig {
-    Stateful(VpcExposeStatefulNat),
+    Masquerade(VpcExposeMasquerade),
     Static(VpcExposeStaticNat),
     PortForwarding(VpcExposePortForwarding),
 }
@@ -53,8 +53,8 @@ impl VpcExposeNat {
     }
 
     #[must_use]
-    pub fn is_stateful(&self) -> bool {
-        matches!(self.config, VpcExposeNatConfig::Stateful(_))
+    pub fn is_masquerade(&self) -> bool {
+        matches!(self.config, VpcExposeNatConfig::Masquerade(_))
     }
 
     #[must_use]
@@ -102,28 +102,25 @@ impl VpcExpose {
         }
     }
 
-    /// Make the [`VpcExpose`] use stateful NAT, with the given idle timeout, if provided.
-    /// If the [`VpcExpose`] is already in stateful mode, the idle timeout is overwritten.
+    /// Make the [`VpcExpose`] use masquerade, with the given idle timeout, if provided.
+    /// If the [`VpcExpose`] is already in masquerade mode, the idle timeout is overwritten.
     ///
     /// # Errors
     ///
     /// Returns an error if the [`VpcExpose`] already has a different NAT mode.
-    pub fn make_stateful_nat(
-        mut self,
-        idle_timeout: Option<Duration>,
-    ) -> Result<Self, ConfigError> {
-        let options = VpcExposeStatefulNat { idle_timeout };
+    pub fn make_masquerade(mut self, idle_timeout: Option<Duration>) -> Result<Self, ConfigError> {
+        let options = VpcExposeMasquerade { idle_timeout };
         match self.nat.as_mut() {
-            Some(nat) if nat.is_stateful() => {
-                nat.config = VpcExposeNatConfig::Stateful(options);
+            Some(nat) if nat.is_masquerade() => {
+                nat.config = VpcExposeNatConfig::Masquerade(options);
                 Ok(self)
             }
             Some(_) => Err(ConfigError::Invalid(format!(
-                "refusing to overwrite previous NAT mode with stateful NAT mode for VpcExpose {self}"
+                "refusing to overwrite previous NAT mode with masquerade mode for VpcExpose {self}"
             ))),
 
             None => {
-                self.nat = Some(VpcExposeNat::from_config(VpcExposeNatConfig::Stateful(
+                self.nat = Some(VpcExposeNat::from_config(VpcExposeNatConfig::Masquerade(
                     options,
                 )));
                 Ok(self)
@@ -409,8 +406,8 @@ impl VpcExpose {
             }
         }
 
-        // For stateful NAT, we don't support port ranges
-        if collapsed_expose.has_stateful_nat()
+        // For masquerade, we don't support port ranges
+        if collapsed_expose.has_masquerade()
             && (collapsed_expose.ips().iter().any(|p| p.ports().is_some())
                 || collapsed_expose
                     .as_range_or_empty()
@@ -418,7 +415,7 @@ impl VpcExpose {
                     .any(|p| p.ports().is_some()))
         {
             return Err(ConfigError::Forbidden(
-                "Port ranges are not supported with stateful NAT",
+                "Port ranges are not supported with masquerade",
             ));
         }
 
@@ -536,8 +533,8 @@ impl ValidatedExpose {
     }
 
     #[must_use]
-    pub fn has_stateful_nat(&self) -> bool {
-        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateful)
+    pub fn has_masquerade(&self) -> bool {
+        self.nat.as_ref().is_some_and(VpcExposeNat::is_masquerade)
     }
 
     #[must_use]
@@ -570,7 +567,7 @@ impl ValidatedExpose {
     #[must_use]
     pub fn idle_timeout(&self) -> Option<Duration> {
         match self.nat_config()? {
-            VpcExposeNatConfig::Stateful(config) => config.idle_timeout,
+            VpcExposeNatConfig::Masquerade(config) => config.idle_timeout,
             VpcExposeNatConfig::PortForwarding(config) => config.idle_timeout,
             VpcExposeNatConfig::Static(_) => None,
         }
@@ -702,20 +699,12 @@ impl ValidatedManifest {
         self.filter_exposes(|expose| expose.has_static_nat())
     }
 
-    pub fn stateful_nat_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_44())
+    pub fn masquerade_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_masquerade() && expose.is_44())
     }
 
-    pub fn stateful_nat_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_stateful_nat() && expose.is_66())
-    }
-
-    pub fn no_stateful_nat_exposes_v4(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v4())
-    }
-
-    pub fn no_stateful_nat_exposes_v6(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| !expose.has_stateful_nat() && expose.is_v6())
+    pub fn masquerade_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_masquerade() && expose.is_66())
     }
 
     pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
@@ -739,17 +728,17 @@ impl ValidatedManifest {
                 match (&expose_left.nat_config(), &expose_right.nat_config()) {
                     // Overlap allowed
 
-                    // Port forwarding plus stateful NAT can be used in combination. This is because
+                    // Port forwarding plus masquerade can be used in combination. This is because
                     // both imply a unique direction for opening a connection, so we can use port
-                    // forwarding when the request is in the associated direction, and stateful NAT
+                    // forwarding when the request is in the associated direction, and masquerade
                     // otherwise.
                     (
-                        Some(VpcExposeNatConfig::Stateful { .. }),
+                        Some(VpcExposeNatConfig::Masquerade { .. }),
                         Some(VpcExposeNatConfig::PortForwarding { .. }),
                     )
                     | (
                         Some(VpcExposeNatConfig::PortForwarding { .. }),
-                        Some(VpcExposeNatConfig::Stateful { .. }),
+                        Some(VpcExposeNatConfig::Masquerade { .. }),
                     ) => {}
 
                     // Overlap denied
@@ -770,19 +759,19 @@ impl ValidatedManifest {
                         Some(VpcExposeNatConfig::PortForwarding { .. }),
                         Some(VpcExposeNatConfig::PortForwarding { .. }),
                     )
-                    // Two exposes using stateful NAT must use distinct internal prefixes, or we
-                    // don't know which to use.
+                    // Two exposes using masquerade must use distinct internal prefixes, or we don't
+                    // know which to use.
                     | (
-                        Some(VpcExposeNatConfig::Stateful { .. }),
-                        Some(VpcExposeNatConfig::Stateful { .. }),
+                        Some(VpcExposeNatConfig::Masquerade { .. }),
+                        Some(VpcExposeNatConfig::Masquerade { .. }),
                     )
-                    // Stateful NAT cannot be used in combination with no NAT, or we don't know
-                    // which prefix to use. Similar to port forwarding plus no NAT, here we could
-                    // figure out something based on the direction for stateful NAT (which only
-                    // works for source NAT), but this is not supported at the moment, and stateful
-                    // NAT might work in both directions in the future anyway.
-                    | (Some(VpcExposeNatConfig::Stateful { .. }), None)
-                    | (None, Some(VpcExposeNatConfig::Stateful { .. }))
+                    // Masquerade cannot be used in combination with no NAT, or we don't know which
+                    // prefix to use. Similar to port forwarding plus no NAT, here we could figure
+                    // out something based on the direction for masquerade (which only works for
+                    // source NAT), but this is not supported at the moment, and masquerade might
+                    // work in both directions in the future anyway.
+                    | (Some(VpcExposeNatConfig::Masquerade { .. }), None)
+                    | (None, Some(VpcExposeNatConfig::Masquerade { .. }))
                     // Port forwarding cannot be used in combination with no NAT, because no NAT is
                     // stateless and the flow entry for port forwarding would "mask" the prefix for
                     // use with no NAT

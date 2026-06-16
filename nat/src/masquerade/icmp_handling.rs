@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Handling of ICMP errors in stateful NAT (masquerading)
+//! Handling of ICMP errors in masquerade
 
 use crate::common::NatFlowStatus;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;

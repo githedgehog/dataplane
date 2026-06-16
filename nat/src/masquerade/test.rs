@@ -5,8 +5,8 @@
 
 use crate::common::{NatAction, NatFlowStatus};
 use crate::masquerade::state::MasqueradeState;
-use crate::masquerade::{NatAllocatorWriter, StatefulNatConfig};
-use crate::{IcmpErrorHandler, StatefulNat};
+use crate::masquerade::{MasqueradeConfig, NatAllocatorWriter};
+use crate::{IcmpErrorHandler, Masquerade};
 use ahash::HashMap;
 use common::cliprovider::Frame;
 use concurrency::sync::Arc;
@@ -83,8 +83,8 @@ impl NetworkFunction<TestBuffer> for TestFlowFilter {
     }
 }
 
-// build pipeline: icmp-error-handler|flow-lookup|stateful-NAT
-fn setup_pipeline_stateful_nat(
+// build pipeline: icmp-error-handler|flow-lookup|masquerade
+fn setup_pipeline_masquerade(
     flow_filter: TestFlowFilter,
 ) -> (Arc<FlowTable>, DynPipeline<TestBuffer>, NatAllocatorWriter) {
     let alloc_writer = NatAllocatorWriter::new();
@@ -93,7 +93,7 @@ fn setup_pipeline_stateful_nat(
     let flow_table = Arc::new(FlowTable::default());
     let flow_lookup = FlowLookup::new("flow-lookup", flow_table.clone());
     let icmp_error_handler = IcmpErrorHandler::new(flow_table.clone());
-    let nat = StatefulNat::new("masq", flow_table.clone(), alloc_reader);
+    let nat = Masquerade::new("masq", flow_table.clone(), alloc_reader);
     let pipeline: DynPipeline<TestBuffer> = DynPipeline::new()
         .add_stage(icmp_error_handler)
         .add_stage(flow_lookup)
@@ -110,7 +110,7 @@ fn test_setup(
     let overlay = overlay.validate().unwrap();
 
     // build the configuration for the nat allocator
-    let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid);
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table(), genid);
 
     // build the config for the test flow filter and the flow filter
     let peerings: Vec<_> = nat_config
@@ -119,8 +119,8 @@ fn test_setup(
         .collect();
     let flow_filter = TestFlowFilter::with_peerings(peerings);
 
-    // build pipeline: icmp-error-handler|flow-lookup|TestFlowFilter|stateful-NAT
-    let (flow_table, pipeline, mut alloc_writer) = setup_pipeline_stateful_nat(flow_filter);
+    // build pipeline: icmp-error-handler|flow-lookup|TestFlowFilter|masquerade
+    let (flow_table, pipeline, mut alloc_writer) = setup_pipeline_masquerade(flow_filter);
 
     // setup the NAT allocator
     alloc_writer.update_nat_allocator(nat_config, &flow_table);
@@ -158,13 +158,13 @@ fn build_overlay_4vpcs() -> Overlay {
 
     // VPC1 <-> VPC2
     let expose121 = VpcExpose::empty()
-        .make_stateful_nat(Some(ONE_MINUTE))
+        .make_masquerade(Some(ONE_MINUTE))
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("10.12.0.0/16".into())
         .unwrap();
     let expose122 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.2.0.0/16".into())
         .as_range("10.98.128.0/17".into())
@@ -172,7 +172,7 @@ fn build_overlay_4vpcs() -> Overlay {
         .as_range("10.99.0.0/17".into())
         .unwrap();
     let expose123 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.3.0.0/24".into())
         .as_range("10.100.0.0/24".into())
@@ -184,13 +184,13 @@ fn build_overlay_4vpcs() -> Overlay {
 
     // VPC1 <-> VPC3
     let expose131 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("3.3.0.0/16".into())
         .unwrap();
     let expose132 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.2.0.0/16".into())
         .as_range("3.1.0.0/16".into())
@@ -203,7 +203,7 @@ fn build_overlay_4vpcs() -> Overlay {
 
     // VPC1 <-> VPC4
     let expose141 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("4.4.0.0/16".into())
@@ -212,7 +212,7 @@ fn build_overlay_4vpcs() -> Overlay {
 
     // VPC2 <-> VPC4
     let expose241 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("2.4.0.0/16".into())
         .not("2.4.1.0/24".into())
@@ -226,7 +226,7 @@ fn build_overlay_4vpcs() -> Overlay {
 
     // VPC3 <-> VPC4
     let expose341 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("192.168.100.0/24".into())
         .as_range("34.34.34.0/24".into())
@@ -285,7 +285,7 @@ fn build_overlay_2vpcs() -> Overlay {
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
 
     let expose121 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("2.2.0.0/16".into())
@@ -309,7 +309,7 @@ fn build_overlay_2vpcs_modified() -> Overlay {
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
 
     let expose121 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("4.4.0.0/16".into())
@@ -327,7 +327,7 @@ fn build_overlay_2vpcs_modified() -> Overlay {
 }
 
 fn check_packet(
-    nat: &mut StatefulNat,
+    nat: &mut Masquerade,
     src_vni: Vni,
     dst_vni: Vni,
     src_ip: &str,
@@ -344,7 +344,7 @@ fn check_packet(
         dport,
     );
     packet.meta_mut().set_overlay(true);
-    packet.meta_mut().set_stateful_nat(true);
+    packet.meta_mut().set_masquerade(true);
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
@@ -382,8 +382,8 @@ async fn test_full_config() {
     let flow_table = FlowTable::new(16);
 
     // Check that we can validate the allocator
-    let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
+    let (mut nat, mut allocator) = Masquerade::new_with_defaults();
+    let nat_config = MasqueradeConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &flow_table);
 
     // No NAT
@@ -458,7 +458,7 @@ async fn test_full_config() {
     let new_config = build_gwconfig_from_overlay(build_overlay_2vpcs())
         .validate()
         .unwrap();
-    let nat_config = StatefulNatConfig::new(new_config.external().overlay().vpc_table(), 2);
+    let nat_config = MasqueradeConfig::new(new_config.external().overlay().vpc_table(), 2);
     allocator.update_nat_allocator(nat_config, &flow_table);
 
     // Check existing connection
@@ -550,13 +550,13 @@ fn test_full_config_no_nat() {
         .unwrap();
 
     // Check that we can validate the allocator
-    let (_, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
+    let (_, mut allocator) = Masquerade::new_with_defaults();
+    let nat_config = MasqueradeConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 }
 
 fn check_packet_icmp_echo(
-    nat: &mut StatefulNat,
+    nat: &mut Masquerade,
     src_vni: Vni,
     dst_vni: Vni,
     src_ip: Ipv4Addr,
@@ -567,7 +567,7 @@ fn check_packet_icmp_echo(
     let mut packet: Packet<TestBuffer> =
         build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
     packet.meta_mut().set_overlay(true);
-    packet.meta_mut().set_stateful_nat(true);
+    packet.meta_mut().set_masquerade(true);
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
 
@@ -597,7 +597,7 @@ fn check_packet_icmp_echo_new(
     let mut packet: Packet<TestBuffer> =
         build_test_icmp4_echo(src_ip, dst_ip, identifier, direction).unwrap();
     packet.meta_mut().set_overlay(true);
-    packet.meta_mut().set_stateful_nat(true);
+    packet.meta_mut().set_masquerade(true);
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
 
     let packets_out: Vec<_> = pipeline.process(vec![packet].into_iter()).collect();
@@ -621,8 +621,8 @@ async fn test_icmp_echo_nat() {
         .unwrap();
 
     // Check that we can validate the allocator
-    let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
+    let (mut nat, mut allocator) = Masquerade::new_with_defaults();
+    let nat_config = MasqueradeConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // No NAT
@@ -742,10 +742,10 @@ fn check_packet_icmp_error(
     )
     .unwrap();
     packet.meta_mut().set_overlay(true);
-    packet.meta_mut().set_stateful_nat(false); // set to false since ICMP error handler will take care
+    packet.meta_mut().set_masquerade(false); // set to false since ICMP error handler will take care
     packet.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(src_vni));
     packet.meta_mut().dst_vpcd = Some(VpcDiscriminant::VNI(dst_vni));
-    packet.meta_mut().dst_vpcd.take(); // remove to force processing by stateful
+    packet.meta_mut().dst_vpcd.take(); // remove to force processing by masquerade
 
     let packets_out: Vec<_> = pipeline.process(std::iter::once(packet)).collect();
 
@@ -909,7 +909,7 @@ fn build_overlay_2vpcs_with_default() -> Overlay {
     let _ = vpc_table.add(Vpc::new("VPC-2", "BBBBB", 200).expect("Failed to add VPC"));
 
     let expose121 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("2.2.0.0/16".into())
@@ -936,8 +936,8 @@ async fn test_default_expose() {
         .unwrap();
 
     // Check that we can validate the allocator
-    let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
+    let (mut nat, mut allocator) = Masquerade::new_with_defaults();
+    let nat_config = MasqueradeConfig::new(config.external().overlay().vpc_table(), 1);
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
 
     // Using the expose with a prefix
@@ -1027,7 +1027,7 @@ fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
 
     // VPC-1 (NAT) <-> VPC-2 (no NAT)
     let expose12 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.0.0.0/24".into())
         .as_range("2.0.0.0/24".into())
@@ -1040,7 +1040,7 @@ fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
 
     // VPC-2 (no NAT) <-> VPC-3 (NAT)
     let expose32 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.0.0.0/24".into())
         .as_range("2.0.0.0/24".into())
@@ -1060,7 +1060,7 @@ fn build_overlay_3vpcs_unidirectional_nat_overlapping_addr() -> Overlay {
 
 #[allow(clippy::too_many_arguments)]
 fn check_packet_with_vpcd_lookup(
-    nat: &mut StatefulNat,
+    nat: &mut Masquerade,
     vpcdlookup: &mut FlowFilter,
     flow_lookup_stage: Option<&mut FlowLookup>,
     src_vni: Vni,
@@ -1133,7 +1133,7 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
         // linkme's distributed_slice uses link_section, which miri can't load,
         // so the trace targets registry is empty under miri; skip the filter setup.
         let tctl = get_trace_ctl();
-        let _ = tctl.setup_from_string("vpc-routing=debug,flow-lookup=debug,stateful-nat=debug");
+        let _ = tctl.setup_from_string("vpc-routing=debug,flow-lookup=debug,masquerade=debug");
     }
 
     let config =
@@ -1153,8 +1153,8 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
     // between the IPs exposed by VPC-2 for both VPC-1 and VPC-3, and to be dropped.
 
     // Build NAT stage
-    let (mut nat, mut allocator) = StatefulNat::new_with_defaults();
-    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
+    let (mut nat, mut allocator) = Masquerade::new_with_defaults();
+    let nat_config = MasqueradeConfig::new(config.external().overlay().vpc_table(), 1);
 
     // Check that we can validate the allocator
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
@@ -1220,9 +1220,9 @@ async fn test_full_config_unidirectional_nat_overlapping_destination() {
 
     // Build a new NAT stage
     let mut allocator = NatAllocatorWriter::new();
-    let mut nat = StatefulNat::new("stateful-nat", flow_table.clone(), allocator.get_reader());
+    let mut nat = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
     let nat_config =
-        StatefulNatConfig::new(config.external().overlay().vpc_table(), 2).set_randomize(false);
+        MasqueradeConfig::new(config.external().overlay().vpc_table(), 2).set_randomize(false);
 
     // Check that we can validate the allocator
     //
@@ -1382,7 +1382,7 @@ fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
 
     // Peering 1
     let expose1_1 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("1.0.0.0/24".into())
         .as_range("2.0.0.0/24".into())
@@ -1396,7 +1396,7 @@ fn build_overlay_2vpcs_unidirectional_nat_overlapping_exposes() -> Overlay {
     // Peering 2 - Overlap with Peering 1
 
     let expose2_1 = VpcExpose::empty()
-        .make_stateful_nat(None)
+        .make_masquerade(None)
         .unwrap()
         .ip("3.0.0.0/24".into())
         .as_range("2.0.0.0/24".into()) // Overlap
@@ -1423,8 +1423,8 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
     let config =
         build_gwconfig_from_overlay(build_overlay_2vpcs_unidirectional_nat_overlapping_exposes());
     // Validation fails - We currently forbid multiple peerings between any pair of VPCs. We
-    // could probably allow them for stateful NAT, but we still need the restriction for
-    // static NAT. We can carry on with the test anyway.
+    // could probably allow them for masquerade, but we still need the restriction for static NAT.
+    // We can carry on with the test anyway.
     assert!(
         config
             .validate()
@@ -1451,8 +1451,8 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
 
     // Build a new NAT stage
     let mut allocator = NatAllocatorWriter::new();
-    let mut nat = StatefulNat::new("stateful-nat", flow_table.clone(), allocator.get_reader());
-    let nat_config = StatefulNatConfig::new(config.external().overlay().vpc_table(), 1);
+    let mut nat = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
+    let nat_config = MasqueradeConfig::new(config.external().overlay().vpc_table(), 1);
 
     // Check that we can validate the allocator
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));
@@ -1602,7 +1602,7 @@ fn tcp_packet_to_masquerade() -> Packet<TestBuffer> {
 
     packet.meta_mut().set_overlay(true);
     packet.meta_mut().src_vpcd = Some(vpcd(100));
-    packet.meta_mut().set_stateful_nat(true);
+    packet.meta_mut().set_masquerade(true);
     packet
 }
 fn flow_status(packet: &Packet<TestBuffer>) -> Option<FlowStatus> {
@@ -1657,7 +1657,7 @@ fn build_reply(packet: &Packet<TestBuffer>) -> Packet<TestBuffer> {
     let mut reply = packet.clone();
     reply.meta_reset();
     reply.meta_mut().src_vpcd = dst_vpcd;
-    reply.meta_mut().set_stateful_nat(true);
+    reply.meta_mut().set_masquerade(true);
     reply.meta_mut().set_overlay(true);
 
     reply.set_eth_source(dst_mac).unwrap();
@@ -1832,7 +1832,7 @@ async fn test_masquerade_reconfig_keep_flow() {
 
     // update the NAT allocator with an identical config
     let overlay = build_overlay_2vpcs().validate().unwrap();
-    let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid + 1);
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table(), genid + 1);
     allocw.update_nat_allocator(nat_config, &flow_table);
 
     // process a packet: it should hit identical flows, except for genid
@@ -1868,7 +1868,7 @@ async fn test_masquerade_reconfig_drop_flow() {
 
     // update the NAT allocator with an identical config
     let overlay = build_overlay_2vpcs_modified().validate().unwrap();
-    let nat_config = StatefulNatConfig::new(overlay.vpc_table(), genid + 1);
+    let nat_config = MasqueradeConfig::new(overlay.vpc_table(), genid + 1);
     allocw.update_nat_allocator(nat_config, &flow_table);
 
     // process a packet: it should hit identical flows

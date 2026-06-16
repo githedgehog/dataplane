@@ -12,8 +12,8 @@ use crate::external::overlay::vpc::{
     Peering, ValidatedPeering, ValidatedVpc, ValidatedVpcTable, Vpc, VpcId, VpcTable,
 };
 use crate::external::overlay::vpcpeering::{
-    ValidatedExpose, ValidatedManifest, VpcExpose, VpcExposeNatConfig, VpcExposePortForwarding,
-    VpcExposeStatefulNat, VpcExposeStaticNat,
+    ValidatedExpose, ValidatedManifest, VpcExpose, VpcExposeMasquerade, VpcExposeNatConfig,
+    VpcExposePortForwarding, VpcExposeStaticNat,
 };
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
 use crate::external::overlay::{Overlay, ValidatedOverlay};
@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use common::cliprovider::Heading;
 const SEP: &str = "       ";
 
-impl Display for VpcExposeStatefulNat {
+impl Display for VpcExposeMasquerade {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let idle_timeout = self
             .idle_timeout
@@ -48,7 +48,7 @@ impl Display for VpcExposeNatConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Static(config) => config.fmt(f),
-            Self::Stateful(config) => config.fmt(f),
+            Self::Masquerade(config) => config.fmt(f),
             Self::PortForwarding(config) => config.fmt(f),
         }
     }

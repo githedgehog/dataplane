@@ -114,12 +114,12 @@ pub(crate) fn check_masquerading_flow(
         return;
     };
 
-    // We've found a peering with stateful NAT between the VPCs that this flow is exchanged.
+    // We've found a peering with masquerade between the VPCs that this flow is exchanged.
     // Check if such a peering has ANY expose with masquerading that includes the address currently
     // used to masquerade the flow.
     debug!("Peering exists between {src_vpcd} and {dst_vpcd}");
     if nat_peering.peering.local().valexp().iter().any(|e| {
-        e.has_stateful_nat()
+        e.has_masquerade()
             && e.nat().is_some_and(|enat| {
                 enat.as_range
                     .iter()

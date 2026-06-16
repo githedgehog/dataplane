@@ -8,7 +8,7 @@ use concurrency::concurrency_mode;
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
 mod context {
-    use crate::masquerade::allocator_writer::StatefulNatConfig;
+    use crate::masquerade::allocator_writer::MasqueradeConfig;
     use crate::masquerade::apalloc::alloc::IpAllocator;
     use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
@@ -73,7 +73,7 @@ mod context {
     fn build_context() -> ValidatedVpcTable {
         // Exposes and manifests
         let expose1 = VpcExpose::empty()
-            .make_stateful_nat(None)
+            .make_masquerade(None)
             .unwrap()
             .ip("1.1.0.0/16".into())
             .ip("1.2.0.0/15".into())
@@ -126,7 +126,7 @@ mod context {
 
     pub fn build_allocator() -> NatAllocator {
         let vpc_table = build_context();
-        let config = StatefulNatConfig::new(&vpc_table, 1);
+        let config = MasqueradeConfig::new(&vpc_table, 1);
         NatAllocator::new(config)
     }
 }

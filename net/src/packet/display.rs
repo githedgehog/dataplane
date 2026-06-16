@@ -365,8 +365,8 @@ fn fmt_metadata_flags(meta: &PacketMeta, f: &mut Formatter<'_>) -> std::fmt::Res
     if meta.is_l2bcast() {
         write!(f, " bcast")?;
     }
-    if meta.requires_stateful_nat() {
-        write!(f, " req-stateful-nat")?;
+    if meta.requires_masquerade() {
+        write!(f, " req-masquerade")?;
     }
     if meta.requires_port_forwarding() {
         write!(f, " req-port-forwarding")?;

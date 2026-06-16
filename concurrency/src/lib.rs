@@ -26,7 +26,7 @@
 //!   testing strategy (real OS threads + tsan, or a hand-rolled
 //!   model). Concrete workspace consequence: NAT's allocator/port-
 //!   forwarder paths use `Weak::upgrade().is_none()` as the liveness
-//!   signal for cleanup (see `nat/src/stateful/apalloc/alloc.rs` and
+//!   signal for cleanup (see `nat/src/masquerade/apalloc/alloc.rs` and
 //!   `port_alloc.rs`); under loom that signal never fires, so those
 //!   paths are *not* exercised. NAT is not in the loom test matrix
 //!   today, which is consistent with that limit; do not add it

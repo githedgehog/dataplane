@@ -808,7 +808,7 @@ mod tests {
             "manifest2",
             vec![
                 VpcExpose::empty()
-                    .make_stateful_nat(None)
+                    .make_masquerade(None)
                     .unwrap()
                     .ip("10.0.0.0/25".into())
                     .as_range("100.0.0.0/25".into())
@@ -840,11 +840,11 @@ mod tests {
                 set.len() == 2
                     // Sending to 10.0.0.0/25 via manifest 1 requires no NAT
                     && set.contains(&RemoteData::new(vpcd1, None, None))
-                    // Replying to 10.0.0.0/25 via manifest 2 requires stateful (destination) NAT
+                    // Replying to 10.0.0.0/25 via manifest 2 requires masquerade (destination)
                     && set.contains(&RemoteData::new(
                         vpcd2,
                         None,
-                        Some(NatRequirement::Stateful),
+                        Some(NatRequirement::Masquerade),
                     ))
             }),
             "{overlap:#?}"
@@ -893,7 +893,7 @@ mod tests {
                     ))
                     .unwrap(),
                 VpcExpose::empty()
-                    .make_stateful_nat(None)
+                    .make_masquerade(None)
                     .unwrap()
                     .ip("1.0.0.0/24".into())
                     .as_range("10.0.0.0/24".into())
@@ -933,7 +933,11 @@ mod tests {
         let set = set.unwrap();
         assert_eq!(set.len(), 4, "{set:?}");
         assert!(
-            set.contains(&RemoteData::new(vpcd, None, Some(NatRequirement::Stateful),)),
+            set.contains(&RemoteData::new(
+                vpcd,
+                None,
+                Some(NatRequirement::Masquerade),
+            )),
             "{set:?}"
         );
         assert!(
@@ -962,7 +966,11 @@ mod tests {
         let set = set.unwrap();
         assert_eq!(set.len(), 2, "{set:?}");
         assert!(
-            set.contains(&RemoteData::new(vpcd, None, Some(NatRequirement::Stateful),)),
+            set.contains(&RemoteData::new(
+                vpcd,
+                None,
+                Some(NatRequirement::Masquerade),
+            )),
             "{set:?}"
         );
         assert!(
@@ -1036,7 +1044,7 @@ mod tests {
             HashSet::from([RemoteData::new(
                 vpcd(200),
                 None,
-                Some(NatRequirement::Stateful),
+                Some(NatRequirement::Masquerade),
             )]),
         );
         overlap.insert(
