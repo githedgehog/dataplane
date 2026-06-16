@@ -7,7 +7,7 @@ use left_right::new_from_empty;
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 use tracing::debug;
 
-use crate::stateless::setup::tables::NatTables;
+use crate::static_nat::setup::tables::NatTables;
 
 enum NatTablesChange {
     UpdateNatTables(NatTables),
