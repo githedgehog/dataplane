@@ -899,7 +899,7 @@ mod tests {
                     .as_range("10.0.0.0/24".into())
                     .unwrap(),
                 VpcExpose::empty()
-                    .make_stateless_nat() // Invalid, but we don't care we just want to test
+                    .make_static_nat() // Invalid, but we don't care we just want to test
                     .unwrap()
                     .ip("1.0.0.0/24".into())
                     .as_range("10.0.0.0/24".into())
@@ -937,11 +937,7 @@ mod tests {
             "{set:?}"
         );
         assert!(
-            set.contains(&RemoteData::new(
-                vpcd,
-                None,
-                Some(NatRequirement::Stateless),
-            )),
+            set.contains(&RemoteData::new(vpcd, None, Some(NatRequirement::Static),)),
             "{set:?}"
         );
         assert!(
@@ -970,11 +966,7 @@ mod tests {
             "{set:?}"
         );
         assert!(
-            set.contains(&RemoteData::new(
-                vpcd,
-                None,
-                Some(NatRequirement::Stateless),
-            )),
+            set.contains(&RemoteData::new(vpcd, None, Some(NatRequirement::Static),)),
             "{set:?}"
         );
     }

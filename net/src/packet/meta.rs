@@ -127,8 +127,8 @@ bitflags! {
         const IS_OVERLAY  = 0b0100_0000; /* Packet was obtained by decapsulation and belongs to a VPC */
         const REQ_STATEFUL_NAT  = 0b1000_0000;      /* Packet requires stateful NAT (source and/or destination) */
         const REQ_PORT_FORWARDING = 0b0001_0000_0000; /* Packet requires port forwarding */
-        const REQ_STATIC_NAT_SRC = 0b0010_0000_0000;      /* Packet requires stateless NAT (source) */
-        const REQ_STATIC_NAT_DST = 0b0100_0000_0000;      /* Packet requires stateless NAT (destination) */
+        const REQ_STATIC_NAT_SRC = 0b0010_0000_0000;      /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST = 0b0100_0000_0000;      /* Packet requires static NAT (destination) */
     }
 }
 

@@ -120,7 +120,7 @@ impl ValidatedPeering {
     }
 
     fn validate_nat_combinations(&self) -> ConfigResult {
-        // If stateful NAT is set up on one side of the peering, we don't support NAT (stateless or
+        // If stateful NAT is set up on one side of the peering, we don't support NAT (static or
         // stateful) on the other side.
         let mut local_has_masquerading = false;
         let mut local_has_port_forwarding = false;
@@ -132,7 +132,7 @@ impl ValidatedPeering {
                 Some(VpcExposeNatConfig::PortForwarding { .. }) => {
                     local_has_port_forwarding = true;
                 }
-                Some(VpcExposeNatConfig::Stateless { .. }) | None => {}
+                Some(VpcExposeNatConfig::Static { .. }) | None => {}
             }
         }
 
@@ -144,7 +144,7 @@ impl ValidatedPeering {
         // Allowed:
         //
         // - no NAT ------------ *
-        // - stateless NAT ----- *
+        // - static NAT -------- *
         //
         // Disallowed (some of them may be supported in the future):
         //

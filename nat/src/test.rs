@@ -100,7 +100,7 @@ fn setup_masq_pipeline(
     println!("{static_nat_tables}");
     let mut static_nat_writer = NatTablesWriter::new();
     static_nat_writer.update_nat_tables(static_nat_tables);
-    let static_nat = StatelessNat::with_reader("static-NAT-1", static_nat_writer.get_reader());
+    let static_nat = StaticNat::with_reader("static-NAT-1", static_nat_writer.get_reader());
     pipeline = pipeline.add_stage(static_nat);
 
     // Port forwarding
@@ -175,7 +175,7 @@ async fn test_nat_combination_static_masquerade() {
                 "vpc2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat() // Static NAT (no ports)
+                        .make_static_nat() // Static NAT (no ports)
                         .unwrap()
                         .ip("192.168.0.0/24".into())
                         .as_range("5.6.7.0/24".into())
@@ -274,7 +274,7 @@ async fn test_nat_combination_static_portfw() {
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat() // Static NAT (with ports)
+                        .make_static_nat() // Static NAT (with ports)
                         .unwrap()
                         .ip(pwp("1.2.3.0/24", 1201, 1300))
                         .as_range(pwp("5.5.5.0/24", 1701, 1800))
@@ -406,7 +406,7 @@ async fn test_nat_combination_static_masq_icmp_error() {
                 "vpc2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat() // Static NAT (no ports)
+                        .make_static_nat() // Static NAT (no ports)
                         .unwrap()
                         .ip("192.168.0.0/24".into())
                         .as_range("5.6.7.0/24".into())
@@ -523,7 +523,7 @@ async fn test_nat_combination_static_portfwd_icmp_error() {
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat() // Static NAT
+                        .make_static_nat() // Static NAT
                         .unwrap()
                         .ip("1.2.3.0/24".into())
                         .as_range("5.5.5.0/24".into())

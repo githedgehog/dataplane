@@ -110,7 +110,7 @@ mod test {
     #[test]
     fn test_nat_without_as_range_rejected() {
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/24".into());
         let result = expose.validate();
@@ -487,11 +487,11 @@ mod test {
 
     // --- NAT-specific constraints ---
 
-    // Stateless NAT: mismatched sizes rejected
+    // Static NAT: mismatched sizes rejected
     #[test]
-    fn test_stateless_nat_mismatched_sizes_rejected() {
+    fn test_static_nat_mismatched_sizes_rejected() {
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.1.0/24".into())
@@ -618,7 +618,7 @@ mod test {
     #[test]
     fn test_valid_expose_all_lists_passes() {
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.1.0/24".into())
@@ -655,14 +655,14 @@ mod test {
         );
     }
 
-    // Stateless + no-NAT private prefixes overlap rejected
+    // Static + no-NAT private prefixes overlap rejected
     #[test]
-    fn test_stateless_plus_no_nat_private_prefixes_overlap_rejected() {
+    fn test_static_plus_no_nat_private_prefixes_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("10.0.0.0/16".into()));
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -675,14 +675,14 @@ mod test {
         );
     }
 
-    // Stateless + no-NAT public prefixes overlap rejected
+    // Static + no-NAT public prefixes overlap rejected
     #[test]
-    fn test_stateless_plus_no_nat_public_prefixes_overlap_rejected() {
+    fn test_static_plus_no_nat_public_prefixes_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(VpcExpose::empty().ip("2.0.0.0/16".into()));
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -781,7 +781,7 @@ mod test {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -789,7 +789,7 @@ mod test {
         );
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.1.0.0/16".into())
                 .as_range("2.1.0.0/16".into())
@@ -798,13 +798,13 @@ mod test {
         assert!(manifest.validate().is_ok());
     }
 
-    // Two stateless NAT exposes with overlapping ips rejected
+    // Two static NAT exposes with overlapping ips rejected
     #[test]
-    fn test_stateless_nat_overlapping_ips_rejected() {
+    fn test_static_nat_overlapping_ips_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -812,7 +812,7 @@ mod test {
         );
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("3.0.0.0/16".into())
@@ -825,13 +825,13 @@ mod test {
         );
     }
 
-    // Two stateless NAT exposes with overlapping as_range rejected
+    // Two static NAT exposes with overlapping as_range rejected
     #[test]
-    fn test_stateless_nat_overlapping_as_range_rejected() {
+    fn test_static_nat_overlapping_as_range_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -839,7 +839,7 @@ mod test {
         );
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.1.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -852,13 +852,13 @@ mod test {
         );
     }
 
-    // Stateless NAT + stateful NAT ips overlap rejected
+    // Static NAT + stateful NAT ips overlap rejected
     #[test]
-    fn test_stateless_nat_plus_stateful_ips_overlap_rejected() {
+    fn test_static_nat_plus_stateful_ips_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -879,13 +879,13 @@ mod test {
         );
     }
 
-    // Stateless NAT + stateful NAT as_range overlap rejected
+    // Static NAT + stateful NAT as_range overlap rejected
     #[test]
-    fn test_stateless_nat_plus_stateful_as_range_overlap_rejected() {
+    fn test_static_nat_plus_stateful_as_range_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -906,13 +906,13 @@ mod test {
         );
     }
 
-    // Stateless NAT + port forwarding ips overlap rejected
+    // Static NAT + port forwarding ips overlap rejected
     #[test]
-    fn test_stateless_nat_plus_port_forwarding_ips_overlap_rejected() {
+    fn test_static_nat_plus_port_forwarding_ips_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -933,13 +933,13 @@ mod test {
         );
     }
 
-    // Stateless NAT + port forwarding as_range overlap rejected
+    // Static NAT + port forwarding as_range overlap rejected
     #[test]
-    fn test_stateless_nat_plus_port_forwarding_as_range_overlap_rejected() {
+    fn test_static_nat_plus_port_forwarding_as_range_overlap_rejected() {
         let mut manifest = VpcManifest::new("VPC-1");
         manifest.add_expose(
             VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip("10.0.0.0/16".into())
                 .as_range("2.0.0.0/16".into())
@@ -1178,16 +1178,16 @@ mod test {
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
-    // Stateless + stateless passes
+    // Static + static passes
     #[test]
-    fn test_stateless_plus_stateless_passes() {
+    fn test_static_plus_static_passes() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
                 "VPC-1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("1.0.0.0/8".into())
                         .as_range("2.0.0.0/8".into())
@@ -1198,7 +1198,7 @@ mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("3.0.0.0/8".into())
                         .as_range("4.0.0.0/8".into())
@@ -1209,9 +1209,9 @@ mod test {
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
-    // Stateless + stateful passes
+    // Static + stateful passes
     #[test]
-    fn test_stateless_plus_stateful_rejected() {
+    fn test_static_plus_stateful_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
@@ -1229,7 +1229,7 @@ mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("3.0.0.0/8".into())
                         .as_range("4.0.0.0/8".into())
@@ -1240,9 +1240,9 @@ mod test {
         assert!(validate_overlay_with_peering(peering).is_ok());
     }
 
-    // Stateless + port forwarding passes
+    // Static + port forwarding passes
     #[test]
-    fn test_stateless_plus_port_forwarding_rejected() {
+    fn test_static_plus_port_forwarding_rejected() {
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
@@ -1260,7 +1260,7 @@ mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("3.0.0.0/8".into())
                         .as_range("4.0.0.0/8".into())
@@ -1482,7 +1482,7 @@ mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("10.0.0.0/16".into())
                         .as_range("1.0.0.0/16".into())
@@ -1497,7 +1497,7 @@ mod test {
                 "VPC-3",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("10.0.0.0/16".into())
                         .as_range("2.0.0.0/16".into())
@@ -1558,10 +1558,7 @@ mod test {
         assert!(expose.validate().is_ok());
 
         // Default with NAT should fail
-        let expose = VpcExpose::empty()
-            .set_default()
-            .make_stateless_nat()
-            .unwrap();
+        let expose = VpcExpose::empty().set_default().make_static_nat().unwrap();
 
         let result = expose.validate();
         assert!(matches!(result, Err(ConfigError::Invalid(_))), "{result:?}");

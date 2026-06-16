@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 //! NAT processing for `ICMPv4` and `ICMPv6` Error messages with embedded IP packets, common to
-//! stateless and stateful NAT modes
+//! static and stateful NAT modes
 
 use crate::NatPort;
 use crate::NatTranslationData;

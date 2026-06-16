@@ -23,7 +23,7 @@ pub mod test {
     fn build_manifest_vpc1() -> VpcManifest {
         let mut m1 = VpcManifest::new("VPC-1");
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(Prefix::expect_from(("10.0.0.0", 25)).into())
             .ip(Prefix::expect_from(("10.0.2.128", 25)).into())
@@ -41,7 +41,7 @@ pub mod test {
     fn build_manifest_vpc2() -> VpcManifest {
         let mut m2 = VpcManifest::new("VPC-2");
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(Prefix::expect_from(("10.0.0.0", 24)).into())
             .as_range(Prefix::expect_from(("100.64.2.0", 24)).into())
@@ -125,7 +125,7 @@ pub mod test {
         */
 
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .as_range("2.0.0.0/16".into())
@@ -133,7 +133,7 @@ pub mod test {
         assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/24".into())
@@ -144,7 +144,7 @@ pub mod test {
         assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("1::/64".into())
             .as_range("2::/64".into())
@@ -153,7 +153,7 @@ pub mod test {
 
         // Overlapping prefixes
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .ip("10.0.0.0/17".into())
@@ -177,7 +177,7 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .ip("1::/64".into())
@@ -192,7 +192,7 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .as_range("1::/112".into())
@@ -204,7 +204,7 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not("1::/120".into())
@@ -219,7 +219,7 @@ pub mod test {
 
         // Incorrect: all prefixes excluded
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.0.0/17".into())
@@ -237,7 +237,7 @@ pub mod test {
 
         // Incorrect: mismatched prefix lists sizes
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("10.0.0.0/16".into())
             .not("10.0.1.0/24".into())
@@ -255,7 +255,7 @@ pub mod test {
     #[test]
     fn test_manifest_expose_overlap() {
         let expose1 = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("1.0.0.0/16".into()) // expose3 overlaps with this
             .ip("2.0.0.0/16".into())
@@ -267,13 +267,13 @@ pub mod test {
             .as_range("13.0.0.0/16".into())
             .unwrap();
         let expose2 = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("4.0.0.0/16".into())
             .as_range("14.0.0.0/16".into())
             .unwrap();
         let expose3 = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("5.0.0.0/16".into())
             .ip("1.0.1.0/24".into()) // overlaps with expose1.ips
@@ -379,7 +379,7 @@ pub mod test {
     }
 
     #[test]
-    fn test_peering_nat_stateful_plus_stateless() {
+    fn test_peering_nat_stateful_plus_static() {
         // Build VPCs and VPC table
         let vpc1 = Vpc::new("VPC-1", "VPC01", 1).unwrap();
         let vpc2 = Vpc::new("VPC-2", "VPC02", 2).unwrap();
@@ -387,7 +387,7 @@ pub mod test {
         vpc_table.add(vpc1).unwrap();
         vpc_table.add(vpc2).unwrap();
 
-        // Build peering with stateful NAT on one side and stateless NAT on the other side
+        // Build peering with stateful NAT on one side and static NAT on the other side
         let peering = VpcPeering::with_default_group(
             "Peering-1",
             VpcManifest::with_exposes(
@@ -405,7 +405,7 @@ pub mod test {
                 "VPC-2",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("3.0.0.0/8".into())
                         .as_range("4.0.0.0/8".into())
@@ -554,7 +554,7 @@ pub mod test {
             m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip(Prefix::expect_from(("192.168.111.0", 24)).into())
                 .not(Prefix::expect_from(("192.168.111.2", 32)).into())
@@ -605,7 +605,7 @@ pub mod test {
             m1.add_expose(expose);
 
             let expose = VpcExpose::empty()
-                .make_stateless_nat()
+                .make_static_nat()
                 .unwrap()
                 .ip(Prefix::expect_from(("192.168.204.4", 32)).into())
                 .as_range(Prefix::expect_from(("100.64.204.4", 32)).into())
@@ -715,7 +715,7 @@ pub mod test {
         assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
@@ -729,7 +729,7 @@ pub mod test {
         assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
@@ -752,7 +752,7 @@ pub mod test {
         assert!(expose.validate().is_ok());
 
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "1::/64".into(),
@@ -779,7 +779,7 @@ pub mod test {
 
         // Overlapping prefixes
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
@@ -843,7 +843,7 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
@@ -870,7 +870,7 @@ pub mod test {
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),
@@ -911,7 +911,7 @@ pub mod test {
 
         // Incorrect: mismatched prefix lists sizes
         let expose = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip(PrefixWithOptionalPorts::new(
                 "10.0.0.0/16".into(),

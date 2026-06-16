@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Stateless NAT configuration model
+//! Static NAT configuration model
 
 #![deny(clippy::all, clippy::pedantic)]
 #![deny(rustdoc::all)]
@@ -59,7 +59,7 @@ impl PerVniTable {
     ) -> Result<(), NatPeeringError> {
         peering
             .local()
-            .stateless_nat_exposes()
+            .static_nat_exposes()
             .try_for_each(|expose| {
                 if expose.as_range_or_empty().is_empty() {
                     // Nothing to do for source NAT, get out of here
@@ -82,7 +82,7 @@ impl PerVniTable {
         // Update table for destination NAT
         peering
             .remote()
-            .stateless_nat_exposes()
+            .static_nat_exposes()
             .try_for_each(|expose| {
                 // For each public prefix, add an entry containing the set of private prefixes
                 generate_private_values(expose).try_for_each(|res| {
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_fabric() {
         let expose1 = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("1.1.0.0/16".into())
             .not("1.1.5.0/24".into())
@@ -149,7 +149,7 @@ mod tests {
             .as_range("2.1.0.0/16".into())
             .unwrap();
         let expose2 = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("3.0.0.0/16".into())
             .as_range("4.0.0.0/16".into())
@@ -160,7 +160,7 @@ mod tests {
         manifest1.add_expose(expose2);
 
         let expose3 = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("1::/64".into())
             .not("1::/128".into())
@@ -169,7 +169,7 @@ mod tests {
             .not_as("1:1::/128".into())
             .unwrap();
         let expose4 = VpcExpose::empty()
-            .make_stateless_nat()
+            .make_static_nat()
             .unwrap()
             .ip("2::/64".into())
             .not("2::/128".into())

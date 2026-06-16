@@ -14,7 +14,7 @@ use std::time::Duration;
 use tracing::warn;
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct VpcExposeStatelessNat;
+pub struct VpcExposeStaticNat;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VpcExposeStatefulNat {
@@ -29,7 +29,7 @@ pub struct VpcExposePortForwarding {
 #[derive(Clone, Debug, PartialEq)]
 pub enum VpcExposeNatConfig {
     Stateful(VpcExposeStatefulNat),
-    Stateless(VpcExposeStatelessNat),
+    Static(VpcExposeStaticNat),
     PortForwarding(VpcExposePortForwarding),
 }
 
@@ -58,8 +58,8 @@ impl VpcExposeNat {
     }
 
     #[must_use]
-    pub fn is_stateless(&self) -> bool {
-        matches!(self.config, VpcExposeNatConfig::Stateless(_))
+    pub fn is_static(&self) -> bool {
+        matches!(self.config, VpcExposeNatConfig::Static(_))
     }
 
     #[must_use]
@@ -82,20 +82,20 @@ pub struct VpcExpose {
     pub nat: Option<VpcExposeNat>,
 }
 impl VpcExpose {
-    /// Make the [`VpcExpose`] use stateless NAT.
+    /// Make the [`VpcExpose`] use static NAT.
     ///
     /// # Errors
     ///
     /// Returns an error if the [`VpcExpose`] already has a different NAT mode.
-    pub fn make_stateless_nat(mut self) -> Result<Self, ConfigError> {
+    pub fn make_static_nat(mut self) -> Result<Self, ConfigError> {
         match self.nat.as_mut() {
-            Some(nat) if nat.is_stateless() => Ok(self),
+            Some(nat) if nat.is_static() => Ok(self),
             Some(_) => Err(ConfigError::Invalid(format!(
-                "refusing to overwrite previous NAT mode with stateless NAT mode for VpcExpose {self}"
+                "refusing to overwrite previous NAT mode with static NAT mode for VpcExpose {self}"
             ))),
             None => {
-                self.nat = Some(VpcExposeNat::from_config(VpcExposeNatConfig::Stateless(
-                    VpcExposeStatelessNat {},
+                self.nat = Some(VpcExposeNat::from_config(VpcExposeNatConfig::Static(
+                    VpcExposeStaticNat {},
                 )));
                 Ok(self)
             }
@@ -376,7 +376,7 @@ impl VpcExpose {
         //
         // Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
         // size was smaller than allowed prefixes size already.
-        if collapsed_expose.has_stateless_nat() && ips_sizes != as_range_sizes {
+        if collapsed_expose.has_static_nat() && ips_sizes != as_range_sizes {
             return Err(ConfigError::MismatchedPrefixSizes(
                 ips_sizes,
                 as_range_sizes,
@@ -541,8 +541,8 @@ impl ValidatedExpose {
     }
 
     #[must_use]
-    pub fn has_stateless_nat(&self) -> bool {
-        self.nat.as_ref().is_some_and(VpcExposeNat::is_stateless)
+    pub fn has_static_nat(&self) -> bool {
+        self.nat.as_ref().is_some_and(VpcExposeNat::is_static)
     }
 
     #[must_use]
@@ -572,7 +572,7 @@ impl ValidatedExpose {
         match self.nat_config()? {
             VpcExposeNatConfig::Stateful(config) => config.idle_timeout,
             VpcExposeNatConfig::PortForwarding(config) => config.idle_timeout,
-            VpcExposeNatConfig::Stateless(_) => None,
+            VpcExposeNatConfig::Static(_) => None,
         }
     }
 }
@@ -698,8 +698,8 @@ impl ValidatedManifest {
         self.valexp().iter().filter(predicate)
     }
 
-    pub fn stateless_nat_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
-        self.filter_exposes(|expose| expose.has_stateless_nat())
+    pub fn static_nat_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
+        self.filter_exposes(|expose| expose.has_static_nat())
     }
 
     pub fn stateful_nat_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
@@ -761,9 +761,9 @@ impl ValidatedManifest {
                         check_private_prefixes_dont_overlap(expose_left, expose_right)?;
                     }
 
-                    // We do not support stateless NAT in combination with another mode.
-                    (Some(VpcExposeNatConfig::Stateless { .. }), _)
-                    | (_, Some(VpcExposeNatConfig::Stateless { .. }))
+                    // We do not support static NAT in combination with another mode.
+                    (Some(VpcExposeNatConfig::Static { .. }), _)
+                    | (_, Some(VpcExposeNatConfig::Static { .. }))
                     // Two exposes using port forwarding must use distinct internal prefixes, or we
                     // don't know which to use.
                     | (

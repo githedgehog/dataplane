@@ -19,7 +19,7 @@ use config::internal::routing::bgp::BgpConfig;
 use config::internal::routing::vrf::VrfConfig;
 use config::{GwConfig, ValidatedGwConfig};
 
-use crate::StatelessNat;
+use crate::StaticNat;
 use crate::static_nat::setup::build_nat_configuration;
 use crate::static_nat::setup::tables::{NatTables, PerVniTable};
 
@@ -145,7 +145,7 @@ fn build_context() -> NatTables {
     //         as:
     //         - cidr: 4.0.0.0/16
     let expose1 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.1.0.0/16".into())
         .not("1.1.5.0/24".into())
@@ -166,7 +166,7 @@ fn build_context() -> NatTables {
         .as_range("2.1.0.0/16".into())
         .unwrap();
     let expose2 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("3.0.0.0/16".into())
         .as_range("4.0.0.0/16".into())
@@ -192,7 +192,7 @@ fn build_context() -> NatTables {
     //         - not: 5.6.0.0/24   # to account for when computing the offset
     //         - not: 5.6.8.0/24
     let expose3 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("8.0.0.0/17".into())
         .not("8.0.0.0/24".into())
@@ -202,7 +202,7 @@ fn build_context() -> NatTables {
         .not_as("3.0.1.0/24".into())
         .unwrap();
     let expose4 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("10.0.0.0/16".into())
         .not("10.0.1.0/24".into())
@@ -267,12 +267,12 @@ fn build_context() -> NatTables {
 }
 
 #[test]
-fn test_dst_nat_stateless_44() {
+fn test_dst_nat_static_44() {
     const TARGET_SRC_IP: Ipv4Addr = Ipv4Addr::new(2, 2, 0, 4);
     const TARGET_DST_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 136, 8);
 
     let nat_tables = build_context();
-    let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
     tablesw.update_nat_tables(nat_tables);
 
     let mut packet = build_test_ipv4_packet(u8::MAX).unwrap();
@@ -323,9 +323,9 @@ fn test_dst_nat_stateless_44() {
 }
 
 #[test]
-fn test_nat_icmp_error_msg_stateless_44() {
+fn test_nat_icmp_error_msg_static_44() {
     let nat_tables = build_context();
-    let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
     tablesw.update_nat_tables(nat_tables);
 
     // Imaginary request was:
@@ -387,13 +387,13 @@ fn build_sample_config() -> ValidatedGwConfig {
 
     // VPC1 <-> VPC2
     let expose121 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("10.12.0.0/16".into())
         .unwrap();
     let expose122 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.2.0.0/16".into())
         .as_range("10.98.128.0/17".into())
@@ -401,31 +401,31 @@ fn build_sample_config() -> ValidatedGwConfig {
         .as_range("10.99.0.0/17".into())
         .unwrap();
     let expose123 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.3.0.0/24".into())
         .as_range("10.100.0.0/24".into())
         .unwrap();
     let expose211 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.2.2.0/24".into())
         .as_range("10.201.201.0/24".into())
         .unwrap();
     let expose212 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.2.3.0/24".into())
         .as_range("10.201.202.0/24".into())
         .unwrap();
     let expose213 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("2.0.0.0/24".into())
         .as_range("10.201.203.0/24".into())
         .unwrap();
     let expose214 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("2.0.1.0/28".into())
         .as_range("10.201.204.192/28".into())
@@ -433,13 +433,13 @@ fn build_sample_config() -> ValidatedGwConfig {
 
     // VPC1 <-> VPC3
     let expose131 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("3.3.0.0/16".into())
         .unwrap();
     let expose132 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.2.0.0/16".into())
         .as_range("3.1.0.0/16".into())
@@ -449,7 +449,7 @@ fn build_sample_config() -> ValidatedGwConfig {
         .as_range("3.2.0.0/17".into())
         .unwrap();
     let expose311 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("192.168.128.0/24".into())
         .as_range("3.3.3.0/24".into())
@@ -457,13 +457,13 @@ fn build_sample_config() -> ValidatedGwConfig {
 
     // VPC1 <-> VPC4
     let expose141 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("4.4.0.0/16".into())
         .unwrap();
     let expose411 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("1.1.0.0/16".into())
         .as_range("4.5.0.0/16".into())
@@ -471,7 +471,7 @@ fn build_sample_config() -> ValidatedGwConfig {
 
     // VPC2 <-> VPC4
     let expose241 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("2.4.0.0/16".into())
         .not("2.4.1.0/24".into())
@@ -480,7 +480,7 @@ fn build_sample_config() -> ValidatedGwConfig {
         .not_as("44.0.200.0/24".into())
         .unwrap();
     let expose421 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("4.4.0.0/16".into())
         .not("4.4.128.0/18".into())
@@ -491,7 +491,7 @@ fn build_sample_config() -> ValidatedGwConfig {
 
     // VPC3 <-> VPC4
     let expose341 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip("192.168.100.0/24".into())
         .as_range("34.34.34.0/24".into())
@@ -596,7 +596,7 @@ pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> GwConfig {
 }
 
 fn check_packet(
-    nat: &mut StatelessNat,
+    nat: &mut StaticNat,
     src_vni: Vni,
     dst_vni: Vni,
     orig_src_ip: Ipv4Addr,
@@ -629,7 +629,7 @@ fn test_full_config() {
     #[cfg(not(miri))]
     println!("Nat tables: {nat_tables:#?}");
 
-    let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
     tablesw.update_nat_tables(nat_tables.clone());
 
     // No NAT
@@ -812,7 +812,7 @@ fn build_gwconfig_from_exposes(
 }
 
 fn check_packet_with_ports(
-    nat: &mut StatelessNat,
+    nat: &mut StaticNat,
     src_vni: Vni,
     dst_vni: Vni,
     orig_src_ip: Ipv4Addr,
@@ -845,7 +845,7 @@ fn check_packet_with_ports(
 #[cfg_attr(not(emulated), traced_test)]
 fn test_config_with_port_ranges_basic() {
     let expose1 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip(PrefixWithOptionalPorts::new(
             "1.1.0.0/16".into(),
@@ -863,7 +863,7 @@ fn test_config_with_port_ranges_basic() {
 
     let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
     let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
-    let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
     tablesw.update_nat_tables(nat_tables);
 
     let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
@@ -907,7 +907,7 @@ fn test_config_with_port_ranges_basic() {
 #[allow(clippy::too_many_lines)]
 fn test_config_with_port_ranges_complex() {
     let expose1 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip(PrefixWithOptionalPorts::new(
             "1.1.1.0/24".into(),
@@ -967,7 +967,7 @@ fn test_config_with_port_ranges_complex() {
     //     = 320,000 ip/port combinations
 
     let expose2 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip(PrefixWithOptionalPorts::new(
             "2.1.0.0/32".into(),
@@ -987,7 +987,7 @@ fn test_config_with_port_ranges_complex() {
 
     let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2]);
     let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
-    let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
     tablesw.update_nat_tables(nat_tables);
 
     let (orig_src_addr, orig_src_port, orig_dst_addr, orig_dst_port) =
@@ -1145,7 +1145,7 @@ fn test_config_with_port_ranges_complex() {
 #[cfg_attr(not(emulated), traced_test)]
 fn test_config_with_port_ranges_with_default() {
     let expose1 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip(PrefixWithOptionalPorts::new(
             "1.1.0.0/16".into(),
@@ -1157,7 +1157,7 @@ fn test_config_with_port_ranges_with_default() {
         ))
         .unwrap();
     let expose2 = VpcExpose::empty()
-        .make_stateless_nat()
+        .make_static_nat()
         .unwrap()
         .ip(PrefixWithOptionalPorts::new(
             "1.2.0.0/16".into(),
@@ -1172,7 +1172,7 @@ fn test_config_with_port_ranges_with_default() {
 
     let gw_config = build_gwconfig_from_exposes(vec![expose1], vec![expose2, expose3]);
     let nat_tables = build_nat_configuration(gw_config.external().overlay().vpc_table()).unwrap();
-    let (mut nat, mut tablesw) = StatelessNat::new("stateless-nat");
+    let (mut nat, mut tablesw) = StaticNat::new("static-nat");
     tablesw.update_nat_tables(nat_tables);
 
     // Using the expose with a prefix

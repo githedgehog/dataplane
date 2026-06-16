@@ -88,7 +88,7 @@ pub struct ConfigProcessorParams {
     // writer for vpc mapping table
     pub vpcmapw: VpcMapWriter<VpcMapName>,
 
-    // writer for stateless NAT tables
+    // writer for static NAT tables
     pub nattablesw: NatTablesWriter,
 
     // writer for stateful NAT allocator
@@ -493,14 +493,14 @@ fn update_stats_vpc_mappings(
     pairs
 }
 
-/// Update the Nat tables for stateless NAT
-fn apply_stateless_nat_config(
+/// Update the Nat tables for static NAT
+fn apply_static_nat_config(
     vpc_table: &ValidatedVpcTable,
     nattablesw: &mut NatTablesWriter,
 ) -> ConfigResult {
     let nat_table = build_nat_configuration(vpc_table)?;
     nattablesw.update_nat_tables(nat_table);
-    debug!("Successfully updated the stateless NAT configuration");
+    debug!("Successfully updated the static NAT configuration");
     Ok(())
 }
 
@@ -609,8 +609,8 @@ impl ConfigProcessor {
         /* get vrf interfaces from kernel and build a hashmap keyed by name */
         let kernel_vrfs = vpc_mgr.get_kernel_vrfs().await?;
 
-        /* apply stateless NAT config */
-        apply_stateless_nat_config(config.external().overlay().vpc_table(), nattablesw)?;
+        /* apply static NAT config */
+        apply_static_nat_config(config.external().overlay().vpc_table(), nattablesw)?;
 
         /* apply stateful NAT config */
         apply_stateful_nat_config(
