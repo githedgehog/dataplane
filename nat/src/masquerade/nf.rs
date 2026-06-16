@@ -5,14 +5,14 @@
 
 use crate::NatPort;
 use crate::common::NatFlowStatus;
-use crate::stateful::NatAllocatorWriter;
-use crate::stateful::allocation::{AllocationResult, AllocatorError};
-use crate::stateful::allocator_writer::NatAllocatorReader;
-use crate::stateful::apalloc::Allocation;
-use crate::stateful::flows::check_masquerading_flow;
-use crate::stateful::packet::{NatPacketError, NatTranslate, masquerade};
-use crate::stateful::protocol::next_flow_status;
-use crate::stateful::state::MasqueradeState;
+use crate::masquerade::NatAllocatorWriter;
+use crate::masquerade::allocation::{AllocationResult, AllocatorError};
+use crate::masquerade::allocator_writer::NatAllocatorReader;
+use crate::masquerade::apalloc::Allocation;
+use crate::masquerade::flows::check_masquerading_flow;
+use crate::masquerade::packet::{NatPacketError, NatTranslate, masquerade};
+use crate::masquerade::protocol::next_flow_status;
+use crate::masquerade::state::MasqueradeState;
 use concurrency::sync::{Arc, Weak};
 use flow_entry::flow_table::table::{FlowTable, FlowTableError};
 use net::buffer::PacketBufferMut;

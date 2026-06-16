@@ -15,8 +15,8 @@ use concurrency::sync::Arc;
 use flow_entry::flow_table::{FlowLookup, FlowTable};
 use flow_filter::{FlowFilter, FlowFilterTableWriter};
 
+use nat::masquerade::NatAllocatorWriter;
 use nat::portfw::{PortForwarder, PortFwTableWriter};
-use nat::stateful::NatAllocatorWriter;
 use nat::static_nat::NatTablesWriter;
 use nat::{IcmpErrorHandler, StatefulNat, StaticNat};
 use net::packet::PacketStats;

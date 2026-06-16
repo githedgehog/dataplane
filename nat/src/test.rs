@@ -6,8 +6,8 @@
 #![cfg(test)]
 
 use super::*;
+use crate::masquerade::{NatAllocatorWriter, StatefulNatConfig};
 use crate::portfw::{PortForwarder, PortFwTableWriter};
-use crate::stateful::{NatAllocatorWriter, StatefulNatConfig};
 use crate::static_nat::NatTablesWriter;
 use crate::static_nat::setup::build_nat_configuration;
 use concurrency::sync::Arc;

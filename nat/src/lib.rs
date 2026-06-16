@@ -25,17 +25,17 @@
 
 mod common;
 mod icmp_handler;
+pub mod masquerade;
 mod port;
 pub mod portfw;
 mod ranges;
-pub mod stateful;
 pub mod static_nat;
 #[cfg(test)]
 mod test;
 
 pub use icmp_handler::nf::IcmpErrorHandler;
+pub use masquerade::StatefulNat;
 pub use port::NatPort;
-pub use stateful::StatefulNat;
 pub use static_nat::StaticNat;
 use std::net::IpAddr;
 

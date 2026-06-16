@@ -44,8 +44,8 @@ pub mod test {
     use concurrency::sync::Arc;
     use config::internal::status::DataplaneStatus;
     use flow_filter::FlowFilterTableWriter;
+    use nat::masquerade::NatAllocatorWriter;
     use nat::portfw::PortFwTableWriter;
-    use nat::stateful::NatAllocatorWriter;
     use nat::static_nat::NatTablesWriter;
     use routing::{Router, RouterParamsBuilder};
     use stats::VpcMapName;

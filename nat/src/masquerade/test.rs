@@ -4,8 +4,8 @@
 #![cfg(test)]
 
 use crate::common::{NatAction, NatFlowStatus};
-use crate::stateful::state::MasqueradeState;
-use crate::stateful::{NatAllocatorWriter, StatefulNatConfig};
+use crate::masquerade::state::MasqueradeState;
+use crate::masquerade::{NatAllocatorWriter, StatefulNatConfig};
 use crate::{IcmpErrorHandler, StatefulNat};
 use ahash::HashMap;
 use common::cliprovider::Frame;

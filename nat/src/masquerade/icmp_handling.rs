@@ -5,8 +5,8 @@
 
 use crate::common::NatFlowStatus;
 use crate::icmp_handler::icmp_error_msg::nat_translate_icmp_inner;
-use crate::stateful::packet::masquerade;
-use crate::stateful::state::MasqueradeState;
+use crate::masquerade::packet::masquerade;
+use crate::masquerade::state::MasqueradeState;
 use net::buffer::PacketBufferMut;
 use net::flows::ExtractRef;
 use net::flows::FlowInfo;

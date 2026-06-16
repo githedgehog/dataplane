@@ -65,9 +65,9 @@
 
 use super::allocation::{AllocationResult, AllocatorError};
 use crate::NatPort;
-use crate::stateful::StatefulNatConfig;
-pub use crate::stateful::apalloc::natip_with_bitmap::NatIpWithBitmap;
-use crate::stateful::natip::NatIp;
+use crate::masquerade::StatefulNatConfig;
+pub use crate::masquerade::apalloc::natip_with_bitmap::NatIpWithBitmap;
+use crate::masquerade::natip::NatIp;
 use config::GenId;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;

@@ -7,7 +7,7 @@
 
 use super::super::allocation::AllocatorError;
 use super::alloc::{map_address, map_offset};
-use crate::stateful::natip::NatIp;
+use crate::masquerade::natip::NatIp;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 

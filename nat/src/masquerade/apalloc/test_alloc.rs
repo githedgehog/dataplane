@@ -8,9 +8,9 @@ use concurrency::concurrency_mode;
 // This module does not contain tests, but helpers to build the context (VpcTable, allocator) used
 // by tests in other modules. These helpers are not to be used outside of tests.
 mod context {
-    use crate::stateful::allocator_writer::StatefulNatConfig;
-    use crate::stateful::apalloc::alloc::IpAllocator;
-    use crate::stateful::apalloc::{NatAllocator, PoolTable, PoolTableKey};
+    use crate::masquerade::allocator_writer::StatefulNatConfig;
+    use crate::masquerade::apalloc::alloc::IpAllocator;
+    use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
     use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
@@ -186,7 +186,7 @@ mod tests {
 #[concurrency_mode(std)]
 mod std_tests {
     use super::context::*;
-    use crate::stateful::apalloc::PoolTableKey;
+    use crate::masquerade::apalloc::PoolTableKey;
     use net::ip::NextHeader;
 
     #[test]
