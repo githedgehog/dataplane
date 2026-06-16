@@ -17,8 +17,8 @@
 //! The package is subject to the following limitations:
 //!
 //! - Only NAT44 is supported (no NAT46, NAT64, or NAT66)
-//! - Either source or destination NAT is supported, only one at a time, by a given [`StatelessNat`]
-//!   or [`StatefulNat`] object.
+//! - Either source or destination NAT is supported, only one at a time, by a given [`StaticNat`] or
+//!   [`StatefulNat`] object.
 //! - "Expose" objects mixing IPv4 and IPv6 endpoints or list of exposed IPs are not supported
 //! - The total number of available (not excluded) private addresses used in an "Expose" object must
 //!   be equal to the total number of publicly exposed addresses in this object.
@@ -36,7 +36,7 @@ mod test;
 pub use icmp_handler::nf::IcmpErrorHandler;
 pub use port::NatPort;
 pub use stateful::StatefulNat;
-pub use static_nat::StatelessNat;
+pub use static_nat::StaticNat;
 use std::net::IpAddr;
 
 #[derive(Debug, Default)]

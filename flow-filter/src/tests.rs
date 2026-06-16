@@ -526,8 +526,8 @@ fn test_flow_filter_ipv6() {
     let src_vpcd = vpcd(100);
     let dst_data = RemoteData::new(
         vpcd(200),
-        Some(NatRequirement::Stateless),
-        Some(NatRequirement::Stateless),
+        Some(NatRequirement::Static),
+        Some(NatRequirement::Static),
     );
 
     table
@@ -844,10 +844,10 @@ fn test_flow_filter_table_check_nat_requirements() {
                 vec![
                     VpcExpose::empty().ip("1.0.0.0/24".into()), // No NAT
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("2.0.0.0/24".into())
-                        .as_range("20.0.0.0/24".into()) // Stateless NAT
+                        .as_range("20.0.0.0/24".into()) // Static NAT
                         .unwrap(),
                     VpcExpose::empty()
                         .make_stateful_nat(None)
@@ -863,10 +863,10 @@ fn test_flow_filter_table_check_nat_requirements() {
                 vec![
                     VpcExpose::empty().ip("5.0.0.0/24".into()), // No NAT
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("6.0.0.0/24".into())
-                        .as_range("60.0.0.0/24".into()) // Stateless NAT
+                        .as_range("60.0.0.0/24".into()) // Static NAT
                         .unwrap(),
                     VpcExpose::empty()
                         .make_stateful_nat(None)
@@ -905,7 +905,7 @@ fn test_flow_filter_table_check_nat_requirements() {
     assert_eq!(packet_out.meta().dst_vpcd, Some(vpcd(vni2.into())));
     assert!(needs_no_nat(&packet_out));
 
-    // src: stateless NAT, dst: stateless NAT
+    // src: static NAT, dst: static NAT
     let packet = create_test_packet(
         Some(vni1.into()),
         "2.0.0.5".parse().unwrap(),
@@ -1440,7 +1440,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("192.168.50.0/24".into())
                         .as_range("10.30.50.0/24".into())
@@ -1452,7 +1452,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 vec![
                     VpcExpose::empty().ip("192.168.100.0/24".into()),
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("192.168.128.0/27".into())
                         .as_range("30.10.128.0/27".into())
@@ -1667,7 +1667,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 "vpc1",
                 vec![
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("192.168.50.0/24".into())
                         .as_range("10.30.50.0/24".into())
@@ -1679,7 +1679,7 @@ fn test_flow_filter_table_from_overlay_masquerade_port_forwarding_private_ips_ov
                 vec![
                     VpcExpose::empty().ip("192.168.100.0/24".into()),
                     VpcExpose::empty()
-                        .make_stateless_nat()
+                        .make_static_nat()
                         .unwrap()
                         .ip("192.168.128.0/27".into())
                         .as_range("30.10.128.0/27".into())

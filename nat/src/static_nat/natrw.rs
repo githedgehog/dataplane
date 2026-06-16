@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Stateless NAT left-right configuration wrapper
+//! Static NAT left-right configuration wrapper
 
 use left_right::new_from_empty;
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
@@ -71,6 +71,6 @@ impl NatTablesWriter {
     pub fn update_nat_tables(&mut self, nat_tables: NatTables) {
         self.0.append(NatTablesChange::UpdateNatTables(nat_tables));
         self.0.publish();
-        debug!("Updated tables for stateless NAT");
+        debug!("Updated tables for static NAT");
     }
 }

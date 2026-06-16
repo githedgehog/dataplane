@@ -464,7 +464,7 @@ impl PortRangeMap<DstConnectionData> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NatRequirement {
-    Stateless,
+    Static,
     Stateful,
     PortForwarding(L4Protocol),
 }
@@ -473,7 +473,7 @@ impl NatRequirement {
     pub(crate) fn from_nat(nat: &VpcExposeNat) -> NatRequirement {
         match (&nat.config, nat.proto) {
             (VpcExposeNatConfig::Stateful(_), _) => NatRequirement::Stateful,
-            (VpcExposeNatConfig::Stateless(_), _) => NatRequirement::Stateless,
+            (VpcExposeNatConfig::Static(_), _) => NatRequirement::Static,
             (VpcExposeNatConfig::PortForwarding(_), proto) => NatRequirement::PortForwarding(proto),
         }
     }
@@ -505,11 +505,11 @@ impl RemoteData {
     }
 
     pub(crate) fn requires_static_nat_src(&self) -> bool {
-        self.src_nat_req == Some(NatRequirement::Stateless)
+        self.src_nat_req == Some(NatRequirement::Static)
     }
 
     pub(crate) fn requires_static_nat_dst(&self) -> bool {
-        self.dst_nat_req == Some(NatRequirement::Stateless)
+        self.dst_nat_req == Some(NatRequirement::Static)
     }
 
     pub(crate) fn requires_port_forwarding(&self, packet_proto: L4Protocol) -> bool {
@@ -767,8 +767,8 @@ mod tests {
         let dst_data_result1 = VpcdLookupResult::Single(RemoteData::new(dst_vpcd1, None, None));
         let dst_data_result2 = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd2,
-            Some(NatRequirement::Stateless),
-            Some(NatRequirement::Stateless),
+            Some(NatRequirement::Static),
+            Some(NatRequirement::Static),
         ));
 
         // Add two entries for different destination prefixes
@@ -912,8 +912,8 @@ mod tests {
         let dst_vpcd2 = vpcd(300);
         let dst_data_result1 = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd1,
-            Some(NatRequirement::Stateless),
-            Some(NatRequirement::Stateless),
+            Some(NatRequirement::Static),
+            Some(NatRequirement::Static),
         ));
         let dst_data_result2 = VpcdLookupResult::Single(RemoteData::new(
             dst_vpcd2,

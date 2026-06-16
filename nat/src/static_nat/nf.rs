@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Stateless NAT implementation
+//! Static NAT implementation
 
 use super::setup::tables::{NatTables, PerVniTable};
 use crate::NatPort;
@@ -26,7 +26,7 @@ use thiserror::Error;
 use tracing::{debug, error, warn};
 
 #[derive(Error, Debug, PartialEq)]
-enum StatelessNatError {
+enum StaticNatError {
     #[error("No IP header")]
     NoIpHeader,
     #[error("Failed to set source IP: {0}")]
@@ -39,16 +39,16 @@ enum StatelessNatError {
     IcmpErrorMsg(IcmpErrorMsgError),
 }
 
-/// A NAT processor, implementing the [`NetworkFunction`] trait. [`StatelessNat`] processes packets
-/// to run source or destination Network Address Translation (NAT) on their IP addresses.
+/// A NAT processor, implementing the [`NetworkFunction`] trait. [`StaticNat`] processes packets to
+/// run source or destination Network Address Translation (NAT) on their IP addresses.
 #[derive(Debug)]
-pub struct StatelessNat {
+pub struct StaticNat {
     name: String,
     tablesr: NatTablesReader,
 }
 
-impl StatelessNat {
-    /// Creates a new [`StatelessNat`] processor, providing a writer to its internal `NatTables`.
+impl StaticNat {
+    /// Creates a new [`StaticNat`] processor, providing a writer to its internal `NatTables`.
     #[must_use]
     pub fn new(name: &str) -> (Self, NatTablesWriter) {
         let writer = NatTablesWriter::new();
@@ -61,7 +61,7 @@ impl StatelessNat {
             writer,
         )
     }
-    /// Creates a new [`StatelessNat`] processor as `new()`, but uses the provided `NatTablesReader`.
+    /// Creates a new [`StaticNat`] processor as `new()`, but uses the provided `NatTablesReader`.
     #[must_use]
     pub fn with_reader(name: &str, tablesr: NatTablesReader) -> Self {
         Self {
@@ -80,18 +80,18 @@ impl StatelessNat {
         &self,
         net: &mut Net,
         target_src: UnicastIpAddr,
-    ) -> Result<(), StatelessNatError> {
+    ) -> Result<(), StaticNatError> {
         let nfi = self.name();
         debug!("{nfi}: Changing IP src: {} -> {target_src}", net.src_addr());
         net.try_set_source(target_src)
-            .map_err(StatelessNatError::FailedToSetSourceIp)
+            .map_err(StaticNatError::FailedToSetSourceIp)
     }
 
-    fn translate_dst(&self, net: &mut Net, target_dst: IpAddr) -> Result<(), StatelessNatError> {
+    fn translate_dst(&self, net: &mut Net, target_dst: IpAddr) -> Result<(), StaticNatError> {
         let nfi = self.name();
         debug!("{nfi}: Changing IP dst: {} -> {target_dst}", net.dst_addr());
         net.try_set_destination(target_dst)
-            .map_err(StatelessNatError::FailedToSetDestIp)
+            .map_err(StaticNatError::FailedToSetDestIp)
     }
 
     fn translate_src_port(&self, transport: &mut TcpUdpMut<'_>, new_port: NonZero<u16>) {
@@ -128,10 +128,10 @@ impl StatelessNat {
     fn translate_icmp_inner_packet_src_if_any<Buf: PacketBufferMut>(
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
-    ) -> Result<bool, StatelessNatError> {
+    ) -> Result<bool, StaticNatError> {
         let addr = packet
             .try_inner_ip()
-            .ok_or(StatelessNatError::NoIpHeader)?
+            .ok_or(StaticNatError::NoIpHeader)?
             .src_addr();
         let port = packet
             .try_embedded_transport()
@@ -144,7 +144,7 @@ impl StatelessNat {
         };
         let src_port = src_port.map(NatPort::new_port);
         nat_translate_icmp_inner_src::<Buf>(packet, src_addr, src_port)
-            .map_err(StatelessNatError::IcmpErrorMsg)?;
+            .map_err(StaticNatError::IcmpErrorMsg)?;
         Ok(true)
     }
 
@@ -152,10 +152,10 @@ impl StatelessNat {
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
         dst_vni: Vni,
-    ) -> Result<bool, StatelessNatError> {
+    ) -> Result<bool, StaticNatError> {
         let addr = packet
             .try_inner_ip()
-            .ok_or(StatelessNatError::NoIpHeader)?
+            .ok_or(StaticNatError::NoIpHeader)?
             .dst_addr();
         let port = packet
             .try_embedded_transport()
@@ -168,7 +168,7 @@ impl StatelessNat {
         };
         let dst_port = dst_port.map(NatPort::new_port);
         nat_translate_icmp_inner_dst::<Buf>(packet, dst_addr.inner(), dst_port)
-            .map_err(StatelessNatError::IcmpErrorMsg)?;
+            .map_err(StaticNatError::IcmpErrorMsg)?;
         Ok(true)
     }
 
@@ -177,14 +177,14 @@ impl StatelessNat {
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
         dst_vni: Vni,
-    ) -> Result<bool, StatelessNatError> {
+    ) -> Result<bool, StaticNatError> {
         let nfi = self.name();
         let mut modified = false;
 
         // Get source IP address, port
         let Some(src_addr) = packet.ip_source() else {
             error!("{nfi}: Failed to get source IP address");
-            return Err(StatelessNatError::NoIpHeader);
+            return Err(StaticNatError::NoIpHeader);
         };
         let src_port_opt = packet.transport_src_port().map(NonZero::get);
 
@@ -192,7 +192,7 @@ impl StatelessNat {
         if let Some((new_src_addr, new_src_port_opt)) =
             table.find_src_mapping(&src_addr, src_port_opt, dst_vni)
         {
-            let net = packet.try_ip_mut().ok_or(StatelessNatError::NoIpHeader)?;
+            let net = packet.try_ip_mut().ok_or(StaticNatError::NoIpHeader)?;
             if new_src_addr.inner() != src_addr {
                 self.translate_src(net, new_src_addr)?;
                 modified = true;
@@ -208,7 +208,7 @@ impl StatelessNat {
 
         // ICMP Error messages
         if Self::is_icmp_inner_translation_candidate(packet) {
-            validate_checksums_icmp(packet).map_err(StatelessNatError::IcmpErrorMsg)?;
+            validate_checksums_icmp(packet).map_err(StaticNatError::IcmpErrorMsg)?;
             modified |= Self::translate_icmp_inner_packet_dst_if_any(table, packet, dst_vni)?;
         }
 
@@ -222,14 +222,14 @@ impl StatelessNat {
         &self,
         table: &PerVniTable,
         packet: &mut Packet<Buf>,
-    ) -> Result<bool, StatelessNatError> {
+    ) -> Result<bool, StaticNatError> {
         let nfi = self.name();
         let mut modified = false;
 
         // Get destination IP address, port
         let Some(dst_addr) = packet.ip_destination() else {
             error!("{nfi}: Failed to get destination IP address");
-            return Err(StatelessNatError::NoIpHeader);
+            return Err(StaticNatError::NoIpHeader);
         };
         let dst_port_opt = packet.transport_dst_port().map(NonZero::get);
 
@@ -237,7 +237,7 @@ impl StatelessNat {
         if let Some((new_dst_addr, new_dst_port_opt)) =
             table.find_dst_mapping(&dst_addr, dst_port_opt)
         {
-            let net = packet.try_ip_mut().ok_or(StatelessNatError::NoIpHeader)?;
+            let net = packet.try_ip_mut().ok_or(StaticNatError::NoIpHeader)?;
             if new_dst_addr != dst_addr {
                 self.translate_dst(net, new_dst_addr)?;
                 modified = true;
@@ -272,13 +272,13 @@ impl StatelessNat {
         packet: &mut Packet<Buf>,
         src_vni: Vni,
         dst_vni: Vni,
-    ) -> Result<bool, StatelessNatError> {
+    ) -> Result<bool, StaticNatError> {
         let nfi = self.name();
         let mut modified = false;
 
         let Some(table) = nat_tables.get_table(src_vni) else {
             error!("{nfi}: Can't find NAT tables for VNI {src_vni}");
-            return Err(StatelessNatError::MissingTable(src_vni));
+            return Err(StaticNatError::MissingTable(src_vni));
         };
 
         if packet.meta().requires_static_nat_src() && !packet.meta().is_src_natted() {
@@ -291,7 +291,7 @@ impl StatelessNat {
     }
 
     /// Processes one packet. This is the main entry point for processing a packet. This is also the
-    /// function that we pass to [`StatelessNat::process`] to iterate over packets.
+    /// function that we pass to [`StaticNat::process`] to iterate over packets.
     fn process_packet<Buf: PacketBufferMut>(&self, packet: &mut Packet<Buf>) {
         let nfi = self.name();
 
@@ -336,20 +336,20 @@ impl StatelessNat {
     }
 }
 
-impl From<&StatelessNatError> for DoneReason {
-    fn from(error: &StatelessNatError) -> Self {
+impl From<&StaticNatError> for DoneReason {
+    fn from(error: &StaticNatError) -> Self {
         match error {
-            StatelessNatError::NoIpHeader => DoneReason::NotIp,
-            StatelessNatError::MissingTable(_) => DoneReason::Unroutable,
-            StatelessNatError::FailedToSetSourceIp(_) | StatelessNatError::FailedToSetDestIp(_) => {
+            StaticNatError::NoIpHeader => DoneReason::NotIp,
+            StaticNatError::MissingTable(_) => DoneReason::Unroutable,
+            StaticNatError::FailedToSetSourceIp(_) | StaticNatError::FailedToSetDestIp(_) => {
                 DoneReason::InternalFailure
             }
-            StatelessNatError::IcmpErrorMsg(inner) => inner.into(),
+            StaticNatError::IcmpErrorMsg(inner) => inner.into(),
         }
     }
 }
 
-impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StatelessNat {
+impl<Buf: PacketBufferMut> NetworkFunction<Buf> for StaticNat {
     #[allow(clippy::if_not_else)]
     fn process<'a, Input: Iterator<Item = Packet<Buf>> + 'a>(
         &'a mut self,

@@ -18,7 +18,7 @@ use flow_filter::{FlowFilter, FlowFilterTableWriter};
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::stateful::NatAllocatorWriter;
 use nat::static_nat::NatTablesWriter;
-use nat::{IcmpErrorHandler, StatefulNat, StatelessNat};
+use nat::{IcmpErrorHandler, StatefulNat, StaticNat};
 use net::packet::PacketStats;
 
 use net::buffer::PacketBufferMut;
@@ -101,7 +101,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         let stage_egress = Egress::new("Egress", iftr_factory.handle(), atabler_factory.handle());
         let iprouter1 = IpForwarder::new("IP-Forward-1", fibtr_factory.handle());
         let iprouter2 = IpForwarder::new("IP-Forward-2", fibtr_factory.handle());
-        let static_nat = StatelessNat::with_reader("static-NAT-1", nattabler_factory.handle());
+        let static_nat = StaticNat::with_reader("static-NAT-1", nattabler_factory.handle());
         let stateful_nat = StatefulNat::new(
             "stateful-NAT",
             flow_table_clone.clone(),

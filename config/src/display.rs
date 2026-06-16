@@ -13,7 +13,7 @@ use crate::external::overlay::vpc::{
 };
 use crate::external::overlay::vpcpeering::{
     ValidatedExpose, ValidatedManifest, VpcExpose, VpcExposeNatConfig, VpcExposePortForwarding,
-    VpcExposeStatefulNat, VpcExposeStatelessNat,
+    VpcExposeStatefulNat, VpcExposeStaticNat,
 };
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
 use crate::external::overlay::{Overlay, ValidatedOverlay};
@@ -30,7 +30,7 @@ impl Display for VpcExposeStatefulNat {
         write!(f, "masquerade, idle timeout: {idle_timeout}")
     }
 }
-impl Display for VpcExposeStatelessNat {
+impl Display for VpcExposeStaticNat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "static")
     }
@@ -47,7 +47,7 @@ impl Display for VpcExposePortForwarding {
 impl Display for VpcExposeNatConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Stateless(config) => config.fmt(f),
+            Self::Static(config) => config.fmt(f),
             Self::Stateful(config) => config.fmt(f),
             Self::PortForwarding(config) => config.fmt(f),
         }

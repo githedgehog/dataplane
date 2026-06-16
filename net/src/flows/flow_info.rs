@@ -140,8 +140,8 @@ impl From<FlowStatus> for AtomicFlowStatus {
 bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub struct FlowInfoFlags: u8 {
-        const REQ_STATIC_NAT_SRC = 0b0000_0001;      /* Packet requires stateless NAT (source) */
-        const REQ_STATIC_NAT_DST = 0b0000_0010;      /* Packet requires stateless NAT (destination) */
+        const REQ_STATIC_NAT_SRC = 0b0000_0001;      /* Packet requires static NAT (source) */
+        const REQ_STATIC_NAT_DST = 0b0000_0010;      /* Packet requires static NAT (destination) */
     }
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Display implementations for the stateless NAT table objects
+//! Display implementations for the static NAT table objects
 
 use crate::static_nat::setup::tables::{
     AddrTranslationValue, NatRuleTable, NatTableValue, NatTables, PerVniTable,

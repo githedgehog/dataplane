@@ -145,7 +145,7 @@ fn process_nat_block(
                 .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string()))
         }
         (None, None, Some(_)) => vpc_expose
-            .make_stateless_nat()
+            .make_static_nat()
             .map_err(|e| FromK8sConversionError::NotAllowed(e.to_string())),
         (None, None, None) => Err(FromK8sConversionError::NotAllowed(
             "NAT config block must specify one NAT mode".to_string(),
@@ -673,8 +673,8 @@ mod test {
                             }
                         }
                     }
-                    (Some(VpcExposeNatConfig::Stateless(_)), Some(k8s_nat)) => {
-                        assert!(k8s_nat.r#static.is_some(), "Stateless NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
+                    (Some(VpcExposeNatConfig::Static(_)), Some(k8s_nat)) => {
+                        assert!(k8s_nat.r#static.is_some(), "Static NAT configured but not by K8s: {expose:#?}\nk8s: {k8s_nat:#?}");
                     },
                 }
             });

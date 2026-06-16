@@ -1424,7 +1424,7 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
         build_gwconfig_from_overlay(build_overlay_2vpcs_unidirectional_nat_overlapping_exposes());
     // Validation fails - We currently forbid multiple peerings between any pair of VPCs. We
     // could probably allow them for stateful NAT, but we still need the restriction for
-    // stateless NAT. We can carry on with the test anyway.
+    // static NAT. We can carry on with the test anyway.
     assert!(
         config
             .validate()

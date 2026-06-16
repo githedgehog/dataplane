@@ -108,8 +108,8 @@ fn add_offset_to_address_and_port(
 
 /// A builder for IP address ranges and port ranges.
 ///
-/// The generated ranges are used in the stateless NAT tables to associate ranges of IP addresses
-/// and optional port ranges with prefixes and port ranges. IP prefixes are used as keys in the NAT
+/// The generated ranges are used in the static NAT tables to associate ranges of IP addresses and
+/// optional port ranges with prefixes and port ranges. IP prefixes are used as keys in the NAT
 /// tables; associated port ranges, as well as corresponding IP and port ranges for translation, are
 /// used as values. and associated ranges are used as keys and values in the NAT tables. When
 /// translating an IP address and a port, we look up the prefix and port range associated to the IP
@@ -1260,7 +1260,7 @@ mod bolero_tests {
             // do not overlap. Also, based on the lengths we use, we know that the total number of
             // available IP addresses covered by these prefixes is the same as for the first list of
             // prefixes. This is a requirement for mapping addresses between the two lists, for
-            // stateless NAT.
+            // static NAT.
             let target = PrefixListsGenerator::build_list_from_lengths(lengths, is_ipv4, d);
 
             // Generate random IP addresses within the original prefixes.
