@@ -17,7 +17,7 @@ use flow_filter::{FlowFilter, FlowFilterTableWriter};
 
 use nat::portfw::{PortForwarder, PortFwTableWriter};
 use nat::stateful::NatAllocatorWriter;
-use nat::stateless::NatTablesWriter;
+use nat::static_nat::NatTablesWriter;
 use nat::{IcmpErrorHandler, StatefulNat, StatelessNat};
 use net::packet::PacketStats;
 

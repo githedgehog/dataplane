@@ -8,8 +8,8 @@
 use super::*;
 use crate::portfw::{PortForwarder, PortFwTableWriter};
 use crate::stateful::{NatAllocatorWriter, StatefulNatConfig};
-use crate::stateless::NatTablesWriter;
-use crate::stateless::setup::build_nat_configuration;
+use crate::static_nat::NatTablesWriter;
+use crate::static_nat::setup::build_nat_configuration;
 use concurrency::sync::Arc;
 use config::external::overlay::vpc::{Vpc, VpcTable};
 use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable};

@@ -26,8 +26,8 @@ use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
 use nat::stateful::{NatAllocatorWriter, StatefulNatConfig};
-use nat::stateless::NatTablesWriter;
-use nat::stateless::setup::build_nat_configuration;
+use nat::static_nat::NatTablesWriter;
+use nat::static_nat::setup::build_nat_configuration;
 use pipeline::PipelineData;
 
 use crate::processor::gwconfigdb::GwConfigDatabase;

@@ -20,8 +20,8 @@ use config::internal::routing::vrf::VrfConfig;
 use config::{GwConfig, ValidatedGwConfig};
 
 use crate::StatelessNat;
-use crate::stateless::setup::build_nat_configuration;
-use crate::stateless::setup::tables::{NatTables, PerVniTable};
+use crate::static_nat::setup::build_nat_configuration;
+use crate::static_nat::setup::tables::{NatTables, PerVniTable};
 
 use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 use net::buffer::PacketBufferMut;

@@ -29,14 +29,14 @@ mod port;
 pub mod portfw;
 mod ranges;
 pub mod stateful;
-pub mod stateless;
+pub mod static_nat;
 #[cfg(test)]
 mod test;
 
 pub use icmp_handler::nf::IcmpErrorHandler;
 pub use port::NatPort;
 pub use stateful::StatefulNat;
-pub use stateless::StatelessNat;
+pub use static_nat::StatelessNat;
 use std::net::IpAddr;
 
 #[derive(Debug, Default)]

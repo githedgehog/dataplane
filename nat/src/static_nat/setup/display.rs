@@ -3,7 +3,7 @@
 
 //! Display implementations for the stateless NAT table objects
 
-use crate::stateless::setup::tables::{
+use crate::static_nat::setup::tables::{
     AddrTranslationValue, NatRuleTable, NatTableValue, NatTables, PerVniTable,
     PortAddrTranslationValue,
 };

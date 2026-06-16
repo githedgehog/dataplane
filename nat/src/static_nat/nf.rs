@@ -9,7 +9,7 @@ use crate::icmp_handler::icmp_error_msg::{
     IcmpErrorMsgError, nat_translate_icmp_inner_dst, nat_translate_icmp_inner_src,
     validate_checksums_icmp,
 };
-pub use crate::stateless::natrw::{NatTablesReader, NatTablesWriter}; // re-export
+pub use crate::static_nat::natrw::{NatTablesReader, NatTablesWriter}; // re-export
 use net::buffer::PacketBufferMut;
 use net::headers::{
     Net, NetError, TryEmbeddedHeaders, TryEmbeddedTransport, TryIcmpAny, TryInnerIp, TryIp,

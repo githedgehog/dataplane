@@ -46,7 +46,7 @@ pub mod test {
     use flow_filter::FlowFilterTableWriter;
     use nat::portfw::PortFwTableWriter;
     use nat::stateful::NatAllocatorWriter;
-    use nat::stateless::NatTablesWriter;
+    use nat::static_nat::NatTablesWriter;
     use routing::{Router, RouterParamsBuilder};
     use stats::VpcMapName;
     use stats::VpcStatsStore;
