@@ -334,39 +334,39 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn register_callsite(&self, meta: &'static Metadata<'static>) -> Interest {
-        Layer::<S>::register_callsite(&**self.inner.load(), meta)
+        Layer::<S>::register_callsite(&*self.inner.load_full(), meta)
     }
 
     fn enabled(&self, meta: &Metadata<'_>, ctx: Context<'_, S>) -> bool {
-        Layer::<S>::enabled(&**self.inner.load(), meta, ctx)
+        Layer::<S>::enabled(&*self.inner.load_full(), meta, ctx)
     }
 
     fn max_level_hint(&self) -> Option<LevelFilter> {
-        Layer::<S>::max_level_hint(&**self.inner.load())
+        Layer::<S>::max_level_hint(&*self.inner.load_full())
     }
 
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_new_span(&**self.inner.load(), attrs, id, ctx);
+        Layer::<S>::on_new_span(&*self.inner.load_full(), attrs, id, ctx);
     }
 
     fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
-        Layer::<S>::on_record(&**self.inner.load(), id, values, ctx);
+        Layer::<S>::on_record(&*self.inner.load_full(), id, values, ctx);
     }
 
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_enter(&**self.inner.load(), id, ctx);
+        Layer::<S>::on_enter(&*self.inner.load_full(), id, ctx);
     }
 
     fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_exit(&**self.inner.load(), id, ctx);
+        Layer::<S>::on_exit(&*self.inner.load_full(), id, ctx);
     }
 
     fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_close(&**self.inner.load(), id, ctx);
+        Layer::<S>::on_close(&*self.inner.load_full(), id, ctx);
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        Layer::<S>::on_event(&**self.inner.load(), event, ctx);
+        Layer::<S>::on_event(&*self.inner.load_full(), event, ctx);
     }
 
     // `downcast_raw` is how the layered subscriber probes a layer for
@@ -446,7 +446,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn enabled(&self, meta: &Metadata<'_>, cx: &Context<'_, S>) -> bool {
-        match &**self.inner.load() {
+        match &*self.inner.load_full() {
             Some(layer) => Filter::<S>::enabled(layer, meta, cx),
             None => true,
         }
@@ -457,7 +457,7 @@ where
     }
 
     fn event_enabled(&self, event: &Event<'_>, cx: &Context<'_, S>) -> bool {
-        match &**self.inner.load() {
+        match &*self.inner.load_full() {
             Some(layer) => Filter::<S>::event_enabled(layer, event, cx),
             None => true,
         }
