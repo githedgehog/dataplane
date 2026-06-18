@@ -3,7 +3,7 @@
 
 //! Tracing runtime control.
 
-use arc_swap::ArcSwap;
+use concurrency::slot::Slot;
 use concurrency::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use ordermap::OrderMap;
 use std::str::FromStr;
@@ -300,27 +300,24 @@ impl TargetCfgDb {
     }
 }
 
-/// `AtomicEnvFilter` wraps an `EnvFilter` in an `ArcSwap` to allow atomic
+/// `AtomicEnvFilter` wraps an `EnvFilter` in a [`Slot`] to allow atomic
 /// swapping of the filter. The type is `Clone`-able: the original instance
 /// is moved into the subscriber as a `Layer`, while a clone is kept on
 /// `TracingControl` to push reloads from the outside. Both clones share the
-/// same `Arc<ArcSwap<EnvFilter>>` so an update from one is visible to the other.
+/// same `Arc<Slot<EnvFilter>>` so an update from one is visible to the other.
 #[derive(Clone)]
 struct AtomicEnvFilter {
-    inner: Arc<ArcSwap<EnvFilter>>,
+    inner: Arc<Slot<EnvFilter>>,
 }
 
 impl AtomicEnvFilter {
     fn new(initial: EnvFilter) -> Self {
         Self {
-            inner: Arc::new(ArcSwap::from_pointee(initial)),
+            inner: Arc::new(Slot::from_pointee(initial)),
         }
     }
 
     fn reload(&self, new: EnvFilter) {
-        // The concurrency facade `Arc` is std-backed under tracectl's
-        // (non-model-checker) backend, which is exactly what `ArcSwap::store`
-        // accepts — so we go through the facade rather than importing directly.
         self.inner.store(Arc::new(new));
         callsite::rebuild_interest_cache();
     }
@@ -378,7 +375,7 @@ where
     // per-layer filter, so reporting "no match" for anything but our own
     // type id is correct. We deliberately do *not* expose the inner
     // `EnvFilter`'s address — its identity can change at any time via
-    // `ArcSwap::store`.
+    // `Slot::store`.
     #[doc(hidden)]
     unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
         if id == TypeId::of::<Self>() {
@@ -389,12 +386,12 @@ where
     }
 }
 
-/// `AtomicThrottle` wraps an *optional* [`TracingRateLimitLayer`] in an
-/// `ArcSwap` so the rate-limit policy can be swapped at runtime — the same
+/// `AtomicThrottle` wraps an *optional* [`TracingRateLimitLayer`] in a
+/// [`Slot`] so the rate-limit policy can be swapped at runtime — the same
 /// pattern [`AtomicEnvFilter`] uses for the level filter. One clone is moved
 /// into the subscriber as a per-layer `Filter`; another is kept on
 /// [`TracingControl`] to push reloads. Both share the same
-/// `Arc<ArcSwap<Option<TracingRateLimitLayer>>>`.
+/// `Arc<Slot<Option<TracingRateLimitLayer>>>`.
 ///
 /// `None` means "no throttling": every event passes. [`reload`](Self::reload)
 /// swaps in a brand-new layer (with fresh token buckets) *when the config
@@ -405,7 +402,7 @@ where
 /// [`TracingControl::build_rate_limit_layer`].
 #[derive(Clone)]
 struct AtomicThrottle {
-    inner: Arc<ArcSwap<Option<TracingRateLimitLayer>>>,
+    inner: Arc<Slot<Option<TracingRateLimitLayer>>>,
     /// The config the current layer was built from. `reload` compares against
     /// it so an unchanged config is a no-op: rebuilding would reset the token
     /// buckets and hand out a fresh burst on every management re-apply of the
@@ -416,9 +413,9 @@ struct AtomicThrottle {
 impl AtomicThrottle {
     fn new(config: Option<TracingRateLimitConfig>) -> Self {
         Self {
-            inner: Arc::new(ArcSwap::from_pointee(
-                TracingControl::build_rate_limit_layer(config),
-            )),
+            inner: Arc::new(Slot::from_pointee(TracingControl::build_rate_limit_layer(
+                config,
+            ))),
             current: Arc::new(Mutex::new(config)),
         }
     }
@@ -432,8 +429,6 @@ impl AtomicThrottle {
         if *current == config {
             return;
         }
-        // See `AtomicEnvFilter::reload`: the facade `Arc` is what
-        // `ArcSwap::store` accepts here, so no direct import is needed.
         self.inner
             .store(Arc::new(TracingControl::build_rate_limit_layer(config)));
         *current = config;
@@ -605,7 +600,7 @@ impl TracingControl {
     fn lock(&self) -> MutexGuard<'_, TargetCfgDb> {
         self.db.lock()
     }
-    /// Reload the active `EnvFilter`. Infallible: the `ArcSwap`-based handle
+    /// Reload the active `EnvFilter`. Infallible: the `Slot`-based handle
     /// has no lock to poison and no subscriber-gone case.
     fn reload(&self, filter: EnvFilter) {
         self.reload_filter.reload(filter);

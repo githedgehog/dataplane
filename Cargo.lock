@@ -1825,7 +1825,6 @@ dependencies = [
 name = "dataplane-tracectl"
 version = "0.22.0"
 dependencies = [
- "arc-swap",
  "color-eyre",
  "dataplane-common",
  "dataplane-concurrency",
