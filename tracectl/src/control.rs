@@ -1259,7 +1259,10 @@ mod tests {
 
         // Phase 2: throttle active — at least the burst survives, but the bulk
         // is dropped. If this saw EMITTED, the reload didn't take effect.
-        assert!(p2 >= 1, "phase 2 throttle swallowed the entire burst");
+        assert!(
+            p2 >= BURST as usize,
+            "phase 2 passed only {p2}/{BURST} burst events"
+        );
         assert!(
             p2 < EMITTED / 2,
             "phase 2 let through {p2}/{EMITTED} events; throttle not applied after reload\n{captured}"
