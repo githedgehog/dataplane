@@ -36,12 +36,7 @@ macro_rules! dpdk_table_alias {
                 <= $crate::dpdk::lookup::MAX_USER_KEY_BYTES,
             "MatchKey::KEY_SIZE exceeds MAX_USER_KEY_BYTES",
         );
-        $vis type $alias<$action> = $crate::dpdk::lookup::DpdkAclLookup<
-            $key,
-            { $crate::dpdk::layout::const_extents(<$key>::FIELD_SPECS).0 },
-            { $crate::dpdk::layout::const_extents(<$key>::FIELD_SPECS).1 },
-            $action,
-        >;
+        $vis type $alias<$action> = $crate::dpdk::lookup::DpdkAclLookup<$key, $action>;
     };
 }
 #[doc(hidden)]
