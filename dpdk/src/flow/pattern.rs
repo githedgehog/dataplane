@@ -18,8 +18,7 @@ fn be32(addr: Ipv4Addr) -> u32 {
     u32::from(addr).to_be()
 }
 
-/// An IPv4 address match: an address with a bit-mask. A host (`/32`) match is the common case; a
-/// shorter prefix matches a subnet.
+/// An IPv4 address and mask, supporting host, subnet and arbitrary masked matches.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Ipv4Prefix {
     addr: Ipv4Addr,
@@ -90,7 +89,7 @@ impl Ipv4Match {
     /// Lower to the `(spec, mask)` pair the PMD reads. Unconstrained fields stay zero in `mask`,
     /// which `rte_flow` reads as "don't care".
     pub(crate) fn lower(&self) -> (rte_flow_item_ipv4, rte_flow_item_ipv4) {
-        // SAFETY: `rte_flow_item_ipv4` is plain data; all-zero is the valid "match nothing" value.
+        // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_ipv4 = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_ipv4 = unsafe { core::mem::zeroed() };
         if let Some(src) = self.src {
@@ -109,8 +108,7 @@ impl Ipv4Match {
     }
 }
 
-/// An IPv6 address match: an address with a bit-mask. A host (`/128`) match is the common case; a
-/// shorter prefix matches a subnet.
+/// An IPv6 address and mask, supporting host, subnet and arbitrary masked matches.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Ipv6Prefix {
     addr: Ipv6Addr,
@@ -181,7 +179,7 @@ impl Ipv6Match {
     /// Lower to the `(spec, mask)` pair the PMD reads. IPv6 addresses are stored network-order
     /// (`Ipv6Addr::octets`); unconstrained fields stay zero in `mask` ("don't care").
     pub(crate) fn lower(&self) -> (rte_flow_item_ipv6, rte_flow_item_ipv6) {
-        // SAFETY: `rte_flow_item_ipv6` is plain data; all-zero is the valid "match nothing" value.
+        // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_ipv6 = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_ipv6 = unsafe { core::mem::zeroed() };
         if let Some(src) = self.src {
@@ -225,7 +223,7 @@ impl VlanMatch {
     /// Lower to the `(spec, mask)` pair. The tag-control-information (TCI) packs PCP (bits 15..13),
     /// DEI (bit 12), and VID (bits 11..0); only the constrained sub-fields are set in `mask`.
     pub(crate) fn lower(&self) -> (rte_flow_item_vlan, rte_flow_item_vlan) {
-        // SAFETY: `rte_flow_item_vlan` is plain data; all-zero is the valid "match nothing" value.
+        // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_vlan = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_vlan = unsafe { core::mem::zeroed() };
         let mut spec_tci: u16 = 0;
@@ -238,7 +236,6 @@ impl VlanMatch {
             spec_tci |= (u16::from(pcp.to_u8()) & 0x7) << 13;
             mask_tci |= 0xe000;
         }
-        // Writing a union field is safe (only reads are unsafe); TCI is network byte order.
         spec.annon1.hdr.vlan_tci = spec_tci.to_be();
         mask.annon1.hdr.vlan_tci = mask_tci.to_be();
         (spec, mask)
@@ -261,13 +258,12 @@ impl VxlanMatch {
 
     /// Lower to the `(spec, mask)` pair. The 24-bit VNI is stored big-endian in a 3-byte field.
     pub(crate) fn lower(&self) -> (rte_flow_item_vxlan, rte_flow_item_vxlan) {
-        // SAFETY: `rte_flow_item_vxlan` is plain data; all-zero is the valid "match nothing" value.
+        // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_vxlan = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_vxlan = unsafe { core::mem::zeroed() };
         if let Some(vni) = self.vni {
             let v = vni.as_u32();
             let bytes = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
-            // Writing a union field is safe (only reads are unsafe).
             spec.annon1.annon1.vni = bytes;
             mask.annon1.annon1.vni = [0xff; 3];
         }
@@ -298,7 +294,7 @@ impl UdpMatch {
     }
 
     pub(crate) fn lower(&self) -> (rte_flow_item_udp, rte_flow_item_udp) {
-        // SAFETY: `rte_flow_item_udp` is plain data; all-zero is the valid "match nothing" value.
+        // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_udp = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_udp = unsafe { core::mem::zeroed() };
         if let Some(src) = self.src {
@@ -336,7 +332,7 @@ impl TcpMatch {
     }
 
     pub(crate) fn lower(&self) -> (rte_flow_item_tcp, rte_flow_item_tcp) {
-        // SAFETY: `rte_flow_item_tcp` is plain data; all-zero is the valid "match nothing" value.
+        // SAFETY: zeroed fields are valid; a zero mask leaves fields unconstrained.
         let mut spec: rte_flow_item_tcp = unsafe { core::mem::zeroed() };
         let mut mask: rte_flow_item_tcp = unsafe { core::mem::zeroed() };
         if let Some(src) = self.src {
