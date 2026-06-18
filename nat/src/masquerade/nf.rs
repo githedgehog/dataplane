@@ -123,7 +123,7 @@ impl Masquerade {
     }
 
     /// Update the `FlowStatus` of a masqueraded flow with a packet, depending on the direction of the
-    /// communication and the protocol, and return how much the timeout of a flow should be extended.
+    /// communication and the protocol and extend the lifetime of the flow (or invalidate it) accordingly.
     fn refresh_masquerade_state<Buf: PacketBufferMut>(
         packet: &Packet<Buf>,
         flow_info: &FlowInfo,
@@ -149,7 +149,9 @@ impl Masquerade {
             | NatFlowStatus::SHalfClose
             | NatFlowStatus::LastAck => Some(Self::MASQUERADE_CLOSING_TIMEOUT),
             NatFlowStatus::OneWay => {
-                warn!("Unexpected oneway state");
+                // this could happen if a burst of packets are sent before any state is there (snat),
+                // or if we got a TCP segment back without expected flags. This should never happen for
+                // a UDP packet in the reverse direction, though.
                 None
             }
         };
@@ -176,8 +178,8 @@ impl Masquerade {
             return None;
         }
         debug!("Hit ACTIVE flow: {}", flow_info.logfmt());
-        let value = flow_info.locked.read();
-        let Some(state) = value.nat_state.as_ref()?.extract_ref::<MasqueradeState>() else {
+        let locked = flow_info.locked.read();
+        let Some(state) = locked.nat_state.as_ref()?.extract_ref::<MasqueradeState>() else {
             debug!("Unable to access masquerade state");
             return None;
         };
@@ -205,7 +207,7 @@ impl Masquerade {
         Some((state.as_translate(), state.idle_timeout()))
     }
 
-    fn setup_flow_nat_state(
+    fn setup_flow_masquerade_state(
         flow_info: &FlowInfo,
         state: MasqueradeState,
         dst_vpcd: VpcDiscriminant,
@@ -274,8 +276,8 @@ impl Masquerade {
         );
 
         // set up their NAT state
-        Self::setup_flow_nat_state(&forward, forward_state, dst_vpc_id);
-        Self::setup_flow_nat_state(&reverse, reverse_state, src_vpc_id);
+        Self::setup_flow_masquerade_state(&forward, forward_state, dst_vpc_id);
+        Self::setup_flow_masquerade_state(&reverse, reverse_state, src_vpc_id);
 
         // set the genid of the flows
         forward.set_genid_pair(genid);
