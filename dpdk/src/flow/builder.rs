@@ -4,6 +4,7 @@
 //! Flow construction and FFI conversion.
 //! The builder owns all spec, mask, and action data until the PMD copies it.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::marker::PhantomData;
@@ -14,21 +15,22 @@ use dpdk_sys::{
     rte_flow_action, rte_flow_action_jump, rte_flow_action_mark, rte_flow_action_modify_field,
     rte_flow_action_of_push_vlan, rte_flow_action_of_set_vlan_pcp, rte_flow_action_of_set_vlan_vid,
     rte_flow_action_queue, rte_flow_action_set_ipv4, rte_flow_action_set_tp,
-    rte_flow_action_type as at, rte_flow_attr, rte_flow_create, rte_flow_error, rte_flow_field_id,
-    rte_flow_item, rte_flow_item_ipv4, rte_flow_item_ipv6, rte_flow_item_tcp,
-    rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vlan, rte_flow_item_vxlan,
-    rte_flow_modify_op, rte_flow_validate,
+    rte_flow_action_type as at, rte_flow_action_vxlan_encap, rte_flow_attr, rte_flow_create,
+    rte_flow_error, rte_flow_field_id, rte_flow_item, rte_flow_item_eth, rte_flow_item_ipv4,
+    rte_flow_item_ipv6, rte_flow_item_tcp, rte_flow_item_type as it, rte_flow_item_udp,
+    rte_flow_item_vlan, rte_flow_item_vxlan, rte_flow_modify_op, rte_flow_validate,
 };
 
 use net::eth::Eth;
 use net::eth::ethtype::EthType;
+use net::eth::mac::Mac;
 use net::headers::Within;
 use net::ipv4::Ipv4;
 use net::ipv6::Ipv6;
 use net::tcp::Tcp;
 use net::udp::Udp;
 use net::vlan::{Pcp, Vid, Vlan};
-use net::vxlan::Vxlan;
+use net::vxlan::{Vni, Vxlan};
 
 use crate::dev::{Dev, DevIndex, Started};
 use crate::flow::error::FlowError;
@@ -104,6 +106,8 @@ enum Action {
     OfSetVlanVid(rte_flow_action_of_set_vlan_vid),
     OfSetVlanPcp(rte_flow_action_of_set_vlan_pcp),
     ModifyField(rte_flow_action_modify_field),
+    VxlanDecap,
+    VxlanEncap(Box<EncapDef>),
 }
 
 impl Action {
@@ -122,6 +126,8 @@ impl Action {
             Action::OfSetVlanVid(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
             Action::OfSetVlanPcp(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP,
             Action::ModifyField(_) => at::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD,
+            Action::VxlanDecap => at::RTE_FLOW_ACTION_TYPE_VXLAN_DECAP,
+            Action::VxlanEncap(_) => at::RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP,
         }
     }
 
@@ -129,7 +135,7 @@ impl Action {
     /// Actions of equal rank retain their insertion order.
     fn rank(&self) -> u8 {
         match self {
-            Action::OfPopVlan => 0,
+            Action::OfPopVlan | Action::VxlanDecap => 0,
             Action::Mark(_) => 1,
             Action::SetIpv4Src(_)
             | Action::SetIpv4Dst(_)
@@ -138,15 +144,13 @@ impl Action {
             | Action::OfSetVlanVid(_)
             | Action::OfSetVlanPcp(_)
             | Action::ModifyField(_) => 2,
-            Action::OfPushVlan(_) => 3,
+            Action::OfPushVlan(_) | Action::VxlanEncap(_) => 3,
             Action::Jump(_) | Action::Queue(_) | Action::Drop => 4,
         }
     }
 
-    /// Pointer to the configuration struct (null for actions that take none). Valid while `self`
-    /// is alive and not moved.
-    fn conf(&self) -> *const c_void {
-        match self {
+    fn view(&self) -> ActionView<'_> {
+        let conf = match self {
             Action::Jump(j) => from_ref(j).cast(),
             Action::Mark(m) => from_ref(m).cast(),
             Action::Queue(q) => from_ref(q).cast(),
@@ -158,7 +162,84 @@ impl Action {
             Action::OfSetVlanVid(a) => from_ref(a).cast(),
             Action::OfSetVlanPcp(a) => from_ref(a).cast(),
             Action::ModifyField(m) => from_ref(m).cast(),
+            Action::VxlanDecap => null(),
+            Action::VxlanEncap(headers) => {
+                let item = |type_, spec| rte_flow_item {
+                    type_,
+                    spec,
+                    last: null(),
+                    mask: null(),
+                };
+                return ActionView::VxlanEncap {
+                    _headers: headers,
+                    items: [
+                        item(it::RTE_FLOW_ITEM_TYPE_ETH, from_ref(&headers.eth).cast()),
+                        item(it::RTE_FLOW_ITEM_TYPE_IPV4, from_ref(&headers.ipv4).cast()),
+                        item(it::RTE_FLOW_ITEM_TYPE_UDP, from_ref(&headers.udp).cast()),
+                        item(
+                            it::RTE_FLOW_ITEM_TYPE_VXLAN,
+                            from_ref(&headers.vxlan).cast(),
+                        ),
+                        item(it::RTE_FLOW_ITEM_TYPE_END, null()),
+                    ],
+                };
+            }
+        };
+        ActionView::Direct { action: self, conf }
+    }
+}
+
+/// Borrows action data; encapsulation item arrays contain no pointers into themselves.
+enum ActionView<'a> {
+    Direct {
+        action: &'a Action,
+        conf: *const c_void,
+    },
+    VxlanEncap {
+        _headers: &'a EncapDef,
+        items: [rte_flow_item; 5],
+    },
+}
+
+impl ActionView<'_> {
+    fn config(&self) -> ActionConfig<'_> {
+        match self {
+            Self::Direct { action, conf } => ActionConfig::Direct {
+                action,
+                conf: *conf,
+            },
+            Self::VxlanEncap { items, .. } => ActionConfig::VxlanEncap {
+                _view: self,
+                config: rte_flow_action_vxlan_encap {
+                    definition: items.as_ptr().cast_mut(),
+                },
+            },
         }
+    }
+}
+
+/// Keeps the borrowed data alive until the synchronous FFI call completes.
+enum ActionConfig<'a> {
+    Direct {
+        action: &'a Action,
+        conf: *const c_void,
+    },
+    VxlanEncap {
+        _view: &'a ActionView<'a>,
+        config: rte_flow_action_vxlan_encap,
+    },
+}
+
+impl ActionConfig<'_> {
+    fn as_ffi(&self) -> rte_flow_action {
+        let (type_, conf) = match self {
+            Self::Direct { action, conf } => (action.type_(), *conf),
+            Self::VxlanEncap { config, .. } => (
+                at::RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP,
+                from_ref(config).cast(),
+            ),
+        };
+        rte_flow_action { type_, conf }
     }
 }
 
@@ -172,26 +253,77 @@ fn set_tp(port: u16) -> rte_flow_action_set_tp {
     rte_flow_action_set_tp { port: port.to_be() }
 }
 
-/// A `MODIFY_FIELD` that sets `dst` to an immediate value. `value` holds the low `width` bits in the
-/// same byte order and length as the corresponding `rte_flow_item_*` field (e.g. network-order for
-/// header fields), left-aligned; per the `rte_flow` contract the destination's bit offset is
-/// inherited by the immediate source.
+/// Set `dst` from bytes in the corresponding `rte_flow_item_*` field's order and size.
+/// The immediate source inherits the destination's bit offset.
 fn modify_set(
     dst: rte_flow_field_id::Type,
     width: u32,
     value: &[u8],
 ) -> rte_flow_action_modify_field {
-    // SAFETY: `rte_flow_action_modify_field` is plain data; all-zero is a valid empty value
-    // (operation SET, level/offset 0, empty immediate).
+    // SAFETY: zero is valid for every field in this C configuration struct.
     let mut mf: rte_flow_action_modify_field = unsafe { core::mem::zeroed() };
     mf.operation = rte_flow_modify_op::RTE_FLOW_MODIFY_SET;
     mf.dst.field = dst;
     mf.src.field = rte_flow_field_id::RTE_FLOW_FIELD_VALUE;
     let mut buf = [0u8; 16];
     buf[..value.len()].copy_from_slice(value);
-    mf.src.annon1.value = buf; // union write (safe)
+    mf.src.annon1.value = buf;
     mf.width = width;
     mf
+}
+
+/// The outer headers prepended by a [`vxlan_encap`](FlowBuilder::vxlan_encap) action. Byte orders are
+/// handled internally; the outer UDP destination is fixed at the VXLAN port (4789).
+#[derive(Debug, Copy, Clone)]
+pub struct VxlanEncap {
+    /// Outer Ethernet source MAC.
+    pub eth_src: Mac,
+    /// Outer Ethernet destination MAC.
+    pub eth_dst: Mac,
+    /// Outer IPv4 source address.
+    pub ip_src: Ipv4Addr,
+    /// Outer IPv4 destination address.
+    pub ip_dst: Ipv4Addr,
+    /// Outer UDP source port (the entropy/hash port).
+    pub udp_src: u16,
+    /// The tunnel VNI to encapsulate with.
+    pub vni: Vni,
+}
+
+/// Owned VXLAN headers. FFI pointers are formed only while borrowing these headers.
+struct EncapDef {
+    eth: rte_flow_item_eth,
+    ipv4: rte_flow_item_ipv4,
+    udp: rte_flow_item_udp,
+    vxlan: rte_flow_item_vxlan,
+}
+
+fn build_encap(e: &VxlanEncap) -> Box<EncapDef> {
+    // SAFETY: zero is valid for every field in these C header structs.
+    let mut eth: rte_flow_item_eth = unsafe { core::mem::zeroed() };
+    eth.annon1.hdr.dst_addr.addr_bytes = e.eth_dst.0;
+    eth.annon1.hdr.src_addr.addr_bytes = e.eth_src.0;
+    eth.annon1.hdr.ether_type = 0x0800u16.to_be(); // outer is IPv4
+    let mut ipv4: rte_flow_item_ipv4 = unsafe { core::mem::zeroed() };
+    ipv4.hdr.annon1.version_ihl = 0x45; // IPv4, 20-byte header
+    ipv4.hdr.time_to_live = 64;
+    ipv4.hdr.next_proto_id = 17; // UDP
+    ipv4.hdr.src_addr = u32::from(e.ip_src).to_be();
+    ipv4.hdr.dst_addr = u32::from(e.ip_dst).to_be();
+    let mut udp: rte_flow_item_udp = unsafe { core::mem::zeroed() };
+    udp.hdr.src_port = e.udp_src.to_be();
+    udp.hdr.dst_port = 4789u16.to_be();
+    let mut vxlan: rte_flow_item_vxlan = unsafe { core::mem::zeroed() };
+    vxlan.annon1.annon1.flags = 0x08; // I flag: VNI present
+    let v = e.vni.as_u32();
+    vxlan.annon1.annon1.vni = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+
+    Box::new(EncapDef {
+        eth,
+        ipv4,
+        udp,
+        vxlan,
+    })
 }
 
 /// Build, validate, or install a flow rule in domain `D`.
@@ -440,6 +572,20 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self
     }
 
+    /// Strip the outer Ethernet/IP/UDP/VXLAN headers.
+    /// The pattern must include [`match_vxlan`](Self::match_vxlan).
+    pub fn vxlan_decap(mut self) -> Self {
+        self.actions.push(Action::VxlanDecap);
+        self
+    }
+
+    /// Prepend a VXLAN tunnel. Combined with [`vxlan_decap`](Self::vxlan_decap),
+    /// which runs first, this can replace a VNI that mlx5 cannot rewrite in place.
+    pub fn vxlan_encap(mut self, outer: VxlanEncap) -> Self {
+        self.actions.push(Action::VxlanEncap(build_encap(&outer)));
+        self
+    }
+
     /// Push a VLAN tag with the given TPID and zero VID/PCP.
     /// On BlueField-3, set VID/PCP in a later group reached via [`jump`](Self::jump),
     /// after the new tag exists.
@@ -479,11 +625,11 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
         self
     }
 
-    /// Lower the accumulated attributes, pattern, and actions into the `rte_flow` C arrays.
-    ///
-    /// The returned `items`/`actions` `Vec`s carry pointers into `self`, so `self` must outlive
-    /// their use (it does in [`create`](Self::create)/[`validate`](Self::validate)).
-    fn lower(&self) -> (rte_flow_attr, Vec<rte_flow_item>, Vec<rte_flow_action>) {
+    /// Use the C arrays while their borrowed data and intermediate descriptors are alive.
+    fn with_lowered<R>(
+        &self,
+        use_rule: impl FnOnce(&rte_flow_attr, &[rte_flow_item], &[rte_flow_action]) -> R,
+    ) -> R {
         // SAFETY: `rte_flow_attr` is plain old data; an all-zero value is a valid empty attribute.
         let mut attr: rte_flow_attr = unsafe { core::mem::zeroed() };
         attr.group = self.group;
@@ -510,41 +656,35 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
             mask: null(),
         });
 
-        // Emit actions in the mlx5 fixed pipeline order (see `Action::rank`), not call order. A stable
-        // sort keeps the relative order of same-rank actions (e.g. two field rewrites).
+        // Preserve insertion order within each action rank.
         let mut ordered: Vec<&Action> = self.actions.iter().collect();
         ordered.sort_by_key(|a| a.rank());
-        let mut actions: Vec<rte_flow_action> = Vec::with_capacity(ordered.len() + 1);
-        for action in ordered {
-            actions.push(rte_flow_action {
-                type_: action.type_(),
-                conf: action.conf(),
-            });
-        }
+        // Finish each descriptor array before borrowing it for the next pointer layer.
+        let views: Vec<_> = ordered.iter().map(|action| action.view()).collect();
+        let configs: Vec<_> = views.iter().map(ActionView::config).collect();
+        let mut actions: Vec<_> = configs.iter().map(ActionConfig::as_ffi).collect();
         actions.push(rte_flow_action {
             type_: at::RTE_FLOW_ACTION_TYPE_END,
             conf: null(),
         });
 
-        (attr, items, actions)
+        use_rule(&attr, &items, &actions)
     }
 
     /// Validate without installing. Creation may still fail, for example if
     /// hardware resources are exhausted.
     pub fn validate(&self) -> Result<(), FlowError> {
-        let (attr, items, actions) = self.lower();
         let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
-        // SAFETY: `attr`, `items`, `actions`, and the spec/mask/config structs owned by `self` all
-        // outlive this call; the arrays are END-terminated and the pointers are non-dangling.
-        let ret = unsafe {
+        // SAFETY: the END-terminated arrays and their backing data outlive this call.
+        let ret = self.with_lowered(|attr, items, actions| unsafe {
             rte_flow_validate(
                 self.port(),
-                &attr,
+                attr,
                 items.as_ptr(),
                 actions.as_ptr(),
                 &mut error,
             )
-        };
+        });
         if ret == 0 {
             Ok(())
         } else {
@@ -556,20 +696,18 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
     pub fn create(self) -> Result<FlowRule<'dev>, FlowError> {
         let port = self.port;
         let live_rules = self.live_rules;
-        let (attr, items, actions) = self.lower();
         let mut error: rte_flow_error = unsafe { core::mem::zeroed() };
-        // SAFETY: `attr`, `items`, `actions`, and the spec/mask/config structs owned by `self` all
-        // outlive this call; the arrays are END-terminated and the pointers are non-dangling. The
-        // PMD copies what it needs before returning.
-        let flow = unsafe {
+        // SAFETY: the END-terminated arrays and their backing data outlive this call;
+        // the PMD copies the configuration before returning.
+        let flow = self.with_lowered(|attr, items, actions| unsafe {
             rte_flow_create(
                 port.as_u16(),
-                &attr,
+                attr,
                 items.as_ptr(),
                 actions.as_ptr(),
                 &mut error,
             )
-        };
+        });
         match NonNull::new(flow) {
             Some(flow) => Ok(FlowRule::new(port, flow, live_rules)),
             None => Err(FlowError::from_raw(&error)),
@@ -584,6 +722,99 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_encapsulation<D: Domain, Pos>(
+        builder: &FlowBuilder<'_, D, Pos>,
+        expected: &[VxlanEncap],
+    ) {
+        builder.with_lowered(|_, _, actions| {
+            let encaps: Vec<_> = actions
+                .iter()
+                .filter(|a| a.type_ == at::RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP)
+                .collect();
+            assert_eq!(encaps.len(), expected.len());
+            for (action, expected) in encaps.into_iter().zip(expected) {
+                // SAFETY: the lowered descriptors and headers are borrowed for this callback.
+                let config = unsafe { &*action.conf.cast::<rte_flow_action_vxlan_encap>() };
+                let items = unsafe { core::slice::from_raw_parts(config.definition, 5) };
+                assert_eq!(
+                    items.iter().map(|item| item.type_).collect::<Vec<_>>(),
+                    [
+                        it::RTE_FLOW_ITEM_TYPE_ETH,
+                        it::RTE_FLOW_ITEM_TYPE_IPV4,
+                        it::RTE_FLOW_ITEM_TYPE_UDP,
+                        it::RTE_FLOW_ITEM_TYPE_VXLAN,
+                        it::RTE_FLOW_ITEM_TYPE_END,
+                    ]
+                );
+                assert!(items[4].spec.is_null());
+                assert!(
+                    items
+                        .iter()
+                        .all(|item| item.mask.is_null() && item.last.is_null())
+                );
+                let eth = unsafe { &*items[0].spec.cast::<rte_flow_item_eth>() };
+                let ipv4 = unsafe { &*items[1].spec.cast::<rte_flow_item_ipv4>() };
+                let udp = unsafe { &*items[2].spec.cast::<rte_flow_item_udp>() };
+                let vxlan = unsafe { &*items[3].spec.cast::<rte_flow_item_vxlan>() };
+                assert_eq!(
+                    unsafe { eth.annon1.hdr.src_addr.addr_bytes },
+                    expected.eth_src.0
+                );
+                assert_eq!(
+                    unsafe { eth.annon1.hdr.dst_addr.addr_bytes },
+                    expected.eth_dst.0
+                );
+                assert_eq!(u16::from_be(unsafe { eth.annon1.hdr.ether_type }), 0x0800);
+                assert_eq!(u32::from_be(ipv4.hdr.src_addr), u32::from(expected.ip_src));
+                assert_eq!(u32::from_be(ipv4.hdr.dst_addr), u32::from(expected.ip_dst));
+                assert_eq!(u16::from_be(udp.hdr.src_port), expected.udp_src);
+                assert_eq!(u16::from_be(udp.hdr.dst_port), 4789);
+                let vni = unsafe { vxlan.annon1.annon1.vni };
+                assert_eq!(
+                    u32::from_be_bytes([0, vni[0], vni[1], vni[2]]),
+                    expected.vni.as_u32()
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn vxlan_encap_pointers_survive_builder_moves() -> Result<(), net::vxlan::InvalidVni> {
+        let live = AtomicUsize::new(0);
+        let builder: FlowBuilder<'_, crate::flow::Ingress, ()> = FlowBuilder {
+            port: DevIndex(0),
+            live_rules: &live,
+            group: 0,
+            priority: 0,
+            items: Vec::new(),
+            actions: Vec::new(),
+            domain: PhantomData,
+            position: PhantomData,
+        };
+        let first = VxlanEncap {
+            eth_src: Mac([2, 0, 0, 0, 0, 1]),
+            eth_dst: Mac([2, 0, 0, 0, 0, 2]),
+            ip_src: Ipv4Addr::new(192, 0, 2, 1),
+            ip_dst: Ipv4Addr::new(192, 0, 2, 2),
+            udp_src: 12345,
+            vni: Vni::new_checked(0x123456)?,
+        };
+        let second = VxlanEncap {
+            ip_src: Ipv4Addr::new(198, 51, 100, 1),
+            udp_src: 54321,
+            vni: Vni::new_checked(0xabcdef)?,
+            ..first
+        };
+        let mut builder = builder.vxlan_encap(first).mark(Mark(7));
+        check_encapsulation(&builder, &[first]);
+        builder.actions.reserve(128);
+        let builder = builder.match_eth().vxlan_encap(second).drop();
+        check_encapsulation(&builder, &[first, second]);
+        check_encapsulation(&builder, &[first, second]);
+        assert_eq!(live.load(concurrency::sync::atomic::Ordering::Relaxed), 0);
+        Ok(())
+    }
 
     /// The validated mlx5 pipeline order: pop -> MARK -> MODIFY_HDR -> push -> terminal.
     #[test]
@@ -602,7 +833,7 @@ mod tests {
         assert!(push.rank() < queue.rank());
     }
 
-    /// Actions added in a HW-invalid order are canonicalized by the same stable sort `lower` uses.
+    /// Actions added in a HW-invalid order are canonicalized by the lowering sort.
     #[test]
     fn scrambled_actions_canonicalize() {
         let scrambled = [
