@@ -8,6 +8,7 @@
 //! handed to `rte_flow_create`/`validate` stay valid for the duration of the call (the PMD copies
 //! them before returning).
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::marker::PhantomData;
@@ -18,21 +19,22 @@ use dpdk_sys::{
     rte_flow_action, rte_flow_action_jump, rte_flow_action_mark, rte_flow_action_modify_field,
     rte_flow_action_of_push_vlan, rte_flow_action_of_set_vlan_pcp, rte_flow_action_of_set_vlan_vid,
     rte_flow_action_queue, rte_flow_action_set_ipv4, rte_flow_action_set_tp,
-    rte_flow_action_type as at, rte_flow_attr, rte_flow_create, rte_flow_error, rte_flow_field_id,
-    rte_flow_item, rte_flow_item_ipv4, rte_flow_item_ipv6, rte_flow_item_tcp,
-    rte_flow_item_type as it, rte_flow_item_udp, rte_flow_item_vlan, rte_flow_item_vxlan,
-    rte_flow_modify_op, rte_flow_validate,
+    rte_flow_action_type as at, rte_flow_action_vxlan_encap, rte_flow_attr, rte_flow_create,
+    rte_flow_error, rte_flow_field_id, rte_flow_item, rte_flow_item_eth, rte_flow_item_ipv4,
+    rte_flow_item_ipv6, rte_flow_item_tcp, rte_flow_item_type as it, rte_flow_item_udp,
+    rte_flow_item_vlan, rte_flow_item_vxlan, rte_flow_modify_op, rte_flow_validate,
 };
 
 use net::eth::Eth;
 use net::eth::ethtype::EthType;
+use net::eth::mac::Mac;
 use net::headers::Within;
 use net::ipv4::Ipv4;
 use net::ipv6::Ipv6;
 use net::tcp::Tcp;
 use net::udp::Udp;
 use net::vlan::{Pcp, Vid, Vlan};
-use net::vxlan::Vxlan;
+use net::vxlan::{Vni, Vxlan};
 
 use crate::dev::{Dev, Started};
 use crate::flow::error::FlowError;
@@ -111,6 +113,8 @@ enum Action {
     OfSetVlanVid(rte_flow_action_of_set_vlan_vid),
     OfSetVlanPcp(rte_flow_action_of_set_vlan_pcp),
     ModifyField(rte_flow_action_modify_field),
+    VxlanDecap,
+    VxlanEncap(Box<EncapDef>),
 }
 
 impl Action {
@@ -129,6 +133,8 @@ impl Action {
             Action::OfSetVlanVid(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID,
             Action::OfSetVlanPcp(_) => at::RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP,
             Action::ModifyField(_) => at::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD,
+            Action::VxlanDecap => at::RTE_FLOW_ACTION_TYPE_VXLAN_DECAP,
+            Action::VxlanEncap(_) => at::RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP,
         }
     }
 
@@ -144,7 +150,7 @@ impl Action {
     /// push (encap) -> terminal forward (queue/drop/jump).
     fn rank(&self) -> u8 {
         match self {
-            Action::OfPopVlan => 0,
+            Action::OfPopVlan | Action::VxlanDecap => 0,
             Action::Mark(_) => 1,
             Action::SetIpv4Src(_)
             | Action::SetIpv4Dst(_)
@@ -153,7 +159,7 @@ impl Action {
             | Action::OfSetVlanVid(_)
             | Action::OfSetVlanPcp(_)
             | Action::ModifyField(_) => 2,
-            Action::OfPushVlan(_) => 3,
+            Action::OfPushVlan(_) | Action::VxlanEncap(_) => 3,
             Action::Jump(_) | Action::Queue(_) | Action::Drop => 4,
         }
     }
@@ -173,6 +179,8 @@ impl Action {
             Action::OfSetVlanVid(a) => from_ref(a).cast(),
             Action::OfSetVlanPcp(a) => from_ref(a).cast(),
             Action::ModifyField(m) => from_ref(m).cast(),
+            Action::VxlanDecap => null(),
+            Action::VxlanEncap(b) => from_ref(&b.action).cast(),
         }
     }
 }
@@ -207,6 +215,91 @@ fn modify_set(
     mf.src.annon1.value = buf; // union write (safe)
     mf.width = width;
     mf
+}
+
+/// The outer headers prepended by a [`vxlan_encap`](FlowBuilder::vxlan_encap) action. Byte orders are
+/// handled internally; the outer UDP destination is fixed at the VXLAN port (4789).
+#[derive(Debug, Copy, Clone)]
+pub struct VxlanEncap {
+    /// Outer Ethernet source MAC.
+    pub eth_src: Mac,
+    /// Outer Ethernet destination MAC.
+    pub eth_dst: Mac,
+    /// Outer IPv4 source address.
+    pub ip_src: Ipv4Addr,
+    /// Outer IPv4 destination address.
+    pub ip_dst: Ipv4Addr,
+    /// Outer UDP source port (the entropy/hash port).
+    pub udp_src: u16,
+    /// The tunnel VNI to encapsulate with.
+    pub vni: Vni,
+}
+
+/// Heap-stable backing for a `VXLAN_ENCAP` action: the four outer-header specs, the item list that
+/// references them, and the action struct whose `definition` points at that list. Boxed so the
+/// internal self-references stay valid when the owning [`Action`] moves in the builder's `Vec`.
+struct EncapDef {
+    eth: rte_flow_item_eth,
+    ipv4: rte_flow_item_ipv4,
+    udp: rte_flow_item_udp,
+    vxlan: rte_flow_item_vxlan,
+    items: [rte_flow_item; 5],
+    action: rte_flow_action_vxlan_encap,
+}
+
+fn build_encap(e: &VxlanEncap) -> Box<EncapDef> {
+    // SAFETY: every item_* struct is plain data; all-zero is the valid empty value. Union field
+    // writes are safe (only reads are unsafe).
+    let mut eth: rte_flow_item_eth = unsafe { core::mem::zeroed() };
+    eth.annon1.hdr.dst_addr.addr_bytes = e.eth_dst.0;
+    eth.annon1.hdr.src_addr.addr_bytes = e.eth_src.0;
+    eth.annon1.hdr.ether_type = 0x0800u16.to_be(); // outer is IPv4
+    let mut ipv4: rte_flow_item_ipv4 = unsafe { core::mem::zeroed() };
+    ipv4.hdr.annon1.version_ihl = 0x45; // IPv4, 20-byte header
+    ipv4.hdr.time_to_live = 64;
+    ipv4.hdr.next_proto_id = 17; // UDP
+    ipv4.hdr.src_addr = u32::from(e.ip_src).to_be();
+    ipv4.hdr.dst_addr = u32::from(e.ip_dst).to_be();
+    let mut udp: rte_flow_item_udp = unsafe { core::mem::zeroed() };
+    udp.hdr.src_port = e.udp_src.to_be();
+    udp.hdr.dst_port = 4789u16.to_be();
+    let mut vxlan: rte_flow_item_vxlan = unsafe { core::mem::zeroed() };
+    vxlan.annon1.annon1.flags = 0x08; // I flag: VNI present
+    let v = e.vni.as_u32();
+    vxlan.annon1.annon1.vni = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+
+    // SAFETY: zeroed plain data; the self-references below are wired after the box is allocated.
+    let mut b = Box::new(EncapDef {
+        eth,
+        ipv4,
+        udp,
+        vxlan,
+        items: unsafe { core::mem::zeroed() },
+        action: unsafe { core::mem::zeroed() },
+    });
+    // `b` is heap-stable: take raw pointers to its spec fields (ends the borrows), then write the item
+    // list and point the action's `definition` at it.
+    let (p_eth, p_ipv4, p_udp, p_vxlan) = (
+        from_ref(&b.eth).cast(),
+        from_ref(&b.ipv4).cast(),
+        from_ref(&b.udp).cast(),
+        from_ref(&b.vxlan).cast(),
+    );
+    let mk = |type_, spec| rte_flow_item {
+        type_,
+        spec,
+        last: null(),
+        mask: null(),
+    };
+    b.items = [
+        mk(it::RTE_FLOW_ITEM_TYPE_ETH, p_eth),
+        mk(it::RTE_FLOW_ITEM_TYPE_IPV4, p_ipv4),
+        mk(it::RTE_FLOW_ITEM_TYPE_UDP, p_udp),
+        mk(it::RTE_FLOW_ITEM_TYPE_VXLAN, p_vxlan),
+        mk(it::RTE_FLOW_ITEM_TYPE_END, null()),
+    ];
+    b.action.definition = b.items.as_mut_ptr();
+    b
 }
 
 /// Builds one flow rule and installs (or validates) it.
@@ -468,6 +561,24 @@ impl<'dev, D: Domain, Pos> FlowBuilder<'dev, D, Pos> {
             32,
             &value.to_le_bytes(),
         )));
+        self
+    }
+
+    /// Decapsulate a matched `VXLAN` tunnel (`VXLAN_DECAP`): strip the outer Ethernet/IP/UDP/VXLAN
+    /// headers, exposing the inner frame. The pattern must match a VXLAN header (see
+    /// [`match_vxlan`](Self::match_vxlan)). After decap the inner headers can be matched/rewritten as
+    /// the (now outermost) packet.
+    pub fn vxlan_decap(mut self) -> Self {
+        self.actions.push(Action::VxlanDecap);
+        self
+    }
+
+    /// Encapsulate matching packets in a new `VXLAN` tunnel (`VXLAN_ENCAP`) with the given `outer`
+    /// headers. Paired with [`vxlan_decap`](Self::vxlan_decap) (which is ordered first) this rewrites
+    /// a tunnel to a new VNI -- the supported path for a VNI change, since mlx5 rejects an in-place
+    /// `VXLAN_VNI` rewrite.
+    pub fn vxlan_encap(mut self, outer: VxlanEncap) -> Self {
+        self.actions.push(Action::VxlanEncap(build_encap(&outer)));
         self
     }
 
