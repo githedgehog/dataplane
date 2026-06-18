@@ -106,10 +106,10 @@ mod bench {
         let max_rules = NonZero::new(u32::try_from(n).unwrap_or(u32::MAX)).expect("n >= 1");
         install_table(&format!("bench_dpdk_v6_{n}"), max_rules, specs).expect("install_table")
     }
-    fn run_lookups<K, const N: usize, const STRIDE: usize>(
+    fn run_lookups<K>(
         group: &mut BenchmarkGroup<'_, WallTime>,
         n: usize,
-        table: &DpdkAclLookup<K, N, STRIDE, u32>,
+        table: &DpdkAclLookup<K, u32>,
         miss: &K,
         hit: &K,
         batch: &[K],

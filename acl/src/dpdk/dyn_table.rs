@@ -11,12 +11,13 @@ use dpdk::acl::{
 use dpdk::socket::SocketId;
 use match_action::{FieldPredicate, FieldSpec};
 
+use dpdk::acl::MAX_FIELDS;
+
 use crate::dpdk::layout::{DpdkLayout, LayoutError, plan_layout};
 use crate::dpdk::rule::{
     AclFieldChunks, AclSize, SpliceError, acl_size_for, exact_field, mask_field, padding_field,
     prefix_field, range_field, splice_user_fields_to_dpdk,
 };
-pub const MAX_DYN_N: usize = 16;
 pub struct DynRuleSpec<A> {
     pub priority: dpdk::acl::Priority,
     pub category_mask: dpdk::acl::CategoryMask,
@@ -115,6 +116,21 @@ pub trait DynClassifier: Send + Sync {
     /// shorter slice is an out-of-bounds read.
     unsafe fn classify_one(&self, key: &[u8]) -> Result<u32, dpdk::acl::AclClassifyError>;
 
+    /// Classifies a batch of pre-packed keys in a single `rte_acl` call.
+    ///
+    /// # Safety
+    ///
+    /// Every pointer in `data` must address at least
+    /// [`min_input_size`](Self::min_input_size) bytes of valid, initialized
+    /// memory laid out according to the ACL context's field definitions (the
+    /// same per-pointer contract as [`classify_one`](Self::classify_one)).
+    /// `results.len()` must be at least `data.len()`.
+    unsafe fn classify_batch(
+        &self,
+        data: &[*const u8],
+        results: &mut [u32],
+    ) -> Result<(), dpdk::acl::AclClassifyError>;
+
     fn min_input_size(&self) -> usize;
 }
 
@@ -127,6 +143,15 @@ impl<const N: usize> DynClassifier for AclContext<N, Built<N>> {
             self.classify(&ptrs, &mut results, 1)?;
         }
         Ok(results[0])
+    }
+
+    unsafe fn classify_batch(
+        &self,
+        data: &[*const u8],
+        results: &mut [u32],
+    ) -> Result<(), dpdk::acl::AclClassifyError> {
+        // SAFETY: per trait contract.
+        unsafe { self.classify(data, results, 1) }
     }
 
     fn min_input_size(&self) -> usize {
@@ -158,17 +183,23 @@ pub fn install_table_dynamic<A>(
     }
     let layout = plan_layout(specs)?;
     let n = layout.field_defs.len();
-    if n > MAX_DYN_N {
-        return Err(DynInstallError::UnsupportedFieldCount { n, max: MAX_DYN_N });
+    if n > MAX_FIELDS {
+        return Err(DynInstallError::UnsupportedFieldCount { n, max: MAX_FIELDS });
     }
     let user_field_sizes: Vec<usize> = specs.iter().map(|s| s.size).collect();
-    dispatch_install(n, name, layout, rules, max_rules, user_field_sizes)
+    let (classifier, actions) = dispatch_build_classifier(n, name, &layout, rules, max_rules)?;
+    Ok(DynDpdkLookup {
+        classifier,
+        actions,
+        layout,
+        user_field_sizes,
+    })
 }
 #[derive(Debug, thiserror::Error)]
 pub enum DynInstallError {
     #[error("layout planning failed: {0}")]
     Layout(#[from] LayoutError),
-    #[error("field-def count {n} exceeds dynamic-install dispatch ceiling {max}")]
+    #[error("field-def count {n} exceeds rte_acl field ceiling {max}")]
     UnsupportedFieldCount { n: usize, max: usize },
     #[error("specs are empty")]
     EmptySpecs,
@@ -204,31 +235,34 @@ pub enum DynInstallError {
     StrideTooSmall { stride: usize, required: usize },
 }
 macro_rules! dispatch_match {
-    ($n:expr, $name:expr, $layout:expr, $rules:expr, $max_rules:expr, $sizes:expr,
+    ($n:expr, $name:expr, $layout:expr, $rules:expr, $max_rules:expr,
      [ $($k:literal),+ $(,)? ]) => {
         match $n {
             $(
-                $k => do_install_n::<$k, _>($name, $layout, $rules, $max_rules, $sizes),
+                $k => build_classifier_n::<$k, _>($name, $layout, $rules, $max_rules),
             )+
             _ => Err(DynInstallError::UnsupportedFieldCount {
                 n: $n,
-                max: MAX_DYN_N,
+                max: MAX_FIELDS,
             }),
         }
     };
 }
 
-fn dispatch_install<A>(
+/// Dispatch the runtime field-def count `n` to the const-`N`
+/// [`build_classifier_n`], which is monomorphized for every `N` up to the
+/// `rte_acl` ceiling. `plan_layout` already guarantees `n <= MAX_FIELDS`, so the
+/// fallthrough arm is unreachable for any valid layout.
+pub(crate) fn dispatch_build_classifier<A>(
     n: usize,
     name: &str,
-    layout: DpdkLayout,
+    layout: &DpdkLayout,
     rules: Vec<DynRuleSpec<A>>,
     max_rules: NonZero<u32>,
-    user_field_sizes: Vec<usize>,
-) -> Result<DynDpdkLookup<A>, DynInstallError> {
+) -> Result<(Box<dyn DynClassifier>, Vec<A>), DynInstallError> {
     const _: () = assert!(
-        MAX_DYN_N == 16,
-        "MAX_DYN_N changed; extend the dispatch_match literal list",
+        MAX_FIELDS == 64,
+        "MAX_FIELDS changed; regenerate the dispatch_match literal list",
     );
     dispatch_match!(
         n,
@@ -236,17 +270,28 @@ fn dispatch_install<A>(
         layout,
         rules,
         max_rules,
-        user_field_sizes,
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+            47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64
+        ]
     )
 }
-fn do_install_n<const N: usize, A>(
+
+/// Build a boxed, type-erased classifier for a layout with exactly `N` DPDK
+/// field defs. Shared by the dynamic ([`install_table_dynamic`]) and typed
+/// (`install_table`) install paths: both reduce to a `Vec<DynRuleSpec<A>>`
+/// over a planned [`DpdkLayout`]. Generic only over `<N, A>` (not the key
+/// type), so the 64-way dispatch monomorphizes a bounded amount of code.
+///
+/// Validates that `layout.stride >= min_input_size` so callers can pack into a
+/// `stride`-sized buffer and classify soundly.
+fn build_classifier_n<const N: usize, A>(
     name: &str,
-    layout: DpdkLayout,
+    layout: &DpdkLayout,
     rules: Vec<DynRuleSpec<A>>,
     max_rules: NonZero<u32>,
-    user_field_sizes: Vec<usize>,
-) -> Result<DynDpdkLookup<A>, DynInstallError> {
+) -> Result<(Box<dyn DynClassifier>, Vec<A>), DynInstallError> {
     debug_assert_eq!(N, layout.field_defs.len());
     let field_defs: [FieldDef; N] = core::array::from_fn(|i| layout.field_defs[i]);
     let build_cfg = AclBuildConfig::<N>::new(1, field_defs, 0)?;
@@ -264,7 +309,7 @@ fn do_install_n<const N: usize, A>(
             category_mask: spec.category_mask,
             userdata,
         };
-        let dpdk_fields: [AclField; N] = splice_user_fields_to_dpdk(&layout, &spec.user_fields)?;
+        let dpdk_fields: [AclField; N] = splice_user_fields_to_dpdk(layout, &spec.user_fields)?;
         dpdk_rules.push(Rule::<N>::new(data, dpdk_fields));
         actions.push(spec.action);
     }
@@ -282,13 +327,7 @@ fn do_install_n<const N: usize, A>(
         });
     }
 
-    let classifier: Box<dyn DynClassifier> = Box::new(built);
-    Ok(DynDpdkLookup {
-        classifier,
-        actions,
-        layout,
-        user_field_sizes,
-    })
+    Ok((Box::new(built), actions))
 }
 #[allow(dead_code)]
 const _PAD: fn() -> AclField = padding_field;
