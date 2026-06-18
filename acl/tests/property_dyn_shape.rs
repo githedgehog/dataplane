@@ -11,10 +11,10 @@ use bolero::TypeGenerator;
 use bolero::ValueGenerator;
 use bolero::generator::bolero_generator::driver::{ByteSliceDriver, Options};
 use dataplane_acl::dpdk::dyn_table::{
-    DynDpdkLookup, DynRuleSpec, MAX_DYN_N, install_table_dynamic, predicate_to_chunks,
+    DynDpdkLookup, DynRuleSpec, install_table_dynamic, predicate_to_chunks,
 };
 use dataplane_acl::reference::{DynReferenceTable, FieldPredicate, RefRule};
-use dpdk::acl::{CategoryMask, Priority};
+use dpdk::acl::{CategoryMask, MAX_FIELDS, Priority};
 use match_action::generator::{
     predicate_hits_bytes, predicate_is_universal, predicate_misses_bytes,
 };
@@ -72,7 +72,7 @@ fn build_shape(raw: &RawShape) -> Option<(Vec<FieldSpec>, Vec<FieldPredicate>)> 
             offset,
         };
         post_split += if size <= 4 { 1 } else { size / 4 };
-        if post_split > MAX_DYN_N {
+        if post_split > MAX_FIELDS {
             return None;
         }
         let pred = build_predicate(kind, size, f)?;
