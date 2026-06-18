@@ -507,7 +507,8 @@ pub struct TracingConfigSection {
     pub show: TracingShowSection,
     /// Tracing configuration string (e.g., "default=info,nat=debug")
     pub config: Option<String>, // TODO: stronger typing on this config?
-    /// Optional rate limit for lower-severity tracing output
+    /// Rate limit for lower-severity tracing output; throttling is always on,
+    /// so an unset CLI flag falls back to the default (50:5)
     pub rate_limit: Option<TracingRateLimit>,
 }
 
@@ -1317,9 +1318,9 @@ E.g. default=error,all=info,nat=debug will set the default target to error, and 
         long,
         value_name = "BURST:REPLENISH_PER_SECOND",
         value_parser=TracingRateLimit::from_str,
-        help = "Optional rate limit for lower-severity tracing output. Syntax: BURST:REPLENISH_PER_SECOND.
+        help = "Rate limit for lower-severity tracing output. Syntax: BURST:REPLENISH_PER_SECOND.
 Example: --tracing-rate-limit 50:5 allows bursts up to 50 repeated messages and replenishes 5 messages per second.
-If omitted, tracing output is not rate-limited."
+Throttling is always on: if omitted, the default rate limit of 50:5 is applied. (DEBUG is exempt from throttling.)"
     )]
     tracing_rate_limit: Option<TracingRateLimit>,
 
