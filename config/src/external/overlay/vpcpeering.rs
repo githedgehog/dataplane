@@ -5,7 +5,7 @@
 
 use crate::utils::{
     check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, collapse_prefixes,
-    merge_contiguous_prefixes, merge_overlapping_prefixes,
+    normalize,
 };
 use concurrency::sync::LazyLock;
 use lpm::prefix::{IpRangeWithPorts, L4Protocol, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
@@ -348,11 +348,9 @@ impl VpcExpose {
         // Apply exclusion prefixes. `collapse_prefixes` folds `nots`/`not_as` into `ips`/`as_range`
         // and clears the exclusion sets, so `self` becomes exclusion-prefix-free.
         collapse_prefixes(self);
-        merge_overlapping_prefixes(&mut self.ips);
-        merge_contiguous_prefixes(&mut self.ips);
+        normalize(&mut self.ips);
         if let Some(nat) = &mut self.nat {
-            merge_overlapping_prefixes(&mut nat.as_range);
-            merge_contiguous_prefixes(&mut nat.as_range);
+            normalize(&mut nat.as_range);
         }
 
         // Ensure we don't exclude all of the allowed prefixes
