@@ -8,8 +8,7 @@ mod overlap;
 
 pub(crate) use collapse::collapse_prefixes;
 pub(crate) use overlap::{
-    check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap,
-    merge_contiguous_prefixes, merge_overlapping_prefixes,
+    check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, normalize,
 };
 
 #[derive(thiserror::Error, Debug, Clone)]
