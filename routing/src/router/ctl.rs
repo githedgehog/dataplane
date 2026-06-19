@@ -52,6 +52,7 @@ pub(crate) enum RouterCtlMsg {
     GetFrrAppliedConfig(RouterCtlReplyTx),
     Config(Arc<ValidatedGwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
+    RebindCli,
 }
 
 /// Object to send control messages to the router
@@ -154,6 +155,14 @@ impl RouterCtlSender {
             .map_err(|_| RouterError::Internal("Failed to send config history"))?;
         Ok(())
     }
+    pub async fn rebind_cli(&mut self) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::RebindCli;
+        self.0
+            .send(msg)
+            .await
+            .map_err(|_| RouterError::Internal("Failed to send cli rebind request"))?;
+        Ok(())
+    }
 }
 
 /// Handle a lock request for the indicated CPI
@@ -251,6 +260,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
         }
         Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
         Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
+        Ok(RouterCtlMsg::RebindCli) => rio.cli_sock_restore(),
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");

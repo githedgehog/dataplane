@@ -82,6 +82,7 @@ pub(crate) struct RioConf {
 }
 
 fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
+    debug!("Opening UX sock; target bind point is {path}");
     let _ = std::fs::remove_file(path);
     let sock = UnixDatagram::bind(path).map_err(|_| RouterError::InvalidPath(path.to_owned()))?;
     let mut perms = fs::metadata(path)
@@ -91,6 +92,7 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     fs::set_permissions(path, perms).map_err(|_| RouterError::PermError)?;
     sock.set_nonblocking(true)
         .map_err(|_| RouterError::Internal("Failure setting non-blocking socket"))?;
+    debug!("Successfully opened UX sock @ {path}");
     Ok(sock)
 }
 
@@ -198,6 +200,23 @@ impl Rio {
             cli_cache: IoCache::new(),
         })
     }
+
+    pub(crate) fn cli_sock_restore(&mut self) {
+        let raw_fd = self.clisock.as_raw_fd();
+        debug!("Restoring CLI socket. Current fd is {raw_fd}...");
+        self.deregister(raw_fd);
+        let _ = self.clisock.shutdown(std::net::Shutdown::Both);
+
+        // open new sock, bind it and register it
+        let Ok(new_sock) = open_cli_sock(&self.cli_sock_path) else {
+            error!("Failed to open CLI sock");
+            return;
+        };
+        self.clisock = new_sock;
+        self.register(CLISOCK, self.clisock.as_raw_fd(), Interest::READABLE);
+        debug!("CLI socket restored at {}", self.cli_sock_path);
+    }
+
     pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {
         debug!("Registering fd {fd}...");
         let mut ev_sock = SourceFd(&fd);
