@@ -512,8 +512,7 @@ async fn tx_packet(
             }
         }
         Err(e) => {
-            // this should be a warn/error. Making it debug until we rate-limit logs
-            debug!(
+            warn!(
                 worker = id,
                 rx_intf_name = rx_if_name,
                 "Serialize failed: {e:?}"

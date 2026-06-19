@@ -30,7 +30,7 @@ use crate::headers::{
     TryHeaders, TryHeadersMut, TryIpMut, TryVxlan,
 };
 use crate::ip::{dscp::Dscp, ecn::Ecn};
-use crate::parse::{DeParse, Parse, ParseError};
+use crate::parse::{DeParse, DeParseError, Parse, ParseError};
 use crate::udp::{Udp, UdpChecksum};
 
 use crate::checksum::Checksum;
@@ -60,6 +60,16 @@ pub struct InvalidPacket<Buf: PacketBufferMut> {
     mbuf: Buf,
     #[source]
     error: ParseError<EthError>,
+}
+
+/// Errors which may occur when failing update a buffer from a [`Packet`]
+#[derive(Debug, thiserror::Error)]
+#[allow(missing_docs)]
+pub enum SerializeError<E> {
+    #[error("Not enough headroom")]
+    NoHeadRoom,
+    #[error("De-parsing error: {0}")]
+    DeparseError(DeParseError<E>),
 }
 
 impl<Buf: PacketBufferMut> Packet<Buf> {
@@ -322,20 +332,45 @@ impl<Buf: PacketBufferMut> Packet<Buf> {
         self
     }
 
-    /// Update the packet's buffer based on any changes to the packets [`Headers`].
+    /// Consume a [`Packet`] and update its buffer based on any changes to its [`Headers`].
     ///
     /// # Errors
     ///
-    /// Returns a [`Prepend::Error`] error if the packet does not have enough headroom to
-    /// serialize.
-    pub fn serialize(mut self) -> Result<Buf, <Buf as Prepend>::Error> {
+    /// This method returns `SerializeError::NoHeadRoom`if the packet does not have enough headroom to
+    /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
+    #[inline]
+    pub(crate) fn do_serialize(&mut self) -> Result<(), SerializeError<()>> {
         self.update_checksums();
         let needed = self.headers.size().get();
-        let buf = self.payload.prepend(needed)?;
+        let buf = self
+            .payload
+            .prepend(needed)
+            .map_err(|_| SerializeError::NoHeadRoom)?;
         self.headers
             .deparse(buf)
-            .unwrap_or_else(|e| unreachable!("{e:?}", e = e));
-        Ok(self.payload)
+            .map_err(SerializeError::DeparseError)?;
+
+        Ok(())
+    }
+
+    /// Consume a [`Packet`] and update its buffer based on any changes to its [`Headers`].
+    /// On error, mark the packet accordingly.
+    ///
+    /// # Errors
+    ///
+    /// This method returns `SerializeError::NoHeadRoom`if the packet does not have enough headroom to
+    /// serialize or `SerializeError::DeparseError` if it does, but the de-parsing the `Packet` failed.
+    pub fn serialize(mut self) -> Result<Buf, SerializeError<()>> {
+        match self.do_serialize() {
+            Ok(()) => Ok(self.payload),
+            Err(e) => {
+                match e {
+                    SerializeError::NoHeadRoom => self.done_force(DoneReason::NoHeadRoom),
+                    SerializeError::DeparseError(_) => self.done_force(DoneReason::DeparseError),
+                }
+                Err(e)
+            }
+        }
     }
 }
 
