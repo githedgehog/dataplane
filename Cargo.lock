@@ -1410,6 +1410,25 @@ name = "dataplane-fixed-size"
 version = "0.22.0"
 
 [[package]]
+name = "dataplane-flofi"
+version = "0.22.0"
+dependencies = [
+ "bitflags 2.13.0",
+ "dataplane-common",
+ "dataplane-concurrency",
+ "dataplane-config",
+ "dataplane-lpm",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "indenter",
+ "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
+ "linkme",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "dataplane-flow-entry"
 version = "0.22.0"
 dependencies = [

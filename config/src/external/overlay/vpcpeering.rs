@@ -539,6 +539,20 @@ impl ValidatedExpose {
             .is_some_and(VpcExposeNat::is_port_forwarding)
     }
 
+    /// Returns whether a packet with a source connection from this expose block can initiate a
+    /// stateful connection
+    #[must_use]
+    pub fn can_init_connection(&self) -> bool {
+        !self.has_port_forwarding()
+    }
+
+    /// Returns whether destinations in this expose block can be used as valid targets for incoming
+    /// stateful connections
+    #[must_use]
+    pub fn can_receive_connection(&self) -> bool {
+        !self.has_masquerade()
+    }
+
     #[must_use]
     pub fn nat(&self) -> Option<&VpcExposeNat> {
         self.nat.as_ref()

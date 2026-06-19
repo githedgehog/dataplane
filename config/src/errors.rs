@@ -66,6 +66,8 @@ pub enum ConfigError {
     InternalFailure(String),
     #[error("MTU out of range [68, 65535]: {0}")]
     BadMtu(u32),
+    #[error("Flow-filter context overflow")]
+    TooManyRules,
 
     // Peering and VpcExpose validation
     #[error("All prefixes are excluded in VpcExpose: {0}")]
