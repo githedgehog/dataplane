@@ -184,6 +184,21 @@ jobs:
         with:
           recipe: "doctest"
 
+      - &verify-clean-tree
+        name: "verify-clean-tree"
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error:: Building the project left the tree dirty."
+            echo "----- git status --porcelain -----"
+            git status --porcelain
+            echo "----- git diff -----"
+            git diff
+            echo "----- hint -----"
+            echo "If the diff is on Cargo.lock, run a build locally and commit the updated lock file."
+            exit 1
+          fi
+
       - &tmate
         name: "Setup tmate session for debug"
         if: "${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}"
@@ -257,6 +272,7 @@ jobs:
           )
           just "${base_args[@]}" push-container "${NIX_TARGET}"
           just "${base_args[@]}" "version=${VERSION}-${PROFILE}" push-container "${NIX_TARGET}"
+      - *verify-clean-tree
       - *tmate
 
   sanitize:
