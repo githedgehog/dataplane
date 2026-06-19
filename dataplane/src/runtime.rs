@@ -6,14 +6,16 @@ use crate::statistics::spawn_metrics;
 use args::{CmdArgs, Parser};
 
 use crate::drivers::kernel::DriverKernel;
-use lifecycle::{Shutdown, default_deadlines, spawn_shutdown_watchdog};
+use lifecycle::{
+    CancellationToken, DpSignal, Shutdown, default_deadlines, spawn_shutdown_watchdog,
+};
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
 use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
 
-use routing::{BmpServerParams, RouterParamsBuilder};
+use routing::{BmpServerParams, RouterCtlSender, RouterParamsBuilder};
 use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
@@ -127,6 +129,32 @@ fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptio
     }
 }
 
+// Main signal handling of dataplane occurs here
+fn spawn_signal_handler(
+    rt_handle: &tokio::runtime::Handle,
+    mut sigrx: tokio::sync::mpsc::Receiver<DpSignal>,
+    root: CancellationToken,
+    mut _router_ctl: RouterCtlSender,
+) {
+    rt_handle.spawn(async move {
+        loop {
+            tokio::select! {
+                Some(sig) = sigrx.recv() => {
+                    info!("Processing signal {sig:?} from signal catcher");
+                    match sig {
+                        DpSignal::SIGTERM | DpSignal::SIGINT | DpSignal::SIGQUIT => root.cancel(),
+                        DpSignal::SIGUSR1 | DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {}
+                    }
+                }
+                () = root.cancelled() => {
+                    break;
+                }
+            }
+        }
+        info!("Signal handler ended");
+    });
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     let args = CmdArgs::parse();
@@ -188,7 +216,7 @@ pub fn main() {
         .expect("Failed to build mgmt runtime");
     let mgmt_handle = mgmt_runtime.handle().clone();
 
-    lifecycle::spawn_signal_handler(&mgmt_handle, shutdown.root.clone())
+    let sigrx = lifecycle::spawn_signal_catcher(&mgmt_handle, shutdown.root.clone())
         .expect("failed to install signal handler");
 
     spawn_shutdown_watchdog(shutdown.root.clone(), default_deadlines::TOTAL, 124)
@@ -218,6 +246,13 @@ pub fn main() {
         router_params,
     )
     .expect("failed to start router");
+
+    spawn_signal_handler(
+        &mgmt_handle,
+        sigrx,
+        shutdown.root.clone(),
+        setup.router.get_ctl_tx(),
+    );
 
     spawn_metrics(
         &shutdown.metrics,
