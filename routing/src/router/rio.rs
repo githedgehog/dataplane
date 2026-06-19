@@ -336,9 +336,28 @@ impl Rio {
     }
 }
 
+// Drop-guard so panic-unwind or unexpected loop exit trips
+// report_fatal.
+struct ExitGuard {
+    subsystem: Subsystem,
+}
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        if self.subsystem.is_cancelled() {
+            return;
+        }
+        let reason = if std::thread::panicking() {
+            "RIO thread panicked"
+        } else {
+            "RIO thread exited unexpectedly"
+        };
+        self.subsystem.report_fatal(reason);
+    }
+}
+
 #[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 pub(crate) fn start_rio(
-    router: &Subsystem,
+    subsystem: &Subsystem,
     conf: &RioConf,
     fibtw: FibTableWriter,
     iftw: IfTableWriter,
@@ -348,30 +367,13 @@ pub(crate) fn start_rio(
     let mut rio = Rio::new(conf)?;
     let ctl_tx = rio.ctl_tx.clone();
     let cli_sources = cli_sources.unwrap_or_default();
-    let cancel = router.cancel_token();
+    let cancel = subsystem.cancel_token();
     let loop_cancel = cancel.clone();
-    let guard_subsystem = router.clone();
+    let guard_subsystem = subsystem.clone();
 
     /* router IO loop */
     let rio_loop = move || {
-        // Drop-guard so panic-unwind or unexpected loop exit trips
-        // report_fatal.
-        struct ExitGuard {
-            subsystem: Subsystem,
-        }
-        impl Drop for ExitGuard {
-            fn drop(&mut self) {
-                if self.subsystem.is_cancelled() {
-                    return;
-                }
-                let reason = if std::thread::panicking() {
-                    "RIO thread panicked"
-                } else {
-                    "RIO thread exited unexpectedly"
-                };
-                self.subsystem.report_fatal(reason);
-            }
-        }
+        // drop-guard to detect loop termination
         let _guard = ExitGuard {
             subsystem: guard_subsystem,
         };
