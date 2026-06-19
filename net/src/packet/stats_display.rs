@@ -50,6 +50,10 @@ impl Display for DoneReason {
             Self::InternalDrop => f.pad("Internal drop"),
             Self::Local => f.pad("Locally delivered"),
             Self::Delivered => f.pad("Delivered"),
+
+            // these occur post delivery, prior to xmit
+            Self::NoHeadRoom => f.pad("No headroom"),
+            Self::DeparseError => f.pad("Deparse error"),
         }
     }
 }
