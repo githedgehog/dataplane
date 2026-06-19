@@ -64,7 +64,7 @@ fn check_prefixes_dont_overlap(
     Ok(())
 }
 
-pub fn merge_overlapping_prefixes(prefixes: &mut PrefixPortsSet) {
+fn merge_overlapping_prefixes(prefixes: &mut PrefixPortsSet) {
     let mut prefixes_to_merge = prefixes.iter().copied().collect::<Vec<_>>();
     let mut merged_prefixes = PrefixPortsSet::default();
 
@@ -82,7 +82,7 @@ pub fn merge_overlapping_prefixes(prefixes: &mut PrefixPortsSet) {
     *prefixes = merged_prefixes;
 }
 
-pub fn merge_contiguous_prefixes(prefixes: &mut PrefixPortsSet) {
+fn merge_contiguous_prefixes(prefixes: &mut PrefixPortsSet) {
     let mut uses_ports = false;
     let mut did_merge = false;
     let mut merged_prefixes = PrefixPortsSet::default();
@@ -128,6 +128,11 @@ pub fn merge_contiguous_prefixes(prefixes: &mut PrefixPortsSet) {
     if uses_ports && did_merge {
         merge_contiguous_prefixes(prefixes);
     }
+}
+
+pub fn normalize(prefix_set: &mut PrefixPortsSet) {
+    merge_overlapping_prefixes(prefix_set);
+    merge_contiguous_prefixes(prefix_set);
 }
 
 #[cfg(test)]
