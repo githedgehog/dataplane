@@ -134,7 +134,7 @@ fn spawn_signal_handler(
     rt_handle: &tokio::runtime::Handle,
     mut sigrx: tokio::sync::mpsc::Receiver<DpSignal>,
     root: CancellationToken,
-    mut _router_ctl: RouterCtlSender,
+    mut router_ctl: RouterCtlSender,
 ) {
     rt_handle.spawn(async move {
         loop {
@@ -143,7 +143,10 @@ fn spawn_signal_handler(
                     info!("Processing signal {sig:?} from signal catcher");
                     match sig {
                         DpSignal::SIGTERM | DpSignal::SIGINT | DpSignal::SIGQUIT => root.cancel(),
-                        DpSignal::SIGUSR1 | DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {}
+                        DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {},
+                        DpSignal::SIGUSR1 => {
+                            let _ = router_ctl.rebind_cli().await;
+                        }
                     }
                 }
                 () = root.cancelled() => {
