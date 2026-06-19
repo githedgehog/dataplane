@@ -23,6 +23,7 @@ use concurrency::sync::atomic::{AtomicBool, Ordering};
 use std::future::Future;
 use std::time::Duration;
 
+use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 use tokio::time::error::Elapsed;
 use tracing::{error, info, warn};
@@ -250,38 +251,96 @@ impl Default for Shutdown {
     }
 }
 
-/// Spawn a task on `handle` that trips `root` on `SIGINT`/`SIGTERM`, and
-/// also exits if `root` was tripped through another path.
+/// Type to indicate the type of signal that was caught
+#[allow(missing_docs)]
+#[derive(Debug)]
+pub enum DpSignal {
+    SIGINT,
+    SIGTERM,
+    SIGQUIT,
+    SIGUSR1,
+    SIGUSR2,
+    SIGHUP,
+    SIGALRM,
+    SIGPIPE,
+}
+
+/// Spawn a task on `handle` that installs signal listeners for `SIGINT`/`SIGTERM` (and
+/// other signals which would otherwise terminate the process by default) and relays `DpSignal`s
+/// over a channel to the `Receiver` returned by this function.
+///
+/// The receiver should trip `root` on `SIGINT`/`SIGTERM`, which will also terminate this task.
 ///
 /// # Errors
 /// Returns [`std::io::Error`] if either signal handler install fails.
 #[cfg(unix)]
-pub fn spawn_signal_handler(
+pub fn spawn_signal_catcher(
     handle: &tokio::runtime::Handle,
     root: CancellationToken,
-) -> std::io::Result<()> {
+) -> std::io::Result<Receiver<DpSignal>> {
     use tokio::signal::unix::{SignalKind, signal};
+    let (tx, rx) = tokio::sync::mpsc::channel::<DpSignal>(10);
 
     // Install inside the runtime context so the handlers register with
     // its signal driver, not just the EnterGuard.
-    let (mut sigint, mut sigterm) = {
+    let (
+        mut sigint,
+        mut sigterm,
+        mut sigquit,
+        mut sigusr1,
+        mut sigusr2,
+        mut sighup,
+        mut sigalrm,
+        mut sigpipe,
+    ) = {
         let _guard = handle.enter();
         (
             signal(SignalKind::interrupt())?,
             signal(SignalKind::terminate())?,
+            signal(SignalKind::quit())?,
+            signal(SignalKind::user_defined1())?,
+            signal(SignalKind::user_defined2())?,
+            signal(SignalKind::hangup())?,
+            signal(SignalKind::alarm())?,
+            signal(SignalKind::pipe())?,
         )
     };
 
     handle.spawn(async move {
-        tokio::select! {
-            _ = sigint.recv()    => info!("SIGINT received; tripping shutdown"),
-            _ = sigterm.recv()   => info!("SIGTERM received; tripping shutdown"),
-            () = root.cancelled() => {}
+        loop {
+            tokio::select! {
+                _ = sigint.recv()  => {
+                    let _ = tx.send(DpSignal::SIGINT).await;
+                },
+                _ = sigterm.recv() => {
+                    let _ = tx.send(DpSignal::SIGTERM).await;
+                },
+                _ = sigquit.recv() => {
+                    let _ = tx.send(DpSignal::SIGQUIT).await;
+                },
+                _ = sigusr1.recv() => {
+                    let _ = tx.send(DpSignal::SIGUSR1).await;
+                },
+                _ = sigusr2.recv() => {
+                    let _ = tx.send(DpSignal::SIGUSR2).await;
+                },
+                _ = sighup.recv() => {
+                    let _ = tx.send(DpSignal::SIGHUP).await;
+                },
+                _ = sigalrm.recv() => {
+                    let _ = tx.send(DpSignal::SIGALRM).await;
+                },
+                _ = sigpipe.recv() => {
+                    let _ = tx.send(DpSignal::SIGPIPE).await;
+                },
+
+                () = root.cancelled() => break,
+            }
         }
-        root.cancel();
+        info!("Signal catcher ended");
     });
 
-    Ok(())
+    Ok(rx)
 }
 
 /// Spawn a detached OS thread that calls [`std::process::exit`] `deadline`
