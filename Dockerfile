@@ -8,10 +8,11 @@
 FROM debug-tools:dev
 
 ARG PROFILE=debug
+ARG PLATFORM=x86_64-unknown-linux-gnu
 LABEL sterile=false
-COPY --link --chown=0:0 ./target/${PROFILE}/dataplane /bin/dataplane
-COPY --link --chown=0:0 ./target/${PROFILE}/dataplane-init /bin/dataplane-init
-COPY --link --chown=0:0 ./target/${PROFILE}/cli /bin/cli
+COPY --link --chown=0:0 ./target/${PLATFORM}/${PROFILE}/dataplane /bin/dataplane
+COPY --link --chown=0:0 ./target/${PLATFORM}/${PROFILE}/dataplane-init /bin/dataplane-init
+COPY --link --chown=0:0 ./target/${PLATFORM}/${PROFILE}/cli /bin/cli
 
 WORKDIR /
 # this is a privileged container, we really do want to run as root
