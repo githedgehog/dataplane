@@ -1444,9 +1444,9 @@ dependencies = [
  "dataplane-net",
  "dataplane-tracectl",
  "futures",
- "k8s-openapi 0.28.0",
+ "k8s-openapi",
  "kube",
- "kube-core 3.1.0",
+ "kube-core",
  "linkme",
  "rustls",
  "schemars",
@@ -3077,18 +3077,6 @@ dependencies = [
 
 [[package]]
 name = "k8s-openapi"
-version = "0.27.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51b326f5219dd55872a72c1b6ddd1b830b8334996c667449c29391d657d78d5e"
-dependencies = [
- "base64",
- "jiff",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "k8s-openapi"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c6922f6afe80418dd6019818af5d0d34584c371780ff09b9752370c25b4abb"
@@ -3116,9 +3104,9 @@ version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bb9108095346a7096d11feeaff419c75dddcac1b2f59acb38d7bf3d13c3e146"
 dependencies = [
- "k8s-openapi 0.28.0",
+ "k8s-openapi",
  "kube-client",
- "kube-core 4.0.0",
+ "kube-core",
  "kube-derive",
  "kube-runtime",
 ]
@@ -3142,8 +3130,8 @@ dependencies = [
  "hyper-util",
  "jiff",
  "jsonpath-rust",
- "k8s-openapi 0.28.0",
- "kube-core 4.0.0",
+ "k8s-openapi",
+ "kube-core",
  "pem",
  "rustls",
  "secrecy",
@@ -3160,23 +3148,6 @@ dependencies = [
 
 [[package]]
 name = "kube-core"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f126d2db7a8b532ec1d839ece2a71e2485dc3bbca6cc3c3f929becaa810e719e"
-dependencies = [
- "derive_more",
- "form_urlencoded",
- "http",
- "jiff",
- "k8s-openapi 0.27.1",
- "serde",
- "serde-value",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "kube-core"
 version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1b02f5933ba06140d58c7d6727f6c319f0962ec6a344aa5e21e475e891deaa8"
@@ -3186,7 +3157,7 @@ dependencies = [
  "http",
  "jiff",
  "json-patch",
- "k8s-openapi 0.28.0",
+ "k8s-openapi",
  "schemars",
  "serde",
  "serde-value",
@@ -3223,7 +3194,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "hostname",
  "json-patch",
- "k8s-openapi 0.28.0",
+ "k8s-openapi",
  "kube-client",
  "parking_lot",
  "pin-project",
