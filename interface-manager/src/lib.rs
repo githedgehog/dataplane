@@ -19,6 +19,7 @@ use concurrency::sync::Arc;
 use std::marker::PhantomData;
 
 pub mod interface;
+pub mod monitor;
 pub mod tc;
 
 use rtnetlink::Handle;
