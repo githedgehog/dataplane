@@ -487,9 +487,11 @@ pub mod test {
             bmp_options: None,
         };
 
+        let rth = tokio::runtime::Handle::current();
+
         /* start config processor to test the processing of a config. The processor embeds the
         config database . In this test, we don't use any channel to communicate the config. */
-        let (mut processor, _) = ConfigProcessor::new(processor_config);
+        let (mut processor, _) = ConfigProcessor::new(processor_config, &rth);
 
         /* let the processor process the config */
         match processor.process_incoming_config(config).await {
