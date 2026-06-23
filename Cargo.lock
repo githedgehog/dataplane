@@ -1507,20 +1507,27 @@ name = "dataplane-interface-manager"
 version = "0.22.0"
 dependencies = [
  "bolero",
+ "caps",
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-rekon",
+ "dataplane-test-utils",
  "derive_builder",
+ "fixin",
  "futures",
  "libc",
  "multi_index_map",
+ "n-vm",
  "nix 0.31.3",
  "rtnetlink",
  "serde",
  "static_assertions",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
+ "tracing-subscriber",
+ "tracing-test",
 ]
 
 [[package]]
