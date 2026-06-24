@@ -19,6 +19,7 @@ common = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
 dplane-rpc = { workspace = true }
+interface-manager = { workspace = true }
 left-right-tlcache = { workspace = true }
 lifecycle = { workspace = true }
 lpm = { workspace = true }
