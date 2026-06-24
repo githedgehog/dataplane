@@ -3,9 +3,11 @@
 
 //! Router events and eventlog
 
+use crate::IfState;
 use crate::event::EventLog;
 use crate::router::cpi::CpiStatus;
 use config::GenId;
+use interface_manager::monitor::EthEvent;
 use std::cell::RefCell;
 use std::fmt::Display;
 
@@ -25,6 +27,9 @@ pub enum RouterEvent {
     FrrConfigApplyRequested(GenId),
     FrrConfigApplySuccess(GenId),
     FrrConfigApplyFailure(GenId),
+
+    IfAdmChange(EthEvent, IfState, IfState),
+    IfOperChange(EthEvent, IfState, IfState),
 }
 
 impl Display for RouterEvent {
@@ -56,6 +61,22 @@ impl Display for RouterEvent {
             }
             RouterEvent::FrrConfigApplyFailure(genid) => {
                 write!(f, "FRR configuration for generation {genid} FAILED")?;
+            }
+            RouterEvent::IfOperChange(ev, old, new) => {
+                let ifc = &ev.name;
+                write!(
+                    f,
+                    "{ifc}: oper state changed {old} -> {new} (carrier:{:#?}, carrier-up:{} carrier-down:{})",
+                    ev.carrier, ev.carrierup, ev.carrierdown
+                )?;
+            }
+            RouterEvent::IfAdmChange(ev, old, new) => {
+                let ifc = &ev.name;
+                write!(
+                    f,
+                    "{ifc}: admin state changed {old} -> {new} (carrier:{:#?}, carrier-up:{} carrier-down:{})",
+                    ev.carrier, ev.carrierup, ev.carrierdown
+                )?;
             }
         }
         Ok(())
