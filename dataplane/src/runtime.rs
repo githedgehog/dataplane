@@ -273,6 +273,7 @@ pub fn main() {
             MgmtParams {
                 config_dir: args.config_dir().cloned(),
                 hostname: gwname.clone(),
+                interfaces: args.interfaces().map(|i| i.interface).collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
                     pipeline_data: pipeline_factory().get_data(),
