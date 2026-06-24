@@ -5,6 +5,8 @@
 
 use crate::fib::fibtype::FibKey;
 use crate::rib::vrf::VrfId;
+use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
+
 use net::eth::mac::SourceMac;
 use net::interface::address::IfAddr;
 use net::interface::{InterfaceIndex, Mtu};
@@ -171,6 +173,7 @@ impl Interface {
                 "Operational state of interface {} changed: {} -> {}",
                 self.name, self.oper_state, state
             );
+            revent!(RouterEvent::IfOperChange(self.name.clone(), state));
             self.oper_state = state;
         }
     }
@@ -184,6 +187,7 @@ impl Interface {
                 "Admin state of interface {} changed: {} -> {}",
                 self.name, self.admin_state, state
             );
+            revent!(RouterEvent::IfAdmChange(self.name.clone(), state));
             self.admin_state = state;
         }
     }
