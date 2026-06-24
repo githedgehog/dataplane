@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use crate::prefix::{Prefix, PrefixError, PrefixSize};
 use ipnet::{Ipv4Net, Ipv6Net};
+use match_action::rule::PrefixSpec;
 use num_traits::{CheckedShr, PrimInt, Unsigned, Zero};
 
 pub trait Representable {
@@ -235,6 +236,12 @@ impl TryFrom<Prefix> for Ipv4Prefix {
     }
 }
 
+impl From<Ipv4Prefix> for PrefixSpec<Ipv4Addr> {
+    fn from(prefix: Ipv4Prefix) -> Self {
+        PrefixSpec::new(prefix.network(), prefix.len())
+    }
+}
+
 ////////////////////////////////////////////////////////////
 // IPv6 Prefix
 ////////////////////////////////////////////////////////////
@@ -368,6 +375,12 @@ impl TryFrom<Prefix> for Ipv6Prefix {
             Prefix::IPV4(_) => Err(Self::Error::InvalidVerConversion),
             Prefix::IPV6(p) => Ok(p),
         }
+    }
+}
+
+impl From<Ipv6Prefix> for PrefixSpec<Ipv6Addr> {
+    fn from(prefix: Ipv6Prefix) -> Self {
+        PrefixSpec::new(prefix.network(), prefix.len())
     }
 }
 

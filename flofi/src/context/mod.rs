@@ -30,7 +30,6 @@ impl NatRequirement {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FlofiContext {
     routes: PeeringTables,
     acls: AclTablesMap,

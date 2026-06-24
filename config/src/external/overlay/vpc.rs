@@ -54,6 +54,13 @@ impl Peering {
             remote_id: self.remote_id.clone(),
             gwgroup: self.gwgroup.clone(),
         };
+
+        if valid_peering_candidate.local.is_v4() != valid_peering_candidate.remote.is_v4() {
+            return Err(ConfigError::Forbidden(
+                "The two manifests of a peering must contain expose blocks of the same IP version",
+            ));
+        }
+
         valid_peering_candidate.validate_nat_combinations()?;
 
         Ok(valid_peering_candidate)
@@ -117,6 +124,13 @@ impl ValidatedPeering {
     #[must_use]
     pub fn gwgroup(&self) -> Option<&String> {
         self.gwgroup.as_ref()
+    }
+
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        // This is a validated object, we checked at validation time that both manifests use the
+        // same IP version, so we only need to look at one of them.
+        self.local.is_v4()
     }
 
     fn validate_nat_combinations(&self) -> ConfigResult {

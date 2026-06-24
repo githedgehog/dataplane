@@ -1414,10 +1414,12 @@ name = "dataplane-flofi"
 version = "0.22.0"
 dependencies = [
  "bitflags 2.13.0",
+ "dataplane-acl",
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
  "dataplane-lpm",
+ "dataplane-match-action",
  "dataplane-net",
  "dataplane-pipeline",
  "dataplane-tracectl",
@@ -1425,7 +1427,6 @@ dependencies = [
  "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
  "linkme",
  "tracing",
- "tracing-test",
 ]
 
 [[package]]
@@ -1610,6 +1611,7 @@ version = "0.22.0"
 dependencies = [
  "bnum",
  "bolero",
+ "dataplane-match-action",
  "ipnet",
  "num-traits",
  "prefix-trie",

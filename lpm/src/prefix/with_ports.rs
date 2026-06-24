@@ -5,6 +5,7 @@ use crate::prefix::range_map::UpperBoundFrom;
 use crate::prefix::{Prefix, PrefixSize};
 use bnum::cast::CastFrom;
 use bnum::{n, t};
+use match_action::RangeSpec;
 use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
@@ -708,6 +709,13 @@ impl RangeBounds<u16> for PortRange {
     }
     fn end_bound(&self) -> Bound<&u16> {
         Bound::Included(&self.end)
+    }
+}
+
+// Used for ACLs
+impl From<PortRange> for RangeSpec<u16> {
+    fn from(range: PortRange) -> Self {
+        RangeSpec::new(range.start, range.end)
     }
 }
 

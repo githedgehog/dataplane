@@ -14,7 +14,6 @@ use tracing::debug;
 
 mod context;
 
-#[derive(Debug)]
 pub struct Flofi {
     name: String,
     tablesr: FlofiContextWrapper,
@@ -233,7 +232,7 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Flofi {
     }
 }
 
-#[derive(Debug)]
+#[allow(unused)]
 struct FlofiContextWrapper(context::FlofiContext);
 
 impl FlofiContextWrapper {
@@ -249,7 +248,6 @@ impl FlofiContextWrapper {
         Option<context::NatRequirement>,
         Option<context::NatRequirement>,
     ) {
-        println!("Route lookup context: {:#?}", self.0);
         todo!();
     }
 
@@ -262,7 +260,6 @@ impl FlofiContextWrapper {
         _proto: NextHeader,
         _ports: Option<(u16, u16)>,
     ) -> bool {
-        println!("ACLs check context: {:#?}", self.0);
         todo!();
     }
 }
