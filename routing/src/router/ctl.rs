@@ -5,6 +5,7 @@
 
 use concurrency::sync::Arc;
 use config::{GwConfigMeta, ValidatedGwConfig};
+use interface_manager::monitor::EthEvent;
 use mio::Interest;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -17,6 +18,7 @@ use tracing::{debug, error, info, warn};
 use crate::RouterError;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
+use crate::interfaces::interface::IfState;
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
@@ -53,9 +55,11 @@ pub(crate) enum RouterCtlMsg {
     Config(Arc<ValidatedGwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
     RebindCli,
+    IfEvent(EthEvent),
 }
 
 /// Object to send control messages to the router
+#[derive(Clone)]
 pub struct RouterCtlSender(tokio::sync::mpsc::Sender<RouterCtlMsg>);
 impl RouterCtlSender {
     #[must_use]
@@ -163,6 +167,14 @@ impl RouterCtlSender {
             .map_err(|_| RouterError::Internal("Failed to send cli rebind request"))?;
         Ok(())
     }
+    pub async fn send_ifevent(&mut self, ev: EthEvent) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::IfEvent(ev);
+        self.0
+            .send(msg)
+            .await
+            .map_err(|_| RouterError::Internal("Failed to send interface event"))?;
+        Ok(())
+    }
 }
 
 /// Handle a lock request for the indicated CPI
@@ -245,6 +257,17 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
+fn handle_ifevent(ev: &EthEvent, db: &mut RoutingDb) {
+    let iftw = &mut db.iftw;
+    let adm_state = if ev.ifup { IfState::Up } else { IfState::Down };
+    let oper_state = if ev.iflowerup && ev.ifrunning && ev.carrier {
+        IfState::Up
+    } else {
+        IfState::Down
+    };
+    iftw.set_iface_admin_state(ev.ifindex, adm_state);
+    iftw.set_iface_oper_state(ev.ifindex, oper_state);
+}
 
 /// Handle a request from the control channel
 pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
@@ -261,6 +284,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
         Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
         Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
         Ok(RouterCtlMsg::RebindCli) => rio.cli_sock_restore(),
+        Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(&ev, db),
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");
