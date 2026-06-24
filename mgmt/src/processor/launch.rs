@@ -7,10 +7,13 @@ use crate::processor::k8s_client::{K8sClient, K8sClientError};
 use crate::processor::k8s_less_client::{K8sLess, K8sLessError};
 use crate::processor::mgmt_client::ConfigClient;
 use crate::processor::proc::ConfigProcessor;
-
 use crate::processor::proc::ConfigProcessorParams;
+use interface_manager::monitor::{EthEvent, InterfaceMonitor};
+
 use concurrency::sync::Arc;
 use lifecycle::{CancellationToken, Subsystem};
+use net::interface::InterfaceName;
+use routing::RouterCtlSender;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +31,7 @@ pub enum LaunchError {
 pub struct MgmtParams {
     pub config_dir: Option<String>,
     pub hostname: String,
+    pub interfaces: Vec<InterfaceName>,
     pub processor_params: ConfigProcessorParams,
 }
 
@@ -84,19 +88,58 @@ async fn k8s_mgmt_init(
     Ok(())
 }
 
+async fn interface_event_notify(
+    mut rx: tokio::sync::broadcast::Receiver<EthEvent>,
+    mut rtr_ctl: RouterCtlSender,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        tokio::select! {
+            sig = rx.recv() => match sig {
+                Ok(ev) => {
+                    info!("Notifying router about interface event...");
+                    if rtr_ctl.send_ifevent(ev).await.is_err() {
+                        warn!("Failed to relay interface event to router")
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    warn!("Dropped {n} interface events (rx lag)");
+                }
+                Err(RecvError::Closed) => {
+                    warn!("Interface monitor channel was closed. Will no longer relay interface events");
+                    break;
+                }
+            },
+        }
+    }
+}
+
 /// Init mgmt synchronously on `handle`, then spawn the long-lived tasks
 /// (config processor, status updater, config watcher) tracked under
 /// `mgmt`. Init observes `mgmt.root_token()` so SIGINT during init returns
 /// [`LaunchError::Cancelled`] within cancel latency.
 ///
 /// # Errors
-/// Returns [`LaunchError`] on init failure. [`LaunchError::Canc    elled`] is
+/// Returns [`LaunchError`] on init failure. [`LaunchError::Cancelled`] is
 /// a clean-shutdown signal — callers must not flip the fatal flag for it.
 pub fn run_mgmt(
     handle: &tokio::runtime::Handle,
     mgmt: &Subsystem,
     params: MgmtParams,
 ) -> Result<(), LaunchError> {
+    // start interface monitor
+    let ifmonitor = Arc::new(InterfaceMonitor::new(
+        mgmt.cancel_token(),
+        params.interfaces.as_slice(),
+    ));
+    let if_subsc = ifmonitor.subscribe();
+    mgmt.spawn_fatal_on_exit("interface monitor", ifmonitor.run(), handle);
+    mgmt.spawn_fatal_on_exit(
+        "interface event relay",
+        interface_event_notify(if_subsc, params.processor_params.router_ctl.clone()),
+        handle,
+    );
+
     // create config processor and run it
     let (processor, client) = ConfigProcessor::new(params.processor_params, handle);
     mgmt.spawn_fatal_on_exit("k8s-less config processor", processor.run(), handle);
