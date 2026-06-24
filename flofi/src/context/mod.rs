@@ -8,10 +8,10 @@ use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
 
 mod acls;
-mod routes;
+mod routing;
 
 use acls::AclTablesMap;
-use routes::RouteLookupTablesMap;
+use routing::PeeringTables;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NatRequirement {
@@ -32,7 +32,7 @@ impl NatRequirement {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FlofiContext {
-    routes: RouteLookupTablesMap,
+    routes: PeeringTables,
     acls: AclTablesMap,
 }
 
@@ -40,7 +40,7 @@ impl TryFrom<&ValidatedOverlay> for FlofiContext {
     type Error = ConfigError;
 
     fn try_from(overlay: &ValidatedOverlay) -> Result<Self, Self::Error> {
-        let route_lookup_tables_map = RouteLookupTablesMap::try_from(overlay)?;
+        let route_lookup_tables_map = PeeringTables::from(overlay);
         let acl_tables_map = AclTablesMap::from(overlay);
         Ok(Self {
             routes: route_lookup_tables_map,
