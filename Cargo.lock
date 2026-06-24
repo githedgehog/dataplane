@@ -1681,6 +1681,7 @@ dependencies = [
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-interface-manager",
  "dataplane-left-right-tlcache",
  "dataplane-lifecycle",
  "dataplane-lpm",
