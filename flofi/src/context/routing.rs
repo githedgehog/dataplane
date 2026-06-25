@@ -10,7 +10,7 @@ use config::external::overlay::vpc::ValidatedPeering;
 use lookup::Lookup;
 use lpm::prefix::Prefix;
 use lpm::prefix::with_ports::L4Protocol;
-use match_action::{Erased, FieldPredicate, MatchKey, RangeSpec};
+use match_action::{Erased, FieldPredicate, FixedSize, MatchKey, RangeSpec};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
@@ -144,47 +144,11 @@ impl VpcContext {
 type RuleBackend = Erased;
 
 #[derive(MatchKey, Clone)]
-struct TwoTupleIpv4 {
+struct TwoTuple<I> {
     #[prefix]
-    ip_range: Ipv4Addr,
+    ip_range: I,
     #[range]
     port_range: u16,
-}
-
-#[derive(MatchKey, Clone)]
-struct SingletonIpv4 {
-    #[prefix]
-    ip_range: Ipv4Addr,
-}
-
-impl From<TwoTupleIpv4> for SingletonIpv4 {
-    fn from(tuple: TwoTupleIpv4) -> Self {
-        Self {
-            ip_range: tuple.ip_range,
-        }
-    }
-}
-
-#[derive(MatchKey, Clone)]
-struct TwoTupleIpv6 {
-    #[prefix]
-    ip_range: Ipv6Addr,
-    #[range]
-    port_range: u16,
-}
-
-#[derive(MatchKey, Clone)]
-struct SingletonIpv6 {
-    #[prefix]
-    ip_range: Ipv6Addr,
-}
-
-impl From<TwoTupleIpv6> for SingletonIpv6 {
-    fn from(tuple: TwoTupleIpv6) -> Self {
-        Self {
-            ip_range: tuple.ip_range,
-        }
-    }
 }
 
 /// A two-field key (prefix + port range), buildable from a `PeeringPrefixInfo`.
@@ -192,33 +156,47 @@ trait TwoTupleKey: MatchKey {
     fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>>;
 }
 
-impl TwoTupleKey for TwoTupleIpv4 {
-    fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>> {
-        let Prefix::IPV4(ip_range) = ip_range else {
-            return None;
-        };
-        Some(
-            TwoTupleIpv4Rule {
-                ip_range: ip_range.into(),
-                port_range,
-            }
-            .into_backend_fields::<RuleBackend>(),
-        )
+impl<I> TwoTuple<I> {
+    fn new(ip: I, port: Option<u16>) -> Self {
+        Self {
+            ip_range: ip,
+            port_range: port.unwrap_or(0),
+        }
     }
 }
 
-impl TwoTupleKey for TwoTupleIpv6 {
+impl<I: FixedSize> TwoTupleKey for TwoTuple<I> {
     fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>> {
-        let Prefix::IPV6(ip_range) = ip_range else {
-            return None;
-        };
-        Some(
-            TwoTupleIpv6Rule {
-                ip_range: ip_range.into(),
-                port_range,
-            }
-            .into_backend_fields::<RuleBackend>(),
-        )
+        match ip_range {
+            Prefix::IPV4(ip_range) => Some(
+                TwoTupleRule {
+                    ip_range: ip_range.into(),
+                    port_range,
+                }
+                .into_backend_fields::<RuleBackend>(),
+            ),
+            Prefix::IPV6(ip_range) => Some(
+                TwoTupleRule {
+                    ip_range: ip_range.into(),
+                    port_range,
+                }
+                .into_backend_fields::<RuleBackend>(),
+            ),
+        }
+    }
+}
+
+#[derive(MatchKey, Clone)]
+struct Singleton<I> {
+    #[prefix]
+    ip_range: I,
+}
+
+impl<I> From<TwoTuple<I>> for Singleton<I> {
+    fn from(tuple: TwoTuple<I>) -> Self {
+        Self {
+            ip_range: tuple.ip_range,
+        }
     }
 }
 
@@ -228,31 +206,22 @@ trait SingletonKey: MatchKey {
     fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>>;
 }
 
-impl SingletonKey for SingletonIpv4 {
+impl<I: FixedSize> SingletonKey for Singleton<I> {
     fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>> {
-        let Prefix::IPV4(ip_range) = ip_range else {
-            return None;
-        };
-        Some(
-            SingletonIpv4Rule {
-                ip_range: ip_range.into(),
-            }
-            .into_backend_fields::<RuleBackend>(),
-        )
-    }
-}
-
-impl SingletonKey for SingletonIpv6 {
-    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>> {
-        let Prefix::IPV6(ip_range) = ip_range else {
-            return None;
-        };
-        Some(
-            SingletonIpv6Rule {
-                ip_range: ip_range.into(),
-            }
-            .into_backend_fields::<RuleBackend>(),
-        )
+        match ip_range {
+            Prefix::IPV4(ip_range) => Some(
+                SingletonRule {
+                    ip_range: ip_range.into(),
+                }
+                .into_backend_fields::<RuleBackend>(),
+            ),
+            Prefix::IPV6(ip_range) => Some(
+                SingletonRule {
+                    ip_range: ip_range.into(),
+                }
+                .into_backend_fields::<RuleBackend>(),
+            ),
+        }
     }
 }
 
@@ -375,8 +344,8 @@ where
 
 #[derive(Default)]
 pub(crate) struct PeeringTables {
-    v4: HashMap<VpcDiscriminant, VpcTable<TwoTupleIpv4, SingletonIpv4>>,
-    v6: HashMap<VpcDiscriminant, VpcTable<TwoTupleIpv6, SingletonIpv6>>,
+    v4: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>>,
+    v6: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>>,
 }
 
 impl From<&ValidatedOverlay> for PeeringTables {
@@ -403,13 +372,13 @@ impl From<&ValidatedOverlay> for PeeringTables {
             if !vpc_context_v4.local_ends.is_empty() {
                 tables.v4.insert(
                     local_vpcd,
-                    VpcTable::<TwoTupleIpv4, SingletonIpv4>::from(vpc_context_v4),
+                    VpcTable::<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>::from(vpc_context_v4),
                 );
             }
             if !vpc_context_v6.local_ends.is_empty() {
                 tables.v6.insert(
                     local_vpcd,
-                    VpcTable::<TwoTupleIpv6, SingletonIpv6>::from(vpc_context_v6),
+                    VpcTable::<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>::from(vpc_context_v6),
                 );
             }
         }
@@ -431,36 +400,20 @@ impl PeeringTables {
         Option<NatRequirement>,
     )> {
         let (src_port, dst_port) = ports.unzip();
-        match (src_ip, dst_ip) {
+        let result = match (src_ip, dst_ip) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => self.v4.get(&src_vpcd).and_then(|table| {
-                table
-                    .lookup(
-                        proto,
-                        &TwoTupleIpv4 {
-                            ip_range: src_ip,
-                            port_range: src_port.unwrap_or(0),
-                        },
-                        &TwoTupleIpv4 {
-                            ip_range: dst_ip,
-                            port_range: dst_port.unwrap_or(0),
-                        },
-                    )
-                    .map(|(verdict, nat_mode)| (verdict.dst_vpcd, verdict.nat_mode, nat_mode))
+                table.lookup(
+                    proto,
+                    &TwoTuple::new(src_ip, src_port),
+                    &TwoTuple::new(dst_ip, dst_port),
+                )
             }),
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => self.v6.get(&src_vpcd).and_then(|table| {
-                table
-                    .lookup(
-                        proto,
-                        &TwoTupleIpv6 {
-                            ip_range: src_ip,
-                            port_range: src_port.unwrap_or(0),
-                        },
-                        &TwoTupleIpv6 {
-                            ip_range: dst_ip,
-                            port_range: dst_port.unwrap_or(0),
-                        },
-                    )
-                    .map(|(verdict, nat_mode)| (verdict.dst_vpcd, verdict.nat_mode, nat_mode))
+                table.lookup(
+                    proto,
+                    &TwoTuple::new(src_ip, src_port),
+                    &TwoTuple::new(dst_ip, dst_port),
+                )
             }),
             _ => {
                 debug!(
@@ -468,6 +421,7 @@ impl PeeringTables {
                 );
                 None
             }
-        }
+        };
+        result.map(|(verdict, nat_mode)| (verdict.dst_vpcd, verdict.nat_mode, nat_mode))
     }
 }
