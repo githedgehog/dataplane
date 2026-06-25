@@ -45,16 +45,17 @@ impl Default for TracingRateLimit {
 pub struct TracingConfig {
     pub default: LevelFilter,
     pub tags: OrderMap<String, LevelFilter>,
-    /// Log rate limiter — always present; defaults to
-    /// [`TracingRateLimit::default`] when a config omits it.
-    pub rate_limit: TracingRateLimit,
+    /// Log rate limiter. `None` disables rate limiting (no config); `Some`
+    /// throttles with the given values (an empty CRD `{}` resolves to the
+    /// [`TracingRateLimit::default`]).
+    pub rate_limit: Option<TracingRateLimit>,
 }
 impl Default for TracingConfig {
     fn default() -> Self {
         Self {
             default: DEFAULT_DEFAULT_LOGLEVEL,
             tags: OrderMap::new(),
-            rate_limit: TracingRateLimit::default(),
+            rate_limit: None,
         }
     }
 }
@@ -64,14 +65,14 @@ impl TracingConfig {
         Self {
             default,
             tags: OrderMap::new(),
-            rate_limit: TracingRateLimit::default(),
+            rate_limit: None,
         }
     }
     pub fn add_tag(&mut self, tag: &str, level: LevelFilter) {
         let _ = self.tags.insert(tag.to_string(), level);
     }
     pub fn set_rate_limit(&mut self, rate_limit: TracingRateLimit) {
-        self.rate_limit = rate_limit;
+        self.rate_limit = Some(rate_limit);
     }
     /// Validate the tracing configuration.
     ///
