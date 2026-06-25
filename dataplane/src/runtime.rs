@@ -50,13 +50,17 @@ fn init_name(args: &CmdArgs) -> Result<String, String> {
     }
 }
 fn init_logging(args: &CmdArgs, gwname: &str) {
-    TracingControl::init_with_rate_limit(Some(args.tracing_rate_limit().map_or_else(
-        TracingRateLimitConfig::default,
-        |rate_limit| TracingRateLimitConfig {
-            burst: rate_limit.burst,
-            replenish_per_second: rate_limit.replenish_per_second,
-        },
-    )));
+    // Log throttling is on by default; a missing --tracing-rate-limit uses the
+    // default. It can be disabled at runtime via the dataplane CLI.
+    let rate_limit =
+        args.tracing_rate_limit()
+            .map_or_else(TracingRateLimitConfig::default, |rate_limit| {
+                TracingRateLimitConfig {
+                    burst: rate_limit.burst,
+                    replenish_per_second: rate_limit.replenish_per_second,
+                }
+            });
+    TracingControl::init_with_rate_limit(Some(rate_limit));
 
     let tctl = get_trace_ctl();
     info!(

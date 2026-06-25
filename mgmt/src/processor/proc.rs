@@ -557,9 +557,10 @@ fn apply_tracing_config(tracing: &Option<TracingConfig>) -> ConfigResult {
             .iter()
             .map(|(tag, level)| (tag.as_str(), *level)),
     )?;
-    get_trace_ctl().reload_rate_limit(Some(TracingRateLimitConfig {
-        burst: tracing.rate_limit.burst,
-        replenish_per_second: tracing.rate_limit.replenish_per_second,
+    // `None` (no rateLimit in config) disables throttling; `Some` enables it.
+    get_trace_ctl().reload_rate_limit(tracing.rate_limit.map(|rl| TracingRateLimitConfig {
+        burst: rl.burst,
+        replenish_per_second: rl.replenish_per_second,
     }));
     debug!("Successfully reconfigured tracing");
     Ok(())

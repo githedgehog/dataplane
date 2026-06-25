@@ -39,19 +39,16 @@ impl TryFrom<&GatewayAgentGatewayLogs> for TracingConfig {
                 config.add_tag(tag, level);
             }
         }
+        // Absent rateLimit => disabled (config.rate_limit stays None). A present
+        // block enables it; an empty `{}` / zero field resolves to the default.
         if let Some(rl) = logs.rate_limit.as_ref() {
-            let burst = rl.burst.filter(|&b| b > 0).ok_or_else(|| {
-                FromK8sConversionError::InvalidData("rate-limit burst must be > 0".to_string())
-            })?;
-            let replenish_per_second =
-                rl.replenish_per_second.filter(|&r| r > 0).ok_or_else(|| {
-                    FromK8sConversionError::InvalidData(
-                        "rate-limit replenishPerSecond must be > 0".to_string(),
-                    )
-                })?;
+            let defaults = TracingRateLimit::default();
             config.set_rate_limit(TracingRateLimit {
-                burst,
-                replenish_per_second,
+                burst: rl.burst.filter(|&b| b > 0).unwrap_or(defaults.burst),
+                replenish_per_second: rl
+                    .replenish_per_second
+                    .filter(|&r| r > 0)
+                    .unwrap_or(defaults.replenish_per_second),
             });
         }
         Ok(config)
@@ -95,14 +92,20 @@ mod test {
                     }
                 }
                 match logs.rate_limit.as_ref() {
+                    // Present => enabled; zero/unset fields resolve to the default.
                     Some(rl) => {
-                        assert_eq!(Some(tc.rate_limit.burst), rl.burst);
-                        assert_eq!(
-                            Some(tc.rate_limit.replenish_per_second),
-                            rl.replenish_per_second
-                        );
+                        let defaults = TracingRateLimit::default();
+                        let want = TracingRateLimit {
+                            burst: rl.burst.filter(|&b| b > 0).unwrap_or(defaults.burst),
+                            replenish_per_second: rl
+                                .replenish_per_second
+                                .filter(|&r| r > 0)
+                                .unwrap_or(defaults.replenish_per_second),
+                        };
+                        assert_eq!(tc.rate_limit, Some(want));
                     }
-                    None => assert_eq!(tc.rate_limit, TracingRateLimit::default()),
+                    // Absent => disabled.
+                    None => assert_eq!(tc.rate_limit, None),
                 }
             });
     }
