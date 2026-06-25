@@ -20,9 +20,9 @@ use tracing::debug;
 type NatMode = Option<NatRequirement>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Verdict {
-    nat_mode: NatMode,
-    dst_vpcd: VpcDiscriminant,
+pub(super) struct Verdict {
+    pub(super) nat_mode: NatMode,
+    pub(super) dst_vpcd: VpcDiscriminant,
 }
 
 /// Backend-neutral source rule: carries the raw match ingredients (prefix +
@@ -144,7 +144,7 @@ impl VpcContext {
 type RuleBackend = Erased;
 
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-struct TwoTuple<I> {
+pub(super) struct TwoTuple<I> {
     #[prefix]
     ip_range: I,
     #[range]
@@ -180,7 +180,7 @@ impl<I> TwoTuple<I> {
 }
 
 #[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
-struct Singleton<I> {
+pub(super) struct Singleton<I> {
     #[prefix]
     ip_range: I,
 }
@@ -245,18 +245,18 @@ fn build_singleton<U: FixedSize, V>(
 }
 
 #[derive(Debug, Clone)]
-struct PeeringEndsTables<T, U, V> {
-    tcp: ReferenceTable<T, V>,
-    udp: ReferenceTable<T, V>,
-    other: ReferenceTable<U, V>,
-    has_default: bool,
+pub(super) struct PeeringEndsTables<T, U, V> {
+    pub(super) tcp: ReferenceTable<T, V>,
+    pub(super) udp: ReferenceTable<T, V>,
+    pub(super) other: ReferenceTable<U, V>,
+    pub(super) has_default: bool,
 }
 
 #[derive(Debug, Clone)]
-struct VpcTable<T, U> {
-    local_ends: HashMap<VpcDiscriminant, PeeringEndsTables<T, U, NatMode>>,
-    remote_ends: PeeringEndsTables<T, U, Verdict>,
-    default_remote_vpcd: Option<VpcDiscriminant>,
+pub(super) struct VpcTable<T, U> {
+    pub(super) local_ends: HashMap<VpcDiscriminant, PeeringEndsTables<T, U, NatMode>>,
+    pub(super) remote_ends: PeeringEndsTables<T, U, Verdict>,
+    pub(super) default_remote_vpcd: Option<VpcDiscriminant>,
 }
 
 impl<T, U> From<VpcContext> for VpcTable<TwoTuple<T>, Singleton<U>>
@@ -292,9 +292,9 @@ where
 }
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct PeeringTables {
-    v4: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>>,
-    v6: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>>,
+pub(super) struct PeeringTables {
+    pub(super) v4: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>>,
+    pub(super) v6: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>>,
 }
 
 impl From<&ValidatedOverlay> for PeeringTables {
@@ -382,7 +382,7 @@ where
 }
 
 impl PeeringTables {
-    pub(crate) fn lookup(
+    pub(super) fn lookup(
         &self,
         src_vpcd: VpcDiscriminant,
         src_ip: IpAddr,

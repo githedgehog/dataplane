@@ -10,6 +10,7 @@ use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
 mod acls;
+mod display;
 mod routing;
 #[cfg(test)]
 mod routing_tests;
