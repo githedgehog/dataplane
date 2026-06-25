@@ -712,10 +712,34 @@ impl RangeBounds<u16> for PortRange {
     }
 }
 
-// Used for ACLs
+// Build RangeSpec<u16> from relevant types - This is used with ACLs
+
+const PORT_RANGE_WILDCARD: RangeSpec<u16> = RangeSpec::new(0, u16::MAX);
+
 impl From<PortRange> for RangeSpec<u16> {
     fn from(range: PortRange) -> Self {
         RangeSpec::new(range.start, range.end)
+    }
+}
+
+impl From<&Prefix> for RangeSpec<u16> {
+    fn from(_: &Prefix) -> Self {
+        PORT_RANGE_WILDCARD
+    }
+}
+
+impl From<&PrefixWithPorts> for RangeSpec<u16> {
+    fn from(prefix_with_ports: &PrefixWithPorts) -> Self {
+        prefix_with_ports.ports().into()
+    }
+}
+
+impl From<&PrefixWithOptionalPorts> for RangeSpec<u16> {
+    fn from(range: &PrefixWithOptionalPorts) -> Self {
+        match range {
+            PrefixWithOptionalPorts::Prefix(p) => p.into(),
+            PrefixWithOptionalPorts::PrefixPorts(p) => p.into(),
+        }
     }
 }
 

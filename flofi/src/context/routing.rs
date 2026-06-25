@@ -9,7 +9,7 @@ use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpc::ValidatedPeering;
 use lookup::Lookup;
 use lpm::prefix::Prefix;
-use lpm::prefix::with_ports::{L4Protocol, PortRange};
+use lpm::prefix::with_ports::L4Protocol;
 use match_action::{Erased, FieldPredicate, MatchKey, RangeSpec};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
@@ -17,149 +17,12 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::debug;
 
-const PORT_RANGE_WILDCARD: RangeSpec<u16> = RangeSpec::new(0, u16::MAX);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PeeringPrefixInfo {
-    ip_range: Prefix,
-    proto: L4Protocol,
-    port_range: Option<PortRange>,
-    dst_vpcd: VpcDiscriminant,
-    nat_mode: Option<NatRequirement>,
-}
-
-impl From<&PeeringPrefixInfo> for RangeSpec<u16> {
-    fn from(prefix: &PeeringPrefixInfo) -> Self {
-        prefix
-            .port_range
-            .map_or(PORT_RANGE_WILDCARD, RangeSpec::from)
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct PeeringManifestInfo {
-    prefixes: Vec<PeeringPrefixInfo>,
-    has_default: bool,
-}
-
-impl PeeringManifestInfo {
-    fn remote_end(remote_vpcd: VpcDiscriminant, peering: &ValidatedPeering) -> Self {
-        let mut table = Self::default();
-        for remote_expose in peering
-            .remote()
-            .valexp()
-            .iter()
-            .filter(|expose| expose.can_receive_connection())
-        {
-            for remote_prefix in remote_expose.public_ips() {
-                table.prefixes.push(PeeringPrefixInfo {
-                    ip_range: remote_prefix.prefix(),
-                    proto: remote_expose.nat().map_or(L4Protocol::Any, |nat| nat.proto),
-                    port_range: remote_prefix.ports(),
-                    dst_vpcd: remote_vpcd,
-                    nat_mode: NatRequirement::from_expose(remote_expose),
-                });
-            }
-        }
-        table.has_default = peering.remote().has_default_expose();
-        table
-    }
-
-    fn local_end(remote_vpcd: VpcDiscriminant, peering: &ValidatedPeering) -> Self {
-        let mut table = Self::default();
-        for local_expose in peering
-            .local()
-            .valexp()
-            .iter()
-            .filter(|expose| expose.can_init_connection())
-        {
-            for local_prefix in local_expose.ips() {
-                table.prefixes.push(PeeringPrefixInfo {
-                    ip_range: local_prefix.prefix(),
-                    proto: local_expose.nat().map_or(L4Protocol::Any, |nat| nat.proto),
-                    port_range: local_prefix.ports(),
-                    dst_vpcd: remote_vpcd,
-                    nat_mode: NatRequirement::from_expose(local_expose),
-                });
-            }
-        }
-        table.has_default = peering.local().has_default_expose();
-        table
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PeeringInfo {
-    local: PeeringManifestInfo,
-    remote: PeeringManifestInfo,
-    remote_vpcd: VpcDiscriminant,
-}
-
-impl PeeringInfo {
-    fn from_peering(remote_vpcd: VpcDiscriminant, peering: &ValidatedPeering) -> Self {
-        Self {
-            local: PeeringManifestInfo::local_end(remote_vpcd, peering),
-            remote: PeeringManifestInfo::remote_end(remote_vpcd, peering),
-            remote_vpcd,
-        }
-    }
-}
-
-// -----------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NatMode {
-    NoNat,
-    StaticNat,
-    Masquerade,
-    PortForwarding,
-}
+type NatMode = Option<NatRequirement>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Verdict {
     nat_mode: NatMode,
     dst_vpcd: VpcDiscriminant,
-}
-
-trait FromPeeringEndPrefix {
-    fn from(prefix: &PeeringPrefixInfo) -> Self;
-}
-
-impl FromPeeringEndPrefix for NatMode {
-    fn from(prefix: &PeeringPrefixInfo) -> Self {
-        prefix.nat_mode.into()
-    }
-}
-
-impl FromPeeringEndPrefix for Verdict {
-    fn from(prefix: &PeeringPrefixInfo) -> Self {
-        Verdict {
-            nat_mode: prefix.nat_mode.into(),
-            dst_vpcd: prefix.dst_vpcd,
-        }
-    }
-}
-
-impl From<Option<NatRequirement>> for NatMode {
-    fn from(nat: Option<NatRequirement>) -> Self {
-        match nat {
-            None => NatMode::NoNat,
-            Some(NatRequirement::Static) => NatMode::StaticNat,
-            Some(NatRequirement::Masquerade) => NatMode::Masquerade,
-            Some(NatRequirement::PortForwarding) => NatMode::PortForwarding,
-        }
-    }
-}
-
-impl From<NatMode> for Option<NatRequirement> {
-    fn from(nat_mode: NatMode) -> Self {
-        match nat_mode {
-            NatMode::NoNat => None,
-            NatMode::StaticNat => Some(NatRequirement::Static),
-            NatMode::Masquerade => Some(NatRequirement::Masquerade),
-            NatMode::PortForwarding => Some(NatRequirement::PortForwarding),
-        }
-    }
 }
 
 /// Backend-neutral source rule: carries the raw match ingredients (prefix +
@@ -168,29 +31,17 @@ impl From<NatMode> for Option<NatRequirement> {
 /// `SingletonKey`), so the choice of backend lives at a single site rather than
 /// being baked in here at the front of the pipeline.
 #[derive(Debug, Clone)]
-struct PeeringRule<V> {
+struct PeeringPrefixInfo<V> {
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
     action: V,
 }
 
-impl<V: FromPeeringEndPrefix> From<&PeeringPrefixInfo> for PeeringRule<V> {
-    fn from(prefix: &PeeringPrefixInfo) -> Self {
-        Self {
-            ip_range: prefix.ip_range,
-            port_range: prefix.into(),
-            action: V::from(prefix),
-        }
-    }
-}
-
-// -----------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 struct PeeringEndsContext<V> {
-    tcp: Vec<PeeringRule<V>>,
-    udp: Vec<PeeringRule<V>>,
-    other: Vec<PeeringRule<V>>,
+    tcp: Vec<PeeringPrefixInfo<V>>,
+    udp: Vec<PeeringPrefixInfo<V>>,
+    other: Vec<PeeringPrefixInfo<V>>,
     has_default: bool,
 }
 
@@ -206,7 +57,7 @@ impl<V> Default for PeeringEndsContext<V> {
 }
 
 impl<V: Clone> PeeringEndsContext<V> {
-    fn insert(&mut self, rule: PeeringRule<V>, proto: L4Protocol) {
+    fn insert(&mut self, rule: PeeringPrefixInfo<V>, proto: L4Protocol) {
         match proto {
             L4Protocol::Tcp => self.tcp.push(rule),
             L4Protocol::Udp => self.udp.push(rule),
@@ -219,6 +70,55 @@ impl<V: Clone> PeeringEndsContext<V> {
     }
 }
 
+impl PeeringEndsContext<NatMode> {
+    fn local_end(peering: &ValidatedPeering) -> Self {
+        let mut ends = Self::default();
+        for local_expose in peering
+            .local()
+            .valexp()
+            .iter()
+            .filter(|expose| expose.can_init_connection())
+        {
+            for local_prefix in local_expose.ips() {
+                let proto = local_expose.nat_proto().unwrap_or(L4Protocol::Any);
+                let rule = PeeringPrefixInfo {
+                    ip_range: local_prefix.prefix(),
+                    port_range: local_prefix.into(),
+                    action: NatRequirement::from_expose(local_expose),
+                };
+                ends.insert(rule, proto);
+            }
+        }
+        ends.has_default = peering.local().has_default_expose();
+        ends
+    }
+}
+
+impl PeeringEndsContext<Verdict> {
+    fn add_remote_end(&mut self, remote_vpcd: VpcDiscriminant, peering: &ValidatedPeering) {
+        for remote_expose in peering
+            .remote()
+            .valexp()
+            .iter()
+            .filter(|expose| expose.can_receive_connection())
+        {
+            for remote_prefix in remote_expose.public_ips() {
+                let proto = remote_expose.nat_proto().unwrap_or(L4Protocol::Any);
+                let rule = PeeringPrefixInfo {
+                    ip_range: remote_prefix.prefix(),
+                    port_range: remote_prefix.into(),
+                    action: Verdict {
+                        nat_mode: NatRequirement::from_expose(remote_expose),
+                        dst_vpcd: remote_vpcd,
+                    },
+                };
+                self.insert(rule, proto);
+            }
+        }
+        self.has_default |= peering.remote().has_default_expose();
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct VpcContext {
     local_ends: HashMap<VpcDiscriminant, PeeringEndsContext<NatMode>>,
@@ -227,24 +127,21 @@ struct VpcContext {
 }
 
 impl VpcContext {
-    fn insert(&mut self, peering_info: &PeeringInfo) {
-        let mut local_context = PeeringEndsContext::<NatMode>::default();
-        for prefix in &peering_info.local.prefixes {
-            local_context.insert(PeeringRule::from(prefix), prefix.proto);
-        }
-        local_context.has_default |= peering_info.local.has_default;
+    fn insert(&mut self, remote_vpcd: VpcDiscriminant, peering: &ValidatedPeering) {
         self.local_ends
-            .insert(peering_info.remote_vpcd, local_context);
-
-        for prefix in &peering_info.remote.prefixes {
-            self.remote_ends
-                .insert(PeeringRule::from(prefix), prefix.proto);
-        }
-        self.remote_ends.has_default |= peering_info.remote.has_default;
+            .insert(remote_vpcd, PeeringEndsContext::local_end(peering));
+        self.remote_ends.add_remote_end(remote_vpcd, peering);
     }
 }
 
-// -----------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+// Backend lowering layer.
+//
+// This is where source rules are lowered into ACL field predicates
+// (`into_backend_fields::<RuleBackend>()`). Switching the reference backend for a hardware backend
+// means changing `RuleBackend` here (and the table types in `PeeringEndsTables`).
+
+type RuleBackend = Erased;
 
 #[derive(MatchKey, Clone)]
 struct TwoTupleIpv4 {
@@ -252,15 +149,6 @@ struct TwoTupleIpv4 {
     ip_range: Ipv4Addr,
     #[range]
     port_range: u16,
-}
-
-impl TwoTupleIpv4 {
-    fn new(ip_range: Ipv4Addr, port_range: Option<u16>) -> Self {
-        Self {
-            ip_range,
-            port_range: port_range.unwrap_or(0),
-        }
-    }
 }
 
 #[derive(MatchKey, Clone)]
@@ -285,15 +173,6 @@ struct TwoTupleIpv6 {
     port_range: u16,
 }
 
-impl TwoTupleIpv6 {
-    fn new(ip_range: Ipv6Addr, port_range: Option<u16>) -> Self {
-        Self {
-            ip_range,
-            port_range: port_range.unwrap_or(0),
-        }
-    }
-}
-
 #[derive(MatchKey, Clone)]
 struct SingletonIpv6 {
     #[prefix]
@@ -308,26 +187,9 @@ impl From<TwoTupleIpv6> for SingletonIpv6 {
     }
 }
 
-// -----------------------------------------------------------------------
-// Backend lowering layer.
-//
-// This is the single site where source rules are lowered into ACL field
-// predicates. Switching the reference backend for a hardware backend means
-// changing `RuleBackend` (and the table types in `PeeringEndsTables`) here --
-// the build pipeline above stays backend-agnostic.
-
-type RuleBackend = Erased;
-
-/// A two-field key (prefix + port range), buildable from a `PeeringRule`.
+/// A two-field key (prefix + port range), buildable from a `PeeringPrefixInfo`.
 trait TwoTupleKey: MatchKey {
     fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>>;
-}
-
-/// A single-field key (prefix only), buildable from a `PeeringRule`. Used for
-/// non-TCP/UDP traffic, where L4 ports are not meaningful and so are dropped
-/// from the match.
-trait SingletonKey: MatchKey {
-    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>>;
 }
 
 impl TwoTupleKey for TwoTupleIpv4 {
@@ -360,6 +222,12 @@ impl TwoTupleKey for TwoTupleIpv6 {
     }
 }
 
+/// A single-field key (prefix only), buildable from a `PeeringPrefixInfo`.
+/// Used for non-TCP/UDP traffic, where L4 ports are missing or not relevant.
+trait SingletonKey: MatchKey {
+    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>>;
+}
+
 impl SingletonKey for SingletonIpv4 {
     fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>> {
         let Prefix::IPV4(ip_range) = ip_range else {
@@ -388,8 +256,8 @@ impl SingletonKey for SingletonIpv6 {
     }
 }
 
-/// Lower a bucket of source rules into a two-field (prefix + port) table.
-fn build_two_tuple<T: TwoTupleKey, V>(rules: Vec<PeeringRule<V>>) -> ReferenceTable<T, V> {
+/// Lower rules into a two-field (prefix + port) table.
+fn build_two_tuple<T: TwoTupleKey, V>(rules: Vec<PeeringPrefixInfo<V>>) -> ReferenceTable<T, V> {
     let rules = rules
         .into_iter()
         .filter_map(|rule| {
@@ -402,9 +270,8 @@ fn build_two_tuple<T: TwoTupleKey, V>(rules: Vec<PeeringRule<V>>) -> ReferenceTa
     ReferenceTable::new(rules)
 }
 
-/// Lower a bucket of source rules into a single-field (prefix only) table,
-/// dropping the port predicate.
-fn build_singleton<U: SingletonKey, V>(rules: Vec<PeeringRule<V>>) -> ReferenceTable<U, V> {
+/// Lower rules into a single-field (prefix only) table, dropping the port predicate.
+fn build_singleton<U: SingletonKey, V>(rules: Vec<PeeringPrefixInfo<V>>) -> ReferenceTable<U, V> {
     let rules = rules
         .into_iter()
         .filter_map(|rule| Some(RefRule::new(U::predicates(rule.ip_range)?, rule.action)))
@@ -482,27 +349,27 @@ where
         src_tuple: &T,
         dst_tuple: &T,
     ) -> Option<(Verdict, NatMode)> {
-        let verdict = self
-            .remote_ends
-            .lookup(proto, dst_tuple)
-            .cloned()
-            .or_else(|| {
-                self.default_remote_vpcd.map(|dst_vpcd| Verdict {
-                    nat_mode: NatMode::NoNat,
-                    dst_vpcd,
-                })
-            })?;
-        let local_table = self.local_ends.get(&verdict.dst_vpcd)?;
-        let nat_mode =
+        let remote_end_verdict =
+            self.remote_ends
+                .lookup(proto, dst_tuple)
+                .cloned()
+                .or_else(|| {
+                    self.default_remote_vpcd.map(|dst_vpcd| Verdict {
+                        nat_mode: None,
+                        dst_vpcd,
+                    })
+                })?;
+        let local_table = self.local_ends.get(&remote_end_verdict.dst_vpcd)?;
+        let local_end_nat_mode =
             local_table
                 .lookup(proto, src_tuple)
                 .copied()
                 .or(if local_table.has_default {
-                    Some(NatMode::NoNat)
+                    Some(None)
                 } else {
                     None
                 })?;
-        Some((verdict, nat_mode))
+        Some((remote_end_verdict, local_end_nat_mode))
     }
 }
 
@@ -521,14 +388,13 @@ impl From<&ValidatedOverlay> for PeeringTables {
             let local_vpcd = VpcDiscriminant::VNI(vpc.vni());
             for peering in vpc.peerings() {
                 let remote_vpcd = VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(peering));
-                let peering_info = PeeringInfo::from_peering(remote_vpcd, peering);
                 if peering.is_v4() {
-                    vpc_context_v4.insert(&peering_info);
+                    vpc_context_v4.insert(remote_vpcd, peering);
                     if peering.remote().has_default_expose() {
                         vpc_context_v4.default_remote_vpcd = Some(remote_vpcd);
                     }
                 } else {
-                    vpc_context_v6.insert(&peering_info);
+                    vpc_context_v6.insert(remote_vpcd, peering);
                     if peering.remote().has_default_expose() {
                         vpc_context_v6.default_remote_vpcd = Some(remote_vpcd);
                     }
@@ -570,23 +436,31 @@ impl PeeringTables {
                 table
                     .lookup(
                         proto,
-                        &TwoTupleIpv4::new(src_ip, src_port),
-                        &TwoTupleIpv4::new(dst_ip, dst_port),
+                        &TwoTupleIpv4 {
+                            ip_range: src_ip,
+                            port_range: src_port.unwrap_or(0),
+                        },
+                        &TwoTupleIpv4 {
+                            ip_range: dst_ip,
+                            port_range: dst_port.unwrap_or(0),
+                        },
                     )
-                    .map(|(verdict, nat_mode)| {
-                        (verdict.dst_vpcd, verdict.nat_mode.into(), nat_mode.into())
-                    })
+                    .map(|(verdict, nat_mode)| (verdict.dst_vpcd, verdict.nat_mode, nat_mode))
             }),
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => self.v6.get(&src_vpcd).and_then(|table| {
                 table
                     .lookup(
                         proto,
-                        &TwoTupleIpv6::new(src_ip, src_port),
-                        &TwoTupleIpv6::new(dst_ip, dst_port),
+                        &TwoTupleIpv6 {
+                            ip_range: src_ip,
+                            port_range: src_port.unwrap_or(0),
+                        },
+                        &TwoTupleIpv6 {
+                            ip_range: dst_ip,
+                            port_range: dst_port.unwrap_or(0),
+                        },
                     )
-                    .map(|(verdict, nat_mode)| {
-                        (verdict.dst_vpcd, verdict.nat_mode.into(), nat_mode.into())
-                    })
+                    .map(|(verdict, nat_mode)| (verdict.dst_vpcd, verdict.nat_mode, nat_mode))
             }),
             _ => {
                 debug!(
