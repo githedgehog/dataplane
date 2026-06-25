@@ -9,6 +9,7 @@
 pub mod control;
 pub mod display;
 pub mod targets;
+mod throttle;
 
 // re-exports
 pub use control::DEFAULT_DEFAULT_LOGLEVEL;
