@@ -10,7 +10,7 @@ use config::external::overlay::vpc::ValidatedPeering;
 use lookup::Lookup;
 use lpm::prefix::Prefix;
 use lpm::prefix::with_ports::{L4Protocol, PortRange};
-use match_action::{Erased, MatchKey, RangeSpec};
+use match_action::{Erased, FieldPredicate, MatchKey, RangeSpec};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
@@ -162,25 +162,24 @@ impl From<NatMode> for Option<NatRequirement> {
     }
 }
 
-impl<V: FromPeeringEndPrefix> From<&PeeringPrefixInfo> for RefRule<V> {
+/// Backend-neutral source rule: carries the raw match ingredients (prefix +
+/// port range) plus the already-resolved action. Lowering into ACL field
+/// predicates is deferred to the table-build step (see `TwoTupleKey` /
+/// `SingletonKey`), so the choice of backend lives at a single site rather than
+/// being baked in here at the front of the pipeline.
+#[derive(Debug, Clone)]
+struct PeeringRule<V> {
+    ip_range: Prefix,
+    port_range: RangeSpec<u16>,
+    action: V,
+}
+
+impl<V: FromPeeringEndPrefix> From<&PeeringPrefixInfo> for PeeringRule<V> {
     fn from(prefix: &PeeringPrefixInfo) -> Self {
-        match prefix.ip_range {
-            Prefix::IPV4(ip_range) => RefRule::new(
-                TwoTupleIpv4Rule {
-                    ip_range: ip_range.into(),
-                    port_range: prefix.into(),
-                }
-                .into_backend_fields::<Erased>(),
-                V::from(prefix),
-            ),
-            Prefix::IPV6(ip_range) => RefRule::new(
-                TwoTupleIpv6Rule {
-                    ip_range: ip_range.into(),
-                    port_range: prefix.into(),
-                }
-                .into_backend_fields::<Erased>(),
-                V::from(prefix),
-            ),
+        Self {
+            ip_range: prefix.ip_range,
+            port_range: prefix.into(),
+            action: V::from(prefix),
         }
     }
 }
@@ -189,9 +188,9 @@ impl<V: FromPeeringEndPrefix> From<&PeeringPrefixInfo> for RefRule<V> {
 
 #[derive(Debug, Clone)]
 struct PeeringEndsContext<V> {
-    tcp: Vec<RefRule<V>>,
-    udp: Vec<RefRule<V>>,
-    other: Vec<RefRule<V>>,
+    tcp: Vec<PeeringRule<V>>,
+    udp: Vec<PeeringRule<V>>,
+    other: Vec<PeeringRule<V>>,
     has_default: bool,
 }
 
@@ -207,7 +206,7 @@ impl<V> Default for PeeringEndsContext<V> {
 }
 
 impl<V: Clone> PeeringEndsContext<V> {
-    fn insert(&mut self, rule: RefRule<V>, proto: L4Protocol) {
+    fn insert(&mut self, rule: PeeringRule<V>, proto: L4Protocol) {
         match proto {
             L4Protocol::Tcp => self.tcp.push(rule),
             L4Protocol::Udp => self.udp.push(rule),
@@ -231,16 +230,15 @@ impl VpcContext {
     fn insert(&mut self, peering_info: &PeeringInfo) {
         let mut local_context = PeeringEndsContext::<NatMode>::default();
         for prefix in &peering_info.local.prefixes {
-            let rule = RefRule::from(prefix);
-            local_context.insert(rule, prefix.proto);
+            local_context.insert(PeeringRule::from(prefix), prefix.proto);
         }
         local_context.has_default |= peering_info.local.has_default;
         self.local_ends
             .insert(peering_info.remote_vpcd, local_context);
 
         for prefix in &peering_info.remote.prefixes {
-            let rule = RefRule::from(prefix);
-            self.remote_ends.insert(rule, prefix.proto);
+            self.remote_ends
+                .insert(PeeringRule::from(prefix), prefix.proto);
         }
         self.remote_ends.has_default |= peering_info.remote.has_default;
     }
@@ -310,6 +308,110 @@ impl From<TwoTupleIpv6> for SingletonIpv6 {
     }
 }
 
+// -----------------------------------------------------------------------
+// Backend lowering layer.
+//
+// This is the single site where source rules are lowered into ACL field
+// predicates. Switching the reference backend for a hardware backend means
+// changing `RuleBackend` (and the table types in `PeeringEndsTables`) here --
+// the build pipeline above stays backend-agnostic.
+
+type RuleBackend = Erased;
+
+/// A two-field key (prefix + port range), buildable from a `PeeringRule`.
+trait TwoTupleKey: MatchKey {
+    fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>>;
+}
+
+/// A single-field key (prefix only), buildable from a `PeeringRule`. Used for
+/// non-TCP/UDP traffic, where L4 ports are not meaningful and so are dropped
+/// from the match.
+trait SingletonKey: MatchKey {
+    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>>;
+}
+
+impl TwoTupleKey for TwoTupleIpv4 {
+    fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>> {
+        let Prefix::IPV4(ip_range) = ip_range else {
+            return None;
+        };
+        Some(
+            TwoTupleIpv4Rule {
+                ip_range: ip_range.into(),
+                port_range,
+            }
+            .into_backend_fields::<RuleBackend>(),
+        )
+    }
+}
+
+impl TwoTupleKey for TwoTupleIpv6 {
+    fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>> {
+        let Prefix::IPV6(ip_range) = ip_range else {
+            return None;
+        };
+        Some(
+            TwoTupleIpv6Rule {
+                ip_range: ip_range.into(),
+                port_range,
+            }
+            .into_backend_fields::<RuleBackend>(),
+        )
+    }
+}
+
+impl SingletonKey for SingletonIpv4 {
+    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>> {
+        let Prefix::IPV4(ip_range) = ip_range else {
+            return None;
+        };
+        Some(
+            SingletonIpv4Rule {
+                ip_range: ip_range.into(),
+            }
+            .into_backend_fields::<RuleBackend>(),
+        )
+    }
+}
+
+impl SingletonKey for SingletonIpv6 {
+    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>> {
+        let Prefix::IPV6(ip_range) = ip_range else {
+            return None;
+        };
+        Some(
+            SingletonIpv6Rule {
+                ip_range: ip_range.into(),
+            }
+            .into_backend_fields::<RuleBackend>(),
+        )
+    }
+}
+
+/// Lower a bucket of source rules into a two-field (prefix + port) table.
+fn build_two_tuple<T: TwoTupleKey, V>(rules: Vec<PeeringRule<V>>) -> ReferenceTable<T, V> {
+    let rules = rules
+        .into_iter()
+        .filter_map(|rule| {
+            Some(RefRule::new(
+                T::predicates(rule.ip_range, rule.port_range)?,
+                rule.action,
+            ))
+        })
+        .collect();
+    ReferenceTable::new(rules)
+}
+
+/// Lower a bucket of source rules into a single-field (prefix only) table,
+/// dropping the port predicate.
+fn build_singleton<U: SingletonKey, V>(rules: Vec<PeeringRule<V>>) -> ReferenceTable<U, V> {
+    let rules = rules
+        .into_iter()
+        .filter_map(|rule| Some(RefRule::new(U::predicates(rule.ip_range)?, rule.action)))
+        .collect();
+    ReferenceTable::new(rules)
+}
+
 struct PeeringEndsTables<T, U, V> {
     tcp: ReferenceTable<T, V>,
     udp: ReferenceTable<T, V>,
@@ -339,26 +441,26 @@ struct VpcTable<T, U> {
 
 impl<T, U> From<VpcContext> for VpcTable<T, U>
 where
-    T: MatchKey,
-    U: MatchKey,
+    T: TwoTupleKey,
+    U: SingletonKey,
 {
     fn from(context: VpcContext) -> Self {
         let mut local_ends = HashMap::new();
-        for (remote_vpcd, context) in context.local_ends {
+        for (remote_vpcd, ends) in context.local_ends {
             local_ends.insert(
                 remote_vpcd,
                 PeeringEndsTables {
-                    tcp: ReferenceTable::new(context.tcp),
-                    udp: ReferenceTable::new(context.udp),
-                    other: ReferenceTable::new(context.other),
-                    has_default: context.has_default,
+                    tcp: build_two_tuple::<T, _>(ends.tcp),
+                    udp: build_two_tuple::<T, _>(ends.udp),
+                    other: build_singleton::<U, _>(ends.other),
+                    has_default: ends.has_default,
                 },
             );
         }
         let remote_ends = PeeringEndsTables {
-            tcp: ReferenceTable::new(context.remote_ends.tcp),
-            udp: ReferenceTable::new(context.remote_ends.udp),
-            other: ReferenceTable::new(context.remote_ends.other),
+            tcp: build_two_tuple::<T, _>(context.remote_ends.tcp),
+            udp: build_two_tuple::<T, _>(context.remote_ends.udp),
+            other: build_singleton::<U, _>(context.remote_ends.other),
             has_default: context.remote_ends.has_default,
         };
         Self {
