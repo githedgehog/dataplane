@@ -25,4 +25,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 config = { workspace = true, features = ["testing"] }
 lpm = { workspace = true, features = ["testing"] }
+net = { workspace = true, features = ["builder"] }
 tracing-test = { workspace = true, features = [] }

@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use concurrency::sync::Arc;
+use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
 use net::flows::{FlowInfo, FlowStatus};
@@ -66,7 +67,7 @@ impl Flofi {
             .tablesr
             .lookup_route(src_vpcd, src_ip, dst_ip, proto, ports);
 
-        let Some((dst_vpcd, src_nat_mode, dst_nat_mode)) = route else {
+        let Some((dst_vpcd, dst_nat_mode, src_nat_mode)) = route else {
             debug!("{nfi}: Could not determine destination VPC, dropping packet");
             packet.invalidate_flows();
             packet.done(DoneReason::Filtered);
@@ -76,6 +77,7 @@ impl Flofi {
             "{nfi}: Packet matches peering configuration, found VPC {dst_vpcd} and NAT modes {src_nat_mode:?} (src), {dst_nat_mode:?} (dst)"
         );
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
+        Self::set_nat_requirements(packet.meta_mut(), src_nat_mode, dst_nat_mode);
 
         if self
             .tablesr
@@ -127,6 +129,25 @@ impl Flofi {
         }
         if flow_summary.flow_info.get_flags().requires_static_nat_dst() {
             meta.set_static_nat_dst(true);
+        }
+    }
+
+    fn set_nat_requirements(
+        meta: &mut PacketMeta,
+        src_nat: Option<NatRequirement>,
+        dst_nat: Option<NatRequirement>,
+    ) {
+        match src_nat {
+            Some(NatRequirement::Masquerade) => meta.set_masquerade(true),
+            Some(NatRequirement::Static) => meta.set_static_nat_src(true),
+            Some(NatRequirement::PortForwarding) => meta.set_port_forwarding(true),
+            None => {}
+        }
+        match dst_nat {
+            Some(NatRequirement::Masquerade) => meta.set_masquerade(true),
+            Some(NatRequirement::Static) => meta.set_static_nat_dst(true),
+            Some(NatRequirement::PortForwarding) => meta.set_port_forwarding(true),
+            None => {}
         }
     }
 
@@ -244,8 +265,8 @@ impl FlofiContextWrapper {
         ports: Option<(u16, u16)>,
     ) -> Option<(
         VpcDiscriminant,
-        Option<context::NatRequirement>,
-        Option<context::NatRequirement>,
+        Option<NatRequirement>,
+        Option<NatRequirement>,
     )> {
         self.0.lookup_route(src_vpcd, src_ip, dst_ip, proto, ports)
     }
@@ -285,5 +306,22 @@ impl FlowSummary {
             needs_port_forwarding: locked_info.port_fw_state.is_some(),
             flow_info: flow_info.clone(),
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NatRequirement {
+    Static,
+    Masquerade,
+    PortForwarding,
+}
+
+impl NatRequirement {
+    fn from_expose(expose: &ValidatedExpose) -> Option<Self> {
+        match expose.nat_config()? {
+            VpcExposeNatConfig::Masquerade(_) => Some(Self::Masquerade),
+            VpcExposeNatConfig::Static(_) => Some(Self::Static),
+            VpcExposeNatConfig::PortForwarding(_) => Some(Self::PortForwarding),
+        }
     }
 }

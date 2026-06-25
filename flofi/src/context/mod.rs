@@ -3,9 +3,9 @@
 
 //! Context table build
 
+use crate::NatRequirement;
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
-use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
@@ -17,23 +17,6 @@ mod routing_tests;
 
 use acls::AclTablesMap;
 use routing::PeeringTables;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NatRequirement {
-    Static,
-    Masquerade,
-    PortForwarding,
-}
-
-impl NatRequirement {
-    fn from_expose(expose: &ValidatedExpose) -> Option<Self> {
-        match expose.nat_config()? {
-            VpcExposeNatConfig::Masquerade(_) => Some(Self::Masquerade),
-            VpcExposeNatConfig::Static(_) => Some(Self::Static),
-            VpcExposeNatConfig::PortForwarding(_) => Some(Self::PortForwarding),
-        }
-    }
-}
 
 #[derive(Debug, Default, Clone)]
 pub struct FlofiContext {

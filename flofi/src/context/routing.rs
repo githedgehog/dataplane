@@ -212,7 +212,7 @@ impl<I> Singleton<I> {
     }
 }
 
-/// Lower rules into a two-field (prefix + port) table.
+// Lower rules into a two-field (prefix + port) table.
 fn build_two_tuple<T: FixedSize, V>(
     rules: Vec<PeeringPrefixInfo<V>>,
 ) -> ReferenceTable<TwoTuple<T>, V> {
@@ -228,7 +228,7 @@ fn build_two_tuple<T: FixedSize, V>(
     ReferenceTable::new(rules)
 }
 
-/// Lower rules into a single-field (prefix only) table, dropping the port predicate.
+// Lower rules into a single-field (prefix only) table, dropping the port predicate.
 fn build_singleton<U: FixedSize, V>(
     rules: Vec<PeeringPrefixInfo<V>>,
 ) -> ReferenceTable<Singleton<U>, V> {
@@ -418,5 +418,77 @@ impl PeeringTables {
             }
         };
         result.map(|(verdict, nat_mode)| (verdict.dst_vpcd, verdict.nat_mode, nat_mode))
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use lpm::prefix::Prefix;
+    use std::net::Ipv4Addr;
+
+    fn info(ip: &str, action: NatMode) -> PeeringPrefixInfo<NatMode> {
+        PeeringPrefixInfo {
+            ip_range: Prefix::from(ip),
+            port_range: RangeSpec::new(0, u16::MAX),
+            action,
+        }
+    }
+
+    #[test]
+    fn singleton_drops_the_port_field() {
+        let tuple = TwoTuple::new(Ipv4Addr::new(10, 0, 0, 1), Some(8080));
+        let singleton = Singleton::from(tuple.clone());
+        assert_eq!(singleton.ip_range, tuple.ip_range);
+    }
+
+    #[test]
+    fn two_tuple_lowers_to_prefix_and_port_predicates() {
+        let preds = TwoTuple::<Ipv4Addr>::predicates(
+            Prefix::from("10.0.0.0/24"),
+            RangeSpec::new(0, u16::MAX),
+        )
+        .unwrap();
+        assert_eq!(preds.len(), 2);
+    }
+
+    #[test]
+    fn singleton_lowers_to_a_single_prefix_predicate() {
+        let preds = Singleton::<Ipv4Addr>::predicates(Prefix::from("10.0.0.0/24")).unwrap();
+        assert_eq!(preds.len(), 1);
+    }
+
+    #[test]
+    fn any_protocol_fans_out_to_all_tables() {
+        let mut ctx = PeeringEndsContext::<NatMode>::default();
+        ctx.insert(info("10.0.0.0/24", None), L4Protocol::Any);
+        assert_eq!(ctx.tcp.len(), 1);
+        assert_eq!(ctx.udp.len(), 1);
+        assert_eq!(ctx.other.len(), 1);
+    }
+
+    #[test]
+    fn tcp_protocol_populates_only_the_tcp_table() {
+        let mut ctx = PeeringEndsContext::<NatMode>::default();
+        ctx.insert(info("10.0.0.0/24", None), L4Protocol::Tcp);
+        assert_eq!(ctx.tcp.len(), 1);
+        assert!(ctx.udp.is_empty());
+        assert!(ctx.other.is_empty());
+    }
+
+    #[test]
+    fn build_two_tuple_table_matches_on_prefix() {
+        let table: ReferenceTable<TwoTuple<Ipv4Addr>, NatMode> =
+            build_two_tuple(vec![info("10.0.0.0/24", Some(NatRequirement::Static))]);
+        assert_eq!(
+            table.lookup(&TwoTuple::new(Ipv4Addr::new(10, 0, 0, 5), Some(1234))),
+            Some(&Some(NatRequirement::Static)),
+        );
+        assert_eq!(
+            table.lookup(&TwoTuple::new(Ipv4Addr::new(11, 0, 0, 5), Some(1234))),
+            None,
+        );
     }
 }

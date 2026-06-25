@@ -3,18 +3,16 @@
 
 //! Display implementations for context tables.
 
+use super::routing::{PeeringEndsTables, PeeringTables, Verdict, VpcTable};
+use crate::NatRequirement;
 use acl::reference::table::ReferenceTable;
 use common::cliprovider::{CliSource, Heading};
 use indenter::indented;
 use match_action::{FieldPredicate, MatchKey};
 use net::packet::VpcDiscriminant;
-
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Display, Formatter, Write};
 use std::net::{Ipv4Addr, Ipv6Addr};
-
-use super::NatRequirement;
-use super::routing::{PeeringEndsTables, PeeringTables, Verdict, VpcTable};
 
 impl CliSource for PeeringTables {}
 
