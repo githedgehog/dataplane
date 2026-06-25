@@ -6,6 +6,8 @@
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
+use net::ip::NextHeader;
+use net::packet::VpcDiscriminant;
 
 mod acls;
 mod routing;
@@ -45,5 +47,27 @@ impl TryFrom<&ValidatedOverlay> for FlofiContext {
             routes: route_lookup_tables_map,
             acls: acl_tables_map,
         })
+    }
+}
+
+impl FlofiContext {
+    pub(crate) fn lookup_route(
+        &self,
+        src_vpcd: VpcDiscriminant,
+        src_ip: std::net::IpAddr,
+        dst_ip: std::net::IpAddr,
+        proto: NextHeader,
+        ports: Option<(u16, u16)>,
+    ) -> Option<(
+        VpcDiscriminant,
+        Option<NatRequirement>,
+        Option<NatRequirement>,
+    )> {
+        self.routes.lookup(src_vpcd, src_ip, dst_ip, proto, ports)
+    }
+
+    pub(crate) fn lookup_acls(&self) -> bool {
+        println!("lookup_acls called, acls: {:?}", self.acls);
+        todo!()
     }
 }

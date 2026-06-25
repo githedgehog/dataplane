@@ -1418,6 +1418,7 @@ dependencies = [
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-lookup",
  "dataplane-lpm",
  "dataplane-match-action",
  "dataplane-net",

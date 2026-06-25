@@ -62,11 +62,11 @@ impl Flofi {
                 .zip(t.dst_port().map(NonZero::get))
         });
 
-        let (dst_vpcd, src_nat_mode, dst_nat_mode) = self
+        let route = self
             .tablesr
             .lookup_route(src_vpcd, src_ip, dst_ip, proto, ports);
 
-        let Some(dst_vpcd) = dst_vpcd else {
+        let Some((dst_vpcd, src_nat_mode, dst_nat_mode)) = route else {
             debug!("{nfi}: Could not determine destination VPC, dropping packet");
             packet.invalidate_flows();
             packet.done(DoneReason::Filtered);
@@ -232,23 +232,22 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for Flofi {
     }
 }
 
-#[allow(unused)]
 struct FlofiContextWrapper(context::FlofiContext);
 
 impl FlofiContextWrapper {
     fn lookup_route(
         &self,
-        _src_vpcd: VpcDiscriminant,
-        _src_ip: std::net::IpAddr,
-        _dst_ip: std::net::IpAddr,
-        _proto: NextHeader,
-        _ports: Option<(u16, u16)>,
-    ) -> (
-        Option<VpcDiscriminant>,
+        src_vpcd: VpcDiscriminant,
+        src_ip: std::net::IpAddr,
+        dst_ip: std::net::IpAddr,
+        proto: NextHeader,
+        ports: Option<(u16, u16)>,
+    ) -> Option<(
+        VpcDiscriminant,
         Option<context::NatRequirement>,
         Option<context::NatRequirement>,
-    ) {
-        todo!();
+    )> {
+        self.0.lookup_route(src_vpcd, src_ip, dst_ip, proto, ports)
     }
 
     fn acls_reject_packet(
@@ -260,7 +259,7 @@ impl FlofiContextWrapper {
         _proto: NextHeader,
         _ports: Option<(u16, u16)>,
     ) -> bool {
-        todo!();
+        self.0.lookup_acls()
     }
 }
 

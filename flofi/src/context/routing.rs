@@ -4,15 +4,18 @@
 //! Context table build (Routes)
 
 use super::NatRequirement;
+use acl::reference::table::{RefRule, ReferenceTable};
 use config::external::overlay::ValidatedOverlay;
 use config::external::overlay::vpc::ValidatedPeering;
+use lookup::Lookup;
 use lpm::prefix::Prefix;
 use lpm::prefix::with_ports::{L4Protocol, PortRange};
-use net::FlowKey;
+use match_action::{Erased, MatchKey, RangeSpec};
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use tracing::debug;
 
 const PORT_RANGE_WILDCARD: RangeSpec<u16> = RangeSpec::new(0, u16::MAX);
 
@@ -85,10 +88,11 @@ impl PeeringManifestInfo {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PeeringInfo {
     local: PeeringManifestInfo,
     remote: PeeringManifestInfo,
+    remote_vpcd: VpcDiscriminant,
 }
 
 impl PeeringInfo {
@@ -96,15 +100,12 @@ impl PeeringInfo {
         Self {
             local: PeeringManifestInfo::local_end(remote_vpcd, peering),
             remote: PeeringManifestInfo::remote_end(remote_vpcd, peering),
+            remote_vpcd,
         }
     }
 }
 
 // -----------------------------------------------------------------------
-
-use acl::reference::table::{RefRule, ReferenceTable};
-use match_action::{Erased, MatchKey, RangeSpec};
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NatMode {
@@ -114,7 +115,7 @@ enum NatMode {
     PortForwarding,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Verdict {
     nat_mode: NatMode,
     dst_vpcd: VpcDiscriminant,
@@ -150,6 +151,17 @@ impl From<Option<NatRequirement>> for NatMode {
     }
 }
 
+impl From<NatMode> for Option<NatRequirement> {
+    fn from(nat_mode: NatMode) -> Self {
+        match nat_mode {
+            NatMode::NoNat => None,
+            NatMode::StaticNat => Some(NatRequirement::Static),
+            NatMode::Masquerade => Some(NatRequirement::Masquerade),
+            NatMode::PortForwarding => Some(NatRequirement::PortForwarding),
+        }
+    }
+}
+
 impl<V: FromPeeringEndPrefix> From<&PeeringPrefixInfo> for RefRule<V> {
     fn from(prefix: &PeeringPrefixInfo) -> Self {
         match prefix.ip_range {
@@ -173,45 +185,70 @@ impl<V: FromPeeringEndPrefix> From<&PeeringPrefixInfo> for RefRule<V> {
     }
 }
 
-struct PeeringEndContext<T, V> {
-    tcp: ReferenceTable<T, V>,
-    udp: ReferenceTable<T, V>,
-    other: ReferenceTable<T, V>,
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct PeeringEndsContext<V> {
+    tcp: Vec<RefRule<V>>,
+    udp: Vec<RefRule<V>>,
+    other: Vec<RefRule<V>>,
     has_default: bool,
 }
 
-impl<T, V> From<&PeeringManifestInfo> for PeeringEndContext<T, V>
-where
-    T: MatchKey,
-    V: FromPeeringEndPrefix,
-{
-    fn from(table: &PeeringManifestInfo) -> Self {
-        let mut tcp: Vec<RefRule<V>> = vec![];
-        let mut udp: Vec<RefRule<V>> = vec![];
-        let mut other: Vec<RefRule<V>> = vec![];
-
-        for prefix in &table.prefixes {
-            match prefix.proto {
-                L4Protocol::Tcp => tcp.push(prefix.into()),
-                L4Protocol::Udp => udp.push(prefix.into()),
-                L4Protocol::Any => {
-                    tcp.push(prefix.into());
-                    udp.push(prefix.into());
-                    other.push(prefix.into());
-                }
-            }
-        }
-
+impl<V> Default for PeeringEndsContext<V> {
+    fn default() -> Self {
         Self {
-            tcp: ReferenceTable::new(tcp),
-            udp: ReferenceTable::new(udp),
-            other: ReferenceTable::new(other),
-            has_default: table.has_default,
+            tcp: Vec::new(),
+            udp: Vec::new(),
+            other: Vec::new(),
+            has_default: false,
         }
     }
 }
 
-#[derive(MatchKey)]
+impl<V: Clone> PeeringEndsContext<V> {
+    fn insert(&mut self, rule: RefRule<V>, proto: L4Protocol) {
+        match proto {
+            L4Protocol::Tcp => self.tcp.push(rule),
+            L4Protocol::Udp => self.udp.push(rule),
+            L4Protocol::Any => {
+                self.tcp.push(rule.clone());
+                self.udp.push(rule.clone());
+                self.other.push(rule);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct VpcContext {
+    local_ends: HashMap<VpcDiscriminant, PeeringEndsContext<NatMode>>,
+    remote_ends: PeeringEndsContext<Verdict>,
+    default_remote_vpcd: Option<VpcDiscriminant>,
+}
+
+impl VpcContext {
+    fn insert(&mut self, peering_info: &PeeringInfo) {
+        let mut local_context = PeeringEndsContext::<NatMode>::default();
+        for prefix in &peering_info.local.prefixes {
+            let rule = RefRule::from(prefix);
+            local_context.insert(rule, prefix.proto);
+        }
+        local_context.has_default |= peering_info.local.has_default;
+        self.local_ends
+            .insert(peering_info.remote_vpcd, local_context);
+
+        for prefix in &peering_info.remote.prefixes {
+            let rule = RefRule::from(prefix);
+            self.remote_ends.insert(rule, prefix.proto);
+        }
+        self.remote_ends.has_default |= peering_info.remote.has_default;
+    }
+}
+
+// -----------------------------------------------------------------------
+
+#[derive(MatchKey, Clone)]
 struct TwoTupleIpv4 {
     #[prefix]
     ip_range: Ipv4Addr,
@@ -219,32 +256,30 @@ struct TwoTupleIpv4 {
     port_range: u16,
 }
 
-struct PeeringContextIpv4 {
-    local: PeeringEndContext<TwoTupleIpv4, NatMode>,
-    remote: PeeringEndContext<TwoTupleIpv4, Verdict>,
-}
-
-impl From<&PeeringInfo> for PeeringContextIpv4 {
-    fn from(table: &PeeringInfo) -> Self {
+impl TwoTupleIpv4 {
+    fn new(ip_range: Ipv4Addr, port_range: Option<u16>) -> Self {
         Self {
-            local: PeeringEndContext::from(&table.local),
-            remote: PeeringEndContext::from(&table.remote),
+            ip_range,
+            port_range: port_range.unwrap_or(0),
         }
     }
 }
 
-impl PeeringContextIpv4 {
-    fn lookup(&self, key: &FlowKey) -> (Verdict, NatMode) {
-        let table = match key.proto() {
-            NextHeader::TCP => &self.remote.tcp,
-            NextHeader::UDP => &self.remote.udp,
-            _ => &self.remote.other,
-        };
-        todo!()
+#[derive(MatchKey, Clone)]
+struct SingletonIpv4 {
+    #[prefix]
+    ip_range: Ipv4Addr,
+}
+
+impl From<TwoTupleIpv4> for SingletonIpv4 {
+    fn from(tuple: TwoTupleIpv4) -> Self {
+        Self {
+            ip_range: tuple.ip_range,
+        }
     }
 }
 
-#[derive(MatchKey)]
+#[derive(MatchKey, Clone)]
 struct TwoTupleIpv6 {
     #[prefix]
     ip_range: Ipv6Addr,
@@ -252,46 +287,165 @@ struct TwoTupleIpv6 {
     port_range: u16,
 }
 
-struct PeeringContextIpv6 {
-    local: PeeringEndContext<TwoTupleIpv6, NatMode>,
-    remote: PeeringEndContext<TwoTupleIpv6, Verdict>,
+impl TwoTupleIpv6 {
+    fn new(ip_range: Ipv6Addr, port_range: Option<u16>) -> Self {
+        Self {
+            ip_range,
+            port_range: port_range.unwrap_or(0),
+        }
+    }
 }
 
-impl From<&PeeringInfo> for PeeringContextIpv6 {
-    fn from(table: &PeeringInfo) -> Self {
+#[derive(MatchKey, Clone)]
+struct SingletonIpv6 {
+    #[prefix]
+    ip_range: Ipv6Addr,
+}
+
+impl From<TwoTupleIpv6> for SingletonIpv6 {
+    fn from(tuple: TwoTupleIpv6) -> Self {
         Self {
-            local: PeeringEndContext::from(&table.local),
-            remote: PeeringEndContext::from(&table.remote),
+            ip_range: tuple.ip_range,
         }
+    }
+}
+
+struct PeeringEndsTables<T, U, V> {
+    tcp: ReferenceTable<T, V>,
+    udp: ReferenceTable<T, V>,
+    other: ReferenceTable<U, V>,
+    has_default: bool,
+}
+
+impl<T, U, V> PeeringEndsTables<T, U, V>
+where
+    T: MatchKey + Clone,
+    U: MatchKey + From<T>,
+{
+    fn lookup(&self, proto: NextHeader, tuple: &T) -> Option<&V> {
+        match proto {
+            NextHeader::TCP => self.tcp.lookup(tuple),
+            NextHeader::UDP => self.udp.lookup(tuple),
+            _ => self.other.lookup(&U::from(tuple.clone())),
+        }
+    }
+}
+
+struct VpcTable<T, U> {
+    local_ends: HashMap<VpcDiscriminant, PeeringEndsTables<T, U, NatMode>>,
+    remote_ends: PeeringEndsTables<T, U, Verdict>,
+    default_remote_vpcd: Option<VpcDiscriminant>,
+}
+
+impl<T, U> From<VpcContext> for VpcTable<T, U>
+where
+    T: MatchKey,
+    U: MatchKey,
+{
+    fn from(context: VpcContext) -> Self {
+        let mut local_ends = HashMap::new();
+        for (remote_vpcd, context) in context.local_ends {
+            local_ends.insert(
+                remote_vpcd,
+                PeeringEndsTables {
+                    tcp: ReferenceTable::new(context.tcp),
+                    udp: ReferenceTable::new(context.udp),
+                    other: ReferenceTable::new(context.other),
+                    has_default: context.has_default,
+                },
+            );
+        }
+        let remote_ends = PeeringEndsTables {
+            tcp: ReferenceTable::new(context.remote_ends.tcp),
+            udp: ReferenceTable::new(context.remote_ends.udp),
+            other: ReferenceTable::new(context.remote_ends.other),
+            has_default: context.remote_ends.has_default,
+        };
+        Self {
+            local_ends,
+            remote_ends,
+            default_remote_vpcd: context.default_remote_vpcd,
+        }
+    }
+}
+
+impl<T, U> VpcTable<T, U>
+where
+    T: MatchKey + Clone,
+    U: MatchKey + From<T>,
+{
+    fn lookup(
+        &self,
+        proto: NextHeader,
+        src_tuple: &T,
+        dst_tuple: &T,
+    ) -> Option<(Verdict, NatMode)> {
+        let verdict = self
+            .remote_ends
+            .lookup(proto, dst_tuple)
+            .cloned()
+            .or_else(|| {
+                self.default_remote_vpcd.map(|dst_vpcd| Verdict {
+                    nat_mode: NatMode::NoNat,
+                    dst_vpcd,
+                })
+            })?;
+        let local_table = self.local_ends.get(&verdict.dst_vpcd)?;
+        let nat_mode =
+            local_table
+                .lookup(proto, src_tuple)
+                .copied()
+                .or(if local_table.has_default {
+                    Some(NatMode::NoNat)
+                } else {
+                    None
+                })?;
+        Some((verdict, nat_mode))
     }
 }
 
 #[derive(Default)]
 pub(crate) struct PeeringTables {
-    v4: HashMap<VpcDiscriminant, PeeringContextIpv4>,
-    v6: HashMap<VpcDiscriminant, PeeringContextIpv6>,
+    v4: HashMap<VpcDiscriminant, VpcTable<TwoTupleIpv4, SingletonIpv4>>,
+    v6: HashMap<VpcDiscriminant, VpcTable<TwoTupleIpv6, SingletonIpv6>>,
 }
 
 impl From<&ValidatedOverlay> for PeeringTables {
     fn from(overlay: &ValidatedOverlay) -> Self {
-        let mut map_v4 = HashMap::new();
-        let mut map_v6 = HashMap::new();
+        let mut tables = Self::default();
         for vpc in overlay.vpc_table().values() {
+            let mut vpc_context_v4 = VpcContext::default();
+            let mut vpc_context_v6 = VpcContext::default();
             let local_vpcd = VpcDiscriminant::VNI(vpc.vni());
             for peering in vpc.peerings() {
                 let remote_vpcd = VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(peering));
-                let table = PeeringInfo::from_peering(remote_vpcd, peering);
+                let peering_info = PeeringInfo::from_peering(remote_vpcd, peering);
                 if peering.is_v4() {
-                    map_v4.insert(local_vpcd, PeeringContextIpv4::from(&table));
+                    vpc_context_v4.insert(&peering_info);
+                    if peering.remote().has_default_expose() {
+                        vpc_context_v4.default_remote_vpcd = Some(remote_vpcd);
+                    }
                 } else {
-                    map_v6.insert(local_vpcd, PeeringContextIpv6::from(&table));
+                    vpc_context_v6.insert(&peering_info);
+                    if peering.remote().has_default_expose() {
+                        vpc_context_v6.default_remote_vpcd = Some(remote_vpcd);
+                    }
                 }
             }
+            if !vpc_context_v4.local_ends.is_empty() {
+                tables.v4.insert(
+                    local_vpcd,
+                    VpcTable::<TwoTupleIpv4, SingletonIpv4>::from(vpc_context_v4),
+                );
+            }
+            if !vpc_context_v6.local_ends.is_empty() {
+                tables.v6.insert(
+                    local_vpcd,
+                    VpcTable::<TwoTupleIpv6, SingletonIpv6>::from(vpc_context_v6),
+                );
+            }
         }
-        Self {
-            v4: map_v4,
-            v6: map_v6,
-        }
+        tables
     }
 }
 
@@ -299,14 +453,45 @@ impl PeeringTables {
     pub(crate) fn lookup(
         &self,
         src_vpcd: VpcDiscriminant,
-        key: &FlowKey,
-    ) -> Option<&PeeringContextIpv4> {
-        todo!()
-        /*
-        match key.src_ip() {
-            IpAddr::V4(_) => self.v4.get(&src_vpcd).lookup(key)
-            IpAddr::V6(_) => self.v6.get(&src_vpcd).lookup(key)
+        src_ip: IpAddr,
+        dst_ip: IpAddr,
+        proto: NextHeader,
+        ports: Option<(u16, u16)>,
+    ) -> Option<(
+        VpcDiscriminant,
+        Option<NatRequirement>,
+        Option<NatRequirement>,
+    )> {
+        let (src_port, dst_port) = ports.unzip();
+        match (src_ip, dst_ip) {
+            (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => self.v4.get(&src_vpcd).and_then(|table| {
+                table
+                    .lookup(
+                        proto,
+                        &TwoTupleIpv4::new(src_ip, src_port),
+                        &TwoTupleIpv4::new(dst_ip, dst_port),
+                    )
+                    .map(|(verdict, nat_mode)| {
+                        (verdict.dst_vpcd, verdict.nat_mode.into(), nat_mode.into())
+                    })
+            }),
+            (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => self.v6.get(&src_vpcd).and_then(|table| {
+                table
+                    .lookup(
+                        proto,
+                        &TwoTupleIpv6::new(src_ip, src_port),
+                        &TwoTupleIpv6::new(dst_ip, dst_port),
+                    )
+                    .map(|(verdict, nat_mode)| {
+                        (verdict.dst_vpcd, verdict.nat_mode.into(), nat_mode.into())
+                    })
+            }),
+            _ => {
+                debug!(
+                    "Source and destination IP versions do not match: src_ip={src_ip:?}, dst_ip={dst_ip:?}",
+                );
+                None
+            }
         }
-        */
     }
 }
