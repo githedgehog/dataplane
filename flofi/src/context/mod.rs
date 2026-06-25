@@ -11,6 +11,8 @@ use net::packet::VpcDiscriminant;
 
 mod acls;
 mod routing;
+#[cfg(test)]
+mod routing_tests;
 
 use acls::AclTablesMap;
 use routing::PeeringTables;
@@ -32,6 +34,7 @@ impl NatRequirement {
     }
 }
 
+#[derive(Debug, Default, Clone)]
 pub struct FlofiContext {
     routes: PeeringTables,
     acls: AclTablesMap,
@@ -42,7 +45,9 @@ impl TryFrom<&ValidatedOverlay> for FlofiContext {
 
     fn try_from(overlay: &ValidatedOverlay) -> Result<Self, Self::Error> {
         let route_lookup_tables_map = PeeringTables::from(overlay);
-        let acl_tables_map = AclTablesMap::from(overlay);
+        // FIXME
+        //let acl_tables_map = AclTablesMap::from(overlay);
+        let acl_tables_map = AclTablesMap::default();
         Ok(Self {
             routes: route_lookup_tables_map,
             acls: acl_tables_map,

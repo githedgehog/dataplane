@@ -21,3 +21,8 @@ net = { workspace = true }
 pipeline = { workspace = true }
 tracectl = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+config = { workspace = true, features = ["testing"] }
+lpm = { workspace = true, features = ["testing"] }
+tracing-test = { workspace = true, features = [] }

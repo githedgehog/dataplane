@@ -1428,6 +1428,7 @@ dependencies = [
  "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
  "linkme",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]

@@ -30,14 +30,14 @@ struct Verdict {
 /// predicates is deferred to the table-build step (see `TwoTupleKey` /
 /// `SingletonKey`), so the choice of backend lives at a single site rather than
 /// being baked in here at the front of the pipeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PeeringPrefixInfo<V> {
     ip_range: Prefix,
     port_range: RangeSpec<u16>,
     action: V,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PeeringEndsContext<V> {
     tcp: Vec<PeeringPrefixInfo<V>>,
     udp: Vec<PeeringPrefixInfo<V>>,
@@ -119,7 +119,7 @@ impl PeeringEndsContext<Verdict> {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct VpcContext {
     local_ends: HashMap<VpcDiscriminant, PeeringEndsContext<NatMode>>,
     remote_ends: PeeringEndsContext<Verdict>,
@@ -143,17 +143,12 @@ impl VpcContext {
 
 type RuleBackend = Erased;
 
-#[derive(MatchKey, Clone)]
+#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
 struct TwoTuple<I> {
     #[prefix]
     ip_range: I,
     #[range]
     port_range: u16,
-}
-
-/// A two-field key (prefix + port range), buildable from a `PeeringPrefixInfo`.
-trait TwoTupleKey: MatchKey {
-    fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>>;
 }
 
 impl<I> TwoTuple<I> {
@@ -163,9 +158,7 @@ impl<I> TwoTuple<I> {
             port_range: port.unwrap_or(0),
         }
     }
-}
 
-impl<I: FixedSize> TwoTupleKey for TwoTuple<I> {
     fn predicates(ip_range: Prefix, port_range: RangeSpec<u16>) -> Option<Vec<FieldPredicate>> {
         match ip_range {
             Prefix::IPV4(ip_range) => Some(
@@ -186,7 +179,7 @@ impl<I: FixedSize> TwoTupleKey for TwoTuple<I> {
     }
 }
 
-#[derive(MatchKey, Clone)]
+#[derive(Debug, MatchKey, Clone, PartialEq, Eq)]
 struct Singleton<I> {
     #[prefix]
     ip_range: I,
@@ -200,13 +193,7 @@ impl<I> From<TwoTuple<I>> for Singleton<I> {
     }
 }
 
-/// A single-field key (prefix only), buildable from a `PeeringPrefixInfo`.
-/// Used for non-TCP/UDP traffic, where L4 ports are missing or not relevant.
-trait SingletonKey: MatchKey {
-    fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>>;
-}
-
-impl<I: FixedSize> SingletonKey for Singleton<I> {
+impl<I> Singleton<I> {
     fn predicates(ip_range: Prefix) -> Option<Vec<FieldPredicate>> {
         match ip_range {
             Prefix::IPV4(ip_range) => Some(
@@ -226,12 +213,14 @@ impl<I: FixedSize> SingletonKey for Singleton<I> {
 }
 
 /// Lower rules into a two-field (prefix + port) table.
-fn build_two_tuple<T: TwoTupleKey, V>(rules: Vec<PeeringPrefixInfo<V>>) -> ReferenceTable<T, V> {
+fn build_two_tuple<T: FixedSize, V>(
+    rules: Vec<PeeringPrefixInfo<V>>,
+) -> ReferenceTable<TwoTuple<T>, V> {
     let rules = rules
         .into_iter()
         .filter_map(|rule| {
             Some(RefRule::new(
-                T::predicates(rule.ip_range, rule.port_range)?,
+                TwoTuple::<T>::predicates(rule.ip_range, rule.port_range)?,
                 rule.action,
             ))
         })
@@ -240,14 +229,22 @@ fn build_two_tuple<T: TwoTupleKey, V>(rules: Vec<PeeringPrefixInfo<V>>) -> Refer
 }
 
 /// Lower rules into a single-field (prefix only) table, dropping the port predicate.
-fn build_singleton<U: SingletonKey, V>(rules: Vec<PeeringPrefixInfo<V>>) -> ReferenceTable<U, V> {
+fn build_singleton<U: FixedSize, V>(
+    rules: Vec<PeeringPrefixInfo<V>>,
+) -> ReferenceTable<Singleton<U>, V> {
     let rules = rules
         .into_iter()
-        .filter_map(|rule| Some(RefRule::new(U::predicates(rule.ip_range)?, rule.action)))
+        .filter_map(|rule| {
+            Some(RefRule::new(
+                Singleton::<U>::predicates(rule.ip_range)?,
+                rule.action,
+            ))
+        })
         .collect();
     ReferenceTable::new(rules)
 }
 
+#[derive(Debug, Clone)]
 struct PeeringEndsTables<T, U, V> {
     tcp: ReferenceTable<T, V>,
     udp: ReferenceTable<T, V>,
@@ -255,30 +252,17 @@ struct PeeringEndsTables<T, U, V> {
     has_default: bool,
 }
 
-impl<T, U, V> PeeringEndsTables<T, U, V>
-where
-    T: MatchKey + Clone,
-    U: MatchKey + From<T>,
-{
-    fn lookup(&self, proto: NextHeader, tuple: &T) -> Option<&V> {
-        match proto {
-            NextHeader::TCP => self.tcp.lookup(tuple),
-            NextHeader::UDP => self.udp.lookup(tuple),
-            _ => self.other.lookup(&U::from(tuple.clone())),
-        }
-    }
-}
-
+#[derive(Debug, Clone)]
 struct VpcTable<T, U> {
     local_ends: HashMap<VpcDiscriminant, PeeringEndsTables<T, U, NatMode>>,
     remote_ends: PeeringEndsTables<T, U, Verdict>,
     default_remote_vpcd: Option<VpcDiscriminant>,
 }
 
-impl<T, U> From<VpcContext> for VpcTable<T, U>
+impl<T, U> From<VpcContext> for VpcTable<TwoTuple<T>, Singleton<U>>
 where
-    T: TwoTupleKey,
-    U: SingletonKey,
+    T: FixedSize,
+    U: FixedSize,
 {
     fn from(context: VpcContext) -> Self {
         let mut local_ends = HashMap::new();
@@ -303,6 +287,61 @@ where
             local_ends,
             remote_ends,
             default_remote_vpcd: context.default_remote_vpcd,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PeeringTables {
+    v4: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>>,
+    v6: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>>,
+}
+
+impl From<&ValidatedOverlay> for PeeringTables {
+    fn from(overlay: &ValidatedOverlay) -> Self {
+        let mut tables = Self::default();
+        for vpc in overlay.vpc_table().values() {
+            let mut vpc_context_v4 = VpcContext::default();
+            let mut vpc_context_v6 = VpcContext::default();
+            let local_vpcd = VpcDiscriminant::VNI(vpc.vni());
+            for peering in vpc.peerings() {
+                let remote_vpcd = VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(peering));
+                if peering.is_v4() {
+                    vpc_context_v4.insert(remote_vpcd, peering);
+                    if peering.remote().has_default_expose() {
+                        vpc_context_v4.default_remote_vpcd = Some(remote_vpcd);
+                    }
+                } else {
+                    vpc_context_v6.insert(remote_vpcd, peering);
+                    if peering.remote().has_default_expose() {
+                        vpc_context_v6.default_remote_vpcd = Some(remote_vpcd);
+                    }
+                }
+            }
+            if !vpc_context_v4.local_ends.is_empty() {
+                tables.v4.insert(local_vpcd, VpcTable::from(vpc_context_v4));
+            }
+            if !vpc_context_v6.local_ends.is_empty() {
+                tables.v6.insert(local_vpcd, VpcTable::from(vpc_context_v6));
+            }
+        }
+        tables
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Lookup logic
+
+impl<T, U, V> PeeringEndsTables<T, U, V>
+where
+    T: MatchKey + Clone,
+    U: MatchKey + From<T>,
+{
+    fn lookup(&self, proto: NextHeader, tuple: &T) -> Option<&V> {
+        match proto {
+            NextHeader::TCP => self.tcp.lookup(tuple),
+            NextHeader::UDP => self.udp.lookup(tuple),
+            _ => self.other.lookup(&U::from(tuple.clone())),
         }
     }
 }
@@ -339,50 +378,6 @@ where
                     None
                 })?;
         Some((remote_end_verdict, local_end_nat_mode))
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct PeeringTables {
-    v4: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>>,
-    v6: HashMap<VpcDiscriminant, VpcTable<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>>,
-}
-
-impl From<&ValidatedOverlay> for PeeringTables {
-    fn from(overlay: &ValidatedOverlay) -> Self {
-        let mut tables = Self::default();
-        for vpc in overlay.vpc_table().values() {
-            let mut vpc_context_v4 = VpcContext::default();
-            let mut vpc_context_v6 = VpcContext::default();
-            let local_vpcd = VpcDiscriminant::VNI(vpc.vni());
-            for peering in vpc.peerings() {
-                let remote_vpcd = VpcDiscriminant::VNI(overlay.vpc_table().get_remote_vni(peering));
-                if peering.is_v4() {
-                    vpc_context_v4.insert(remote_vpcd, peering);
-                    if peering.remote().has_default_expose() {
-                        vpc_context_v4.default_remote_vpcd = Some(remote_vpcd);
-                    }
-                } else {
-                    vpc_context_v6.insert(remote_vpcd, peering);
-                    if peering.remote().has_default_expose() {
-                        vpc_context_v6.default_remote_vpcd = Some(remote_vpcd);
-                    }
-                }
-            }
-            if !vpc_context_v4.local_ends.is_empty() {
-                tables.v4.insert(
-                    local_vpcd,
-                    VpcTable::<TwoTuple<Ipv4Addr>, Singleton<Ipv4Addr>>::from(vpc_context_v4),
-                );
-            }
-            if !vpc_context_v6.local_ends.is_empty() {
-                tables.v6.insert(
-                    local_vpcd,
-                    VpcTable::<TwoTuple<Ipv6Addr>, Singleton<Ipv6Addr>>::from(vpc_context_v6),
-                );
-            }
-        }
-        tables
     }
 }
 
