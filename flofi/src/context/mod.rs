@@ -9,19 +9,16 @@ use config::external::overlay::ValidatedOverlay;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
-mod acls;
 mod display;
 mod routing;
 #[cfg(test)]
-mod routing_tests;
+mod tests;
 
-use acls::AclTablesMap;
 use routing::PeeringTables;
 
 #[derive(Debug, Default, Clone)]
 pub struct FlofiContext {
     routes: PeeringTables,
-    acls: AclTablesMap,
 }
 
 impl TryFrom<&ValidatedOverlay> for FlofiContext {
@@ -29,12 +26,8 @@ impl TryFrom<&ValidatedOverlay> for FlofiContext {
 
     fn try_from(overlay: &ValidatedOverlay) -> Result<Self, Self::Error> {
         let route_lookup_tables_map = PeeringTables::from(overlay);
-        // FIXME
-        //let acl_tables_map = AclTablesMap::from(overlay);
-        let acl_tables_map = AclTablesMap::default();
         Ok(Self {
             routes: route_lookup_tables_map,
-            acls: acl_tables_map,
         })
     }
 }
@@ -53,10 +46,5 @@ impl FlofiContext {
         Option<NatRequirement>,
     )> {
         self.routes.lookup(src_vpcd, src_ip, dst_ip, proto, ports)
-    }
-
-    pub(crate) fn lookup_acls(&self) -> bool {
-        println!("lookup_acls called, acls: {:?}", self.acls);
-        todo!()
     }
 }

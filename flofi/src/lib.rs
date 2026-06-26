@@ -79,16 +79,6 @@ impl Flofi {
         packet.meta_mut().dst_vpcd = Some(dst_vpcd);
         Self::set_nat_requirements(packet.meta_mut(), src_nat_mode, dst_nat_mode);
 
-        if self
-            .tablesr
-            .acls_reject_packet(src_vpcd, dst_vpcd, src_ip, dst_ip, proto, ports)
-        {
-            debug!("{nfi}: Packet rejected by ACLs, dropping packet");
-            packet.invalidate_flows();
-            packet.done(DoneReason::Filtered);
-            return;
-        }
-
         // Port forwarding or masquerading used in combination with static NAT need to keep track of
         // the initial IP addresses for creating the right flow table entries, so we may have to
         // attach the flow key to packet's metadata.
@@ -269,18 +259,6 @@ impl FlofiContextWrapper {
         Option<NatRequirement>,
     )> {
         self.0.lookup_route(src_vpcd, src_ip, dst_ip, proto, ports)
-    }
-
-    fn acls_reject_packet(
-        &self,
-        _src_vpcd: VpcDiscriminant,
-        _dst_vpcd: VpcDiscriminant,
-        _src_ip: std::net::IpAddr,
-        _dst_ip: std::net::IpAddr,
-        _proto: NextHeader,
-        _ports: Option<(u16, u16)>,
-    ) -> bool {
-        self.0.lookup_acls()
     }
 }
 
