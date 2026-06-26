@@ -6,7 +6,6 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-arc-swap = { workspace = true }
 color-eyre = { workspace = true , features = [ "capture-spantrace", "color-spantrace", "tracing-error", "track-caller" ] }
 common = { workspace = true }
 concurrency = { workspace = true }
@@ -16,7 +15,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-error = { workspace = true, features = ["traced-error"] }
 tracing-subscriber = { workspace = true, features = ["registry", "std", "env-filter", "fmt"] }
-tracing-throttle = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

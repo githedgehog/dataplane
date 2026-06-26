@@ -7,7 +7,7 @@ use std::ops::Bound;
 use bolero::{Driver, TypeGenerator};
 
 use crate::bolero::LegalValue;
-use crate::gateway_agent_crd::GatewayAgentGatewayLogs;
+use crate::gateway_agent_crd::{GatewayAgentGatewayLogs, GatewayAgentGatewayLogsRateLimit};
 
 const LEVELS: &[&str] = &["off", "error", "warning", "info", "debug", "trace"];
 
@@ -49,10 +49,19 @@ impl TypeGenerator for LegalValue<GatewayAgentGatewayLogs> {
             }
             tags = Some(tag_levels);
         }
+        let rate_limit = if d.produce::<bool>()? {
+            Some(GatewayAgentGatewayLogsRateLimit {
+                burst: Some(d.produce::<u32>()?.max(1)),
+                replenish_per_second: Some(d.produce::<u32>()?.max(1)),
+            })
+        } else {
+            None
+        };
         Some(LegalValue(GatewayAgentGatewayLogs {
             default: d
                 .produce::<Option<LogLevel>>()?
                 .map(|log_level| log_level.0),
+            rate_limit,
             tags,
         }))
     }
