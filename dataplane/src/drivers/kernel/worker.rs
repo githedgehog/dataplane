@@ -271,7 +271,7 @@ fn packet_recv(
     max_to_read: usize,
     pkts: &mut Vec<Box<Packet<TestBuffer>>>,
 ) -> Result<(), nix::Error> {
-    let mut raw = [0u8; 9100];
+    let mut raw = [0u8; 9600];
     let mut ret = Ok(());
     pkts.clear();
     while pkts.len() < max_to_read {
