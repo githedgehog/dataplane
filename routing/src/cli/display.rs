@@ -477,12 +477,12 @@ fn fmt_interface_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 
 impl Display for IfState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            IfState::Unknown => write!(f, "{:9}", "unknown")?,
-            IfState::Up => write!(f, "{:9}", "up")?,
-            IfState::Down => write!(f, "{:9}", "down")?,
-        }
-        Ok(())
+        let s = match *self {
+            IfState::Unknown => "unknown",
+            IfState::Up => "up",
+            IfState::Down => "down",
+        };
+        f.pad(s)
     }
 }
 impl Display for IfDataEthernet {

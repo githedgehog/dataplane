@@ -209,7 +209,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////////
     /// Set the operational state of an [`Interface`]
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
+    pub(super) fn set_iface_oper_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
             ifr.set_oper_state(state);
         }
@@ -218,7 +218,7 @@ impl IfTable {
     //////////////////////////////////////////////////////////////////////
     /// Set the admin state of an [`Interface`]
     //////////////////////////////////////////////////////////////////////
-    pub(crate) fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
+    pub(super) fn set_iface_admin_state(&mut self, ifindex: InterfaceIndex, state: IfState) {
         if let Some(ifr) = self.get_interface_mut(ifindex) {
             ifr.set_admin_state(state);
         }
