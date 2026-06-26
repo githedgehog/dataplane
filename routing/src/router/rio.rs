@@ -25,7 +25,7 @@ use dplane_rpc::socks::RpcCachedSock;
 use lifecycle::{CancellationToken, Subsystem};
 
 use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token};
+use mio::{Events, Interest, Poll, Token, Waker};
 
 use concurrency::sync::Arc;
 use concurrency::thread::{self, JoinHandle};
@@ -47,6 +47,7 @@ const CTL_CHANNEL_CAPACITY: usize = 100;
 pub(crate) struct RioHandle {
     cancel: CancellationToken,
     ctl: Sender<RouterCtlMsg>,
+    waker: Arc<Waker>,
     handle: Option<JoinHandle<()>>,
 }
 impl RioHandle {
@@ -70,7 +71,7 @@ impl RioHandle {
     }
     #[must_use]
     pub(crate) fn get_ctl_tx(&self) -> RouterCtlSender {
-        RouterCtlSender::new(self.ctl.clone())
+        RouterCtlSender::new(self.ctl.clone(), self.waker.clone())
     }
 }
 
@@ -109,6 +110,8 @@ fn open_cli_sock(path: &String) -> Result<UnixDatagram, RouterError> {
 pub(crate) const CPSOCK: Token = Token(0);
 pub(crate) const CLISOCK: Token = Token(1);
 pub(crate) const FRRMISOCK: Token = Token(2);
+pub(crate) const CTL_CHANNEL: Token = Token(3);
+
 /// `Rio` is the router IO loop state
 pub(crate) struct Rio {
     #[allow(unused)]
@@ -122,6 +125,7 @@ pub(crate) struct Rio {
     pub(crate) frrmi: Frrmi,
     pub(crate) ctl_tx: Sender<RouterCtlMsg>,
     pub(crate) ctl_rx: Receiver<RouterCtlMsg>,
+    pub(crate) waker: Arc<Waker>,
     pub(crate) cpistats: CpiStats,
     stale_timeout: Option<Instant>,
     pub(crate) gwconfig: Option<Arc<ValidatedGwConfig>>,
@@ -182,6 +186,12 @@ impl Rio {
             .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
             .map_err(|_| RouterError::Internal("Failed to register CLI sock"))?;
 
+        // Waker to integrate the async ctl channel with the poller
+        let waker = Arc::new(
+            Waker::new(poller.registry(), CTL_CHANNEL)
+                .map_err(|_| RouterError::Internal("Failed to create ctl channel waker"))?,
+        );
+
         Ok(Rio {
             name: conf.name.clone(),
             frozen: false,
@@ -193,6 +203,7 @@ impl Rio {
             frrmi,
             ctl_tx,
             ctl_rx,
+            waker,
             cpistats: CpiStats::new(),
             stale_timeout: None,
             gwconfig: None,
@@ -385,6 +396,7 @@ pub(crate) fn start_rio(
 ) -> Result<RioHandle, RouterError> {
     let mut rio = Rio::new(conf)?;
     let ctl_tx = rio.ctl_tx.clone();
+    let waker = rio.waker.clone();
     let cli_sources = cli_sources.unwrap_or_default();
     let cancel = subsystem.cancel_token();
     let loop_cancel = cancel.clone();
@@ -495,15 +507,13 @@ pub(crate) fn start_rio(
                             }
                         }
                     }
+                    CTL_CHANNEL => handle_ctl_msg(&mut rio, &mut db),
                     _ => {}
                 }
             }
 
             /* check stale timeout. If expired, remove stale routes */
             rio.check_stale_timeout(&mut db);
-
-            /* handle control-channel messages */
-            handle_ctl_msg(&mut rio, &mut db);
         }
     };
     let handle = thread::Builder::new()
@@ -514,6 +524,7 @@ pub(crate) fn start_rio(
     Ok(RioHandle {
         cancel,
         ctl: ctl_tx,
+        waker,
         handle: Some(handle),
     })
 }
