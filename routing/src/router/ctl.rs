@@ -5,7 +5,8 @@
 
 use concurrency::sync::Arc;
 use config::{GwConfigMeta, ValidatedGwConfig};
-use mio::Interest;
+use interface_manager::monitor::EthEvent;
+use mio::{Interest, Waker};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::oneshot;
@@ -17,6 +18,7 @@ use tracing::{debug, error, info, warn};
 use crate::RouterError;
 use crate::config::RouterConfig;
 use crate::frr::frrmi::FrrAppliedConfig;
+use crate::interfaces::interface::IfState;
 use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use crate::router::rio::{CPSOCK, Rio};
 use crate::routingdb::RoutingDb;
@@ -29,15 +31,19 @@ pub(crate) enum RouterCtlReply {
     FrrConfig(Option<FrrAppliedConfig>),
 }
 
-#[repr(transparent)]
-pub struct LockGuard(Option<Sender<RouterCtlMsg>>);
+pub struct LockGuard {
+    tx: Option<Sender<RouterCtlMsg>>,
+    waker: Arc<Waker>,
+}
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        let tx = self.0.take();
-        if let Some(tx) = tx {
+        if let Some(tx) = self.tx.take() {
+            let waker = Arc::clone(&self.waker);
             task::spawn(async move {
                 if let Err(e) = tx.send(RouterCtlMsg::GuardedUnlock).await {
                     error!("Fatal: could not send unlock request!!: {e}");
+                } else {
+                    let _ = waker.wake();
                 }
             });
         }
@@ -52,27 +58,47 @@ pub(crate) enum RouterCtlMsg {
     GetFrrAppliedConfig(RouterCtlReplyTx),
     Config(Arc<ValidatedGwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
+    RebindCli,
+    IfEvent(EthEvent),
 }
 
 /// Object to send control messages to the router
-pub struct RouterCtlSender(tokio::sync::mpsc::Sender<RouterCtlMsg>);
+#[derive(Clone)]
+pub struct RouterCtlSender {
+    tx: tokio::sync::mpsc::Sender<RouterCtlMsg>,
+    waker: Arc<Waker>,
+}
 impl RouterCtlSender {
     #[must_use]
-    pub(crate) fn new(tx: Sender<RouterCtlMsg>) -> Self {
-        Self(tx)
+    pub(crate) fn new(tx: Sender<RouterCtlMsg>, waker: Arc<Waker>) -> Self {
+        Self { tx, waker }
     }
+
     #[must_use]
     pub(crate) fn as_lock_guard(&self) -> LockGuard {
-        LockGuard(Some(self.0.clone()))
+        LockGuard {
+            tx: Some(self.tx.clone()),
+            waker: Arc::clone(&self.waker),
+        }
     }
+    async fn send_and_wake(&mut self, msg: RouterCtlMsg) -> Result<(), RouterError> {
+        self.tx
+            .send(msg)
+            .await
+            .map_err(|_| RouterError::Internal("Failed to send router ctl request"))?;
+
+        // wake up poller
+        self.waker
+            .wake()
+            .map_err(|_| RouterError::Internal("Failed to wake RIO"))?;
+        Ok(())
+    }
+
     pub async fn lock(&mut self) -> Result<LockGuard, RouterError> {
         debug!("Requesting CPI lock...");
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::Lock(reply_tx);
-        self.0
-            .send(msg)
-            .await
-            .map_err(|_| RouterError::Internal("Failed to send lock request"))?;
+        self.send_and_wake(msg).await?;
         let reply = reply_rx
             .await
             .map_err(|_| RouterError::Internal("Failed to receive lock reply"))?;
@@ -88,10 +114,8 @@ impl RouterCtlSender {
         debug!("Requesting CPI unlock...");
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::Unlock(reply_tx);
-        self.0
-            .send(msg)
-            .await
-            .map_err(|_| RouterError::Internal("Failed to send unlock request"))?;
+        self.send_and_wake(msg).await?;
+
         let reply = reply_rx
             .await
             .map_err(|_| RouterError::Internal("Failed to receive unlock reply"))?;
@@ -105,10 +129,8 @@ impl RouterCtlSender {
         debug!("Requesting router to apply config for gen {genid}...");
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::Configure(config, reply_tx);
-        self.0
-            .send(msg)
-            .await
-            .map_err(|_| RouterError::Internal("Failed to send configure request"))?;
+        self.send_and_wake(msg).await?;
+
         let reply = reply_rx
             .await
             .map_err(|_| RouterError::Internal("Failed to receive configure reply"))?;
@@ -123,10 +145,8 @@ impl RouterCtlSender {
     ) -> Result<Option<FrrAppliedConfig>, RouterError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = RouterCtlMsg::GetFrrAppliedConfig(reply_tx);
-        self.0
-            .send(msg)
-            .await
-            .map_err(|_| RouterError::Internal("Failed to send get FRR applied config"))?;
+        self.send_and_wake(msg).await?;
+
         let reply = reply_rx
             .await
             .map_err(|_| RouterError::Internal("Failed to receive reply for get FRR config"))?;
@@ -137,22 +157,22 @@ impl RouterCtlSender {
     }
     pub async fn send_config(&mut self, config: Arc<ValidatedGwConfig>) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::Config(config);
-        self.0
-            .send(msg)
-            .await
-            .map_err(|_| RouterError::Internal("Failed to send ValidatedGwConfig"))?;
-        Ok(())
+        self.send_and_wake(msg).await
     }
     pub async fn send_config_history(
         &mut self,
         history: Arc<Vec<GwConfigMeta>>,
     ) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::ConfigHistory(history);
-        self.0
-            .send(msg)
-            .await
-            .map_err(|_| RouterError::Internal("Failed to send config history"))?;
-        Ok(())
+        self.send_and_wake(msg).await
+    }
+    pub async fn rebind_cli(&mut self) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::RebindCli;
+        self.send_and_wake(msg).await
+    }
+    pub async fn send_ifevent(&mut self, ev: EthEvent) -> Result<(), RouterError> {
+        let msg = RouterCtlMsg::IfEvent(ev);
+        self.send_and_wake(msg).await
     }
 }
 
@@ -236,24 +256,57 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
+fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
+    let iftw = &mut db.iftw;
+    let adm_state = if ev.ifup { IfState::Up } else { IfState::Down };
+    let oper_state = if ev.iflowerup && ev.ifrunning && ev.carrier {
+        IfState::Up
+    } else {
+        IfState::Down
+    };
+    let ifindex = ev.ifindex;
+    if let Some(iftable) = iftw.enter() {
+        let Some(iface) = iftable.get_interface(ifindex) else {
+            return;
+        };
+        if iface.admin_state != adm_state {
+            revent!(RouterEvent::IfAdmChange(
+                ev.clone(),
+                iface.admin_state,
+                adm_state
+            ));
+        }
+        if iface.oper_state != oper_state {
+            revent!(RouterEvent::IfOperChange(ev, iface.oper_state, oper_state));
+        }
+    }
+    iftw.set_iface_admin_state(ifindex, adm_state);
+    iftw.set_iface_oper_state(ifindex, oper_state);
+}
 
-/// Handle a request from the control channel
+/// Handle requests from the control channel. Since the channel is integrated with the poll loop via a `Waker`
+/// and the `Waker` coalesce multiple readiness events, we drain completely on each call with a loop.
 pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
-    match rio.ctl_rx.try_recv() {
-        Ok(RouterCtlMsg::Lock(reply_to)) => handle_lock(rio, true, Some(reply_to)),
-        Ok(RouterCtlMsg::Unlock(reply_to)) => handle_lock(rio, false, Some(reply_to)),
-        Ok(RouterCtlMsg::GuardedUnlock) => handle_lock(rio, false, None),
-        Ok(RouterCtlMsg::Configure(config, reply_to)) => {
-            handle_configure(rio, config, db, reply_to);
-        }
-        Ok(RouterCtlMsg::GetFrrAppliedConfig(reply_to)) => {
-            handle_get_frr_applied_config(rio, reply_to);
-        }
-        Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
-        Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-        Err(TryRecvError::Empty) => {}
-        Err(e) => {
-            error!("Error receiving from ctl channel {e:?}");
+    loop {
+        match rio.ctl_rx.try_recv() {
+            Ok(RouterCtlMsg::Lock(reply_to)) => handle_lock(rio, true, Some(reply_to)),
+            Ok(RouterCtlMsg::Unlock(reply_to)) => handle_lock(rio, false, Some(reply_to)),
+            Ok(RouterCtlMsg::GuardedUnlock) => handle_lock(rio, false, None),
+            Ok(RouterCtlMsg::Configure(config, reply_to)) => {
+                handle_configure(rio, config, db, reply_to);
+            }
+            Ok(RouterCtlMsg::GetFrrAppliedConfig(reply_to)) => {
+                handle_get_frr_applied_config(rio, reply_to);
+            }
+            Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
+            Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
+            Ok(RouterCtlMsg::RebindCli) => rio.cli_sock_restore(),
+            Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, db),
+            Err(TryRecvError::Empty) => break,
+            Err(e) => {
+                error!("Error receiving from ctl channel {e:?}");
+                break;
+            }
         }
     }
 }

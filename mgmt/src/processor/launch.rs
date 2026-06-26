@@ -5,11 +5,14 @@
 
 use crate::processor::k8s_client::{K8sClient, K8sClientError};
 use crate::processor::k8s_less_client::{K8sLess, K8sLessError};
+use crate::processor::mgmt_client::ConfigClient;
 use crate::processor::proc::ConfigProcessor;
-
 use crate::processor::proc::ConfigProcessorParams;
+use interface_manager::monitor::{EthEvent, InterfaceMonitor};
+
 use concurrency::sync::Arc;
 use lifecycle::{CancellationToken, Subsystem};
+use routing::RouterCtlSender;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +86,20 @@ async fn k8s_mgmt_init(
     Ok(())
 }
 
+async fn interface_event_notify(
+    mut rx: tokio::sync::broadcast::Receiver<EthEvent>,
+    mut rtr_ctl: RouterCtlSender,
+) {
+    loop {
+        if let Ok(ev) = rx.recv().await {
+            info!("Notifying router about interface event...");
+            if rtr_ctl.send_ifevent(ev).await.is_err() {
+                warn!("Failed to relay interface event to router")
+            }
+        }
+    }
+}
+
 /// Init mgmt synchronously on `handle`, then spawn the long-lived tasks
 /// (config processor, status updater, config watcher) tracked under
 /// `mgmt`. Init observes `mgmt.root_token()` so SIGINT during init returns
@@ -96,6 +113,20 @@ pub fn run_mgmt(
     mgmt: &Subsystem,
     params: MgmtParams,
 ) -> Result<(), LaunchError> {
+    // start interface monitor
+    let ifmonitor = Arc::new(InterfaceMonitor::new(mgmt.cancel_token()).phy_only());
+    let if_subsc = ifmonitor.subscribe();
+    mgmt.spawn_fatal_on_exit("interface monitor", ifmonitor.run(), handle);
+    mgmt.spawn_fatal_on_exit(
+        "interface event relay",
+        interface_event_notify(if_subsc, params.processor_params.router_ctl.clone()),
+        handle,
+    );
+
+    // create config processor and run it
+    let (processor, client) = ConfigProcessor::new(params.processor_params, handle);
+    mgmt.spawn_fatal_on_exit("k8s-less config processor", processor.run(), handle);
+
     if let Some(config_dir) = &params.config_dir {
         warn!("Running in k8s-less mode....");
         handle.block_on(run_k8s_less(
@@ -103,16 +134,11 @@ pub fn run_mgmt(
             mgmt,
             params.hostname.as_str(),
             config_dir,
-            params.processor_params,
+            client,
         ))
     } else {
         debug!("Will start watching k8s for configuration changes");
-        handle.block_on(run_k8s(
-            handle,
-            mgmt,
-            params.hostname.as_str(),
-            params.processor_params,
-        ))
+        handle.block_on(run_k8s(handle, mgmt, params.hostname.as_str(), client))
     }
 }
 
@@ -121,15 +147,13 @@ async fn run_k8s_less(
     mgmt: &Subsystem,
     hostname: &str,
     config_dir: &str,
-    processor_params: ConfigProcessorParams,
+    client: ConfigClient,
 ) -> Result<(), LaunchError> {
-    let (processor, client) = ConfigProcessor::new(processor_params);
     let k8sless = Arc::new(K8sLess::new(hostname, config_dir, client));
     let k8sless_for_watch = k8sless.clone();
 
     init_cancellable(k8sless.init(), &mgmt.root_token()).await?;
 
-    mgmt.spawn_fatal_on_exit("k8s-less config processor", processor.run(), handle);
     let k8sless_for_status = k8sless.clone();
     mgmt.spawn_fatal_on_exit(
         "k8s-less status updater",
@@ -158,15 +182,12 @@ async fn run_k8s(
     handle: &tokio::runtime::Handle,
     mgmt: &Subsystem,
     hostname: &str,
-    processor_params: ConfigProcessorParams,
+    client: ConfigClient,
 ) -> Result<(), LaunchError> {
-    let (processor, client) = ConfigProcessor::new(processor_params);
     let k8s_client = Arc::new(K8sClient::new(hostname, client));
     let k8s_client_for_status = k8s_client.clone();
-
     k8s_mgmt_init(&k8s_client, &mgmt.root_token()).await?;
 
-    mgmt.spawn_fatal_on_exit("k8s config processor", processor.run(), handle);
     mgmt.spawn_fatal_on_exit(
         "k8s status updater",
         async move {
