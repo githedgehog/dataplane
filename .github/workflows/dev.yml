@@ -749,7 +749,7 @@ jobs:
 
       # used to run go fmt after patching dp/frr versions in the fabricator
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v6.4.0
         with:
           go-version: stable
           cache: false
