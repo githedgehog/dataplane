@@ -257,7 +257,7 @@ fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
     rio.cfg_history = history;
 }
-fn handle_ifevent(ev: &EthEvent, db: &mut RoutingDb) {
+fn handle_ifevent(ev: EthEvent, db: &mut RoutingDb) {
     let iftw = &mut db.iftw;
     let adm_state = if ev.ifup { IfState::Up } else { IfState::Down };
     let oper_state = if ev.iflowerup && ev.ifrunning && ev.carrier {
@@ -265,8 +265,24 @@ fn handle_ifevent(ev: &EthEvent, db: &mut RoutingDb) {
     } else {
         IfState::Down
     };
-    iftw.set_iface_admin_state(ev.ifindex, adm_state);
-    iftw.set_iface_oper_state(ev.ifindex, oper_state);
+    let ifindex = ev.ifindex;
+    if let Some(iftable) = iftw.enter() {
+        let Some(iface) = iftable.get_interface(ifindex) else {
+            return;
+        };
+        if iface.admin_state != adm_state {
+            revent!(RouterEvent::IfAdmChange(
+                ev.clone(),
+                iface.admin_state,
+                adm_state
+            ));
+        }
+        if iface.oper_state != oper_state {
+            revent!(RouterEvent::IfOperChange(ev, iface.oper_state, oper_state));
+        }
+    }
+    iftw.set_iface_admin_state(ifindex, adm_state);
+    iftw.set_iface_oper_state(ifindex, oper_state);
 }
 
 /// Handle a request from the control channel
@@ -284,7 +300,7 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
         Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
         Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
         Ok(RouterCtlMsg::RebindCli) => rio.cli_sock_restore(),
-        Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(&ev, db),
+        Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, db),
         Err(TryRecvError::Empty) => {}
         Err(e) => {
             error!("Error receiving from ctl channel {e:?}");
