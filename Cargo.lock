@@ -1262,6 +1262,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-afi"
+version = "0.22.0"
+dependencies = [
+ "bitflags 2.13.0",
+ "dataplane-acl",
+ "dataplane-common",
+ "dataplane-concurrency",
+ "dataplane-config",
+ "dataplane-lookup",
+ "dataplane-lpm",
+ "dataplane-match-action",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "dataplane-tracectl",
+ "indenter",
+ "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
+ "linkme",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "dataplane-args"
 version = "0.22.0"
 dependencies = [

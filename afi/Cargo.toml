@@ -1,0 +1,29 @@
+[package]
+name = "dataplane-afi"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+acl = { workspace = true }
+bitflags = { workspace = true }
+common = { workspace = true }
+concurrency = { workspace = true }
+config = { workspace = true }
+indenter = { workspace = true }
+left-right = { workspace = true }
+linkme = { workspace = true }
+lookup = { workspace = true }
+lpm = { workspace = true }
+match-action = { workspace = true, features = ["derive"] }
+net = { workspace = true }
+pipeline = { workspace = true }
+tracectl = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+config = { workspace = true, features = ["testing"] }
+lpm = { workspace = true, features = ["testing"] }
+net = { workspace = true, features = ["builder"] }
+tracing-test = { workspace = true, features = [] }
