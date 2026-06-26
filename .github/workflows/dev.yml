@@ -68,7 +68,7 @@ jobs:
     steps:
       - name: "Checkout"
         if: "${{ !github.event.pull_request }}"
-        uses: "actions/checkout@v6"
+        uses: "actions/checkout@v7"
         with:
           persist-credentials: "false"
           fetch-depth: "0"
@@ -95,7 +95,7 @@ jobs:
     steps:
       - &checkout
         name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -743,7 +743,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -780,7 +780,7 @@ jobs:
       # Bump dataplane in the fabricator repository
 
       - name: Checkout fabricator repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: githedgehog/fabricator
           path: fab-repo
