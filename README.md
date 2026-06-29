@@ -21,6 +21,10 @@ of the Fabric.
 [nix]: https://nixos.org/download/#nix-install-linux
 [just]: https://github.com/casey/just
 
+
+> [!NOTE]
+> Ensure flakes are enabled (e.g. `experimental-features = nix-command flakes` in `~/.config/nix/nix.conf` for single-user installs, or `/etc/nix/nix.conf` for multi-user installs), or some commands will fail.
+
 ### Step 0. Clone the repository
 
 ```bash
