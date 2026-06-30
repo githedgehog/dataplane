@@ -574,8 +574,8 @@ impl ValidatedExpose {
     }
 
     #[must_use]
-    pub fn nat_proto(&self) -> Option<&L4Protocol> {
-        self.nat.as_ref().map(|nat| &nat.proto)
+    pub fn nat_proto(&self) -> Option<L4Protocol> {
+        self.nat.as_ref().map(|nat| nat.proto)
     }
 
     #[must_use]
