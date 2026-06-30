@@ -42,7 +42,7 @@ fn port_forwarding_with_distinct_l4_protocols(
         && expose_left.nat_proto().is_some_and(|proto_left| {
             expose_right
                 .nat_proto()
-                .is_some_and(|proto_right| proto_left.intersection(proto_right).is_none())
+                .is_some_and(|proto_right| proto_left.intersection(&proto_right).is_none())
         })
 }
 
