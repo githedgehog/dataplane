@@ -62,7 +62,7 @@ version_platform := if platform == "x86-64-v3" { "" } else { "-" + platform }
 version_profile := if profile == "release" { "" } else { "-" + profile }
 version_san := if sanitize == "" { "" } else { "-san." + replace(sanitize, ",", ".") }
 version_feat := if features == "" { "" } else { "-feat." + replace(features, ",", ".") }
-version := env("VERSION", "") || `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_feat + version_extra
+version := env("VERSION", `git describe --tags --dirty --always` + version_platform + version_profile + version_san + version_feat + version_extra)
 
 # Print version that will be used in the build
 version:
