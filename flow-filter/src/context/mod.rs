@@ -14,6 +14,7 @@ use net::ip::NextHeader;
 #[cfg(test)]
 use net::packet::VpcDiscriminant;
 
+mod display;
 mod tables;
 
 pub(crate) use tables::{LookupInput, Route};
