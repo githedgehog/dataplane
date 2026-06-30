@@ -58,7 +58,6 @@ pub(crate) enum RouterCtlMsg {
     GetFrrAppliedConfig(RouterCtlReplyTx),
     Config(Arc<ValidatedGwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
-    RebindCli,
     IfEvent(EthEvent),
 }
 
@@ -164,10 +163,6 @@ impl RouterCtlSender {
         history: Arc<Vec<GwConfigMeta>>,
     ) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::ConfigHistory(history);
-        self.send_and_wake(msg).await
-    }
-    pub async fn rebind_cli(&mut self) -> Result<(), RouterError> {
-        let msg = RouterCtlMsg::RebindCli;
         self.send_and_wake(msg).await
     }
     pub async fn send_ifevent(&mut self, ev: EthEvent) -> Result<(), RouterError> {
@@ -300,7 +295,6 @@ pub(crate) fn handle_ctl_msg(rio: &mut Rio, db: &mut RoutingDb) {
             }
             Ok(RouterCtlMsg::Config(config)) => handle_config(rio, config),
             Ok(RouterCtlMsg::ConfigHistory(history)) => handle_config_history(rio, history),
-            Ok(RouterCtlMsg::RebindCli) => rio.cli_sock_restore(),
             Ok(RouterCtlMsg::IfEvent(ev)) => handle_ifevent(ev, db),
             Err(TryRecvError::Empty) => break,
             Err(e) => {

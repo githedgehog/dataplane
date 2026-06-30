@@ -15,7 +15,7 @@ use nix::unistd::gethostname;
 use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
 use pyroscope::pyroscope::{PyroscopeAgentBuilder, PyroscopeConfig};
 
-use routing::{BmpServerParams, RouterCtlSender, RouterParamsBuilder};
+use routing::{BmpServerParams, RouterParamsBuilder};
 use tracectl::{
     TracingControl, TracingRateLimitConfig, custom_target, get_trace_ctl, trace_target,
 };
@@ -134,7 +134,6 @@ fn spawn_signal_handler(
     rt_handle: &tokio::runtime::Handle,
     mut sigrx: tokio::sync::mpsc::Receiver<DpSignal>,
     root: CancellationToken,
-    mut router_ctl: RouterCtlSender,
 ) {
     rt_handle.spawn(async move {
         loop {
@@ -143,10 +142,7 @@ fn spawn_signal_handler(
                     info!("Processing signal {sig:?} from signal catcher");
                     match sig {
                         DpSignal::SIGTERM | DpSignal::SIGINT | DpSignal::SIGQUIT => root.cancel(),
-                        DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {},
-                        DpSignal::SIGUSR1 => {
-                            let _ = router_ctl.rebind_cli().await;
-                        }
+                        DpSignal::SIGUSR1 | DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {},
                     }
                 }
                 () = root.cancelled() => {
@@ -250,12 +246,7 @@ pub fn main() {
     )
     .expect("failed to start router");
 
-    spawn_signal_handler(
-        &mgmt_handle,
-        sigrx,
-        shutdown.root.clone(),
-        setup.router.get_ctl_tx(),
-    );
+    spawn_signal_handler(&mgmt_handle, sigrx, shutdown.root.clone());
 
     spawn_metrics(
         &shutdown.metrics,
