@@ -15,6 +15,10 @@ use std::num::NonZero;
 use tracing::debug;
 
 mod context;
+#[cfg(test)]
+mod test_utils;
+#[cfg(test)]
+mod tests;
 
 pub use context::{
     FlowFilterContext, FlowFilterContextReader, FlowFilterContextReaderFactory,

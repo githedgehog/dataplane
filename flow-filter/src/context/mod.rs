@@ -16,6 +16,8 @@ use net::packet::VpcDiscriminant;
 
 mod display;
 mod tables;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use tables::{LookupInput, Route};
 use tables::{PRODUCTION_BACKEND, PeeringTables};
