@@ -13,6 +13,8 @@ use net::packet::VpcDiscriminant;
 
 mod display;
 mod tables;
+#[cfg(test)]
+mod tests;
 
 use tables::PeeringTables;
 
