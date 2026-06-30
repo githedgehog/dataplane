@@ -11,6 +11,7 @@ use config::external::overlay::ValidatedOverlay;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
+mod display;
 mod tables;
 
 use tables::PeeringTables;
