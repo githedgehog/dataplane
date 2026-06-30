@@ -19,16 +19,42 @@ use tracing::metadata::LevelFilter;
 #[cfg(not(unix))]
 const DEFAULT_DEFAULT_LOGLEVEL: LevelFilter = LevelFilter::INFO;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TracingRateLimit {
+    pub burst: u32,
+    pub replenish_per_second: u32,
+}
+impl Default for TracingRateLimit {
+    fn default() -> Self {
+        #[cfg(unix)]
+        let (burst, replenish_per_second) = {
+            let d = tracectl::TracingRateLimitConfig::default();
+            (d.burst, d.replenish_per_second)
+        };
+        #[cfg(not(unix))]
+        // Default params
+        let (burst, replenish_per_second) = (50, 5);
+        Self {
+            burst,
+            replenish_per_second,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TracingConfig {
     pub default: LevelFilter,
     pub tags: OrderMap<String, LevelFilter>,
+    /// Log rate limiter — always present; defaults to
+    /// [`TracingRateLimit::default`] when a config omits it.
+    pub rate_limit: TracingRateLimit,
 }
 impl Default for TracingConfig {
     fn default() -> Self {
         Self {
             default: DEFAULT_DEFAULT_LOGLEVEL,
             tags: OrderMap::new(),
+            rate_limit: TracingRateLimit::default(),
         }
     }
 }
@@ -38,10 +64,14 @@ impl TracingConfig {
         Self {
             default,
             tags: OrderMap::new(),
+            rate_limit: TracingRateLimit::default(),
         }
     }
     pub fn add_tag(&mut self, tag: &str, level: LevelFilter) {
         let _ = self.tags.insert(tag.to_string(), level);
+    }
+    pub fn set_rate_limit(&mut self, rate_limit: TracingRateLimit) {
+        self.rate_limit = rate_limit;
     }
     /// Validate the tracing configuration.
     ///

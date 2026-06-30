@@ -8,7 +8,10 @@ use tracing::metadata::LevelFilter;
 
 use k8s_intf::gateway_agent_crd::GatewayAgentGatewayLogs;
 
-use crate::{converters::k8s::FromK8sConversionError, internal::device::tracecfg::TracingConfig};
+use crate::{
+    converters::k8s::FromK8sConversionError,
+    internal::device::tracecfg::{TracingConfig, TracingRateLimit},
+};
 
 fn levelstring_to_levelfilter(value: Option<&str>) -> Result<LevelFilter, FromK8sConversionError> {
     match value {
@@ -35,6 +38,21 @@ impl TryFrom<&GatewayAgentGatewayLogs> for TracingConfig {
                 let level = levelstring_to_levelfilter(Some(level.as_str()))?;
                 config.add_tag(tag, level);
             }
+        }
+        if let Some(rl) = logs.rate_limit.as_ref() {
+            let burst = rl.burst.filter(|&b| b > 0).ok_or_else(|| {
+                FromK8sConversionError::InvalidData("rate-limit burst must be > 0".to_string())
+            })?;
+            let replenish_per_second =
+                rl.replenish_per_second.filter(|&r| r > 0).ok_or_else(|| {
+                    FromK8sConversionError::InvalidData(
+                        "rate-limit replenishPerSecond must be > 0".to_string(),
+                    )
+                })?;
+            config.set_rate_limit(TracingRateLimit {
+                burst,
+                replenish_per_second,
+            });
         }
         Ok(config)
     }
@@ -75,6 +93,16 @@ mod test {
                         let tc_level = tc.tags.get(tag).unwrap();
                         assert_eq!(&level, tc_level);
                     }
+                }
+                match logs.rate_limit.as_ref() {
+                    Some(rl) => {
+                        assert_eq!(Some(tc.rate_limit.burst), rl.burst);
+                        assert_eq!(
+                            Some(tc.rate_limit.replenish_per_second),
+                            rl.replenish_per_second
+                        );
+                    }
+                    None => assert_eq!(tc.rate_limit, TracingRateLimit::default()),
                 }
             });
     }

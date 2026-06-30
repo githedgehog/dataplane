@@ -3,33 +3,42 @@
 
 //! Tracing runtime control.
 
-use arc_swap::ArcSwap;
+use concurrency::slot::Slot;
 use concurrency::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use ordermap::OrderMap;
 use std::str::FromStr;
-use std::{any::TypeId, collections::HashSet, time::Duration};
+use std::{any::TypeId, collections::HashSet};
 use thiserror::Error;
 use tracing::{Event, Metadata, span, subscriber::Interest};
 #[allow(unused)]
 use tracing::{Level, Subscriber, callsite, debug, error, info, warn};
 use tracing_subscriber::{
     EnvFilter,
-    filter::{FilterExt, LevelFilter, filter_fn},
-    layer::{Context, Filter, Layer},
+    filter::LevelFilter,
+    layer::{Context, Layer},
     prelude::*,
     registry::LookupSpan,
 };
-use tracing_throttle::{Policy, TracingRateLimitLayer};
 
 use crate::display::TargetCfgDbByTag;
 use crate::targets::{TRACING_TAG_ALL, TRACING_TARGETS};
+use crate::throttle::RateLimitFilter;
 use crate::trace_target;
 trace_target!("tracectl", LevelFilter::INFO, &[]);
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TracingRateLimitConfig {
     pub burst: u32,
     pub replenish_per_second: u32,
+}
+
+impl Default for TracingRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            burst: 50,
+            replenish_per_second: 5,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Error, PartialEq)]
@@ -291,25 +300,25 @@ impl TargetCfgDb {
     }
 }
 
-/// `AtomicEnvFilter` wraps an `EnvFilter` in an `ArcSwap` to allow atomic
+/// `AtomicEnvFilter` wraps an `EnvFilter` in a [`Slot`] to allow atomic
 /// swapping of the filter. The type is `Clone`-able: the original instance
 /// is moved into the subscriber as a `Layer`, while a clone is kept on
 /// `TracingControl` to push reloads from the outside. Both clones share the
-/// same `Arc<ArcSwap<EnvFilter>>` so an update from one is visible to the other.
+/// same `Arc<Slot<EnvFilter>>` so an update from one is visible to the other.
 #[derive(Clone)]
 struct AtomicEnvFilter {
-    inner: Arc<ArcSwap<EnvFilter>>,
+    inner: Arc<Slot<EnvFilter>>,
 }
 
 impl AtomicEnvFilter {
     fn new(initial: EnvFilter) -> Self {
         Self {
-            inner: Arc::new(ArcSwap::from_pointee(initial)),
+            inner: Arc::new(Slot::from_pointee(initial)),
         }
     }
 
     fn reload(&self, new: EnvFilter) {
-        self.inner.store(std::sync::Arc::new(new)); // nosemgrep: rust-no-direct-std-sync-import
+        self.inner.store(Arc::new(new));
         callsite::rebuild_interest_cache();
     }
 }
@@ -325,39 +334,39 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn register_callsite(&self, meta: &'static Metadata<'static>) -> Interest {
-        Layer::<S>::register_callsite(&**self.inner.load(), meta)
+        Layer::<S>::register_callsite(&*self.inner.load_full(), meta)
     }
 
     fn enabled(&self, meta: &Metadata<'_>, ctx: Context<'_, S>) -> bool {
-        Layer::<S>::enabled(&**self.inner.load(), meta, ctx)
+        Layer::<S>::enabled(&*self.inner.load_full(), meta, ctx)
     }
 
     fn max_level_hint(&self) -> Option<LevelFilter> {
-        Layer::<S>::max_level_hint(&**self.inner.load())
+        Layer::<S>::max_level_hint(&*self.inner.load_full())
     }
 
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_new_span(&**self.inner.load(), attrs, id, ctx);
+        Layer::<S>::on_new_span(&*self.inner.load_full(), attrs, id, ctx);
     }
 
     fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
-        Layer::<S>::on_record(&**self.inner.load(), id, values, ctx);
+        Layer::<S>::on_record(&*self.inner.load_full(), id, values, ctx);
     }
 
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_enter(&**self.inner.load(), id, ctx);
+        Layer::<S>::on_enter(&*self.inner.load_full(), id, ctx);
     }
 
     fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_exit(&**self.inner.load(), id, ctx);
+        Layer::<S>::on_exit(&*self.inner.load_full(), id, ctx);
     }
 
     fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
-        Layer::<S>::on_close(&**self.inner.load(), id, ctx);
+        Layer::<S>::on_close(&*self.inner.load_full(), id, ctx);
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        Layer::<S>::on_event(&**self.inner.load(), event, ctx);
+        Layer::<S>::on_event(&*self.inner.load_full(), event, ctx);
     }
 
     // `downcast_raw` is how the layered subscriber probes a layer for
@@ -366,7 +375,7 @@ where
     // per-layer filter, so reporting "no match" for anything but our own
     // type id is correct. We deliberately do *not* expose the inner
     // `EnvFilter`'s address — its identity can change at any time via
-    // `ArcSwap::store`.
+    // `Slot::store`.
     #[doc(hidden)]
     unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
         if id == TypeId::of::<Self>() {
@@ -374,6 +383,140 @@ where
         } else {
             None
         }
+    }
+}
+
+/// `AtomicThrottle` wraps an *optional* [`RateLimitFilter`] in a
+/// [`Slot`] so the rate-limit policy can be swapped at runtime — the same
+/// pattern [`AtomicEnvFilter`] uses for the level filter. One clone is moved
+/// into the subscriber inside the [`FmtGate`] layer; another is kept on
+/// [`TracingControl`] to push reloads. Both share the same
+/// `Arc<Slot<Option<RateLimitFilter>>>`.
+///
+/// `None` means "no throttling": every event passes. [`reload`](Self::reload)
+/// swaps in a brand-new limiter (with fresh token buckets) *when the config
+/// changes*, or stores `None` to disable throttling entirely; an unchanged
+/// config is a no-op, so live bucket state survives repeated applies of the
+/// same config.
+#[derive(Clone)]
+struct AtomicThrottle {
+    inner: Arc<Slot<Option<RateLimitFilter>>>,
+    /// The config the current limiter was built from. `reload` compares against
+    /// it so an unchanged config is a no-op: rebuilding would reset the token
+    /// buckets and hand out a fresh burst on every management re-apply of the
+    /// same config, which would weaken throttling.
+    current: Arc<Mutex<Option<TracingRateLimitConfig>>>,
+}
+
+impl AtomicThrottle {
+    fn new(config: Option<TracingRateLimitConfig>) -> Self {
+        Self {
+            inner: Arc::new(Slot::from_pointee(TracingControl::build_rate_limit_layer(
+                config,
+            ))),
+            current: Arc::new(Mutex::new(config)),
+        }
+    }
+
+    /// Swap the active limiter when the config changes. `Some(config)` installs
+    /// a freshly-built token-bucket limiter; `None` removes throttling.
+    /// Idempotent: an unchanged config is a no-op, preserving live bucket
+    /// state. Infallible: a config that fails to build degrades to unthrottled.
+    fn reload(&self, config: Option<TracingRateLimitConfig>) {
+        let mut current = self.current.lock();
+        if *current == config {
+            return;
+        }
+        self.inner
+            .store(Arc::new(TracingControl::build_rate_limit_layer(config)));
+        *current = config;
+    }
+
+    /// Token-bucket verdict for `meta`. `None` (no limiter configured) admits
+    /// every event. Hot path: called once per event from [`FmtGate::on_event`].
+    fn allow(&self, meta: &Metadata<'_>) -> bool {
+        match &*self.inner.load_full() {
+            Some(limiter) => limiter.allow(meta),
+            None => true,
+        }
+    }
+}
+
+/// The single formatting layer, gating output in [`on_event`](Layer::on_event):
+/// `DEBUG` is written unthrottled (the most verbose deliberate level), every
+/// other level is passed through the token bucket first.
+///
+/// **Crucially, this is a plain `Layer` with no per-layer `Filter`** — there is
+/// no `with_filter` anywhere in the fmt stack. That is deliberate and is the
+/// whole point:
+///
+/// * A per-layer `Filter` that decides per event must report
+///   [`Interest::sometimes`], which forces tracing to run the full per-event
+///   `Subscriber::enabled` evaluation through the entire layered subscriber on
+///   *every* event.
+/// * Worse, even a *static* per-layer filter anywhere in the stack
+///   (`inner_has_layer_filter`) makes tracing promote a callsite the env filter
+///   *disabled* (`never`) to `sometimes` whenever another layer reports
+///   non-`never` — see `Layered::pick_interest`. That means hot, disabled
+///   per-packet `trace!`/`debug!` callsites pay `Subscriber::enabled` on every
+///   call. This was the regression: the split unthrottled/throttled
+///   `with_filter` layers kept `inner_has_layer_filter == true`.
+///
+/// With zero per-layer filters, a callsite the env filter disables stays
+/// `never` (cheap, no per-event `enabled`), while enabled callsites are
+/// `always` and reach `on_event`, where the level routing + bucket decide what
+/// is actually written. The env filter (a plain global `Layer`) still gates by
+/// level/target as before.
+struct FmtGate<S> {
+    /// The wrapped formatting layer; only sees events the gate admits.
+    fmt: BoxedTracingLayer<S>,
+    throttle: AtomicThrottle,
+}
+
+impl<S> FmtGate<S> {
+    fn new(fmt: BoxedTracingLayer<S>, throttle: AtomicThrottle) -> Self {
+        Self { fmt, throttle }
+    }
+}
+
+impl<S> Layer<S> for FmtGate<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn register_callsite(&self, _metadata: &'static Metadata<'static>) -> Interest {
+        // Static `always` — never `sometimes` — and, since this layer carries no
+        // per-layer filter, it does not make the env filter's `never` callsites
+        // promote to `sometimes`. The env filter still decides what is enabled.
+        Interest::always()
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        let meta = event.metadata();
+        // `DEBUG` is written unthrottled; every other level goes through the
+        // token bucket. (The env filter has already gated what reaches here.)
+        if *meta.level() == Level::DEBUG || self.throttle.allow(meta) {
+            self.fmt.on_event(event, ctx);
+        }
+    }
+
+    // Forward span lifecycle so the wrapped formatter can render span context.
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
+        self.fmt.on_new_span(attrs, id, ctx);
+    }
+    fn on_record(&self, span: &span::Id, values: &span::Record<'_>, ctx: Context<'_, S>) {
+        self.fmt.on_record(span, values, ctx);
+    }
+    fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
+        self.fmt.on_enter(id, ctx);
+    }
+    fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
+        self.fmt.on_exit(id, ctx);
+    }
+    fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
+        self.fmt.on_close(id, ctx);
+    }
+    fn on_id_change(&self, old: &span::Id, new: &span::Id, ctx: Context<'_, S>) {
+        self.fmt.on_id_change(old, new, ctx);
     }
 }
 
@@ -386,6 +529,7 @@ type BoxedTracingLayer<S> = Box<dyn Layer<S> + Send + Sync>;
 pub struct TracingControl {
     db: Arc<Mutex<TargetCfgDb>>,
     reload_filter: AtomicEnvFilter,
+    reload_throttle: AtomicThrottle,
 }
 impl TracingControl {
     fn fmt_layer<S>() -> impl Layer<S> + Send + Sync
@@ -400,94 +544,37 @@ impl TracingControl {
             .with_level(true)
     }
 
-    // To get rid of spaghetti filters in the layers, we split the fmt layer into two:
-    // one for unthrottled levels and one for throttled levels.
-
-    // `DEBUG` level remains unthrottled if we assume that it is the most verbose level
-    // that users would want to enable while digging into particular issues.
-    fn unthrottled_level_filter<S>() -> impl Filter<S> + Send + Sync
-    where
-        S: Subscriber + for<'span> LookupSpan<'span>,
-    {
-        filter_fn(|meta| matches!(*meta.level(), Level::DEBUG))
-    }
-
-    fn throttled_level_filter<S>() -> impl Filter<S> + Send + Sync
-    where
-        S: Subscriber + for<'span> LookupSpan<'span>,
-    {
-        filter_fn(|meta| {
-            matches!(
-                *meta.level(),
-                Level::INFO | Level::TRACE | Level::ERROR | Level::WARN
-            )
-        })
-    }
-
-    fn unthrottled_fmt_layer<S>() -> BoxedTracingLayer<S>
+    // A single formatting layer wrapped in a `FmtGate`, which routes `DEBUG`
+    // (unthrottled) vs. everything else (throttled) in `on_event`. The throttle
+    // is always installed (even when it currently holds `None`) so the policy
+    // can be turned on, off, or reconfigured at runtime via
+    // `AtomicThrottle::reload` without rebuilding the subscriber.
+    //
+    // There is deliberately NO per-layer `Filter` (`with_filter`) here: any
+    // per-layer filter in the stack makes tracing promote env-filter-disabled
+    // callsites to `sometimes`, forcing a per-event `Subscriber::enabled` walk
+    // for hot disabled per-packet logs (see `FmtGate`). One plain `Layer` keeps
+    // those callsites `never` and cheap.
+    fn fmt_gate_layer<S>(throttle: AtomicThrottle) -> BoxedTracingLayer<S>
     where
         S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
     {
-        Self::fmt_layer()
-            .with_filter(Self::unthrottled_level_filter())
-            .boxed()
+        FmtGate::new(Self::fmt_layer().boxed(), throttle).boxed()
     }
 
-    fn throttled_fmt_layer<S>(
-        rate_limit_config: Option<TracingRateLimitConfig>,
-    ) -> BoxedTracingLayer<S>
-    where
-        S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync + 'static,
-    {
-        if let Some(rate_limit) = Self::build_rate_limit_layer(rate_limit_config) {
-            Self::fmt_layer()
-                .with_filter(Self::throttled_level_filter().and(rate_limit))
-                .boxed()
-        } else {
-            Self::fmt_layer()
-                .with_filter(Self::throttled_level_filter())
-                .boxed()
-        }
-    }
-
+    /// Build the rate-limit filter for `rate_limit_config`. `None` means "no
+    /// throttling". Construction is infallible, so the only `None` result is a
+    /// `None` input.
     fn build_rate_limit_layer(
         rate_limit_config: Option<TracingRateLimitConfig>,
-    ) -> Option<TracingRateLimitLayer> {
-        let rate_limit_config = rate_limit_config?;
-
-        let policy = match Policy::token_bucket(
-            f64::from(rate_limit_config.burst),
-            f64::from(rate_limit_config.replenish_per_second),
-        ) {
-            Ok(policy) => policy,
-            Err(e) => {
-                eprintln!(
-                    "Failed to create tracing throttle policy: {e}; falling back to unthrottled logging"
-                );
-                return None;
-            }
-        };
-
-        match TracingRateLimitLayer::builder()
-            .with_policy(policy)
-            .with_summary_interval(Duration::from_secs(30))
-            .build()
-        {
-            Ok(rate_limit) => Some(rate_limit),
-            Err(e) => {
-                eprintln!(
-                    "Failed to create tracing throttle layer: {e}; falling back to unthrottled logging"
-                );
-                None
-            }
-        }
+    ) -> Option<RateLimitFilter> {
+        rate_limit_config.map(RateLimitFilter::new)
     }
 
-    fn init_subscriber(filter: AtomicEnvFilter, rate_limit_config: Option<TracingRateLimitConfig>) {
+    fn init_subscriber(filter: AtomicEnvFilter, throttle: AtomicThrottle) {
         if let Err(e) = tracing_subscriber::registry()
             .with(filter)
-            .with(Self::unthrottled_fmt_layer())
-            .with(Self::throttled_fmt_layer(rate_limit_config))
+            .with(Self::fmt_gate_layer(throttle))
             .with(tracing_error::ErrorLayer::default())
             .try_init()
         {
@@ -499,8 +586,10 @@ impl TracingControl {
         let db = TargetCfgDb::new();
         let filter = AtomicEnvFilter::new(db.env_filter());
         let reload_filter = filter.clone();
+        let throttle = AtomicThrottle::new(rate_limit_config);
+        let reload_throttle = throttle.clone();
 
-        Self::init_subscriber(filter, rate_limit_config);
+        Self::init_subscriber(filter, throttle);
 
         if let Err(e) = color_eyre::install() {
             eprintln!("Failed to initialize color_eyre:\n{e}");
@@ -508,12 +597,13 @@ impl TracingControl {
         Self {
             db: Arc::new(Mutex::new(db)),
             reload_filter,
+            reload_throttle,
         }
     }
     fn lock(&self) -> MutexGuard<'_, TargetCfgDb> {
         self.db.lock()
     }
-    /// Reload the active `EnvFilter`. Infallible: the `ArcSwap`-based handle
+    /// Reload the active `EnvFilter`. Infallible: the `Slot`-based handle
     /// has no lock to poison and no subscriber-gone case.
     fn reload(&self, filter: EnvFilter) {
         self.reload_filter.reload(filter);
@@ -585,6 +675,20 @@ impl TracingControl {
     pub fn get_default_level(&self) -> Result<LevelFilter, TraceCtlError> {
         let db = self.lock();
         Ok(db.default)
+    }
+
+    /// Reload (or disable) the tracing rate limiter at runtime.
+    ///
+    /// `Some(config)` swaps in a freshly-built token-bucket layer when the
+    /// config differs from the active one (a changed config resets buckets to a
+    /// fresh burst); an unchanged config is a no-op, so repeatedly re-applying
+    /// the same config does not keep resetting buckets. `None` removes
+    /// throttling so every event passes. Infallible: like init, a config that
+    /// fails to build degrades to unthrottled. This is the hook a config/CRD
+    /// handler calls when the rate-limit parameters change, analogous to
+    /// [`reconfigure`](Self::reconfigure) for log levels.
+    pub fn reload_rate_limit(&self, config: Option<TracingRateLimitConfig>) {
+        self.reload_throttle.reload(config);
     }
 
     /// Parse a string made of comma-separated tag=level; level = [off,error,warn,info,debug,trace]
@@ -1059,70 +1163,120 @@ mod tests {
         assert_eq!(check_level!(Y4), LevelFilter::DEBUG);
     }
 
-    // Verify the rate limiter actually drops events past the burst.
+    // Exercise the runtime reload path: no throttle -> install one -> remove it,
+    // counting events at each phase to prove the swap takes effect live.
+    //
+    // The throttle is held in an `AtomicThrottle` and applied by the `FmtGate`
+    // layer — the same handles `TracingControl` wires up. We build a *local*
+    // subscriber (rather than the global one) only so the fmt output lands in a
+    // capturable `MockWriter` buffer instead of stdout — the mechanism under
+    // test is identical (a plain `Layer` gating in `on_event`, no per-layer
+    // filter), so it throttles without the per-layer-filter machinery at all.
     #[test]
     #[serial]
     #[allow(clippy::disallowed_types)]
-    fn test_rate_limit_drops_burst_overflow() {
-        use crate::control::{TracingControl, TracingRateLimitConfig};
+    fn test_rate_limit_reload_phases() {
+        use crate::control::{AtomicThrottle, FmtGate, TracingRateLimitConfig};
         use std::sync::Mutex; // nosemgrep: rust-no-direct-std-sync-import
-        use tracing_subscriber::{EnvFilter, filter::FilterExt, layer::Layer, prelude::*};
+        use tracing_subscriber::{EnvFilter, layer::Layer, prelude::*};
         use tracing_test::internal::MockWriter;
 
-        const INFO_MARKER: &str = "HH_RATE_TEST_INFO";
-        const DEBUG_MARKER: &str = "HH_RATE_TEST_DEBUG";
+        // Distinct markers so one accumulating buffer can be counted per phase.
+        const P1_OFF: &str = "HH_RL_PHASE1_OFF";
+        const P2_ON: &str = "HH_RL_PHASE2_ON";
+        const P3_OFF: &str = "HH_RL_PHASE3_OFF";
         const BURST: u32 = 5;
         const EMITTED: usize = 100;
 
         // We leak a `Mutex<Vec<u8>>` to get a `'static` writer buffer for the subscriber layer.
         let buf: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
-        let rate_limit = TracingControl::build_rate_limit_layer(Some(TracingRateLimitConfig {
-            burst: BURST,
-            replenish_per_second: 1,
-        }))
-        .expect("build rate-limit layer");
+        // Start with throttling disabled; keep a handle to flip it mid-test.
+        let throttle = AtomicThrottle::new(None);
 
-        // Same for dataplane: `DEBUG` events are unthrottled, `INFO` events are
-        let fmt_unthrottled = tracing_subscriber::fmt::layer()
+        let fmt = tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_writer(MockWriter::new(buf))
-            .with_filter(TracingControl::unthrottled_level_filter());
-
-        let fmt_throttled = tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(MockWriter::new(buf))
-            .with_filter(TracingControl::throttled_level_filter().and(rate_limit));
+            .boxed();
+        let gate = FmtGate::new(fmt, throttle.clone());
 
         let subscriber = tracing_subscriber::registry()
-            .with(EnvFilter::new("debug"))
-            .with(fmt_unthrottled)
-            .with(fmt_throttled);
+            .with(EnvFilter::new("info"))
+            .with(gate);
 
         tracing::subscriber::with_default(subscriber, || {
+            // Phase 1 — no throttle: every INFO event must pass.
             for _ in 0..EMITTED {
-                tracing::debug!("{DEBUG_MARKER}");
-                tracing::info!("{INFO_MARKER}");
+                tracing::info!("{P1_OFF}");
+            }
+
+            // Phase 2 — install a small-burst throttle and reload the layer.
+            let cfg = TracingRateLimitConfig {
+                burst: BURST,
+                replenish_per_second: 1,
+            };
+            throttle.reload(Some(cfg));
+            // Emit through a single callsite so the two bursts below share one
+            // token bucket (the throttle keys buckets by callsite + fields); a
+            // fresh callsite would get its own bucket and hide the bug.
+            let emit_p2 = || {
+                for _ in 0..EMITTED {
+                    tracing::info!("{P2_ON}");
+                }
+            };
+            let p2_passed = || {
+                String::from_utf8(buf.lock().unwrap().clone())
+                    .unwrap()
+                    .matches(P2_ON)
+                    .count()
+            };
+            emit_p2();
+            let p2_first = p2_passed();
+
+            // Phase 2b — reload with the *identical* config. This must be a
+            // no-op (idempotent): the bucket is not refilled, so a second burst
+            // through the same callsite stays throttled rather than receiving a
+            // fresh BURST allowance.
+            throttle.reload(Some(cfg));
+            emit_p2();
+            let p2_second = p2_passed() - p2_first;
+            assert!(
+                p2_second < BURST as usize,
+                "idempotent reload granted a fresh burst: 2nd burst passed {p2_second}, expected < BURST ({BURST})"
+            );
+
+            // Phase 3 — remove the throttle again: every INFO event must pass.
+            throttle.reload(None);
+            for _ in 0..EMITTED {
+                tracing::info!("{P3_OFF}");
             }
         });
 
         let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
-        let info_kept = captured.matches(INFO_MARKER).count();
-        let debug_kept = captured.matches(DEBUG_MARKER).count();
+        let count = |marker: &str| captured.matches(marker).count();
+        let (p1, p2, p3) = (count(P1_OFF), count(P2_ON), count(P3_OFF));
 
-        // DEBUG is unthrottled — every event must make it through, and the
-        // throttle layer never sees it so it can't burn tokens budgeted for INFO.
+        // Phase 1: throttle disabled, nothing dropped.
         assert_eq!(
-            debug_kept, EMITTED,
-            "DEBUG events must pass the unthrottled layer; got {debug_kept}/{EMITTED}"
+            p1, EMITTED,
+            "phase 1 (no throttle) dropped events: {p1}/{EMITTED}"
+        );
+
+        // Phase 2: throttle active — at least the burst survives, but the bulk
+        // is dropped. If this saw EMITTED, the reload didn't take effect.
+        assert!(
+            p2 >= BURST as usize,
+            "phase 2 passed only {p2}/{BURST} burst events"
         );
         assert!(
-            info_kept >= 1,
-            "rate limiter swallowed the entire INFO burst"
+            p2 < EMITTED / 2,
+            "phase 2 let through {p2}/{EMITTED} events; throttle not applied after reload\n{captured}"
         );
-        assert!(
-            info_kept < EMITTED / 2,
-            "rate limiter let through {info_kept}/{EMITTED} INFO events; expected ≪ {EMITTED}\n{captured}"
+
+        // Phase 3: throttle removed — back to passing everything.
+        assert_eq!(
+            p3, EMITTED,
+            "phase 3 (throttle removed) dropped events: {p3}/{EMITTED}"
         );
     }
 }
