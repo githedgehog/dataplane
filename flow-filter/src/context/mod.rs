@@ -12,6 +12,8 @@ use config::external::overlay::ValidatedOverlay;
 
 mod display;
 mod tables;
+#[cfg(test)]
+mod tests;
 
 pub use tables::FlowFilterContext;
 use tables::PRODUCTION_BACKEND;
