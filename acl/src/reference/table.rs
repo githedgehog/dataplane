@@ -63,6 +63,12 @@ impl<K: MatchKey, A> ReferenceTable<K, A> {
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
     }
+
+    #[must_use]
+    pub fn rules(&self) -> &[RefRule<A>] {
+        &self.rules
+    }
+
     fn pack(key: &K) -> Option<[u8; MAX_KEY_BYTES]> {
         if K::KEY_SIZE > MAX_KEY_BYTES {
             return None;
