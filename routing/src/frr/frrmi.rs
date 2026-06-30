@@ -209,8 +209,8 @@ impl Frrmi {
         }
         self.sock.as_mut().ok_or(FrrErr::NotConnected)?;
         if let Some(req) = self.requests.pop_front() {
-            debug!("Initiating new FRR reconfiguration (gen: {})", req.genid);
             let genid = req.genid;
+            debug!("Initiating new FRR reconfiguration (gen: {genid})");
             self.send_msg(req)?;
             revent!(RouterEvent::FrrConfigApplyRequested(genid));
         }
