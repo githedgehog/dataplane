@@ -681,6 +681,31 @@ impl VpcManifest {
         self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
     }
 
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        self.valexp().iter().any(VpcExpose::is_v4)
+    }
+
+    #[must_use]
+    pub fn is_v6(&self) -> bool {
+        self.valexp().iter().any(VpcExpose::is_v6)
+    }
+
+    #[must_use]
+    pub fn is_default_only(&self) -> bool {
+        self.valexp().len() == 1 && self.valexp().first().is_some_and(VpcExpose::is_default)
+    }
+
+    #[must_use]
+    pub fn is_v4_or_default(&self) -> bool {
+        self.is_default_only() || self.is_v4()
+    }
+
+    #[must_use]
+    pub fn is_v6_or_default(&self) -> bool {
+        self.is_default_only() || self.is_v6()
+    }
+
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes
         for (index, expose_left) in self.exposes.iter().enumerate() {

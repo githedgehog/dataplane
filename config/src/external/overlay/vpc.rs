@@ -112,6 +112,20 @@ impl Peering {
         &self.gwgroup
     }
 
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        // This is a validated object, we checked at validation time that both manifests use the
+        // same IP version, so we only need to look at one of them.
+        //
+        // We also know that at least one of the manifests has a non-default expose, so we can
+        // always tell the IP version in use from one of them.
+        if self.local.is_default_only() {
+            self.remote.is_v4()
+        } else {
+            self.local.is_v4()
+        }
+    }
+
     fn validate_nat_combinations(&self) -> ConfigResult {
         // If stateful NAT is set up on one side of the peering, we don't support NAT (static or
         // stateful) on the other side.
