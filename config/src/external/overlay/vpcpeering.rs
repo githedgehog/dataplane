@@ -549,6 +549,20 @@ impl ValidatedExpose {
             .is_some_and(VpcExposeNat::is_port_forwarding)
     }
 
+    /// Returns whether a packet with a source connection from this expose block can initiate a
+    /// stateful connection
+    #[must_use]
+    pub fn can_init_connection(&self) -> bool {
+        !self.has_port_forwarding()
+    }
+
+    /// Returns whether destinations in this expose block can be used as valid targets for incoming
+    /// stateful connections
+    #[must_use]
+    pub fn can_receive_connection(&self) -> bool {
+        !self.has_masquerade()
+    }
+
     #[must_use]
     pub fn nat(&self) -> Option<&VpcExposeNat> {
         self.nat.as_ref()
@@ -560,8 +574,8 @@ impl ValidatedExpose {
     }
 
     #[must_use]
-    pub fn nat_proto(&self) -> Option<&L4Protocol> {
-        self.nat.as_ref().map(|nat| &nat.proto)
+    pub fn nat_proto(&self) -> Option<L4Protocol> {
+        self.nat.as_ref().map(|nat| nat.proto)
     }
 
     #[must_use]
@@ -684,6 +698,11 @@ impl ValidatedManifest {
     }
 
     #[must_use]
+    pub fn has_default_expose(&self) -> bool {
+        self.valexp().iter().any(ValidatedExpose::is_default)
+    }
+
+    #[must_use]
     pub fn default_expose(&self) -> Option<&ValidatedExpose> {
         self.valexp().iter().find(|expose| expose.is_default())
     }
@@ -717,6 +736,16 @@ impl ValidatedManifest {
 
     pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
         self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
+    }
+
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        self.valexp.iter().any(ValidatedExpose::is_v4)
+    }
+
+    #[must_use]
+    pub fn is_v6(&self) -> bool {
+        self.valexp.iter().any(ValidatedExpose::is_v6)
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {
