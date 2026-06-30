@@ -796,16 +796,6 @@ impl ValidatedManifest {
         self.valexp.len() == 1 && self.valexp.first().is_some_and(ValidatedExpose::is_default)
     }
 
-    #[must_use]
-    pub fn is_v4_or_default(&self) -> bool {
-        self.is_default_only() || self.is_v4()
-    }
-
-    #[must_use]
-    pub fn is_v6_or_default(&self) -> bool {
-        self.is_default_only() || self.is_v6()
-    }
-
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes
         for (index, expose_left) in self.valexp.iter().enumerate() {
