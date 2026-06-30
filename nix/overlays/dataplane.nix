@@ -146,6 +146,15 @@ in
         version = sources.rdma-core.branch;
         src = sources.rdma-core.outPath;
 
+        # nixpkgs carries the "cmake-allow-overriding-sysusers.d-install-directory" patch, which turns SYSUSERS_DIR
+        # into a CMake cache variable.  Our pinned fork already cherry-picked that exact upstream commit (see the
+        # SYSUSERS_DIR cmakeFlag note below), so applying the nixpkgs patch on top fails with "Reversed (or previously
+        # applied) patch detected" and aborts patchPhase.  Drop that one patch by name (rather than clearing the whole
+        # list) so any future nixpkgs patches we *do* want still apply.
+        patches = builtins.filter (
+          p: !final.lib.hasInfix "cmake-allow-overriding-sysusers.d-install-directory" (toString p)
+        ) (orig.patches or [ ]);
+
         # Patching the shebang lines in the perl scripts causes nixgraph to (incorrectly) think we depend on perl at
         # runtime.  We absolutely do not (we don't even ship a perl interpreter), so don't patch these shebang lines.
         # In fact, we don't use any of the scripts from this package.
