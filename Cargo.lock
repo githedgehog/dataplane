@@ -1410,6 +1410,23 @@ name = "dataplane-fixed-size"
 version = "0.22.0"
 
 [[package]]
+name = "dataplane-flofi"
+version = "0.22.0"
+dependencies = [
+ "dataplane-acl",
+ "dataplane-common",
+ "dataplane-concurrency",
+ "dataplane-config",
+ "dataplane-lookup",
+ "dataplane-lpm",
+ "dataplane-match-action",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "indenter",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-flow-entry"
 version = "0.22.0"
 dependencies = [

@@ -1,0 +1,23 @@
+[package]
+name = "dataplane-flofi"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+acl = { workspace = true }
+common = { workspace = true }
+concurrency = { workspace = true }
+config = { workspace = true }
+indenter = { workspace = true }
+lookup = { workspace = true }
+lpm = { workspace = true }
+match-action = { workspace = true, features = ["derive"] }
+net = { workspace = true }
+pipeline = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+lpm = { workspace = true, features = ["testing"] }
+net = { workspace = true, features = ["builder"] }
