@@ -719,6 +719,16 @@ impl ValidatedManifest {
         self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
     }
 
+    #[must_use]
+    pub fn is_v4(&self) -> bool {
+        self.valexp.iter().any(ValidatedExpose::is_v4)
+    }
+
+    #[must_use]
+    pub fn is_v6(&self) -> bool {
+        self.valexp.iter().any(ValidatedExpose::is_v6)
+    }
+
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes
         for (index, expose_left) in self.valexp.iter().enumerate() {
