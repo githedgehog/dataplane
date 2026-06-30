@@ -1443,6 +1443,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-flow-filter"
+version = "0.23.0"
+dependencies = [
+ "dataplane-acl",
+ "dataplane-common",
+ "dataplane-concurrency",
+ "dataplane-config",
+ "dataplane-dpdk",
+ "dataplane-lookup",
+ "dataplane-lpm",
+ "dataplane-match-action",
+ "dataplane-net",
+ "dataplane-pipeline",
+ "tracing",
+]
+
+[[package]]
 name = "dataplane-flow-filter-legacy"
 version = "0.23.0"
 dependencies = [
