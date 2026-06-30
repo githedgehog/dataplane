@@ -696,6 +696,11 @@ impl ValidatedManifest {
     }
 
     #[must_use]
+    pub fn has_default_expose(&self) -> bool {
+        self.valexp().iter().any(ValidatedExpose::is_default)
+    }
+
+    #[must_use]
     pub fn default_expose(&self) -> Option<&ValidatedExpose> {
         self.valexp().iter().find(|expose| expose.is_default())
     }
