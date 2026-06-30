@@ -287,6 +287,16 @@ miri = true # must ALWAYS work
 # NOTE: concurrency should likely be dependency gated as `cfg(unix)` or `cfg(not(target_arch = "wasm32"))`
 wasm = false # hopeless + pointless
 
+[workspace.metadata.package.concurrency-macros]
+package = "dataplane-concurrency-macros"
+# Proc-macro crate: runs at the host toolchain, not the miri target.
+# Excluded from miri to keep the target dep graph clean.  Without this,
+# `cargo miri nextest` builds the host test binary and then tries to run
+# it through the cargo-miri runner, which fails with a misleading
+# "outdated or invalid JSON; try `cargo clean`".
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
 [workspace.metadata.package.dataplane]
 package = "dataplane"
 miri = false # hopeless + pointless
@@ -299,6 +309,16 @@ wasm = false # hopeless + pointless
 
 [workspace.metadata.package.dpdk-sys]
 package = "dataplane-dpdk-sys"
+miri = false # hopeless + pointless
+wasm = false # hopeless + pointless
+
+[workspace.metadata.package.dpdk-test-macros]
+package = "dataplane-dpdk-test-macros"
+# Proc-macro crate: runs at the host toolchain, not the miri target.
+# Excluded from miri to keep the target dep graph clean.  Without this,
+# `cargo miri nextest` builds the host test binary and then tries to run
+# it through the cargo-miri runner, which fails with a misleading
+# "outdated or invalid JSON; try `cargo clean`".
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
 
