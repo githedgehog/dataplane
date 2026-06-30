@@ -67,6 +67,15 @@ impl Peering {
             gwgroup: self.gwgroup.clone(),
             acl,
         };
+
+        if valid_peering_candidate.local.is_v4_or_default()
+            != valid_peering_candidate.remote.is_v4_or_default()
+        {
+            return Err(ConfigError::Forbidden(
+                "The two manifests of a peering must contain expose blocks of the same IP version",
+            ));
+        }
+
         valid_peering_candidate.validate_nat_combinations()?;
 
         Ok(valid_peering_candidate)

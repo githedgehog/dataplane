@@ -162,20 +162,20 @@ mod tests {
         let expose3 = VpcExpose::empty()
             .make_static_nat()
             .unwrap()
-            .ip("1::/64".into())
-            .not("1::/128".into())
-            .as_range("1:1::/64".into())
+            .ip("5.0.0.0/16".into())
+            .not("5.0.5.0/24".into())
+            .as_range("6.0.0.0/16".into())
             .unwrap()
-            .not_as("1:1::/128".into())
+            .not_as("6.0.6.0/24".into())
             .unwrap();
         let expose4 = VpcExpose::empty()
             .make_static_nat()
             .unwrap()
-            .ip("2::/64".into())
-            .not("2::/128".into())
-            .as_range("2:4::/64".into())
+            .ip("7.0.0.0/16".into())
+            .not("7.0.7.0/24".into())
+            .as_range("7.8.0.0/16".into())
             .unwrap()
-            .not_as("2:4::/128".into())
+            .not_as("7.8.9.0/24".into())
             .unwrap();
 
         let mut manifest2 = VpcManifest::new("VPC-2");
