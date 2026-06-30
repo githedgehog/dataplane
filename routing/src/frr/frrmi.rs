@@ -15,7 +15,7 @@ use crate::router::revent::{ROUTER_EVENTS, RouterEvent, revent};
 use config::GenId;
 
 #[allow(unused)]
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 use tracectl::trace_target;
 trace_target!("frrmi", LevelFilter::DEBUG, &["routing-full"]);
@@ -240,7 +240,7 @@ impl Frrmi {
 
         // Attempt to clean-up the config before re-applying the actual config.
         // This is disabled as the blank config is unsuitable for us and providing a suitable
-        //  one requires the ability to build frr configs, which we don't have here.
+        // one requires the ability to build frr configs, which we don't have here.
         if false {
             self.requests.push_front(FrrmiRequest::blank());
         }
@@ -328,22 +328,22 @@ impl Frrmi {
         };
         loop {
             let pending = self.readb.next_read_len();
-            trace!("Recv data (read:{} pending:{pending})", self.readb.used);
+            debug!("Recv data (read:{} pending:{pending})", self.readb.used);
             match Self::recv(sock, &mut self.readb, pending) {
                 Ok(0) => {
                     revent!(RouterEvent::FrrmiPeerLeft);
                     return Err(FrrErr::PeerLeft);
                 }
                 Ok(_) => {
-                    if self.readb.next_read_len() == 0 {
-                        {
-                            let response = self.readb.deserialize()?;
-                            return Ok(Some(response));
-                        }
+                    let pending = self.readb.next_read_len();
+                    if pending == 0 {
+                        let response = self.readb.deserialize()?;
+                        return Ok(Some(response));
                     }
                     // did not receive the complete message and need to read more
+                    debug!("Expecting {pending} octets of data from frr agent");
                 }
-                // we must wait. Can't provide a message yet
+                // we must wait and cannot provide a message yet
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => return Ok(None),
                 // recv failed due to unrecoverable reason. Will restart
                 Err(e) => return Err(FrrErr::IOFailure(e.to_string())),

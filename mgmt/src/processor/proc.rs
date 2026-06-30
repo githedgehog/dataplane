@@ -188,7 +188,7 @@ impl ConfigProcessor {
 
     /// Attempt to apply the previously applied config.
     async fn rollback(&mut self) {
-        let active = self.config_db.get_applied();
+        let active = self.config_db.get_current_config();
         let active_genid = active.genid();
         info!("Rolling back to config with genid {}...", active.genid());
         let result = self.apply_gw_config(active.clone()).await.map(drop);

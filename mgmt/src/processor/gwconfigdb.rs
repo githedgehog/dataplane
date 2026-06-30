@@ -48,18 +48,13 @@ impl GwConfigDatabase {
         self.applied = config;
     }
 
-    /// Get a refcounted reference to the applied `GwConfig`
-    pub fn get_applied(&self) -> Arc<ValidatedGwConfig> {
-        self.applied.clone()
-    }
-
     /// Get the generation Id of the currently applied config, if any.
     #[must_use]
     pub fn get_current_gen(&self) -> GenId {
         self.applied.genid()
     }
 
-    /// Get a reference to the config currently applied, if any.
+    /// Get a refcounted reference to the applied `GwConfig`
     #[must_use]
     pub fn get_current_config(&self) -> Arc<ValidatedGwConfig> {
         self.applied.clone()

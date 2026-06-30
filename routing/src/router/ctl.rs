@@ -215,16 +215,13 @@ fn handle_configure(
         return;
     }
 
-    /* request application of frr config */
+    /* request application of frr config. This is infallible */
     if let Some(frr_config) = config.get_frr_config() {
         rio.request_frr_config(config.genid(), frr_config.clone());
     }
 
-    /* generate event depending on result */
-    match result {
-        Ok(()) => revent!(RouterEvent::ConfigSuceeded(config.genid())),
-        Err(_) => revent!(RouterEvent::ConfigFailed(config.genid())),
-    }
+    /* generate event: we successfully applied the router config and FRR's is on its way  */
+    revent!(RouterEvent::ConfigSuceeded(config.genid()));
 
     /* reply */
     let _ = reply_to.send(RouterCtlReply::Result(result)).map_err(|e| {
