@@ -167,6 +167,12 @@ impl Frrmi {
     pub(crate) fn has_sock(&self) -> bool {
         self.sock.is_some()
     }
+    /// Whether a request is currently being serviced or waiting in the queue.
+    /// Used to avoid re-queuing a reconcile request while delivery is still in progress.
+    #[must_use]
+    pub(crate) fn has_pending(&self) -> bool {
+        self.inservice.is_some() || !self.requests.is_empty()
+    }
     #[must_use]
     pub(crate) fn get_remote(&self) -> &String {
         &self.remote
@@ -486,5 +492,46 @@ impl IoBuffer {
         let data = data.to_string();
         self.clear();
         Ok(FrrmiResponse { genid, data })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `applied_cfg` is the dataplane's record of what frr-agent actually confirmed, and the reconcile
+    /// loop trusts it to detect drift. It must advance ONLY on a successful response, never merely
+    /// because a config was queued/sent — otherwise a failed delivery would masquerade as applied.
+    #[test]
+    fn applied_cfg_advances_only_on_success() {
+        let mut frrmi = Frrmi::new("/tmp/hh_frrmi_test_unused.sock");
+        assert!(frrmi.get_applied_cfg().is_none());
+        assert!(!frrmi.has_pending());
+
+        // Queue a request: now pending (delivery not yet confirmed).
+        frrmi.queue_request(FrrmiRequest::new(5, "! cfg 5".to_string(), 0));
+        assert!(frrmi.has_pending());
+
+        // Simulate the request having been sent (in service), then a FAILURE response from frr-agent.
+        frrmi.inservice = frrmi.requests.pop_front();
+        assert!(frrmi.has_pending());
+        frrmi.process_response(&FrrmiResponse {
+            genid: 5,
+            data: "some reload error".to_string(),
+        });
+        assert!(
+            frrmi.get_applied_cfg().is_none(),
+            "a failed response must not advance applied_cfg",
+        );
+        assert!(!frrmi.has_pending());
+
+        // A SUCCESS response advances applied_cfg to the confirmed genid.
+        frrmi.inservice = Some(FrrmiRequest::new(6, "! cfg 6".to_string(), 0));
+        frrmi.process_response(&FrrmiResponse {
+            genid: 6,
+            data: "Ok".to_string(),
+        });
+        assert_eq!(frrmi.get_applied_cfg().map(|cfg| cfg.genid), Some(6));
+        assert!(!frrmi.has_pending());
     }
 }

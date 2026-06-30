@@ -5,7 +5,7 @@
 
 use crate::atable::atablerw::AtableReader;
 use crate::cli::handler::handle_cli_request;
-use crate::config::FrrConfig;
+use crate::config::{FrrConfig, RouterConfig};
 use crate::errors::RouterError;
 use crate::fib::fibtable::FibTableWriter;
 use crate::frr::frrmi::{FrrErr, Frrmi, FrrmiRequest};
@@ -20,7 +20,7 @@ use crate::routingdb::RoutingDb;
 use bytes::BytesMut;
 use cli::IoCache;
 use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest};
-use config::{GwConfigMeta, ValidatedGwConfig};
+use config::{GenId, GwConfigMeta, ValidatedGwConfig};
 use dplane_rpc::socks::RpcCachedSock;
 use lifecycle::{CancellationToken, Subsystem};
 
@@ -122,6 +122,7 @@ pub(crate) struct Rio {
     pub(crate) ctl_rx: Receiver<RouterCtlMsg>,
     pub(crate) cpistats: CpiStats,
     stale_timeout: Option<Instant>,
+    reconcile_timeout: Option<Instant>,
     pub(crate) gwconfig: Option<Arc<ValidatedGwConfig>>,
     pub(crate) cfg_history: Arc<Vec<GwConfigMeta>>,
     pub(crate) cli_cache: IoCache,
@@ -193,6 +194,7 @@ impl Rio {
             ctl_rx,
             cpistats: CpiStats::new(),
             stale_timeout: None,
+            reconcile_timeout: None,
             gwconfig: None,
             cfg_history: Arc::from(vec![]),
             cli_cache: IoCache::new(),
@@ -276,12 +278,49 @@ impl Rio {
         let req = FrrmiRequest::new(genid, cfg, 0);
         self.frrmi.queue_request(req);
     }
+    /// How often [`Rio::reconcile_frr_config`] re-checks (and, on drift, re-pushes) the FRR config.
+    const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+
     /// Request to reapply the last configuration
     pub(crate) fn reapply_frr_config(&mut self, db: &RoutingDb) {
         if let Some(rconfig) = &db.config {
             if let Some(frr_cfg) = rconfig.get_frr_config() {
                 self.request_frr_config(rconfig.genid(), frr_cfg.clone());
             }
+        }
+    }
+
+    /// Reconcile FRR's configuration with the intended one.
+    ///
+    /// The genid the dataplane records as "applied" is set when the FRR config is *queued* on the
+    /// frrmi, not when frr-agent confirms it. Any failure on the frrmi unix socket after that point
+    /// (timeout on a slow reload, partial write, peer reset, a reload that returns an error) leaves
+    /// FRR without the intended config while the dataplane believes it was applied, with nothing to
+    /// re-drive it. This periodic check compares the genid frr-agent actually confirmed
+    /// (`frrmi.applied_cfg`, set only on a successful response) against the intended one (`db.config`)
+    /// and re-pushes on mismatch, so a dropped/failed delivery self-heals without a process restart.
+    ///
+    /// It only acts when the frrmi is connected and idle (no request in flight or queued) so it never
+    /// races a delivery that is still in progress.
+    pub(crate) fn reconcile_frr_config(&mut self, db: &RoutingDb) {
+        /* throttle: only check periodically to bound the re-push rate on a persistent failure */
+        if self.reconcile_timeout.is_some_and(|t| t > Instant::now()) {
+            return;
+        }
+        self.reconcile_timeout = Instant::now().checked_add(Self::RECONCILE_INTERVAL);
+
+        let intended = intended_frr_genid(db.config.as_ref());
+        let applied = self.frrmi.get_applied_cfg().map(|cfg| cfg.genid);
+        if frr_resync_needed(
+            self.frrmi.has_sock(),
+            self.frrmi.has_pending(),
+            intended,
+            applied,
+        ) {
+            warn!(
+                "FRR config out of sync (frr-agent confirmed gen {applied:?}, intended gen {intended:?}); re-pushing..."
+            );
+            self.reapply_frr_config(db);
         }
     }
 
@@ -333,6 +372,42 @@ impl Rio {
             Interest::READABLE
         };
         let _ = self.reregister(CLISOCK, self.clisock.as_raw_fd(), interests);
+    }
+}
+
+/// The genid of the FRR config the dataplane intends FRR to have, if any.
+///
+/// Mirrors `handle_configure`, which pushes to frr-agent only when the router config actually carries
+/// an FRR config: a config whose `get_frr_config()` is `None` has nothing to push, so it yields `None`
+/// here and the reconcile loop neither warns nor performs a no-op re-push for it.
+#[must_use]
+fn intended_frr_genid(config: Option<&RouterConfig>) -> Option<GenId> {
+    config
+        .filter(|cfg| cfg.get_frr_config().is_some())
+        .map(RouterConfig::genid)
+}
+
+/// Decide whether FRR's configuration must be re-pushed to frr-agent.
+///
+/// Returns true only when all of the following hold:
+/// * `connected` — the frrmi has a live socket to frr-agent;
+/// * `!pending` — no request is in flight or queued (so we never race an in-progress delivery);
+/// * `intended` is a real, non-blank config (`Some(genid)` with `genid != 0`); and
+/// * frr-agent has not confirmed that exact genid (`applied != Some(intended)`).
+///
+/// `applied` is the genid frr-agent actually acknowledged (`Frrmi::applied_cfg`, set only on a
+/// successful response), so a delivery that was queued-but-never-confirmed shows up here as a
+/// mismatch and triggers a re-push.
+#[must_use]
+fn frr_resync_needed(
+    connected: bool,
+    pending: bool,
+    intended: Option<GenId>,
+    applied: Option<GenId>,
+) -> bool {
+    match intended {
+        Some(intended) if intended != 0 => connected && !pending && applied != Some(intended),
+        _ => false,
     }
 }
 
@@ -481,6 +556,9 @@ pub(crate) fn start_rio(
             /* check stale timeout. If expired, remove stale routes */
             rio.check_stale_timeout(&mut db);
 
+            /* re-push the FRR config if frr-agent's confirmed gen drifted from the intended one */
+            rio.reconcile_frr_config(&db);
+
             /* handle control-channel messages */
             handle_ctl_msg(&mut rio, &mut db);
         }
@@ -503,7 +581,7 @@ mod tests {
     use crate::errors::RouterError;
     use crate::fib::fibtable::FibTableWriter;
     use crate::interfaces::iftablerw::IfTableWriter;
-    use crate::router::rio::{RioConf, start_rio};
+    use crate::router::rio::{Rio, RioConf, start_rio};
     use concurrency::thread;
     use lifecycle::{CancellationToken, Subsystem};
     use std::time::Duration;
@@ -568,5 +646,99 @@ mod tests {
         let router = test_router_subsystem();
         let rio = start_rio(&router, &conf, fibtw, iftw, atabler, None);
         assert!(rio.is_err_and(|e| matches!(e, RouterError::InvalidPath(_))));
+    }
+
+    /// Exhaustively cover the decision the reconcile loop makes. No sockets or timers involved.
+    #[test]
+    fn frr_resync_needed_decision() {
+        use crate::router::rio::frr_resync_needed;
+
+        // not connected to frr-agent: never re-push (would just fail)
+        assert!(!frr_resync_needed(false, false, Some(7), None));
+        // a delivery is in flight/queued: leave it alone, it will settle
+        assert!(!frr_resync_needed(true, true, Some(7), None));
+        // no intended config yet: nothing to converge to
+        assert!(!frr_resync_needed(true, false, None, None));
+        // blank (genid 0) config: nothing meaningful to push
+        assert!(!frr_resync_needed(true, false, Some(0), None));
+        // connected + idle + real config, frr-agent confirmed nothing: re-push
+        assert!(frr_resync_needed(true, false, Some(7), None));
+        // connected + idle, frr-agent confirmed an older gen than intended: re-push
+        assert!(frr_resync_needed(true, false, Some(7), Some(6)));
+        // already in sync (frr-agent confirmed the intended gen): do nothing
+        assert!(!frr_resync_needed(true, false, Some(7), Some(7)));
+    }
+
+    /// Only a router config that actually carries an FRR config counts as "intended" — otherwise the
+    /// reconcile loop would warn and no-op every interval (mirrors the guard in `handle_configure`).
+    #[test]
+    fn intended_frr_genid_requires_frr_config() {
+        use crate::config::RouterConfig;
+        use crate::router::rio::intended_frr_genid;
+
+        // no config at all
+        assert_eq!(intended_frr_genid(None), None);
+        // config present but without an FRR config: nothing to push
+        let bare = RouterConfig::new(7);
+        assert_eq!(intended_frr_genid(Some(&bare)), None);
+        // config carrying an FRR config: its genid
+        let mut full = RouterConfig::new(7);
+        full.set_frr_config("! frr config".to_string());
+        assert_eq!(intended_frr_genid(Some(&full)), Some(7));
+    }
+
+    /// End-to-end: a connected, idle frrmi whose last-confirmed gen lags the intended config gets a
+    /// re-push queued by the reconcile loop — the self-heal for a dropped/failed FRRMI delivery.
+    #[test]
+    #[cfg_attr(emulated, ignore = "binds Unix domain sockets at /tmp/hh_*.sock")]
+    fn reconcile_repushes_when_frr_out_of_sync() {
+        use crate::config::RouterConfig;
+        use crate::routingdb::RoutingDb;
+
+        let dp = "/tmp/hh_recon_dataplane.sock".to_string();
+        let cli = "/tmp/hh_recon_cli.sock".to_string();
+        let frra = "/tmp/hh_recon_frr-agent.sock".to_string();
+        let _ = std::fs::remove_file(&dp);
+        let _ = std::fs::remove_file(&cli);
+        let _ = std::fs::remove_file(&frra);
+
+        // A listener so frrmi_connect() establishes a live socket (has_sock() == true).
+        let listener =
+            std::os::unix::net::UnixListener::bind(&frra).expect("bind fake frr-agent sock");
+
+        let conf = RioConf {
+            name: "test-reconcile".to_string(),
+            cpi_sock_path: Some(dp.clone()),
+            cli_sock_path: Some(cli.clone()),
+            frrmi_sock_path: Some(frra.clone()),
+        };
+        let (iftw, _iftr) = IfTableWriter::new();
+        let (fibtw, _fibtr) = FibTableWriter::new();
+        let (_atablew, atabler) = AtableWriter::new();
+
+        let mut rio = Rio::new(&conf).expect("create rio");
+        rio.frrmi_connect();
+        assert!(
+            rio.frrmi.has_sock(),
+            "frrmi should be connected to the listener"
+        );
+
+        let mut db = RoutingDb::new(fibtw, iftw, atabler);
+        let mut cfg = RouterConfig::new(7);
+        cfg.set_frr_config("! frr config for gen 7".to_string());
+        db.set_config(cfg);
+
+        // frr-agent has confirmed nothing yet while gen 7 is intended -> out of sync.
+        assert!(!rio.frrmi.has_pending());
+        rio.reconcile_frr_config(&db);
+        assert!(
+            rio.frrmi.has_pending(),
+            "reconcile should queue a re-push when the confirmed gen lags the intended gen",
+        );
+
+        drop(listener);
+        let _ = std::fs::remove_file(&dp);
+        let _ = std::fs::remove_file(&cli);
+        let _ = std::fs::remove_file(&frra);
     }
 }
