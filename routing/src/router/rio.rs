@@ -22,7 +22,10 @@ use cli::IoCache;
 use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest};
 use config::{GwConfigMeta, ValidatedGwConfig};
 use dplane_rpc::socks::RpcCachedSock;
+use inotify::{EventMask, Inotify, WatchMask};
 use lifecycle::{CancellationToken, Subsystem};
+use std::os::fd::AsRawFd;
+use std::path::Path;
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -31,7 +34,6 @@ use concurrency::sync::Arc;
 use concurrency::thread::{self, JoinHandle};
 use nix::sys::socket::{getsockopt, setsockopt, sockopt::SndBuf};
 use std::fs;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::time::{Duration, Instant};
@@ -107,10 +109,32 @@ fn open_cli_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     Ok(sock)
 }
 
+// set up an inotify watcher for the directory where the CLI socket path lives.
+// This is way more reliable than tracking the file itself, since unlinking the path
+// only removes the directory entry, but the inode remains if the sock is open; so
+// no DELETE_SELF would be emitted.
+fn setup_clipath_watcher(path: &str) -> Result<Inotify, RouterError> {
+    let inotify = Inotify::init().map_err(|_| RouterError::Internal("Failed to init inotify"))?;
+    let dir = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or(RouterError::Internal("CLI socket path has no parent dir"))?;
+
+    let mask = WatchMask::DELETE | WatchMask::MOVED_FROM;
+    inotify
+        .watches()
+        .add(dir, mask)
+        .map_err(|_| RouterError::Internal("Failed to add watcher for inotify"))?;
+
+    debug!("Will track {path} via ({})", dir.display());
+    Ok(inotify)
+}
+
 pub(crate) const CPSOCK: Token = Token(0);
 pub(crate) const CLISOCK: Token = Token(1);
 pub(crate) const FRRMISOCK: Token = Token(2);
 pub(crate) const CTL_CHANNEL: Token = Token(3);
+pub(crate) const CLIPATH_WATCHER: Token = Token(4);
 
 /// `Rio` is the router IO loop state
 pub(crate) struct Rio {
@@ -131,6 +155,7 @@ pub(crate) struct Rio {
     pub(crate) gwconfig: Option<Arc<ValidatedGwConfig>>,
     pub(crate) cfg_history: Arc<Vec<GwConfigMeta>>,
     pub(crate) cli_cache: IoCache,
+    pub(crate) inotify: Inotify,
 }
 impl Rio {
     fn new(conf: &RioConf) -> Result<Rio, RouterError> {
@@ -158,6 +183,11 @@ impl Rio {
         /* create unix sock for cli and bind it */
         let clisock = open_cli_sock(&cli_sock_path)?;
 
+        /* add a watcher to the cli sock directory to detect if the file is removed */
+        let inotify = setup_clipath_watcher(&cli_sock_path)?;
+        let inotify_fd = inotify.as_raw_fd();
+        let mut inotify_src_fd = SourceFd(&inotify_fd);
+
         /* frrmi - communication to frr-agent */
         let frrmi = Frrmi::new(&frrmi_sock_path);
 
@@ -175,7 +205,7 @@ impl Rio {
         let clisock_fd = clisock.as_raw_fd();
         let mut ev_clisock = SourceFd(&clisock_fd);
 
-        /* create poller and register cp_sock and cli_sock */
+        /* create poller and register cp_sock, cli_sock, ctl waker and cli path inotify watcher */
         let poller = Poll::new().map_err(|_| RouterError::Internal("Poll creation failed"))?;
         poller
             .registry()
@@ -185,6 +215,11 @@ impl Rio {
             .registry()
             .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
             .map_err(|_| RouterError::Internal("Failed to register CLI sock"))?;
+
+        poller
+            .registry()
+            .register(&mut inotify_src_fd, CLIPATH_WATCHER, Interest::READABLE)
+            .map_err(|_| RouterError::Internal("Failed to register CLIPATH watcher"))?;
 
         // Waker to integrate the async ctl channel with the poller
         let waker = Arc::new(
@@ -209,6 +244,7 @@ impl Rio {
             gwconfig: None,
             cfg_history: Arc::from(vec![]),
             cli_cache: IoCache::new(),
+            inotify,
         })
     }
 
@@ -438,7 +474,7 @@ pub(crate) fn start_rio(
             /* did any request time out? */
             rio.frrmi.timeout();
 
-            /* events on unix sockets */
+            /* handle events */
             for event in &events {
                 match event.token() {
                     CPSOCK => {
@@ -505,6 +541,23 @@ pub(crate) fn start_rio(
                                     let _ = rio.reregister(FRRMISOCK, fd, Interest::READABLE);
                                 }
                             }
+                        }
+                    }
+                    CLIPATH_WATCHER => {
+                        let mut buffer = [0u8; 4096];
+                        let sock_name = Path::new(&rio.cli_sock_path).file_name();
+                        match rio.inotify.read_events(&mut buffer) {
+                            Ok(evs) => {
+                                let removed = evs.into_iter().any(|e| {
+                                    e.mask.intersects(EventMask::DELETE | EventMask::MOVED_FROM)
+                                        && e.name == sock_name
+                                });
+                                if removed && !Path::new(&rio.cli_sock_path).exists() {
+                                    debug!("CLI socket file was removed...");
+                                    rio.cli_sock_restore();
+                                }
+                            }
+                            Err(e) => warn!("Error reading inotify events: {e}"),
                         }
                     }
                     CTL_CHANNEL => handle_ctl_msg(&mut rio, &mut db),
