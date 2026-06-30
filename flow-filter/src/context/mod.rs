@@ -10,6 +10,7 @@ use concurrency::sync::Arc;
 use config::ConfigError;
 use config::external::overlay::ValidatedOverlay;
 
+mod display;
 mod tables;
 
 pub use tables::FlowFilterContext;
