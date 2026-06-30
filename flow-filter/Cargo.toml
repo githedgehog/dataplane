@@ -19,6 +19,7 @@ net = { workspace = true }
 pipeline = { workspace = true }
 
 # external
+indenter = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
