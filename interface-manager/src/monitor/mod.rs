@@ -120,9 +120,9 @@ impl InterfaceMonitor {
     /// # Errors
     ///
     /// This method fails if a netlink connection cannot be created.
-    pub async fn run(self: Arc<Self>) -> Result<(), ()> {
+    pub async fn run(monitor: Arc<Self>) -> Result<(), ()> {
         info!("Starting interface monitor");
-        for i in &self.tracked {
+        for i in &monitor.tracked {
             info!("Will track status of interface {i}");
         }
         let (conn, _, mut messages) = rtnetlink::new_multicast_connection(&[MulticastGroup::Link])
@@ -131,14 +131,14 @@ impl InterfaceMonitor {
 
         tokio::spawn(conn);
 
-        let tx = self.tx.clone();
-        let ct = self.ct.clone();
+        let tx = monitor.tx.clone();
+        let ct = monitor.ct.clone();
         loop {
             tokio::select! {
                 nlmsg = messages.recv() => {
                     match nlmsg {
                         Ok((msg, _)) => {
-                            if let Some(event) = self.netlink_to_event(msg) && tx.send(event).is_err() {
+                            if let Some(event) = monitor.netlink_to_event(msg) && tx.send(event).is_err() {
                                 warn!("Warning, there are no link event readers!");
                             }
                         }
@@ -180,7 +180,6 @@ mod test {
         handle.link().add(msg).execute().await.unwrap();
     }
 
-    #[traced_test]
     #[tokio::test]
     #[wrap(with_caps([Capability::CAP_NET_ADMIN]))]
     #[n_vm::in_vm]
@@ -193,7 +192,7 @@ mod test {
         let ifmonitor = Arc::new(InterfaceMonitor::new(ct, &[test_ifname]));
         let mut subsc1 = ifmonitor.subscribe();
         let mut subsc2 = ifmonitor.subscribe();
-        tokio::spawn(ifmonitor.clone().run());
+        tokio::spawn(InterfaceMonitor::run(ifmonitor.clone()));
 
         create_dummy(INTERFACE).await;
 

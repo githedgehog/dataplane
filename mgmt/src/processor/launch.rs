@@ -133,7 +133,11 @@ pub fn run_mgmt(
         params.interfaces.as_slice(),
     ));
     let if_subsc = ifmonitor.subscribe();
-    mgmt.spawn_fatal_on_exit("interface monitor", ifmonitor.run(), handle);
+    mgmt.spawn_fatal_on_exit(
+        "interface monitor",
+        InterfaceMonitor::run(ifmonitor),
+        handle,
+    );
     mgmt.spawn_fatal_on_exit(
         "interface event relay",
         interface_event_notify(if_subsc, params.processor_params.router_ctl.clone()),
