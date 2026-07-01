@@ -169,10 +169,10 @@ jobs:
         with:
           recipe: "test"
 
-      - name: "lint"
+      - name: "clippy"
         uses: *just
         with:
-          recipe: "lint"
+          recipe: "clippy"
 
       - name: "doctest"
         uses: *just
