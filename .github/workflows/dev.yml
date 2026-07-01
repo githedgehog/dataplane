@@ -220,43 +220,89 @@ jobs:
       # registry) depends on this whole job, so a check-dependencies failure
       # here still blocks a container push -- it's just no longer a separate,
       # uncoupled workflow that could pass or get skipped independently.
+      #
+      # These would be good candidates for the new `parallel:` step keyword
+      # (none are compute-heavy or depend on each other), but actionlint
+      # (which we also run here) doesn't understand that syntax yet -- see
+      # https://github.com/rhysd/actionlint/issues/693. Revisit once it does.
+      #
+      # Each step is `continue-on-error` so one failing lint doesn't hide the
+      # rest; "Flag any lint failures" below fails the job if any of them did.
       - name: "check-dependencies"
+        id: "check-dependencies"
+        continue-on-error: true
         uses: *just
         with:
           recipe: "check-dependencies"
+          recipe_args: ""
 
       - name: "commitlint"
+        id: "commitlint"
+        continue-on-error: true
         uses: *just
         with:
           recipe: "commitlint"
           recipe_args: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}"
 
       - name: "opengrep"
+        id: "opengrep"
+        continue-on-error: true
         uses: *just
         with:
           recipe: "opengrep"
 
       - name: "zizmor"
+        id: "zizmor"
+        continue-on-error: true
         uses: *just
         with:
           recipe: "zizmor"
           recipe_args: "--color=never"
 
       - name: "pinact"
+        id: "pinact"
+        continue-on-error: true
         uses: *just
         with:
           recipe: "pinact"
           recipe_args: "--check --verify"
 
       - name: "actionlint"
+        id: "actionlint"
+        continue-on-error: true
         uses: *just
         with:
           recipe: "actionlint"
 
       - name: "license-headers"
+        id: "license-headers"
+        continue-on-error: true
         uses: *just
         with:
           recipe: "license-headers"
+
+      - name: "Flag any lint failures"
+        if: always()
+        env:
+          OUTCOMES: |-
+            check-dependencies=${{ steps.check-dependencies.outcome }}
+            commitlint=${{ steps.commitlint.outcome }}
+            opengrep=${{ steps.opengrep.outcome }}
+            zizmor=${{ steps.zizmor.outcome }}
+            pinact=${{ steps.pinact.outcome }}
+            actionlint=${{ steps.actionlint.outcome }}
+            license-headers=${{ steps.license-headers.outcome }}
+        run: |
+          set -euo pipefail
+          status=0
+          while IFS='=' read -r name outcome; do
+            [ -z "${name}" ] && continue
+            if [ "${outcome}" != "success" ] && [ "${outcome}" != "skipped" ]; then
+              echo "::error::${name} failed (outcome=${outcome})"
+              status=1
+            fi
+          done <<<"${OUTCOMES}"
+          exit "${status}"
 
       - *tmate
 
