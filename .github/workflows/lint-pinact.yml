@@ -1,9 +1,7 @@
-# Make sure Rust source code is consistently formatted with rustfmt.
-#
-# Uses the nix-shell environment to ensure the same rustfmt version
-# that developers use locally.
+# Make sure every GitHub Actions / reusable workflow reference stays
+# pinned to a commit SHA with an accurate version comment.
 
-name: "lint-cargo-fmt.yml"
+name: "lint-pinact.yml"
 
 on:
   pull_request: {}
@@ -18,8 +16,8 @@ permissions:
   contents: "read"
 
 jobs:
-  format-check:
-    name: "Check formatting for Rust code"
+  pinact:
+    name: "Run pinact"
     runs-on: "lab"
     # Skip this job in merge group checks; but we need the workflow to run,
     # given that the status check is required for merging.
@@ -38,13 +36,10 @@ jobs:
           cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
           cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
-      - name: "Check formatting"
+      - name: "Run pinact"
         shell: "bash"
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
         run: |
           set -euo pipefail
-          just fmt --check
-
-      - name: "How to fix"
-        if: ${{ failure() }}
-        run: |
-          echo "::notice::Try fixing the issue with 'cargo fmt --all', then commit the changes."
+          pinact run --check --verify

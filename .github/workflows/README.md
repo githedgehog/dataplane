@@ -43,7 +43,7 @@ Production artifacts are produced via nix builds in a separate CI workflow.
 4. Execute tests:
    - Regular tests using `cargo nextest` (via `just test`)
    - Shuttle tests (concurrent execution testing with `features=shuttle`)
-5. Run `cargo clippy` for linting (via `just lint`)
+5. Run `cargo clippy` for linting (via `just clippy`)
 6. Build documentation with `rustdoc` (via `just docs`)
 7. Run doctests (via `just doctest`)
 8. Push container images to GHCR (for non-test targets)

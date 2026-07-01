@@ -353,11 +353,30 @@ check-dependencies *args:
     {{ _just_debuggable_ }}
     cargo deny {{ _cargo_feature_flags }} check {{ args }}
 
-# Run linters
 [script]
-lint *args:
+opengrep:
+    {{ _just_debuggable_ }}
+    opengrep scan --experimental --verbose --error --config auto --config .semgrep/rules
+
+[script]
+pinact *args="-check":
+    {{ _just_debuggable_ }}
+    pinact run {{ args }}
+
+[script]
+zizmor:
+    {{ _just_debuggable_ }}
+    zizmor --persona=pedantic .
+
+[script]
+clippy *args:
     {{ _just_debuggable_ }}
     cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings
+
+# Run linters
+[script]
+lint: (clippy) (opengrep) (pinact "-check") (zizmor)
+    {{ _just_debuggable_ }}
 
 # Run doctests
 [script]

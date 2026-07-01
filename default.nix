@@ -173,6 +173,7 @@ let
       opengrep
       openssl
       oras
+      pinact
       pkg-config
       python3Packages.pyflakes
       qemu-user
@@ -182,6 +183,7 @@ let
       wasmtime
       wget
       yq
+      zizmor
     ]);
   };
   devenv = pkgs.mkShell {

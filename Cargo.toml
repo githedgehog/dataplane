@@ -3,6 +3,7 @@
 members = [
     "acl",
     "args",
+    "cascade",
     "cli",
     "common",
     "concurrency",
@@ -67,6 +68,7 @@ repository = "https://github.com/githedgehog/dataplane/"
 # Internal
 acl = { path = "./acl", package = "dataplane-acl", features = [] }
 args = { path = "./args", package = "dataplane-args", features = [] }
+cascade = { path = "./cascade", package = "dataplane-cascade", features = [] }
 cli = { path = "./cli", package = "dataplane-cli", features = [] }
 common = { path = "./common", package = "dataplane-common", features = [] }
 concurrency = { path = "./concurrency", package = "dataplane-concurrency", features = [] }
@@ -265,10 +267,6 @@ overflow-checks = true
 #       logic which can and should eventually be factored out or abstracted into something suitable for wasm/miri.
 [workspace.metadata.package.acl]
 package = "dataplane-acl"
-# Default features enable the DPDK `rte_acl` backend, which pulls in
-# `dpdk-sys` (bindgen against the system DPDK headers).  miri can't
-# build that path on the cross target, and the reference backend's
-# unit tests run fine outside the miri profile.
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
 
@@ -276,6 +274,11 @@ wasm = false # hopeless + pointless
 package = "dataplane-args"
 miri = true
 wasm = false # miss
+
+[workspace.metadata.package.cascade]
+package = "dataplane-cascade"
+miri = true
+wasm = false # split
 
 [workspace.metadata.package.cli]
 package = "dataplane-cli"
@@ -375,8 +378,6 @@ wasm = true
 
 [workspace.metadata.package.match-action-derive]
 package = "dataplane-match-action-derive"
-# Proc-macro crate: runs at the host toolchain, not the miri target.
-# Excluded from miri to keep the target dep graph clean.
 miri = false # hopeless + pointless
 wasm = false # hopeless + pointless
 

@@ -26,7 +26,7 @@ jobs:
             USER: "runner"
         steps:
             - name: "Checkout"
-              uses: "actions/checkout@v7"
+              uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
               with:
                   fetch-depth: "1"
                   persist-credentials: "false"
@@ -40,6 +40,4 @@ jobs:
               shell: "bash"
               run: |
                   set -euo pipefail
-                  opengrep scan --experimental --verbose --error \
-                      --config auto \
-                      --config .semgrep/rules
+                  just opengrep
