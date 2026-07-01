@@ -53,15 +53,13 @@ concurrency:
 
 permissions:
   contents: "read"
-  packages: "write"
-  id-token: "write"
 
 jobs:
   check_changes:
     name: "Deduce required tests from code changes"
     permissions:
       contents: "read"
-      pull-requests: "read"
+      pull-requests: "read" # dorny/paths-filter reads the PR's changed-file list via the API
     runs-on: "ubuntu-latest"
     outputs:
       devfiles: "${{ steps.changes.outputs.devfiles }}"
@@ -120,11 +118,7 @@ jobs:
     needs:
       - check_changes
     permissions: &check-perms
-      checks: "write"
-      pull-requests: "write"
       contents: "read"
-      packages: "write"
-      id-token: "write"
     env: &check-env
       USER: "runner"
       JUST_VARS: >-
@@ -220,11 +214,8 @@ jobs:
       - check_changes
       - version
     permissions:
-      checks: "write"
-      pull-requests: "write"
       contents: "read"
-      packages: "write"
-      id-token: "write"
+      packages: "write" # nix-setup logs into ghcr.io; this job pushes images via `just push-container`
     env:
       USER: "runner"
       JUST_VARS: >-
@@ -351,12 +342,7 @@ jobs:
     runs-on: "lab"
     needs:
       - check_changes
-    permissions:
-      checks: "write"
-      pull-requests: "read"
-      contents: "read"
-      packages: "read"
-      id-token: "write"
+    permissions: *check-perms
     env:
       USER: "runner"
     strategy:
@@ -423,12 +409,7 @@ jobs:
     runs-on: "lab"
     needs:
       - check_changes
-    permissions:
-      checks: "write"
-      pull-requests: "read"
-      contents: "read"
-      packages: "read"
-      id-token: "write"
+    permissions: *check-perms
     env:
       USER: "runner"
     strategy:
@@ -474,12 +455,7 @@ jobs:
       - check
       - miri
       - wasm
-    permissions:
-      checks: "write"
-      pull-requests: "read"
-      contents: "read"
-      packages: "read"
-      id-token: "write"
+    permissions: *check-perms
     env:
       USER: "runner"
     strategy:
@@ -735,7 +711,7 @@ jobs:
       - vlab
 
     permissions:
-      packages: write
+      packages: write # docker/login-action + `just push` publish images to ghcr.io
       contents: read
 
     env:
@@ -746,6 +722,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # used to run go fmt after patching dp/frr versions in the fabricator
       - name: Setup Go
@@ -804,6 +781,8 @@ jobs:
           private-key: ${{ secrets.FAB_PRIVATE_KEY }}
           repositories: |
             fabricator
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Create Pull Request for fabricator
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1

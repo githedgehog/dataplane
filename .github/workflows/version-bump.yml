@@ -17,9 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: "write"
-  id-token: "write"
-  pull-requests: "write"
+  contents: "read"
 
 jobs:
   bump_version:
@@ -47,6 +45,8 @@ jobs:
         with:
           app-id: "${{ secrets.DP_APP_ID }}"
           private-key: "${{ secrets.DP_PRIVATE_KEY }}"
+          permission-contents: "write"
+          permission-pull-requests: "write"
 
       - name: "Checkout"
         uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
