@@ -16,7 +16,7 @@ use config::internal::status::{
     DataplaneStatus, FrrStatus, VpcCounters, VpcPeeringCounters, VpcStatus,
 };
 use config::{ConfigError, ConfigResult, stringify};
-use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig, ValidatedGwConfig};
+use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwConfig};
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
@@ -144,7 +144,7 @@ impl ConfigProcessor {
     }
 
     /// Main entry point for new configurations
-    pub(crate) async fn process_incoming_config(&mut self, config: GwConfig) -> ConfigResult {
+    pub(crate) async fn process_incoming_config(&mut self, config: ExternalConfig) -> ConfigResult {
         let mut validated_config = config.validate()?;
         let internal =
             build_internal_config(&validated_config, self.proc_params.bmp_options.clone())?;
@@ -200,8 +200,8 @@ impl ConfigProcessor {
     }
 
     /// RPC handler: store and apply the provided config
-    async fn handle_apply_config(&mut self, config: GwConfig) -> ConfigResponse {
-        let genid = config.genid();
+    async fn handle_apply_config(&mut self, config: ExternalConfig) -> ConfigResponse {
+        let genid = config.genid;
         debug!("━━━━━━ Handling apply configuration request. Genid {genid} ━━━━━━");
         let result = self.process_incoming_config(config).await;
         debug!(

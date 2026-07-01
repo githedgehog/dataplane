@@ -10,6 +10,7 @@ pub mod underlay;
 
 use std::num::NonZero;
 
+use crate::ValidatedGwConfig;
 use crate::internal::device::DeviceConfig;
 use crate::{ConfigError, ConfigResult};
 use communities::PriorityCommunityTable;
@@ -103,7 +104,8 @@ impl ExternalConfig {
     /// # Errors
     ///
     /// Returns a [`ConfigError`] if validation fails.
-    pub fn validate(&self) -> Result<ValidatedExternalConfig, ConfigError> {
+    pub fn validate(&self) -> Result<ValidatedGwConfig, ConfigError> {
+        debug!("Validating external config with genid {} ..", self.genid);
         self.device.validate()?;
         let validated_underlay = self.underlay.validate()?;
         let validated_overlay = self.overlay.validate()?;
@@ -117,7 +119,8 @@ impl ExternalConfig {
         }
         debug!("Community table mappings:\n{}", self.communities);
         debug!("Gateway-groups are:\n{}", self.gwgroups);
-        Ok(ValidatedExternalConfig {
+
+        let validated_external = ValidatedExternalConfig {
             gwname: self.gwname.clone(),
             genid: self.genid,
             device: self.device.clone(),
@@ -126,7 +129,8 @@ impl ExternalConfig {
             gwgroups: self.gwgroups.clone(),
             communities: self.communities.clone(),
             flow_table_capacity: self.flow_table_capacity,
-        })
+        };
+        Ok(ValidatedGwConfig::new(validated_external))
     }
 
     /// FOR TESTS ONLY. Fake validation for the external config.
