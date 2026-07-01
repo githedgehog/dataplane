@@ -5,7 +5,7 @@
 //! the configuration processor to apply them.
 
 use concurrency::sync::Arc;
-use config::{ExternalConfig, GwConfig};
+use config::ExternalConfig;
 use futures::TryFutureExt;
 use k8s_less::kubeless_watch_gateway_agent_crd;
 use std::path::PathBuf;
@@ -96,10 +96,8 @@ impl K8sLess {
                     };
                     info!("Current configuration is {applied_genid}");
 
-                    let gwconfig = GwConfig::new(external_config);
-
                     // request the config processor to apply the config and update status on success
-                    match k8sless.client.apply_config(gwconfig).await {
+                    match k8sless.client.apply_config(external_config).await {
                         Ok(()) => {
                             info!("Config for generation {genid} was successfully applied. Updating status...");
                             k8sless.update_gateway_status().await;

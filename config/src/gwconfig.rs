@@ -4,12 +4,11 @@
 //! Top-level configuration object for the dataplane
 
 use crate::errors::{ConfigError, ConfigResult};
-use crate::external::{ExternalConfig, GenId, ValidatedExternalConfig};
+use crate::external::{GenId, ValidatedExternalConfig};
 use crate::internal::InternalConfig;
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
 use std::time::SystemTime;
-use tracing::debug;
 
 /// Metadata associated to a gateway configuration
 #[derive(Clone, Debug)]
@@ -62,62 +61,6 @@ impl GwConfigMeta {
 }
 
 #[derive(Debug)]
-pub struct GwConfig {
-    pub external: ExternalConfig,
-}
-
-impl GwConfig {
-    //////////////////////////////////////////////////////////////////
-    /// Create a [`GwConfig`] object with a given [`ExternalConfig`].
-    //////////////////////////////////////////////////////////////////
-    #[must_use]
-    pub fn new(external: ExternalConfig) -> Self {
-        Self { external }
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Create a blank [`GwConfig`] with an empty [`ExternalConfig`].
-    //////////////////////////////////////////////////////////////////
-    #[must_use]
-    pub fn blank() -> Self {
-        Self::new(ExternalConfig::new(""))
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Return the [`GenId`] of a [`GwConfig`] object.
-    //////////////////////////////////////////////////////////////////
-    #[must_use]
-    pub fn genid(&self) -> GenId {
-        self.external.genid
-    }
-
-    /// Validate a [`GwConfig`]. We only validate the external.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ConfigError`] if the external configuration fails validation.
-    pub fn validate(self) -> Result<ValidatedGwConfig, ConfigError> {
-        debug!("Validating external config with genid {} ..", self.genid());
-        let validated_external = self.external.validate()?;
-        Ok(ValidatedGwConfig::new(validated_external))
-    }
-
-    /// FOR TESTS ONLY. Fake validation for the config.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_validated_config_for_tests(self) -> ValidatedGwConfig {
-        let fake_valid_external = unsafe { self.external.fake_validated_external_for_tests() };
-
-        ValidatedGwConfig::new(fake_valid_external)
-    }
-}
-
-#[derive(Debug)]
 pub struct ValidatedGwConfig {
     meta: Slot<GwConfigMeta>,
     external: ValidatedExternalConfig,
@@ -126,7 +69,7 @@ pub struct ValidatedGwConfig {
 
 impl ValidatedGwConfig {
     #[must_use]
-    fn new(external: ValidatedExternalConfig) -> Self {
+    pub fn new(external: ValidatedExternalConfig) -> Self {
         Self {
             meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid()))),
             external,
@@ -169,11 +112,11 @@ impl ValidatedGwConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::GwConfig;
+    use crate::ExternalConfig;
 
     #[test]
     fn test_blank_config_is_valid() {
-        let _ = GwConfig::blank()
+        let _ = ExternalConfig::new("")
             .validate()
             .expect("Failed to validate blank config");
     }

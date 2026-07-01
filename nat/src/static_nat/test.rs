@@ -17,7 +17,7 @@ use config::internal::interfaces::interface::InterfaceConfig;
 use config::internal::interfaces::interface::{IfVtepConfig, InterfaceType};
 use config::internal::routing::bgp::BgpConfig;
 use config::internal::routing::vrf::VrfConfig;
-use config::{GwConfig, ValidatedGwConfig};
+use config::{ExternalConfig, ValidatedGwConfig};
 
 use crate::StaticNat;
 use crate::static_nat::setup::build_nat_configuration;
@@ -555,7 +555,7 @@ fn build_sample_config() -> ValidatedGwConfig {
 // Use the provided overlay with some default configuration to build a valid GwConfig. This
 // configuration is not really relevant to our tests, we just want a valid GwConfig object to
 // work with.
-pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> GwConfig {
+pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> ExternalConfig {
     let device_config = DeviceConfig::new();
 
     let vtep = InterfaceConfig::new(
@@ -588,11 +588,9 @@ pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> GwConfig {
     external_builder.overlay(overlay);
     external_builder.gwgroups(group_table);
     external_builder.communities(PriorityCommunityTable::new());
-    let external_config = external_builder
+    external_builder
         .build()
-        .expect("Failed to build external config");
-
-    GwConfig::new(external_config)
+        .expect("Failed to build external config")
 }
 
 fn check_packet(

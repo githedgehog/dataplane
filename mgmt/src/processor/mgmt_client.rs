@@ -7,7 +7,7 @@ use config::ConfigError;
 use config::ConfigResult;
 use config::GenId;
 use config::internal::status::DataplaneStatus;
-use config::{GwConfig, ValidatedGwConfig};
+use config::{ExternalConfig, ValidatedGwConfig};
 
 use concurrency::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -21,7 +21,7 @@ use thiserror::Error;
 /// A request type to the `ConfigProcessor`
 #[derive(Debug)]
 pub(crate) enum ConfigRequest {
-    ApplyConfig(Box<GwConfig>),
+    ApplyConfig(Box<ExternalConfig>),
     GetCurrentConfig,
     GetGeneration,
     GetDataplaneStatus,
@@ -81,8 +81,8 @@ impl ConfigClient {
     /// # Errors
     /// This method returns `ConfigProcessorError` if the config request could not be sent, the response
     /// could not be received or the response was a failure.
-    pub async fn apply_config(&self, gwconfig: GwConfig) -> Result<(), ConfigProcessorError> {
-        let (req, rx) = ConfigChannelRequest::new(ConfigRequest::ApplyConfig(Box::new(gwconfig)));
+    pub async fn apply_config(&self, external: ExternalConfig) -> Result<(), ConfigProcessorError> {
+        let (req, rx) = ConfigChannelRequest::new(ConfigRequest::ApplyConfig(Box::new(external)));
         self.tx.send(req).await?;
         match rx.await? {
             ConfigResponse::ApplyConfig(Err(e)) => Err(e.into()),

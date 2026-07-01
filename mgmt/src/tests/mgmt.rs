@@ -27,6 +27,7 @@ pub mod test {
     };
     use config::external::underlay::Underlay;
 
+    use config::ExternalConfig;
     use config::internal::device::DeviceConfig;
     use config::internal::interfaces::interface::{
         IfEthConfig, IfVtepConfig, InterfaceConfig, InterfaceType,
@@ -34,8 +35,6 @@ pub mod test {
     use config::internal::routing::bgp::*;
     use config::internal::routing::ospf::{Ospf, OspfInterface, OspfNetwork};
     use config::internal::routing::vrf::VrfConfig;
-
-    use config::{ExternalConfig, GwConfig};
 
     use routing::Render;
 
@@ -393,8 +392,7 @@ pub mod test {
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
-        let config = GwConfig::new(external);
-        let validated_config = config.validate().expect("Config validation failed");
+        let validated_config = external.validate().expect("Config validation failed");
         if false {
             let vpc_table = validated_config.external().overlay().vpc_table();
             let peering_table = validated_config.external().overlay().peering_table();
@@ -418,9 +416,6 @@ pub mod test {
         /* build sample external config */
         let external = sample_external_config();
         println!("External config is:\n{external:#?}");
-
-        /* build a gw config from a sample external config */
-        let config = GwConfig::new(external);
 
         let dp_status_r: Arc<RwLock<DataplaneStatus>> =
             Arc::new(RwLock::new(DataplaneStatus::new()));
@@ -494,7 +489,7 @@ pub mod test {
         let (mut processor, _) = ConfigProcessor::new(processor_config, &rth);
 
         /* let the processor process the config */
-        match processor.process_incoming_config(config).await {
+        match processor.process_incoming_config(external).await {
             Ok(()) => {}
             Err(e) => {
                 error!("{e}");

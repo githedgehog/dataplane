@@ -10,7 +10,7 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::field_reassign_with_default)]
 
-use config::{ExternalConfig, GwConfig, converters::k8s::FromK8sConversionError};
+use config::{ExternalConfig, converters::k8s::FromK8sConversionError};
 use k8s_intf::gateway_agent_crd::GatewayAgent;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -128,8 +128,7 @@ fn validate(gwagent_json: &str) -> Result<(), ValidateError> {
         _ => ValidateError::ConversionError(e.to_string()),
     })?;
 
-    let gwconfig = GwConfig::new(external);
-    let _ = gwconfig.validate().map_err(|e| {
+    let _ = external.validate().map_err(|e| {
         let mut config = ConfigErrors::default();
         config.errors.push(e.to_string());
         ValidateError::Configuration(config)

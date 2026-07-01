@@ -1432,11 +1432,11 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
     );
     let config = unsafe {
         build_gwconfig_from_overlay(build_overlay_2vpcs_unidirectional_nat_overlapping_exposes())
-            .fake_validated_config_for_tests()
+            .fake_validated_external_for_tests()
     };
 
     // Build VPC discriminant lookup stage
-    let vpcd_tables = FlowFilterTable::build_from_overlay(config.external().overlay()).unwrap();
+    let vpcd_tables = FlowFilterTable::build_from_overlay(config.overlay()).unwrap();
     let mut vpcdtablesw = FlowFilterTableWriter::new();
     vpcdtablesw.update_flow_filter_table(vpcd_tables);
     let mut vpcdlookup = FlowFilter::new("vpcd-lookup", vpcdtablesw.get_reader());
@@ -1452,7 +1452,7 @@ async fn test_full_config_unidirectional_nat_overlapping_exposes_for_single_peer
     // Build a new NAT stage
     let mut allocator = NatAllocatorWriter::new();
     let mut nat = Masquerade::new("masquerade", flow_table.clone(), allocator.get_reader());
-    let nat_config = MasqueradeConfig::new(config.external().overlay().vpc_table(), 1);
+    let nat_config = MasqueradeConfig::new(config.overlay().vpc_table(), 1);
 
     // Check that we can validate the allocator
     allocator.update_nat_allocator(nat_config, &FlowTable::new(16));

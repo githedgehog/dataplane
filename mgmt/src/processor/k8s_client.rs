@@ -8,8 +8,8 @@ use std::time::SystemTime;
 
 use chrono::{TimeZone, Utc};
 
+use config::ExternalConfig;
 use config::converters::k8s::status::dataplane_status::DataplaneStatusForK8sConversion;
-use config::{ExternalConfig, GwConfig};
 use k8s_intf::client::{ReplaceStatusError, replace_gateway_status, watch_gateway_agent_crd};
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateDataplane,
@@ -160,10 +160,8 @@ impl K8sClient {
                         return;
                     }
 
-                    let gwconfig = GwConfig::new(external_config);
-
                     // request the config processor to apply the config and update status on success
-                    if let Err(e) = k8s_client.client.apply_config(gwconfig).await {
+                    if let Err(e) = k8s_client.client.apply_config(external_config).await {
                         error!("Failed to apply the config for genid {genid}: {e}");
                     } else {
                         info!("Config for genid {genid} successfully applied. Updating status...");
