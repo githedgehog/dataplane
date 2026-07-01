@@ -21,10 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: "write"
-  packages: "read"
-  id-token: "write"
-  pull-requests: "write"
+  contents: "read" # actions/checkout on this private repo; git push + PR go through the scoped app token below
 
 jobs:
   cargo-upgrades:
@@ -39,9 +36,13 @@ jobs:
         with:
           app-id: "${{ secrets.DP_APP_ID }}"
           private-key: "${{ secrets.DP_PRIVATE_KEY }}"
+          permission-contents: "write"
+          permission-pull-requests: "write"
 
       - name: "Checkout"
         uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
+        with:
+          persist-credentials: false
 
       - uses: "./.github/actions/nix-shell"
         with:
