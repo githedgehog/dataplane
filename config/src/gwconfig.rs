@@ -63,10 +63,6 @@ impl GwConfigMeta {
 
 #[derive(Debug)]
 pub struct GwConfig {
-    /// Configuration metadata
-    pub meta: Slot<GwConfigMeta>,
-
-    /// Configuration, as received
     pub external: ExternalConfig,
 }
 
@@ -76,10 +72,7 @@ impl GwConfig {
     //////////////////////////////////////////////////////////////////
     #[must_use]
     pub fn new(external: ExternalConfig) -> Self {
-        Self {
-            meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid))),
-            external,
-        }
+        Self { external }
     }
 
     //////////////////////////////////////////////////////////////////
@@ -106,12 +99,7 @@ impl GwConfig {
     pub fn validate(self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid());
         let validated_external = self.external.validate()?;
-
-        Ok(ValidatedGwConfig {
-            meta: self.meta,
-            external: validated_external,
-            internal: None,
-        })
+        Ok(ValidatedGwConfig::new(validated_external))
     }
 
     /// FOR TESTS ONLY. Fake validation for the config.
@@ -125,11 +113,7 @@ impl GwConfig {
     pub unsafe fn fake_validated_config_for_tests(self) -> ValidatedGwConfig {
         let fake_valid_external = unsafe { self.external.fake_validated_external_for_tests() };
 
-        ValidatedGwConfig {
-            meta: self.meta,
-            external: fake_valid_external,
-            internal: None,
-        }
+        ValidatedGwConfig::new(fake_valid_external)
     }
 }
 
@@ -142,15 +126,20 @@ pub struct ValidatedGwConfig {
 
 impl ValidatedGwConfig {
     #[must_use]
-    pub fn blank() -> Self {
-        // The blank config has no overlay, peerings, or VPCs, so it trivially passes validation.
-        // A unit test verifies this invariant.
-        let external = ValidatedExternalConfig::blank();
+    fn new(external: ValidatedExternalConfig) -> Self {
         Self {
             meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid()))),
             external,
             internal: None,
         }
+    }
+
+    #[must_use]
+    pub fn blank() -> Self {
+        // The blank config has no overlay, peerings, or VPCs, so it trivially passes validation.
+        // A unit test verifies this invariant.
+        let external = ValidatedExternalConfig::blank();
+        Self::new(external)
     }
 
     #[must_use]
