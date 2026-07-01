@@ -227,6 +227,12 @@ jobs:
         with:
           recipe: "check-dependencies"
 
+      - name: "commitlint"
+        uses: *just
+        with:
+          recipe: "commitlint"
+          recipe_args: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}"
+
       - name: "opengrep"
         uses: *just
         with:

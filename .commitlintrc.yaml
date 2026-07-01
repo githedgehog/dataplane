@@ -1,0 +1,29 @@
+# Config for commitlint-rs
+rules:
+  type:
+    level: error
+    options:
+      - build
+      - bump
+      - chore
+      - ci
+      - docs
+      - feat
+      - fix
+      - perf
+      - refactor
+      - revert
+      - style
+      - test
+  type-empty:
+    level: error
+  subject-empty:
+    level: error
+  description-empty:
+    level: error
+  description-format:
+    level: error
+    format: "^.*[^.]$"
+  description-max-length:
+    level: error
+    length: 72
