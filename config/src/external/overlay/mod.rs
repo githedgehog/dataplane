@@ -110,7 +110,7 @@ impl Overlay {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ValidatedOverlay {
     vpc_table: ValidatedVpcTable,
     // Note: unlike the vpc_table, the peering_table is not changed to a `Validated*` new type. A
@@ -121,14 +121,6 @@ pub struct ValidatedOverlay {
 }
 
 impl ValidatedOverlay {
-    #[must_use]
-    pub(crate) fn blank() -> Self {
-        Self {
-            vpc_table: ValidatedVpcTable::blank(),
-            peering_table: VpcPeeringTable::default(),
-        }
-    }
-
     #[must_use]
     pub fn vpc_table(&self) -> &ValidatedVpcTable {
         &self.vpc_table

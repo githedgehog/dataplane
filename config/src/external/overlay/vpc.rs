@@ -542,21 +542,13 @@ impl VpcTable {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ValidatedVpcTable {
     vpcs: BTreeMap<String, ValidatedVpc>,
     ids: BTreeMap<VpcId, String>, // name of vpc
 }
 
 impl ValidatedVpcTable {
-    #[must_use]
-    pub fn blank() -> Self {
-        Self {
-            vpcs: BTreeMap::new(),
-            ids: BTreeMap::new(),
-        }
-    }
-
     #[must_use]
     pub fn len(&self) -> usize {
         self.vpcs.len()

@@ -182,7 +182,7 @@ impl ValidatedExternalConfig {
             genid: ExternalConfig::BLANK_GENID,
             device: DeviceConfig::new(),
             underlay: Underlay::default(),
-            overlay: ValidatedOverlay::blank(),
+            overlay: ValidatedOverlay::default(),
             gwgroups: GwGroupTable::new(),
             communities: PriorityCommunityTable::new(),
             flow_table_capacity: None,
