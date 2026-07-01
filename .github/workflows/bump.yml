@@ -35,13 +35,13 @@ jobs:
       # Use a GitHub App token so that the generated PR can trigger CI
       - name: "Generate GitHub App token"
         id: "app-token"
-        uses: "actions/create-github-app-token@v3"
+        uses: "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" # v3.2.0
         with:
           app-id: "${{ secrets.DP_APP_ID }}"
           private-key: "${{ secrets.DP_PRIVATE_KEY }}"
 
       - name: "Checkout"
-        uses: "actions/checkout@v7"
+        uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
 
       - uses: "./.github/actions/nix-shell"
         with:
@@ -144,7 +144,7 @@ jobs:
           just check-dependencies
 
       - name: "Create Pull Request"
-        uses: "peter-evans/create-pull-request@v8"
+        uses: "peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1" # v8.1.1
         with:
           token: "${{ steps.app-token.outputs.token }}"
           branch: "bump/cargo-upgrades"
@@ -162,7 +162,7 @@ jobs:
 
       - name: "Setup tmate session for debug"
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: "mxschmitt/action-tmate@v3"
+        uses: "mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113" # v3.24
         timeout-minutes: 60
         with:
           limit-access-to-actor: true

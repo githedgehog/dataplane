@@ -68,12 +68,12 @@ jobs:
     steps:
       - name: "Checkout"
         if: "${{ !github.event.pull_request }}"
-        uses: "actions/checkout@v7"
+        uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
         with:
           persist-credentials: "false"
           fetch-depth: "0"
       - name: "Check code changes"
-        uses: "dorny/paths-filter@v4"
+        uses: "dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d" # v4.0.1
         id: "changes"
         with:
           filters: |
@@ -95,7 +95,7 @@ jobs:
     steps:
       - &checkout
         name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -202,7 +202,7 @@ jobs:
       - &tmate
         name: "Setup tmate session for debug"
         if: "${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}"
-        uses: "mxschmitt/action-tmate@v3"
+        uses: "mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113" # v3.24
         timeout-minutes: 60
         with:
           limit-access-to-actor: true
@@ -586,7 +586,7 @@ jobs:
 
     name: "${{ matrix.hybrid && 'h' || 'v' }}-${{ matrix.upgradefrom && 'up' || '' }}${{ matrix.upgradefrom }}${{ matrix.upgradefrom && '-' || '' }}${{ matrix.mesh && 'mesh-' || '' }}${{ matrix.gateway && 'gw-' || '' }}${{ matrix.includeonie && 'onie-' || '' }}${{ matrix.buildmode }}-${{ matrix.vpcmode }}"
 
-    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@master
+    uses: githedgehog/fabricator/.github/workflows/run-vlab.yaml@0c65d56c096215e51d0823f69380b1477d39c951 # v0.47.4
     with:
       # ci:+hlab is required to enable hybrid lab tests on PR
       # ci:+vlab is required to enable virtual lab tests on PR
@@ -743,19 +743,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       # used to run go fmt after patching dp/frr versions in the fabricator
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: stable
           cache: false
 
       - name: Login to ghcr.io
-        uses: docker/login-action@v4.2.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -780,7 +780,7 @@ jobs:
       # Bump dataplane in the fabricator repository
 
       - name: Checkout fabricator repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: githedgehog/fabricator
           path: fab-repo
@@ -797,7 +797,7 @@ jobs:
           go fmt pkg/fab/versions.go
 
       - name: Generate token for the fabricator repository
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: fab-app-token
         with:
           app-id: ${{ secrets.FAB_APP_ID }}
@@ -806,7 +806,7 @@ jobs:
             fabricator
 
       - name: Create Pull Request for fabricator
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         id: fab-pr
         with:
           token: ${{ steps.fab-app-token.outputs.token }}
