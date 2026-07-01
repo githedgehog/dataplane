@@ -394,11 +394,31 @@ license-headers:
     done
     exit ${res}
 
+# NOTE: commitlint-rs's `--from`/`--to` flags are unusable in any
+# non-interactive shell (CI, this recipe, etc): its arg-handling checks stdin
+# before checking --from/--to, and stdin is never a TTY there, so it silently
+# lints empty/stray stdin content instead of the requested commit range.
+# See https://github.com/KeisukeYamashita/commitlint-rs/blob/main/cli/src/args.rs
+# Work around it by feeding each commit's message to commitlint individually
+# over stdin, which is the one invocation mode that actually works.
+[script]
+commitlint base="origin/main":
+    {{ _just_debuggable_ }}
+    declare -i status=0
+    while IFS= read -r sha; do
+        if ! git log -1 --format=%B "${sha}" | commitlint; then
+            echo "::error::commit ${sha} failed commitlint" >&2
+            status=1
+        fi
+    done < <(git log --format=%H --no-merges "{{base}}"..HEAD)
+    exit "${status}"
+
 # Run linters
 [script]
 lint: \
     (fmt "--check") \
     (clippy) \
+    (commitlint) \
     (check-dependencies) \
     (opengrep) \
     (zizmor) \
