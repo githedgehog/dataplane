@@ -1,0 +1,45 @@
+# Make sure our GitHub Actions workflows and composite actions don't
+# regress on the supply-chain / permissions issues zizmor checks for.
+
+name: "lint-zizmor.yml"
+
+on:
+  pull_request: {}
+  merge_group:
+    types: ["checks_requested"]
+
+concurrency:
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: "read"
+
+jobs:
+  zizmor:
+    name: "Run zizmor"
+    runs-on: "lab"
+    # Skip this job in merge group checks; but we need the workflow to run,
+    # given that the status check is required for merging.
+    if: "${{ github.event.pull_request }}"
+    env:
+      USER: "runner"
+    steps:
+      - name: "Checkout"
+        uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
+        with:
+          fetch-depth: "1"
+          persist-credentials: "false"
+
+      - uses: "./.github/actions/nix-shell"
+        with:
+          cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
+          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: "Run zizmor"
+        shell: "bash"
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          set -euo pipefail
+          zizmor --color=never --persona=pedantic --format=github .
