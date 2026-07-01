@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   cargo-upgrades:
+    name: "Check for cargo dependency upgrades"
     runs-on: "lab"
     env:
       USER: "runner"
@@ -145,6 +146,8 @@ jobs:
           just check-dependencies
 
       - name: "Create Pull Request"
+        # zizmor: ignore[superfluous-actions] -- relies on this action's diff-detection,
+        # labeling, draft, and sign-commits behavior; not worth reimplementing over `gh pr create`.
         uses: "peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1" # v8.1.1
         with:
           token: "${{ steps.app-token.outputs.token }}"

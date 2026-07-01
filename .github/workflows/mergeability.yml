@@ -8,6 +8,12 @@ on:
   merge_group:
     types: ["checks_requested"]
 
+concurrency:
+  # Fall back to `github.run_id` (always unique) for merge_group events so we
+  # never cancel an in-progress merge-queue check.
+  group: "${{ github.workflow }}:${{ github.event.pull_request.number || github.run_id }}"
+  cancel-in-progress: true
+
 permissions: {}
 
 jobs:
