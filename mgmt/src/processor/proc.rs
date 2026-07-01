@@ -8,8 +8,6 @@ use config::external::overlay::ValidatedOverlay;
 use flow_entry::flow_table::FlowTable;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
-
-use tokio::spawn;
 use tokio::sync::mpsc;
 
 use config::external::overlay::vpc::ValidatedVpcTable;
@@ -117,18 +115,25 @@ impl ConfigProcessor {
     /// Create a [`ConfigProcessor`] and return a [`ConfigClient`] to interact with it
     /////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub(crate) fn new(proc_params: ConfigProcessorParams) -> (Self, ConfigClient) {
+    pub(crate) fn new(
+        proc_params: ConfigProcessorParams,
+        handle: &tokio::runtime::Handle,
+    ) -> (Self, ConfigClient) {
         debug!("Creating config processor...");
-        let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
+        let _g = handle.enter();
 
+        // create netlink socket and spawn background task
         let Ok((connection, netlink, _)) = rtnetlink::new_connection() else {
             panic!("failed to create connection");
         };
-        spawn(connection);
+        handle.spawn(connection);
 
+        // build vpc manager
         let netlink = Arc::new(netlink);
         let vpc_mgr = VpcManager::<RequiredInformationBase>::new(netlink);
 
+        // create processor
+        let (tx, rx) = mpsc::channel(Self::CHANNEL_SIZE);
         let processor = ConfigProcessor {
             config_db: GwConfigDatabase::new(),
             rx,
@@ -183,7 +188,7 @@ impl ConfigProcessor {
 
     /// Attempt to apply the previously applied config.
     async fn rollback(&mut self) {
-        let active = self.config_db.get_applied();
+        let active = self.config_db.get_current_config();
         let active_genid = active.genid();
         info!("Rolling back to config with genid {}...", active.genid());
         let result = self.apply_gw_config(active.clone()).await.map(drop);

@@ -1507,20 +1507,27 @@ name = "dataplane-interface-manager"
 version = "0.22.0"
 dependencies = [
  "bolero",
+ "caps",
  "dataplane-concurrency",
  "dataplane-net",
  "dataplane-rekon",
+ "dataplane-test-utils",
  "derive_builder",
+ "fixin",
  "futures",
  "libc",
  "multi_index_map",
+ "n-vm",
  "nix 0.31.3",
  "rtnetlink",
  "serde",
  "static_assertions",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
+ "tracing-subscriber",
+ "tracing-test",
 ]
 
 [[package]]
@@ -1764,6 +1771,7 @@ dependencies = [
  "dataplane-common",
  "dataplane-concurrency",
  "dataplane-config",
+ "dataplane-interface-manager",
  "dataplane-left-right-tlcache",
  "dataplane-lifecycle",
  "dataplane-lpm",
@@ -1772,6 +1780,7 @@ dependencies = [
  "derive_builder",
  "dplane-rpc",
  "futures-util",
+ "inotify",
  "ipnet",
  "left-right 0.11.7 (git+https://github.com/githedgehog/left-right.git?branch=fredi%2Ffix-writehandle-drop)",
  "linkme",

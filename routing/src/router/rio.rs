@@ -22,16 +22,18 @@ use cli::IoCache;
 use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest};
 use config::{GwConfigMeta, ValidatedGwConfig};
 use dplane_rpc::socks::RpcCachedSock;
+use inotify::{EventMask, Inotify, WatchMask};
 use lifecycle::{CancellationToken, Subsystem};
+use std::os::fd::AsRawFd;
+use std::path::Path;
 
 use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token};
+use mio::{Events, Interest, Poll, Token, Waker};
 
 use concurrency::sync::Arc;
 use concurrency::thread::{self, JoinHandle};
 use nix::sys::socket::{getsockopt, setsockopt, sockopt::SndBuf};
 use std::fs;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::time::{Duration, Instant};
@@ -47,6 +49,7 @@ const CTL_CHANNEL_CAPACITY: usize = 100;
 pub(crate) struct RioHandle {
     cancel: CancellationToken,
     ctl: Sender<RouterCtlMsg>,
+    waker: Arc<Waker>,
     handle: Option<JoinHandle<()>>,
 }
 impl RioHandle {
@@ -70,7 +73,7 @@ impl RioHandle {
     }
     #[must_use]
     pub(crate) fn get_ctl_tx(&self) -> RouterCtlSender {
-        RouterCtlSender::new(self.ctl.clone())
+        RouterCtlSender::new(self.ctl.clone(), self.waker.clone())
     }
 }
 
@@ -82,6 +85,7 @@ pub(crate) struct RioConf {
 }
 
 fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
+    debug!("Opening UNIX sock; target bind point is {path}");
     let _ = std::fs::remove_file(path);
     let sock = UnixDatagram::bind(path).map_err(|_| RouterError::InvalidPath(path.to_owned()))?;
     let mut perms = fs::metadata(path)
@@ -91,6 +95,7 @@ fn open_unix_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     fs::set_permissions(path, perms).map_err(|_| RouterError::PermError)?;
     sock.set_nonblocking(true)
         .map_err(|_| RouterError::Internal("Failure setting non-blocking socket"))?;
+    debug!("Successfully opened UX sock @ {path}");
     Ok(sock)
 }
 
@@ -104,9 +109,33 @@ fn open_cli_sock(path: &String) -> Result<UnixDatagram, RouterError> {
     Ok(sock)
 }
 
+// set up an inotify watcher for the directory where the CLI socket path lives.
+// This is way more reliable than tracking the file itself, since unlinking the path
+// only removes the directory entry, but the inode remains if the sock is open; so
+// no DELETE_SELF would be emitted.
+fn setup_clipath_watcher(path: &str) -> Result<Inotify, RouterError> {
+    let inotify = Inotify::init().map_err(|_| RouterError::Internal("Failed to init inotify"))?;
+    let dir = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or(RouterError::Internal("CLI socket path has no parent dir"))?;
+
+    let mask = WatchMask::DELETE | WatchMask::MOVED_FROM;
+    inotify
+        .watches()
+        .add(dir, mask)
+        .map_err(|_| RouterError::Internal("Failed to add watcher for inotify"))?;
+
+    debug!("Will track {path} via ({})", dir.display());
+    Ok(inotify)
+}
+
 pub(crate) const CPSOCK: Token = Token(0);
 pub(crate) const CLISOCK: Token = Token(1);
 pub(crate) const FRRMISOCK: Token = Token(2);
+pub(crate) const CTL_CHANNEL: Token = Token(3);
+pub(crate) const CLIPATH_WATCHER: Token = Token(4);
+
 /// `Rio` is the router IO loop state
 pub(crate) struct Rio {
     #[allow(unused)]
@@ -120,11 +149,13 @@ pub(crate) struct Rio {
     pub(crate) frrmi: Frrmi,
     pub(crate) ctl_tx: Sender<RouterCtlMsg>,
     pub(crate) ctl_rx: Receiver<RouterCtlMsg>,
+    pub(crate) waker: Arc<Waker>,
     pub(crate) cpistats: CpiStats,
     stale_timeout: Option<Instant>,
     pub(crate) gwconfig: Option<Arc<ValidatedGwConfig>>,
     pub(crate) cfg_history: Arc<Vec<GwConfigMeta>>,
     pub(crate) cli_cache: IoCache,
+    pub(crate) inotify: Inotify,
 }
 impl Rio {
     fn new(conf: &RioConf) -> Result<Rio, RouterError> {
@@ -152,6 +183,11 @@ impl Rio {
         /* create unix sock for cli and bind it */
         let clisock = open_cli_sock(&cli_sock_path)?;
 
+        /* add a watcher to the cli sock directory to detect if the file is removed */
+        let inotify = setup_clipath_watcher(&cli_sock_path)?;
+        let inotify_fd = inotify.as_raw_fd();
+        let mut inotify_src_fd = SourceFd(&inotify_fd);
+
         /* frrmi - communication to frr-agent */
         let frrmi = Frrmi::new(&frrmi_sock_path);
 
@@ -169,7 +205,7 @@ impl Rio {
         let clisock_fd = clisock.as_raw_fd();
         let mut ev_clisock = SourceFd(&clisock_fd);
 
-        /* create poller and register cp_sock and cli_sock */
+        /* create poller and register cp_sock, cli_sock, ctl waker and cli path inotify watcher */
         let poller = Poll::new().map_err(|_| RouterError::Internal("Poll creation failed"))?;
         poller
             .registry()
@@ -179,6 +215,17 @@ impl Rio {
             .registry()
             .register(&mut ev_clisock, CLISOCK, Interest::READABLE)
             .map_err(|_| RouterError::Internal("Failed to register CLI sock"))?;
+
+        poller
+            .registry()
+            .register(&mut inotify_src_fd, CLIPATH_WATCHER, Interest::READABLE)
+            .map_err(|_| RouterError::Internal("Failed to register CLIPATH watcher"))?;
+
+        // Waker to integrate the async ctl channel with the poller
+        let waker = Arc::new(
+            Waker::new(poller.registry(), CTL_CHANNEL)
+                .map_err(|_| RouterError::Internal("Failed to create ctl channel waker"))?,
+        );
 
         Ok(Rio {
             name: conf.name.clone(),
@@ -191,13 +238,32 @@ impl Rio {
             frrmi,
             ctl_tx,
             ctl_rx,
+            waker,
             cpistats: CpiStats::new(),
             stale_timeout: None,
             gwconfig: None,
             cfg_history: Arc::from(vec![]),
             cli_cache: IoCache::new(),
+            inotify,
         })
     }
+
+    pub(crate) fn cli_sock_restore(&mut self) {
+        let raw_fd = self.clisock.as_raw_fd();
+        debug!("Restoring CLI socket. Current fd is {raw_fd}...");
+        self.deregister(raw_fd);
+        let _ = self.clisock.shutdown(std::net::Shutdown::Both);
+
+        // open new sock, bind it and register it
+        let Ok(new_sock) = open_cli_sock(&self.cli_sock_path) else {
+            error!("Failed to open CLI sock");
+            return;
+        };
+        self.clisock = new_sock;
+        self.register(CLISOCK, self.clisock.as_raw_fd(), Interest::READABLE);
+        debug!("CLI socket restored at {}", self.cli_sock_path);
+    }
+
     pub(crate) fn register(&self, token: Token, fd: i32, interests: Interest) {
         debug!("Registering fd {fd}...");
         let mut ev_sock = SourceFd(&fd);
@@ -336,9 +402,28 @@ impl Rio {
     }
 }
 
+// Drop-guard so panic-unwind or unexpected loop exit trips
+// report_fatal.
+struct ExitGuard {
+    subsystem: Subsystem,
+}
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        if self.subsystem.is_cancelled() {
+            return;
+        }
+        let reason = if std::thread::panicking() {
+            "RIO thread panicked"
+        } else {
+            "RIO thread exited unexpectedly"
+        };
+        self.subsystem.report_fatal(reason);
+    }
+}
+
 #[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 pub(crate) fn start_rio(
-    router: &Subsystem,
+    subsystem: &Subsystem,
     conf: &RioConf,
     fibtw: FibTableWriter,
     iftw: IfTableWriter,
@@ -347,31 +432,15 @@ pub(crate) fn start_rio(
 ) -> Result<RioHandle, RouterError> {
     let mut rio = Rio::new(conf)?;
     let ctl_tx = rio.ctl_tx.clone();
+    let waker = rio.waker.clone();
     let cli_sources = cli_sources.unwrap_or_default();
-    let cancel = router.cancel_token();
+    let cancel = subsystem.cancel_token();
     let loop_cancel = cancel.clone();
-    let guard_subsystem = router.clone();
+    let guard_subsystem = subsystem.clone();
 
     /* router IO loop */
     let rio_loop = move || {
-        // Drop-guard so panic-unwind or unexpected loop exit trips
-        // report_fatal.
-        struct ExitGuard {
-            subsystem: Subsystem,
-        }
-        impl Drop for ExitGuard {
-            fn drop(&mut self) {
-                if self.subsystem.is_cancelled() {
-                    return;
-                }
-                let reason = if std::thread::panicking() {
-                    "RIO thread panicked"
-                } else {
-                    "RIO thread exited unexpectedly"
-                };
-                self.subsystem.report_fatal(reason);
-            }
-        }
+        // drop-guard to detect loop termination
         let _guard = ExitGuard {
             subsystem: guard_subsystem,
         };
@@ -405,7 +474,7 @@ pub(crate) fn start_rio(
             /* did any request time out? */
             rio.frrmi.timeout();
 
-            /* events on unix sockets */
+            /* handle events */
             for event in &events {
                 match event.token() {
                     CPSOCK => {
@@ -474,15 +543,30 @@ pub(crate) fn start_rio(
                             }
                         }
                     }
+                    CLIPATH_WATCHER => {
+                        let mut buffer = [0u8; 4096];
+                        let sock_name = Path::new(&rio.cli_sock_path).file_name();
+                        match rio.inotify.read_events(&mut buffer) {
+                            Ok(evs) => {
+                                let removed = evs.into_iter().any(|e| {
+                                    e.mask.intersects(EventMask::DELETE | EventMask::MOVED_FROM)
+                                        && e.name == sock_name
+                                });
+                                if removed && !Path::new(&rio.cli_sock_path).exists() {
+                                    debug!("CLI socket file was removed...");
+                                    rio.cli_sock_restore();
+                                }
+                            }
+                            Err(e) => warn!("Error reading inotify events: {e}"),
+                        }
+                    }
+                    CTL_CHANNEL => handle_ctl_msg(&mut rio, &mut db),
                     _ => {}
                 }
             }
 
             /* check stale timeout. If expired, remove stale routes */
             rio.check_stale_timeout(&mut db);
-
-            /* handle control-channel messages */
-            handle_ctl_msg(&mut rio, &mut db);
         }
     };
     let handle = thread::Builder::new()
@@ -493,6 +577,7 @@ pub(crate) fn start_rio(
     Ok(RioHandle {
         cancel,
         ctl: ctl_tx,
+        waker,
         handle: Some(handle),
     })
 }

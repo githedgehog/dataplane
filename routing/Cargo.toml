@@ -19,6 +19,7 @@ common = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
 dplane-rpc = { workspace = true }
+interface-manager = { workspace = true }
 left-right-tlcache = { workspace = true }
 lifecycle = { workspace = true }
 lpm = { workspace = true }
@@ -35,6 +36,7 @@ chrono = { workspace = true, features = ["clock"] }
 derive_builder = { workspace = true, features = ["default", "std"] }
 futures-util = { workspace = true }
 ipnet = { workspace = true }
+inotify = { workspace = true, features = ["stream"] }
 left-right = { workspace = true }
 linkme = { workspace = true }
 mio = { workspace = true, features = ["os-ext", "net"] }

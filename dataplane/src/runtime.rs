@@ -6,7 +6,9 @@ use crate::statistics::spawn_metrics;
 use args::{CmdArgs, Parser};
 
 use crate::drivers::kernel::DriverKernel;
-use lifecycle::{Shutdown, default_deadlines, spawn_shutdown_watchdog};
+use lifecycle::{
+    CancellationToken, DpSignal, Shutdown, default_deadlines, spawn_shutdown_watchdog,
+};
 use mgmt::{ConfigProcessorParams, LaunchError, MgmtParams, run_mgmt};
 
 use nix::unistd::gethostname;
@@ -127,6 +129,31 @@ fn parse_bmp_params(args: &CmdArgs) -> (Option<BmpServerParams>, Option<BmpOptio
     }
 }
 
+// Main signal handling of dataplane occurs here
+fn spawn_signal_handler(
+    rt_handle: &tokio::runtime::Handle,
+    mut sigrx: tokio::sync::mpsc::Receiver<DpSignal>,
+    root: CancellationToken,
+) {
+    rt_handle.spawn(async move {
+        loop {
+            tokio::select! {
+                Some(sig) = sigrx.recv() => {
+                    info!("Processing signal {sig:?} from signal catcher");
+                    match sig {
+                        DpSignal::SIGTERM | DpSignal::SIGINT | DpSignal::SIGQUIT => root.cancel(),
+                        DpSignal::SIGUSR1 | DpSignal::SIGUSR2 | DpSignal::SIGHUP | DpSignal::SIGALRM | DpSignal::SIGPIPE => {},
+                    }
+                }
+                () = root.cancelled() => {
+                    break;
+                }
+            }
+        }
+        info!("Signal handler ended");
+    });
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     let args = CmdArgs::parse();
@@ -188,7 +215,7 @@ pub fn main() {
         .expect("Failed to build mgmt runtime");
     let mgmt_handle = mgmt_runtime.handle().clone();
 
-    lifecycle::spawn_signal_handler(&mgmt_handle, shutdown.root.clone())
+    let sigrx = lifecycle::spawn_signal_catcher(&mgmt_handle, shutdown.root.clone())
         .expect("failed to install signal handler");
 
     spawn_shutdown_watchdog(shutdown.root.clone(), default_deadlines::TOTAL, 124)
@@ -219,6 +246,8 @@ pub fn main() {
     )
     .expect("failed to start router");
 
+    spawn_signal_handler(&mgmt_handle, sigrx, shutdown.root.clone());
+
     spawn_metrics(
         &shutdown.metrics,
         &mgmt_handle,
@@ -235,6 +264,7 @@ pub fn main() {
             MgmtParams {
                 config_dir: args.config_dir().cloned(),
                 hostname: gwname.clone(),
+                interfaces: args.interfaces().map(|i| i.interface).collect(),
                 processor_params: ConfigProcessorParams {
                     router_ctl: setup.router.get_ctl_tx(),
                     pipeline_data: pipeline_factory().get_data(),

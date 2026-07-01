@@ -28,11 +28,18 @@ serde = { workspace = true, features = ["std"] }
 static_assertions = { workspace = true, features = [] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, default-features = false, features = ["fs", "io-util"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
 # internal
+fixin = { workspace = true }
 net = { workspace = true, features = ["bolero", "test_buffer", "serde", "netdevsim"] }
+n-vm = { workspace = true }
+test-utils = { workspace = true }
 
 # external
+caps = { workspace = true, default-features = false, features = [] }
 bolero = { workspace = true, default-features = false, features = ["alloc"] }
+tracing-subscriber = { workspace = true }
+tracing-test = { workspace = true }
