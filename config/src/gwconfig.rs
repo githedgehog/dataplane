@@ -68,9 +68,6 @@ pub struct GwConfig {
 
     /// Configuration, as received
     pub external: ExternalConfig,
-
-    /// Configuration built from the external
-    pub internal: Option<InternalConfig>,
 }
 
 impl GwConfig {
@@ -82,7 +79,6 @@ impl GwConfig {
         Self {
             meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid))),
             external,
-            internal: None,
         }
     }
 
@@ -92,13 +88,6 @@ impl GwConfig {
     #[must_use]
     pub fn blank() -> Self {
         Self::new(ExternalConfig::new(""))
-    }
-
-    //////////////////////////////////////////////////////////////////
-    /// Set an internal config object, once built.
-    //////////////////////////////////////////////////////////////////
-    pub fn set_internal_config(&mut self, internal: InternalConfig) {
-        self.internal = Some(internal);
     }
 
     //////////////////////////////////////////////////////////////////
@@ -121,7 +110,7 @@ impl GwConfig {
         Ok(ValidatedGwConfig {
             meta: self.meta,
             external: validated_external,
-            internal: self.internal.clone(),
+            internal: None,
         })
     }
 
@@ -139,7 +128,7 @@ impl GwConfig {
         ValidatedGwConfig {
             meta: self.meta,
             external: fake_valid_external,
-            internal: self.internal.clone(),
+            internal: None,
         }
     }
 }
