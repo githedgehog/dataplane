@@ -183,6 +183,7 @@ let
       wasmtime
       wget
       yq
+      zizmor
     ]);
   };
   devenv = pkgs.mkShell {
