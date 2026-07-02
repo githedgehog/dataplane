@@ -3035,9 +3035,9 @@ dependencies = [
 
 [[package]]
 name = "inotify-sys"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e05c02b5e89bff3b946cedeca278abc628fe811e604f027c45a8aa3cf793d0eb"
+checksum = "6fda9741ca16536952da2ecaa6105c2f4653fa6f0724681df6d2414c4106d0b0"
 dependencies = [
  "libc",
 ]
@@ -5526,9 +5526,9 @@ checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
 name = "symbolic-common"
-version = "13.6.1"
+version = "13.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba98c95b1ff25ce40400d286f5dec838097ee42ad1bbd64242cce24c2baace8c"
+checksum = "82bfbe03a011e4d3e2a94f03e054c33b101767f6905ec2a608dd85aa0cd71c97"
 dependencies = [
  "debugid",
  "memmap2",
@@ -5538,9 +5538,9 @@ dependencies = [
 
 [[package]]
 name = "symbolic-demangle"
-version = "13.6.1"
+version = "13.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c547b0231d1794aec8e4795dbb04c1d395ff774954f18e37d46d5a70f0ce4b2"
+checksum = "f9d2ed98c0fd513dd4788554e1a62d9736f3642f8aaf7923644ec647158c1ded"
 dependencies = [
  "rustc-demangle",
  "symbolic-common",
@@ -5658,9 +5658,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.52"
+version = "0.3.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e48db7b415311b615f910b3dcaa4557bcd4bf1982379c95c223fd8c2a20e210"
+checksum = "18dfaaeddcb932337b5e7866ee7d0ce9b76d2fd092997146f187ec09b4558a50"
 dependencies = [
  "deranged",
  "num-conv",
