@@ -99,12 +99,14 @@ impl ExternalConfig {
         }
         Ok(())
     }
+
     /// Validate the external configuration.
+    /// This method consumes `ExternalConfig` and outputs a `ValidatedGwConfig` on success.
     ///
     /// # Errors
     ///
     /// Returns a [`ConfigError`] if validation fails.
-    pub fn validate(&self) -> Result<ValidatedGwConfig, ConfigError> {
+    pub fn validate(self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid);
         self.device.validate()?;
         let validated_underlay = self.underlay.validate()?;
@@ -121,13 +123,13 @@ impl ExternalConfig {
         debug!("Gateway-groups are:\n{}", self.gwgroups);
 
         let validated_external = ValidatedExternalConfig {
-            gwname: self.gwname.clone(),
+            gwname: self.gwname,
             genid: self.genid,
-            device: self.device.clone(),
+            device: self.device,
             underlay: validated_underlay,
             overlay: validated_overlay,
-            gwgroups: self.gwgroups.clone(),
-            communities: self.communities.clone(),
+            gwgroups: self.gwgroups,
+            communities: self.communities,
             flow_table_capacity: self.flow_table_capacity,
         };
         Ok(ValidatedGwConfig::new(validated_external))
