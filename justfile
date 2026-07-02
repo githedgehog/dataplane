@@ -364,18 +364,47 @@ pinact *args="--check --verify":
     pinact run {{ args }}
 
 [script]
-zizmor:
+zizmor *args="":
     {{ _just_debuggable_ }}
-    zizmor --persona=pedantic .
+    zizmor --persona=pedantic {{args}} .
 
 [script]
 clippy *args:
     {{ _just_debuggable_ }}
     cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings
 
+[script]
+actionlint:
+    {{ _just_debuggable_ }}
+    actionlint
+
+[script]
+license-headers:
+    {{ _just_debuggable_ }}
+    declare -i res=0
+    for f in $(git ls-files '*.rs' '*.sh' justfile); do
+        if ! head "${f}" | grep -wq 'SPDX'; then
+            echo "::error::Missing SPDX license header in file ${f}"
+            res=1
+        fi
+        if ! head "${f}" | grep -wqi 'copyright'; then
+            echo "::error::Missing copyright notice in file ${f}"
+            res=1
+        fi
+    done
+    exit ${res}
+
 # Run linters
 [script]
-lint: (clippy) (opengrep) (pinact "--check --verify") (zizmor)
+lint: \
+    (fmt "--check") \
+    (clippy) \
+    (check-dependencies) \
+    (opengrep) \
+    (zizmor) \
+    (pinact "--fix=false" "--no-api") \
+    (actionlint) \
+    (license-headers)
     {{ _just_debuggable_ }}
 
 # Run doctests
