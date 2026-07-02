@@ -353,11 +353,79 @@ check-dependencies *args:
     {{ _just_debuggable_ }}
     cargo deny {{ _cargo_feature_flags }} check {{ args }}
 
-# Run linters
 [script]
-lint *args:
+opengrep:
+    {{ _just_debuggable_ }}
+    opengrep scan --experimental --verbose --error --config auto --config .semgrep/rules
+
+[script]
+pinact *args="--check --verify":
+    {{ _just_debuggable_ }}
+    pinact run {{ args }}
+
+[script]
+zizmor *args="":
+    {{ _just_debuggable_ }}
+    zizmor --persona=pedantic {{args}} .
+
+[script]
+clippy *args:
     {{ _just_debuggable_ }}
     cargo clippy --all-targets {{ _cargo_feature_flags }} {{ _cargo_profile_flag }} {{ args }} -- -D warnings
+
+[script]
+actionlint:
+    {{ _just_debuggable_ }}
+    actionlint
+
+[script]
+license-headers:
+    {{ _just_debuggable_ }}
+    declare -i res=0
+    for f in $(git ls-files '*.rs' '*.sh' justfile); do
+        if ! head "${f}" | grep -wq 'SPDX'; then
+            echo "::error::Missing SPDX license header in file ${f}"
+            res=1
+        fi
+        if ! head "${f}" | grep -wqi 'copyright'; then
+            echo "::error::Missing copyright notice in file ${f}"
+            res=1
+        fi
+    done
+    exit ${res}
+
+# NOTE: commitlint-rs's `--from`/`--to` flags are unusable in any
+# non-interactive shell (CI, this recipe, etc): its arg-handling checks stdin
+# before checking --from/--to, and stdin is never a TTY there, so it silently
+# lints empty/stray stdin content instead of the requested commit range.
+# See https://github.com/KeisukeYamashita/commitlint-rs/blob/main/cli/src/args.rs
+# Work around it by feeding each commit's message to commitlint individually
+# over stdin, which is the one invocation mode that actually works.
+[script]
+commitlint base="origin/main":
+    {{ _just_debuggable_ }}
+    declare -i status=0
+    while IFS= read -r sha; do
+        if ! git log -1 --format=%B "${sha}" | commitlint; then
+            echo "::error::commit ${sha} failed commitlint" >&2
+            status=1
+        fi
+    done < <(git log --format=%H --no-merges "{{base}}"..HEAD)
+    exit "${status}"
+
+# Run linters
+[script]
+lint: \
+    (fmt "--check") \
+    (clippy) \
+    (commitlint) \
+    (check-dependencies) \
+    (opengrep) \
+    (zizmor) \
+    (pinact "--fix=false" "--no-api") \
+    (actionlint) \
+    (license-headers)
+    {{ _just_debuggable_ }}
 
 # Run doctests
 [script]
@@ -391,6 +459,95 @@ depgraph:
     cargo depgraph --exclude dataplane-test-utils,dataplane-dpdk-sysroot-helper --workspace-only \
       | sed 's/dataplane-//g' \
       | dot -Grankdir=TD -Gsplines=polyline -Granksep=1.5 -Tsvg > workspace-deps.svg
+
+[script]
+bump-actions:
+    {{ _just_debuggable_ }}
+    pinact run --update
+
+export GITHUB_STEP_SUMMARY := env("GITHUB_STEP_SUMMARY", "")
+export GITHUB_OUTPUT := env("GITHUB_OUTPUT", "")
+
+[script]
+bump-cargo-deps:
+    {{ _just_debuggable_ }}
+    declare BASE
+    BASE="$(git rev-parse HEAD)"
+    declare -r BASE
+
+    # Run "cargo update"
+    echo "::notice::Running cargo update"
+    cargo update
+    if ! git diff --quiet; then
+        echo "Found changes after cargo update, creating commit"
+        git add Cargo.lock
+        git commit -sm "bump!: regular dependency update"
+    fi
+
+    # Check updates available with "cargo upgrade",
+    # then bump each package individually through separate commits
+    echo "::notice::Looking for dependencies to upgrade"
+    declare upgrade_output
+    upgrade_output="$(mktemp)"
+    declare -r upgrade_output
+    declare list_packages
+    list_packages="$(mktemp)"
+    declare -r list_packages
+    cargo upgrade --incompatible=allow --dry-run | tee "${upgrade_output}"
+    sed "/^====/d; /^name .*old req .*new req/d; s/ .*//" "${upgrade_output}" > "${list_packages}"
+    nb_upgrades=$(wc -l < "${list_packages}")
+
+    echo "Found the following ${nb_upgrades} upgrade(s) available:"
+    cat "${list_packages}"
+
+    echo "::notice::Upgrading packages that need an upgrade (if any), one by one"
+    declare commit_msg
+    commit_msg="$(mktemp)"
+    declare -r commit_msg
+    while read -r package; do
+        echo "bump(cargo)!: bump $package (cargo upgrade)" | tee "${commit_msg}"
+        tee -a "${commit_msg}" <<<""
+        cargo upgrade --incompatible=allow --package "$package" | tee -a "${commit_msg}"
+        git add Cargo.lock Cargo.toml cli/Cargo.toml
+        git commit -sF "${commit_msg}"
+    done < "${list_packages}"
+
+    # If we did not create any commits, we do not need to create a PR message
+    if [[ "$(git rev-parse HEAD)" = "${BASE}" ]]; then
+        rm -f -- "${upgrade_output}" "${list_packages}" "${commit_msg}"
+        exit 0
+    fi
+    echo "::notice::We created the following commits:"
+    git log --reverse -p "${BASE}"..
+
+    # Create Pull Request description
+    declare upgrade_log
+    upgrade_log="$(mktemp)"
+    declare -r upgrade_log
+    if [[ "${nb_upgrades}" -ge 1 ]]; then
+        {
+            echo "### :rocket: Upgrades available";
+            echo ""
+            echo "| name | old | req | compatible | latest |";
+            echo "|------|-----|-----|------------|--------|";
+            awk '{print "| " $1 " | " $2 " | " $3 " | " $4 " | " $5 " |"}' < <(sed 1,2d < "${upgrade_output}");
+            echo ""
+            echo ":warning: This Pull Request was automatically generated and should be carefully reviewed before acceptance. It may introduce **breaking changes**."
+            echo ""
+        } > "${upgrade_log}"
+    fi
+
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -n "${GITHUB_OUTPUT:-}" ] && [ -w "${GITHUB_STEP_SUMMARY}" ] && [ -w "${GITHUB_OUTPUT}" ]; then
+        cat "${upgrade_log}" > "${GITHUB_STEP_SUMMARY}"
+        {
+            echo "upgrade<<EOF";
+            cat "${upgrade_log}";
+            echo "EOF";
+        } >> "${GITHUB_OUTPUT}"
+    fi
+
+    rm -f -- "${upgrade_log}" "${upgrade_output}" "${list_packages}" "${commit_msg}"
+
 
 # Bump the minor version in Cargo.toml and reset patch version to 0
 [script]

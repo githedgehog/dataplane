@@ -1,0 +1,6 @@
+rules:
+    unpinned-uses:
+      disable: false
+      config:
+          policies:
+              githedgehog/fabricator/.github/workflows/run-vlab.yaml: ref-pin
