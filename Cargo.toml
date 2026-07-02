@@ -109,8 +109,8 @@ vpcmap = { path = "./vpcmap", package = "dataplane-vpcmap", features = [] }
 # External
 afpacket = { version = "0.2.3", default-features = false, features = [] }
 ahash = { version = "0.8.12", default-features = false, features = [] }
-anyhow = { version = "1.0.102", default-features = false, features = [] }
-arc-swap = { version = "1.9.1", default-features = false, features = [] }
+anyhow = { version = "1.0.103", default-features = false, features = [] }
+arc-swap = { version = "1.9.2", default-features = false, features = [] }
 arrayvec = { version = "0.7.7", default-features = false, features = [] }
 async-trait = { version = "0.1.89", default-features = false, features = [] }
 atomic-instant-full = { version = "0.1.1", default-features = false, features = [] }
@@ -182,7 +182,7 @@ procfs = { version = "0.18.0", default-features = false, features = [] }
 pyroscope = { version = "2.0.6", default-features = false, features = [] }
 quote = { version = "1.0.46", default-features = false, features = [] }
 rand = { version = "0.10.1", default-features = false, features = [] }
-rapidhash = { version = "4.4.1", default-features = false, features = [] }
+rapidhash = { version = "4.4.2", default-features = false, features = [] }
 reedline = { version = "0.48.0", default-features = false, features = [] }
 rkyv = { version = "0.8.16", default-features = false, features = [] }
 roaring = { version = "0.11.4", default-features = false, features = [] }
@@ -218,7 +218,7 @@ tracing-test = { version = "0.2.6", default-features = false, features = [] }
 tracing-throttle = { version = "0.4.2", default-features = false, features = [] }
 ureq = { version = "3.3.0", default-features = false, features = [] }
 url = { version = "2.5.8", default-features = false, features = [] }
-uuid = { version = "1.23.3", default-features = false, features = [] }
+uuid = { version = "1.23.4", default-features = false, features = [] }
 
 # NOTE: panic strategy is intentionally left unset here.
 #
