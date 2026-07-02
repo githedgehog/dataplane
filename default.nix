@@ -173,6 +173,7 @@ let
       opengrep
       openssl
       oras
+      pinact
       pkg-config
       python3Packages.pyflakes
       qemu-user
