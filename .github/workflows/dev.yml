@@ -152,14 +152,8 @@ jobs:
           cachix_signing_key: "${{ secrets.CACHIX_SIGNING_KEY }}"
           cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
-      - &check-dependencies
-        name: "check-dependencies"
-        uses: &just "./.github/actions/just"
-        with:
-          recipe: "check-dependencies"
-
       - name: "fmt"
-        uses: *just
+        uses: &just "./.github/actions/just"
         with:
           recipe: "fmt"
           recipe_args: "--check"
@@ -202,6 +196,64 @@ jobs:
         with:
           limit-access-to-actor: true
 
+  lint:
+    if: >-
+      ${{
+        needs.check_changes.outputs.devfiles == 'true'
+        || startsWith(github.event.ref, 'refs/tags/v')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    name: "lint"
+    runs-on: "lab"
+    needs:
+      - check_changes
+    permissions:
+      contents: "read" # actions/checkout on this private repo; this job doesn't build or push images
+    env:
+      USER: "runner"
+      JUST_VARS: "" # the `.github/actions/just` composite action runs under `set -u`; must be set even when empty
+    steps:
+      - *checkout
+      - *nix-setup
+
+      # `build` (and therefore `publish`, which pushes to our container
+      # registry) depends on this whole job, so a check-dependencies failure
+      # here still blocks a container push -- it's just no longer a separate,
+      # uncoupled workflow that could pass or get skipped independently.
+      - name: "check-dependencies"
+        uses: *just
+        with:
+          recipe: "check-dependencies"
+
+      - name: "opengrep"
+        uses: *just
+        with:
+          recipe: "opengrep"
+
+      - name: "zizmor"
+        uses: *just
+        with:
+          recipe: "zizmor"
+          recipe_args: "--color=never"
+
+      - name: "pinact"
+        uses: *just
+        with:
+          recipe: "pinact"
+          recipe_args: "--check --verify"
+
+      - name: "actionlint"
+        uses: *just
+        with:
+          recipe: "actionlint"
+
+      - name: "license-headers"
+        uses: *just
+        with:
+          recipe: "license-headers"
+
+      - *tmate
+
   build:
     if: >-
       ${{
@@ -214,6 +266,7 @@ jobs:
     needs:
       - check_changes
       - version
+      - lint
     permissions:
       contents: "read" # actions/checkout on this private repo
       packages: "write" # nix-setup logs into ghcr.io; this job pushes images via `just push-container`
@@ -236,7 +289,6 @@ jobs:
     steps:
       - *checkout
       - *nix-setup
-      - *check-dependencies
 
       - name: "push container"
         env:
@@ -643,6 +695,7 @@ jobs:
     runs-on: "ubuntu-latest"
     needs:
       - check
+      - lint
       - sanitize
       - concurrency
       - build
@@ -662,6 +715,11 @@ jobs:
         if: ${{ needs.check.result != 'success' && needs.check.result != 'skipped' }}
         run: |
           echo '::error:: Some check job(s) failed'
+          exit 1
+      - name: "Flag any lint failures"
+        if: ${{ needs.lint.result != 'success' && needs.lint.result != 'skipped' }}
+        run: |
+          echo '::error:: lint job failed'
           exit 1
       - name: "Flag any concurrency job failures"
         if: ${{ needs.concurrency.result != 'success' && needs.concurrency.result != 'skipped' }}
