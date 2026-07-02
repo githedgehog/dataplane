@@ -6,7 +6,7 @@
 use super::vpcpeering::VpcManifest;
 use crate::ConfigError;
 use crate::utils::normalize;
-use lpm::prefix::PrefixPortsSet;
+use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
 use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -30,10 +30,33 @@ pub enum AclProtoMatch {
 pub struct AclPattern {
     src: PrefixPortsSet,
     dst: PrefixPortsSet,
+    /// Port ranges for match entries that specified neither `cidr` nor `vpcSubnet`, meaning "any
+    /// address within the peering, restricted to these ports". These can't be resolved into
+    /// concrete prefixes until the peering's manifests are known, so they're materialized into
+    /// `src`/`dst` during [`AclRule::validate_patterns_coverage`] rather than at conversion time.
+    src_any_ports: Vec<PortRange>,
+    dst_any_ports: Vec<PortRange>,
     proto: AclProtoMatch,
 }
 
 impl AclPattern {
+    #[must_use]
+    pub(crate) fn new(
+        src: PrefixPortsSet,
+        dst: PrefixPortsSet,
+        src_any_ports: Vec<PortRange>,
+        dst_any_ports: Vec<PortRange>,
+        proto: AclProtoMatch,
+    ) -> Self {
+        Self {
+            src,
+            dst,
+            src_any_ports,
+            dst_any_ports,
+            proto,
+        }
+    }
+
     #[must_use]
     pub fn src(&self) -> &PrefixPortsSet {
         &self.src
@@ -53,7 +76,10 @@ impl AclPattern {
         match self.proto {
             AclProtoMatch::Tcp | AclProtoMatch::Udp => true,
             AclProtoMatch::Other(_) | AclProtoMatch::Icmp | AclProtoMatch::Any => {
-                !self.src.uses_ports() && !self.dst.uses_ports()
+                !self.src.uses_ports()
+                    && !self.dst.uses_ports()
+                    && self.src_any_ports.is_empty()
+                    && self.dst_any_ports.is_empty()
             }
         }
     }
@@ -96,6 +122,27 @@ pub struct AclRule {
 }
 
 impl AclRule {
+    #[must_use]
+    pub(crate) fn new(
+        name: String,
+        from: String,
+        to: String,
+        action: AclAction,
+        pattern: AclPattern,
+        scope: AclScope,
+        log: bool,
+    ) -> Self {
+        Self {
+            name,
+            from,
+            to,
+            action,
+            pattern,
+            scope,
+            log,
+        }
+    }
+
     #[must_use]
     pub fn action(&self) -> AclAction {
         self.action
@@ -144,45 +191,23 @@ impl AclRule {
         }
     }
 
+    // The k8s CRD converter completes a rule's `from`/`to` against the peering's two VPC names
+    // before an `AclRule` is ever built (see `converters::k8s::config::acl::complete_from_to`).
     fn validate_from_to(
         &mut self,
         manifest_left: &VpcManifest,
         manifest_right: &VpcManifest,
     ) -> Result<(), ConfigError> {
-        match (&self.from, &self.to) {
-            // Accept if values match the names of the two manifests
+        match (self.from.as_str(), self.to.as_str()) {
             (from, to) if from == manifest_left.name() && to == manifest_right.name() => Ok(()),
             (from, to) if from == manifest_right.name() && to == manifest_left.name() => Ok(()),
-
-            // Accept, and complete, if one value matches a manifest, and the other is empty
-            (from, to) if from == manifest_left.name() && to.is_empty() => {
-                self.to = manifest_right.name().to_string();
-                Ok(())
-            }
-            (from, to) if from == manifest_right.name() && to.is_empty() => {
-                self.to = manifest_left.name().to_string();
-                Ok(())
-            }
-            (from, to) if from.is_empty() && to == manifest_left.name() => {
-                self.from = manifest_right.name().to_string();
-                Ok(())
-            }
-            (from, to) if from.is_empty() && to == manifest_right.name() => {
-                self.from = manifest_left.name().to_string();
-                Ok(())
-            }
-
-            // Reject both values empty
-            (from, to) if from.is_empty() && to.is_empty() => {
-                Err(ConfigError::InvalidAcl(format!(
-                    "Rule '{}' must specify at least one of 'from' or 'to' fields",
-                    self.name,
-                )))
-            }
-            // Reject if one value is non-empty but does not match either manifest
             _ => Err(ConfigError::InvalidAcl(format!(
-                "Rule '{}' has invalid 'from' or 'to' fields: '{}' -> '{}'",
-                self.name, self.from, self.to,
+                "Rule '{}' has invalid 'from'/'to' fields: '{}' -> '{}', expected the peering's two VPCs '{}' and '{}'",
+                self.name,
+                self.from,
+                self.to,
+                manifest_left.name(),
+                manifest_right.name(),
             ))),
         }
     }
@@ -217,28 +242,64 @@ impl AclRule {
         Ok(())
     }
 
+    /// Materialize "any address within the peering, restricted to these ports" entries into
+    /// concrete prefixes, one per port range per prefix advertised by `manifest_prefixes`.
+    fn expand_any_ports(manifest_prefixes: &PrefixPortsSet, ports: &[PortRange]) -> PrefixPortsSet {
+        ports
+            .iter()
+            .flat_map(|port| {
+                manifest_prefixes
+                    .iter()
+                    .map(move |p| PrefixWithOptionalPorts::new(p.prefix(), Some(*port)))
+            })
+            .collect()
+    }
+
+    fn manifest_coverage_set(
+        manifest: &VpcManifest,
+        is_v4: bool,
+        is_public: bool,
+    ) -> PrefixPortsSet {
+        if manifest.has_default_expose() {
+            [PrefixWithOptionalPorts::from(if is_v4 {
+                Prefix::root_v4()
+            } else {
+                Prefix::root_v6()
+            })]
+            .into()
+        } else if is_public {
+            manifest.all_public_ips()
+        } else {
+            manifest.all_ips()
+        }
+    }
+
     fn validate_patterns_coverage(
         &mut self,
         manifest_left: &VpcManifest,
         manifest_right: &VpcManifest,
     ) -> Result<(), ConfigError> {
-        let manifest_from = self.manifest_from(manifest_left, manifest_right);
-        if manifest_from.has_default_expose() {
-            // ACL pattern necessarily covers all traffic. Do not restrict the ACL pattern to the
-            // manifest's prefixes, we'll use a wildcard match anyway.
+        // A default-only manifest's is_v4()/is_v6() are always false, so fall back to the other side
+        let is_v4 = if manifest_left.is_default_only() {
+            manifest_right.is_v4()
         } else {
-            let src_set = manifest_from.all_ips();
-            Self::validate_pattern_coverage(&self.name, &mut self.pattern.src, &src_set)?;
-        }
+            manifest_left.is_v4()
+        };
+
+        let manifest_from = self.manifest_from(manifest_left, manifest_right);
+        let src_set = Self::manifest_coverage_set(manifest_from, is_v4, false);
+        let any =
+            Self::expand_any_ports(&src_set, &std::mem::take(&mut self.pattern.src_any_ports));
+        self.pattern.src = self.pattern.src.union_prefixes_and_ports(&any);
+        Self::validate_pattern_coverage(&self.name, &mut self.pattern.src, &src_set)?;
 
         let manifest_to = self.manifest_to(manifest_left, manifest_right);
-        if manifest_to.has_default_expose() {
-            // ACL pattern necessarily covers all traffic. Do not restrict the ACL pattern to the
-            // manifest's prefixes, we'll use a wildcard match anyway.
-        } else {
-            let dst_set = manifest_to.all_public_ips();
-            Self::validate_pattern_coverage(&self.name, &mut self.pattern.dst, &dst_set)?;
-        }
+        let dst_set = Self::manifest_coverage_set(manifest_to, is_v4, true);
+        let any =
+            Self::expand_any_ports(&dst_set, &std::mem::take(&mut self.pattern.dst_any_ports));
+        self.pattern.dst = self.pattern.dst.union_prefixes_and_ports(&any);
+        Self::validate_pattern_coverage(&self.name, &mut self.pattern.dst, &dst_set)?;
+
         Ok(())
     }
 
@@ -261,6 +322,11 @@ pub struct Acl {
 }
 
 impl Acl {
+    #[must_use]
+    pub(crate) fn new(default: AclAction, rules: Vec<AclRule>) -> Self {
+        Self { default, rules }
+    }
+
     #[must_use]
     pub fn default_action(&self) -> AclAction {
         self.default
@@ -349,6 +415,13 @@ mod validation_tests {
         manifest
     }
 
+    // Helper: build a validated manifest with only a default expose (no concrete prefixes)
+    fn default_manifest(name: &str) -> ValidatedManifest {
+        VpcManifest::with_exposes(name, vec![VpcExpose::empty().set_default()])
+            .validate()
+            .unwrap()
+    }
+
     // Helper: the standard two-side peering used by most tests
     // VPC-1 owns 10.0.0.0/16, VPC-2 owns 10.1.0.0/16
     fn manifests() -> (VpcManifest, VpcManifest) {
@@ -376,7 +449,13 @@ mod validation_tests {
 
     // Helper: assemble an AclPattern
     fn pattern(src: PrefixPortsSet, dst: PrefixPortsSet, proto: AclProtoMatch) -> AclPattern {
-        AclPattern { src, dst, proto }
+        AclPattern {
+            src,
+            dst,
+            src_any_ports: Vec::new(),
+            dst_any_ports: Vec::new(),
+            proto,
+        }
     }
 
     // Helper: assemble an AclRule
@@ -426,36 +505,24 @@ mod validation_tests {
         assert!(validate_rule(rule).is_ok());
     }
 
-    // "from" set to the left VPC, "to" omitted: the right VPC is implied
     #[test]
-    fn test_acl_from_left_only_completes_to() {
+    fn test_acl_to_blank_rejected() {
         let rule = rule("r", "VPC-1", "", AclAction::Allow, match_all());
-        let validated = validate_rule(rule).expect("should validate");
-        assert_eq!(validated.to, "VPC-2");
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
     }
 
-    // "from" set to the right VPC, "to" omitted: the left VPC is implied
     #[test]
-    fn test_acl_from_right_only_completes_to() {
-        let rule = rule("r", "VPC-2", "", AclAction::Allow, match_all());
-        let validated = validate_rule(rule).expect("should validate");
-        assert_eq!(validated.to, "VPC-1");
-    }
-
-    // "to" set to the right VPC, "from" omitted: the left VPC is implied
-    #[test]
-    fn test_acl_to_right_only_completes_from() {
+    fn test_acl_from_blank_rejected() {
         let rule = rule("r", "", "VPC-2", AclAction::Allow, match_all());
-        let validated = validate_rule(rule).expect("should validate");
-        assert_eq!(validated.from, "VPC-1");
-    }
-
-    // "to" set to the left VPC, "from" omitted: the right VPC is implied
-    #[test]
-    fn test_acl_to_left_only_completes_from() {
-        let rule = rule("r", "", "VPC-1", AclAction::Allow, match_all());
-        let validated = validate_rule(rule).expect("should validate");
-        assert_eq!(validated.from, "VPC-2");
+        let result = validate_rule(rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
     }
 
     // Omitting both "from" and "to" is rejected
@@ -764,6 +831,97 @@ mod validation_tests {
         let validated = validate_rule(rule).expect("should validate");
         assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/24"]));
         assert_eq!(validated.pattern.dst, prefixes(&["10.1.0.0/24"]));
+    }
+
+    // =============================================================================================
+    // "Any address within the peering" (neither cidr nor vpcSubnet set) match entries
+    // =============================================================================================
+
+    // A match entry with neither cidr/vpcSubnet nor ports (an empty entry) matches any address on
+    // any port, same as omitting the field entirely.
+    #[test]
+    fn test_acl_any_address_any_port_covers_manifest() {
+        let mut p = match_all();
+        p.src_any_ports = vec![]; // no explicit ports: empty src == "match everything"
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(validated.pattern.src, prefixes(&["10.0.0.0/16"]));
+    }
+
+    // A match entry with neither cidr nor vpcSubnet, but with ports set, matches any address
+    // advertised by the manifest restricted to those ports -- not literally "any port".
+    #[test]
+    fn test_acl_any_address_with_ports_restricts_to_manifest_prefixes_and_ports() {
+        let mut p = pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::Tcp,
+        );
+        p.src_any_ports = vec![PortRange::new(443, 443).unwrap()];
+        let rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let validated = validate_rule(rule).expect("should validate");
+        assert_eq!(
+            validated.pattern.src,
+            [prefix_with_ports("10.0.0.0/16", 443, 443)].into()
+        );
+        // dst was left fully unrestricted (empty, no any_ports): still "match everything".
+        assert_eq!(validated.pattern.dst, prefixes(&["10.1.0.0/16"]));
+    }
+
+    // A protocol that doesn't support ports (e.g. ICMP) rejects an "any address" port-restricted
+    // entry just like it rejects a concrete-prefix one.
+    #[test]
+    fn test_acl_any_address_with_ports_rejected_for_portless_proto() {
+        let mut p = pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::Icmp,
+        );
+        p.src_any_ports = vec![PortRange::new(443, 443).unwrap()];
+        let icmp_rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p.clone());
+        let result = validate_rule(icmp_rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+
+        // same thing for numeric protocols
+        p.proto = AclProtoMatch::Other(46);
+        let num_rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+        let result = validate_rule(num_rule);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidAcl(_))),
+            "{result:?}"
+        );
+    }
+
+    // A default-exposed manifest has no concrete prefixes to resolve "any address" against, so an
+    // "any address, these ports" entry on that side must fall back to the address family's root
+    // prefix instead of being silently dropped.
+    #[test]
+    fn test_acl_any_address_with_ports_against_default_expose_resolves_to_root_prefix() {
+        // VPC-1 is concrete IPv4, which also tells us the peering's IP family; VPC-2 only has a
+        // default expose, so it has no prefixes of its own to fall back on.
+        let left = manifest("VPC-1", &["10.0.0.0/16"]);
+        let right = default_manifest("VPC-2");
+
+        let mut p = pattern(
+            PrefixPortsSet::new(),
+            PrefixPortsSet::new(),
+            AclProtoMatch::Tcp,
+        );
+        p.dst_any_ports = vec![PortRange::new(443, 443).unwrap()];
+        let mut rule = rule("r", "VPC-1", "VPC-2", AclAction::Allow, p);
+
+        rule.validate(&left, &right).expect("should validate");
+        assert_eq!(
+            rule.pattern.dst,
+            [PrefixWithOptionalPorts::new(
+                Prefix::root_v4(),
+                Some(PortRange::new(443, 443).unwrap())
+            )]
+            .into()
+        );
     }
 
     // =============================================================================================

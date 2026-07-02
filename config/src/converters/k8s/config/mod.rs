@@ -5,6 +5,7 @@
 
 #![deny(clippy::all, clippy::pedantic)]
 
+pub mod acl;
 pub mod bgp;
 pub mod communities;
 pub mod device;

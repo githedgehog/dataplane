@@ -54,6 +54,7 @@ impl TypeGenerator for LegalValue<GatewayAgentGatewayLogs> {
                 .produce::<Option<LogLevel>>()?
                 .map(|log_level| log_level.0),
             tags,
+            rate_limit: None, // FIXME: Add a proper implementation when used
         }))
     }
 }

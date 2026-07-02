@@ -14,7 +14,7 @@ use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::SubnetMap;
 use crate::external::overlay::vpcpeering::VpcExpose;
 
-fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversionError> {
+pub(crate) fn parse_port_ranges(ports_str: &str) -> Result<Vec<PortRange>, FromK8sConversionError> {
     ports_str
         // Split port ranges for prefix on ','
         .split(',')

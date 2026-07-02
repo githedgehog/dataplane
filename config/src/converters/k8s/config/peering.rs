@@ -6,6 +6,7 @@ use k8s_intf::gateway_agent_crd::{GatewayAgentPeerings, GatewayAgentPeeringsPeer
 
 use crate::converters::k8s::FromK8sConversionError;
 use crate::converters::k8s::config::{SubnetMap, VpcSubnetMap};
+use crate::external::overlay::acl::Acl;
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering};
 
 impl TryFrom<(&SubnetMap, &str, &GatewayAgentPeeringsPeering)> for VpcManifest {
@@ -42,6 +43,7 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
             )))?
             .clone();
 
+        let acl_spec = peering.acl.as_ref();
         if let Some(peering) = peering.peering.as_ref() {
             let num_peerings = peering.len();
             if peering.len() != 2 {
@@ -62,7 +64,18 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
             let right = manifests.pop().unwrap_or_else(|| unreachable!());
             let left = manifests.pop().unwrap_or_else(|| unreachable!());
 
-            Ok(VpcPeering::new(peering_name, left, right, gwgroup))
+            let mut vpc_peering = VpcPeering::new(peering_name, left, right, gwgroup);
+            if let Some(acl) = acl_spec {
+                let acl = Acl::try_from((
+                    vpc_subnets,
+                    vpc_peering.left.name.as_str(),
+                    vpc_peering.right.name.as_str(),
+                    acl,
+                ))?;
+                vpc_peering.acl = Some(acl);
+            }
+
+            Ok(vpc_peering)
         } else {
             Err(FromK8sConversionError::MissingData(
                 "Vpc reference in peering".to_string(),
@@ -165,5 +178,56 @@ mod test {
                 assert_eq!(peering.name, peering_name);
                 // Rest of the assertions come from the types and the unwrap in the conversion above
             });
+    }
+
+    #[test]
+    fn test_vpc_peering_conversion_acl() {
+        use k8s_intf::gateway_agent_crd::{
+            GatewayAgentPeeringsAcl, GatewayAgentPeeringsAclDefault, GatewayAgentPeeringsAclRules,
+            GatewayAgentPeeringsAclRulesAction,
+        };
+        use std::collections::BTreeMap;
+
+        let subnets = VpcSubnetMap::from([
+            ("vpc0".to_string(), SubnetMap::new()),
+            ("vpc1".to_string(), SubnetMap::new()),
+        ]);
+
+        let peering_side = GatewayAgentPeeringsPeering {
+            expose: Some(vec![]),
+        };
+        let peerings_map = BTreeMap::from([
+            ("vpc0".to_string(), peering_side.clone()),
+            ("vpc1".to_string(), peering_side),
+        ]);
+
+        let acl = GatewayAgentPeeringsAcl {
+            default: GatewayAgentPeeringsAclDefault::Deny,
+            rules: Some(vec![GatewayAgentPeeringsAclRules {
+                action: GatewayAgentPeeringsAclRulesAction::Allow,
+                from: Some("vpc0".to_string()),
+                to: Some("vpc1".to_string()),
+                log: None,
+                r#match: None,
+                name: Some("allow-all".to_string()),
+                scope: None,
+            }]),
+        };
+
+        let k8s_peering = GatewayAgentPeerings {
+            gateway_group: Some("default".to_string()),
+            peering: Some(peerings_map),
+            acl: Some(acl),
+        };
+
+        let vpc_peering = VpcPeering::try_from((&subnets, "test-peering", &k8s_peering)).unwrap();
+        let converted_acl = vpc_peering.acl.expect("acl should be present");
+        assert_eq!(converted_acl.rules().len(), 1);
+
+        let mut k8s_peering_no_acl = k8s_peering;
+        k8s_peering_no_acl.acl = None;
+        let vpc_peering_no_acl =
+            VpcPeering::try_from((&subnets, "test-peering", &k8s_peering_no_acl)).unwrap();
+        assert!(vpc_peering_no_acl.acl.is_none());
     }
 }
