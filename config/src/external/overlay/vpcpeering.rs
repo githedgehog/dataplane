@@ -3,6 +3,7 @@
 
 //! Dataplane configuration model: vpc peering
 
+use crate::external::overlay::acl::Acl;
 use crate::utils::{
     check_private_prefixes_dont_overlap, check_public_prefixes_dont_overlap, collapse_prefixes,
     normalize,
@@ -838,6 +839,7 @@ pub struct VpcPeering {
     pub left: VpcManifest,  /* manifest for one side of the peering */
     pub right: VpcManifest, /* manifest for the other side */
     pub gwgroup: String,    /* name of gateway group */
+    pub acl: Option<Acl>,   /* optional peering-scoped ACL */
 }
 impl VpcPeering {
     #[must_use]
@@ -847,6 +849,7 @@ impl VpcPeering {
             left,
             right,
             gwgroup,
+            acl: None,
         }
     }
 
@@ -859,6 +862,7 @@ impl VpcPeering {
             left,
             right,
             gwgroup: "default".to_string(),
+            acl: None,
         }
     }
 
