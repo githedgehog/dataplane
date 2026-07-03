@@ -846,7 +846,7 @@ mod end_to_end {
     use config::external::overlay::ValidatedOverlay;
 
     use flow_entry::flow_table::{FlowLookup, FlowTable};
-    use flow_filter::{FlowFilter, FlowFilterTable, FlowFilterTableWriter};
+    use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextWriter};
     use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
     use nat::portfw::{PortForwarder, PortFwTableWriter};
     use nat::static_nat::NatTablesWriter;
@@ -862,7 +862,7 @@ mod end_to_end {
     // Keep every writer handle alive for the lifetime of the pipeline: dropping one would tear down
     // the data it published
     struct PipelineHandles {
-        _flow_filter: FlowFilterTableWriter,
+        _flow_filter: FlowFilterContextWriter,
         _static_nat: NatTablesWriter,
         _portfw: PortFwTableWriter,
         _masquerade: NatAllocatorWriter,
@@ -903,9 +903,8 @@ mod end_to_end {
         pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", flow_table.clone()));
 
         // Flow filter (determines destination VPC and NAT requirements)
-        let mut flow_filter_writer = FlowFilterTableWriter::new();
-        flow_filter_writer
-            .update_flow_filter_table(FlowFilterTable::build_from_overlay(overlay).unwrap());
+        let flow_filter_writer = FlowFilterContextWriter::new();
+        flow_filter_writer.store(FlowFilterContext::try_from(overlay).unwrap());
         pipeline = pipeline.add_stage(FlowFilter::new(
             "flow-filter",
             flow_filter_writer.get_reader(),
@@ -956,6 +955,7 @@ mod end_to_end {
 
     #[traced_test]
     #[tokio::test]
+    #[dpdk::with_eal] // Required for flow-filter
     async fn flow_scope_end_to_end() {
         let overlay = build_overlay();
         let (mut pipeline, _flow_table, _handles) = setup_pipeline(&overlay);

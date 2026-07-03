@@ -43,7 +43,7 @@ pub mod test {
     use crate::processor::proc::{ConfigProcessor, ConfigProcessorParams};
     use concurrency::sync::Arc;
     use config::internal::status::DataplaneStatus;
-    use flow_filter_legacy::FlowFilterTableWriter;
+    use flow_filter::FlowFilterContextWriter;
     use nat::masquerade::NatAllocatorWriter;
     use nat::portfw::PortFwTableWriter;
     use nat::static_nat::NatTablesWriter;
@@ -455,7 +455,7 @@ pub mod test {
         let natallocatorw = NatAllocatorWriter::new();
 
         /* create FlowFilterTable for flow filtering */
-        let flowfilterw = FlowFilterTableWriter::new();
+        let flow_filter_writer = FlowFilterContextWriter::new();
 
         /* create AclFilterContext for ACL filtering */
         let aclfilterw = AclFilterContextWriter::new();
@@ -480,7 +480,7 @@ pub mod test {
             vpcmapw,
             nattablesw,
             natallocatorw,
-            flowfilterw,
+            flow_filter_writer,
             aclfilterw,
             portfw_w,
             vpc_stats_store,

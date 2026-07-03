@@ -36,9 +36,10 @@ shuttle = { workspace = true, optional = true }
 
 [dev-dependencies]
 # internal
-config = { workspace = true, features = ["testing"] }
+config = { workspace = true }
+dpdk = { workspace = true, features = ["test"] }
 fixin = { workspace = true }
-flow-filter-legacy = { workspace = true }
+flow-filter = { workspace = true }
 test-utils = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 net = { workspace = true, features = ["bolero"] }
