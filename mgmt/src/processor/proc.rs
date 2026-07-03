@@ -22,7 +22,7 @@ use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwCon
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
-use flow_filter_legacy::{FlowFilterTable, FlowFilterTableWriter};
+use flow_filter::{FlowFilterContext, FlowFilterContextWriter};
 use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use nat::portfw::PortFwTableWriter;
 use nat::portfw::build_port_forwarding_configuration;
@@ -94,8 +94,8 @@ pub struct ConfigProcessorParams {
     // writer for masquerade allocator
     pub natallocatorw: NatAllocatorWriter,
 
-    // writer for flow filter table
-    pub flowfilterw: FlowFilterTableWriter,
+    // writer for flow-filter table
+    pub flow_filter_writer: FlowFilterContextWriter,
 
     // writer for ACL filter tables
     pub aclfilterw: AclFilterContextWriter,
@@ -503,12 +503,11 @@ fn update_stats_vpc_mappings(
     pairs
 }
 
-fn apply_flow_filtering_config(
+fn apply_flow_filter_config(
     overlay: &ValidatedOverlay,
-    flowfilterw: &mut FlowFilterTableWriter,
+    flow_filter_writer: &mut FlowFilterContextWriter,
 ) -> ConfigResult {
-    let flow_filter_table = FlowFilterTable::build_from_overlay(overlay)?;
-    flowfilterw.update_flow_filter_table(flow_filter_table);
+    flow_filter_writer.store(FlowFilterContext::try_from(overlay)?);
     debug!("Successfully updated flow-filter table");
     Ok(())
 }
@@ -597,7 +596,7 @@ impl ConfigProcessor {
         let vpcmapw = &mut self.proc_params.vpcmapw;
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
-        let flowfilterw = &mut self.proc_params.flowfilterw;
+        let flow_filter_writer = &mut self.proc_params.flow_filter_writer;
         let aclfilterw = &mut self.proc_params.aclfilterw;
         let portfw_w = &mut self.proc_params.portfw_w;
         let flow_table = &self.proc_params.flow_table;
@@ -637,8 +636,8 @@ impl ConfigProcessor {
 
         let overlay = config.external().overlay();
 
-        /* apply flow filtering config */
-        apply_flow_filtering_config(overlay, flowfilterw)?;
+        /* apply flow-filter config */
+        apply_flow_filter_config(config.external().overlay(), flow_filter_writer)?;
 
         /* apply ACL filter config */
         apply_acl_filter_config(overlay, aclfilterw)?;

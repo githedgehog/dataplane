@@ -22,7 +22,7 @@ args = { workspace = true }
 config = { workspace = true }
 concurrency = { workspace = true }
 flow-entry = { workspace = true }
-flow-filter-legacy = { workspace = true }
+flow-filter = { workspace = true }
 id = { workspace = true }
 interface-manager = { workspace = true }
 k8s-intf = { workspace = true, features = ["client"] }

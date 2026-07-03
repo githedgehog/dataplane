@@ -299,7 +299,7 @@ pub fn main() {
                     vpcmapw: setup.vpcmapw,
                     nattablesw: setup.nattablesw,
                     natallocatorw: setup.natallocatorw,
-                    flowfilterw: setup.flowfiltertablesw,
+                    flow_filter_writer: setup.flow_filter_writer,
                     aclfilterw: setup.aclfiltertablesw,
                     portfw_w: setup.portfw_w,
                     vpc_stats_store: setup.vpc_stats_store,

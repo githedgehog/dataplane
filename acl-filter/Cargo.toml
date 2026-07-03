@@ -29,7 +29,7 @@ acl = { workspace = true, features = ["reference"] }
 config = { workspace = true, features = ["testing"] }
 dpdk = { workspace = true, features = ["test"] }
 flow-entry = { workspace = true }
-flow-filter-legacy = { workspace = true }
+flow-filter = { workspace = true }
 lpm = { workspace = true, features = ["testing"] }
 nat = { workspace = true }
 net = { workspace = true, features = ["builder"] }
