@@ -14,7 +14,7 @@ use concurrency::sync::Arc;
 
 use acl_filter::{AclFilter, AclFilterContextWriter};
 use flow_entry::flow_table::{FlowLookup, FlowTable};
-use flow_filter_legacy::{FlowFilter, FlowFilterTableWriter};
+use flow_filter::{FlowFilter, FlowFilterContextWriter};
 
 use nat::masquerade::NatAllocatorWriter;
 use nat::portfw::{PortForwarder, PortFwTableWriter};
@@ -42,7 +42,7 @@ where
     pub vpcmapw: VpcMapWriter<VpcMapName>,
     pub nattablesw: NatTablesWriter,
     pub natallocatorw: NatAllocatorWriter,
-    pub flowfiltertablesw: FlowFilterTableWriter,
+    pub flow_filter_writer: FlowFilterContextWriter,
     pub aclfiltertablesw: AclFilterContextWriter,
     pub stats: StatsCollector,
     pub vpc_stats_store: Arc<VpcStatsStore>,
@@ -64,8 +64,8 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
 
     // create entities shared by management and data-path NFs
     let flow_table = Arc::new(FlowTable::default());
-    let flowfiltertablesw = FlowFilterTableWriter::new();
-    let flowfiltertablesr_factory = flowfiltertablesw.get_reader_factory();
+    let flow_filter_writer = FlowFilterContextWriter::new();
+    let flow_filter_reader_factory = flow_filter_writer.get_reader_factory();
     let aclfiltertablesw = AclFilterContextWriter::new();
     let aclfiltertablesr_factory = aclfiltertablesw.get_reader_factory();
     let nattablesw = NatTablesWriter::new();
@@ -80,7 +80,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
     // collect readers and the like for cli
     let cli_sources = CliSources {
         flow_table: Some(Box::new(flow_table.clone())),
-        flow_filter: Some(Box::new(flowfiltertablesr_factory.handle().inner())),
+        flow_filter: Some(Box::new(flow_filter_reader_factory.handle().inner())),
         portfw_table: Some(Box::new(portfw_w.reader().inner())),
         nat_tables: Some(Box::new(nattabler_factory.handle().inner())),
         masquerade_state: Some(Box::new(natallocator_factory.handle().inner())),
@@ -111,7 +111,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         );
         let pktdump = PacketDumper::new("pipeline-end", true, None);
         let stats_stage = Stats::new("stats", stats_w.clone());
-        let flow_filter = FlowFilter::new("flow-filter", flowfiltertablesr_factory.handle());
+        let flow_filter = FlowFilter::new("flow-filter", flow_filter_reader_factory.handle());
         let acl_filter = AclFilter::new("acl-filter", aclfiltertablesr_factory.handle());
         let icmp_error_handler = IcmpErrorHandler::new(flow_table_clone.clone());
         let flow_lookup = FlowLookup::new("flow-lookup", flow_table_clone.clone());
@@ -149,7 +149,7 @@ pub(crate) fn start_router<Buf: PacketBufferMut>(
         vpcmapw,
         nattablesw,
         natallocatorw,
-        flowfiltertablesw,
+        flow_filter_writer,
         aclfiltertablesw,
         stats,
         vpc_stats_store,
