@@ -128,34 +128,6 @@ impl ExternalConfig {
         debug!("Gateway-groups are:\n{}", validated_external.gwgroups);
         Ok(ValidatedGwConfig::new(validated_external))
     }
-
-    /// FOR TESTS ONLY. Fake validation for the external config.
-    ///
-    /// # Safety
-    ///
-    /// All bets are off. Do not use outside of tests.
-    ///
-    /// # Panics
-    ///
-    /// May panic if the underlay validation fails.
-    #[cfg(feature = "testing")]
-    #[allow(unsafe_code)]
-    #[must_use]
-    pub unsafe fn fake_validated_external_for_tests(self) -> ValidatedExternalConfig {
-        #[allow(clippy::unwrap_used)]
-        let validated_underlay = self.underlay.validate().unwrap();
-        let fake_valid_overlay = unsafe { self.overlay.fake_validated_overlay_for_tests() };
-        ValidatedExternalConfig {
-            gwname: self.gwname,
-            genid: self.genid,
-            device: self.device,
-            underlay: validated_underlay,
-            overlay: fake_valid_overlay,
-            gwgroups: self.gwgroups,
-            communities: self.communities,
-            flow_table_capacity: self.flow_table_capacity,
-        }
-    }
 }
 
 #[derive(Debug)]
