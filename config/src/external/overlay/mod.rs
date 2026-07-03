@@ -76,10 +76,10 @@ impl Overlay {
 
         let validated_overlay = ValidatedOverlay {
             vpc_table: validated_vpc_table,
-            peering_table: self.peering_table.clone(),
         };
 
-        debug!("Overlay configuration is VALID:\n{validated_overlay}");
+        let peering_table = &self.peering_table;
+        debug!("Overlay configuration is VALID:\n{validated_overlay}\n{peering_table}");
         Ok(validated_overlay)
     }
 
@@ -105,7 +105,6 @@ impl Overlay {
         let fake_valid_vpc_table = unsafe { vpc_table.fake_validated_vpc_table_for_tests() };
         ValidatedOverlay {
             vpc_table: fake_valid_vpc_table,
-            peering_table: self.peering_table.clone(),
         }
     }
 }
@@ -113,21 +112,11 @@ impl Overlay {
 #[derive(Clone, Debug, Default)]
 pub struct ValidatedOverlay {
     vpc_table: ValidatedVpcTable,
-    // Note: unlike the vpc_table, the peering_table is not changed to a `Validated*` new type. A
-    // VpcPeering is symmetric (no local/remote distinction), and per-side validation is performed
-    // only on the asymmetric Peering copies held by the VPCs, in the vpc_table. Since the peering
-    // table is not validated independently, it is exposed as-is.
-    peering_table: VpcPeeringTable,
 }
 
 impl ValidatedOverlay {
     #[must_use]
     pub fn vpc_table(&self) -> &ValidatedVpcTable {
         &self.vpc_table
-    }
-
-    #[must_use]
-    pub fn peering_table(&self) -> &VpcPeeringTable {
-        &self.peering_table
     }
 }

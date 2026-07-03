@@ -478,8 +478,7 @@ impl Display for Overlay {
 
 impl Display for ValidatedOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.vpc_table().as_summary().fmt(f)?;
-        self.peering_table().fmt(f)
+        self.vpc_table().as_summary().fmt(f)
     }
 }
 
