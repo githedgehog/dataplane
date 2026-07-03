@@ -392,10 +392,10 @@ pub mod test {
     fn check_frr_config() {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
+        let peering_table = external.overlay.peering_table.clone();
         let validated_config = external.validate().expect("Config validation failed");
         if false {
             let vpc_table = validated_config.external().overlay().vpc_table();
-            let peering_table = validated_config.external().overlay().peering_table();
             println!("\n{}\n{peering_table}", vpc_table.as_summary());
         }
         let bmp_config = None;
