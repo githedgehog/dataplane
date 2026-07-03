@@ -9,6 +9,7 @@ pub mod test {
     use config::external::gwgroup::GwGroupMember;
     use config::external::gwgroup::GwGroupTable;
 
+    use flofi::FlofiContextWriter;
     use flow_entry::flow_table::FlowTable;
     use lpm::prefix::Prefix;
     use net::eth::mac::Mac;
@@ -455,6 +456,9 @@ pub mod test {
         /* create FlowFilterTable for flow filtering */
         let flowfilterw = FlowFilterTableWriter::new();
 
+        /* create FlowFilterTable for flow filtering */
+        let flofi_writer = FlofiContextWriter::new();
+
         /* create port forwarding table */
         let portfw_w = PortFwTableWriter::new();
 
@@ -476,6 +480,7 @@ pub mod test {
             nattablesw,
             natallocatorw,
             flowfilterw,
+            flofi_writer,
             portfw_w,
             vpc_stats_store,
             dp_status_r,

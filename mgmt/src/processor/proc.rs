@@ -20,6 +20,7 @@ use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwCon
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
+use flofi::{FlofiContext, FlofiContextWriter};
 use flow_filter::{FlowFilterTable, FlowFilterTableWriter};
 use nat::masquerade::{MasqueradeConfig, NatAllocatorWriter};
 use nat::portfw::PortFwTableWriter;
@@ -94,6 +95,9 @@ pub struct ConfigProcessorParams {
 
     // writer for flow filter table
     pub flowfilterw: FlowFilterTableWriter,
+
+    // writer for flofi table
+    pub flofi_writer: FlofiContextWriter,
 
     // writer for port forwarding table
     pub portfw_w: PortFwTableWriter,
@@ -532,6 +536,15 @@ fn apply_flow_filtering_config(
     Ok(())
 }
 
+fn apply_flofi_config(
+    overlay: &ValidatedOverlay,
+    flofi_writer: &mut FlofiContextWriter,
+) -> ConfigResult {
+    flofi_writer.store(FlofiContext::try_from(overlay)?);
+    debug!("Successfully updated flofi table");
+    Ok(())
+}
+
 fn apply_port_forwarding_config(
     vpc_table: &ValidatedVpcTable,
     portfw_w: &mut PortFwTableWriter,
@@ -583,6 +596,7 @@ impl ConfigProcessor {
         let nattablesw = &mut self.proc_params.nattablesw;
         let natallocatorw = &mut self.proc_params.natallocatorw;
         let flowfilterw = &mut self.proc_params.flowfilterw;
+        let flofi_writer = &mut self.proc_params.flofi_writer;
         let portfw_w = &mut self.proc_params.portfw_w;
         let flow_table = &self.proc_params.flow_table;
 
@@ -632,6 +646,9 @@ impl ConfigProcessor {
 
         /* apply flow filtering config */
         apply_flow_filtering_config(config.external().overlay(), flowfilterw)?;
+
+        /* apply flofi config */
+        apply_flofi_config(config.external().overlay(), flofi_writer)?;
 
         /* apply port-forwarding config */
         apply_port_forwarding_config(config.external().overlay().vpc_table(), portfw_w)?;
