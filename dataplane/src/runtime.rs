@@ -273,6 +273,7 @@ pub fn main() {
                     nattablesw: setup.nattablesw,
                     natallocatorw: setup.natallocatorw,
                     flowfilterw: setup.flowfiltertablesw,
+                    flofi_writer: setup.flofi_writer,
                     portfw_w: setup.portfw_w,
                     vpc_stats_store: setup.vpc_stats_store,
                     dp_status_r: dp_status.clone(),
