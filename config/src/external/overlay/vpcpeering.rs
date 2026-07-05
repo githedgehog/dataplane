@@ -789,14 +789,14 @@ impl ValidatedManifest {
 
 #[derive(Clone, Debug)]
 pub struct VpcPeering {
-    pub name: String,            /* name of peering (key in table) */
-    pub left: VpcManifest,       /* manifest for one side of the peering */
-    pub right: VpcManifest,      /* manifest for the other side */
-    pub gwgroup: Option<String>, /* name of gateway group */
+    pub name: String,       /* name of peering (key in table) */
+    pub left: VpcManifest,  /* manifest for one side of the peering */
+    pub right: VpcManifest, /* manifest for the other side */
+    pub gwgroup: String,    /* name of gateway group */
 }
 impl VpcPeering {
     #[must_use]
-    pub fn new(name: &str, left: VpcManifest, right: VpcManifest, gwgroup: Option<String>) -> Self {
+    pub fn new(name: &str, left: VpcManifest, right: VpcManifest, gwgroup: String) -> Self {
         Self {
             name: name.to_owned(),
             left,
@@ -813,7 +813,7 @@ impl VpcPeering {
             name: name.to_owned(),
             left,
             right,
-            gwgroup: Some("default".to_string()),
+            gwgroup: "default".to_string(),
         }
     }
 

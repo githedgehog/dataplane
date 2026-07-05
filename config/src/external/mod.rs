@@ -62,14 +62,8 @@ impl ExternalConfig {
         let gwgroups = &self.gwgroups;
         let comtable = &self.communities;
 
-        // check that peering refers to a group
-        let group_name = peering
-            .gwgroup
-            .as_ref()
-            .ok_or(ConfigError::Incomplete(format!(
-                "Peering {} is not mapped to any gateway group",
-                peering.name
-            )))?;
+        // get name of gw group a peering is mapped to
+        let group_name = &peering.gwgroup;
 
         // check that such a group exists
         let group = gwgroups
@@ -109,12 +103,12 @@ impl ExternalConfig {
     pub fn validate(self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid);
         self.device.validate()?;
-        let validated_underlay = self.underlay.validate()?;
-        let validated_overlay = self.overlay.validate()?;
+        let underlay = self.underlay.validate()?;
+        let overlay = self.overlay.validate()?;
         self.validate_peering_gw_groups()?;
 
         // if there are vpcs configured, there MUST be a vtep configured
-        if !validated_overlay.vpc_table().is_empty() && validated_underlay.vtep.is_none() {
+        if !overlay.vpc_table().is_empty() && underlay.vtep.is_none() {
             return Err(ConfigError::MissingParameter(
                 "Vtep interface configuration",
             ));
@@ -126,8 +120,8 @@ impl ExternalConfig {
             gwname: self.gwname,
             genid: self.genid,
             device: self.device,
-            underlay: validated_underlay,
-            overlay: validated_overlay,
+            underlay,
+            overlay,
             gwgroups: self.gwgroups,
             communities: self.communities,
             flow_table_capacity: self.flow_table_capacity,

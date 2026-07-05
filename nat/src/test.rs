@@ -182,7 +182,7 @@ async fn test_nat_combination_static_masquerade() {
                         .unwrap(),
                 ],
             ),
-            None,
+            "default".into(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
@@ -292,7 +292,7 @@ async fn test_nat_combination_static_portfw() {
                         .unwrap(),
                 ],
             ),
-            None,
+            "default".into(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
@@ -413,7 +413,7 @@ async fn test_nat_combination_static_masq_icmp_error() {
                         .unwrap(),
                 ],
             ),
-            None,
+            "default".into(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();
@@ -541,7 +541,7 @@ async fn test_nat_combination_static_portfwd_icmp_error() {
                         .unwrap(),
                 ],
             ),
-            None,
+            "default".into(),
         ))
         .unwrap();
     let overlay = Overlay::new(vpc_table, peering_table).validate().unwrap();

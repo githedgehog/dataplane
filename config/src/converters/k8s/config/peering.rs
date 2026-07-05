@@ -34,7 +34,14 @@ impl TryFrom<(&VpcSubnetMap, &str, &GatewayAgentPeerings)> for VpcPeering {
     fn try_from(
         (vpc_subnets, peering_name, peering): (&VpcSubnetMap, &str, &GatewayAgentPeerings),
     ) -> Result<Self, Self::Error> {
-        let gwgroup = peering.gateway_group.clone(); // we don't fail atm if not set
+        let gwgroup = peering
+            .gateway_group
+            .as_ref()
+            .ok_or(FromK8sConversionError::MissingData(format!(
+                "Peering {peering_name} is not mapped to any gateway group",
+            )))?
+            .clone();
+
         if let Some(peering) = peering.peering.as_ref() {
             let num_peerings = peering.len();
             if peering.len() != 2 {

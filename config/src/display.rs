@@ -149,11 +149,7 @@ fn fmt_remote_manifest(
 impl Display for Peering {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  ■ {}:", self.name)?;
-        writeln!(
-            f,
-            "   gwgroup: {}",
-            self.gwgroup.as_ref().map_or("none", |v| v)
-        )?;
+        writeln!(f, "   gwgroup: {}", &self.gwgroup)?;
         fmt_local_manifest(f, &self.local)?;
         writeln!(f)?;
         fmt_remote_manifest(f, &self.remote, &self.remote_id)?;
@@ -192,7 +188,7 @@ fn fmt_remote_validated_manifest(
 impl Display for ValidatedPeering {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  ■ {}:", self.name())?;
-        writeln!(f, "   gwgroup: {}", self.gwgroup().map_or("none", |v| v))?;
+        writeln!(f, "   gwgroup: {}", self.gwgroup())?;
         fmt_local_validated_manifest(f, self.local())?;
         writeln!(f)?;
         fmt_remote_validated_manifest(f, self.remote(), self.remote_id())?;

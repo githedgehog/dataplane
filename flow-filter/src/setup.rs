@@ -1232,7 +1232,7 @@ mod tests {
                 vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
             ),
             remote_id: "VPC02".try_into().unwrap(),
-            gwgroup: None,
+            gwgroup: "default".into(),
         });
 
         vpc_table.add(vpc1.clone()).unwrap();
@@ -1290,7 +1290,7 @@ mod tests {
                 vec![VpcExpose::empty().ip("20.0.0.0/24".into())],
             ),
             remote_id: "VPC02".try_into().unwrap(),
-            gwgroup: None,
+            gwgroup: "default".into(),
         });
 
         vpc1.peerings.push(Peering {
@@ -1304,7 +1304,7 @@ mod tests {
                 vec![VpcExpose::empty().ip("20.0.0.0/25".into())],
             ),
             remote_id: "VPC03".try_into().unwrap(),
-            gwgroup: None,
+            gwgroup: "default".into(),
         });
 
         vpc_table.add(vpc1.clone()).unwrap();

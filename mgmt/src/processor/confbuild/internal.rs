@@ -186,8 +186,7 @@ impl VpcRoutingConfigIpv4 {
         commtable: &PriorityCommunityTable,
     ) -> ConfigResult {
         for peer in vpc.peerings().iter() {
-            if let Some(group) = &peer.gwgroup()
-                && let Some(rank) = grouptable.get_group_member_rank(group, gwname)
+            if let Some(rank) = grouptable.get_group_member_rank(peer.gwgroup(), gwname)
                 && let Some(comm) = commtable.get_community(rank)
             {
                 self.build_routing_config_peer(vpc, peer, Community::String(comm.clone()))?;

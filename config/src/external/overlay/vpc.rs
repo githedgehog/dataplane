@@ -27,11 +27,11 @@ use crate::external::overlay::vpcpeering::VpcPeering;
 /// Most importantly, [`Peering`] has a notion of local and remote, while [`VpcPeering`] is symmetrical.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Peering {
-    pub name: String,            /* name of peering */
-    pub local: VpcManifest,      /* local manifest */
-    pub remote: VpcManifest,     /* remote manifest */
-    pub remote_id: VpcId,        /* Id of peer */
-    pub gwgroup: Option<String>, /* gateway group serving this peering */
+    pub name: String,        /* name of peering */
+    pub local: VpcManifest,  /* local manifest */
+    pub remote: VpcManifest, /* remote manifest */
+    pub remote_id: VpcId,    /* Id of peer */
+    pub gwgroup: String,     /* gateway group serving this peering */
 }
 
 impl Peering {
@@ -90,7 +90,7 @@ pub struct ValidatedPeering {
     local: ValidatedManifest,  /* local manifest */
     remote: ValidatedManifest, /* remote manifest */
     remote_id: VpcId,          /* Id of peer */
-    gwgroup: Option<String>,   /* gateway group serving this peering */
+    gwgroup: String,           /* gateway group serving this peering */
 }
 
 impl ValidatedPeering {
@@ -115,8 +115,8 @@ impl ValidatedPeering {
     }
 
     #[must_use]
-    pub fn gwgroup(&self) -> Option<&String> {
-        self.gwgroup.as_ref()
+    pub fn gwgroup(&self) -> &String {
+        &self.gwgroup
     }
 
     fn validate_nat_combinations(&self) -> ConfigResult {
