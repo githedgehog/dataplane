@@ -99,14 +99,14 @@ mod context {
             local: manifest1.clone(),
             remote: manifest2.clone(),
             remote_id: "12345".try_into().unwrap(),
-            gwgroup: None,
+            gwgroup: "default".into(),
         };
         let peering2 = Peering {
             name: "test_peering2".into(),
             local: manifest2,
             remote: manifest1,
             remote_id: "67890".try_into().unwrap(),
-            gwgroup: None,
+            gwgroup: "default".into(),
         };
 
         // VPC-1

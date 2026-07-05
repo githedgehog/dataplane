@@ -76,7 +76,7 @@ impl ConfigClient {
         Self { tx: channel_tx }
     }
 
-    /// Apply the provided `GwConfig`
+    /// Apply the provided `ExternalConfig`
     ///
     /// # Errors
     /// This method returns `ConfigProcessorError` if the config request could not be sent, the response

@@ -422,7 +422,7 @@ fn test_flow_filter_table_overlap_cases() {
             "vpc1-to-vpc2",
             VpcManifest::with_exposes("vpc1", vec![VpcExpose::empty().ip("1.0.0.0/24".into())]),
             VpcManifest::with_exposes("vpc2", vec![VpcExpose::empty().ip("5.0.0.0/24".into())]),
-            None,
+            "default".into(),
         ))
         .unwrap();
 
@@ -437,7 +437,7 @@ fn test_flow_filter_table_overlap_cases() {
                 ],
             ),
             VpcManifest::with_exposes("vpc3", vec![VpcExpose::empty().ip("1.0.0.64/26".into())]),
-            None,
+            "default".into(),
         ))
         .unwrap();
 

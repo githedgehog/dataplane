@@ -187,7 +187,7 @@ mod tests {
             local: manifest1,
             remote: manifest2,
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
-            gwgroup: None,
+            gwgroup: "default".into(),
         };
 
         let src_vni = Vni::new_checked(100).unwrap();

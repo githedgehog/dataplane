@@ -223,14 +223,14 @@ fn build_context() -> NatTables {
         local: manifest1.clone(),
         remote: manifest2.clone(),
         remote_id: "12345".try_into().expect("Failed to create VPC ID"),
-        gwgroup: None,
+        gwgroup: "default".into(),
     };
     let peering2 = Peering {
         name: "test_peering2".into(),
         local: manifest2,
         remote: manifest1,
         remote_id: "67890".try_into().expect("Failed to create VPC ID"),
-        gwgroup: None,
+        gwgroup: "default".into(),
     };
 
     // This code is extremely convoluted
@@ -552,8 +552,8 @@ fn build_sample_config() -> ValidatedGwConfig {
     build_gwconfig_from_overlay(overlay).validate().unwrap()
 }
 
-// Use the provided overlay with some default configuration to build a valid GwConfig. This
-// configuration is not really relevant to our tests, we just want a valid GwConfig object to
+// Use the provided overlay with some default configuration to build a valid `ExternalConfig`. This
+// configuration is not really relevant to our tests, we just want a valid `ExternalConfig` object to
 // work with.
 pub(crate) fn build_gwconfig_from_overlay(overlay: Overlay) -> ExternalConfig {
     let device_config = DeviceConfig::new();

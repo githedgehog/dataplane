@@ -147,7 +147,7 @@ pub mod test {
                 "VPC-1--VPC-2",
                 man_vpc1_with_vpc2(),
                 man_vpc2_with_vpc1(),
-                Some("gw-group-1".to_string()),
+                "gw-group-1".to_string(),
             ))
             .expect("Should succeed");
 
@@ -156,7 +156,7 @@ pub mod test {
                 "VPC-1--VPC-3",
                 man_vpc1_with_vpc3(),
                 man_vpc3_with_vpc1(),
-                Some("gw-group-1".to_string()),
+                "gw-group-1".to_string(),
             ))
             .expect("Should succeed");
 
