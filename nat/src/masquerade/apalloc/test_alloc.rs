@@ -21,15 +21,15 @@ mod context {
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
-    #[allow(unused)]
+    #[allow(dead_code)]
     pub fn addr_v4(ip: &str) -> Ipv4Addr {
         Ipv4Addr::from_str(ip).unwrap()
     }
-    #[allow(unused)]
+    #[allow(dead_code)]
     pub fn addr_v4_bits(ip: &str) -> u32 {
         addr_v4(ip).to_bits()
     }
-    #[allow(unused)]
+    #[allow(dead_code)]
     pub fn ipaddr(ip: &str) -> IpAddr {
         IpAddr::from_str(ip).unwrap()
     }
@@ -40,6 +40,7 @@ mod context {
     pub fn vni2() -> Vni {
         Vni::new_checked(200).unwrap()
     }
+    #[allow(dead_code)]
     pub fn vpcd1() -> VpcDiscriminant {
         VpcDiscriminant::from_vni(vni1())
     }
