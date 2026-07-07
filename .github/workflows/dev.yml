@@ -397,7 +397,7 @@ jobs:
             sanitize: "thread"
             instrument: "none"
           - name: "address"
-            profile: "debug"
+            profile: "fuzz"
             sanitize: "address"
             instrument: "none"
     steps:
