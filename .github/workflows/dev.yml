@@ -641,7 +641,7 @@ jobs:
           JUST_VARS: >-
             docker_sock=/run/docker/docker.sock
             debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
-            profile=release
+            profile=fuzz
             features=shuttle
             oci_repo=ghcr.io
         uses: *just
@@ -652,7 +652,7 @@ jobs:
           JUST_VARS: >-
             docker_sock=/run/docker/docker.sock
             debug_justfile=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_justfile || false }}
-            profile=release
+            profile=fuzz
             features=loom
             oci_repo=ghcr.io
         uses: *just
