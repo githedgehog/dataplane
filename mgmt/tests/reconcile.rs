@@ -48,7 +48,7 @@ fn reconcile_fuzz() {
         // `RefUnwindSafe` impl that `std::sync::Mutex` provides.
         // Reach into std here on purpose.
         #[allow(clippy::disallowed_types)]
-        std::sync::Mutex::new(Arc::new(handle)) // nosemgrep: rust-no-direct-std-sync-import
+        std::sync::Mutex::new(Arc::new(handle))
     });
     bolero::check!()
         .with_type()

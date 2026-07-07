@@ -309,7 +309,7 @@ impl AtomicEnvFilter {
     }
 
     fn reload(&self, new: EnvFilter) {
-        self.inner.store(std::sync::Arc::new(new)); // nosemgrep: rust-no-direct-std-sync-import
+        self.inner.store(std::sync::Arc::new(new));
         callsite::rebuild_interest_cache();
     }
 }
@@ -1065,7 +1065,7 @@ mod tests {
     #[allow(clippy::disallowed_types)]
     fn test_rate_limit_drops_burst_overflow() {
         use crate::control::{TracingControl, TracingRateLimitConfig};
-        use std::sync::Mutex; // nosemgrep: rust-no-direct-std-sync-import
+        use std::sync::Mutex;
         use tracing_subscriber::{EnvFilter, filter::FilterExt, layer::Layer, prelude::*};
         use tracing_test::internal::MockWriter;
 
