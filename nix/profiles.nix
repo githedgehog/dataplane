@@ -49,6 +49,7 @@ let
     "-Cdwarf-version=5"
     "-Csymbol-mangling-version=v0"
     "-Clink-arg=-Wl,--as-needed,--gc-sections" # FRR builds don't like this, but rust does fine
+    "-Clink-arg=-Wl,--thinlto-jobs=4" # setting this parameter too high causes massive memory load on the linking step
   ]
   ++ (
     if needs-unwind then
