@@ -247,8 +247,10 @@ rpath = true
 
 [profile.fuzz]
 inherits = "release"
+opt-level = 2
 debug-assertions = true
 overflow-checks = true
+codegen-units = 8
 
 # Some packages have either hardware or os level interactions which make them impossible to test on miri or use in wasm
 # We encode exclusions for our wasm and miri builds into the metadata here.
