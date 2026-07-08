@@ -581,4 +581,9 @@ impl ValidatedVpcTable {
             .unwrap_or_else(|| unreachable!())
             .vni
     }
+
+    /// Iterate over all of the [`Peering`]s of all [`Vpc`]s immutably
+    pub fn peerings(&self) -> impl Iterator<Item = &ValidatedPeering> {
+        self.vpcs.values().flat_map(|vpc| vpc.peerings.iter())
+    }
 }
