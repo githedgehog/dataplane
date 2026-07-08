@@ -3,7 +3,7 @@
 
 use crate::ConfigError;
 use crate::external::overlay::vpcpeering::ValidatedExpose;
-use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet, PrefixWithOptionalPorts};
+use lpm::prefix::{IpRangeWithPorts, PrefixPortsSet};
 
 pub fn check_private_prefixes_dont_overlap(
     expose_left: &ValidatedExpose,
@@ -94,7 +94,7 @@ pub fn merge_contiguous_prefixes(prefixes: &mut PrefixPortsSet) {
     sorted_prefixes.sort_by_key(|p| p.prefix().length());
 
     'next_prefix: while let Some(prefix_left) = sorted_prefixes.pop() {
-        if matches!(prefix_left, PrefixWithOptionalPorts::PrefixPorts(_)) {
+        if prefix_left.ports().is_some() {
             uses_ports = true;
         }
         for (index_right, prefix_right) in sorted_prefixes.iter().enumerate() {
@@ -133,7 +133,7 @@ pub fn merge_contiguous_prefixes(prefixes: &mut PrefixPortsSet) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lpm::prefix::PortRange;
+    use lpm::prefix::{PortRange, PrefixWithOptionalPorts};
 
     #[test]
     fn test_merge_contiguous_prefixes_simple() {

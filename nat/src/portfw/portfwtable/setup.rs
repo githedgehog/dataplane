@@ -8,7 +8,7 @@ use crate::portfw::{PortFwEntry, PortFwKey, PortFwTableError};
 use config::ConfigError;
 use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc, ValidatedVpcTable};
 use config::external::overlay::vpcpeering::ValidatedExpose;
-use lpm::prefix::{L4Protocol, PrefixWithOptionalPorts};
+use lpm::prefix::L4Protocol;
 use net::ip::NextHeader;
 use net::packet::VpcDiscriminant;
 
@@ -26,17 +26,17 @@ fn expose_to_portfw_rule(
     debug_assert!(nat.is_port_forwarding());
     debug_assert_eq!(nat.as_range.len(), 1);
     debug_assert_eq!(expose.ips().len(), 1);
-    let ips = expose.ips().first().unwrap_or_else(|| unreachable!());
-    let (prefix, ports) = match ips {
-        PrefixWithOptionalPorts::Prefix(_) => unreachable!(),
-        PrefixWithOptionalPorts::PrefixPorts(e) => (e.prefix(), e.ports()),
-    };
+    let prefix = expose.ips().first().unwrap_or_else(|| unreachable!());
+    let (prefix, ports) = (
+        prefix.prefix(),
+        prefix.ports().unwrap_or_else(|| unreachable!()),
+    );
 
     let as_range = nat.as_range.first().unwrap_or_else(|| unreachable!());
-    let (ext_prefix, ext_ports) = match as_range {
-        PrefixWithOptionalPorts::Prefix(_) => unreachable!(),
-        PrefixWithOptionalPorts::PrefixPorts(e) => (e.prefix(), e.ports()),
-    };
+    let (ext_prefix, ext_ports) = (
+        as_range.prefix(),
+        as_range.ports().unwrap_or_else(|| unreachable!()),
+    );
 
     // the idle timeout of the api gets mapped to the established timeout in port-forwarding
     let idle_timeout = expose.idle_timeout();
