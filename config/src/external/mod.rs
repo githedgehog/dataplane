@@ -11,12 +11,12 @@ pub mod underlay;
 use std::num::NonZero;
 
 use crate::ValidatedGwConfig;
+use crate::external::overlay::vpc::ValidatedPeering;
 use crate::internal::device::DeviceConfig;
 use crate::{ConfigError, ConfigResult};
 use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
-use overlay::vpc::Peering;
 use overlay::{Overlay, ValidatedOverlay};
 use tracing::debug;
 use underlay::Underlay;
@@ -56,14 +56,14 @@ impl ExternalConfig {
     }
 
     /// Check the gateway group for a peering
-    fn check_peering_gwgroup(&self, peering: &Peering) -> ConfigResult {
+    fn check_gwgroup(&self, peering: &ValidatedPeering) -> ConfigResult {
         let gwname = &self.gwname;
-        let peering_name = &peering.name;
+        let peering_name = peering.name();
         let gwgroups = &self.gwgroups;
         let comtable = &self.communities;
 
         // get name of gw group a peering is mapped to
-        let group_name = &peering.gwgroup;
+        let group_name = peering.gwgroup();
 
         // check that such a group exists
         let group = gwgroups
@@ -82,14 +82,18 @@ impl ExternalConfig {
         // we're part of the group. What's our community?
         comtable
             .get_community(rank)
-            .ok_or(ConfigError::NoCommunityAvailable(peering_name.clone()))?;
+            .ok_or(ConfigError::NoCommunityAvailable(peering_name.to_string()))?;
 
         Ok(())
     }
 
-    fn validate_peering_gw_groups(&self) -> ConfigResult {
-        for peering in self.overlay.vpc_table.peerings() {
-            self.check_peering_gwgroup(peering)?;
+    /// Validate the peering groups from a set of validated peerings
+    fn validate_peering_groups<'a>(
+        &self,
+        peerings: impl Iterator<Item = &'a ValidatedPeering>,
+    ) -> ConfigResult {
+        for peering in peerings {
+            self.check_gwgroup(peering)?;
         }
         Ok(())
     }
@@ -105,7 +109,8 @@ impl ExternalConfig {
         self.device.validate()?;
         let underlay = self.underlay.validate()?;
         let overlay = self.overlay.validate()?;
-        self.validate_peering_gw_groups()?;
+        let validated_peerings = overlay.vpc_table().peerings();
+        self.validate_peering_groups(validated_peerings)?;
 
         // if there are vpcs configured, there MUST be a vtep configured
         if !overlay.vpc_table().is_empty() && underlay.vtep.is_none() {

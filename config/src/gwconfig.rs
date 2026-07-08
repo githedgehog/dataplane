@@ -33,7 +33,7 @@ impl GwConfigMeta {
     /// Build config metadata. This is automatically built when creating a `GwConfig`
     ////////////////////////////////////////////////////////////////////////////////
     #[must_use]
-    pub fn new(genid: GenId) -> Self {
+    fn new(genid: GenId) -> Self {
         Self {
             genid,
             create_t: SystemTime::now(),
@@ -69,7 +69,7 @@ pub struct ValidatedGwConfig {
 
 impl ValidatedGwConfig {
     #[must_use]
-    pub fn new(external: ValidatedExternalConfig) -> Self {
+    pub(crate) fn new(external: ValidatedExternalConfig) -> Self {
         Self {
             meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid()))),
             external,

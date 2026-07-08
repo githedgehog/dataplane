@@ -73,7 +73,6 @@ impl Overlay {
 
         // Collect peerings for every VPC and validate the table
         let validated_vpc_table = self.collect_peerings().validate()?;
-
         let validated_overlay = ValidatedOverlay {
             vpc_table: validated_vpc_table,
         };
