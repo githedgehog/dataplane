@@ -8,8 +8,6 @@ pub mod gwgroup;
 pub mod overlay;
 pub mod underlay;
 
-use std::num::NonZero;
-
 use crate::ValidatedGwConfig;
 use crate::external::overlay::vpc::ValidatedPeering;
 use crate::internal::device::DeviceConfig;
@@ -18,6 +16,8 @@ use communities::PriorityCommunityTable;
 use derive_builder::Builder;
 use gwgroup::GwGroupTable;
 use overlay::{Overlay, ValidatedOverlay};
+use std::collections::HashSet;
+use std::num::NonZero;
 use tracing::debug;
 use underlay::Underlay;
 
@@ -55,45 +55,40 @@ impl ExternalConfig {
         }
     }
 
-    /// Check the gateway group for a peering
-    fn check_gwgroup(&self, peering: &ValidatedPeering) -> ConfigResult {
-        let gwname = &self.gwname;
-        let peering_name = peering.name();
-        let gwgroups = &self.gwgroups;
-        let comtable = &self.communities;
+    fn validate_gw_groups(&mut self) -> ConfigResult {
+        // sort the groups
+        self.gwgroups = self.gwgroups.sorted();
 
-        // get name of gw group a peering is mapped to
-        let group_name = peering.gwgroup();
+        // check that for each group position, a community exists
+        for group in self.gwgroups.iter() {
+            for member in group.iter() {
+                let rank = group
+                    .get_member_pos(&member.name)
+                    .unwrap_or_else(|| unreachable!());
 
-        // check that such a group exists
-        let group = gwgroups
-            .get_group(group_name)
-            .ok_or_else(|| ConfigError::NoSuchGroup(group_name.to_owned()))?;
-
-        // sort out members
-        let group = group.sorted();
-
-        // lookup ourselves in the group
-        let Some(rank) = group.get_member_pos(gwname) else {
-            // We may not be part of the group serving a peering, which is fine
-            return Ok(());
-        };
-
-        // we're part of the group. What's our community?
-        comtable
-            .get_community(rank)
-            .ok_or(ConfigError::NoCommunityAvailable(peering_name.to_string()))?;
-
+                self.communities
+                    .get_community(rank)
+                    .ok_or(ConfigError::NoCommunityAvailable(rank))?;
+            }
+        }
         Ok(())
     }
 
-    /// Validate the peering groups from a set of validated peerings
-    fn validate_peering_groups<'a>(
+    fn check_peering_gwgroups_exist<'a>(
         &self,
         peerings: impl Iterator<Item = &'a ValidatedPeering>,
     ) -> ConfigResult {
-        for peering in peerings {
-            self.check_gwgroup(peering)?;
+        // collect all distinct group names across all peerings
+        let groups: HashSet<_> = peerings
+            .into_iter()
+            .map(ValidatedPeering::gwgroup)
+            .collect();
+
+        // check that they are present in the group table
+        for group_name in groups {
+            self.gwgroups
+                .get_group(group_name)
+                .ok_or_else(|| ConfigError::NoSuchGroup(group_name.to_owned()))?;
         }
         Ok(())
     }
@@ -104,13 +99,14 @@ impl ExternalConfig {
     /// # Errors
     ///
     /// Returns a [`ConfigError`] if validation fails.
-    pub fn validate(self) -> Result<ValidatedGwConfig, ConfigError> {
+    pub fn validate(mut self) -> Result<ValidatedGwConfig, ConfigError> {
         debug!("Validating external config with genid {} ..", self.genid);
         self.device.validate()?;
+        self.validate_gw_groups()?;
         let underlay = self.underlay.validate()?;
         let overlay = self.overlay.validate()?;
-        let validated_peerings = overlay.vpc_table().peerings();
-        self.validate_peering_groups(validated_peerings)?;
+        let peerings = overlay.vpc_table().peerings();
+        self.check_peering_gwgroups_exist(peerings)?;
 
         // if there are vpcs configured, there MUST be a vtep configured
         if !overlay.vpc_table().is_empty() && underlay.vtep.is_none() {

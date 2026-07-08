@@ -103,8 +103,8 @@ pub enum ConfigError {
     Tracing(String),
 
     // Community mappings
-    #[error("Could not assign BGP community to VPC peering {0}")]
-    NoCommunityAvailable(String),
+    #[error("No BGP community exists for rank {0}")]
+    NoCommunityAvailable(usize),
 
     #[error("Community {0} is mapped from distinct priorities")]
     DuplicateCommunity(String),
