@@ -113,9 +113,6 @@ impl ExternalConfig {
                 "Vtep interface configuration",
             ));
         }
-        debug!("Community table mappings:\n{}", self.communities);
-        debug!("Gateway-groups are:\n{}", self.gwgroups);
-
         let validated_external = ValidatedExternalConfig {
             gwname: self.gwname,
             genid: self.genid,
@@ -126,6 +123,8 @@ impl ExternalConfig {
             communities: self.communities,
             flow_table_capacity: self.flow_table_capacity,
         };
+        debug!("Community table:\n{}", validated_external.communities());
+        debug!("Gateway-groups are:\n{}", validated_external.gwgroups);
         Ok(ValidatedGwConfig::new(validated_external))
     }
 
