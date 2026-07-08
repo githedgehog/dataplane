@@ -82,10 +82,10 @@
       "version_upper_bound": null,
       "release_prefix": null,
       "submodules": false,
-      "version": "v0.117.0",
-      "revision": "c44d5756e066adccec25f57b89efc8583ea8f5ad",
-      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.117.0",
-      "hash": "sha256-ZQ/zLiVH1khkCRrX7riPoCfadD6vJgGjHixmKxhYnQw=",
+      "version": "v0.126.0",
+      "revision": "b66a16fcf0f21523d6f416b7b6bcf92dd0e5fea7",
+      "url": "https://api.github.com/repos/githedgehog/fabric/tarball/refs/tags/v0.126.0",
+      "hash": "sha256-/pF/MXy33jc33CRUcOjfZ4uL33TDfPzDpQ3ZoZsdc9A=",
       "frozen": true
     },
     "frr": {
