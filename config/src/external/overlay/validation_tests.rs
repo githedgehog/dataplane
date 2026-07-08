@@ -16,7 +16,7 @@ mod test {
         VpcExpose, VpcManifest, VpcPeering, VpcPeeringTable,
     };
 
-    use lpm::prefix::{PortRange, Prefix, PrefixWithOptionalPorts, ppsize_from};
+    use lpm::prefix::{L4Protocol, PortRange, Prefix, PrefixWithOptionalPorts, ppsize_from};
 
     // Helper: create a PrefixWithOptionalPorts with a port range
     fn prefix_with_ports(prefix_str: &str, start: u16, end: u16) -> PrefixWithOptionalPorts {
@@ -557,6 +557,22 @@ mod test {
             matches!(result, Err(ConfigError::MismatchedPrefixSizes(_, _))),
             "{result:?}",
         );
+    }
+
+    // Port forwarding: reject full range of ports (`0-65535`)
+    #[test]
+    fn test_port_forwarding_full_port_range_rejected() {
+        let expose = VpcExpose::empty()
+            .make_port_forwarding(None, Some(L4Protocol::Tcp))
+            .unwrap()
+            .ip(prefix_with_ports("10.0.0.0/24", 0, 65535))
+            .as_range(prefix_with_ports("2.0.0.0/24", 0, 65535))
+            .unwrap();
+
+        // ranges are normalized to `None`. So a check on start would be skipped without the validate
+        assert!(expose.ips.iter().all(|p| p.ports().is_none()));
+        let result = expose.validate();
+        assert!(result.is_err_and(|e| matches!(e, ConfigError::Forbidden(_))));
     }
 
     // Masquerade: port ranges rejected

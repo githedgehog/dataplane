@@ -404,6 +404,15 @@ impl VpcExpose {
                     as_range_sizes,
                 ));
             }
+            // For port forwarding, ensure that a port range is always present. Lack of port range would imply
+            // all ports, which is not allowed since port 0 is forbidden in the implementation
+            for prefixes in [collapsed_expose.ips(), collapsed_expose.as_range_or_empty()] {
+                if prefixes.iter().any(|p| p.ports().is_none()) {
+                    return Err(ConfigError::Forbidden(
+                        "Port forwarding requires a port range on each prefix",
+                    ));
+                }
+            }
         }
 
         // For masquerade, we don't support port ranges
