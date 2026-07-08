@@ -26,6 +26,10 @@ fn expose_to_portfw_rule(
     debug_assert!(nat.is_port_forwarding());
     debug_assert_eq!(nat.as_range.len(), 1);
     debug_assert_eq!(expose.ips().len(), 1);
+
+    // in a port forwarding expose, the range must always be Some(range) because a None
+    // would imply a Some(max_range) which includes port 0 which is forbidden. So, finding
+    // `None` would be a validation failure
     let prefix = expose.ips().first().unwrap_or_else(|| unreachable!());
     let (prefix, ports) = (
         prefix.prefix(),
