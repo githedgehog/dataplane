@@ -234,11 +234,12 @@ impl std::ops::DerefMut for PrefixPortsSet {
 
 /// A structure containing a prefix and an optional port range.
 ///
-/// A `None` port range means "all ports" and is equivalent to the full range.
-/// The two representations (`None` and `Some(max_range)`) are
-/// semantically equal; use [`PrefixWithOptionalPorts::simplify`] to normalize to the `None` form.
+/// There is some ambiguity in this type in that a None port range may be
+/// understood as all ports, meaning that two distinct instances of this
+/// type would be semantically equivalent. To avoid this, the constructor
+/// of this type guarantees that `max_range` is mapped to None, without
+/// needing to call an additional simplify method.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct PrefixWithOptionalPorts {
     prefix: Prefix,
     ports: Option<PortRange>,
@@ -246,8 +247,10 @@ pub struct PrefixWithOptionalPorts {
 
 impl PrefixWithOptionalPorts {
     /// Creates a new `PrefixWithOptionalPorts` from a prefix and an optional port range.
+    /// If the port range is `Some(max_range)`, the value is normalized to None.
     #[must_use]
     pub fn new(prefix: Prefix, ports: Option<PortRange>) -> Self {
+        let ports = ports.filter(|range| !range.is_max_range());
         Self { prefix, ports }
     }
 
@@ -257,30 +260,10 @@ impl PrefixWithOptionalPorts {
         self.prefix
     }
 
-    /// Returns the optional port range.
+    /// Returns the optional port range (`None` means "all ports").
     #[must_use]
     pub fn ports(&self) -> Option<PortRange> {
         self.ports
-    }
-
-    /// Normalize a full ("max range") port range to the `None` (all ports) representation.
-    #[must_use]
-    pub fn simplify(&self) -> Self {
-        match self.ports {
-            Some(ports) if ports.is_max_range() => Self {
-                prefix: self.prefix,
-                ports: None,
-            },
-            _ => *self,
-        }
-    }
-}
-
-impl PrefixWithOptionalPorts {
-    /// Normalize a [`PrefixWithPorts`] result back into a `PrefixWithOptionalPorts`, collapsing a
-    /// full port range into the `None` representation.
-    fn from_prefix_with_ports(pwp: PrefixWithPorts) -> Self {
-        Self::new(pwp.prefix(), Some(pwp.ports())).simplify()
     }
 }
 
@@ -307,21 +290,21 @@ impl IpRangeWithPorts for PrefixWithOptionalPorts {
     fn intersection(&self, other: &Self) -> Option<Self> {
         PrefixWithPorts::from(*self)
             .intersection(&(*other).into())
-            .map(Self::from_prefix_with_ports)
+            .map(Self::from)
     }
 
     fn subtract(&self, other: &Self) -> Vec<Self> {
         PrefixWithPorts::from(*self)
             .subtract(&(*other).into())
             .into_iter()
-            .map(Self::from_prefix_with_ports)
+            .map(Self::from)
             .collect()
     }
 
     fn merge(&self, other: &Self) -> Option<Self> {
         PrefixWithPorts::from(*self)
             .merge(&(*other).into())
-            .map(Self::from_prefix_with_ports)
+            .map(Self::from)
     }
 }
 
@@ -598,7 +581,7 @@ impl L4Protocol {
 
 #[cfg(any(test, feature = "bolero"))]
 mod contract {
-    use super::PortRange;
+    use super::{PortRange, Prefix, PrefixWithOptionalPorts};
     use bolero::{Driver, TypeGenerator};
 
     impl TypeGenerator for PortRange {
@@ -606,6 +589,14 @@ mod contract {
             let start: u16 = driver.produce()?;
             let end: u16 = driver.produce()?;
             Some(PortRange::new(start.min(end), start.max(end)).unwrap_or_else(|_| unreachable!()))
+        }
+    }
+
+    impl TypeGenerator for PrefixWithOptionalPorts {
+        fn generate<D: Driver>(driver: &mut D) -> Option<Self> {
+            let prefix: Prefix = driver.produce()?;
+            let ports: Option<PortRange> = driver.produce()?;
+            Some(PrefixWithOptionalPorts::new(prefix, ports))
         }
     }
 }
