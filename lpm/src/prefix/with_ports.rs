@@ -233,233 +233,95 @@ impl std::ops::DerefMut for PrefixPortsSet {
 }
 
 /// A structure containing a prefix and an optional port range.
+///
+/// A `None` port range means "all ports" and is equivalent to the full range.
+/// The two representations (`None` and `Some(max_range)`) are
+/// semantically equal; use [`PrefixWithOptionalPorts::simplify`] to normalize to the `None` form.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
-pub enum PrefixWithOptionalPorts {
-    Prefix(Prefix),
-    PrefixPorts(PrefixWithPorts),
+pub struct PrefixWithOptionalPorts {
+    prefix: Prefix,
+    ports: Option<PortRange>,
 }
 
 impl PrefixWithOptionalPorts {
     /// Creates a new `PrefixWithOptionalPorts` from a prefix and an optional port range.
     #[must_use]
     pub fn new(prefix: Prefix, ports: Option<PortRange>) -> Self {
-        match ports {
-            Some(ports) => {
-                PrefixWithOptionalPorts::PrefixPorts(PrefixWithPorts::new(prefix, ports))
-            }
-            None => PrefixWithOptionalPorts::Prefix(prefix),
-        }
+        Self { prefix, ports }
     }
 
     /// Returns the prefix.
     #[must_use]
     pub fn prefix(&self) -> Prefix {
-        match self {
-            PrefixWithOptionalPorts::Prefix(prefix) => *prefix,
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => prefix_with_ports.prefix(),
-        }
+        self.prefix
     }
 
     /// Returns the optional port range.
     #[must_use]
     pub fn ports(&self) -> Option<PortRange> {
-        match self {
-            PrefixWithOptionalPorts::Prefix(_) => None,
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
-                Some(prefix_with_ports.ports())
-            }
-        }
+        self.ports
     }
 
-    /// Change variant from `PrefixPorts` to `Prefix` if the port range is the full range.
+    /// Normalize a full ("max range") port range to the `None` (all ports) representation.
     #[must_use]
     pub fn simplify(&self) -> Self {
-        match self {
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports)
-                if prefix_with_ports.ports().is_max_range() =>
-            {
-                PrefixWithOptionalPorts::Prefix(prefix_with_ports.prefix())
-            }
+        match self.ports {
+            Some(ports) if ports.is_max_range() => Self {
+                prefix: self.prefix,
+                ports: None,
+            },
             _ => *self,
         }
     }
 }
 
+impl PrefixWithOptionalPorts {
+    /// Normalize a [`PrefixWithPorts`] result back into a `PrefixWithOptionalPorts`, collapsing a
+    /// full port range into the `None` representation.
+    fn from_prefix_with_ports(pwp: PrefixWithPorts) -> Self {
+        Self::new(pwp.prefix(), Some(pwp.ports())).simplify()
+    }
+}
+
 impl IpRangeWithPorts for PrefixWithOptionalPorts {
     fn addr_range_len(&self) -> PrefixSize {
-        match self {
-            PrefixWithOptionalPorts::Prefix(prefix) => prefix.size(),
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
-                prefix_with_ports.prefix().size()
-            }
-        }
+        self.prefix.size()
     }
 
     fn port_range_len(&self) -> usize {
-        match self {
-            PrefixWithOptionalPorts::Prefix(_) => PortRange::MAX_LENGTH,
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
-                prefix_with_ports.ports().len()
-            }
-        }
+        self.ports
+            .map_or(PortRange::MAX_LENGTH, |ports| ports.len())
     }
 
     fn covers(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
-                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
-            ) => self_prefix_with_ports.covers(other_prefix_with_ports),
-            (
-                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
-                PrefixWithOptionalPorts::Prefix(other_prefix),
-            ) if self_prefix_with_ports.port_range_len() == PortRange::MAX_LENGTH => {
-                // All ports contained in both instances, so we only check prefixes
-                self_prefix_with_ports.prefix().covers(other_prefix)
-            }
-            (PrefixWithOptionalPorts::PrefixPorts(_), PrefixWithOptionalPorts::Prefix(_)) => {
-                // "other" cover all ports, "self" doesn't: "other" has ports not covered
-                false
-            }
-            _ => {
-                // We necessarily cover all prefixes from the other instance, only check prefixes
-                self.prefix().covers(&other.prefix())
-            }
-        }
+        // Since portrange = None means all ports, represent both self and other
+        // as `PrefixWithPorts` and use its `covers` implementation
+        PrefixWithPorts::from(*self).covers(&(*other).into())
     }
 
     fn overlaps(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
-                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
-            ) => self_prefix_with_ports.overlaps(other_prefix_with_ports),
-            _ => self.prefix().collides_with(&other.prefix()),
-        }
+        PrefixWithPorts::from(*self).overlaps(&(*other).into())
     }
 
     fn intersection(&self, other: &Self) -> Option<Self> {
-        match (self, other) {
-            (
-                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
-                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
-            ) => Some(PrefixWithOptionalPorts::PrefixPorts(
-                self_prefix_with_ports.intersection(other_prefix_with_ports)?,
-            )),
-            (
-                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
-                PrefixWithOptionalPorts::Prefix(prefix),
-            )
-            | (
-                PrefixWithOptionalPorts::Prefix(prefix),
-                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
-            ) => Some(Self::new(
-                prefix_with_ports.prefix().intersection(prefix)?,
-                Some(prefix_with_ports.ports()),
-            )),
-            (
-                PrefixWithOptionalPorts::Prefix(self_prefix),
-                PrefixWithOptionalPorts::Prefix(other_prefix),
-            ) => Some(PrefixWithOptionalPorts::Prefix(
-                self_prefix.intersection(other_prefix)?,
-            )),
-        }
+        PrefixWithPorts::from(*self)
+            .intersection(&(*other).into())
+            .map(Self::from_prefix_with_ports)
     }
 
     fn subtract(&self, other: &Self) -> Vec<Self> {
-        fn convert_result_type<P>(
-            vector: Vec<P>,
-            convert_ports: bool,
-        ) -> Vec<PrefixWithOptionalPorts>
-        where
-            P: Into<PrefixWithOptionalPorts>,
-        {
-            vector
-                .into_iter()
-                .map(Into::into)
-                .map(|p| {
-                    if convert_ports
-                        && let Some(ports) = p.ports()
-                        && ports.is_max_range()
-                    {
-                        PrefixWithOptionalPorts::Prefix(p.prefix())
-                    } else {
-                        p
-                    }
-                })
-                .collect()
-        }
-
-        if !self.overlaps(other) {
-            return Vec::new();
-        }
-
-        match (self, other) {
-            (
-                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
-                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
-            ) => convert_result_type(
-                self_prefix_with_ports.subtract(other_prefix_with_ports),
-                false,
-            ),
-            (
-                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
-                PrefixWithOptionalPorts::Prefix(other_prefix),
-            ) => convert_result_type(
-                self_prefix_with_ports.subtract(&(*other_prefix).into()),
-                false,
-            ),
-            (
-                PrefixWithOptionalPorts::Prefix(self_prefix),
-                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
-            ) => convert_result_type(
-                PrefixWithPorts::from(*self_prefix).subtract(other_prefix_with_ports),
-                true,
-            ),
-            (
-                PrefixWithOptionalPorts::Prefix(self_prefix),
-                PrefixWithOptionalPorts::Prefix(other_prefix),
-            ) => convert_result_type(self_prefix.subtract(other_prefix), false),
-        }
+        PrefixWithPorts::from(*self)
+            .subtract(&(*other).into())
+            .into_iter()
+            .map(Self::from_prefix_with_ports)
+            .collect()
     }
 
     fn merge(&self, other: &Self) -> Option<Self> {
-        match (self, other) {
-            (
-                PrefixWithOptionalPorts::Prefix(self_prefix),
-                PrefixWithOptionalPorts::Prefix(other_prefix),
-            ) => self_prefix
-                .merge(other_prefix)
-                .map(PrefixWithOptionalPorts::Prefix),
-            (
-                PrefixWithOptionalPorts::PrefixPorts(self_prefix_with_ports),
-                PrefixWithOptionalPorts::PrefixPorts(other_prefix_with_ports),
-            ) => self_prefix_with_ports
-                .merge(other_prefix_with_ports)
-                .map(PrefixWithOptionalPorts::PrefixPorts),
-            (
-                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
-                PrefixWithOptionalPorts::Prefix(prefix),
-            )
-            | (
-                PrefixWithOptionalPorts::Prefix(prefix),
-                PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports),
-            ) => {
-                if prefix_with_ports.prefix() == *prefix {
-                    // Same IP prefix, and one of them covers all of the ports
-                    Some(PrefixWithOptionalPorts::Prefix(*prefix))
-                } else if prefix_with_ports.ports().is_max_range() {
-                    // Same (full) port ranges, try merging the prefixes
-                    prefix
-                        .merge(&prefix_with_ports.prefix())
-                        .map(PrefixWithOptionalPorts::Prefix)
-                } else {
-                    // Different IP ranges and ports, nothing we can do
-                    None
-                }
-            }
-        }
+        PrefixWithPorts::from(*self)
+            .merge(&(*other).into())
+            .map(Self::from_prefix_with_ports)
     }
 }
 
@@ -482,18 +344,13 @@ pub enum PortRangeError {
 
 impl From<PrefixWithPorts> for PrefixWithOptionalPorts {
     fn from(value: PrefixWithPorts) -> Self {
-        PrefixWithOptionalPorts::PrefixPorts(value)
+        Self::new(value.prefix(), Some(value.ports()))
     }
 }
 
 impl From<PrefixWithOptionalPorts> for PrefixWithPorts {
     fn from(p: PrefixWithOptionalPorts) -> Self {
-        match p {
-            PrefixWithOptionalPorts::Prefix(prefix) => {
-                PrefixWithPorts::new(prefix, PortRange::new_max_range())
-            }
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => prefix_with_ports,
-        }
+        PrefixWithPorts::new(p.prefix, p.ports.unwrap_or_else(PortRange::new_max_range))
     }
 }
 
@@ -511,7 +368,7 @@ where
     T: Into<Prefix>,
 {
     fn from(value: T) -> Self {
-        PrefixWithOptionalPorts::Prefix(value.into())
+        PrefixWithOptionalPorts::new(value.into(), None)
     }
 }
 
@@ -519,10 +376,7 @@ impl TryFrom<PrefixWithOptionalPorts> for Prefix {
     type Error = PortRangeError;
 
     fn try_from(p: PrefixWithOptionalPorts) -> Result<Self, Self::Error> {
-        match p {
-            PrefixWithOptionalPorts::Prefix(prefix) => Ok(prefix),
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => Ok(prefix_with_ports.prefix),
-        }
+        Ok(p.prefix)
     }
 }
 
@@ -653,8 +507,12 @@ impl PortRange {
         if u32::from(left.end) + 1 < u32::from(right.start) {
             None
         } else {
-            // We know we have left.start <= right.end given that left <= right
-            Some(PortRange::new(left.start, right.end).unwrap_or_else(|_| unreachable!()))
+            // left has the smaller start value, but the union ends at the larger of the two ends
+            // since left could contain right. So we have to take the highest of the two.
+            Some(
+                PortRange::new(left.start, left.end.max(right.end))
+                    .unwrap_or_else(|_| unreachable!()),
+            )
         }
     }
 }
@@ -713,11 +571,9 @@ impl Display for PrefixWithPorts {
 
 impl Display for PrefixWithOptionalPorts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PrefixWithOptionalPorts::Prefix(prefix) => write!(f, "{prefix}:[all]"),
-            PrefixWithOptionalPorts::PrefixPorts(prefix_with_ports) => {
-                write!(f, "{prefix_with_ports}")
-            }
+        match self.ports {
+            None => write!(f, "{}:[all]", self.prefix),
+            Some(ports) => write!(f, "{}:[{}]", self.prefix, ports),
         }
     }
 }
@@ -1347,6 +1203,37 @@ mod tests {
 
         let merged = pwop1.merge(&pwop2);
         assert!(merged.is_none());
+    }
+
+    #[test]
+    fn test_prefix_with_optional_ports_merge_containing_port_ranges() {
+        // With same prefix, a port range containing another must merge to the container
+        let prefix = prefix_v4("10.0.0.0/24");
+        let pwop1 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(80, 200).unwrap()));
+        let pwop2 = PrefixWithOptionalPorts::new(prefix, Some(PortRange::new(100, 150).unwrap()));
+
+        let merged = pwop1.merge(&pwop2).expect("Should merge");
+        assert_eq!(merged.prefix(), prefix);
+        assert_eq!(merged.ports(), Some(PortRange::new(80, 200).unwrap()));
+
+        // Symmetry
+        assert_eq!(pwop2.merge(&pwop1).expect("Should merge"), merged);
+    }
+
+    // PortRange - merge
+
+    #[test]
+    fn test_port_range_merge_containment() {
+        // The larger range fully contains the smaller one: the union is the larger range.
+        let outer = PortRange::new(0, 65535).unwrap();
+        let inner = PortRange::new(80, 100).unwrap();
+        assert_eq!(outer.merge(inner), Some(outer));
+        assert_eq!(inner.merge(outer), Some(outer));
+
+        let a = PortRange::new(80, 200).unwrap();
+        let b = PortRange::new(100, 150).unwrap();
+        assert_eq!(a.merge(b), Some(a));
+        assert_eq!(b.merge(a), Some(a));
     }
 
     // PortRange - FromStr

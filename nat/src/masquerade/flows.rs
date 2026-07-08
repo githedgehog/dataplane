@@ -123,7 +123,7 @@ pub(crate) fn check_masquerading_flow(
             && e.nat().is_some_and(|enat| {
                 enat.as_range
                     .iter()
-                    .any(|pfx| pfx.covers(&PrefixWithOptionalPorts::Prefix(ip.into())))
+                    .any(|pfx| pfx.covers(&PrefixWithOptionalPorts::new(ip.into(), None)))
             })
     }) {
         debug!("Flow uses an address compatible with the peering {src_vpcd} -- {dst_vpcd}");

@@ -334,7 +334,6 @@ impl TryFrom<(&SubnetMap, &GatewayAgentPeeringsPeeringExpose)> for VpcExposes {
 mod test {
     use super::*;
     use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
-    use lpm::prefix::PrefixWithPorts;
 
     fn map_ports(
         prefix: Prefix,
@@ -346,11 +345,7 @@ mod test {
         parse_port_ranges(ports_str)?
             .into_iter()
             // Derive one PrefixWithOptionalPorts for each port range
-            .map(|port_range| {
-                Ok(PrefixWithOptionalPorts::PrefixPorts(PrefixWithPorts::new(
-                    prefix, port_range,
-                )))
-            })
+            .map(|port_range| Ok(PrefixWithOptionalPorts::new(prefix, Some(port_range))))
             .collect::<Result<Vec<_>, _>>()
     }
 
@@ -370,12 +365,9 @@ mod test {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].prefix(), prefix);
-        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
-            assert_eq!(pp.ports().start(), 80);
-            assert_eq!(pp.ports().end(), 80);
-        } else {
-            panic!("Expected PrefixPorts variant");
-        }
+        let ports = result[0].ports().expect("Expected a port range");
+        assert_eq!(ports.start(), 80);
+        assert_eq!(ports.end(), 80);
     }
 
     #[test]
@@ -384,12 +376,9 @@ mod test {
         let result = map_ports(prefix, Some("8000-8080")).unwrap();
 
         assert_eq!(result.len(), 1);
-        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
-            assert_eq!(pp.ports().start(), 8000);
-            assert_eq!(pp.ports().end(), 8080);
-        } else {
-            panic!("Expected PrefixPorts variant");
-        }
+        let ports = result[0].ports().expect("Expected a port range");
+        assert_eq!(ports.start(), 8000);
+        assert_eq!(ports.end(), 8080);
     }
 
     #[test]
@@ -399,29 +388,20 @@ mod test {
 
         assert_eq!(result.len(), 3);
 
-        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
-            assert_eq!(pp.prefix(), prefix);
-            assert_eq!(pp.ports().start(), 80);
-            assert_eq!(pp.ports().end(), 80);
-        } else {
-            panic!("Expected PrefixPorts variant");
-        }
+        assert_eq!(result[0].prefix(), prefix);
+        let ports = result[0].ports().expect("Expected a port range");
+        assert_eq!(ports.start(), 80);
+        assert_eq!(ports.end(), 80);
 
-        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[1] {
-            assert_eq!(pp.prefix(), prefix);
-            assert_eq!(pp.ports().start(), 443);
-            assert_eq!(pp.ports().end(), 443);
-        } else {
-            panic!("Expected PrefixPorts variant");
-        }
+        assert_eq!(result[1].prefix(), prefix);
+        let ports = result[1].ports().expect("Expected a port range");
+        assert_eq!(ports.start(), 443);
+        assert_eq!(ports.end(), 443);
 
-        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[2] {
-            assert_eq!(pp.prefix(), prefix);
-            assert_eq!(pp.ports().start(), 8000);
-            assert_eq!(pp.ports().end(), 8080);
-        } else {
-            panic!("Expected PrefixPorts variant");
-        }
+        assert_eq!(result[2].prefix(), prefix);
+        let ports = result[2].ports().expect("Expected a port range");
+        assert_eq!(ports.start(), 8000);
+        assert_eq!(ports.end(), 8080);
     }
 
     #[test]
@@ -451,21 +431,15 @@ mod test {
 
         assert_eq!(result.len(), 3);
 
-        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[0] {
-            assert_eq!(pp.prefix(), prefix);
-            assert_eq!(pp.ports().start(), 80);
-            assert_eq!(pp.ports().end(), 80);
-        } else {
-            panic!("Expected PrefixPorts variant");
-        }
+        assert_eq!(result[0].prefix(), prefix);
+        let ports = result[0].ports().expect("Expected a port range");
+        assert_eq!(ports.start(), 80);
+        assert_eq!(ports.end(), 80);
 
-        if let PrefixWithOptionalPorts::PrefixPorts(pp) = &result[1] {
-            assert_eq!(pp.prefix(), prefix);
-            assert_eq!(pp.ports().start(), 443);
-            assert_eq!(pp.ports().end(), 443);
-        } else {
-            panic!("Expected PrefixPorts variant");
-        }
+        assert_eq!(result[1].prefix(), prefix);
+        let ports = result[1].ports().expect("Expected a port range");
+        assert_eq!(ports.start(), 443);
+        assert_eq!(ports.end(), 443);
     }
 
     // See https://github.com/githedgehog/gateway/pull/268/changes#diff-a0a0f9914d0cR239-R271
