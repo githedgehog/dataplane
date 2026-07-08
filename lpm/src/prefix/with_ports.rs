@@ -500,11 +500,17 @@ impl PortRange {
         None
     }
 
-    // Return a merged range if the two ranges overlap or are adjacent
+    // Return a merged `PortRange` if the two ranges overlap or are adjacent
     #[must_use]
     pub fn merge(&self, other: Self) -> Option<Self> {
-        let (left, right) = (self.min(&other), self.max(&other));
+        // determine which range begins first
+        let (left, right) = if self.start <= other.start {
+            (self, &other)
+        } else {
+            (&other, self)
+        };
         if u32::from(left.end) + 1 < u32::from(right.start) {
+            // range do not overlap (nor are adjacent)
             None
         } else {
             // left has the smaller start value, but the union ends at the larger of the two ends
