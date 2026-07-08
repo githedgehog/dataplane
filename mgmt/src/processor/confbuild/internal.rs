@@ -365,7 +365,7 @@ pub fn build_internal_config(
 
     internal.add_vrf_config(default_vrf)?;
     internal.set_vtep(external.underlay().vtep.clone());
-    internal.gwgrouptable = external.gwgroups().sorted();
+    internal.gwgrouptable = external.gwgroups().clone();
     internal.commtable = external.communities().clone();
 
     // Build BFD peers from underlay BGP neighbors
