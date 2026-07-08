@@ -97,9 +97,9 @@
       },
       "branch": "stable/10.5",
       "submodules": false,
-      "revision": "a4879cf65419e9cd528fa6f1a27809c28358b588",
-      "url": "https://github.com/FRRouting/frr/archive/a4879cf65419e9cd528fa6f1a27809c28358b588.tar.gz",
-      "hash": "sha256-1rj2wPZ8VD/vuIt1gTNzLgsHwe2B3goIwbU+iLEJD5A="
+      "revision": "e3681378ab5eb3444c05e74d4399f61d59b5080a",
+      "url": "https://github.com/FRRouting/frr/archive/e3681378ab5eb3444c05e74d4399f61d59b5080a.tar.gz",
+      "hash": "sha256-5stnCA4HmagIC10Xwl4zcH0afgGx//3QrERhKybsjaY="
     },
     "frr-agent": {
       "type": "Git",
@@ -191,9 +191,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "76c3b810fb57ce45ab9fd9a34a6e58457f83b487",
-      "url": "https://github.com/linux-rdma/perftest/archive/76c3b810fb57ce45ab9fd9a34a6e58457f83b487.tar.gz",
-      "hash": "sha256-ukFFiCECkshizKKywzzBtwNDiddyHesa1UFsFTLym5c="
+      "revision": "47420e11faddce2bf38e8beb444ac1214e102af4",
+      "url": "https://github.com/linux-rdma/perftest/archive/47420e11faddce2bf38e8beb444ac1214e102af4.tar.gz",
+      "hash": "sha256-aBGO5srbAsUbPZMpXKquyhJ/80vpaVlbGO+qp9/X6Y8="
     },
     "rdma-core": {
       "type": "Git",
@@ -233,9 +233,9 @@
       },
       "branch": "master",
       "submodules": false,
-      "revision": "cb368fd55ced25a1fa12414b9e984cdfb1681d18",
-      "url": "https://github.com/oxalica/rust-overlay/archive/cb368fd55ced25a1fa12414b9e984cdfb1681d18.tar.gz",
-      "hash": "sha256-cTDI249Vl2JTQ3aicT9jeJPIBlNlodpJbdO0yLigCzU="
+      "revision": "7dc3a177a239ed879c5581a80f6dc246c7e102f1",
+      "url": "https://github.com/oxalica/rust-overlay/archive/7dc3a177a239ed879c5581a80f6dc246c7e102f1.tar.gz",
+      "hash": "sha256-jmWf+H3iC/0z7/mmvTovaJx1E/LME1QyHkyk+AFfJPk="
     }
   },
   "version": 8
