@@ -372,14 +372,6 @@ where
     }
 }
 
-impl TryFrom<PrefixWithOptionalPorts> for Prefix {
-    type Error = PortRangeError;
-
-    fn try_from(p: PrefixWithOptionalPorts) -> Result<Self, Self::Error> {
-        Ok(p.prefix)
-    }
-}
-
 /// A port range, with a start and an end port (both included in the range).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PortRange {
