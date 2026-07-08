@@ -320,16 +320,16 @@ mod tests {
         let pf_expose1 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("10.0.1.0/24".into())
-            .as_range("192.168.1.0/24".into())
+            .ip(prefix_with_ports("10.0.1.0/24", 8080, 8090))
+            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
             .unwrap()
             .validate()
             .unwrap();
         let pf_expose2 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("172.16.5.0/24".into())
-            .as_range("192.168.2.0/24".into())
+            .ip(prefix_with_ports("172.16.5.0/24", 8080, 8090))
+            .as_range(prefix_with_ports("192.168.2.0/24", 8080, 8090))
             .unwrap()
             .validate()
             .unwrap();
@@ -338,8 +338,14 @@ mod tests {
         assert_eq!(
             result,
             ReserveSets {
-                tcp: PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()]),
-                udp: PrefixPortsSet::from(["10.0.1.0/24".into(), "172.16.5.0/24".into()]),
+                tcp: PrefixPortsSet::from([
+                    prefix_with_ports("10.0.1.0/24", 8080, 8090),
+                    prefix_with_ports("172.16.5.0/24", 8080, 8090),
+                ]),
+                udp: PrefixPortsSet::from([
+                    prefix_with_ports("10.0.1.0/24", 8080, 8090),
+                    prefix_with_ports("172.16.5.0/24", 8080, 8090),
+                ]),
             }
         );
     }
@@ -416,16 +422,16 @@ mod tests {
         let pf_expose1 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("10.0.1.0/24".into())
-            .as_range("192.168.1.0/24".into())
+            .ip(prefix_with_ports("10.0.1.0/24", 8080, 8090))
+            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
             .unwrap()
             .validate()
             .unwrap();
         let pf_expose2 = VpcExpose::empty()
             .make_port_forwarding(None, None)
             .unwrap()
-            .ip("10.0.1.0/24".into())
-            .as_range("192.168.1.0/24".into())
+            .ip(prefix_with_ports("10.0.1.0/24", 8080, 8090))
+            .as_range(prefix_with_ports("192.168.1.0/24", 8080, 8090))
             .unwrap()
             .validate()
             .unwrap();
@@ -434,8 +440,8 @@ mod tests {
         assert_eq!(
             result,
             ReserveSets {
-                tcp: PrefixPortsSet::from(["10.0.1.0/24".into()]),
-                udp: PrefixPortsSet::from(["10.0.1.0/24".into()]),
+                tcp: PrefixPortsSet::from([prefix_with_ports("10.0.1.0/24", 8080, 8090)]),
+                udp: PrefixPortsSet::from([prefix_with_ports("10.0.1.0/24", 8080, 8090)]),
             }
         );
     }
