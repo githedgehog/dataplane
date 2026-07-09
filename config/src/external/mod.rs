@@ -57,7 +57,7 @@ impl ExternalConfig {
 
     fn validate_gw_groups(&mut self) -> ConfigResult {
         // sort the groups
-        self.gwgroups = self.gwgroups.sorted();
+        self.gwgroups.sort();
 
         // check that for each group position, a community exists
         for group in self.gwgroups.iter() {

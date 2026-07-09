@@ -66,17 +66,11 @@ impl GwGroup {
             members: vec![],
         }
     }
-    #[must_use]
-    pub fn sorted(&self) -> GwGroup {
-        let mut clone = self.clone();
-        //N.B. we reverse the operands since want the most preferred first
-        clone.members.sort_by(|m1, m2| m2.cmp(m1));
-        clone
-    }
     pub fn sort_members(&mut self) {
         //N.B. we reverse the operands since want the most preferred first
         self.members.sort_by(|m1, m2| m2.cmp(m1));
     }
+
     /// Add a member to the gateway group.
     ///
     /// # Errors
@@ -117,11 +111,6 @@ impl GwGroup {
     #[must_use]
     pub fn get_member_pos(&self, name: &str) -> Option<usize> {
         self.members.iter().position(|m| m.name.as_str() == name)
-    }
-
-    #[must_use]
-    pub fn get_member_at(&self, index: usize) -> Option<&GwGroupMember> {
-        self.members.get(index)
     }
 }
 
@@ -164,14 +153,8 @@ impl GwGroupTable {
         self.get_group(group)
             .map(|group| group.get_member_pos(name))?
     }
-    #[must_use]
-    pub fn sorted(&self) -> Self {
-        let inner: HashMap<String, GwGroup> = self
-            .0
-            .iter()
-            .map(|(name, group)| (name.clone(), group.sorted()))
-            .collect();
-        Self(inner)
+    pub fn sort(&mut self) {
+        self.0.values_mut().for_each(GwGroup::sort_members);
     }
 }
 
