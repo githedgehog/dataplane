@@ -1233,6 +1233,7 @@ mod tests {
             ),
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: "default".into(),
+            acl: None,
         });
 
         vpc_table.add(vpc1.clone()).unwrap();
@@ -1291,6 +1292,7 @@ mod tests {
             ),
             remote_id: "VPC02".try_into().unwrap(),
             gwgroup: "default".into(),
+            acl: None,
         });
 
         vpc1.peerings.push(Peering {
@@ -1305,6 +1307,7 @@ mod tests {
             ),
             remote_id: "VPC03".try_into().unwrap(),
             gwgroup: "default".into(),
+            acl: None,
         });
 
         vpc_table.add(vpc1.clone()).unwrap();

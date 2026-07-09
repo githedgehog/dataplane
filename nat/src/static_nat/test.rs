@@ -224,6 +224,7 @@ fn build_context() -> NatTables {
         remote: manifest2.clone(),
         remote_id: "12345".try_into().expect("Failed to create VPC ID"),
         gwgroup: "default".into(),
+        acl: None,
     };
     let peering2 = Peering {
         name: "test_peering2".into(),
@@ -231,6 +232,7 @@ fn build_context() -> NatTables {
         remote: manifest1,
         remote_id: "67890".try_into().expect("Failed to create VPC ID"),
         gwgroup: "default".into(),
+        acl: None,
     };
 
     // This code is extremely convoluted
