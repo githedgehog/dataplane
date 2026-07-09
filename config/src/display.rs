@@ -18,6 +18,7 @@ use crate::external::overlay::vpcpeering::{
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
 use crate::external::overlay::{Overlay, ValidatedOverlay};
 use chrono::{DateTime, Utc};
+use net::vxlan::Vni;
 
 use common::cliprovider::Heading;
 const SEP: &str = "       ";
@@ -134,10 +135,11 @@ fn fmt_remote_manifest(
     f: &mut std::fmt::Formatter<'_>,
     manifest: &VpcManifest,
     remote_id: &VpcId,
+    remote_vni: Vni,
 ) -> std::fmt::Result {
     writeln!(
         f,
-        "     remote VPC is {} (id:{}):",
+        "     remote VPC is {} (id:{}), vni: {remote_vni}:",
         manifest.name, remote_id
     )?;
     for e in &manifest.exposes {
@@ -152,7 +154,7 @@ impl Display for Peering {
         writeln!(f, "   gwgroup: {}", self.gwgroup)?;
         fmt_local_manifest(f, &self.local)?;
         writeln!(f)?;
-        fmt_remote_manifest(f, &self.remote, &self.remote_id)?;
+        fmt_remote_manifest(f, &self.remote, &self.remote_id, self.remote_vni)?;
         writeln!(f)
     }
 }
@@ -172,12 +174,12 @@ fn fmt_remote_validated_manifest(
     f: &mut std::fmt::Formatter<'_>,
     manifest: &ValidatedManifest,
     remote_id: &VpcId,
+    remote_vni: Vni,
 ) -> std::fmt::Result {
     writeln!(
         f,
-        "     remote VPC is {} (id:{}):",
+        "     remote VPC is {} (id:{remote_id}) vni:{remote_vni} :",
         manifest.name(),
-        remote_id
     )?;
     for e in manifest.valexp() {
         e.fmt(f)?;
@@ -191,7 +193,7 @@ impl Display for ValidatedPeering {
         writeln!(f, "   gwgroup: {}", self.gwgroup())?;
         fmt_local_validated_manifest(f, self.local())?;
         writeln!(f)?;
-        fmt_remote_validated_manifest(f, self.remote(), self.remote_id())?;
+        fmt_remote_validated_manifest(f, self.remote(), self.remote_id(), self.remote_vni())?;
         writeln!(f)
     }
 }

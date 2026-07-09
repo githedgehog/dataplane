@@ -182,17 +182,19 @@ mod tests {
         manifest2.add_expose(expose3);
         manifest2.add_expose(expose4);
 
+        let src_vni = Vni::new_checked(100).unwrap();
+        let dst_vni = Vni::new_checked(200).unwrap();
+
         let peering: Peering = Peering {
             name: "test_peering".into(),
             local: manifest1,
             remote: manifest2,
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
+            remote_vni: dst_vni,
             gwgroup: "default".into(),
             acl: None,
         };
 
-        let src_vni = Vni::new_checked(100).unwrap();
-        let dst_vni = Vni::new_checked(200).unwrap();
         let mut vpctable = VpcTable::new();
         let mut src_vpc = Vpc::new("VPC", "12345", src_vni.as_u32()).unwrap();
         src_vpc.peerings.push(peering.clone());

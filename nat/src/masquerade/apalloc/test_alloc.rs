@@ -93,12 +93,17 @@ mod context {
 
         let manifest2 = VpcManifest::with_exposes("VPC-2", vec![expose3, expose4]);
 
+        // VPC-1 and VPC-2
+        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
+        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
+
         // Peerings
         let peering1 = Peering {
             name: "test_peering1".into(),
             local: manifest1.clone(),
             remote: manifest2.clone(),
             remote_id: "12345".try_into().unwrap(),
+            remote_vni: vpc2.vni,
             gwgroup: "default".into(),
             acl: None,
         };
@@ -107,16 +112,12 @@ mod context {
             local: manifest2,
             remote: manifest1,
             remote_id: "67890".try_into().unwrap(),
+            remote_vni: vpc1.vni,
             gwgroup: "default".into(),
             acl: None,
         };
 
-        // VPC-1
-        let mut vpc1 = Vpc::new("VPC-1", "67890", vni1().as_u32()).unwrap();
         vpc1.peerings.push(peering1.clone());
-
-        // VPC-2
-        let mut vpc2 = Vpc::new("VPC-2", "12345", vni2().as_u32()).unwrap();
         vpc2.peerings.push(peering2.clone());
 
         // VPC table
