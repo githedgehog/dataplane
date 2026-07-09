@@ -14,6 +14,7 @@ use tracing::{debug, error, warn};
 
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
+use crate::external::overlay::acl::{Acl, ValidatedAcl};
 use crate::external::overlay::vpcpeering::ValidatedManifest;
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
 use crate::internal::interfaces::interface::InterfaceConfigTable;
@@ -32,6 +33,7 @@ pub struct Peering {
     pub remote: VpcManifest, /* remote manifest */
     pub remote_id: VpcId,    /* Id of peer */
     pub gwgroup: String,     /* gateway group serving this peering */
+    pub acl: Option<Acl>,    /* optional ACL for this peering */
 }
 
 impl Peering {
@@ -47,12 +49,21 @@ impl Peering {
             ));
         }
 
+        let local = self.local.validate()?;
+        let remote = self.remote.validate()?;
+        let acl = if let Some(acl) = &self.acl {
+            Some(acl.validate(&local, &remote)?)
+        } else {
+            None
+        };
+
         let valid_peering_candidate = ValidatedPeering {
             name: self.name.clone(),
-            local: self.local.validate()?,
-            remote: self.remote.validate()?,
+            local,
+            remote,
             remote_id: self.remote_id.clone(),
             gwgroup: self.gwgroup.clone(),
+            acl,
         };
         valid_peering_candidate.validate_nat_combinations()?;
 
@@ -80,6 +91,7 @@ impl Peering {
             remote: fake_remote,
             remote_id: self.remote_id.clone(),
             gwgroup: self.gwgroup.clone(),
+            acl: None,
         }
     }
 }
@@ -91,6 +103,7 @@ pub struct ValidatedPeering {
     remote: ValidatedManifest, /* remote manifest */
     remote_id: VpcId,          /* Id of peer */
     gwgroup: String,           /* gateway group serving this peering */
+    acl: Option<ValidatedAcl>, /* optional ACL for this peering */
 }
 
 impl ValidatedPeering {
@@ -238,6 +251,7 @@ impl Vpc {
                     remote: remote.clone(),
                     remote_id: remote_id.clone(),
                     gwgroup: p.gwgroup.clone(),
+                    acl: p.acl.clone(),
                 }
             })
             .collect();
@@ -317,6 +331,7 @@ impl Vpc {
                     remote: fake_remote,
                     remote_id: peering.remote_id.clone(),
                     gwgroup: peering.gwgroup.clone(),
+                    acl: None,
                 }
             })
             .collect::<Vec<_>>();

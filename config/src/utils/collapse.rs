@@ -237,6 +237,7 @@ mod tests {
             remote: manifest_empty.clone(),
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
             gwgroup: "default".into(),
+            acl: None,
         };
 
         let expected_expose = VpcExpose::empty()
