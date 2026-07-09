@@ -218,11 +218,23 @@ fn build_context() -> NatTables {
 
     let manifest2 = VpcManifest::with_exposes("VPC-2", vec![expose3, expose4]);
 
+    // This code is extremely convoluted
+    let mut vpctable = VpcTable::new();
+
+    // vpc-1
+    let vni1 = Vni::new_checked(100).unwrap();
+    let mut vpc1 = Vpc::new("VPC-1", "67890", vni1.as_u32()).unwrap();
+
+    // vpc-2
+    let vni2 = Vni::new_checked(200).unwrap();
+    let mut vpc2 = Vpc::new("VPC-2", "12345", vni2.as_u32()).unwrap();
+
     let peering1 = Peering {
         name: "test_peering1".into(),
         local: manifest1.clone(),
         remote: manifest2.clone(),
         remote_id: "12345".try_into().expect("Failed to create VPC ID"),
+        remote_vni: vpc2.vni,
         gwgroup: "default".into(),
     };
     let peering2 = Peering {
@@ -230,22 +242,16 @@ fn build_context() -> NatTables {
         local: manifest2,
         remote: manifest1,
         remote_id: "67890".try_into().expect("Failed to create VPC ID"),
+        remote_vni: vpc1.vni,
         gwgroup: "default".into(),
     };
 
-    // This code is extremely convoluted
-    let mut vpctable = VpcTable::new();
-
-    // vpc-1
-    let vni1 = Vni::new_checked(100).unwrap();
-    let mut vpc1 = Vpc::new("VPC-1", "67890", vni1.as_u32()).unwrap();
+    // Add peerings to vpcs
     vpc1.peerings.push(peering1.clone());
-    vpctable.add(vpc1).unwrap();
-
-    // vpc-2
-    let vni2 = Vni::new_checked(200).unwrap();
-    let mut vpc2 = Vpc::new("VPC-2", "12345", vni2.as_u32()).unwrap();
     vpc2.peerings.push(peering2.clone());
+
+    // add vpcs to table
+    vpctable.add(vpc1).unwrap();
     vpctable.add(vpc2).unwrap();
 
     let mut nat_table = NatTables::new();

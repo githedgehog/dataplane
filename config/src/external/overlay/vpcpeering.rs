@@ -839,7 +839,7 @@ impl VpcPeering {
     }
     /// Given a peering fetch the manifests, orderly depending on the provided vpc name
     #[must_use]
-    pub fn get_peering_manifests(&self, vpc: &str) -> (&VpcManifest, &VpcManifest) {
+    pub(crate) fn get_peering_manifests(&self, vpc: &str) -> (&VpcManifest, &VpcManifest) {
         if self.left.name == vpc {
             (&self.left, &self.right)
         } else {

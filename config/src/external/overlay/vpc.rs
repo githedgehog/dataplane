@@ -31,6 +31,7 @@ pub struct Peering {
     pub local: VpcManifest,  /* local manifest */
     pub remote: VpcManifest, /* remote manifest */
     pub remote_id: VpcId,    /* Id of peer */
+    pub remote_vni: Vni,     /* Vni of peer -- should be vpc discriminant in future */
     pub gwgroup: String,     /* gateway group serving this peering */
 }
 
@@ -52,6 +53,7 @@ impl Peering {
             local: self.local.validate()?,
             remote: self.remote.validate()?,
             remote_id: self.remote_id.clone(),
+            remote_vni: self.remote_vni,
             gwgroup: self.gwgroup.clone(),
         };
         valid_peering_candidate.validate_nat_combinations()?;
@@ -79,6 +81,7 @@ impl Peering {
             local: fake_local,
             remote: fake_remote,
             remote_id: self.remote_id.clone(),
+            remote_vni: self.remote_vni,
             gwgroup: self.gwgroup.clone(),
         }
     }
@@ -90,6 +93,7 @@ pub struct ValidatedPeering {
     local: ValidatedManifest,  /* local manifest */
     remote: ValidatedManifest, /* remote manifest */
     remote_id: VpcId,          /* Id of peer */
+    remote_vni: Vni,           /* Vni of peer -- should be vpc discriminant in future */
     gwgroup: String,           /* gateway group serving this peering */
 }
 
@@ -112,6 +116,11 @@ impl ValidatedPeering {
     #[must_use]
     pub fn remote_id(&self) -> &VpcId {
         &self.remote_id
+    }
+
+    #[must_use]
+    pub fn remote_vni(&self) -> Vni {
+        self.remote_vni
     }
 
     #[must_use]
@@ -187,7 +196,19 @@ impl TryFrom<&str> for VpcId {
     }
 }
 
-type VpcIdMap = BTreeMap<String, VpcId>;
+struct VpcSummary {
+    vpcid: VpcId,
+    vni: Vni,
+}
+impl From<&Vpc> for VpcSummary {
+    fn from(vpc: &Vpc) -> Self {
+        Self {
+            vpcid: vpc.id.clone(),
+            vni: vpc.vni,
+        }
+    }
+}
+type VpcMap = BTreeMap<String, VpcSummary>;
 
 /// Representation of a VPC from the RPC
 #[derive(Clone, Debug, PartialEq)]
@@ -196,7 +217,7 @@ pub struct Vpc {
     pub id: VpcId,                        /* internal Id, unique*/
     pub vni: Vni,                         /* mandatory */
     pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
-    pub peerings: Vec<Peering>,           /* peerings of this VPC - NOT set via gRPC */
+    pub peerings: Vec<Peering>,           /* peerings of this VPC (collected) */
 }
 impl Vpc {
     pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ConfigError> {
@@ -211,18 +232,19 @@ impl Vpc {
     }
 
     /// Collect all peerings from the [`VpcPeeringTable`] table this vpc participates in
-    fn set_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcIdMap) {
+    fn set_peerings(&mut self, peering_table: &VpcPeeringTable, idmap: &VpcMap) {
         debug!("Collecting peerings for vpc '{}'...", self.name);
         self.peerings = peering_table
             .peerings_vpc(&self.name)
             .map(|p| {
                 let (local, remote) = p.get_peering_manifests(&self.name);
-                let remote_id = idmap.get(&remote.name).unwrap_or_else(|| unreachable!());
+                let remote_vpc = idmap.get(&remote.name).unwrap_or_else(|| unreachable!());
                 Peering {
                     name: p.name.clone(),
                     local: local.clone(),
                     remote: remote.clone(),
-                    remote_id: remote_id.clone(),
+                    remote_id: remote_vpc.vpcid.clone(),
+                    remote_vni: remote_vpc.vni,
                     gwgroup: p.gwgroup.clone(),
                 }
             })
@@ -301,6 +323,7 @@ impl Vpc {
                     local: fake_local,
                     remote: fake_remote,
                     remote_id: peering.remote_id.clone(),
+                    remote_vni: peering.remote_vni,
                     gwgroup: peering.gwgroup.clone(),
                 }
             })
@@ -467,13 +490,13 @@ impl VpcTable {
         Ok(())
     }
 
-    /// Build a `VpcIdMap`
+    /// Build a `VpcMap`
     #[must_use]
-    fn vpcid_map(&self) -> VpcIdMap {
-        debug!("Building a VPC Id map...");
-        let id_map: VpcIdMap = self
+    fn vpc_map(&self) -> VpcMap {
+        debug!("Building a VPC map...");
+        let id_map: VpcMap = self
             .values()
-            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
+            .map(|vpc| (vpc.name.clone(), VpcSummary::from(vpc)))
             .collect();
         id_map
     }
@@ -501,12 +524,12 @@ impl VpcTable {
 
     /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
     pub(crate) fn collect_peerings(&self, peering_table: &VpcPeeringTable) -> VpcTable {
-        let idmap = self.vpcid_map();
+        let vpc_map = self.vpc_map();
         debug!("Collecting peerings for all VPCs..");
         let mut new_table = self.clone();
         new_table
             .values_mut()
-            .for_each(|vpc| vpc.set_peerings(peering_table, &idmap));
+            .for_each(|vpc| vpc.set_peerings(peering_table, &vpc_map));
         new_table
     }
 
