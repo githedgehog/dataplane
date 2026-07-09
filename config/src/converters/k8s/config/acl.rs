@@ -425,7 +425,7 @@ mod test {
             ),
         )
         .unwrap();
-        assert_eq!(r.action(), AclAction::Allow);
+        assert_eq!(r.action, AclAction::Allow);
 
         // 'to' blank, inferred from 'from'
         assert!(
@@ -501,7 +501,7 @@ mod test {
             ),
         )
         .unwrap();
-        assert!(!r.pattern().src().is_empty());
+        assert!(!r.pattern.src.is_empty());
 
         // Same subnet name doesn't exist under VPC-2: fails when VPC-2 is the "from" side
         assert!(
@@ -581,7 +581,7 @@ mod test {
             ),
         )
         .unwrap();
-        assert!(r.pattern().src().is_empty());
+        assert!(r.pattern.src.is_empty());
     }
 
     // An entry with ports but neither cidr nor vpcSubnet is legal ("any address, these ports") but
@@ -614,7 +614,7 @@ mod test {
             ),
         )
         .unwrap();
-        assert!(r.pattern().src().is_empty());
+        assert!(r.pattern.src.is_empty());
 
         let empty_ports = GatewayAgentPeeringsAclRulesMatch {
             dst: None,
@@ -690,8 +690,9 @@ mod test {
         .validate()
         .unwrap();
 
-        let mut acl = Acl::new(AclAction::Deny, vec![converted_rule]);
-        acl.validate(&left, &right).unwrap();
+        let acl = Acl::new(AclAction::Deny, vec![converted_rule])
+            .validate(&left, &right)
+            .unwrap();
         assert_eq!(
             acl.rules()[0].pattern().src(),
             &PrefixPortsSet::from([PrefixWithOptionalPorts::new(
@@ -751,15 +752,15 @@ mod test {
         // The two rules built via `rule()` default to no explicit scope (CRD `None`), which maps to
         // `AclScope::Flow`; the third rule explicitly requested `Packet` scope, which must survive
         // the conversion.
-        assert_eq!(converted.rules()[0].scope(), AclScope::Flow);
-        assert_eq!(converted.rules()[1].scope(), AclScope::Flow);
-        assert_eq!(converted.rules()[2].scope(), AclScope::Packet);
+        assert_eq!(converted.rules()[0].scope, AclScope::Flow);
+        assert_eq!(converted.rules()[1].scope, AclScope::Flow);
+        assert_eq!(converted.rules()[2].scope, AclScope::Packet);
 
         // Same for `log`: the two rules built via `rule()` default to no explicit `log` (CRD
         // `None`), which maps to `false`; the third rule explicitly requested `log: true`, which
         // must survive the conversion too.
-        assert!(!converted.rules()[0].log());
-        assert!(!converted.rules()[1].log());
-        assert!(converted.rules()[2].log());
+        assert!(!converted.rules()[0].log);
+        assert!(!converted.rules()[1].log);
+        assert!(converted.rules()[2].log);
     }
 }
