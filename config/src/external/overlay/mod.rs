@@ -11,7 +11,7 @@ pub mod vpcpeering;
 
 use crate::{ConfigError, ConfigResult};
 use tracing::{debug, error};
-use vpc::{ValidatedVpcTable, VpcIdMap, VpcTable};
+use vpc::{ValidatedVpcTable, VpcTable};
 use vpcpeering::{VpcManifest, VpcPeeringTable};
 
 #[derive(Clone, Debug, Default)]
@@ -28,6 +28,7 @@ impl Overlay {
             peering_table,
         }
     }
+
     /// Check if a `Vpc` referred in a peering exists
     fn check_peering_vpc(&self, peering: &str, manifest: &VpcManifest) -> ConfigResult {
         self.vpc_table.get_vpc(&manifest.name).ok_or_else(|| {
@@ -37,29 +38,14 @@ impl Overlay {
         Ok(())
     }
 
-    /// Validate all peerings, checking if the VPCs they refer to exist in vpc table
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a peering references a VPC that does not exist in the VPC table.
-    pub fn validate_peerings(&self) -> ConfigResult {
+    /// Validate all peerings: check if the VPCs they refer to exist in vpc table
+    fn validate_peering_vpcs(&self) -> ConfigResult {
         debug!("Validating VPC peerings...");
         for peering in self.peering_table.values() {
             self.check_peering_vpc(&peering.name, &peering.left)?;
             self.check_peering_vpc(&peering.name, &peering.right)?;
         }
         Ok(())
-    }
-
-    /// Build a `VpcIdMap`. We have already checked that all VPC Ids are distinct
-    #[must_use]
-    pub(crate) fn vpcid_map(&self) -> VpcIdMap {
-        let id_map: VpcIdMap = self
-            .vpc_table
-            .values()
-            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
-            .collect();
-        id_map
     }
 
     /// Validate the overlay configuration, returning a `ValidatedOverlay` if successful.
@@ -70,26 +56,20 @@ impl Overlay {
     pub fn validate(&self) -> Result<ValidatedOverlay, ConfigError> {
         debug!("Validating overlay configuration...");
 
-        self.validate_peerings()?;
+        // validate peerings:
+        self.validate_peering_vpcs()?;
 
         // Collect peerings for every VPC and validate the table
-        let validated_vpc_table = self.collect_peerings().validate()?;
-        let validated_overlay = ValidatedOverlay {
-            vpc_table: validated_vpc_table,
-        };
+        let vpc_table = self
+            .vpc_table
+            .collect_peerings(&self.peering_table)
+            .validate()?;
+
+        let validated_overlay = ValidatedOverlay { vpc_table };
 
         let peering_table = &self.peering_table;
         debug!("Overlay configuration is VALID:\n{validated_overlay}\n{peering_table}");
         Ok(validated_overlay)
-    }
-
-    /// Collect peerings from the peering table for every VPC.
-    ///
-    /// Should only be called in `validate`, or in tests.
-    pub(crate) fn collect_peerings(&self) -> VpcTable {
-        let id_map = self.vpcid_map();
-        self.vpc_table
-            .collect_peerings(&self.peering_table, &id_map)
     }
 
     /// FOR TESTS ONLY. Fake validation for the overlay.
@@ -101,7 +81,7 @@ impl Overlay {
     #[allow(unsafe_code)]
     #[must_use]
     pub unsafe fn fake_validated_overlay_for_tests(&self) -> ValidatedOverlay {
-        let vpc_table = self.collect_peerings();
+        let vpc_table = self.vpc_table.collect_peerings(&self.peering_table);
         let fake_valid_vpc_table = unsafe { vpc_table.fake_validated_vpc_table_for_tests() };
         ValidatedOverlay {
             vpc_table: fake_valid_vpc_table,
