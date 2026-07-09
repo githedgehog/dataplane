@@ -10,7 +10,6 @@
 pub mod test {
     use crate::external::ConfigError;
     use crate::external::overlay::Overlay;
-    use crate::external::overlay::VpcIdMap;
     use crate::external::overlay::vpc::{Vpc, VpcTable};
     use crate::external::overlay::vpcpeering::VpcExpose;
     use crate::external::overlay::vpcpeering::VpcManifest;
@@ -688,14 +687,8 @@ pub mod test {
         /* display peering table */
         println!("{peering_table}");
 
-        /* collect ids */
-        let id_map: VpcIdMap = vpc_table
-            .values()
-            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
-            .collect();
-
         /* collect the peerings for each VPC */
-        vpc_table.collect_peerings(&peering_table, &id_map);
+        vpc_table = vpc_table.collect_peerings(&peering_table);
 
         /* display VPC table */
         println!("{}", vpc_table.as_summary());

@@ -187,7 +187,7 @@ impl TryFrom<&str> for VpcId {
     }
 }
 
-pub(crate) type VpcIdMap = BTreeMap<String, VpcId>;
+type VpcIdMap = BTreeMap<String, VpcId>;
 
 /// Representation of a VPC from the RPC
 #[derive(Clone, Debug, PartialEq)]
@@ -266,16 +266,15 @@ impl Vpc {
             .map(Peering::validate)
             .collect::<Result<_, _>>()?;
 
-        let valid_vpc_candidate = ValidatedVpc {
+        let validated_vpc = ValidatedVpc {
             name: self.name.clone(),
             id: self.id.clone(),
             vni: self.vni,
             interfaces: self.interfaces.clone(),
             peerings: validated_peerings,
         };
-
-        valid_vpc_candidate.check_overlap_and_default()?;
-        Ok(valid_vpc_candidate)
+        validated_vpc.check_overlap_and_default()?;
+        Ok(validated_vpc)
     }
 
     /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
@@ -468,6 +467,17 @@ impl VpcTable {
         Ok(())
     }
 
+    /// Build a `VpcIdMap`
+    #[must_use]
+    fn vpcid_map(&self) -> VpcIdMap {
+        debug!("Building a VPC Id map...");
+        let id_map: VpcIdMap = self
+            .values()
+            .map(|vpc| (vpc.name.clone(), vpc.id.clone()))
+            .collect();
+        id_map
+    }
+
     /// Get a [`Vpc`] from the vpc table by name
     #[must_use]
     pub fn get_vpc(&self, vpc_name: &str) -> Option<&Vpc> {
@@ -490,16 +500,13 @@ impl VpcTable {
     }
 
     /// Collect peerings for all [`Vpc`]s in this [`VpcTable`]
-    pub(crate) fn collect_peerings(
-        &self,
-        peering_table: &VpcPeeringTable,
-        idmap: &VpcIdMap,
-    ) -> VpcTable {
+    pub(crate) fn collect_peerings(&self, peering_table: &VpcPeeringTable) -> VpcTable {
+        let idmap = self.vpcid_map();
         debug!("Collecting peerings for all VPCs..");
         let mut new_table = self.clone();
         new_table
             .values_mut()
-            .for_each(|vpc| vpc.set_peerings(peering_table, idmap));
+            .for_each(|vpc| vpc.set_peerings(peering_table, &idmap));
         new_table
     }
 
