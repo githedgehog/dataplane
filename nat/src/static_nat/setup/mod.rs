@@ -192,6 +192,7 @@ mod tests {
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
             remote_vni: dst_vni,
             gwgroup: "default".into(),
+            acl: None,
         };
 
         let mut vpctable = VpcTable::new();

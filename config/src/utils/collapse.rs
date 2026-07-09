@@ -238,6 +238,7 @@ mod tests {
             remote_id: "12345".try_into().expect("Failed to create VPC ID"),
             remote_vni: 100.try_into().unwrap(),
             gwgroup: "default".into(),
+            acl: None,
         };
 
         let expected_expose = VpcExpose::empty()

@@ -236,6 +236,7 @@ fn build_context() -> NatTables {
         remote_id: "12345".try_into().expect("Failed to create VPC ID"),
         remote_vni: vpc2.vni,
         gwgroup: "default".into(),
+        acl: None,
     };
     let peering2 = Peering {
         name: "test_peering2".into(),
@@ -244,6 +245,7 @@ fn build_context() -> NatTables {
         remote_id: "67890".try_into().expect("Failed to create VPC ID"),
         remote_vni: vpc1.vni,
         gwgroup: "default".into(),
+        acl: None,
     };
 
     // Add peerings to vpcs

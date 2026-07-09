@@ -105,6 +105,7 @@ mod context {
             remote_id: "12345".try_into().unwrap(),
             remote_vni: vpc2.vni,
             gwgroup: "default".into(),
+            acl: None,
         };
         let peering2 = Peering {
             name: "test_peering2".into(),
@@ -113,6 +114,7 @@ mod context {
             remote_id: "67890".try_into().unwrap(),
             remote_vni: vpc1.vni,
             gwgroup: "default".into(),
+            acl: None,
         };
 
         vpc1.peerings.push(peering1.clone());

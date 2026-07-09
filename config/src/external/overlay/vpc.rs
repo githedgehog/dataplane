@@ -13,6 +13,9 @@ use tracing::{debug, error, warn};
 
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
+
+use crate::external::overlay::acl::{Acl, ValidatedAcl};
+
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
 use crate::external::overlay::vpcrouting::VpcRouteTable;
 use crate::internal::interfaces::interface::InterfaceConfigTable;
@@ -32,6 +35,7 @@ pub struct Peering {
     pub remote_id: VpcId,    /* Id of peer */
     pub remote_vni: Vni,     /* Vni of peer -- should be vpc discriminant in future */
     pub gwgroup: String,     /* gateway group serving this peering */
+    pub acl: Option<Acl>,    /* optional ACL for this peering */
 }
 
 impl Peering {
@@ -51,10 +55,18 @@ impl Peering {
                 "A default expose cannot be peered with another default expose",
             ));
         }
-
         self.local.validate()?;
         self.remote.validate()?;
-        self.validate_nat_combinations()
+        self.validate_nat_combinations()?;
+
+        // FIXME: we don't store validated acl -- this is an artifact of rebasing
+        // the acl branch on the validated types removal
+        let acl = if let Some(acl) = &self.acl {
+            Some(acl.validate(&self.local, &self.remote)?)
+        } else {
+            None
+        };
+        Ok(())
     }
 
     /// FOR TESTS ONLY. Fake validation for a VPC peering.
@@ -79,6 +91,7 @@ impl Peering {
             remote_id: self.remote_id.clone(),
             remote_vni: self.remote_vni,
             gwgroup: self.gwgroup.clone(),
+            acl: None,
         }
     }
 
@@ -247,6 +260,7 @@ impl Vpc {
                     remote_id: remote_vpc.vpcid.clone(),
                     remote_vni: remote_vpc.vni,
                     gwgroup: p.gwgroup.clone(),
+                    acl: p.acl.clone(),
                 }
             })
             .collect();
@@ -324,6 +338,7 @@ impl Vpc {
                     remote_id: peering.remote_id.clone(),
                     remote_vni: peering.remote_vni,
                     gwgroup: peering.gwgroup.clone(),
+                    acl: None,
                 }
             })
             .collect::<Vec<_>>();
