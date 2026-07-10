@@ -61,7 +61,7 @@ pub trait IpRangeWithPorts {
 }
 
 /// A structure containing a prefix and a port range.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(any(test, feature = "bolero"), derive(bolero::TypeGenerator))]
 pub struct PrefixWithPorts {
     prefix: Prefix,
@@ -156,6 +156,22 @@ impl PrefixPortsSet {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn root_v4() -> Self {
+        let mut empty = Self::new();
+        let root_v4 = PrefixWithOptionalPorts::new(Prefix::root_v4(), None);
+        empty.insert(root_v4);
+        empty
+    }
+
+    #[must_use]
+    pub fn root_v6() -> Self {
+        let mut empty = Self::new();
+        let root_v6 = PrefixWithOptionalPorts::new(Prefix::root_v6(), None);
+        empty.insert(root_v6);
+        empty
     }
 
     /// Given two [`PrefixPortsSet`] objects, returns the set containing the intersection of
@@ -276,7 +292,7 @@ impl std::ops::DerefMut for PrefixPortsSet {
 /// type would be semantically equivalent. To avoid this, the constructor
 /// of this type guarantees that `max_range` is mapped to None, without
 /// needing to call an additional simplify method.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PrefixWithOptionalPorts {
     prefix: Prefix,
     ports: Option<PortRange>,
@@ -393,7 +409,7 @@ where
 }
 
 /// A port range, with a start and an end port (both included in the range).
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PortRange {
     start: u16,
     end: u16,
