@@ -123,12 +123,12 @@ fn deserialize(ga_input: &str) -> Result<GatewayAgent, ValidateError> {
 /// Main validation function
 fn validate(gwagent_json: &str) -> Result<(), ValidateError> {
     let crd = deserialize(gwagent_json)?;
-    let external = ExternalConfig::try_from(&crd).map_err(|e| match e {
+    let mut external = ExternalConfig::try_from(&crd).map_err(|e| match e {
         FromK8sConversionError::K8sInfra(e) => ValidateError::MetadataError(e.to_string()),
         _ => ValidateError::ConversionError(e.to_string()),
     })?;
 
-    let _ = external.validate().map_err(|e| {
+    external.validate().map_err(|e| {
         let mut config = ConfigErrors::default();
         config.errors.push(e.to_string());
         ValidateError::Configuration(config)

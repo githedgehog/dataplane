@@ -13,7 +13,6 @@ use tracing::{debug, error, warn};
 
 use crate::external::overlay::VpcManifest;
 use crate::external::overlay::VpcPeeringTable;
-use crate::external::overlay::vpcpeering::ValidatedManifest;
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
 use crate::external::overlay::vpcrouting::VpcRouteTable;
 use crate::internal::interfaces::interface::InterfaceConfigTable;
@@ -36,7 +35,12 @@ pub struct Peering {
 }
 
 impl Peering {
-    pub fn validate(&self) -> Result<ValidatedPeering, ConfigError> {
+    /// Validate this [`Peering`] (and its manifests) in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peering configuration is invalid.
+    pub fn validate(&mut self) -> ConfigResult {
         debug!(
             "Validating manifest of VPC {} in peering {}",
             self.local.name, self.name
@@ -48,17 +52,9 @@ impl Peering {
             ));
         }
 
-        let valid_peering_candidate = ValidatedPeering {
-            name: self.name.clone(),
-            local: self.local.validate()?,
-            remote: self.remote.validate()?,
-            remote_id: self.remote_id.clone(),
-            remote_vni: self.remote_vni,
-            gwgroup: self.gwgroup.clone(),
-        };
-        valid_peering_candidate.validate_nat_combinations()?;
-
-        Ok(valid_peering_candidate)
+        self.local.validate()?;
+        self.remote.validate()?;
+        self.validate_nat_combinations()
     }
 
     /// FOR TESTS ONLY. Fake validation for a VPC peering.
@@ -69,14 +65,14 @@ impl Peering {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub unsafe fn fake_validated_peering_for_tests(&self) -> ValidatedPeering {
+    pub unsafe fn fake_validated_peering_for_tests(&self) -> Peering {
         let (fake_local, fake_remote) = unsafe {
             (
                 self.local.fake_valid_manifest_for_tests(),
                 self.remote.fake_valid_manifest_for_tests(),
             )
         };
-        ValidatedPeering {
+        Peering {
             name: self.name.clone(),
             local: fake_local,
             remote: fake_remote,
@@ -85,31 +81,19 @@ impl Peering {
             gwgroup: self.gwgroup.clone(),
         }
     }
-}
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ValidatedPeering {
-    name: String,              /* name of peering */
-    local: ValidatedManifest,  /* local manifest */
-    remote: ValidatedManifest, /* remote manifest */
-    remote_id: VpcId,          /* Id of peer */
-    remote_vni: Vni,           /* Vni of peer -- should be vpc discriminant in future */
-    gwgroup: String,           /* gateway group serving this peering */
-}
-
-impl ValidatedPeering {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     #[must_use]
-    pub fn local(&self) -> &ValidatedManifest {
+    pub fn local(&self) -> &VpcManifest {
         &self.local
     }
 
     #[must_use]
-    pub fn remote(&self) -> &ValidatedManifest {
+    pub fn remote(&self) -> &VpcManifest {
         &self.remote
     }
 
@@ -218,6 +202,8 @@ pub struct Vpc {
     pub vni: Vni,                         /* mandatory */
     pub interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
     pub peerings: Vec<Peering>,           /* peerings of this VPC (collected) */
+    /// Route table towards remote VPCs. Empty until `validate()` builds it.
+    rt: VpcRouteTable,
 }
 impl Vpc {
     pub fn new(name: &str, id: &str, vni: u32) -> Result<Self, ConfigError> {
@@ -228,6 +214,7 @@ impl Vpc {
             vni,
             interfaces: InterfaceConfigTable::new(),
             peerings: vec![],
+            rt: VpcRouteTable::default(),
         })
     }
 
@@ -272,33 +259,29 @@ impl Vpc {
         Ok(())
     }
 
-    /// Validate a [`Vpc`] and produce a [`ValidatedVpc`] if it passes validation.
+    /// Validate a [`Vpc`], returning the enriched (peerings validated, route table built) VPC.
     ///
     /// # Errors
     ///
     /// Returns an error if the VPC configuration is invalid.
-    pub fn validate(&self) -> Result<ValidatedVpc, ConfigError> {
+    /// Validate this [`Vpc`] in place, validating its peerings and building its route table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the VPC configuration is invalid.
+    pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating config for VPC {}...", self.name);
         self.check_peering_count()?;
 
         debug!("Checking peerings of VPC {}...", self.name);
-        let validated_peerings: Vec<ValidatedPeering> = self
-            .peerings
-            .iter()
-            .map(Peering::validate)
-            .collect::<Result<_, _>>()?;
+        for peering in &mut self.peerings {
+            peering.validate()?;
+        }
 
-        let rt = VpcRouteTable::build(&validated_peerings).validate()?;
+        self.rt = VpcRouteTable::build(&self.peerings);
+        self.rt.validate()?;
 
-        let validated_vpc = ValidatedVpc {
-            name: self.name.clone(),
-            id: self.id.clone(),
-            vni: self.vni,
-            interfaces: self.interfaces.clone(),
-            peerings: validated_peerings,
-            rt,
-        };
-        Ok(validated_vpc)
+        Ok(())
     }
 
     /// FOR TESTS ONLY. Fake validation for the VPC peering manifests.
@@ -309,7 +292,7 @@ impl Vpc {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub unsafe fn fake_validated_vpc_for_tests(&self) -> ValidatedVpc {
+    pub unsafe fn fake_validated_vpc_for_tests(&self) -> Vpc {
         let fake_validated_peerings = self
             .peerings
             .iter()
@@ -320,7 +303,7 @@ impl Vpc {
                         peering.remote.fake_valid_manifest_for_tests(),
                     )
                 };
-                ValidatedPeering {
+                Peering {
                     name: peering.name.clone(),
                     local: fake_local,
                     remote: fake_remote,
@@ -333,7 +316,7 @@ impl Vpc {
 
         let not_validated_rt = VpcRouteTable::build(&fake_validated_peerings);
 
-        ValidatedVpc {
+        Vpc {
             name: self.name.clone(),
             id: self.id.clone(),
             vni: self.vni,
@@ -342,19 +325,7 @@ impl Vpc {
             rt: not_validated_rt,
         }
     }
-}
 
-#[derive(Debug)]
-pub struct ValidatedVpc {
-    name: String,                     /* name of vpc, used as key */
-    id: VpcId,                        /* internal Id, unique*/
-    vni: Vni,                         /* mandatory */
-    interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
-    peerings: Vec<ValidatedPeering>,  /* peerings of this VPC - NOT set via gRPC */
-    rt: VpcRouteTable,
-}
-
-impl ValidatedVpc {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -376,7 +347,7 @@ impl ValidatedVpc {
     }
 
     #[must_use]
-    pub fn peerings(&self) -> &[ValidatedPeering] {
+    pub fn peerings(&self) -> &[Peering] {
         &self.peerings
     }
 
@@ -393,7 +364,7 @@ impl ValidatedVpc {
 
     /// Provide an iterator over all peerings that have either masquerade or port-forwarding
     /// exposes locally.
-    pub fn local_stateful_nat_peerings(&self) -> impl Iterator<Item = &ValidatedPeering> {
+    pub fn local_stateful_nat_peerings(&self) -> impl Iterator<Item = &Peering> {
         self.peerings().iter().filter(|p| {
             p.local()
                 .valexp()
@@ -486,21 +457,16 @@ impl VpcTable {
         new_table
     }
 
-    /// Validate the [`VpcTable`] and produce a [`ValidatedVpcTable`] if it passes validation.
+    /// Validate the [`VpcTable`], returning it with every [`Vpc`] validated and enriched.
     ///
     /// # Errors
     ///
     /// Returns an error if any [`Vpc`] fails validation.
-    pub fn validate(&self) -> Result<ValidatedVpcTable, ConfigError> {
-        let validated_vpcs = self
-            .vpcs
-            .iter()
-            .map(|(name, vpc)| vpc.validate().map(|vpc| (name.clone(), vpc)))
-            .collect::<Result<_, _>>()?;
-        Ok(ValidatedVpcTable {
-            vpcs: validated_vpcs,
-            ids: self.ids.clone(),
-        })
+    pub fn validate(&mut self) -> ConfigResult {
+        for vpc in self.vpcs.values_mut() {
+            vpc.validate()?;
+        }
+        Ok(())
     }
 
     /// FOR TESTS ONLY. Fake validation for the VPC table.
@@ -511,47 +477,21 @@ impl VpcTable {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub(crate) unsafe fn fake_validated_vpc_table_for_tests(&self) -> ValidatedVpcTable {
-        let fake_validated_vpcs = unsafe {
+    pub(crate) unsafe fn fake_validated_vpc_table_for_tests(&self) -> VpcTable {
+        let vpcs = unsafe {
             self.vpcs
                 .iter()
                 .map(|(name, vpc)| (name.clone(), vpc.fake_validated_vpc_for_tests()))
                 .collect()
         };
-        ValidatedVpcTable {
-            vpcs: fake_validated_vpcs,
+        VpcTable {
+            vpcs,
+            vnis: self.vnis.clone(),
             ids: self.ids.clone(),
         }
     }
-}
 
-#[derive(Debug, Default)]
-pub struct ValidatedVpcTable {
-    vpcs: BTreeMap<String, ValidatedVpc>,
-    ids: BTreeMap<VpcId, String>, // name of vpc
-}
-
-impl ValidatedVpcTable {
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.vpcs.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.vpcs.is_empty()
-    }
-
-    pub fn values(&self) -> impl Iterator<Item = &ValidatedVpc> {
-        self.vpcs.values()
-    }
-
-    #[must_use]
-    pub fn get_vpc(&self, vpc_name: &str) -> Option<&ValidatedVpc> {
-        self.vpcs.get(vpc_name)
-    }
-
-    fn get_vpc_by_vpcid(&self, vpcid: &VpcId) -> Option<&ValidatedVpc> {
+    fn get_vpc_by_vpcid(&self, vpcid: &VpcId) -> Option<&Vpc> {
         match self.ids.get(vpcid) {
             Some(name) => self.vpcs.get(name),
             None => None,
@@ -559,14 +499,9 @@ impl ValidatedVpcTable {
     }
 
     #[must_use]
-    pub fn get_remote_vni(&self, peering: &ValidatedPeering) -> Vni {
+    pub fn get_remote_vni(&self, peering: &Peering) -> Vni {
         self.get_vpc_by_vpcid(peering.remote_id())
             .unwrap_or_else(|| unreachable!())
             .vni
-    }
-
-    /// Iterate over all of the [`Peering`]s of all [`Vpc`]s immutably
-    pub fn peerings(&self) -> impl Iterator<Item = &ValidatedPeering> {
-        self.vpcs.values().flat_map(|vpc| vpc.peerings.iter())
     }
 }

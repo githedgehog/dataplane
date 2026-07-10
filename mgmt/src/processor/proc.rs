@@ -4,19 +4,19 @@
 //! Configuration processor
 
 use concurrency::sync::Arc;
-use config::external::overlay::ValidatedOverlay;
+use config::external::overlay::Overlay;
 use flow_entry::flow_table::FlowTable;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
-use config::external::overlay::vpc::ValidatedVpcTable;
+use config::external::overlay::vpc::VpcTable;
 use config::internal::device::tracecfg::TracingConfig;
 use config::internal::status::{
     DataplaneStatus, FrrStatus, VpcCounters, VpcPeeringCounters, VpcStatus,
 };
 use config::{ConfigError, ConfigResult, stringify};
-use config::{DeviceConfig, ExternalConfig, GenId, InternalConfig, ValidatedGwConfig};
+use config::{DeviceConfig, ExternalConfig, GenId, GwConfig, InternalConfig};
 
 use crate::processor::confbuild::internal::build_internal_config;
 use crate::processor::confbuild::router::generate_router_config;
@@ -145,7 +145,7 @@ impl ConfigProcessor {
 
     /// Main entry point for new configurations
     pub(crate) async fn process_incoming_config(&mut self, config: ExternalConfig) -> ConfigResult {
-        let mut validated_config = config.validate()?;
+        let mut validated_config = GwConfig::from_external(config)?;
         let internal =
             build_internal_config(&validated_config, self.proc_params.bmp_options.clone())?;
         validated_config.set_internal_config(internal);
@@ -154,7 +154,7 @@ impl ConfigProcessor {
 
     async fn update_history(
         &mut self,
-        config: &ValidatedGwConfig,
+        config: &GwConfig,
         result: &ConfigResult,
         is_rollback: bool,
     ) {
@@ -174,7 +174,7 @@ impl ConfigProcessor {
     }
 
     /// Apply a configuration. On success, store it. On failure, roll-back. Update the history in either case.
-    async fn apply(&mut self, config: ValidatedGwConfig) -> ConfigResult {
+    async fn apply(&mut self, config: GwConfig) -> ConfigResult {
         let config = Arc::from(config);
         let result = self.apply_gw_config(config.clone()).await;
         self.update_history(&config, &result, false).await;
@@ -454,7 +454,7 @@ impl VpcManager<RequiredInformationBase> {
 /// Build router config and apply it over the router control channel
 async fn apply_router_config(
     kernel_vrfs: &HashMap<InterfaceName, Interface>,
-    config: Arc<ValidatedGwConfig>,
+    config: Arc<GwConfig>,
     router_ctl: &mut RouterCtlSender,
 ) -> ConfigResult {
     let genid = config.genid();
@@ -476,7 +476,7 @@ async fn apply_router_config(
 ///
 /// Returns the list of `(VpcDiscriminant, name)` so the caller can seed the stats store.
 fn update_stats_vpc_mappings(
-    config: &ValidatedGwConfig,
+    config: &GwConfig,
     vpcmapw: &mut VpcMapWriter<VpcMapName>,
 ) -> Vec<(VpcDiscriminant, String)> {
     // create a mapping table from the vpc table in the config
@@ -499,10 +499,7 @@ fn update_stats_vpc_mappings(
 }
 
 /// Update the Nat tables for static NAT
-fn apply_static_nat_config(
-    vpc_table: &ValidatedVpcTable,
-    nattablesw: &mut NatTablesWriter,
-) -> ConfigResult {
+fn apply_static_nat_config(vpc_table: &VpcTable, nattablesw: &mut NatTablesWriter) -> ConfigResult {
     let nat_table = build_nat_configuration(vpc_table)?;
     nattablesw.update_nat_tables(nat_table);
     debug!("Successfully updated the static NAT configuration");
@@ -512,7 +509,7 @@ fn apply_static_nat_config(
 /// Update the config for masquerade.
 /// This is now infallible. Validation should ensure it is.
 fn apply_masquerade_config(
-    vpc_table: &ValidatedVpcTable,
+    vpc_table: &VpcTable,
     flow_table: &FlowTable,
     natallocatorw: &mut NatAllocatorWriter,
     genid: GenId,
@@ -523,7 +520,7 @@ fn apply_masquerade_config(
 }
 
 fn apply_flow_filtering_config(
-    overlay: &ValidatedOverlay,
+    overlay: &Overlay,
     flowfilterw: &mut FlowFilterTableWriter,
 ) -> ConfigResult {
     let flow_filter_table = FlowFilterTable::build_from_overlay(overlay)?;
@@ -533,7 +530,7 @@ fn apply_flow_filtering_config(
 }
 
 fn apply_port_forwarding_config(
-    vpc_table: &ValidatedVpcTable,
+    vpc_table: &VpcTable,
     portfw_w: &mut PortFwTableWriter,
 ) -> ConfigResult {
     let ruleset = build_port_forwarding_configuration(vpc_table)?;
@@ -568,7 +565,7 @@ fn apply_device_config(device: &DeviceConfig) -> ConfigResult {
 
 impl ConfigProcessor {
     /// Main method to apply a config
-    async fn apply_gw_config(&mut self, config: Arc<ValidatedGwConfig>) -> Result<(), ConfigError> {
+    async fn apply_gw_config(&mut self, config: Arc<GwConfig>) -> Result<(), ConfigError> {
         let genid = config.genid();
         debug!("Applying config with genid '{genid}'...");
 

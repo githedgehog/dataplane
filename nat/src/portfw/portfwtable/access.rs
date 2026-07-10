@@ -7,7 +7,7 @@
 use super::super::build_port_forwarding_configuration;
 use super::PortFwTableError;
 use super::objects::{PortFwEntry, PortFwTable};
-use config::external::overlay::vpc::ValidatedVpcTable;
+use config::external::overlay::vpc::VpcTable;
 use left_right::{Absorb, ReadGuard, ReadHandle, ReadHandleFactory, WriteHandle};
 
 #[allow(unused)]
@@ -59,10 +59,7 @@ impl PortFwTableWriter {
         self.0.publish(); // intended
         Ok(())
     }
-    pub fn update_from_vpc_table(
-        &mut self,
-        vpc_table: &ValidatedVpcTable,
-    ) -> Result<(), PortFwTableError> {
+    pub fn update_from_vpc_table(&mut self, vpc_table: &VpcTable) -> Result<(), PortFwTableError> {
         let ruleset = build_port_forwarding_configuration(vpc_table)
             .map_err(|e| PortFwTableError::Unsupported(e.to_string()))?;
         self.update_table(&ruleset)

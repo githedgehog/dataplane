@@ -28,6 +28,7 @@ pub mod test {
     use config::external::underlay::Underlay;
 
     use config::ExternalConfig;
+    use config::GwConfig;
     use config::internal::device::DeviceConfig;
     use config::internal::interfaces::interface::{
         IfEthConfig, IfVtepConfig, InterfaceConfig, InterfaceType,
@@ -393,7 +394,7 @@ pub mod test {
         /* Not really a test but a tool to check generated FRR configs given a gateway config */
         let external = sample_external_config();
         let peering_table = external.overlay.peering_table.clone();
-        let validated_config = external.validate().expect("Config validation failed");
+        let validated_config = GwConfig::from_external(external).expect("Config validation failed");
         if false {
             let vpc_table = validated_config.external().overlay().vpc_table();
             println!("\n{}\n{peering_table}", vpc_table.as_summary());

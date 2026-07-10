@@ -13,8 +13,8 @@ pub mod tables;
 use tables::{NatTableValue, NatTables, PerVniTable};
 
 use config::ConfigError;
-use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpcTable};
-use config::external::overlay::vpcpeering::ValidatedExpose;
+use config::external::overlay::vpc::{Peering, VpcTable};
+use config::external::overlay::vpcpeering::VpcExpose;
 use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::vxlan::Vni;
 use std::collections::BTreeSet;
@@ -35,13 +35,13 @@ pub(crate) fn generate_nat_values<'a>(
 }
 
 fn generate_public_values(
-    expose: &ValidatedExpose,
+    expose: &VpcExpose,
 ) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
     generate_nat_values(expose.ips(), expose.as_range_or_empty())
 }
 
 fn generate_private_values(
-    expose: &ValidatedExpose,
+    expose: &VpcExpose,
 ) -> impl Iterator<Item = Result<(Prefix, NatTableValue), NatPeeringError>> {
     generate_nat_values(expose.as_range_or_empty(), expose.ips())
 }
@@ -54,7 +54,7 @@ impl PerVniTable {
     /// Returns an error if some lists of prefixes contain duplicates
     pub(crate) fn add_peering(
         &mut self,
-        peering: &ValidatedPeering,
+        peering: &Peering,
         dst_vni: Vni,
     ) -> Result<(), NatPeeringError> {
         peering
@@ -103,7 +103,7 @@ impl PerVniTable {
 /// # Errors
 ///
 /// Returns [`ConfigError::FailureApply`] if the configuration for some NAT peering cannot be built.
-pub fn build_nat_configuration(vpc_table: &ValidatedVpcTable) -> Result<NatTables, ConfigError> {
+pub fn build_nat_configuration(vpc_table: &VpcTable) -> Result<NatTables, ConfigError> {
     let mut nat_tables = NatTables::new();
     for vpc in vpc_table.values() {
         let mut table = PerVniTable::new();
@@ -199,9 +199,11 @@ mod tests {
         src_vpc.peerings.push(peering.clone());
         vpctable.add(src_vpc).unwrap();
 
+        let mut peering_v = peering.clone();
+        peering_v.validate().unwrap();
         let mut vni_table = PerVniTable::new();
         vni_table
-            .add_peering(&peering.validate().unwrap(), dst_vni)
+            .add_peering(&peering_v, dst_vni)
             .expect("Failed to build NAT tables");
     }
 }

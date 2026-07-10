@@ -11,7 +11,7 @@ pub mod vpcrouting;
 
 use crate::{ConfigError, ConfigResult};
 use tracing::{debug, error};
-use vpc::{ValidatedVpcTable, VpcTable};
+use vpc::VpcTable;
 use vpcpeering::{VpcManifest, VpcPeeringTable};
 
 #[derive(Clone, Debug, Default)]
@@ -48,28 +48,25 @@ impl Overlay {
         Ok(())
     }
 
-    /// Validate the overlay configuration, returning a `ValidatedOverlay` if successful.
+    /// Validate the overlay configuration, returning it with the VPC table validated and the
+    /// peerings collected into each VPC.
     ///
     /// # Errors
     ///
     /// Returns an error if the overlay configuration is invalid.
-    pub fn validate(&self) -> Result<ValidatedOverlay, ConfigError> {
+    pub fn validate(&mut self) -> ConfigResult {
         debug!("Validating overlay configuration...");
 
         // validate peerings:
         self.validate_peering_vpcs()?;
 
         // Collect peerings for every VPC and validate the table
-        let vpc_table = self
-            .vpc_table
-            .collect_peerings(&self.peering_table)
-            .validate()?;
+        let mut vpc_table = self.vpc_table.collect_peerings(&self.peering_table);
+        vpc_table.validate()?;
+        self.vpc_table = vpc_table;
 
-        let validated_overlay = ValidatedOverlay { vpc_table };
-
-        let peering_table = &self.peering_table;
-        debug!("Overlay configuration is VALID:\n{validated_overlay}\n{peering_table}");
-        Ok(validated_overlay)
+        debug!("Overlay configuration is VALID:\n{self}");
+        Ok(())
     }
 
     /// FOR TESTS ONLY. Fake validation for the overlay.
@@ -80,23 +77,17 @@ impl Overlay {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub unsafe fn fake_validated_overlay_for_tests(&self) -> ValidatedOverlay {
+    pub unsafe fn fake_validated_overlay_for_tests(&self) -> Overlay {
         let vpc_table = self.vpc_table.collect_peerings(&self.peering_table);
         let fake_valid_vpc_table = unsafe { vpc_table.fake_validated_vpc_table_for_tests() };
-        ValidatedOverlay {
+        Overlay {
             vpc_table: fake_valid_vpc_table,
+            peering_table: self.peering_table.clone(),
         }
     }
-}
 
-#[derive(Debug, Default)]
-pub struct ValidatedOverlay {
-    vpc_table: ValidatedVpcTable,
-}
-
-impl ValidatedOverlay {
     #[must_use]
-    pub fn vpc_table(&self) -> &ValidatedVpcTable {
+    pub fn vpc_table(&self) -> &VpcTable {
         &self.vpc_table
     }
 }

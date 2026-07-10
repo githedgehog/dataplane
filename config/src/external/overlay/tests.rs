@@ -104,25 +104,25 @@ pub mod test {
     fn test_expose_validate() {
         let expose = VpcExpose::empty();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::Forbidden(
                 "Non-default expose cannot have empty 'ips' list"
             ))
         );
 
         let expose = VpcExpose::empty().ip("10.0.0.0/16".into());
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Empty ips but non-empty nots - Currently not supported
         /*
         let expose = VpcExpose::empty().not("10.0.1.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert_eq!(expose.clone().validate(), Ok(()));
         */
 
         // Empty as_range but non-empty not_as - Currently not supported
         /*
         let expose = VpcExpose::empty().not_as("2.0.1.0/24".into());
-        assert_eq!(expose.validate(), Ok(()));
+        assert_eq!(expose.clone().validate(), Ok(()));
         */
 
         let expose = VpcExpose::empty()
@@ -131,7 +131,7 @@ pub mod test {
             .ip("10.0.0.0/16".into())
             .as_range("2.0.0.0/16".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_static_nat()
@@ -142,7 +142,7 @@ pub mod test {
             .unwrap()
             .not_as("2.0.0.0/24".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_static_nat()
@@ -150,7 +150,7 @@ pub mod test {
             .ip("1::/64".into())
             .as_range("2::/64".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Overlapping prefixes
         let expose = VpcExpose::empty()
@@ -162,7 +162,7 @@ pub mod test {
             .unwrap()
             .as_range("2.0.0.0/16".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Out-of-range exclusion prefix
         let expose = VpcExpose::empty()
@@ -174,7 +174,7 @@ pub mod test {
             .unwrap()
             .not_as("2.0.1.0/24".into())
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
@@ -187,7 +187,7 @@ pub mod test {
             .as_range("2::/64".into())
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -199,7 +199,7 @@ pub mod test {
             .as_range("1::/112".into())
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -214,7 +214,7 @@ pub mod test {
             .not_as("2::/120".into())
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -232,7 +232,7 @@ pub mod test {
             .not_as("2.0.128.0/17".into())
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone())))
         );
 
@@ -245,7 +245,7 @@ pub mod test {
             .as_range("2.0.0.0/24".into())
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::MismatchedPrefixSizes(
                 ppsize_from((65536 - 256u32) * (u32::from(u16::MAX) + 1)),
                 ppsize_from(256u32 * (u32::from(u16::MAX) + 1)),
@@ -374,7 +374,7 @@ pub mod test {
         // Build overlay object and validate it
         let overlay = Overlay::new(vpc_table, peering_table);
         assert_eq!(
-            overlay.validate().map(|_| ()),
+            overlay.clone().validate(),
             Err(ConfigError::IncompatibleNatModes("Peering-1".to_owned()))
         );
     }
@@ -421,7 +421,7 @@ pub mod test {
 
         // Build overlay object and validate it
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(overlay.validate().is_ok());
+        assert!(overlay.clone().validate().is_ok());
     }
 
     #[test]
@@ -441,7 +441,7 @@ pub mod test {
         peering_table.add(peering).expect("Should succeed");
 
         /* build overlay object and validate it */
-        let overlay = Overlay::new(vpc_table, peering_table);
+        let mut overlay = Overlay::new(vpc_table, peering_table);
         assert!(
             overlay
                 .validate()
@@ -476,7 +476,7 @@ pub mod test {
         peering_table.add(peering2).expect("Should succeed");
 
         /* build overlay object and validate it */
-        let overlay = Overlay::new(vpc_table, peering_table);
+        let mut overlay = Overlay::new(vpc_table, peering_table);
         assert!(
             overlay
                 .validate()
@@ -506,7 +506,7 @@ pub mod test {
 
         /* build overlay object and validate it */
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(overlay.validate().is_ok());
+        assert!(overlay.clone().validate().is_ok());
     }
 
     #[test]
@@ -707,7 +707,7 @@ pub mod test {
             "10.0.0.0/16".into(),
             Some(PortRange::new(1, 65535).unwrap()),
         ));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_static_nat()
@@ -721,7 +721,7 @@ pub mod test {
                 Some(PortRange::new(8001, 9000).unwrap()),
             ))
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_static_nat()
@@ -744,7 +744,7 @@ pub mod test {
                 Some(PortRange::new(8001, 8200).unwrap()),
             ))
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         let expose = VpcExpose::empty()
             .make_static_nat()
@@ -758,7 +758,7 @@ pub mod test {
                 Some(PortRange::new(8001, 9000).unwrap()),
             ))
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Overlapping prefix, but distinct port ranges
         let expose = VpcExpose::empty()
@@ -770,7 +770,7 @@ pub mod test {
                 "10.0.0.0/17".into(),
                 Some(PortRange::new(8001, 9500).unwrap()),
             ));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Overlapping prefixes
         let expose = VpcExpose::empty()
@@ -794,7 +794,7 @@ pub mod test {
                 Some(PortRange::new(8001, 8500).unwrap()),
             ))
             .unwrap();
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Out-of-range exclusion prefix (IPs)
         let expose = VpcExpose::empty()
@@ -810,7 +810,7 @@ pub mod test {
                 "10.0.0.0/15".into(),
                 Some(PortRange::new(5001, 5500).unwrap()),
             ));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Out-of-range exclusion prefix (port range)
         let expose = VpcExpose::empty()
@@ -822,7 +822,7 @@ pub mod test {
                 "10.0.0.0/24".into(),
                 Some(PortRange::new(7001, 8000).unwrap()),
             ));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Out-of-range exclusion prefix (port range, albeit with overlap)
         let expose = VpcExpose::empty()
@@ -834,7 +834,7 @@ pub mod test {
                 "10.0.0.0/24".into(),
                 Some(PortRange::new(5001, 8000).unwrap()),
             ));
-        assert!(expose.validate().is_ok());
+        assert!(expose.clone().validate().is_ok());
 
         // Incorrect: mixed IP versions
         let expose = VpcExpose::empty()
@@ -859,7 +859,7 @@ pub mod test {
             ))
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -877,7 +877,7 @@ pub mod test {
             ))
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::InconsistentIpVersion(Box::new(expose.clone())))
         );
 
@@ -900,7 +900,7 @@ pub mod test {
                 Some(PortRange::new(5001, 6000).unwrap()),
             ));
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::ExcludedAllPrefixes(Box::new(expose.clone())))
         );
 
@@ -922,7 +922,7 @@ pub mod test {
             ))
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::MismatchedPrefixSizes(
                 ppsize_from(65536u32 * 1000 - 256u32 * 500),
                 ppsize_from(256u32 * 1000),
@@ -940,7 +940,7 @@ pub mod test {
             .as_range(PrefixWithOptionalPorts::new("2.0.0.0/24".into(), None))
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::Forbidden(
                 "Port ranges are not supported with masquerade",
             ))
@@ -957,7 +957,7 @@ pub mod test {
             ))
             .unwrap();
         assert_eq!(
-            expose.validate(),
+            expose.clone().validate(),
             Err(ConfigError::Forbidden(
                 "Port ranges are not supported with masquerade",
             ))
@@ -1018,7 +1018,7 @@ pub mod test {
             .unwrap();
 
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(overlay.validate().is_err_and(|e| e
+        assert!(overlay.clone().validate().is_err_and(|e| e
             == ConfigError::OverlappingPrefixes(
                 PrefixWithOptionalPorts::new(
                     "5.0.0.0/24".into(),
@@ -1080,7 +1080,7 @@ pub mod test {
             .unwrap();
 
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(overlay.validate().is_ok());
+        assert!(overlay.clone().validate().is_ok());
     }
 
     #[test]
@@ -1125,7 +1125,7 @@ pub mod test {
             .unwrap();
 
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(overlay.validate().is_ok());
+        assert!(overlay.clone().validate().is_ok());
     }
 
     #[test]
@@ -1170,7 +1170,7 @@ pub mod test {
             .unwrap();
 
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(overlay.validate().is_err_and(
+        assert!(overlay.clone().validate().is_err_and(
             |e| e == ConfigError::Forbidden("Multiple default destinations exposed to VPC")
         ));
     }
@@ -1216,14 +1216,14 @@ pub mod test {
             .unwrap();
 
         let overlay = Overlay::new(vpc_table, peering_table);
-        assert!(overlay.validate().is_err_and(
+        assert!(overlay.clone().validate().is_err_and(
             |e| e == ConfigError::Forbidden("Manifest cannot have multiple default exposes",)
         ));
     }
 
     #[test]
     fn test_manifest_must_have_exposes() {
-        let manifest = VpcManifest::new("some-vpc");
+        let mut manifest = VpcManifest::new("some-vpc");
         assert!(
             manifest
                 .validate()

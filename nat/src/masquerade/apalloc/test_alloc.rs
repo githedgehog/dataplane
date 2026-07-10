@@ -11,7 +11,7 @@ mod context {
     use crate::masquerade::allocator_writer::MasqueradeConfig;
     use crate::masquerade::apalloc::alloc::IpAllocator;
     use crate::masquerade::apalloc::{NatAllocator, PoolTable, PoolTableKey};
-    use config::external::overlay::vpc::{Peering, ValidatedVpcTable, Vpc, VpcTable};
+    use config::external::overlay::vpc::{Peering, Vpc, VpcTable};
     use config::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
     use net::ip::NextHeader;
     use net::packet::VpcDiscriminant;
@@ -71,7 +71,7 @@ mod context {
         .unwrap()
     }
 
-    fn build_context() -> ValidatedVpcTable {
+    fn build_context() -> VpcTable {
         // Exposes and manifests
         let expose1 = VpcExpose::empty()
             .make_masquerade(None)
@@ -123,7 +123,8 @@ mod context {
         vpctable.add(vpc1).unwrap();
         vpctable.add(vpc2).unwrap();
 
-        vpctable.validate().unwrap()
+        vpctable.validate().unwrap();
+        vpctable
     }
 
     pub fn build_allocator() -> NatAllocator {

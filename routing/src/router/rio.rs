@@ -20,7 +20,7 @@ use crate::routingdb::RoutingDb;
 use bytes::BytesMut;
 use cli::IoCache;
 use cli::cliproto::{CLI_RX_BUFF_SIZE, CliRequest};
-use config::{GwConfigMeta, ValidatedGwConfig};
+use config::{GwConfig, GwConfigMeta};
 use dplane_rpc::socks::RpcCachedSock;
 use inotify::{EventMask, Inotify, WatchMask};
 use lifecycle::{CancellationToken, Subsystem};
@@ -152,7 +152,7 @@ pub(crate) struct Rio {
     pub(crate) waker: Arc<Waker>,
     pub(crate) cpistats: CpiStats,
     stale_timeout: Option<Instant>,
-    pub(crate) gwconfig: Option<Arc<ValidatedGwConfig>>,
+    pub(crate) gwconfig: Option<Arc<GwConfig>>,
     pub(crate) cfg_history: Arc<Vec<GwConfigMeta>>,
     pub(crate) cli_cache: IoCache,
     pub(crate) inotify: Inotify,

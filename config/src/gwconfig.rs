@@ -4,7 +4,7 @@
 //! Top-level configuration object for the dataplane
 
 use crate::errors::{ConfigError, ConfigResult};
-use crate::external::{GenId, ValidatedExternalConfig};
+use crate::external::{ExternalConfig, GenId};
 use crate::internal::InternalConfig;
 use concurrency::slot::Slot;
 use concurrency::sync::Arc;
@@ -61,28 +61,36 @@ impl GwConfigMeta {
 }
 
 #[derive(Debug)]
-pub struct ValidatedGwConfig {
+pub struct GwConfig {
     meta: Slot<GwConfigMeta>,
-    external: ValidatedExternalConfig,
+    external: ExternalConfig,
     internal: Option<InternalConfig>,
 }
 
-impl ValidatedGwConfig {
+impl GwConfig {
     #[must_use]
-    pub(crate) fn new(external: ValidatedExternalConfig) -> Self {
+    pub(crate) fn new(external: ExternalConfig) -> Self {
         Self {
             meta: Slot::new(Arc::from(GwConfigMeta::new(external.genid()))),
             external,
             internal: None,
         }
     }
-
     #[must_use]
+    /// Build an empty [`GwConfig`] from an empty [`ExternalConfig`].
+    /// An empty [`ExternalConfig`] should always be valid. A unit test verifies this invariant.
     pub fn blank() -> Self {
-        // The blank config has no overlay, peerings, or VPCs, so it trivially passes validation.
-        // A unit test verifies this invariant.
-        let external = ValidatedExternalConfig::blank();
-        Self::new(external)
+        Self::from_external(ExternalConfig::new("")).unwrap_or_else(|_| unreachable!())
+    }
+
+    /// Consume an [`ExternalConfig`] to obtain a [`GwConfig`], which is validated by definition.
+    /// This is the only way to obtain a non-blank [`GwConfig`].
+    ///
+    /// # Errors
+    ///    This method returns `ConfigError` if the external config fails to validate
+    pub fn from_external(mut external: ExternalConfig) -> Result<Self, ConfigError> {
+        external.validate()?;
+        Ok(Self::new(external))
     }
 
     #[must_use]
@@ -91,7 +99,7 @@ impl ValidatedGwConfig {
     }
 
     #[must_use]
-    pub fn external(&self) -> &ValidatedExternalConfig {
+    pub fn external(&self) -> &ExternalConfig {
         &self.external
     }
 
@@ -116,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_blank_config_is_valid() {
-        let _ = ExternalConfig::new("")
+        ExternalConfig::new("")
             .validate()
             .expect("Failed to validate blank config");
     }

@@ -11,7 +11,7 @@
 
 #![allow(unused)]
 
-use config::external::overlay::vpc::{ValidatedVpc, VpcId};
+use config::external::overlay::vpc::{Vpc, VpcId};
 use net::interface::InterfaceName;
 
 ////////////////////////////////////////////////////////////////////////
@@ -53,7 +53,7 @@ pub(crate) trait VpcConfigNames {
     fn adv_rmap(&self) -> String;
 }
 
-impl VpcConfigNames for ValidatedVpc {
+impl VpcConfigNames for Vpc {
     fn vrf_name(&self) -> String {
         self.id().vrf_name().to_string()
     }

@@ -5,8 +5,8 @@ use crate::masquerade::apalloc::NatAllocator;
 use concurrency::slot::SlotOption;
 use concurrency::sync::Arc;
 use config::GenId;
-use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpcTable};
-use config::external::overlay::vpcpeering::ValidatedExpose;
+use config::external::overlay::vpc::{Peering, VpcTable};
+use config::external::overlay::vpcpeering::VpcExpose;
 use flow_entry::flow_table::FlowTable;
 use net::packet::VpcDiscriminant;
 use tracing::debug;
@@ -19,7 +19,7 @@ use crate::masquerade::flows::upgrade_all_masquerading_flows;
 pub(crate) struct MasqueradePeering {
     pub(crate) src_vpcd: VpcDiscriminant,
     pub(crate) dst_vpcd: VpcDiscriminant,
-    pub(crate) peering: ValidatedPeering,
+    pub(crate) peering: Peering,
 }
 #[derive(Debug, Default, Clone)]
 pub struct MasqueradeConfig {
@@ -36,7 +36,7 @@ impl PartialEq for MasqueradeConfig {
 
 impl MasqueradeConfig {
     #[must_use]
-    pub fn new(vpc_table: &ValidatedVpcTable, genid: GenId) -> Self {
+    pub fn new(vpc_table: &VpcTable, genid: GenId) -> Self {
         let mut peerings = Vec::new();
         for vpc in vpc_table.values() {
             for peering in vpc.local_stateful_nat_peerings() {
@@ -75,12 +75,10 @@ impl MasqueradeConfig {
     }
 
     pub(crate) fn has_masquerading_peerings(&self) -> bool {
-        self.peerings.iter().map(|p| &p.peering).any(|p| {
-            p.local()
-                .valexp()
-                .iter()
-                .any(ValidatedExpose::has_masquerade)
-        })
+        self.peerings
+            .iter()
+            .map(|p| &p.peering)
+            .any(|p| p.local().valexp().iter().any(VpcExpose::has_masquerade))
     }
 
     pub(crate) fn get_peering(

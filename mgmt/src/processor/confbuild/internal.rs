@@ -10,9 +10,9 @@ const IMPORT_VRFS: bool = false;
 
 use config::external::communities::PriorityCommunityTable;
 use config::external::gwgroup::GwGroupTable;
-use config::external::overlay::ValidatedOverlay;
-use config::external::overlay::vpc::{ValidatedPeering, ValidatedVpc};
-use config::external::overlay::vpcpeering::ValidatedManifest;
+use config::external::overlay::Overlay;
+use config::external::overlay::vpc::{Peering, Vpc};
+use config::external::overlay::vpcpeering::VpcManifest;
 use config::{ConfigError, ConfigResult};
 
 use lpm::prefix::Prefix;
@@ -33,12 +33,12 @@ use config::internal::routing::routemap::{
 };
 use config::internal::routing::statics::StaticRoute;
 use config::internal::routing::vrf::VrfConfig;
-use config::{InternalConfig, ValidatedGwConfig};
+use config::{GwConfig, InternalConfig};
 
 /// Populate a prefix list to import routes into a vpc vrf
 fn vpc_import_prefix_list_for_peer(
-    vpc: &ValidatedVpc,
-    rmanifest: &ValidatedManifest,
+    vpc: &Vpc,
+    rmanifest: &VpcManifest,
 ) -> Result<PrefixList, ConfigError> {
     let mut plist = PrefixList::new(
         &vpc.import_plist_peer(rmanifest.name()),
@@ -66,7 +66,7 @@ fn vpc_import_prefix_list_for_peer(
 
 /// Build AF l2vpn EVPN config for a VPC VRF
 #[must_use]
-fn vpc_bgp_af_l2vpn_evpn(vpc: &ValidatedVpc) -> AfL2vpnEvpn {
+fn vpc_bgp_af_l2vpn_evpn(vpc: &Vpc) -> AfL2vpnEvpn {
     AfL2vpnEvpn::new()
         .set_adv_all_vni(false)
         .set_adv_default_gw(false)
@@ -103,7 +103,7 @@ struct VpcRoutingConfigIpv4 {
 }
 impl VpcRoutingConfigIpv4 {
     #[must_use]
-    fn new(vpc: &ValidatedVpc) -> Self {
+    fn new(vpc: &Vpc) -> Self {
         Self {
             import_rmap: RouteMap::new(&vpc.import_rmap_ipv4()),
             import_plists: Vec::with_capacity(vpc.num_peerings()),
@@ -116,8 +116,8 @@ impl VpcRoutingConfigIpv4 {
     }
     fn build_routing_config_peer(
         &mut self,
-        vpc: &ValidatedVpc,
-        peer: &ValidatedPeering,
+        vpc: &Vpc,
+        peer: &Peering,
         community: Community,
     ) -> ConfigResult {
         /* remote manifest */
@@ -181,7 +181,7 @@ impl VpcRoutingConfigIpv4 {
     fn build_routing_config(
         &mut self,
         gwname: &str,
-        vpc: &ValidatedVpc,
+        vpc: &Vpc,
         grouptable: &GwGroupTable,
         commtable: &PriorityCommunityTable,
     ) -> ConfigResult {
@@ -197,7 +197,7 @@ impl VpcRoutingConfigIpv4 {
 }
 
 /// Build BGP config for a VPC VRF (bmp is applied elsewhere)
-fn vpc_vrf_bgp_config(vpc: &ValidatedVpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpConfig {
+fn vpc_vrf_bgp_config(vpc: &Vpc, asn: u32, router_id: Option<Ipv4Addr>) -> BgpConfig {
     let mut bgp = BgpConfig::new(asn).set_vrf_name(vpc.vrf_name());
     if let Some(router_id) = router_id {
         bgp.set_router_id(router_id);
@@ -207,7 +207,7 @@ fn vpc_vrf_bgp_config(vpc: &ValidatedVpc, asn: u32, router_id: Option<Ipv4Addr>)
 }
 
 /// Build VRF config for a VPC
-fn vpc_vrf_config(vpc: &ValidatedVpc) -> Result<VrfConfig, ConfigError> {
+fn vpc_vrf_config(vpc: &Vpc) -> Result<VrfConfig, ConfigError> {
     debug!("Building VRF config for vpc '{}'", vpc.name());
     /* build vrf config */
     let mut vrf_cfg = VrfConfig::new(&vpc.vrf_name(), Some(vpc.vni()), false)
@@ -247,7 +247,7 @@ fn vpc_bgp_af_ipv4_unicast(vpc_rconf: &VpcRoutingConfigIpv4) -> AfIpv4Ucast {
 }
 
 fn build_vpc_internal_config(
-    vpc: &ValidatedVpc,
+    vpc: &Vpc,
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
@@ -288,7 +288,7 @@ fn build_vpc_internal_config(
 }
 
 fn build_internal_overlay_config(
-    overlay: &ValidatedOverlay,
+    overlay: &Overlay,
     asn: u32,
     router_id: Option<Ipv4Addr>,
     internal: &mut InternalConfig,
@@ -338,7 +338,7 @@ fn configure_bgp_peers(vrf: &mut VrfConfig, internal: &mut InternalConfig) {
 
 /// Public entry — build with BMP (global options injected into default VRF and import views)
 pub fn build_internal_config(
-    config: &ValidatedGwConfig,
+    config: &GwConfig,
     bmp: Option<BmpOptions>,
 ) -> Result<InternalConfig, ConfigError> {
     let genid = config.genid();

@@ -5,20 +5,20 @@
 
 use crate::processor::confbuild::internal::build_internal_config;
 use concurrency::sync::Arc;
-use config::{ConfigSummary, GenId, GwConfigMeta, ValidatedGwConfig};
+use config::{ConfigSummary, GenId, GwConfig, GwConfigMeta};
 use tracing::{debug, info};
 
 /// Configuration database, keeps a set of [`GwConfig`]s keyed by generation id [`GenId`]
 pub(crate) struct GwConfigDatabase {
-    applied: Arc<ValidatedGwConfig>, /* Currently applied config or blank */
-    history: Vec<GwConfigMeta>,      /* event history */
+    applied: Arc<GwConfig>,     /* Currently applied config or blank */
+    history: Vec<GwConfigMeta>, /* event history */
 }
 
 impl GwConfigDatabase {
     #[must_use]
     pub fn new() -> Self {
         debug!("Building config database...");
-        let mut blank = ValidatedGwConfig::blank();
+        let mut blank = GwConfig::blank();
         let internal = build_internal_config(&blank, None).unwrap_or_else(|_| unreachable!());
         blank.set_internal_config(internal);
         GwConfigDatabase {
@@ -43,7 +43,7 @@ impl GwConfigDatabase {
     }
 
     /// Store the given config
-    pub fn store(&mut self, config: Arc<ValidatedGwConfig>) {
+    pub fn store(&mut self, config: Arc<GwConfig>) {
         info!("Storing config for generation '{}' in db", config.genid());
         self.applied = config;
     }
@@ -56,7 +56,7 @@ impl GwConfigDatabase {
 
     /// Get a refcounted reference to the applied `GwConfig`
     #[must_use]
-    pub fn get_current_config(&self) -> Arc<ValidatedGwConfig> {
+    pub fn get_current_config(&self) -> Arc<GwConfig> {
         self.applied.clone()
     }
 }

@@ -167,7 +167,8 @@ impl VpcExpose {
         Ok(self)
     }
 
-    fn as_range_or_empty(&self) -> &PrefixPortsSet {
+    #[must_use]
+    pub fn as_range_or_empty(&self) -> &PrefixPortsSet {
         self.nat.as_ref().map_or(empty_set(), |nat| &nat.as_range)
     }
 
@@ -270,8 +271,14 @@ impl VpcExpose {
     /// # Errors
     ///
     /// Returns an error if the expose configuration is invalid.
+    /// Validate and collapse this [`VpcExpose`] in place (exclusion prefixes are folded into the
+    /// allowed prefixes).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the expose configuration is invalid.
     #[allow(clippy::too_many_lines)]
-    pub fn validate(&self) -> Result<ValidatedExpose, ConfigError> {
+    pub fn validate(&mut self) -> ConfigResult {
         // Check default exposes and prefixes
         self.validate_default_expose()?;
 
@@ -342,38 +349,39 @@ impl VpcExpose {
             }
         }
 
-        // Apply exclusion prefixes
-        let mut clone = self.clone();
-        collapse_prefixes(&mut clone);
-        merge_overlapping_prefixes(&mut clone.ips);
-        merge_contiguous_prefixes(&mut clone.ips);
-        if let Some(nat) = &mut clone.nat {
+        // Capture pre-collapse state needed by the post-collapse checks below: the original expose
+        // for error reporting, and whether the user specified any exclusion prefixes (which
+        // `collapse_prefixes` is about to fold away and clear).
+        let original = self.clone();
+        let had_exclusions = !self.nots.is_empty() || !self.not_as_or_empty().is_empty();
+
+        // Apply exclusion prefixes. `collapse_prefixes` folds `nots`/`not_as` into `ips`/`as_range`
+        // and clears the exclusion sets, so `self` becomes exclusion-prefix-free.
+        collapse_prefixes(self);
+        merge_overlapping_prefixes(&mut self.ips);
+        merge_contiguous_prefixes(&mut self.ips);
+        if let Some(nat) = &mut self.nat {
             merge_overlapping_prefixes(&mut nat.as_range);
             merge_contiguous_prefixes(&mut nat.as_range);
         }
-        let collapsed_expose = ValidatedExpose {
-            default: clone.default,
-            ips: clone.ips,
-            nat: clone.nat,
-        };
 
         // Ensure we don't exclude all of the allowed prefixes
-        if collapsed_expose.ips().is_empty() && !collapsed_expose.is_default() {
-            return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
+        if self.ips.is_empty() && !self.default {
+            return Err(ConfigError::ExcludedAllPrefixes(Box::new(original)));
         }
-        if collapsed_expose.nat().is_some() && collapsed_expose.as_range_or_empty().is_empty() {
-            return Err(ConfigError::ExcludedAllPrefixes(Box::new(self.clone())));
+        if self.nat.is_some() && self.as_range_or_empty().is_empty() {
+            return Err(ConfigError::ExcludedAllPrefixes(Box::new(original)));
         }
 
-        let ips_sizes = collapsed_expose.ips().total_prefixes_size();
-        let as_range_sizes = collapsed_expose.as_range_or_empty().total_prefixes_size();
+        let ips_sizes = self.ips.total_prefixes_size();
+        let as_range_sizes = self.as_range_or_empty().total_prefixes_size();
 
         // For static NAT, ensure that, if the list of publicly-exposed addresses is not empty, then
         // we have the same number of addresses on each side.
         //
         // Note: We shouldn't have subtraction overflows because we check that exclusion prefixes
         // size was smaller than allowed prefixes size already.
-        if collapsed_expose.has_static_nat() && ips_sizes != as_range_sizes {
+        if self.has_static_nat() && ips_sizes != as_range_sizes {
             return Err(ConfigError::MismatchedPrefixSizes(
                 ips_sizes,
                 as_range_sizes,
@@ -386,14 +394,13 @@ impl VpcExpose {
         // - we have a single prefix on each side (private and public addresses)
         // - we have the same number of addresses on each side
         // - the list of associated port ranges also has the same size on each side
-        if collapsed_expose.has_port_forwarding() {
-            if !self.nots.is_empty() || !self.not_as_or_empty().is_empty() {
+        if self.has_port_forwarding() {
+            if had_exclusions {
                 return Err(ConfigError::Forbidden(
                     "Port forwarding does not support exclusion prefixes",
                 ));
             }
-            if collapsed_expose.ips().len() != 1 || collapsed_expose.as_range_or_empty().len() != 1
-            {
+            if self.ips.len() != 1 || self.as_range_or_empty().len() != 1 {
                 return Err(ConfigError::Forbidden(
                     "Port forwarding requires a single prefix on each side",
                 ));
@@ -406,7 +413,7 @@ impl VpcExpose {
             }
             // For port forwarding, ensure that a port range is always present. Lack of port range would imply
             // all ports, which is not allowed since port 0 is forbidden in the implementation
-            for prefixes in [collapsed_expose.ips(), collapsed_expose.as_range_or_empty()] {
+            for prefixes in [self.ips(), self.as_range_or_empty()] {
                 if prefixes.iter().any(|p| p.ports().is_none()) {
                     return Err(ConfigError::Forbidden(
                         "Port forwarding requires a port range on each prefix",
@@ -416,42 +423,32 @@ impl VpcExpose {
         }
 
         // For masquerade, we don't support port ranges
-        if collapsed_expose.has_masquerade()
-            && (collapsed_expose.ips().iter().any(|p| p.ports().is_some())
-                || collapsed_expose
-                    .as_range_or_empty()
-                    .iter()
-                    .any(|p| p.ports().is_some()))
+        if self.has_masquerade()
+            && (self.ips.iter().any(|p| p.ports().is_some())
+                || self.as_range_or_empty().iter().any(|p| p.ports().is_some()))
         {
             return Err(ConfigError::Forbidden(
                 "Port ranges are not supported with masquerade",
             ));
         }
 
-        Ok(collapsed_expose)
+        Ok(())
     }
 
-    /// FOR TESTS ONLY
+    /// FOR TESTS ONLY. Produces an enriched-but-not-collapsed expose (exclusion prefixes are
+    /// dropped without being applied), bypassing real validation.
     #[cfg(feature = "testing")]
     #[must_use]
     #[allow(unsafe_code)]
-    unsafe fn fake_validated_expose(&self) -> ValidatedExpose {
-        ValidatedExpose {
+    unsafe fn fake_validated_expose(&self) -> VpcExpose {
+        VpcExpose {
             default: self.default,
             ips: self.ips.clone(),
+            nots: PrefixPortsSet::new(),
             nat: self.nat.clone(),
         }
     }
-}
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ValidatedExpose {
-    default: bool,
-    ips: PrefixPortsSet,
-    nat: Option<VpcExposeNat>,
-}
-
-impl ValidatedExpose {
     #[must_use]
     pub fn is_default(&self) -> bool {
         self.default
@@ -460,26 +457,6 @@ impl ValidatedExpose {
     #[must_use]
     pub fn ips(&self) -> &PrefixPortsSet {
         &self.ips
-    }
-
-    #[must_use]
-    pub fn as_range_or_empty(&self) -> &PrefixPortsSet {
-        self.nat.as_ref().map_or(empty_set(), |nat| &nat.as_range)
-    }
-
-    // If the as_range list is empty, then there's no NAT required for the expose, meaning that the
-    // public IPs are those from the "ips" list. This method returns the current list of public IPs
-    // for the VpcExpose.
-    #[must_use]
-    pub fn public_ips(&self) -> &PrefixPortsSet {
-        let Some(nat) = self.nat.as_ref() else {
-            return &self.ips;
-        };
-        if nat.as_range.is_empty() {
-            &self.ips
-        } else {
-            &nat.as_range
-        }
     }
 
     /// The prefixes of an expose to be advertised to a remote peer
@@ -564,11 +541,6 @@ impl ValidatedExpose {
     }
 
     #[must_use]
-    pub fn nat_config(&self) -> Option<&VpcExposeNatConfig> {
-        self.nat.as_ref().map(|nat| &nat.config)
-    }
-
-    #[must_use]
     pub fn nat_proto(&self) -> Option<&L4Protocol> {
         self.nat.as_ref().map(|nat| &nat.proto)
     }
@@ -623,7 +595,12 @@ impl VpcManifest {
     /// # Errors
     ///
     /// Returns an error if the manifest configuration is invalid.
-    pub fn validate(&self) -> Result<ValidatedManifest, ConfigError> {
+    /// Validate and collapse this [`VpcManifest`] (and its exposes) in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest configuration is invalid.
+    pub fn validate(&mut self) -> ConfigResult {
         if self.name.is_empty() {
             return Err(ConfigError::MissingIdentifier("Manifest name"));
         }
@@ -636,16 +613,12 @@ impl VpcManifest {
             ));
         }
 
-        let mut valid_manifest_candidate = ValidatedManifest {
-            name: self.name.clone(),
-            valexp: Vec::new(),
-        };
-        for expose in &self.exposes {
-            valid_manifest_candidate.valexp.push(expose.validate()?);
+        // Validate and collapse each expose in place.
+        for expose in &mut self.exposes {
+            expose.validate()?;
         }
 
-        valid_manifest_candidate.validate_expose_collisions()?;
-        Ok(valid_manifest_candidate)
+        self.validate_expose_collisions()
     }
 
     #[must_use]
@@ -661,78 +634,65 @@ impl VpcManifest {
     #[cfg(feature = "testing")]
     #[allow(unsafe_code)]
     #[must_use]
-    pub unsafe fn fake_valid_manifest_for_tests(&self) -> ValidatedManifest {
-        let mut fake_valid_manifest = ValidatedManifest {
+    pub unsafe fn fake_valid_manifest_for_tests(&self) -> VpcManifest {
+        let exposes = self
+            .exposes
+            .iter()
+            .map(|expose| unsafe { expose.fake_validated_expose() })
+            .collect();
+        VpcManifest {
             name: self.name.clone(),
-            valexp: Vec::new(),
-        };
-        for expose in &self.exposes {
-            let fake_valid_expose = unsafe { expose.fake_validated_expose() };
-            fake_valid_manifest.valexp.push(fake_valid_expose);
+            exposes,
         }
-        fake_valid_manifest
     }
-}
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ValidatedManifest {
-    name: String, /* key: name of vpc */
-    // Validated, exclusion-prefixes-free view of exposes.
-    valexp: Vec<ValidatedExpose>,
-}
-
-impl ValidatedManifest {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Validated, exclusion-prefixes-free view of the exposes.
     #[must_use]
-    pub fn valexp(&self) -> &[ValidatedExpose] {
-        &self.valexp
+    pub fn valexp(&self) -> &[VpcExpose] {
+        &self.exposes
     }
 
-    #[must_use]
-    pub fn default_expose(&self) -> Option<&ValidatedExpose> {
-        self.valexp().iter().find(|expose| expose.is_default())
-    }
-
-    fn filter_exposes<F>(&self, predicate: F) -> impl Iterator<Item = &ValidatedExpose>
+    fn filter_exposes<F>(&self, predicate: F) -> impl Iterator<Item = &VpcExpose>
     where
-        F: FnMut(&&ValidatedExpose) -> bool,
+        F: FnMut(&&VpcExpose) -> bool,
     {
         self.valexp().iter().filter(predicate)
     }
 
-    pub fn static_nat_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
+    pub fn static_nat_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
         self.filter_exposes(|expose| expose.has_static_nat())
     }
 
-    pub fn masquerade_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
+    pub fn masquerade_exposes_44(&self) -> impl Iterator<Item = &VpcExpose> {
         self.filter_exposes(|expose| expose.has_masquerade() && expose.is_44())
     }
 
-    pub fn masquerade_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
+    pub fn masquerade_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
         self.filter_exposes(|expose| expose.has_masquerade() && expose.is_66())
     }
 
-    pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &ValidatedExpose> {
+    pub fn port_forwarding_exposes(&self) -> impl Iterator<Item = &VpcExpose> {
         self.filter_exposes(|expose| expose.has_port_forwarding())
     }
 
-    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &ValidatedExpose> {
+    pub fn port_forwarding_exposes_44(&self) -> impl Iterator<Item = &VpcExpose> {
         self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_44())
     }
 
-    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &ValidatedExpose> {
+    pub fn port_forwarding_exposes_66(&self) -> impl Iterator<Item = &VpcExpose> {
         self.filter_exposes(|expose| expose.has_port_forwarding() && expose.is_66())
     }
 
     fn validate_expose_collisions(&self) -> ConfigResult {
         // Check that prefixes in each expose don't overlap with prefixes in other exposes
-        for (index, expose_left) in self.valexp.iter().enumerate() {
+        for (index, expose_left) in self.exposes.iter().enumerate() {
             // Loop over the remaining exposes in the list
-            for expose_right in self.valexp.iter().skip(index + 1) {
+            for expose_right in self.exposes.iter().skip(index + 1) {
                 #[allow(clippy::unnested_or_patterns)]
                 match (&expose_left.nat_config(), &expose_right.nat_config()) {
                     // Overlap allowed

@@ -4,7 +4,7 @@
 //! Control channel for the router
 
 use concurrency::sync::Arc;
-use config::{GwConfigMeta, ValidatedGwConfig};
+use config::{GwConfig, GwConfigMeta};
 use interface_manager::monitor::EthEvent;
 use mio::{Interest, Waker};
 use tokio::sync::mpsc::Sender;
@@ -56,7 +56,7 @@ pub(crate) enum RouterCtlMsg {
     GuardedUnlock,
     Configure(RouterConfig, RouterCtlReplyTx),
     GetFrrAppliedConfig(RouterCtlReplyTx),
-    Config(Arc<ValidatedGwConfig>),
+    Config(Arc<GwConfig>),
     ConfigHistory(Arc<Vec<GwConfigMeta>>),
     IfEvent(EthEvent),
 }
@@ -154,7 +154,7 @@ impl RouterCtlSender {
         };
         Ok(frr_cfg)
     }
-    pub async fn send_config(&mut self, config: Arc<ValidatedGwConfig>) -> Result<(), RouterError> {
+    pub async fn send_config(&mut self, config: Arc<GwConfig>) -> Result<(), RouterError> {
         let msg = RouterCtlMsg::Config(config);
         self.send_and_wake(msg).await
     }
@@ -242,7 +242,7 @@ fn handle_get_frr_applied_config(rio: &Rio, reply_to: RouterCtlReplyTx) {
         });
 }
 
-fn handle_config(rio: &mut Rio, config: Arc<ValidatedGwConfig>) {
+fn handle_config(rio: &mut Rio, config: Arc<GwConfig>) {
     rio.gwconfig = Some(config);
 }
 fn handle_config_history(rio: &mut Rio, history: Arc<Vec<GwConfigMeta>>) {
