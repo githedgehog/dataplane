@@ -80,6 +80,30 @@ impl VpcRoute {
     }
 }
 
+// pub getters
+impl VpcRoute {
+    #[must_use]
+    pub fn destination(&self) -> PrefixWithOptionalPorts {
+        self.dst
+    }
+    #[must_use]
+    pub fn dst_vpc(&self) -> &str {
+        &self.dstvpc
+    }
+    #[must_use]
+    pub fn remote_action(&self) -> ExposeAction {
+        self.rem_action
+    }
+    #[must_use]
+    pub fn dst_vni(&self) -> Vni {
+        self.dstvni
+    }
+    #[must_use]
+    pub fn gw_group(&self) -> &str {
+        &self.gwgroup
+    }
+}
+
 /// A table of `VpcRoutes`.
 ///
 /// For any destination `PrefixWithOptionalPorts`, this table can keep
