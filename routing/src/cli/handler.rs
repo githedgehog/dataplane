@@ -392,6 +392,7 @@ fn show_config(request: CliRequest, config: Option<&Arc<ValidatedGwConfig>>) -> 
     let contents = match request.action {
         CliAction::ShowVpc => vpc_table.as_summary().to_string(),
         CliAction::ShowVpcPeerings => vpc_table.as_peerings().to_string(),
+        CliAction::ShowVpcRouting => vpc_table.as_route_tables().to_string(),
         CliAction::ShowGatewayGroups => config.external().gwgroups().to_string(),
         CliAction::ShowGatewayCommunities => config.external().communities().to_string(),
         CliAction::ShowConfigInternal => {
@@ -446,6 +447,7 @@ fn do_handle_cli_request(
         CliAction::ShowTech => show_tech(request, db, rio, sources),
         CliAction::ShowVpc
         | CliAction::ShowVpcPeerings
+        | CliAction::ShowVpcRouting
         | CliAction::ShowGatewayCommunities
         | CliAction::ShowGatewayGroups
         | CliAction::ShowConfigInternal => show_config(request, rio.gwconfig.as_ref()),

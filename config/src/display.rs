@@ -425,6 +425,10 @@ impl ValidatedVpcTable {
     pub fn as_peerings(&self) -> ValidatedVpcTablePeerings<'_> {
         ValidatedVpcTablePeerings(self)
     }
+    #[must_use]
+    pub fn as_route_tables(&self) -> VpcTableRoutingTables<'_> {
+        VpcTableRoutingTables(self)
+    }
 }
 
 impl Vpc {
@@ -498,7 +502,7 @@ impl Display for ValidatedOverlay {
 
 macro_rules! VPC_RT_TBL_FMT {
     () => {
-        "{:<30} {:<10} {:<12} {:<13} {:<16}"
+        " {:<30} {:<10} {:<12} {:<13} {:<16}"
     };
 }
 fn fmt_vpc_rt_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
