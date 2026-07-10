@@ -5,7 +5,6 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use lpm::prefix::IpRangeWithPorts;
 use net::vxlan::Vni;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -17,6 +16,7 @@ use crate::external::overlay::VpcPeeringTable;
 use crate::external::overlay::acl::{Acl, ValidatedAcl};
 use crate::external::overlay::vpcpeering::ValidatedManifest;
 use crate::external::overlay::vpcpeering::VpcExposeNatConfig;
+use crate::external::overlay::vpcrouting::VpcRouteTable;
 use crate::internal::interfaces::interface::InterfaceConfigTable;
 use crate::{ConfigError, ConfigResult};
 
@@ -316,6 +316,8 @@ impl Vpc {
             .map(Peering::validate)
             .collect::<Result<_, _>>()?;
 
+        VpcRouteTable::build(&validated_peerings).validate()?;
+
         let validated_vpc = ValidatedVpc {
             name: self.name.clone(),
             id: self.id.clone(),
@@ -323,7 +325,6 @@ impl Vpc {
             interfaces: self.interfaces.clone(),
             peerings: validated_peerings,
         };
-        validated_vpc.check_overlap_and_default()?;
         Ok(validated_vpc)
     }
 
@@ -418,64 +419,6 @@ impl ValidatedVpc {
                 .iter()
                 .any(|e| e.has_port_forwarding() || e.has_masquerade())
         })
-    }
-
-    /// Check that prefixes exposed to a given VPC do not overlap. Exceptions:
-    ///
-    /// - overlap is allowed between a prefix and a default expose (it overlaps by design)
-    /// - overlap is allowed between prefixes from different exposes if both their exposes use
-    ///   masquerade (we can fall back to the flow table to disambiguate the destination VPC)
-    ///
-    /// Also check that at most one default expose is exposed to the VPC.
-    fn check_overlap_and_default(&self) -> ConfigResult {
-        // FIXME: Find a less expensive approach to find overlapping prefixes
-        for (i, current_peering) in self.peerings().iter().enumerate() {
-            // Check we don't have non-default, overlapping prefixes exposed to the VPC
-            for other_peering in &self.peerings()[i + 1..] {
-                for current_expose in current_peering.remote().valexp() {
-                    for other_expose in other_peering.remote().valexp() {
-                        if current_expose.has_masquerade() && other_expose.has_masquerade() {
-                            // Overlap is allowed if both expose blocks use masquerade
-                            continue;
-                        }
-                        match (current_expose.is_default(), other_expose.is_default()) {
-                            (true, true) => {
-                                // We support at most one default destination exposed to any VPC
-                                error!(
-                                    "Multiple 'default' destinations exposed to VPC {}",
-                                    self.name()
-                                );
-                                return Err(ConfigError::Forbidden(
-                                    "Multiple 'default' destinations exposed to VPC",
-                                ));
-                            }
-                            (true, false) | (false, true) => {
-                                // Overlap is allowed between a prefix and a default expose
-                                continue;
-                            }
-                            (false, false) => { /* keep processing */ }
-                        }
-                        for current_prefix in current_expose.public_ips() {
-                            for other_prefix in other_expose.public_ips() {
-                                if current_prefix.overlaps(other_prefix) {
-                                    error!(
-                                        "Prefixes exposed to VPC {} overlap: {} and {}",
-                                        self.name(),
-                                        current_prefix,
-                                        other_prefix
-                                    );
-                                    return Err(ConfigError::OverlappingPrefixes(
-                                        *current_prefix,
-                                        *other_prefix,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 
