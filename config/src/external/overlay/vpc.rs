@@ -380,6 +380,11 @@ impl ValidatedVpc {
         &self.peerings
     }
 
+    #[must_use]
+    pub fn route_table(&self) -> &VpcRouteTable {
+        &self.rt
+    }
+
     /// Tell how many peerings this VPC has
     #[must_use]
     pub fn num_peerings(&self) -> usize {
