@@ -65,7 +65,7 @@ pub struct InterfaceConfig {
     pub pci: Option<net::pci::PciEbdf>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 /// An interface configuration table
 pub struct InterfaceConfigTable(BTreeMap<String, InterfaceConfig>);
 
