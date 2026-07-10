@@ -286,6 +286,7 @@ pub enum CliAction {
     // config: vpcs & peerings
     ShowVpc,
     ShowVpcPeerings,
+    ShowVpcRouting,
 
     // router: Eventlog
     RouterEventLog,

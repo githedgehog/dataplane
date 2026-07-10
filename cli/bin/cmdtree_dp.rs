@@ -81,6 +81,11 @@ fn cmd_show_vpc() -> Node {
     root += Node::new("peerings")
         .desc("Show the peerings of each vpc")
         .action(CliAction::ShowVpcPeerings);
+
+    root += Node::new("routing")
+        .desc("Show the routing table of each vpc")
+        .action(CliAction::ShowVpcRouting);
+
     root
 }
 fn cmd_show_ip() -> Node {
