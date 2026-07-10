@@ -89,7 +89,7 @@ impl Overlay {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct ValidatedOverlay {
     vpc_table: ValidatedVpcTable,
 }

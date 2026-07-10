@@ -65,7 +65,7 @@ pub mod test {
 
         /* invalid vni should be rejected */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 0);
-        assert_eq!(vpc1, Err(ConfigError::InvalidVpcVni(0)));
+        assert!(vpc1.is_err_and(|e| matches!(e, ConfigError::InvalidVpcVni(0))));
 
         /* add vpc with valid vni 3000 */
         let vpc1 = Vpc::new("VPC-1", "AAAAA", 3000).expect("Should succeed");
@@ -90,12 +90,14 @@ pub mod test {
         );
 
         /* vpc with bad Id should not build */
-        let bad = Vpc::new("VPC-2", "AAA", 9000);
-        assert_eq!(bad, Err(ConfigError::BadVpcId("AAA".to_string())));
+        let bad_id = "AAA".to_string();
+        let bad = Vpc::new("VPC-2", &bad_id, 9000);
+        assert!(bad.is_err_and(|e| matches!(e, ConfigError::BadVpcId(_bad_id))));
 
         /* vpc with bad Id should not build */
-        let bad = Vpc::new("VPC-2", "!1234", 9000);
-        assert_eq!(bad, Err(ConfigError::BadVpcId("!1234".to_string())));
+        let bad_id = "!1234".to_string();
+        let bad = Vpc::new("VPC-2", &bad_id, 9000);
+        assert!(bad.is_err_and(|e| matches!(e, ConfigError::BadVpcId(_bad_id))));
     }
 
     #[test]

@@ -211,7 +211,7 @@ impl From<&Vpc> for VpcSummary {
 type VpcMap = BTreeMap<String, VpcSummary>;
 
 /// Representation of a VPC from the RPC
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Vpc {
     pub name: String,                     /* name of vpc, used as key */
     pub id: VpcId,                        /* internal Id, unique*/
@@ -340,7 +340,7 @@ impl Vpc {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct ValidatedVpc {
     name: String,                     /* name of vpc, used as key */
     id: VpcId,                        /* internal Id, unique*/
@@ -515,7 +515,7 @@ impl VpcTable {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct ValidatedVpcTable {
     vpcs: BTreeMap<String, ValidatedVpc>,
     ids: BTreeMap<VpcId, String>, // name of vpc
