@@ -1171,7 +1171,7 @@ pub mod test {
 
         let overlay = Overlay::new(vpc_table, peering_table);
         assert!(overlay.validate().is_err_and(
-            |e| e == ConfigError::Forbidden("Multiple 'default' destinations exposed to VPC")
+            |e| e == ConfigError::Forbidden("Multiple default destinations exposed to VPC")
         ));
     }
 

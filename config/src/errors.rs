@@ -42,8 +42,6 @@ pub enum ConfigError {
     InvalidVpcVni(u32),
     #[error("Config with id {0} not found")]
     NoSuchConfig(GenId),
-    #[error("A config with id {0} already exists")]
-    ConfigAlreadyExists(GenId),
     #[error("Failure applying config: {0}")]
     FailureApply(String),
     #[error("Forbidden: {0}")]
@@ -58,20 +56,14 @@ pub enum ConfigError {
     MissingIdentifier(&'static str),
     #[error("Missing mandatory parameter: {0}")]
     MissingParameter(&'static str),
-    #[error("Incomplete: {0}")]
-    Incomplete(String),
     #[error("Multiple instances of {0} found, expected {1}")]
     TooManyInstances(&'static str, usize),
     #[error("Internal error: {0}")]
     InternalFailure(String),
-    #[error("MTU out of range [68, 65535]: {0}")]
-    BadMtu(u32),
 
     // Peering and VpcExpose validation
     #[error("All prefixes are excluded in VpcExpose: {0}")]
     ExcludedAllPrefixes(Box<VpcExpose>),
-    #[error("Exclusion prefix {0} not contained within existing allowed prefix")]
-    OutOfRangeExclusionPrefix(PrefixWithOptionalPorts),
     #[error("VPC prefixes overlap: {0} and {1}")]
     OverlappingPrefixes(PrefixWithOptionalPorts, PrefixWithOptionalPorts),
     #[error("Inconsistent IP version in VpcExpose: {0}")]
