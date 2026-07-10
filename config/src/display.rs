@@ -16,7 +16,9 @@ use crate::external::overlay::vpcpeering::{
     VpcExposePortForwarding, VpcExposeStaticNat,
 };
 use crate::external::overlay::vpcpeering::{VpcManifest, VpcPeering, VpcPeeringTable};
+use crate::external::overlay::vpcrouting::{ExposeAction, VpcRoute, VpcRouteTable};
 use crate::external::overlay::{Overlay, ValidatedOverlay};
+
 use chrono::{DateTime, Utc};
 use net::vxlan::Vni;
 
@@ -347,6 +349,18 @@ impl Display for ValidatedVpcSummary<'_> {
     }
 }
 
+pub struct VpcTableRoutingTables<'a>(&'a ValidatedVpcTable);
+impl Display for VpcTableRoutingTables<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for vpc in self.0.values() {
+            Heading(vpc.name().to_string()).fmt(f)?;
+            vpc.route_table().fmt(f)?;
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
 pub struct VpcTableSummary<'a>(&'a VpcTable);
 impl Display for VpcTableSummary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -477,6 +491,58 @@ impl Display for Overlay {
 impl Display for ValidatedOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.vpc_table().as_summary().fmt(f)
+    }
+}
+
+/* ===== VPC routing tables =====*/
+
+macro_rules! VPC_RT_TBL_FMT {
+    () => {
+        "{:<30} {:<10} {:<12} {:<13} {:<16}"
+    };
+}
+fn fmt_vpc_rt_table_heading(f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    writeln!(
+        f,
+        VPC_RT_TBL_FMT!(),
+        "destinations", "remote-VPC", "remote-vni", "remote-action", "gw-group"
+    )
+}
+
+impl Display for ExposeAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(match self {
+            ExposeAction::Default => "default",
+            ExposeAction::Forward => "forward",
+            ExposeAction::StaticNat => "static-nat",
+            ExposeAction::PortForwarding => "port-forward",
+            ExposeAction::Masquerade => "masqueraded",
+        })
+    }
+}
+
+impl Display for VpcRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let dst = self.destination().to_string();
+        writeln!(
+            f,
+            VPC_RT_TBL_FMT!(),
+            dst,
+            self.dst_vpc(),
+            self.dst_vni(),
+            self.remote_action(),
+            self.gw_group()
+        )
+    }
+}
+
+impl Display for VpcRouteTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_vpc_rt_table_heading(f)?;
+        for route_set in self.iter() {
+            route_set.fmt(f)?;
+        }
+        Ok(())
     }
 }
 
