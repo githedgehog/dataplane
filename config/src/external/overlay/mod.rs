@@ -7,6 +7,7 @@ pub mod tests;
 pub mod validation_tests;
 pub mod vpc;
 pub mod vpcpeering;
+pub mod vpcrouting;
 
 use crate::{ConfigError, ConfigResult};
 use tracing::{debug, error};
