@@ -288,7 +288,7 @@ impl Vpc {
             .map(Peering::validate)
             .collect::<Result<_, _>>()?;
 
-        VpcRouteTable::build(&validated_peerings).validate()?;
+        let route_table = VpcRouteTable::build(&validated_peerings).validate()?;
 
         let validated_vpc = ValidatedVpc {
             name: self.name.clone(),
@@ -296,6 +296,7 @@ impl Vpc {
             vni: self.vni,
             interfaces: self.interfaces.clone(),
             peerings: validated_peerings,
+            route_table,
         };
         Ok(validated_vpc)
     }
@@ -330,12 +331,15 @@ impl Vpc {
             })
             .collect::<Vec<_>>();
 
+        let not_validated_rt = VpcRouteTable::build(&fake_validated_peerings);
+
         ValidatedVpc {
             name: self.name.clone(),
             id: self.id.clone(),
             vni: self.vni,
             interfaces: self.interfaces.clone(),
             peerings: fake_validated_peerings,
+            route_table: not_validated_rt,
         }
     }
 }
@@ -347,6 +351,7 @@ pub struct ValidatedVpc {
     vni: Vni,                         /* mandatory */
     interfaces: InterfaceConfigTable, /* user-defined interfaces in this VPC */
     peerings: Vec<ValidatedPeering>,  /* peerings of this VPC - NOT set via gRPC */
+    route_table: VpcRouteTable,
 }
 
 impl ValidatedVpc {
@@ -373,6 +378,11 @@ impl ValidatedVpc {
     #[must_use]
     pub fn peerings(&self) -> &[ValidatedPeering] {
         &self.peerings
+    }
+
+    #[must_use]
+    pub fn route_table(&self) -> &VpcRouteTable {
+        &self.route_table
     }
 
     /// Tell how many peerings this VPC has
