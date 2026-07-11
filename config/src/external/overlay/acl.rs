@@ -307,157 +307,6 @@ impl AclRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ValidatedAclRule {
-    name: String,
-    from: String,
-    to: String,
-    action: AclAction,
-    pattern: ValidatedAclPattern,
-    scope: AclScope,
-    log: bool,
-}
-
-impl ValidatedAclRule {
-    #[must_use]
-    pub fn action(&self) -> AclAction {
-        self.action
-    }
-
-    #[must_use]
-    pub fn pattern(&self) -> &ValidatedAclPattern {
-        &self.pattern
-    }
-
-    #[must_use]
-    pub fn log(&self) -> bool {
-        self.log
-    }
-
-    #[must_use]
-    pub fn scope(&self) -> AclScope {
-        self.scope
-    }
-
-    // This function assumes that validate_from_to has already been called, so exactly one of
-    // from/to matches manifest_left/manifest_right
-    fn manifest_to<'a>(
-        &self,
-        manifest_left: &'a VpcManifest,
-        manifest_right: &'a VpcManifest,
-    ) -> &'a VpcManifest {
-        if self.to == manifest_left.name() {
-            manifest_left
-        } else {
-            manifest_right
-        }
-    }
-
-    // This function assumes that validate_from_to has already been called, so exactly one of
-    // from/to matches manifest_left/manifest_right
-    fn manifest_from<'a>(
-        &self,
-        manifest_left: &'a VpcManifest,
-        manifest_right: &'a VpcManifest,
-    ) -> &'a VpcManifest {
-        if self.from == manifest_left.name() {
-            manifest_left
-        } else {
-            manifest_right
-        }
-    }
-
-    fn validate_pattern_coverage(
-        name: &str,
-        prefixes_acl: &mut PrefixPortsSet,
-        prefixes_manifest: &PrefixPortsSet,
-    ) -> Result<(), ConfigError> {
-        // If the list of prefixes is empty, it means we match all prefixes from the manifest.
-        if prefixes_acl.is_empty() {
-            *prefixes_acl = prefixes_manifest.clone();
-            return Ok(());
-        }
-
-        // If the ACL prefixes don't match any of the manifest prefixes, reject it.
-        let intersection = prefixes_acl.intersection_prefixes_and_ports(prefixes_manifest);
-        if intersection.is_empty() {
-            return Err(ConfigError::InvalidAcl(format!(
-                "ACL rule '{name}' has a 'match' that does not match any traffic in the manifest: {prefixes_acl:?} vs {prefixes_manifest:?}",
-            )));
-        }
-
-        // If some addresses/ports covered by the ACL fall outside of the scope of the manifest, log
-        // a message, and restrict the ACL to the manifest scope.
-        if intersection.total_prefixes_size() != prefixes_acl.total_prefixes_size() {
-            debug!(
-                "ACL rule '{name}' has a 'match' that doesn't fully covers the manifest traffic: {prefixes_acl:?} vs {prefixes_manifest:?}",
-            );
-            *prefixes_acl = intersection;
-        }
-        Ok(())
-    }
-
-    /// Materialize "any address within the peering, restricted to these ports" entries into
-    /// concrete prefixes, one per port range per prefix advertised by `manifest_prefixes`.
-    fn expand_any_ports(manifest_prefixes: &PrefixPortsSet, ports: &[PortRange]) -> PrefixPortsSet {
-        ports
-            .iter()
-            .flat_map(|port| {
-                manifest_prefixes
-                    .iter()
-                    .map(move |p| PrefixWithOptionalPorts::new(p.prefix(), Some(*port)))
-            })
-            .collect()
-    }
-
-    fn manifest_coverage_set(
-        manifest: &VpcManifest,
-        is_v4: bool,
-        is_public: bool,
-    ) -> PrefixPortsSet {
-        if manifest.has_default_expose() {
-            [PrefixWithOptionalPorts::from(if is_v4 {
-                Prefix::root_v4()
-            } else {
-                Prefix::root_v6()
-            })]
-            .into()
-        } else if is_public {
-            manifest.all_public_ips()
-        } else {
-            manifest.all_ips()
-        }
-    }
-
-    fn validate_patterns_coverage(
-        &mut self,
-        manifest_left: &VpcManifest,
-        manifest_right: &VpcManifest,
-        src_any_ports: &[PortRange],
-        dst_any_ports: &[PortRange],
-    ) -> Result<(), ConfigError> {
-        // A default-only manifest's is_v4()/is_v6() are always false, so fall back to the other side
-        let is_v4 = if manifest_left.is_default_only() {
-            manifest_right.is_v4()
-        } else {
-            manifest_left.is_v4()
-        };
-        let manifest_from = self.manifest_from(manifest_left, manifest_right);
-        let src_set = Self::manifest_coverage_set(manifest_from, is_v4, false);
-        let any = Self::expand_any_ports(&src_set, src_any_ports);
-        self.pattern.src = self.pattern.src.union_prefixes_and_ports(&any);
-        Self::validate_pattern_coverage(&self.name, &mut self.pattern.src, &src_set)?;
-
-        let manifest_to = self.manifest_to(manifest_left, manifest_right);
-        let dst_set = Self::manifest_coverage_set(manifest_to, is_v4, true);
-        let any = Self::expand_any_ports(&dst_set, dst_any_ports);
-        self.pattern.dst = self.pattern.dst.union_prefixes_and_ports(&any);
-        Self::validate_pattern_coverage(&self.name, &mut self.pattern.dst, &dst_set)?;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Acl {
     default: AclAction,
     rules: Vec<AclRule>,
@@ -513,24 +362,6 @@ impl Acl {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidatedAcl {
-    rules: Vec<ValidatedAclRule>,
-    default_action: AclAction,
-}
-
-impl ValidatedAcl {
-    #[must_use]
-    pub fn rules(&self) -> &[ValidatedAclRule] {
-        &self.rules
-    }
-
-    #[must_use]
-    pub fn default_action(&self) -> AclAction {
-        self.default_action
-    }
-}
-
 // =================================================================================================
 // ACL validation tests
 //
@@ -542,7 +373,6 @@ impl ValidatedAcl {
 mod validation_tests {
     use super::{Acl, AclAction, AclPattern, AclProtoMatch, AclRule, AclScope};
     use crate::ConfigError;
-    use crate::external::overlay::acl::ValidatedAclRule;
     use crate::external::overlay::vpcpeering::{VpcExpose, VpcManifest};
 
     use lpm::prefix::{PortRange, Prefix, PrefixPortsSet, PrefixWithOptionalPorts};
@@ -616,7 +446,7 @@ mod validation_tests {
 
     // Helper: validate a single rule against the standard peering, returning the (possibly
     // completed/restricted) rule on success
-    fn validate_rule(rule: AclRule) -> Result<ValidatedAclRule, ConfigError> {
+    fn validate_rule(mut rule: AclRule) -> Result<(), ConfigError> {
         let (left, right) = manifests();
         rule.validate(&left, &right)
     }
